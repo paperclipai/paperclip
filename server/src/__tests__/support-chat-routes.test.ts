@@ -86,7 +86,10 @@ const VERIFIED_USER: UserRow = {
 
 /** A fetch stub answering Plain's upsertTenant mutation. */
 function tenantUpsertFetch(result: "ok" | "mutation-error" | "http-500") {
-  return vi.fn(async () => {
+  return vi.fn(async (_url: unknown, init: RequestInit) => {
+    const query = JSON.parse(init.body as string).query;
+    if (query.includes("upsertCustomer")) return Response.json({ data: { upsertCustomer: { customer: { id: "c_test" }, error: null } } });
+    if (query.includes("addCustomerToTenants")) return Response.json({ data: { addCustomerToTenants: { error: null } } });
     if (result === "http-500") return new Response("nope", { status: 500 });
     const body =
       result === "ok"
@@ -281,7 +284,7 @@ describe("GET /api/support-chat/session", () => {
     // The upsert went to Plain's documented endpoint with the documented
     // input shape, authenticated server-side.
     const stub = fetchStub as unknown as ReturnType<typeof vi.fn>;
-    expect(stub).toHaveBeenCalledTimes(1);
+    expect(stub).toHaveBeenCalledTimes(3);
     const [url, init] = stub.mock.calls[0] as [string, RequestInit];
     expect(url).toBe(PLAIN_GRAPHQL_ENDPOINT);
     expect((init.headers as Record<string, string>).Authorization).toBe("Bearer plainApiKey_TEST");
@@ -315,6 +318,28 @@ describe("GET /api/support-chat/session", () => {
       tenantId: null,
       });
     }
+  });
+
+  it("withholds tenant context when membership fails after tenant upsert", async () => {
+    const fetchStub = vi.fn()
+      .mockResolvedValueOnce(Response.json({ data: { upsertTenant: { tenant: { id: "te_exists" } } } }))
+      .mockResolvedValueOnce(Response.json({ data: { upsertCustomer: { customer: { id: "c_test" } } } }))
+      .mockResolvedValueOnce(Response.json({ data: { addCustomerToTenants: { error: { code: "DENIED" } } } }));
+    const res = await request(createApp({ row: VERIFIED_USER, company: COMPANY,
+      runtimeEnv: { ...CLOUD_ENV, PLAIN_API_KEY: "test" }, tenantSyncFetch: fetchStub,
+    })).get(`/api/support-chat/session?companyId=${COMPANY.id}`);
+    expect(res.status).toBe(200);
+    expect(res.body.company.tenantId).toBeNull();
+    expect(res.body.company.tenantExternalId).toBeNull();
+  });
+
+  it("does not sync any Plain membership for an unverified identity", async () => {
+    const fetchStub = vi.fn();
+    const res = await request(createApp({ row: { ...VERIFIED_USER, emailVerified: false }, company: COMPANY,
+      runtimeEnv: { ...CLOUD_ENV, PLAIN_API_KEY: "test" }, tenantSyncFetch: fetchStub,
+    })).get(`/api/support-chat/session?companyId=${COMPANY.id}`);
+    expect(res.body.company.tenantId).toBeNull();
+    expect(fetchStub).not.toHaveBeenCalled();
   });
 
   it("refuses the dev preview opt-in on a production build", async () => {

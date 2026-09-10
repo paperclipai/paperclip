@@ -226,6 +226,27 @@ describe("plain-chat controller", () => {
     expect(fake.update.mock.lastCall![0]).not.toHaveProperty("appId");
   });
 
+  it("removes the stale widget and restores fallback after a rejected company update", async () => {
+    const fake = createFakePlain();
+    (window as unknown as { Plain: unknown }).Plain = fake;
+    const host = document.createElement("div");
+    host.id = "plain-chat";
+    document.body.appendChild(host);
+    await mountSupportChat({ ...MOUNT, tenantId: "te_original" });
+    fake.update.mockRejectedValue(new Error("vendor update rejected"));
+    fake.close.mockImplementation(() => { throw new Error("close also failed"); });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    await updateSupportChatCompany("te_next");
+    expect(getSupportChatWidgetStatus()).toBe("error");
+    expect(document.getElementById("plain-chat")).toBeNull();
+    const count = fake.update.mock.calls.length;
+    await mountSupportChat(MOUNT);
+    await updateSupportChatTheme("dark");
+    expect(fake.init).toHaveBeenCalledTimes(1);
+    expect(fake.update).toHaveBeenCalledTimes(count);
+    error.mockRestore();
+  });
+
   it("scopes new threads to the current company's tenant at init", async () => {
     const scripts = captureScript();
     const fake = createFakePlain();

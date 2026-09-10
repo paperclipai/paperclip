@@ -197,9 +197,21 @@ function buildConfig(opts: SupportChatMountOptions): Record<string, unknown> {
   };
 }
 
+/** Disable the vendor surface for this page after any untrusted transition.
+ * Plain's default launcher and panel share the plain-chat shadow host. Remove
+ * that host as well as requesting close: a rejected SDK update cannot be
+ * relied on to hide itself. Recovery requires a fresh document.
+ */
+function disableSupportChat() {
+  try { plain?.close(); } catch { /* DOM removal below is authoritative. */ }
+  document.getElementById("plain-chat")?.remove();
+  lastConfig = null;
+  setState({ status: "error", launcherVisible: false });
+}
+
 /** Push mutable configuration to a mounted widget. */
 async function applyConfig(next: Record<string, unknown>) {
-  if (!plain) return;
+  if (!plain || state.status === "error") return;
   try {
     // appId is init-only; Plain rejects it in update configuration.
     const { appId: _appId, ...updateConfig } = next;
@@ -208,6 +220,7 @@ async function applyConfig(next: Record<string, unknown>) {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[paperclip] Plain chat update failed", err);
+    disableSupportChat();
   }
 }
 
@@ -223,8 +236,10 @@ async function applyUpdate(patch: Record<string, unknown>) {
  */
 export function mountSupportChat(opts: SupportChatMountOptions): Promise<void> {
   return enqueue(async () => {
+    if (state.status === "error") return;
     if (mountedIdentityKey !== null) {
       if (mountedIdentityKey !== opts.identityKey) {
+        disableSupportChat();
         // eslint-disable-next-line no-console
         console.warn(
           "[paperclip] Support chat is already bound to another account for this page; reload to start a chat session for the new account.",
@@ -232,7 +247,7 @@ export function mountSupportChat(opts: SupportChatMountOptions): Promise<void> {
         return;
       }
       await applyUpdate({ hideLauncher: false, theme: opts.theme });
-      setState({ launcherVisible: true });
+      if (getSupportChatWidgetStatus() !== "error") setState({ launcherVisible: true });
       return;
     }
 
@@ -248,7 +263,7 @@ export function mountSupportChat(opts: SupportChatMountOptions): Promise<void> {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[paperclip] Plain chat bootstrap failed", err);
-      setState({ status: "error", launcherVisible: false });
+      disableSupportChat();
       return;
     }
     plain = Plain;

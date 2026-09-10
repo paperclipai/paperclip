@@ -119,3 +119,61 @@ export async function ensurePlainTenant(opts: EnsurePlainTenantOptions): Promise
     clearTimeout(timeout);
   }
 }
+
+/** Establish the membership Plain requires to persist a chat's tenant.
+ * Only call after Paperclip authorizes the selected company and verifies the
+ * user's email. Do not cache memberships: they can be removed in Plain.
+ * Adding this membership does not remove other memberships or change a
+ * customer's email-domain company, and never reassigns existing threads.
+ */
+export async function ensurePlainCustomerTenant(opts: {
+  apiKey: string;
+  tenantId: string;
+  customer: { email: string; fullName: string | null; externalId: string };
+  fetchImpl?: typeof fetch;
+  timeoutMs?: number;
+}): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), opts.timeoutMs ?? 4_000);
+  const call = async (query: string, input: unknown) => {
+    const response = await (opts.fetchImpl ?? fetch)(PLAIN_GRAPHQL_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${opts.apiKey}` },
+      body: JSON.stringify({ query, variables: { input } }),
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error("Plain membership request failed");
+    const payload = await response.json();
+    if (payload.errors?.length) throw new Error("Plain membership query rejected");
+    return payload.data;
+  };
+  try {
+    const { email, fullName, externalId } = opts.customer;
+    const customer = await call(`mutation upsertCustomer($input: UpsertCustomerInput!) {
+      upsertCustomer(input: $input) { customer { id } error { code } }
+    }`, {
+      identifier: { emailAddress: email },
+      onCreate: { fullName: fullName || email, email: { email, isVerified: true }, externalId },
+      onUpdate: {
+        ...(fullName ? { fullName: { value: fullName } } : {}),
+        email: { email, isVerified: true },
+        externalId: { value: externalId },
+      },
+    });
+    const result = customer?.upsertCustomer;
+    if (result?.error || !result?.customer?.id) return false;
+    const membership = await call(`mutation addCustomerToTenants($input: AddCustomerToTenantsInput!) {
+      addCustomerToTenants(input: $input) { error { code } }
+    }`, {
+      customerIdentifier: { customerId: result.customer.id },
+      tenantIdentifiers: [{ tenantId: opts.tenantId }],
+    });
+    return !!membership?.addCustomerToTenants && !membership.addCustomerToTenants.error;
+  } catch {
+    // Never log request bodies, customer identity, vendor errors, or credentials.
+    logger.warn("Plain customer tenant membership sync failed");
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}

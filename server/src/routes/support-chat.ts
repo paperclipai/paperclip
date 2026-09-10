@@ -12,6 +12,7 @@ import {
 } from "../services/support-chat.js";
 import {
   ensurePlainTenant,
+  ensurePlainCustomerTenant,
   plainTenantExternalId,
 } from "../services/plain-tenant-sync.js";
 import type { CloudInstanceEnv } from "../services/cloud-instance.js";
@@ -38,7 +39,8 @@ const companyIdParamSchema = z.string().uuid();
  *   marked `Cache-Control: no-store` because the hash is a bearer credential
  *   for the customer's chat identity.
  * - Tenant context is only handed out after `ensurePlainTenant` confirmed the
- *   tenant exists in the Plain workspace (needs `PLAIN_API_KEY`); without it
+ *   tenant exists and the verified customer membership is established
+ *   in Plain (needs `PLAIN_API_KEY`); without it
  *   the company block still names the company but carries no tenant id, and
  *   the widget passes no tenant to Plain.
  */
@@ -56,6 +58,7 @@ export function supportChatRoutes(
   async function resolveCompanyContext(
     config: SupportChatRuntimeConfig,
     companyId: string,
+    customer: { email: string; fullName: string | null; externalId: string } | null,
   ): Promise<SupportChatCompany | null> {
     const company = await db
       .select({ id: companies.id, name: companies.name })
@@ -66,7 +69,7 @@ export function supportChatRoutes(
 
     let tenantExternalId: string | null = null;
     let tenantId: string | null = null;
-    if (config.tenantSyncApiKey) {
+    if (config.tenantSyncApiKey && customer) {
       const externalId = plainTenantExternalId(company.id);
       tenantId = await ensurePlainTenant({
         apiKey: config.tenantSyncApiKey,
@@ -74,7 +77,16 @@ export function supportChatRoutes(
         name: company.name,
         fetchImpl: opts.tenantSyncFetch,
       });
-      if (tenantId) tenantExternalId = externalId;
+      if (tenantId) {
+        const linked = await ensurePlainCustomerTenant({
+          apiKey: config.tenantSyncApiKey,
+          tenantId,
+          customer,
+          fetchImpl: opts.tenantSyncFetch,
+        });
+        if (linked) tenantExternalId = externalId;
+        else tenantId = null;
+      }
     }
     return { id: company.id, name: company.name, tenantExternalId, tenantId };
   }
@@ -131,7 +143,7 @@ export function supportChatRoutes(
     const requestedCompanyId = companyIdParamSchema.safeParse(req.query.companyId);
     const company =
       requestedCompanyId.success && hasCompanyAccess(req, requestedCompanyId.data)
-        ? await resolveCompanyContext(config, requestedCompanyId.data)
+        ? await resolveCompanyContext(config, requestedCompanyId.data, customer)
         : null;
 
     res.setHeader("Cache-Control", "no-store");

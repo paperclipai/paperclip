@@ -92,3 +92,28 @@ describe("plainTenantExternalId", () => {
     expect(plainTenantExternalId("abc-123")).toBe("paperclip-company-abc-123");
   });
 });
+
+describe("customer tenant membership prerequisite", () => {
+  it("creates the verified customer before linking only the selected tenant", async () => {
+    const { ensurePlainCustomerTenant } = await import("../services/plain-tenant-sync.js");
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(Response.json({ data: { upsertCustomer: { customer: { id: "c_new" }, error: null } } }))
+      .mockResolvedValueOnce(Response.json({ data: { addCustomerToTenants: { error: null } } }));
+    expect(await ensurePlainCustomerTenant({ apiKey: "test", tenantId: "te_current", customer: { email: "test@example.com", fullName: "Test", externalId: "user-test" }, fetchImpl })).toBe(true);
+    const customer = JSON.parse(fetchImpl.mock.calls[0][1].body).variables.input;
+    expect(customer.identifier).toEqual({ emailAddress: "test@example.com" });
+    expect(customer.onCreate.email).toEqual({ email: "test@example.com", isVerified: true });
+    expect(customer.onCreate).not.toHaveProperty("company");
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).variables.input).toEqual({ customerIdentifier: { customerId: "c_new" }, tenantIdentifiers: [{ tenantId: "te_current" }] });
+  });
+
+  it.each(["customer", "membership", "missing", "http", "network"])("fails closed on %s failure", async (mode) => {
+    const { ensurePlainCustomerTenant } = await import("../services/plain-tenant-sync.js");
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(mode === "http" ? new Response("", { status: 503 }) : Response.json({ data: { upsertCustomer: mode === "customer" ? { error: { code: "DENIED" } } : { customer: { id: "c_new" } } } }))
+      .mockResolvedValueOnce(Response.json(mode === "missing" ? { data: {} } : { data: { addCustomerToTenants: { error: { code: "DENIED" } } } }));
+    if (mode === "network") fetchImpl.mockReset().mockRejectedValue(new Error("network"));
+    expect(await ensurePlainCustomerTenant({ apiKey: "test", tenantId: "te_current", customer: { email: "test@example.com", fullName: null, externalId: "u" }, fetchImpl })).toBe(false);
+    if (["customer", "http", "network"].includes(mode)) expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+});

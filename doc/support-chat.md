@@ -25,7 +25,7 @@ entry point is untouched.
   user is a member of (`hasCompanyAccess`); malformed, foreign, and unknown
   ids all collapse to `company: null`, so the parameter is not an existence
   oracle. When honored — and only after the tenant sync below confirmed the
-  tenant exists in Plain — the response includes the native tenant ID and stable externalId
+  tenant exists and the customer membership is confirmed in Plain — the response includes the native tenant ID and stable externalId
   (`paperclip-company-<company uuid>`), which the widget passes as
   `threadDetails.tenantIdentifier.tenantId` so **new** support threads are
   scoped to the company the customer is working in.
@@ -57,7 +57,13 @@ Plain has two grouping concepts, and only one of them is ours to set:
   Plain's documented `upsertTenant` GraphQL mutation before the session
   response ever references it; every failure path withholds the tenant id so
   the widget never points Plain at a tenant that may not exist. Successful
-  upserts are cached per process; a company rename re-upserts.
+  upserts are cached per process; a company rename re-upserts. The server then
+  upserts the verified customer and calls `addCustomerToTenants` for the selected
+  tenant. Membership is not cached. No other memberships are removed, no
+  existing threads are reassigned, and the email-domain company is untouched.
+  Unverified customers receive no tenant context. These memberships are support
+  metadata, not Paperclip authorization; this integration does not synchronize
+  membership removals or grant access to Paperclip resources.
 
 ## Environment / secret bindings
 
@@ -65,7 +71,7 @@ Plain has two grouping concepts, and only one of them is ours to set:
 | --- | --- | --- |
 | `PLAIN_CHAT_APP_ID` | Public identifier | The Plain Chat App id (e.g. `liveChatApp_…`). Absent → support chat off everywhere. |
 | `PLAIN_CHAT_EMAIL_HMAC_SECRET` | **Secret, bearer-grade** | Plain's chat authentication secret (Plain → Settings → Chat → the Chat App → Authentication). Holder can mint a chat identity for any email. Server-side env only: never in client bundles, issue comments, documents, or logs. Absent → the widget still mounts, but unauthenticated; Plain's own email OTP flow covers identity. |
-| `PLAIN_API_KEY` | **Secret** | A Plain Core API key scoped to exactly `tenant:read` + `tenant:create` + `tenant:edit` (Plain → Settings → Machine users / API keys), used server-side to upsert the tenant mirroring a Paperclip company. Same handling rules as the HMAC secret. Absent → sessions carry the company name but no tenant id, and support threads lack the current-company association; chat itself is unaffected. |
+| `PLAIN_API_KEY` | **Secret** | A Plain Core API key scoped to exactly `tenant:read`, `tenant:create`, `tenant:edit`, `customer:create`, `customer:edit`, and `customerTenantMembership:create` (Plain → Settings → Machine users / API keys), used server-side to upsert the tenant and verified customer, then add the customer to that tenant. Same handling rules as the HMAC secret. Absent → sessions carry the company name but no tenant id, and support threads lack the current-company association; chat itself is unaffected. |
 | `PAPERCLIP_SUPPORT_CHAT_DEV_PREVIEW` | Dev-only switch | `1`/`true` enables the surface on a local development instance for product review. Ignored (fails closed) when `NODE_ENV=production` or when the instance is Cloud-managed. |
 
 Gating (`server/src/services/support-chat.ts`): the surface is enabled when a
@@ -155,11 +161,21 @@ identities, never the production Chat App or real customer emails.
 ## Validation status
 
 Local live testing confirmed message delivery and verified customer identity.
-Tenant association remains unresolved: an actual chat request contained the
-existing tenant ID on both thread and customer details, but the saved thread
-had no tenant and the customer had no tenant memberships. Experimental customer
-membership changes were removed. Do not treat unit tests as proof that Plain
-persists tenant context. Cloud staging must verify this before rollout.
+The initial tenant-ID handoff failed because the customer had no tenant
+membership. After adding that prerequisite, a new chat saved the selected
+Plain tenant while preserving the separate email-domain company. The server
+now performs the customer upsert and membership step before returning tenant
+context; a failed step withholds the tenant ID. Cloud staging still needs its
+own end-to-end verification with Cloud authentication and organization switches.
+Local browser testing also verified an organization switch through the automatic
+server path: the new thread saved the second tenant, the earlier thread retained
+the first tenant, and the email-domain company remained unchanged.
+
+If a widget update rejects, the controller removes the default Plain shadow
+host, restores the feedback fallback, and refuses further mounts until a full
+page reload. This prevents a failed organization transition from leaving the
+previous tenant active. The host ID is a vendor DOM dependency, covered by the
+local failure-path test and should be checked when the vendor widget changes.
 
 Plain server credentials are removed from inherited adapter environments.
 
