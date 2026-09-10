@@ -160,6 +160,32 @@ describeEmbeddedPostgres("GitHub delivery connection credentials", () => {
     };
   }
 
+  it("discovers an authoritative pull request from GitHub's array response", async () => {
+    const fixture = await createPersonalPatFixture();
+    const head = "a".repeat(40);
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json([{ number: 42 }]))
+      .mockResolvedValueOnce(Response.json({
+        number: 42, html_url: "https://github.com/acme/widget/pull/42", state: "open",
+        head: { sha: head, ref: "delivery/candidate" }, base: { ref: "main" },
+      }));
+    const client = createGitHubDeliveryClient(db, { fetch: fetchMock });
+    expect(await client.findOpenPullRequest(fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", "delivery/candidate", "main"))
+      .toMatchObject({ ok: true, value: { number: 42, headSha: head, headRef: "delivery/candidate", baseRef: "main" } });
+  });
+
+  it("preserves approvals and blocking findings from GitHub's review array", async () => {
+    const fixture = await createPersonalPatFixture();
+    const head = "a".repeat(40);
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(Response.json([
+      { state: "APPROVED", user: { login: "approver" }, commit_id: head, submitted_at: "2026-09-09T10:00:00Z" },
+      { state: "CHANGES_REQUESTED", user: { login: "reviewer" }, commit_id: head, submitted_at: "2026-09-09T11:00:00Z" },
+    ]));
+    const client = createGitHubDeliveryClient(db, { fetch: fetchMock });
+    expect(await client.getReviews(fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", 42))
+      .toMatchObject({ ok: true, value: { blockingFindings: 1, approvals: [{ login: "approver", commitSha: head }] } });
+  });
+
   it("projects the personal PAT Authorization binding into a real delivery request", async () => {
     const fixture = await createPersonalPatFixture();
     const fetchMock = vi.fn(async () => githubRepositoryResponse());

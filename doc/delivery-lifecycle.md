@@ -312,6 +312,10 @@ modes, Done through the real issue mutation on a GitHub project without a policy
 atomic fail-closed submit, covered-issue authorization, Greptile
 partial-read failure, policy authorization invalidation, reconciliation
 downgrade, pause/disposition guards, and bounded retry.
+`server/src/__tests__/github-delivery-client.test.ts` exercises governed
+credentials and GitHub REST array decoding through the real client: pull
+requests remain discoverable, and review approvals and blocking findings are
+preserved rather than silently discarded.
 
 The candidate publisher is the framework broker; see
 `/Users/mirko/.paseo/worktrees/0is1eoku/delivery-integration` (framework repo) for

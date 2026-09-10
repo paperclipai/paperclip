@@ -180,9 +180,9 @@ function retryAfterSeconds(response: Response) {
   return null;
 }
 
-async function readJson(response: Response): Promise<Record<string, unknown> | null> {
+async function readJson(response: Response): Promise<unknown> {
   try {
-    return record(await response.json());
+    return await response.json();
   } catch {
     return null;
   }
@@ -300,7 +300,7 @@ export function createGitHubDeliveryClient(
       return { ok: false, status: 404, errorCode: "github_not_found", message: "GitHub resource not found", retryAfterSeconds: null };
     }
     if (response.status === 405 || response.status === 409 || response.status === 422) {
-      const message = str(payload?.message) ?? `GitHub rejected the request (HTTP ${response.status})`;
+      const message = str(record(payload)?.message) ?? `GitHub rejected the request (HTTP ${response.status})`;
       return { ok: false, status: response.status, errorCode: "github_rejected", message, retryAfterSeconds: null };
     }
     return {
@@ -551,7 +551,7 @@ export function createGitHubDeliveryClient(
     } catch {
       return { ok: false, status: null, errorCode: "github_unreachable", message: "GitHub could not be reached", retryAfterSeconds: null };
     }
-    const payload = await readJson(response);
+    const payload = record(await readJson(response));
     if (!response.ok) {
       const firstError = arrayOf(payload?.errors)[0];
       return {
