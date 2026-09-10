@@ -100,12 +100,29 @@ describeEmbeddedPostgres("GET /projects/:id reference resolution", () => {
   });
 
   it("returns 404 instead of 500 for a non-uuid ref without company context", async () => {
-    const { companyId } = await seed();
-    const app = createApp(db, boardActor(companyId));
+    await seed();
+    const app = createApp(db, {
+      type: "board",
+      userId: "user-1",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [],
+      memberships: [],
+    });
 
     const res = await request(app).get("/api/projects/demo-project");
 
     expect(res.status).toBe(404);
+  });
+
+  it("resolves a shortname for a single-company actor without ?companyId=", async () => {
+    const { companyId, projectId } = await seed();
+    const app = createApp(db, boardActor(companyId));
+
+    const res = await request(app).get("/api/projects/demo-project");
+
+    expect(res.status).toBe(200);
+    expect(res.body.id).toBe(projectId);
   });
 
   it("still returns 404 for an unknown uuid", async () => {
