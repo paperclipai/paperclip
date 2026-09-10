@@ -81,6 +81,12 @@ describeEmbeddedPostgres("board API key scope migration", () => {
       ).rejects.toThrow();
       await expect(
         sql.unsafe(`
+          INSERT INTO board_api_keys (id, scope_config, legacy_unrestricted)
+          VALUES ('00000000-0000-4000-8000-000000000006', NULL, true)
+        `),
+      ).rejects.toThrow("new board API keys cannot be legacy unrestricted");
+      await expect(
+        sql.unsafe(`
           INSERT INTO board_api_keys (id, scope_config)
           VALUES ('00000000-0000-4000-8000-000000000004', '{"version":1}'::jsonb)
         `),
@@ -91,6 +97,13 @@ describeEmbeddedPostgres("board API key scope migration", () => {
           VALUES ('00000000-0000-4000-8000-000000000005', '{"version":1}'::jsonb, true)
         `),
       ).rejects.toThrow();
+      await expect(
+        sql.unsafe(`
+          UPDATE board_api_keys
+          SET scope_config = NULL, legacy_unrestricted = true
+          WHERE id = '00000000-0000-4000-8000-000000000004'
+        `),
+      ).rejects.toThrow("board API keys cannot become legacy unrestricted");
     } finally {
       await sql.end();
     }

@@ -26,6 +26,31 @@ UPDATE "board_api_keys"
 SET "legacy_unrestricted" = true
 WHERE "scope_config" IS NULL;--> statement-breakpoint
 
+CREATE OR REPLACE FUNCTION "prevent_new_legacy_unrestricted_board_api_key"()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+	IF TG_OP = 'INSERT' AND NEW."legacy_unrestricted" = true THEN
+		RAISE EXCEPTION 'new board API keys cannot be legacy unrestricted'
+			USING ERRCODE = '23514';
+	END IF;
+	IF TG_OP = 'UPDATE'
+		AND NEW."legacy_unrestricted" = true
+		AND OLD."legacy_unrestricted" = false THEN
+		RAISE EXCEPTION 'board API keys cannot become legacy unrestricted'
+			USING ERRCODE = '23514';
+	END IF;
+	RETURN NEW;
+END;
+$$;--> statement-breakpoint
+
+DROP TRIGGER IF EXISTS "board_api_keys_prevent_new_legacy_unrestricted" ON "board_api_keys";--> statement-breakpoint
+CREATE TRIGGER "board_api_keys_prevent_new_legacy_unrestricted"
+BEFORE INSERT OR UPDATE OF "legacy_unrestricted" ON "board_api_keys"
+FOR EACH ROW
+EXECUTE FUNCTION "prevent_new_legacy_unrestricted_board_api_key"();--> statement-breakpoint
+
 DO $$
 BEGIN
 	IF NOT EXISTS (
