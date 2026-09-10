@@ -1532,6 +1532,7 @@ export function createToolGatewayService(
     const metadata = input.tool ? toolAuditMetadata(input.tool) : {};
     await db.insert(toolCallEvents).values({
       companyId: input.session.companyId,
+      gatewayId: input.session.gatewayId ?? null,
       invocationId: input.invocationId ?? null,
       actionRequestId: input.actionRequestId ?? null,
       eventType: input.eventType,
@@ -5857,6 +5858,7 @@ export function createToolGatewayService(
         eq(toolActionRequests.issueId, input.session.issueId),
         eq(toolActionRequests.canonicalArgumentsHash, input.argumentsHash),
         eq(toolInvocations.agentId, input.session.agentId),
+        input.session.gatewayId ? eq(toolInvocations.gatewayId, input.session.gatewayId) : isNull(toolInvocations.gatewayId),
         eq(toolInvocations.toolName, input.toolName),
         inArray(toolActionRequests.status, ["pending", "approved", "executing", "rejected", "executed"]),
       ))
@@ -6954,6 +6956,7 @@ export function createToolGatewayService(
         const [invocation] = request ? await db.select().from(toolInvocations).where(and(
           eq(toolInvocations.id, request.invocationId), eq(toolInvocations.companyId, session.companyId),
           eq(toolInvocations.runId, session.runId!), eq(toolInvocations.agentId, session.agentId!),
+          session.gatewayId ? eq(toolInvocations.gatewayId, session.gatewayId) : isNull(toolInvocations.gatewayId),
         )) : [];
         const payload = request && invocation ? readSignedToolArgumentsPayload({
           signedArguments: request.signedArguments, invocationId: invocation.id,
@@ -6989,6 +6992,7 @@ export function createToolGatewayService(
         });
         const [invocation] = await db.insert(toolInvocations).values({
           companyId: session.companyId,
+          gatewayId: session.gatewayId ?? null,
           actorType: session.actorType ?? (session.agentId ? "agent" : "system"),
           actorId: session.actorId ?? session.agentId ?? session.gatewayTokenId ?? session.companyId,
           agentId: session.agentId,
@@ -7118,6 +7122,7 @@ export function createToolGatewayService(
           || storedInvocation.issueId !== session.issueId
           || storedInvocation.agentId !== session.agentId
           || storedInvocation.runId !== session.runId
+          || storedInvocation.gatewayId !== (session.gatewayId ?? null)
           || actionRequest.requestedByAgentId !== session.agentId
         ) {
           throw new ToolGatewayHttpError(403, "Approved action request is not scoped to this gateway session", "action_scope_mismatch");
