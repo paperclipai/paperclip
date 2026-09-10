@@ -708,6 +708,46 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     await expect(adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() })).resolves.toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
   });
 
+  it("selects the newest applicable blocker instead of a historical reconciliation action", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId: agentId });
+
+    const historicalUpdatedAt = new Date("2026-09-09T00:00:00.000Z");
+    const currentUpdatedAt = new Date("2026-09-10T00:00:00.000Z");
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "active_run_watchdog",
+      ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation",
+      status: "resolved",
+      evidence: { automaticRecovery: { replay: "blocked" } },
+      fingerprint: randomUUID(),
+      nextAction: "Inspect the historical execution before continuing.",
+      updatedAt: historicalUpdatedAt,
+      createdAt: historicalUpdatedAt,
+    });
+    const [currentAction] = await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "active_run_watchdog",
+      ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation",
+      status: "active",
+      evidence: {},
+      fingerprint: randomUUID(),
+      nextAction: "Reconcile the current execution before continuing.",
+      updatedAt: currentUpdatedAt,
+      createdAt: currentUpdatedAt,
+    }).returning({ id: issueRecoveryActions.id });
+
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({
+      recoveryActionId: currentAction!.id,
+      nextAction: "Reconcile the current execution before continuing.",
+    });
+  });
+
   it("links the stopped run's agent instead of its return owner, within the same company", async () => {
     const { companyId, agentId: ownerId } = await seedCompanyAndAgent();
     const reviewerId = randomUUID(), issueId = randomUUID(), runId = randomUUID();

@@ -12,7 +12,9 @@ export function executionBlockerPredicate() {
   );
 }
 
+/** A resolved no-replay disposition remains an effective hold. */
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string): Promise<ExecutionBlocker | null> {
+  // An older recovery action must not shadow the newest applicable blocker.
   const [action] = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
