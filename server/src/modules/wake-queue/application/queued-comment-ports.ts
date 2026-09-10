@@ -144,6 +144,15 @@ export interface QueuedCommentQueueTransaction {
     state: "deferred" | "queued" | null;
     queueRun: QueuedCommentRunRow | null;
     activeRun: QueuedCommentRunRow | null;
+    /**
+     * A queue mutation does not itself deliver same-turn steering, so it must
+     * leave `false` (the default) and report the static
+     * "temporarily_unavailable" answer instead of a live probe. Only the
+     * steer mutation sets this `true`, and only for a snapshot it returns to
+     * the caller, because a steer that just ran knows the live disposition
+     * the read path would otherwise have to probe for.
+     */
+    probeLiveSteering?: boolean;
   }): Promise<QueuedCommentQueueSnapshot>;
   syncCommentReferences(commentId: string): Promise<void>;
   deleteCommentReferenceSource(commentId: string): Promise<void>;

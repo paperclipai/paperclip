@@ -11,6 +11,7 @@ import {
 } from "../../../services/issue-queued-comment-queue.js";
 import { logActivity as persistActivityLogRow, type ActivityPublication } from "../../../services/activity-log.js";
 import {
+  getNativeSessionSteeringState,
   NativeSessionSteeringError,
   steerNativeSession,
 } from "../../../services/native-runtime/native-session-executor.js";
@@ -125,7 +126,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
         .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId), eq(issues.executionRunId, executionRunId)));
     },
 
-    async buildQueueSnapshot({ issue, actor, wake, state, queueRun, activeRun }): Promise<IssueQueuedCommentQueue> {
+    async buildQueueSnapshot({ issue, actor, wake, state, queueRun, activeRun, probeLiveSteering }): Promise<IssueQueuedCommentQueue> {
       const commentIds = queuedCommentIdsFromWakePayload(wake?.payload ?? null);
       const rows =
         commentIds.length > 0
@@ -155,10 +156,13 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
             .then((agentRows) => agentRows[0] ?? null)
         : null;
 
-      // A queue mutation never delivers same-turn steering itself, so this
-      // adapter never probes the live runner: it answers
+      // A queue mutation never delivers same-turn steering itself, so by
+      // default this adapter never probes the live runner: it answers
       // "temporarily_unavailable" wherever the shared rule says a caller
-      // may probe. Only the read path probes the live provider.
+      // may probe. The steer mutation is the one exception: right after it
+      // delivers a message, it already knows the live provider is reachable,
+      // so it asks `probeLiveSteering: true` for the snapshot it returns to
+      // its own caller, matching what a fresh read would report.
       const steering = decideQueuedCommentQueueSteering({
         state,
         queueRunRuntimeMode: queueRun?.runtimeMode ?? null,
@@ -167,7 +171,13 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
         queuedCommentCount: comments.length,
       });
       const steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"] =
-        steering.kind === "probe" ? "temporarily_unavailable" : steering.kind;
+        steering.kind !== "probe"
+          ? steering.kind
+          : probeLiveSteering
+            ? await getNativeSessionSteeringState(steering.steeringRunId)
+                .then((liveState) => liveState.disposition)
+                .catch(() => "temporarily_unavailable" as const)
+            : "temporarily_unavailable";
 
       return buildQueuedCommentQueueSnapshot({
         issueId: issue.id,
@@ -461,6 +471,7 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
               state: current?.state ?? null,
               queueRun: current?.queueRun ? toRunRow(current.queueRun) : null,
               activeRun: retryRunRow.status === "running" ? toRunRow(retryRunRow) : null,
+              probeLiveSteering: true,
             });
           }
 
@@ -547,7 +558,15 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
           if (priorAcknowledgement.status === "acknowledged" && priorAcknowledgement.queueId === queueId) {
             duplicate = true;
             turnId = typeof priorAcknowledgement.turnId === "string" ? priorAcknowledgement.turnId : null;
-            return lockedQueue;
+            return transaction.buildQueueSnapshot({
+              issue,
+              actor,
+              wake: toWakeRow(wakeRow),
+              state,
+              queueRun: queueRunRow ? toRunRow(queueRunRow) : null,
+              activeRun: toRunRow(activeRunRow),
+              probeLiveSteering: true,
+            });
           }
 
           requireMutationTarget(lockedQueue, queueId, revision);
@@ -614,6 +633,7 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
             state: nextWakeRow ? "deferred" : null,
             queueRun: null,
             activeRun: toRunRow(activeRunRow),
+            probeLiveSteering: true,
           });
         });
         return { queue, turnId, duplicate };

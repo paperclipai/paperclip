@@ -14,12 +14,21 @@ import { QueuedCommentMutationError } from "../application/queued-comment-use-ca
 
 // The steering mutation delivers through the live native-runtime transport.
 // This mock stands in for that transport, so the test proves the module's
-// own read/write behavior without a live provider connection.
+// own read/write behavior without a live provider connection. The steering
+// mutation also asks the same transport for the live steering state right
+// after a successful steer, so it can answer with the authoritative
+// disposition instead of the static "temporarily_unavailable" fallback.
 const steerNativeSessionMock = vi.hoisted(() => vi.fn());
+const getNativeSessionSteeringStateMock = vi.hoisted(() => vi.fn());
 vi.mock("../../../services/native-runtime/native-session-executor.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../services/native-runtime/native-session-executor.js")>();
   steerNativeSessionMock.mockImplementation(actual.steerNativeSession);
-  return { ...actual, steerNativeSession: steerNativeSessionMock };
+  getNativeSessionSteeringStateMock.mockImplementation(actual.getNativeSessionSteeringState);
+  return {
+    ...actual,
+    steerNativeSession: steerNativeSessionMock,
+    getNativeSessionSteeringState: getNativeSessionSteeringStateMock,
+  };
 });
 
 // Proves the same two properties the release-half adapter test proves for
@@ -400,6 +409,40 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
     const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const commentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, commentIds: [commentId] });
+
+    const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
+    const queue = await issueLock.withLockedQueue(
+      {
+        issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+        actor: { actorType: "user", actorId: "user-1", agentId: null },
+        queueId: wakeId,
+      },
+      async (locked, transaction) => {
+        // An edit never delivers same-turn steering itself, so it must never
+        // probe the live provider for the answer, unlike the steer mutation
+        // below.
+        return transaction.buildQueueSnapshot({
+          issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+          actor: { actorType: "user", actorId: "user-1", agentId: null },
+          wake: locked.wake,
+          state: locked.state,
+          queueRun: locked.queueRun,
+          activeRun: { id: randomUUID(), status: "running", runtimeMode: "native", contextSnapshot: {} },
+        });
+      },
+    );
+
+    expect(queue.protocol).toBe("paperclip_runner_v1");
+    expect(queue.steeringDisposition).toBe("temporarily_unavailable");
+    expect(getNativeSessionSteeringStateMock).not.toHaveBeenCalled();
+  });
+
+  it("reports the live steering disposition after a successful steer leaves more messages queued", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId, adapterType: "paperclip_runner" });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
     const firstCommentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
     const secondCommentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
     const wakeId = await seedDeferredWake({
@@ -411,6 +454,9 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     const targetRunId = await seedRunningNativeRun({ companyId, agentId, issueId });
 
     steerNativeSessionMock.mockResolvedValueOnce({ turnId: "turn-1" });
+    // The live provider still has an active turn to steer, since the second
+    // queued message has not been delivered yet.
+    getNativeSessionSteeringStateMock.mockResolvedValueOnce({ disposition: "available", activeTurnId: "turn-1" });
 
     const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
     const peeked = await issueLock.withLockedQueue(
@@ -433,9 +479,30 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
 
     expect(result.queue.entries).toHaveLength(1);
     expect(result.queue.entries[0]!.comment.id).toBe(secondCommentId);
-    // A queue mutation never probes the live provider for the steering
-    // answer. Only the read path probes the provider, and it corrects
-    // this value the next time a caller reads the queue.
-    expect(result.queue.steeringDisposition).toBe("temporarily_unavailable");
+    // The steer just delivered a message, so it must ask the live provider
+    // for the real answer instead of falling back to
+    // "temporarily_unavailable" and leaving the next steering action
+    // disabled until an unrelated read refreshes the state.
+    expect(result.queue.steeringDisposition).toBe("available");
+    expect(getNativeSessionSteeringStateMock).toHaveBeenCalledWith(targetRunId);
+
+    // A second, consecutive steer on the same run must keep reporting the
+    // live disposition, not the stale value from the first steer.
+    getNativeSessionSteeringStateMock.mockResolvedValueOnce({ disposition: "temporarily_unavailable", activeTurnId: null });
+    steerNativeSessionMock.mockResolvedValueOnce({ turnId: "turn-2" });
+    const second = await issueLock.steerQueuedWakeComment({
+      issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+      actor: { actorType: "user", actorId: "user-1", agentId: null },
+      commentId: secondCommentId,
+      queueId: wakeId,
+      targetRunId,
+      revision: result.queue.revision,
+    });
+
+    // The queue is now empty, so the wake is cancelled and no run remains to
+    // probe -- the shared rule answers "temporarily_unavailable" directly,
+    // without a live call.
+    expect(second.queue.entries).toHaveLength(0);
+    expect(second.queue.steeringDisposition).toBe("temporarily_unavailable");
   });
 });
