@@ -3750,6 +3750,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(child.projectWorkspaceId).toBe(projectWorkspaceId);
     expect(child.executionWorkspaceId).toBeNull();
     expect(child.executionWorkspacePreference).toBeNull();
+    expect(child.executionWorkspaceSettings).toBeNull();
   });
 
   it("createChild applies parent defaults, acceptance criteria, workspace inheritance, and optional parent blocker chaining", async () => {
