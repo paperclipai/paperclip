@@ -196,6 +196,32 @@ export type ReleaseRecoveryDecision =
   | { kind: "queue_review_participant_recovery" }
   | { kind: "queue_recovery" };
 
+export type ImmediateRecoveryContextLabels = {
+  retryReason: "assignment_recovery" | "issue_continuation_needed";
+  recoveryReason: "issue_assignment_recovery" | "issue_continuation_needed";
+  recoverySource: "issue.assignment_recovery" | "issue.continuation_recovery";
+};
+
+/**
+ * Derives the three labels an immediate-recovery heartbeat run's context
+ * snapshot carries, from the issue's status. A `todo` issue lost its
+ * assignment; every other status this decision reaches is a stalled
+ * continuation.
+ */
+export function deriveImmediateRecoveryContextLabels(issueStatus: string): ImmediateRecoveryContextLabels {
+  return issueStatus === "todo"
+    ? {
+        retryReason: "assignment_recovery",
+        recoveryReason: "issue_assignment_recovery",
+        recoverySource: "issue.assignment_recovery",
+      }
+    : {
+        retryReason: "issue_continuation_needed",
+        recoveryReason: "issue_continuation_needed",
+        recoverySource: "issue.continuation_recovery",
+      };
+}
+
 /**
  * Decides the release-recovery outcome once the deferred-wake queue is
  * empty and no wake was promoted. The review-participant branch and the

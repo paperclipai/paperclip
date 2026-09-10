@@ -309,6 +309,60 @@ describe("releaseIssueExecution", () => {
     });
   });
 
+  it("resolves the responsible user for an immediate recovery run before queuing it", async () => {
+    const resolveResponsibleUserId = vi.fn(
+      async (_input: Parameters<WakeQueueReader["resolveResponsibleUserId"]>[0]) => "resolved-user",
+    );
+    const queueImmediateRecoveryRun = vi.fn(
+      async (input: Parameters<WakeQueueWriter["queueImmediateRecoveryRun"]>[0]) => runSummary("immediate-recovery"),
+    );
+    const writer = createFakeWriter({ queueImmediateRecoveryRun });
+    const reader = createFakeReader({ resolveResponsibleUserId });
+    const issueLock = createFakeIssueLock(reader, writer);
+    const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    const result = await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
+
+    expect(result.outcome.kind).toBe("queued_recovery");
+    expect(resolveResponsibleUserId).toHaveBeenCalledTimes(1);
+    const resolveCall = resolveResponsibleUserId.mock.calls[0]![0];
+    expect(resolveCall.requestedByActorType).toBe("system");
+    expect(resolveCall.requestedByActorId).toBeNull();
+    expect(resolveCall.source).toBe("automation");
+    expect(resolveCall.triggerDetail).toBe("system");
+    expect(resolveCall.existingRunResponsibleUserId).toBe(RUN.responsibleUserId);
+    // ISSUE.status is "in_progress", so the stalled-continuation labels apply.
+    expect(resolveCall.contextSnapshot).toEqual({
+      issueId: ISSUE.id,
+      taskId: ISSUE.id,
+      wakeReason: "issue_continuation_needed",
+      retryReason: "issue_continuation_needed",
+      source: "issue.continuation_recovery",
+      retryOfRunId: RUN.id,
+    });
+
+    expect(queueImmediateRecoveryRun).toHaveBeenCalledTimes(1);
+    const queueCall = queueImmediateRecoveryRun.mock.calls[0]![0];
+    expect(queueCall.reason).toBe("issue_continuation_needed");
+    expect(queueCall.responsibleUserId).toBe("resolved-user");
+    expect(queueCall.contextSnapshot).toBe(resolveCall.contextSnapshot);
+  });
+
+  it("throws WakeQueueApplicationError with code responsible_user_unresolved for a recovery run, without queuing it", async () => {
+    const writer = createFakeWriter();
+    const reader = createFakeReader({ resolveResponsibleUserId: vi.fn(async () => null) });
+    const issueLock = createFakeIssueLock(reader, writer);
+    const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
+
+    await expect(
+      releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() }),
+    ).rejects.toMatchObject({
+      constructor: WakeQueueApplicationError,
+      code: "responsible_user_unresolved",
+    });
+    expect(writer.queueImmediateRecoveryRun).not.toHaveBeenCalled();
+  });
+
   it("escalates through the recovery port for a blocked outcome, after the transaction resolves", async () => {
     const writer = createFakeWriter({
       claimNextDeferredWake: vi.fn(async () => null),

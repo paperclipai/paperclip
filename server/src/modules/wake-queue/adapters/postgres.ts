@@ -45,7 +45,6 @@ import type {
   WakeQueueWriter,
 } from "../application/ports.js";
 import type { RunSummary } from "../application/types.js";
-import { WakeQueueApplicationError } from "../application/types.js";
 
 const DEFERRED_WAKE_STATUS = "deferred_issue_execution";
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -502,48 +501,17 @@ function buildWriter(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueWrite
       return toRunSummary(queuedRun);
     },
 
-    async queueImmediateRecoveryRun({ companyId, issue, finishingRun, recoveryAgent, sessionBefore, now }) {
-      const retryReason = issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed";
-      const recoveryReason = issue.status === "todo" ? "issue_assignment_recovery" : "issue_continuation_needed";
-      const recoverySource = issue.status === "todo" ? "issue.assignment_recovery" : "issue.continuation_recovery";
-      const recoveryContextSnapshot = withRecoveryContext(
-        {
-          issueId: issue.id,
-          taskId: issue.id,
-          wakeReason: recoveryReason,
-          retryReason,
-          source: recoverySource,
-          retryOfRunId: finishingRun.id,
-        },
-        "normal_model",
-      );
-
-      const routineEnvContext = await deps.getRoutineEnv({ companyId, issue });
-      const responsibleUserId = await deps.resolveResponsibleUserId({
-        companyId,
-        contextSnapshot: recoveryContextSnapshot,
-        issue,
-        routineEnvContext,
-        requestedByActorType: "system",
-        requestedByActorId: null,
-        source: "automation",
-        triggerDetail: "system",
-        existingRunResponsibleUserId: finishingRun.responsibleUserId,
-      });
-      if (!responsibleUserId) {
-        throw new WakeQueueApplicationError(
-          "responsible_user_unresolved",
-          "Unable to resolve responsible user for recovery heartbeat run",
-          {
-            runId: finishingRun.id,
-            agentId: recoveryAgent.id,
-            companyId,
-            issueId: issue.id,
-            wakeReason: recoveryReason,
-          },
-        );
-      }
-
+    async queueImmediateRecoveryRun({
+      companyId,
+      issue,
+      finishingRun,
+      recoveryAgent,
+      reason,
+      contextSnapshot,
+      responsibleUserId,
+      sessionBefore,
+      now,
+    }) {
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
         .values({
@@ -551,7 +519,7 @@ function buildWriter(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueWrite
           agentId: recoveryAgent.id,
           source: "automation",
           triggerDetail: "system",
-          reason: recoveryReason,
+          reason,
           payload: withRecoveryContext({ issueId: issue.id, retryOfRunId: finishingRun.id }, "normal_model"),
           status: "queued",
           requestedByActorType: "system",
@@ -570,7 +538,7 @@ function buildWriter(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueWrite
           triggerDetail: "system",
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot: recoveryContextSnapshot,
+          contextSnapshot,
           responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: finishingRun.id,

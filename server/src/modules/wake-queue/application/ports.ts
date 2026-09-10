@@ -178,16 +178,18 @@ export interface WakeQueueWriter {
     now: Date;
   }): Promise<RunSummary>;
   /**
-   * Builds the recovery context snapshot, resolves the responsible user
-   * from it, and queues the run. Throws `WakeQueueApplicationError` with
-   * code `responsible_user_unresolved` when no responsible user resolves,
-   * without queuing anything.
+   * Queues the run with the context snapshot and the responsible user the
+   * caller already resolved.
    */
   queueImmediateRecoveryRun(input: {
     companyId: string;
     issue: IssueSnapshot;
     finishingRun: RunSnapshot;
     recoveryAgent: InvokableAgentSnapshot;
+    /** The wakeup request's reason and the run's context-snapshot wakeReason; the caller derives it from the issue status. */
+    reason: string;
+    contextSnapshot: Record<string, unknown>;
+    responsibleUserId: string;
     sessionBefore: string | null;
     now: Date;
   }): Promise<RunSummary>;

@@ -1,11 +1,17 @@
 import { enrichPromotedWakeContext } from "../domain/context.js";
-import { decideQueuedCommentAction, decideReleaseRecovery, decideWakeOutcome } from "../domain/policy.js";
+import {
+  decideQueuedCommentAction,
+  decideReleaseRecovery,
+  decideWakeOutcome,
+  deriveImmediateRecoveryContextLabels,
+} from "../domain/policy.js";
 import {
   EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
   isConfigurationIncompleteFailedRun,
   isWorkspaceValidationFailedRun,
   readNonEmptyString,
 } from "../domain/values.js";
+import { withRecoveryContext } from "../../../services/recovery/status-only-context.js";
 import type {
   DeferredWakeCandidate,
   InvokableAgentSnapshot,
@@ -64,6 +70,39 @@ function currentAgentParticipant(issue: IssueSnapshot): { agentId: string } | nu
   if (!participant || participant.type !== "agent") return null;
   const agentId = readNonEmptyString(participant.agentId);
   return agentId ? { agentId } : null;
+}
+
+/**
+ * Resolves the responsible user for a heartbeat run the module is about to
+ * queue. The promote path and the immediate-recovery path both call this
+ * one function; each still checks the result and throws its own error with
+ * its own metadata when no responsible user resolves.
+ */
+async function resolveResponsibleUserForQueuedRun(
+  reader: WakeQueueReader,
+  input: {
+    companyId: string;
+    contextSnapshot: Record<string, unknown>;
+    issue: IssueSnapshot;
+    requestedByActorType: "user" | "agent" | "system" | null;
+    requestedByActorId: string | null;
+    source: string;
+    triggerDetail: string | null;
+    existingRunResponsibleUserId: string | null;
+  },
+): Promise<string | null> {
+  const routineEnvContext = await reader.getRoutineEnv({ companyId: input.companyId, issue: input.issue });
+  return reader.resolveResponsibleUserId({
+    companyId: input.companyId,
+    contextSnapshot: input.contextSnapshot,
+    issue: input.issue,
+    routineEnvContext,
+    requestedByActorType: input.requestedByActorType,
+    requestedByActorId: input.requestedByActorId,
+    source: input.source,
+    triggerDetail: input.triggerDetail,
+    existingRunResponsibleUserId: input.existingRunResponsibleUserId,
+  });
 }
 
 export type ReleaseIssueExecutionInput = {
@@ -276,15 +315,10 @@ async function promoteDeferredWake(
       taskKey: promotedTaskKey,
     }));
 
-  const promotedRoutineEnvContext = await ports.reader.getRoutineEnv({
-    companyId: invokableAgent.companyId,
-    issue: currentIssue,
-  });
-  const responsibleUserId = await ports.reader.resolveResponsibleUserId({
+  const responsibleUserId = await resolveResponsibleUserForQueuedRun(ports.reader, {
     companyId: invokableAgent.companyId,
     contextSnapshot: promotedContextSnapshot,
     issue: currentIssue,
-    routineEnvContext: promotedRoutineEnvContext,
     requestedByActorType: workingCandidate.requestedByActorType,
     requestedByActorId: workingCandidate.requestedByActorId,
     source: promotedSource,
@@ -444,14 +478,53 @@ async function runReleaseRecoveryTail(
     return { outcome: { kind: "queued_review_participant_recovery", run: queuedRun }, postCommitEffects };
   }
 
-  // decision.kind === "queue_recovery"; the adapter builds the recovery
-  // context snapshot and resolves the responsible user from it, throwing
-  // WakeQueueApplicationError when no responsible user resolves.
+  // decision.kind === "queue_recovery"; resolve the responsible user here,
+  // in the application layer, before the writer queues the run.
+  const { retryReason, recoveryReason, recoverySource } = deriveImmediateRecoveryContextLabels(issue.status);
+  const recoveryContextSnapshot = withRecoveryContext(
+    {
+      issueId: issue.id,
+      taskId: issue.id,
+      wakeReason: recoveryReason,
+      retryReason,
+      source: recoverySource,
+      retryOfRunId: run.id,
+    },
+    "normal_model",
+  );
+
+  const recoveryResponsibleUserId = await resolveResponsibleUserForQueuedRun(reader, {
+    companyId: issue.companyId,
+    contextSnapshot: recoveryContextSnapshot,
+    issue,
+    requestedByActorType: "system",
+    requestedByActorId: null,
+    source: "automation",
+    triggerDetail: "system",
+    existingRunResponsibleUserId: run.responsibleUserId,
+  });
+  if (!recoveryResponsibleUserId) {
+    throw new WakeQueueApplicationError(
+      "responsible_user_unresolved",
+      "Unable to resolve responsible user for recovery heartbeat run",
+      {
+        runId: run.id,
+        agentId: recoveryAgent.id,
+        companyId: issue.companyId,
+        issueId: issue.id,
+        wakeReason: recoveryReason,
+      },
+    );
+  }
+
   const queuedRun = await writer.queueImmediateRecoveryRun({
     companyId: issue.companyId,
     issue,
     finishingRun: run,
     recoveryAgent,
+    reason: recoveryReason,
+    contextSnapshot: recoveryContextSnapshot,
+    responsibleUserId: recoveryResponsibleUserId,
     sessionBefore,
     now: input.now,
   });

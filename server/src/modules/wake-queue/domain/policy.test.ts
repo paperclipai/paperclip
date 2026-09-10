@@ -4,8 +4,10 @@ import {
   decideQueuedCommentAction,
   decideReleaseRecovery,
   decideWakeOutcome,
+  deriveImmediateRecoveryContextLabels,
   type DeferredWakeOutcomeFacts,
   type DeferredWakeQueuedCommentFacts,
+  type ImmediateRecoveryContextLabels,
   type PreDrainFacts,
   type ReleaseRecoveryFacts,
 } from "./policy.js";
@@ -448,6 +450,48 @@ describe("decideReleaseRecovery", () => {
   for (const testCase of cases) {
     it(testCase.name, () => {
       expect(decideReleaseRecovery(testCase.facts)).toEqual(testCase.expected);
+    });
+  }
+});
+
+describe("deriveImmediateRecoveryContextLabels", () => {
+  const cases: Array<{
+    name: string;
+    issueStatus: string;
+    expected: ImmediateRecoveryContextLabels;
+  }> = [
+    {
+      name: "todo: the issue lost its assignment",
+      issueStatus: "todo",
+      expected: {
+        retryReason: "assignment_recovery",
+        recoveryReason: "issue_assignment_recovery",
+        recoverySource: "issue.assignment_recovery",
+      },
+    },
+    {
+      name: "not todo: an in_progress issue is a stalled continuation",
+      issueStatus: "in_progress",
+      expected: {
+        retryReason: "issue_continuation_needed",
+        recoveryReason: "issue_continuation_needed",
+        recoverySource: "issue.continuation_recovery",
+      },
+    },
+    {
+      name: "not todo: any other status also derives the stalled-continuation labels",
+      issueStatus: "in_review",
+      expected: {
+        retryReason: "issue_continuation_needed",
+        recoveryReason: "issue_continuation_needed",
+        recoverySource: "issue.continuation_recovery",
+      },
+    },
+  ];
+
+  for (const testCase of cases) {
+    it(testCase.name, () => {
+      expect(deriveImmediateRecoveryContextLabels(testCase.issueStatus)).toEqual(testCase.expected);
     });
   }
 });
