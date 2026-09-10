@@ -9,6 +9,7 @@ import { shouldLoadWorkingDirectoryEnv } from "./env-file-policy.js";
 import {
   AUTH_BASE_URL_MODES,
   BIND_MODES,
+  DISABLED_PRODUCT_FEEDBACK_CAPABILITY,
   DEPLOYMENT_EXPOSURES,
   DEPLOYMENT_MODES,
   SECRET_PROVIDERS,
@@ -17,6 +18,7 @@ import {
   type AuthBaseUrlMode,
   type DeploymentExposure,
   type DeploymentMode,
+  type ProductFeedbackCapability,
   type SecretProvider,
   type StorageProvider,
   inferBindModeFromHost,
@@ -93,6 +95,14 @@ export interface Config {
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
+  productFeedback: ProductFeedbackCapability;
+}
+
+export function applyManagedCloudProductFeedbackFloor(
+  capability: ProductFeedbackCapability,
+  cloudManaged: boolean,
+): ProductFeedbackCapability {
+  return cloudManaged ? { ...capability, enabled: false } : capability;
 }
 
 function detectTailnetBindHost(): string | undefined {
@@ -254,6 +264,15 @@ export function loadConfig(): Config {
     companyDeletionEnvRaw !== undefined
       ? companyDeletionEnvRaw === "true"
       : deploymentMode === "local_trusted";
+  const productFeedbackEnabled = process.env.PAPERCLIP_PRODUCT_FEEDBACK_ENABLED !== undefined
+    ? process.env.PAPERCLIP_PRODUCT_FEEDBACK_ENABLED === "true"
+    : (fileConfig?.productFeedback.enabled ?? true);
+  const productFeedback: ProductFeedbackCapability = {
+    enabled: productFeedbackEnabled,
+    limits: {
+      ...DISABLED_PRODUCT_FEEDBACK_CAPABILITY.limits,
+    },
+  };
   const databaseBackupEnabled =
     process.env.PAPERCLIP_DB_BACKUP_ENABLED !== undefined
       ? process.env.PAPERCLIP_DB_BACKUP_ENABLED === "true"
@@ -359,5 +378,6 @@ export function loadConfig(): Config {
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,
+    productFeedback,
   };
 }

@@ -23,6 +23,12 @@ const mockToggleTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
 const mockNavigateTopLevel = vi.hoisted(() => vi.fn());
 
+vi.mock("./ProductFeedbackDialog", () => ({
+  ProductFeedbackDialog: ({ open }: { open: boolean }) => open
+    ? <div data-testid="product-feedback-dialog">Native product feedback</div>
+    : null,
+}));
+
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
 }));
@@ -348,4 +354,36 @@ describe("SidebarAccountMenu", () => {
     });
   });
 
+  it("opens the native dialog only when the server advertises the capability", async () => {
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <TooltipProvider>
+            <SidebarAccountMenu
+              companyId="11111111-1111-4111-8111-111111111111"
+              deploymentMode="local_trusted"
+              open
+              productFeedback={{
+                enabled: true,
+                limits: { feedbackMaxLength: 5_000, diagnosticCount: 5 },
+              }}
+            />
+          </TooltipProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(document.body.querySelector('a[href="https://paperclip.ing/feedback"]')).toBeNull();
+    const feedbackButton = document.body.querySelector<HTMLButtonElement>('button[aria-label="Share feedback"]');
+    await act(() => feedbackButton?.click());
+    await flushReact();
+
+    expect(document.body.querySelector('[data-testid="product-feedback-dialog"]')).not.toBeNull();
+
+    await act(() => root.unmount());
+  });
 });

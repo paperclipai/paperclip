@@ -1,4 +1,4 @@
-import type { ServerInfoSnapshot } from "@paperclipai/shared";
+import type { ProductFeedbackCapability, ServerInfoSnapshot } from "@paperclipai/shared";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 
 export type DevServerHealthStatus = {
@@ -33,6 +33,7 @@ export type HealthStatus = {
   bootstrapInviteActive?: boolean;
   features?: {
     companyDeletionEnabled?: boolean;
+    productFeedback?: ProductFeedbackCapability;
   };
   serverInfo?: ServerInfoSnapshot;
   devServer?: DevServerHealthStatus;

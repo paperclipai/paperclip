@@ -55,6 +55,7 @@ export type {
   AttentionWorkspaceRef,
 } from "./attention.js";
 export { ATTENTION_SOURCE_KINDS } from "./attention.js";
+export * from "./product-feedback.js";
 export type {
   DecisionQueue,
   DecisionQueueItem,

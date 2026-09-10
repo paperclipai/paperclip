@@ -107,6 +107,9 @@ function configWithSecretsProvider(provider: PaperclipConfig["secrets"]["provide
     telemetry: {
       enabled: true,
     },
+    productFeedback: {
+      enabled: false,
+    },
     storage: {
       provider: "local_disk",
       localDisk: {

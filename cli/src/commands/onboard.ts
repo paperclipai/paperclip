@@ -712,6 +712,9 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     telemetry: {
       enabled: true,
     },
+    productFeedback: {
+      enabled: true,
+    },
     storage,
     secrets,
   };

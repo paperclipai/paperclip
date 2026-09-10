@@ -76,6 +76,9 @@ function defaultConfig(): PaperclipConfig {
     telemetry: {
       enabled: true,
     },
+    productFeedback: {
+      enabled: true,
+    },
     storage: defaultStorageConfig(),
     secrets: defaultSecretsConfig(),
   };

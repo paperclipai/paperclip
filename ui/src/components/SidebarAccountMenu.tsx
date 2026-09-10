@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
@@ -9,7 +9,7 @@ import {
   UserRound,
   UserRoundPen,
 } from "lucide-react";
-import type { DeploymentMode } from "@paperclipai/shared";
+import type { DeploymentMode, ProductFeedbackCapability } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { authApi } from "@/api/auth";
 import { queryKeys } from "@/lib/queryKeys";
@@ -21,17 +21,22 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { ThemeToggle } from "./ThemeToggle";
 import { SidebarServerInfo } from "./SidebarServerInfo";
+import { ProductFeedbackDialog } from "./ProductFeedbackDialog";
 
 const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
 const DOCS_URL = "https://docs.paperclip.ing/";
 const FEEDBACK_URL = "https://paperclip.ing/feedback";
 
 interface SidebarAccountMenuProps {
+  companyId?: string | null;
   deploymentMode?: DeploymentMode;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
   /** Contextual navigation occupies a full sidebar even if the saved global nav mode is collapsed. */
   forceExpanded?: boolean;
+  productFeedback?: ProductFeedbackCapability;
+  /** App version forwarded to the product feedback payload; the menu itself no longer displays it. */
+  version?: string | null;
 }
 
 interface MenuActionProps {
@@ -107,12 +112,17 @@ function MenuAction({
 }
 
 export function SidebarAccountMenu({
+  companyId,
   deploymentMode,
   open: controlledOpen,
   onOpenChange,
   forceExpanded = false,
+  productFeedback,
+  version,
 }: SidebarAccountMenuProps) {
   const [internalOpen, setInternalOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const openingFeedbackRef = useRef(false);
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking && !forceExpanded;
   const open = controlledOpen ?? internalOpen;
@@ -130,6 +140,7 @@ export function SidebarAccountMenu({
     session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
   const initials = deriveInitials(displayName);
   const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
+  const nativeFeedbackEnabled = Boolean(companyId) && productFeedback?.enabled === true;
 
   function closeNavigationChrome() {
     setOpen(false);
@@ -165,6 +176,9 @@ export function SidebarAccountMenu({
             align="start"
             sideOffset={10}
             className="min-h-(--profile-popover-min-height) w-(--profile-popover-width) max-w-(--sz-calc-24) overflow-hidden rounded-xl border-border bg-popover p-0 shadow-(--shadow-profile-popover)"
+            onCloseAutoFocus={(event) => {
+              if (openingFeedbackRef.current) event.preventDefault();
+            }}
           >
             <div className="flex h-(--profile-popover-header-height) shrink-0 items-center gap-2.5 px-3.5">
               <Avatar className="size-9">
@@ -233,18 +247,46 @@ export function SidebarAccountMenu({
         {!rail ? (
           <Tooltip>
             <TooltipTrigger asChild>
-              <a
-                href={FEEDBACK_URL}
-                target="_blank"
-                rel="noreferrer"
-                aria-label="Share feedback"
-                className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground/50 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Flag className="h-4 w-4" aria-hidden="true" />
-              </a>
+              {nativeFeedbackEnabled ? (
+                <button
+                  type="button"
+                  aria-label="Share feedback"
+                  className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground/50 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => {
+                    openingFeedbackRef.current = true;
+                    setFeedbackOpen(true);
+                  }}
+                >
+                  <Flag className="h-4 w-4" aria-hidden="true" />
+                </button>
+              ) : (
+                <a
+                  href={FEEDBACK_URL}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label="Share feedback"
+                  className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground/50 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <Flag className="h-4 w-4" aria-hidden="true" />
+                </a>
+              )}
             </TooltipTrigger>
             <TooltipContent side="top">Share feedback</TooltipContent>
           </Tooltip>
+        ) : null}
+        {nativeFeedbackEnabled && productFeedback && companyId ? (
+          <ProductFeedbackDialog
+            companyId={companyId}
+            open={feedbackOpen}
+            onOpenChange={(nextOpen) => {
+              if (!nextOpen) openingFeedbackRef.current = false;
+              setFeedbackOpen(nextOpen);
+            }}
+            capability={productFeedback}
+            deploymentMode={deploymentMode ?? "local_trusted"}
+            knownEmail={deploymentMode === "authenticated" ? session?.user.email : null}
+            appVersion={version}
+          />
         ) : null}
       </div>
     </div>

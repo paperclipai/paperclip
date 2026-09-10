@@ -285,6 +285,9 @@ export function buildWorktreeConfig(input: {
     telemetry: {
       enabled: source?.telemetry?.enabled ?? true,
     },
+    productFeedback: {
+      enabled: source?.productFeedback?.enabled ?? true,
+    },
     storage: {
       provider: source?.storage.provider ?? "local_disk",
       localDisk: {
