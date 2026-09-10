@@ -210,6 +210,138 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
   });
 
+  // SAG-668 / SAG-661 scenario: a productivity review must NOT be auto-assigned to a
+  // small-model `opencode_local` engineer that lacks manager-style judgement. Under the
+  // OLD logic the review routed to the source agent's reporting manager regardless of
+  // adapter capability — so a small-model CTO (here, an opencode_local manager) would
+  // have been picked. The NEW logic gates on manager-capable adapters and falls back to
+  // the CEO. The helper below seeds an org whose only manager-tier candidates are
+  // small-model opencode_local agents plus a CEO, so we can prove the routing change.
+  async function seedSmallModelOrg(opts?: { ceoAdapterType?: string; managerAdapterType?: string }) {
+    const companyId = randomUUID();
+    const ceoId = randomUUID();
+    const ctoId = randomUUID();
+    const coderId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `PR${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const createdAt = new Date("2026-04-28T10:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Small Model Co",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: ceoId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "idle",
+        adapterType: opts?.ceoAdapterType ?? "claude_local",
+        adapterConfig: opts?.ceoAdapterType === "claude_local" || !opts?.ceoAdapterType
+          ? { model: "claude-opus-4" }
+          : {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: ctoId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "idle",
+        // Small-model opencode_local manager — the kind that SAG-668/SAG-661 wrongly routed to.
+        adapterType: opts?.managerAdapterType ?? "opencode_local",
+        adapterConfig: { model: "qwen2.5-coder:7b" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: coderId,
+        companyId,
+        name: "Coder",
+        role: "engineer",
+        status: "idle",
+        reportsTo: ctoId,
+        adapterType: "opencode_local",
+        adapterConfig: { model: "qwen2.5-coder:7b" },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Implement data import",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: coderId,
+      originKind: "manual",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      startedAt: createdAt,
+      createdAt,
+      updatedAt: createdAt,
+    });
+
+    return { companyId, ceoId, ctoId, coderId, issueId, issuePrefix, createdAt };
+  }
+
+  it("routes to the CEO instead of a small-model opencode_local manager (SAG-668 / SAG-661)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    // Pool of manager-tier candidates is ONLY small-model opencode_local agents, plus a
+    // capable claude_local CEO. The source agent reports to the small-model CTO.
+    const seeded = await seedSmallModelOrg({ managerAdapterType: "opencode_local" });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+    const reviews = await listProductivityReviews(seeded.companyId);
+
+    expect(result.created).toBe(1);
+    expect(reviews).toHaveLength(1);
+    // OLD logic would have routed to the small-model CTO (seeded.ctoId) — i.e. "would
+    // have routed differently". NEW logic routes to the capable CEO instead.
+    expect(reviews[0]?.assigneeAgentId).toBe(seeded.ceoId);
+    expect(reviews[0]?.assigneeAgentId).not.toBe(seeded.ctoId);
+  });
+
+  it("routes to a claude_local manager when one exists in a mixed pool (SAG-668 / SAG-661)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    // Mixed pool: small-model opencode_local engineers + a capable claude_local manager.
+    // Here the CTO is the capable claude_local manager; the CEO is also claude_local.
+    const seeded = await seedSmallModelOrg({ managerAdapterType: "claude_local" });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+    const reviews = await listProductivityReviews(seeded.companyId);
+
+    expect(result.created).toBe(1);
+    expect(reviews).toHaveLength(1);
+    // The claude_local CTO is the source agent's reporting manager and is manager-capable,
+    // so it is preferred over the CEO fallback.
+    expect(reviews[0]?.assigneeAgentId).toBe(seeded.ctoId);
+  });
+
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue();
