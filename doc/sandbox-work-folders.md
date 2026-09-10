@@ -237,8 +237,9 @@ saving outgoing changes. Imported bytes therefore cannot overwrite a newer
 shared version by being mistaken for an agent edit; actual subsequent edits
 still synchronize normally. Failed explicit refreshes retain the same intent.
 Other providers keep the small-argument transport. Incoming storage responses
-are prefetched four at a time and closed if transfer fails. Repository restores
-use the same path, then recreate confined repository links.
+are prefetched sixteen at a time without consuming queued response bodies, and
+closed if transfer fails. The transport keeps its separate bounded batch buffer.
+Repository restores use the same path, then recreate confined repository links.
 
 Read-only sandbox commands retry transient connection failures and HTTP
 502/503/504 responses up to three attempts within one 120-second deadline.

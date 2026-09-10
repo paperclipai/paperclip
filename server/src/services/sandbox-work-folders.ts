@@ -1,5 +1,5 @@
 import { measureSandboxOperation, measureSandboxStream, captureSandboxPerformanceContext } from "./sandbox-performance.js";
-import { prefetchWorkFiles } from "./work-folder-transfer.js";
+import { prefetchWorkFiles, WORK_FOLDER_PREFETCH_CONCURRENCY } from "./work-folder-transfer.js";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { managedAgentFiles } from "./work-folder-agent-import.js";
@@ -242,7 +242,7 @@ export async function prepareSandboxWorkFolders(input: {
         }
         const changed = saved.sort((a, b) => a.path.length - b.path.length)
           .filter((entry) => signature(current.get(entry.path)) !== signature(entry));
-        await measureSandboxOperation("work_folder.scope.hydrate", { scope, files: changed.length, parallelism: 4 }, async () => (transport.writeMany(paths[scope]!, staging, prefetchWorkFiles(changed, async (entry, fileIndex) => {
+        await measureSandboxOperation("work_folder.scope.hydrate", { scope, files: changed.length, parallelism: WORK_FOLDER_PREFETCH_CONCURRENCY }, async () => (transport.writeMany(paths[scope]!, staging, prefetchWorkFiles(changed, async (entry, fileIndex) => {
           if (entry.kind === "directory") return { entry };
           const result = await svc.content(folder, entry.path, fileIndex);
           // A shared file can change after listing. Validate and baseline the
