@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { createReleaseIssueExecution } from "./use-cases.js";
+import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "./use-cases.js";
+import type { AdmitWakeBehindIssueExecutionInput } from "./use-cases.js";
 import { WakeQueueApplicationError } from "./types.js";
 import type {
   DeferredWakeCandidate,
@@ -10,6 +11,10 @@ import type {
   RecoveryEscalationPort,
   RunSnapshot,
   RunSummary,
+  TransactionScope,
+  WakeAdmissionActiveExecutionRun,
+  WakeAdmissionReader,
+  WakeAdmissionWriter,
   WakeQueueHost,
   WakeQueueTransaction,
 } from "./ports.js";
@@ -403,5 +408,126 @@ describe("releaseIssueExecution", () => {
     expect(result.outcome.kind).toBe("blocked");
     expect(result.outcome.kind === "blocked" && result.outcome.noticeKind).toBe("immediate_execution_path");
     expect(recovery.escalateStrandedAssignedIssue).toHaveBeenCalledTimes(1);
+  });
+});
+
+const ACTIVE_EXECUTION_RUN: WakeAdmissionActiveExecutionRun = {
+  id: "active-run-1",
+  agentId: "execution-agent",
+  status: "running",
+  contextSnapshot: { taskKey: "issue-1" },
+};
+
+// The scope is opaque to the use case; the fakes below never inspect it.
+const SCOPE = {} as TransactionScope;
+
+function admissionInput(
+  overrides: Partial<AdmitWakeBehindIssueExecutionInput> = {},
+): AdmitWakeBehindIssueExecutionInput {
+  return {
+    companyId: "company-1",
+    issueId: "issue-1",
+    agentId: "wake-agent",
+    agentNameKey: "codexcoder",
+    issueExecutionAgentNameKey: null,
+    activeExecutionRun: ACTIVE_EXECUTION_RUN,
+    liveRunExecutions: { has: () => true },
+    wakeCommentId: null,
+    forceFreshSession: false,
+    contextSnapshot: { wakeReason: "issue_commented" },
+    source: "on_demand",
+    triggerDetail: null,
+    payload: { issueId: "issue-1" },
+    requestedByActorType: "user",
+    requestedByActorId: "user-1",
+    idempotencyKey: null,
+    ...overrides,
+  };
+}
+
+function createFakeAdmissionReader(overrides: Partial<WakeAdmissionReader> = {}): WakeAdmissionReader {
+  return {
+    isSameExecutionAgent: vi.fn(async () => true),
+    findExistingDeferredWake: vi.fn(async () => null),
+    ...overrides,
+  };
+}
+
+function createFakeAdmissionWriter(overrides: Partial<WakeAdmissionWriter> = {}): WakeAdmissionWriter {
+  return {
+    coalesceIntoActiveExecutionRun: vi.fn(async () => ({ id: "merged-run-1" })),
+    mergeIntoExistingDeferredWake: vi.fn(async () => {}),
+    insertNewDeferredWake: vi.fn(async () => {}),
+    ...overrides,
+  };
+}
+
+describe("admitWakeBehindIssueExecution", () => {
+  it("returns the coalesce outcome and calls the writer one time when the same agent's run absorbs the wake", async () => {
+    const writer = createFakeAdmissionWriter();
+    const reader = createFakeAdmissionReader();
+    const admit = createAdmitWakeBehindIssueExecution({ reader, writer });
+
+    const result = await admit(SCOPE, admissionInput());
+
+    expect(result).toEqual({ kind: "coalesced", run: { id: "merged-run-1" } });
+    expect(writer.coalesceIntoActiveExecutionRun).toHaveBeenCalledTimes(1);
+    expect(writer.mergeIntoExistingDeferredWake).not.toHaveBeenCalled();
+    expect(writer.insertNewDeferredWake).not.toHaveBeenCalled();
+  });
+
+  it("merges into the existing deferred wake when the policy returns a merge target", async () => {
+    const mergeIntoExistingDeferredWake = vi.fn(
+      async (_scope: TransactionScope, _input: Parameters<WakeAdmissionWriter["mergeIntoExistingDeferredWake"]>[1]) => {},
+    );
+    const writer = createFakeAdmissionWriter({ mergeIntoExistingDeferredWake });
+    const reader = createFakeAdmissionReader({
+      isSameExecutionAgent: vi.fn(async () => false),
+      findExistingDeferredWake: vi.fn(async () => ({
+        id: "deferred-1",
+        payload: { issueId: "issue-1", foo: "bar" },
+        deferredContext: { wakeReason: "issue_commented" },
+        coalescedCount: 2,
+      })),
+    });
+    const admit = createAdmitWakeBehindIssueExecution({ reader, writer });
+
+    const result = await admit(SCOPE, admissionInput());
+
+    expect(result).toEqual({ kind: "deferred" });
+    expect(mergeIntoExistingDeferredWake).toHaveBeenCalledTimes(1);
+    const call = mergeIntoExistingDeferredWake.mock.calls[0]![1];
+    expect(call.existingDeferredWakeId).toBe("deferred-1");
+    expect(call.nextCoalescedCount).toBe(3);
+    expect(call.mergedPayload.foo).toBe("bar");
+    expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
+    expect(writer.insertNewDeferredWake).not.toHaveBeenCalled();
+  });
+
+  it("inserts a new deferred wake when a different agent holds the lock and none is queued yet", async () => {
+    const writer = createFakeAdmissionWriter();
+    const reader = createFakeAdmissionReader({ isSameExecutionAgent: vi.fn(async () => false) });
+    const admit = createAdmitWakeBehindIssueExecution({ reader, writer });
+
+    const result = await admit(SCOPE, admissionInput());
+
+    expect(result).toEqual({ kind: "deferred" });
+    expect(writer.insertNewDeferredWake).toHaveBeenCalledTimes(1);
+    expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
+    expect(writer.mergeIntoExistingDeferredWake).not.toHaveBeenCalled();
+  });
+
+  it("proceeds, and never reads for an existing deferred wake, when the zombie-run filter leaves no live coalesce target", async () => {
+    const writer = createFakeAdmissionWriter();
+    const reader = createFakeAdmissionReader();
+    const admit = createAdmitWakeBehindIssueExecution({ reader, writer });
+
+    const result = await admit(SCOPE, admissionInput({ liveRunExecutions: { has: () => false } }));
+
+    expect(result).toEqual({ kind: "proceed" });
+    expect(reader.findExistingDeferredWake).not.toHaveBeenCalled();
+    expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
+    expect(writer.mergeIntoExistingDeferredWake).not.toHaveBeenCalled();
+    expect(writer.insertNewDeferredWake).not.toHaveBeenCalled();
   });
 });

@@ -3,6 +3,7 @@ import {
   decidePreDrain,
   decideQueuedCommentAction,
   decideReleaseRecovery,
+  decideWakeAdmission,
   decideWakeOutcome,
   deriveImmediateRecoveryContextLabels,
   type DeferredWakeOutcomeFacts,
@@ -10,6 +11,7 @@ import {
   type ImmediateRecoveryContextLabels,
   type PreDrainFacts,
   type ReleaseRecoveryFacts,
+  type WakeAdmissionFacts,
 } from "./policy.js";
 
 const basePreDrainFacts: PreDrainFacts = {
@@ -492,6 +494,69 @@ describe("deriveImmediateRecoveryContextLabels", () => {
   for (const testCase of cases) {
     it(testCase.name, () => {
       expect(deriveImmediateRecoveryContextLabels(testCase.issueStatus)).toEqual(testCase.expected);
+    });
+  }
+});
+
+const baseWakeAdmissionFacts: WakeAdmissionFacts = {
+  isSameExecutionAgent: true,
+  shouldDeferFollowupWake: false,
+  shouldQueueFollowupForRunningWake: false,
+  availableActiveExecutionRunPresent: true,
+  hasExistingDeferredWake: false,
+};
+
+describe("decideWakeAdmission", () => {
+  const cases: Array<{
+    name: string;
+    facts: WakeAdmissionFacts;
+    expected: ReturnType<typeof decideWakeAdmission>;
+  }> = [
+    {
+      name: "coalesce: same execution agent, no defer condition, and a live coalesce target",
+      facts: baseWakeAdmissionFacts,
+      expected: { kind: "coalesce" },
+    },
+    {
+      name: "defer_new: same execution agent, but the running agent needs a fresh session, and no deferred wake exists yet",
+      facts: { ...baseWakeAdmissionFacts, shouldDeferFollowupWake: true },
+      expected: { kind: "defer_new" },
+    },
+    {
+      name: "defer_merge: same execution agent, but the running agent needs a fresh session, and a deferred wake already exists",
+      facts: { ...baseWakeAdmissionFacts, shouldDeferFollowupWake: true, hasExistingDeferredWake: true },
+      expected: { kind: "defer_merge" },
+    },
+    {
+      name: "defer_new: same execution agent, but the running turn must finish first",
+      facts: { ...baseWakeAdmissionFacts, shouldQueueFollowupForRunningWake: true },
+      expected: { kind: "defer_new" },
+    },
+    {
+      name: "defer_merge: a different agent already holds the execution lock, and a deferred wake already exists",
+      facts: { ...baseWakeAdmissionFacts, isSameExecutionAgent: false, hasExistingDeferredWake: true },
+      expected: { kind: "defer_merge" },
+    },
+    {
+      name: "defer_new: a different agent already holds the execution lock, and no deferred wake exists yet",
+      facts: { ...baseWakeAdmissionFacts, isSameExecutionAgent: false },
+      expected: { kind: "defer_new" },
+    },
+    {
+      name: "proceed: the zombie-run filter leaves no live coalesce target",
+      facts: { ...baseWakeAdmissionFacts, availableActiveExecutionRunPresent: false },
+      expected: { kind: "proceed" },
+    },
+    {
+      name: "proceed: no live coalesce target, even when a deferred wake already exists",
+      facts: { ...baseWakeAdmissionFacts, availableActiveExecutionRunPresent: false, hasExistingDeferredWake: true },
+      expected: { kind: "proceed" },
+    },
+  ];
+
+  for (const testCase of cases) {
+    it(testCase.name, () => {
+      expect(decideWakeAdmission(testCase.facts)).toEqual(testCase.expected);
     });
   }
 });

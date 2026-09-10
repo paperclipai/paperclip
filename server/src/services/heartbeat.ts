@@ -23797,147 +23797,50 @@ export function heartbeatService(
           // its fresh-session contract into unrelated work or create a second
           // deferred wake that could later replay the same reconciliation.
           if (reconciledSourceRunId) return { kind: "deferred" as const };
-          const executionAgent = await tx
-            .select({ name: agents.name })
-            .from(agents)
-            .where(eq(agents.id, activeExecutionRun.agentId))
-            .then((rows) => rows[0] ?? null);
-          const executionAgentNameKey =
-            normalizeAgentNameKey(issue.executionAgentNameKey) ??
-            normalizeAgentNameKey(executionAgent?.name);
-          const isSameExecutionAgent =
-            Boolean(executionAgentNameKey) &&
-            executionAgentNameKey === agentNameKey;
-          const shouldDeferFollowupWake = shouldDeferFollowupWakeForSameIssue({
-            activeRunStatus: activeExecutionRun.status,
-            isSameExecutionAgent,
-            wakeCommentId,
-            forceFreshSession:
-              enrichedContextSnapshot.forceFreshSession === true,
-          });
-          const shouldQueueFollowupForRunningWake =
-            shouldQueueFollowupForRunningIssueWake({
-              contextSnapshot: enrichedContextSnapshot,
-              wakeCommentId,
-            }) &&
-            activeExecutionRun.status === "running" &&
-            isSameExecutionAgent;
-          const availableActiveExecutionRun = isSameExecutionAgent
-            ? filterZombieCoalesceTarget(activeExecutionRun, liveRunExecutions)
-            : activeExecutionRun;
 
-          if (
-            isSameExecutionAgent &&
-            !shouldDeferFollowupWake &&
-            !shouldQueueFollowupForRunningWake &&
-            availableActiveExecutionRun
-          ) {
-            const mergedContextSnapshot = mergeCoalescedContextSnapshot(
-              availableActiveExecutionRun.contextSnapshot,
-              enrichedContextSnapshot,
-              {
-                preserveExistingInteractionContinuation:
-                  availableActiveExecutionRun.status === "queued" ||
-                  availableActiveExecutionRun.status === "scheduled_retry",
+          const admissionScope = wakeQueue.createAdmissionTransactionScope(
+            agent.companyId,
+            tx as unknown as Db,
+          );
+          const admission = await wakeQueue.admitWakeBehindIssueExecution(
+            admissionScope,
+            {
+              companyId: agent.companyId,
+              issueId: issue.id,
+              agentId,
+              agentNameKey,
+              issueExecutionAgentNameKey: issue.executionAgentNameKey,
+              activeExecutionRun: {
+                id: activeExecutionRun.id,
+                agentId: activeExecutionRun.agentId,
+                status: activeExecutionRun.status,
+                contextSnapshot: activeExecutionRun.contextSnapshot,
               },
-            );
-            const mergedRun = await tx
-              .update(heartbeatRuns)
-              .set({
-                contextSnapshot: mergedContextSnapshot,
-                updatedAt: new Date(),
-              })
-              .where(eq(heartbeatRuns.id, availableActiveExecutionRun.id))
-              .returning()
-              .then((rows) => rows[0] ?? availableActiveExecutionRun);
-
-            await tx.insert(agentWakeupRequests).values({
-              companyId: agent.companyId,
-              agentId,
+              liveRunExecutions,
+              wakeCommentId,
+              forceFreshSession:
+                enrichedContextSnapshot.forceFreshSession === true,
+              contextSnapshot: enrichedContextSnapshot,
               source,
               triggerDetail,
-              reason: "issue_execution_same_name",
               payload,
-              status: "coalesced",
-              coalescedCount: 1,
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
               idempotencyKey: opts.idempotencyKey ?? null,
-              runId: mergedRun.id,
-              finishedAt: new Date(),
-            });
+            },
+          );
 
-            return { kind: "coalesced" as const, run: mergedRun };
-          }
-
-          if (availableActiveExecutionRun) {
-            const deferredPayload = {
-              ...(payload ?? {}),
-              issueId,
-              [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
+          if (admission.kind === "coalesced") {
+            return {
+              kind: "coalesced" as const,
+              run: admission.run as typeof heartbeatRuns.$inferSelect,
             };
-
-            const existingDeferred = await tx
-              .select()
-              .from(agentWakeupRequests)
-              .where(
-                and(
-                  eq(agentWakeupRequests.companyId, agent.companyId),
-                  eq(agentWakeupRequests.agentId, agentId),
-                  eq(agentWakeupRequests.status, "deferred_issue_execution"),
-                  sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
-                ),
-              )
-              .orderBy(asc(agentWakeupRequests.requestedAt))
-              .limit(1)
-              .then((rows) => rows[0] ?? null);
-
-            if (existingDeferred) {
-              const existingDeferredPayload = parseObject(
-                existingDeferred.payload,
-              );
-              const existingDeferredContext = parseObject(
-                existingDeferredPayload[DEFERRED_WAKE_CONTEXT_KEY],
-              );
-              const mergedDeferredContext = mergeCoalescedContextSnapshot(
-                existingDeferredContext,
-                enrichedContextSnapshot,
-                { preserveExistingInteractionContinuation: true },
-              );
-              const mergedDeferredPayload = {
-                ...existingDeferredPayload,
-                ...(payload ?? {}),
-                issueId,
-                [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
-              };
-
-              await tx
-                .update(agentWakeupRequests)
-                .set({
-                  payload: mergedDeferredPayload,
-                  coalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
-                  updatedAt: new Date(),
-                })
-                .where(eq(agentWakeupRequests.id, existingDeferred.id));
-
-              return { kind: "deferred" as const };
-            }
-
-            await tx.insert(agentWakeupRequests).values({
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason: "issue_execution_deferred",
-              payload: deferredPayload,
-              status: "deferred_issue_execution",
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
-            });
-
+          }
+          if (admission.kind === "deferred") {
             return { kind: "deferred" as const };
           }
+          // admission.kind === "proceed": no active run absorbed this wake,
+          // so fall through to the ordinary queue path below.
         }
 
         // PAP-13775: no live run holds the lock, so this wake would start a

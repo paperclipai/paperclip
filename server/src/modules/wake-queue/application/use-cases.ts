@@ -1,7 +1,14 @@
+import {
+  filterZombieCoalesceTarget,
+  mergeCoalescedContextSnapshot,
+  shouldDeferFollowupWakeForSameIssue,
+  shouldQueueFollowupForRunningIssueWake,
+} from "../../../services/heartbeat.js";
 import { enrichPromotedWakeContext } from "../domain/context.js";
 import {
   decideQueuedCommentAction,
   decideReleaseRecovery,
+  decideWakeAdmission,
   decideWakeOutcome,
   deriveImmediateRecoveryContextLabels,
 } from "../domain/policy.js";
@@ -13,6 +20,7 @@ import {
 } from "../domain/values.js";
 import { withRecoveryContext } from "../../../services/recovery/status-only-context.js";
 import type {
+  AdmitWakeBehindIssueExecutionResult,
   DeferredWakeCandidate,
   InvokableAgentSnapshot,
   IssueLockWriter,
@@ -21,11 +29,17 @@ import type {
   RecoveryEscalationPort,
   ReleaseTransactionResult,
   RunSnapshot,
+  TransactionScope,
+  WakeAdmissionActiveExecutionRun,
+  WakeAdmissionReader,
+  WakeAdmissionWriter,
   WakeQueueHost,
   WakeQueueTransaction,
 } from "./ports.js";
 import type { PostCommitEffect, ReleaseOutcome } from "./types.js";
 import { WakeQueueApplicationError } from "./types.js";
+
+const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
 const ISSUE_DISPOSITION_REPAIR_RETRY_REASON = "issue_disposition_repair";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASONS = new Set([
@@ -551,6 +565,145 @@ async function runReleaseRecoveryTail(
 
 function statusForBlock(issue: IssueSnapshot): "todo" | "in_progress" | "in_review" {
   return issue.status === "todo" || issue.status === "in_review" ? issue.status : "in_progress";
+}
+
+export type AdmitWakeBehindIssueExecutionInput = {
+  companyId: string;
+  issueId: string;
+  agentId: string;
+  agentNameKey: string | null;
+  issueExecutionAgentNameKey: string | null;
+  activeExecutionRun: WakeAdmissionActiveExecutionRun;
+  /** Tracks which runs are still live in this process, for the zombie-run filter. */
+  liveRunExecutions: { has(id: string): boolean };
+  wakeCommentId: string | null;
+  forceFreshSession: boolean;
+  contextSnapshot: Record<string, unknown>;
+  source: string;
+  triggerDetail: string | null;
+  payload: Record<string, unknown> | null;
+  requestedByActorType: string | null;
+  requestedByActorId: string | null;
+  idempotencyKey: string | null;
+};
+
+export type { AdmitWakeBehindIssueExecutionResult };
+
+/**
+ * Decides and applies the admission outcome for a wake that arrives while
+ * an active execution run already holds the issue's execution lock: merge
+ * it into that run (coalesce), hold it behind the run (defer), or leave it
+ * for the caller to queue as an ordinary wake (proceed).
+ */
+export function createAdmitWakeBehindIssueExecution(deps: {
+  reader: WakeAdmissionReader;
+  writer: WakeAdmissionWriter;
+}) {
+  return async function admitWakeBehindIssueExecution(
+    scope: TransactionScope,
+    input: AdmitWakeBehindIssueExecutionInput,
+  ): Promise<AdmitWakeBehindIssueExecutionResult> {
+    const isSameExecutionAgent = await deps.reader.isSameExecutionAgent(scope, {
+      companyId: input.companyId,
+      activeExecutionRunAgentId: input.activeExecutionRun.agentId,
+      issueExecutionAgentNameKey: input.issueExecutionAgentNameKey,
+      agentNameKey: input.agentNameKey,
+    });
+
+    const shouldDeferFollowupWake = shouldDeferFollowupWakeForSameIssue({
+      activeRunStatus: input.activeExecutionRun.status,
+      isSameExecutionAgent,
+      wakeCommentId: input.wakeCommentId,
+      forceFreshSession: input.forceFreshSession,
+    });
+    const shouldQueueFollowupForRunningWake =
+      shouldQueueFollowupForRunningIssueWake({
+        contextSnapshot: input.contextSnapshot,
+        wakeCommentId: input.wakeCommentId,
+      }) &&
+      input.activeExecutionRun.status === "running" &&
+      isSameExecutionAgent;
+    const availableActiveExecutionRun = isSameExecutionAgent
+      ? filterZombieCoalesceTarget(input.activeExecutionRun, input.liveRunExecutions)
+      : input.activeExecutionRun;
+
+    const existingDeferred = availableActiveExecutionRun
+      ? await deps.reader.findExistingDeferredWake(scope, {
+          companyId: input.companyId,
+          agentId: input.agentId,
+          issueId: input.issueId,
+        })
+      : null;
+
+    const decision = decideWakeAdmission({
+      isSameExecutionAgent,
+      shouldDeferFollowupWake,
+      shouldQueueFollowupForRunningWake,
+      availableActiveExecutionRunPresent: availableActiveExecutionRun !== null,
+      hasExistingDeferredWake: existingDeferred !== null,
+    });
+
+    if (decision.kind === "proceed") return { kind: "proceed" };
+
+    if (decision.kind === "coalesce") {
+      const target = availableActiveExecutionRun!;
+      const mergedContextSnapshot = mergeCoalescedContextSnapshot(target.contextSnapshot, input.contextSnapshot, {
+        preserveExistingInteractionContinuation:
+          target.status === "queued" || target.status === "scheduled_retry",
+      });
+      const run = await deps.writer.coalesceIntoActiveExecutionRun(scope, {
+        companyId: input.companyId,
+        activeExecutionRunId: target.id,
+        mergedContextSnapshot,
+        agentId: input.agentId,
+        source: input.source,
+        triggerDetail: input.triggerDetail,
+        payload: input.payload,
+        requestedByActorType: input.requestedByActorType,
+        requestedByActorId: input.requestedByActorId,
+        idempotencyKey: input.idempotencyKey,
+      });
+      return { kind: "coalesced", run };
+    }
+
+    if (decision.kind === "defer_merge") {
+      const existing = existingDeferred!;
+      const mergedDeferredContext = mergeCoalescedContextSnapshot(existing.deferredContext, input.contextSnapshot, {
+        preserveExistingInteractionContinuation: true,
+      });
+      const mergedPayload = {
+        ...existing.payload,
+        ...(input.payload ?? {}),
+        issueId: input.issueId,
+        [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
+      };
+      await deps.writer.mergeIntoExistingDeferredWake(scope, {
+        companyId: input.companyId,
+        existingDeferredWakeId: existing.id,
+        mergedPayload,
+        nextCoalescedCount: (existing.coalescedCount ?? 0) + 1,
+      });
+      return { kind: "deferred" };
+    }
+
+    // decision.kind === "defer_new"
+    const deferredPayload = {
+      ...(input.payload ?? {}),
+      issueId: input.issueId,
+      [DEFERRED_WAKE_CONTEXT_KEY]: input.contextSnapshot,
+    };
+    await deps.writer.insertNewDeferredWake(scope, {
+      companyId: input.companyId,
+      agentId: input.agentId,
+      source: input.source,
+      triggerDetail: input.triggerDetail,
+      payload: deferredPayload,
+      requestedByActorType: input.requestedByActorType,
+      requestedByActorId: input.requestedByActorId,
+      idempotencyKey: input.idempotencyKey,
+    });
+    return { kind: "deferred" };
+  };
 }
 
 export function createReleaseIssueExecution(deps: {

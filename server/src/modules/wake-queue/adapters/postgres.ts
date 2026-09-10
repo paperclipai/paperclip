@@ -33,6 +33,7 @@ import {
   parseObject,
   readNonEmptyString,
 } from "../domain/values.js";
+import { requireTransactionScopeTx, TransactionScope } from "../application/ports.js";
 import type {
   DeferredWakeCandidate,
   InvokableAgentSnapshot,
@@ -41,6 +42,8 @@ import type {
   LockedIssueExecution,
   ReleaseTransactionResult,
   RunSnapshot,
+  WakeAdmissionReader,
+  WakeAdmissionWriter,
   WakeQueueHost,
   WakeQueueTransaction,
 } from "../application/ports.js";
@@ -626,6 +629,142 @@ async function recordNativeTerminalRecoveryIfNeeded(tx: Db, run: HeartbeatRunRow
     });
   }
   return true;
+}
+
+/**
+ * Builds the temporary transaction-scope handle the admission port needs.
+ * `heartbeat.ts` calls this through `createWakeQueue`'s own wrapper; it
+ * never builds a `TransactionScope` itself.
+ */
+export function createAdmissionTransactionScope(companyId: string, tx: Db): TransactionScope {
+  return TransactionScope.create(companyId, tx);
+}
+
+function requireAdmissionTx(scope: TransactionScope | null | undefined, companyId: string): Db {
+  return requireTransactionScopeTx(scope, companyId) as Db;
+}
+
+export function createWakeAdmissionReader(): WakeAdmissionReader {
+  return {
+    async isSameExecutionAgent(
+      scope,
+      { companyId, activeExecutionRunAgentId, issueExecutionAgentNameKey, agentNameKey },
+    ) {
+      const tx = requireAdmissionTx(scope, companyId);
+      const executionAgent = await tx
+        .select({ name: agents.name })
+        .from(agents)
+        .where(and(eq(agents.id, activeExecutionRunAgentId), eq(agents.companyId, companyId)))
+        .then((rows) => rows[0] ?? null);
+      const executionAgentNameKey =
+        normalizeAgentNameKey(issueExecutionAgentNameKey) ?? normalizeAgentNameKey(executionAgent?.name);
+      return Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey;
+    },
+
+    async findExistingDeferredWake(scope, { companyId, agentId, issueId }) {
+      const tx = requireAdmissionTx(scope, companyId);
+      const row = await tx
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          ),
+        )
+        .orderBy(asc(agentWakeupRequests.requestedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!row) return null;
+      const payload = parseObject(row.payload);
+      return {
+        id: row.id,
+        payload,
+        deferredContext: parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]),
+        coalescedCount: row.coalescedCount,
+      };
+    },
+  };
+}
+
+export function createWakeAdmissionWriter(): WakeAdmissionWriter {
+  return {
+    async coalesceIntoActiveExecutionRun(scope, input) {
+      const tx = requireAdmissionTx(scope, input.companyId);
+      const now = new Date();
+      const mergedRun = await tx
+        .update(heartbeatRuns)
+        .set({ contextSnapshot: input.mergedContextSnapshot, updatedAt: now })
+        .where(and(eq(heartbeatRuns.id, input.activeExecutionRunId), eq(heartbeatRuns.companyId, input.companyId)))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!mergedRun) {
+        // The compare-and-set write affected no row. Throw to roll the
+        // transaction back instead of recording a coalesced wake against a
+        // run this write never touched.
+        throw new Error("wake-queue: the coalesce target run was not found for this company");
+      }
+      await tx.insert(agentWakeupRequests).values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        source: input.source,
+        triggerDetail: input.triggerDetail,
+        reason: "issue_execution_same_name",
+        payload: input.payload,
+        status: "coalesced",
+        coalescedCount: 1,
+        requestedByActorType: input.requestedByActorType,
+        requestedByActorId: input.requestedByActorId,
+        idempotencyKey: input.idempotencyKey,
+        runId: mergedRun.id,
+        finishedAt: now,
+      });
+      return mergedRun as unknown as Record<string, unknown>;
+    },
+
+    async mergeIntoExistingDeferredWake(scope, input) {
+      const tx = requireAdmissionTx(scope, input.companyId);
+      const rows = await tx
+        .update(agentWakeupRequests)
+        .set({
+          payload: input.mergedPayload,
+          coalescedCount: input.nextCoalescedCount,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.id, input.existingDeferredWakeId),
+            eq(agentWakeupRequests.companyId, input.companyId),
+            eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+          ),
+        )
+        .returning({ id: agentWakeupRequests.id });
+      if (rows.length === 0) {
+        // The compare-and-set write affected no row: a concurrent writer
+        // already moved this wake off `deferred_issue_execution`. Roll the
+        // transaction back instead of leaving the merge half-applied.
+        throw new Error("wake-queue: the deferred wake to merge into was not found for this company");
+      }
+    },
+
+    async insertNewDeferredWake(scope, input) {
+      const tx = requireAdmissionTx(scope, input.companyId);
+      await tx.insert(agentWakeupRequests).values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        source: input.source,
+        triggerDetail: input.triggerDetail,
+        reason: "issue_execution_deferred",
+        payload: input.payload,
+        status: DEFERRED_WAKE_STATUS,
+        requestedByActorType: input.requestedByActorType,
+        requestedByActorId: input.requestedByActorId,
+        idempotencyKey: input.idempotencyKey,
+      });
+    },
+  };
 }
 
 export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAdapterDeps): IssueLockWriter {

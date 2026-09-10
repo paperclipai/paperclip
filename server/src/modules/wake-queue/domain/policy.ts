@@ -1,5 +1,7 @@
-// Pure decision rules for the release half of the deferred issue-execution
-// wake state machine:
+// Pure decision rules for the deferred issue-execution wake state machine:
+//   - the admission decision (decideWakeAdmission), applied to a new wake
+//     that arrives while an active execution run already holds the issue's
+//     execution lock
 //   - the pre-drain decision (decidePreDrain), applied once per lock
 //     acquisition, before the caller touches the deferred-wake queue at all
 //   - the per-wake decision, split into decideQueuedCommentAction and
@@ -10,6 +12,48 @@
 // The caller reads the database and packs the result into a facts object.
 // This file only branches on that facts object; it never queries a
 // database, reads the clock, or reads the wake context payload directly.
+
+export type WakeAdmissionFacts = {
+  /** True when the active execution run's agent and this wake's own agent share an execution-agent-name key. */
+  isSameExecutionAgent: boolean;
+  /** True when a same-agent, still-running execution run must not absorb this wake and needs a new run boundary instead. */
+  shouldDeferFollowupWake: boolean;
+  /** True when a same-agent, running execution run must finish its current turn before this wake runs. */
+  shouldQueueFollowupForRunningWake: boolean;
+  /** True when the active execution run still stands as a live coalesce target after the zombie-run filter runs. */
+  availableActiveExecutionRunPresent: boolean;
+  /** True when a deferred wake already sits queued for this agent and this issue. */
+  hasExistingDeferredWake: boolean;
+};
+
+export type WakeAdmissionDecision =
+  | { kind: "proceed" }
+  | { kind: "coalesce" }
+  | { kind: "defer_merge" }
+  | { kind: "defer_new" };
+
+/**
+ * Decides what a new wake does when an active execution run already holds
+ * the issue's execution lock: run into that run (coalesce), wait behind it
+ * (defer, merged into an existing deferred wake or queued as a new one), or
+ * proceed as an ordinary wake because no run currently holds the lock.
+ */
+export function decideWakeAdmission(facts: WakeAdmissionFacts): WakeAdmissionDecision {
+  if (
+    facts.isSameExecutionAgent &&
+    !facts.shouldDeferFollowupWake &&
+    !facts.shouldQueueFollowupForRunningWake &&
+    facts.availableActiveExecutionRunPresent
+  ) {
+    return { kind: "coalesce" };
+  }
+
+  if (facts.availableActiveExecutionRunPresent) {
+    return facts.hasExistingDeferredWake ? { kind: "defer_merge" } : { kind: "defer_new" };
+  }
+
+  return { kind: "proceed" };
+}
 
 export type PreDrainFacts = {
   /** True when the transaction found the issue row the lock is for. */
