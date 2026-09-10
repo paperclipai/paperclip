@@ -240,6 +240,11 @@ already-published candidate:
   candidate mergeable; acceptance requires independent review/check evidence on
   the accepted head.
 
+The Delivery screen's merge queue includes only registered, non-terminal
+code-delivery candidates. Rows and counts represent covered tasks, so tasks
+sharing one PR do not imply independent candidates. Non-code, unsubmitted,
+and completed work remains visible in the reconciliation inventory.
+
 ## 10. Greptile
 
 Greptile is read through the governed MCP tool gateway

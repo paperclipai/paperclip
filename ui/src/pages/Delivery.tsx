@@ -361,7 +361,9 @@ export function Delivery() {
 
   const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
   const queueGroups = useMemo(
-    () => groupDeliveryQueues(deliveryQuery.data?.items ?? []),
+    () => groupDeliveryQueues((deliveryQuery.data?.items ?? []).filter(
+      (item) => item.codeDelivery && item.unitId !== null && item.phase !== "done" && item.phase !== "cancelled",
+    )),
     [deliveryQuery.data],
   );
   const reconciliationItems = useMemo(
@@ -458,7 +460,7 @@ export function Delivery() {
               <h3 className="font-mono text-xs text-muted-foreground">
                 {deliveryQueueLabel({ repository: group.repository, targetBranch: group.targetBranch })}
                 <span className="ml-2 text-muted-foreground/70">
-                  {group.items.length} {group.items.length === 1 ? "candidate" : "candidates"}
+                  {group.items.length} {group.items.length === 1 ? "task" : "tasks"}
                 </span>
               </h3>
               <QueueTable
