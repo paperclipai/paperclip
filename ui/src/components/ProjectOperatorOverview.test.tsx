@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import type { Issue, IssueOverview } from "@paperclipai/shared";
+import type { Issue, IssueOverview, IssueOverviewPullRequest } from "@paperclipai/shared";
 import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PROJECT_OPERATOR_PR_PREVIEW_LIMIT } from "./project-operator-overview";
 import { ProjectOperatorOverview, type ProjectOperatorOverviewProps } from "./ProjectOperatorOverview";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -322,7 +323,7 @@ describe("ProjectOperatorOverview", () => {
           [
             "m",
             overview("m", {
-              phase: "merged",
+              phase: "done",
               pullRequests: [
                 { url: "https://git.example/r/pull/12", number: 12, repository: "r", state: "merged", updatedAt: "2026-09-04T00:00:00Z", stale: false },
               ],
@@ -361,10 +362,17 @@ describe("ProjectOperatorOverview", () => {
       }),
     );
     const section = container.querySelector('[data-testid="project-operator-overview-completed"]')!;
-    // Exactly one task-level Merged marker plus the reading guide's explanation.
-    expect(section.textContent!.match(/Merged/g)).toHaveLength(1);
-    expect(section.textContent).toContain("Marked done · delivery evidence not recorded");
-    expect(section.querySelector('a[href="https://git.example/r/pull/12"]')?.textContent).toContain("PR #12");
+    const rows = Array.from(section.querySelectorAll("li"));
+    const mergedRow = rows.find((row) => row.textContent?.includes("Merged work"))!;
+    const historicalRow = rows.find((row) => row.textContent?.includes("Merged PR but open delivery"))!;
+    const nonCodeRow = rows.find((row) => row.textContent?.includes("Docs update"))!;
+    expect(mergedRow.querySelector("div")?.textContent).toMatch(/Merged work.*Merged/);
+    expect(historicalRow.textContent).toContain("Marked done · delivery evidence not recorded");
+    expect(nonCodeRow.querySelector("div")?.textContent).toMatch(/Docs update.*Done/);
+    const mergedLink = section.querySelector('a[href="https://git.example/r/pull/12"]')!;
+    expect(mergedLink.getAttribute("target")).toBe("_blank");
+    expect(mergedLink.getAttribute("rel")).toContain("noreferrer");
+    expect(mergedLink.querySelector('[data-pr-state="merged"]')).not.toBeNull();
     expect(container.textContent).toContain("Merged appears only with a recorded delivery merge");
   });
 
@@ -405,6 +413,7 @@ describe("ProjectOperatorOverview", () => {
           ["a", overview("a", { pullRequests: [{ ...shared }] })],
           ["b", overview("b", { pullRequests: [{ ...shared }] })],
         ]),
+        overviewsObservedAt: Date.parse("2026-09-09T12:00:00Z"),
       }),
     );
     expect(
@@ -442,5 +451,153 @@ describe("ProjectOperatorOverview", () => {
     expect(guide.tagName).toBe("DETAILS");
     expect(guide.textContent).toContain("not business acceptance or operational readiness");
     expect(container.textContent).not.toMatch(/business ready|ready for business|accepted by/i);
+  });
+
+  it("reports blockers as unavailable, not absent, while delivery detail is unavailable", async () => {
+    const onRetryOverviews = vi.fn();
+    await render(
+      baseProps({
+        issues: [issue({ id: "a", status: "in_progress", title: "Quiet task" })],
+        overviewsError: new Error("detail down"),
+        onRetryOverviews,
+      }),
+    );
+    // Task-row fallbacks stay; only the claim about blockers changes.
+    expect(container.textContent).toContain("Quiet task");
+    const empty = container.querySelector('[data-testid="project-operator-overview-blockers-empty"]')!;
+    expect(empty).not.toBeNull();
+    expect(empty.getAttribute("data-delivery-coverage")).toBe("unavailable");
+    expect(empty.textContent).not.toContain("No recorded blockers");
+    expect(empty.textContent).toMatch(/unavailable/i);
+    const evidence = container.querySelector('[data-testid="project-operator-overview-evidence"]')!;
+    expect(evidence.getAttribute("data-delivery-coverage")).toBe("unavailable");
+    expect(evidence.textContent).not.toMatch(/\d+ pull request/);
+    const band = container.querySelector('[data-testid="project-operator-overview-detail-error"]')!;
+    click([...band.querySelectorAll("button")].find((button) => button.textContent === "Retry"));
+    expect(onRetryOverviews).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps task-row blockers visible while delivery detail is unavailable", async () => {
+    await render(
+      baseProps({
+        issues: [
+          issue({
+            id: "b",
+            status: "blocked",
+            identifier: "PAP-2",
+            title: "Stuck task",
+            blockedBy: [{ id: "x", identifier: "PAP-9", title: "API work", status: "in_progress" }],
+          }),
+        ],
+        overviewsError: new Error("detail down"),
+      }),
+    );
+    const section = container.querySelector('[data-testid="project-operator-overview-blockers"]')!;
+    expect(section.querySelector('[data-testid="project-operator-overview-blockers-empty"]')).toBeNull();
+    expect(section.querySelector('a[href="/issues/PAP-9"]')).not.toBeNull();
+  });
+
+  it("labels pull request totals as partial once an observation exists but the refresh failed", async () => {
+    await render(
+      baseProps({
+        issues: [issue({ id: "a", status: "in_progress", title: "Quiet task" })],
+        overviewsById: new Map([
+          [
+            "a",
+            overview("a", {
+              pullRequests: [
+                {
+                  url: "https://git.example/r/pull/9",
+                  number: 9,
+                  repository: "r",
+                  state: "open",
+                  updatedAt: null,
+                  stale: false,
+                },
+              ],
+            }),
+          ],
+        ]),
+        overviewsObservedAt: Date.parse("2026-09-09T12:00:00Z"),
+        overviewsError: new Error("detail down"),
+      }),
+    );
+    const evidence = container.querySelector('[data-testid="project-operator-overview-evidence"]')!;
+    expect(evidence.getAttribute("data-delivery-coverage")).toBe("partial");
+    expect(evidence.textContent).toMatch(/partial/i);
+    const blockersEmpty = container.querySelector(
+      '[data-testid="project-operator-overview-blockers-empty"]',
+    )!;
+    expect(blockersEmpty).not.toBeNull();
+    expect(blockersEmpty.getAttribute("data-delivery-coverage")).toBe("partial");
+    expect(blockersEmpty.textContent).not.toContain("No recorded blockers");
+    // The observation that did land still renders.
+    expect(container.querySelector('[data-testid="pull-request-markers"]')).not.toBeNull();
+  });
+
+  it("keeps explicit code completion distinct from unclassified and non-code done work", async () => {
+    const code = { ...issue({ id: "c", status: "done", title: "Code work" }), deliveryKind: "code" } as Issue;
+    const nonCode = {
+      ...issue({ id: "n", status: "done", title: "Non-code work" }),
+      deliveryKind: "non_code",
+    } as Issue;
+    await render(
+      baseProps({
+        issues: [code, nonCode, issue({ id: "u", status: "done", title: "Unknown work" })],
+      }),
+    );
+    const section = container.querySelector('[data-testid="project-operator-overview-completed"]')!;
+    const markerText = (state: string) =>
+      section
+        .querySelector(`li[data-completion-state="${state}"] [data-testid="project-operator-overview-completion"]`)!
+        .textContent;
+    const codeText = markerText("code_unverified");
+    const nonCodeText = markerText("non_code");
+    const unclassifiedText = markerText("unclassified");
+    expect(codeText).not.toBe(nonCodeText);
+    expect(codeText).not.toBe(unclassifiedText);
+    expect(nonCodeText).not.toBe(unclassifiedText);
+    expect(codeText).not.toMatch(/Merged/);
+    expect(codeText).not.toMatch(/not recorded/);
+  });
+
+  it("shows every recorded pull request state behind a bounded preview and disclosure", async () => {
+    const pullRequests: IssueOverviewPullRequest[] = [
+      { url: "https://git.example/r/pull/1", number: 1, repository: "r", state: "draft", updatedAt: null, stale: false },
+      { url: "https://git.example/r/pull/2", number: 2, repository: "r", state: "open", updatedAt: null, stale: true },
+      { url: "https://git.example/r/pull/3", number: 3, repository: "r", state: "closed", updatedAt: null, stale: false },
+      { url: "https://git.example/r/pull/4", number: 4, repository: "r", state: "merged", updatedAt: null, stale: false },
+      { url: null, number: null, repository: null, state: "unknown", updatedAt: null, stale: false },
+    ];
+    await render(
+      baseProps({
+        issues: [issue({ id: "a", status: "in_progress", title: "Many PRs" })],
+        overviewsById: new Map([["a", overview("a", { pullRequests })]]),
+      }),
+    );
+    const lanes = container.querySelector('[data-testid="project-operator-overview-lanes"]')!;
+    const markers = lanes.querySelector('[data-testid="pull-request-markers"]')!;
+    const overflow = markers.querySelector('[data-testid="pull-request-overflow"]')!;
+    expect(overflow.tagName).toBe("DETAILS");
+    expect(overflow.querySelector("summary")).not.toBeNull();
+    const states = [...markers.querySelectorAll("[data-pr-state]")]
+      .map((chip) => chip.getAttribute("data-pr-state"))
+      .sort();
+    expect(states).toEqual(["closed", "draft", "merged", "open", "unknown"]);
+    const disclosed = overflow.querySelectorAll("[data-pr-state]").length;
+    expect(disclosed).toBe(pullRequests.length - PROJECT_OPERATOR_PR_PREVIEW_LIMIT);
+    expect(markers.querySelectorAll("[data-pr-state]").length - disclosed).toBe(
+      PROJECT_OPERATOR_PR_PREVIEW_LIMIT,
+    );
+    const links = [...markers.querySelectorAll('a[target="_blank"]')];
+    expect(links.map((link) => link.getAttribute("href")).sort()).toEqual([
+      "https://git.example/r/pull/1",
+      "https://git.example/r/pull/2",
+      "https://git.example/r/pull/3",
+      "https://git.example/r/pull/4",
+    ]);
+    for (const link of links) expect(link.getAttribute("rel")).toContain("noreferrer");
+    expect(markers.querySelector('[data-pr-state="unknown"]')!.closest("a")).toBeNull();
+    expect(markers.querySelector('[data-pr-state="open"]')!.getAttribute("data-pr-stale")).toBe("true");
   });
 });

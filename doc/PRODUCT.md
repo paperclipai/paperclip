@@ -58,6 +58,15 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+The operator overview keeps that context on the working surface:
+
+- **Tasks / Kanban:** project and parent identity, named blockers, independent PR states, and hover/focus/tap inspection. Blocked work stays in its recorded workflow stage; an unknown stage is explicitly unrecorded, not guessed. Project swimlanes and outcome-only views retain access to subtasks.
+- **Dashboard / Decisions:** recorded outcomes, personal decisions, stuck work, next candidates, and project rollups precede optional engineering detail. Shared board gates remain shared; another user's assigned review is not your decision. Views do not grant resolution permission.
+- **Project overview:** current task records remain separate from generated summaries. Roadmap labels define Now/Next/Later only when recorded; otherwise Active/Ready/Backlog describes task state, not permission to begin operational work.
+- **Task detail:** the requested outcome, recorded result, remaining scope, and evidence appear above the transcript. Historical evidence does not make a cancelled or reopened task currently in progress.
+
+Task completion, a recorded PR merge, business acceptance, and operational readiness are distinct. Explicit non-code completion is not inferred from missing code evidence. Missing or stale detail remains visible, and observation time is not a fresh provider check.
+
 ### Company Skills and Policy
 
 Company skills are shared operating capabilities, not privileged objects by default. Every authenticated agent in a company can create, import, install, edit, update, test, reset, and remove that company's skills unless the company has configured an explicit restriction.

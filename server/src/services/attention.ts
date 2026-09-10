@@ -738,6 +738,7 @@ function recoveryActionProjection(item: AttentionItem, generation: AttentionReco
     cause: generation.cause,
     fingerprint: generation.fingerprint,
     ownerType: readString(metadata?.ownerType),
+    ownerUserId: readString(metadata?.ownerUserId),
     sourceIssueId: generation.sourceIssueId,
     recoveryIssueId: readString(metadata?.recoveryIssueId),
     sourceBlockedTransitionAt: generation.recordedBlockedTransitionAt,

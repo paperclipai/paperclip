@@ -8,7 +8,8 @@ import {
   isInventoryTruncated,
   normalizeDeliveryKind,
   PROJECT_OPERATOR_OVERVIEW_PAGE_SIZE,
-  pullRequestDedupKey,
+  resolveCompletionState,
+  resolveDeliveryCoverage,
   summarizeProjectOutcomes,
   summarizePullRequests,
   taskRoadmapBucket,
@@ -96,7 +97,8 @@ describe("roadmap lanes", () => {
       task({ id: "orphan", status: "todo", parentId: "missing" }),
     ]);
     const now = grouping.lanes[0];
-    expect(now.roots.map((r) => r.task.id).sort()).toEqual(["epic", "orphan"]);
+    expect(now.roots.map((r) => r.task.id)).toEqual(["epic"]);
+    expect(grouping.lanes[3].roots.map((r) => r.task.id)).toEqual(["orphan"]);
     expect(now.roots.find((r) => r.task.id === "epic")!.children.map((c) => c.id).sort()).toEqual([
       "child-1",
       "child-2",
@@ -279,6 +281,33 @@ describe("completed tasks", () => {
   });
 });
 
+describe("delivery coverage", () => {
+  it("only calls coverage complete after a successful observation", () => {
+    expect(resolveDeliveryCoverage({ pending: false, failed: false, observedAt: 0 })).toBe("unavailable");
+    expect(resolveDeliveryCoverage({ pending: true, failed: false, observedAt: 0 })).toBe("loading");
+    expect(resolveDeliveryCoverage({ pending: false, failed: true, observedAt: 0 })).toBe("unavailable");
+    expect(resolveDeliveryCoverage({ pending: false, failed: false, observedAt: 1730000000000 })).toBe("complete");
+  });
+
+  it("treats a failure after an earlier observation as partial, not unavailable", () => {
+    expect(resolveDeliveryCoverage({ pending: false, failed: true, observedAt: 1730000000000 })).toBe("partial");
+    expect(resolveDeliveryCoverage({ pending: true, failed: false, observedAt: 1730000000000 })).toBe("complete");
+  });
+});
+
+describe("completion state", () => {
+  it("keeps recorded code completion distinct from unclassified work", () => {
+    expect(resolveCompletionState({ merged: false, deliveryKind: "code" })).toBe("code_unverified");
+    expect(resolveCompletionState({ merged: false, deliveryKind: null })).toBe("unclassified");
+    expect(resolveCompletionState({ merged: false, deliveryKind: "non_code" })).toBe("non_code");
+  });
+
+  it("lets a verified merge outrank the recorded delivery kind", () => {
+    expect(resolveCompletionState({ merged: true, deliveryKind: "code" })).toBe("merged");
+    expect(resolveCompletionState({ merged: true, deliveryKind: null })).toBe("merged");
+  });
+});
+
 describe("pull requests and bounds", () => {
   function pr(overrides: Partial<IssueOverviewPullRequest> = {}): IssueOverviewPullRequest {
     return {
@@ -304,11 +333,6 @@ describe("pull requests and bounds", () => {
     ).toEqual({ total: 3, open: 1, merged: 1, closedUnmerged: 1, unknown: 0 });
   });
 
-  it("builds stable dedup keys preferring URL then repo and number", () => {
-    expect(pullRequestDedupKey("a", 0, pr({ url: "u" }))).toBe("url:u");
-    expect(pullRequestDedupKey("a", 0, pr({ repository: "r", number: 3 }))).toBe("repo:r#3");
-    expect(pullRequestDedupKey("a", 2, pr())).toBe("task:a#2");
-  });
 
   it("normalizes delivery kind with unclassified null", () => {
     expect(normalizeDeliveryKind("code")).toBe("code");

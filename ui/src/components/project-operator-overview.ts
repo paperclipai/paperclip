@@ -19,6 +19,11 @@ import type { IssueOverview, IssueOverviewPullRequest } from "@paperclipai/share
  *   PR sync timestamps are not candidate order, so PR chips stay independent.
  * - Missing merge evidence never proves non-code work; unclassified done
  *   tasks say exactly that. Only explicit non-code delivery kind reads plain.
+ *   A done task recorded as code without a verified merge reads exactly that:
+ *   code completion, merge unverified.
+ * - Delivery coverage is explicit. Loading, partial, and unavailable detail
+ *   never render as a confirmed zero or a complete count; only a successful
+ *   observation does.
  * - "Needs decision" comes only from canonical awaiting-decision attention.
  *   Stalled reviews and blocking findings are informational, never auto-read
  *   as a human decision.
@@ -44,6 +49,13 @@ export const PROJECT_OPERATOR_OVERVIEW_PAGE_SIZE = 500;
 export const PROJECT_OPERATOR_LANE_ROW_LIMIT = 6;
 export const PROJECT_OPERATOR_BLOCKER_ROW_LIMIT = 5;
 export const PROJECT_OPERATOR_COMPLETED_ROW_LIMIT = 5;
+
+/**
+ * Pull-request chips shown inline before the remaining entries move into the
+ * row's disclosure. Small on purpose: the row stays scannable while every
+ * recorded PR stays reachable one tap or keypress away.
+ */
+export const PROJECT_OPERATOR_PR_PREVIEW_LIMIT = 2;
 
 /** Minimal linkable task reference for the view layer. */
 export interface OperatorTaskRef {
@@ -123,6 +135,32 @@ export function isTerminalTaskStatus(status: string): boolean {
  */
 export function normalizeDeliveryKind(value: unknown): "code" | "non_code" | null {
   return value === "code" || value === "non_code" ? value : null;
+}
+
+/**
+ * How much delivery detail is actually in hand behind the snapshot.
+ *
+ * - `complete` needs a successful observation; only then may the snapshot
+ *   state a definitive total or an empty "no blockers" result.
+ * - `partial` is a failure after an earlier observation: the loaded rows are
+ *   real, anything newer may be missing.
+ * - `unavailable` is nothing observed (failed, disabled, or never requested).
+ * - `loading` is a first load still in flight.
+ *
+ * Loading, partial, and unavailable are all non-answers and must never render
+ * as a confirmed zero or a complete count.
+ */
+export type OperatorDeliveryCoverage = "complete" | "loading" | "partial" | "unavailable";
+
+export function resolveDeliveryCoverage(args: {
+  pending: boolean;
+  failed: boolean;
+  /** Observation time of the loaded detail. 0 when never loaded. */
+  observedAt: number;
+}): OperatorDeliveryCoverage {
+  if (args.failed) return args.observedAt > 0 ? "partial" : "unavailable";
+  if (args.observedAt > 0) return "complete";
+  return args.pending ? "loading" : "unavailable";
 }
 
 function priorityRank(priority: string): number {
@@ -399,6 +437,31 @@ export interface OperatorCompletedTask {
   merged: boolean;
   artifactReady: boolean;
   pullRequests: IssueOverviewPullRequest[];
+}
+
+/**
+ * How a done task's recorded completion reads.
+ *
+ * - `merged`: the delivery record's merged phase plus a merge timestamp.
+ * - `non_code`: explicit non-code delivery kind — a recorded completion that
+ *   never claims a merge.
+ * - `code_unverified`: explicit code delivery kind without a verified current
+ *   merge. Distinct from unclassified on purpose: the work is recorded as
+ *   code, only the merge is unproven.
+ * - `unclassified`: no recorded delivery kind. Absence of merge evidence is
+ *   not evidence of non-code work.
+ *
+ * Merge verification outranks the recorded kind; PR state never decides here.
+ */
+export type OperatorCompletionState = "merged" | "non_code" | "code_unverified" | "unclassified";
+
+export function resolveCompletionState(
+  completed: Pick<OperatorCompletedTask, "merged" | "deliveryKind">,
+): OperatorCompletionState {
+  if (completed.merged) return "merged";
+  if (completed.deliveryKind === "non_code") return "non_code";
+  if (completed.deliveryKind === "code") return "code_unverified";
+  return "unclassified";
 }
 
 /**

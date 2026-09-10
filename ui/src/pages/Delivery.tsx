@@ -362,7 +362,7 @@ export function Delivery() {
   const projects = useMemo(() => projectsQuery.data ?? [], [projectsQuery.data]);
   const queueGroups = useMemo(
     () => groupDeliveryQueues((deliveryQuery.data?.items ?? []).filter(
-      (item) => item.codeDelivery && item.unitId !== null && item.phase !== "done" && item.phase !== "cancelled",
+      (item) => item.codeDelivery && item.unitId !== null && item.phase !== "done",
     )),
     [deliveryQuery.data],
   );

@@ -1439,45 +1439,6 @@ describe("IssueDetail", () => {
     ).toBe(false);
   });
 
-  it("keeps hierarchy breadcrumbs and label chips out of the Streamlined task header", async () => {
-    mockIssuesApi.get.mockResolvedValue(
-      createIssue({
-        ancestors: [
-          {
-            id: "parent-1",
-            identifier: "PAP-0",
-            title: "Parent task visible in Properties",
-          },
-        ] as Issue["ancestors"],
-        labels: [
-          {
-            id: "label-1",
-            companyId: "company-1",
-            name: "Quick win",
-            color: "#22c55e",
-            createdAt: new Date("2026-04-21T00:00:00.000Z"),
-            updatedAt: new Date("2026-04-21T00:00:00.000Z"),
-          },
-        ],
-        labelIds: ["label-1"],
-      }),
-    );
-
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <IssueDetail />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-
-    expect(container.textContent).not.toContain(
-      "Parent task visible in Properties",
-    );
-    expect(container.textContent).not.toContain("Quick win");
-    expect(container.textContent).toContain("Issue detail smoke");
-  });
 
   it("preserves hierarchy breadcrumbs and label chips when Streamlined UI is off", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({

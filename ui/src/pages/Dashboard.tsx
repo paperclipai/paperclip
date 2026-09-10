@@ -31,13 +31,14 @@ import {
   deriveNextCandidates,
   deriveProjectRollups,
   deriveStuckTasks,
+  describeDecisionPreviewCoverage,
   describeOperatorInventory,
-  filterDecisionView,
   loadOperatorLastVisit,
   loadOperatorTimeWindow,
   recordOperatorVisit,
   resolveOperatorWindow,
   saveOperatorTimeWindow,
+  scanDecisionPreview,
   type OperatorTimeWindowId,
 } from "../lib/operator-dashboard";
 import { MetricCard } from "../components/MetricCard";
@@ -57,7 +58,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { Card } from "@/components/ui/card";
 import { Button } from "../components/ui/button";
 import { InlineBanner } from "../components/InlineBanner";
-import type { Agent, DashboardSummary, Issue } from "@paperclipai/shared";
+import type { Agent, AttentionItem, DashboardSummary, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
 import {
@@ -319,15 +320,30 @@ export function Dashboard() {
     enabled: !!selectedCompanyId,
   });
 
-  // Decisions preview: the server-ranked top of the attention feed plus the
-  // company-wide counts, so the preview links out with honest numbers.
+  // Decisions preview: the server ranks the whole attention feed before it
+  // paginates, so the viewer's own gates can sit below the first page. Read
+  // bounded pages until the quota is filled or the budget runs out, and carry
+  // the scan's scope into the section so a partial read never reads as an
+  // all-clear.
   const decisionPreviewQuery = useQuery({
-    queryKey: [...queryKeys.attention(selectedCompanyId!), "operator-preview"] as const,
-    queryFn: () => attentionApi.list(selectedCompanyId!, { limit: OPERATOR_DECISION_PREVIEW_LIMIT }),
+    queryKey: [
+      ...queryKeys.attention(selectedCompanyId!),
+      "operator-preview",
+      currentUserId ?? "signed-out",
+    ] as const,
+    queryFn: () =>
+      scanDecisionPreview<AttentionItem>(
+        (cursor) =>
+          attentionApi.list(selectedCompanyId!, {
+            limit: OPERATOR_DECISION_PREVIEW_LIMIT,
+            cursor: cursor ?? undefined,
+          }),
+        currentUserId,
+      ),
     enabled: !!selectedCompanyId,
     refetchOnWindowFocus: true,
   });
-  const decisionPreview = decisionPreviewQuery.data;
+  const decisionPreviewScan = decisionPreviewQuery.data;
 
   const decidedPreviewQuery = useQuery({
     queryKey: [...queryKeys.decisions.list(selectedCompanyId!, "decided"), "operator"] as const,
@@ -443,10 +459,14 @@ export function Dashboard() {
 
   // The preview shows the viewer's own gates only, resolved by actual
   // audience/ownership — never every attention row under a personal label.
-  const previewMineItems = useMemo(() => {
-    if (!decisionPreview) return [];
-    return filterDecisionView(decisionPreview.items, "mine", currentUserId);
-  }, [decisionPreview, currentUserId]);
+  const previewMineItems = useMemo(
+    () => (decisionPreviewScan?.items ?? []).slice(0, OPERATOR_DECISION_PREVIEW_LIMIT),
+    [decisionPreviewScan],
+  );
+  const decisionPreviewCoverage = useMemo(
+    () => (decisionPreviewScan ? describeDecisionPreviewCoverage(decisionPreviewScan) : null),
+    [decisionPreviewScan],
+  );
 
   const decidedByLabel = useMemo(() => {
     return (userId: string | null): string | null => {
@@ -669,7 +689,8 @@ export function Dashboard() {
             <NeedsDecisionSection
               companyId={selectedCompanyId!}
               items={previewMineItems}
-              totalOpenCount={decisionPreview?.totalCount ?? previewMineItems.length}
+              totalOpenCount={decisionPreviewScan?.totalCount ?? previewMineItems.length}
+              coverage={decisionPreviewCoverage}
               agentMap={agentMap}
               agents={agents}
               currentUserId={currentUserId}

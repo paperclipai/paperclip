@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ChevronRight,
   ExternalLink,
+  Eye,
   GitPullRequest,
   GripVertical,
 } from "lucide-react";
@@ -16,6 +17,7 @@ import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Identity } from "./Identity";
 import { ProjectTile } from "./ProjectTile";
+import { IssuesQuicklook } from "./IssuesQuicklook";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { brandChipBadge, issueStatusText } from "../lib/status-colors";
 import {
@@ -120,7 +122,8 @@ function PullRequestChips({
             className="max-w-full gap-1 border-border px-1.5 text-(length:--text-nano) font-medium text-muted-foreground"
             title={title}
           >
-            <span className="max-w-28 truncate">{prDisplayRef(pr)}</span>
+            {pr.repository ? <span className="min-w-0 max-w-20 truncate">{pr.repository}</span> : null}
+            <span className="shrink-0">{pr.number !== null ? `#${pr.number}` : "PR"}</span>
             <span className="shrink-0">{prStateLabel(pr.state)}</span>
             {pr.stale ? <span className="shrink-0">stale</span> : null}
           </Badge>
@@ -224,7 +227,6 @@ export function KanbanOperatorCardView({
       data-testid="kanban-card"
       data-issue-id={issue.id}
       title={!dragEnabled && dragDisabledReason ? dragDisabledReason : undefined}
-      aria-disabled={!dragEnabled || undefined}
       className={cn(
         "block transition-shadow",
         dimmed ? "opacity-30" : "",
@@ -249,6 +251,19 @@ export function KanbanOperatorCardView({
         <span className="shrink-0 font-mono text-xs text-muted-foreground">
           {issue.identifier ?? issue.id.slice(0, 8)}
         </span>
+        {!quicklookDisabled && !isOverlay ? (
+          <IssuesQuicklook issue={issue}>
+            <button
+              type="button"
+              aria-label={`Inspect ${issue.identifier ?? "task"}`}
+              title="Inspect task without leaving the board"
+              onPointerDown={(event) => event.stopPropagation()}
+              className="ml-auto shrink-0 rounded-sm p-1 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Eye className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </IssuesQuicklook>
+        ) : null}
         {isSuccessfulRunHandoffRequired(issue) ? (
           <Badge
             variant="outline"

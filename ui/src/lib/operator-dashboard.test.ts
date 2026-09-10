@@ -8,16 +8,20 @@ import {
   deriveNextCandidates,
   deriveProjectRollups,
   deriveStuckTasks,
+  describeDecisionPreviewCoverage,
   describeOperatorInventory,
   filterDecisionView,
   loadOperatorDecisionView,
   loadOperatorLastVisit,
   loadOperatorTimeWindow,
+  OPERATOR_DECISION_PREVIEW_LIMIT,
+  OPERATOR_DECISION_PREVIEW_MAX_PAGES,
   OPERATOR_ISSUE_LOAD_LIMIT,
   recordOperatorVisit,
   resolveOperatorWindow,
   saveOperatorDecisionView,
   saveOperatorTimeWindow,
+  scanDecisionPreview,
 } from "./operator-dashboard";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -263,14 +267,18 @@ describe("deriveStuckTasks", () => {
     projectNameById: new Map([["project-1", "Atlas"]]),
   };
 
-  it("prefers the blocker message, then named blockers, then samples", () => {
+  it("prefers the blocker message over named blockers and preserves named fallback", () => {
     const rows = [
       issue({
         id: "a",
         status: "blocked",
         blockedBy: [{ id: "x", identifier: "PAP-9", title: "Upstream" }] as Issue["blockedBy"],
       }),
-      issue({ id: "b", status: "blocked" }),
+      issue({
+        id: "b",
+        status: "blocked",
+        blockedBy: [{ id: "x", identifier: "PAP-9", title: "Upstream" }] as Issue["blockedBy"],
+      }),
     ];
     const byId = new Map<string, IssueOverview>([
       ["a", overview({ issueId: "a", blocker: { message: "Waiting on vendor", ownerLabel: null, nextAction: null, issues: [] } })],
@@ -477,10 +485,6 @@ describe("decision views", () => {
     });
     expect(attentionItemDecisionViews(ownedRecovery, null).has("mine")).toBe(true);
     expect(attentionItemDecisionViews(ownedRecovery, null).has("fixing")).toBe(true);
-    const humanReview = attentionItem("review", {
-      subject: { ...attentionItem("review").subject, metadata: { ownerType: "user", ownerUserId: "user-1" } },
-    });
-    expect(attentionItemDecisionViews(humanReview, null).has("mine")).toBe(true);
     const humanBlocker = attentionItem("blocker_attention", {
       subject: { ...attentionItem("blocker_attention").subject, metadata: { ownerType: "board" } },
     });
@@ -490,6 +494,71 @@ describe("decision views", () => {
       entryRule: "human reviewer, user assignee, or linked pending approval",
     });
     expect(attentionItemDecisionViews(stalledReview, null).has("mine")).toBe(false);
+  });
+
+  it("claims a user-owned gate only for the user it is assigned to", () => {
+    const review = attentionItem("review", {
+      subject: {
+        ...attentionItem("review").subject,
+        metadata: { ownerType: "user", ownerUserId: "user-1" },
+      },
+    });
+    expect(attentionItemDecisionViews(review, "user-1").has("mine")).toBe(true);
+    // Another user's review is not this viewer's decision, and an unloaded
+    // viewer claims nothing by default.
+    expect(attentionItemDecisionViews(review, "user-2").has("mine")).toBe(false);
+    expect(attentionItemDecisionViews(review, null).has("mine")).toBe(false);
+    expect(attentionItemDecisionViews(review, "user-2").has("all")).toBe(true);
+  });
+
+  it("keeps board gates shared and reads folded recovery ownership", () => {
+    const boardGate = attentionItem("blocker_attention", {
+      subject: {
+        ...attentionItem("blocker_attention").subject,
+        metadata: { ownerType: "board", ownerUserId: null },
+      },
+    });
+    expect(attentionItemDecisionViews(boardGate, "user-2").has("mine")).toBe(true);
+    // A dependency row that absorbed a recovery action keeps the action's
+    // ownership under `metadata.recoveryAction`.
+    const folded = attentionItem("blocker_attention", {
+      subject: {
+        ...attentionItem("blocker_attention").subject,
+        metadata: {
+          recoveryAction: {
+            id: "recovery-user-1",
+            href: "/issues/source",
+            status: "active",
+            nextAction: "Inspect the failed candidate",
+            kind: "missing_disposition",
+            cause: "successful_run_missing_state",
+            fingerprint: "source-generation",
+            ownerType: "user",
+            ownerUserId: "user-1",
+            sourceIssueId: "source",
+            recoveryIssueId: null,
+            sourceBlockedTransitionAt: "2026-09-09T00:00:00Z",
+          },
+        },
+      },
+      dedupKey: "blocker:folded",
+    });
+    expect(attentionItemDecisionViews(folded, "user-1").has("mine")).toBe(true);
+    expect(attentionItemDecisionViews(folded, "user-2").has("mine")).toBe(false);
+    const foldedAgent = attentionItem("blocker_attention", {
+      subject: {
+        ...attentionItem("blocker_attention").subject,
+        metadata: {
+          recoveryAction: {
+            ...folded.subject.metadata!.recoveryAction!,
+            ownerType: "agent",
+            ownerUserId: null,
+          },
+        },
+      },
+      dedupKey: "blocker:folded-agent",
+    });
+    expect(attentionItemDecisionViews(foldedAgent, "user-1").has("mine")).toBe(false);
   });
 
   it("routes provisioning to setup alongside the verdict views", () => {
@@ -539,5 +608,99 @@ describe("decision views", () => {
     saveOperatorDecisionView("c1", "setup");
     expect(loadOperatorDecisionView("c1")).toBe("setup");
     expect(loadOperatorDecisionView("c2")).toBe("all");
+  });
+});
+
+describe("scanDecisionPreview", () => {
+  function systemRows(page: number): AttentionItem[] {
+    return Array.from({ length: OPERATOR_DECISION_PREVIEW_LIMIT }, (_, index) =>
+      attentionItem("failed_run", { id: `system-${page}-${index}` }),
+    );
+  }
+
+  function actorGate(id: string, userId: string): AttentionItem {
+    return attentionItem("review", {
+      id,
+      subject: {
+        ...attentionItem("review").subject,
+        metadata: { ownerType: "user", ownerUserId: userId },
+      },
+    });
+  }
+
+  it("reads past a system-owned first page to the viewer's gate", async () => {
+    const pages: Array<{ items: AttentionItem[]; totalCount: number; nextCursor: string | null }> = [
+      { items: systemRows(1), totalCount: 13, nextCursor: "cursor-2" },
+      {
+        items: [...systemRows(2).slice(0, 5), actorGate("review-owns", "user-1")],
+        totalCount: 13,
+        nextCursor: null,
+      },
+    ];
+    const requested: Array<string | null> = [];
+    const scan = await scanDecisionPreview(async (cursor) => {
+      requested.push(cursor);
+      return pages[requested.length - 1]!;
+    }, "user-1");
+
+    expect(requested).toEqual([null, "cursor-2"]);
+    expect(scan.items.map((item) => item.id)).toEqual(["review-owns"]);
+    expect(scan.scannedCount).toBe(12);
+    expect(scan.totalCount).toBe(13);
+    expect(describeDecisionPreviewCoverage(scan).partial).toBe(false);
+  });
+
+  it("stops at the page budget and reports the unread remainder", async () => {
+    const requested: Array<string | null> = [];
+    const scan = await scanDecisionPreview(async (cursor) => {
+      requested.push(cursor);
+      return { items: systemRows(requested.length), totalCount: 40, nextCursor: `cursor-${requested.length + 1}` };
+    }, "user-1");
+
+    expect(requested).toHaveLength(OPERATOR_DECISION_PREVIEW_MAX_PAGES);
+    expect(scan.items).toHaveLength(0);
+    const coverage = describeDecisionPreviewCoverage(scan);
+    expect(coverage.partial).toBe(true);
+    expect(coverage.scannedCount).toBe(OPERATOR_DECISION_PREVIEW_LIMIT * OPERATOR_DECISION_PREVIEW_MAX_PAGES);
+    expect(coverage.note).toContain(`${OPERATOR_DECISION_PREVIEW_LIMIT * OPERATOR_DECISION_PREVIEW_MAX_PAGES}`);
+    expect(coverage.note).toContain("not scanned");
+  });
+
+  it("stops as soon as the viewer's quota is filled", async () => {
+    let requests = 0;
+    const gate = actorGate("review-owns", "user-1");
+    const scan = await scanDecisionPreview(async () => {
+      requests += 1;
+      return {
+        items: [gate, gate, gate, gate, gate, gate],
+        totalCount: 30,
+        nextCursor: "cursor-2",
+      };
+    }, "user-1");
+
+    expect(requests).toBe(1);
+    expect(scan.items).toHaveLength(OPERATOR_DECISION_PREVIEW_LIMIT);
+    const coverage = describeDecisionPreviewCoverage(scan);
+    expect(coverage.partial).toBe(true);
+    expect(coverage.note).not.toContain("not scanned");
+  });
+
+  it("excludes another user's gate while keeping board gates", async () => {
+    const scan = await scanDecisionPreview(async () => ({
+      items: [
+        actorGate("review-other", "user-2"),
+        attentionItem("blocker_attention", {
+          id: "board-gate",
+          subject: {
+            ...attentionItem("blocker_attention").subject,
+            metadata: { ownerType: "board", ownerUserId: null },
+          },
+        }),
+      ],
+      totalCount: 2,
+      nextCursor: null,
+    }), "user-1");
+
+    expect(scan.items.map((item) => item.id)).toEqual(["board-gate"]);
   });
 });

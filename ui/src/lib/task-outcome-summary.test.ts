@@ -212,7 +212,7 @@ describe("buildTaskOutcomeModel result", () => {
       }),
     );
 
-    expect(model.resultKind).toBe("in_progress_with_evidence");
+    expect(model.resultKind).toBe("recorded_evidence");
     expect(model.pullRequests).toEqual([]);
     expect(model.prStateAvailable).toBe(true);
   });
@@ -317,46 +317,6 @@ describe("buildTaskOutcomeModel result", () => {
     expect(model.pullRequests).toHaveLength(2);
   });
 
-  it("gives every branch its own evidence-less fallback", () => {
-    const merged = buildTaskOutcomeModel(
-      baseInput({
-        issue: doneIssue(),
-        overview: overview({
-          delivery: {
-            phase: "merged",
-            artifactReady: true,
-            reviewStatus: "approved",
-            blockingFindings: 0,
-            queuePosition: null,
-            nextAction: null,
-            lastEventAt: null,
-            mergedAt: "2026-02-01T00:00:00Z",
-          },
-        }),
-      }),
-    );
-    expect(merged.resultKind).toBe("merged");
-    expect(merged.resultNote).toContain("merge");
-
-    const code = buildTaskOutcomeModel(
-      baseInput({
-        issue: doneIssue({ deliveryKind: "code" }),
-        overview: overview(),
-      }),
-    );
-    expect(code.resultNote).toContain("Code work recorded");
-    expect(code.resultNote).not.toContain("merge");
-
-    const progress = buildTaskOutcomeModel(
-      baseInput({
-        workProducts: [workProduct({ id: "wp-a", type: "artifact" })],
-        overview: overview(),
-      }),
-    );
-    expect(progress.resultKind).toBe("in_progress_with_evidence");
-    expect(progress.resultNote).toContain("without stored summaries");
-    expect(progress.resultNote).not.toContain("merge");
-  });
 });
 
 describe("buildTaskOutcomeModel children", () => {

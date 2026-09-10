@@ -44,13 +44,12 @@ export function resolveCardPhase(
   issue: Issue,
   overview: IssueOverview | undefined,
 ): KanbanPhase | null {
-  if (overview) return overview.phase;
-  return issue.status === "blocked" ? null : issue.status;
+  if (issue.status !== "blocked" && !overview?.blocked) return issue.status;
+  return overview?.phase ?? null;
 }
 
 export function isCardBlocked(issue: Issue, overview: IssueOverview | undefined): boolean {
-  if (overview) return overview.blocked;
-  return issue.status === "blocked";
+  return issue.status === "blocked" || overview?.blocked === true;
 }
 
 export function resolveCardProject(
@@ -155,7 +154,7 @@ export function prStateLabel(state: IssueOverviewPullRequest["state"]): string {
   }
 }
 
-/** Compact direct-link label: `repo#123`, `#123`, or bare `PR` when unknown. */
+/** Compact direct-link label: repository and PR number, or bare PR when unknown. */
 export function prDisplayRef(pr: IssueOverviewPullRequest): string {
   const number = pr.number != null ? `#${pr.number}` : "PR";
   return pr.repository ? `${pr.repository}${number}` : number;

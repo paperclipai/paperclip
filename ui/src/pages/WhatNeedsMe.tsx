@@ -6,12 +6,13 @@ import { useNavigate, useSearchParams } from "@/lib/router";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
-import { decisionsApi } from "../api/decisions";
+import { decisionsApi, type DecisionOutcome, type DecisionStatus } from "../api/decisions";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { useInboxDismissals } from "../hooks/useInboxBadge";
 import { queryKeys } from "../lib/queryKeys";
+import { cn } from "../lib/utils";
 import {
   ATTENTION_AGING_DAYS,
   attentionIsAging,
@@ -80,6 +81,80 @@ export function decisionHistoryCount(count: number | undefined) {
   return count > DECISION_HISTORY_VISIBLE_LIMIT ? `${DECISION_HISTORY_VISIBLE_LIMIT}+` : count;
 }
 
+
+export type DecisionDeepLinkResolution =
+  /** Still loading: neither the open feed nor the canonical record has settled. */
+  | { kind: "pending" }
+  /** The decision is still an open gate in the attention feed. */
+  | { kind: "open"; attentionItemId: string }
+  /** The decision is terminal and belongs to the named history curtain. */
+  | { kind: "history"; decisionId: string; status: "decided" | "expired" }
+  | { kind: "unavailable"; reason: "error" | "unlisted" };
+
+/**
+ * What `?decisionId=` resolves to. The open attention feed is searched first (a
+ * gate can still be waiting there), then the canonical decision record decides
+ * which terminal curtain owns it — the open feed never carries decided rows, so
+ * a recently-decided link can only be honoured from history.
+ */
+export function resolveDecisionDeepLink(input: {
+  decisionId: string;
+  /** Attention row id when the open feed already carries this decision. */
+  openAttentionItemId: string | null;
+  /** Canonical decision record, undefined while it is still loading. */
+  detail: { status: DecisionStatus } | null | undefined;
+  detailError: Error | null;
+}): DecisionDeepLinkResolution {
+  if (input.openAttentionItemId) return { kind: "open", attentionItemId: input.openAttentionItemId };
+  if (input.detail) {
+    if (input.detail.status === "decided" || input.detail.status === "expired") {
+      return { kind: "history", decisionId: input.decisionId, status: input.detail.status };
+    }
+    return { kind: "unavailable", reason: "unlisted" };
+  }
+  if (input.detailError) return { kind: "unavailable", reason: "error" };
+  return { kind: "pending" };
+}
+
+/**
+ * One terminal-history row. Its wrapper is the focus target for a `?decisionId=`
+ * deep link, so the linked result can be scrolled to, focused and marked
+ * instead of only opening the generic queue.
+ */
+function DecisionHistoryRow({
+  decision,
+  companyId,
+  agentMap,
+  focused,
+  onReady,
+}: {
+  decision: DecisionOutcome;
+  companyId: string;
+  agentMap: Map<string, Agent>;
+  focused: boolean;
+  onReady?: (element: HTMLDivElement | null) => void;
+}) {
+  return (
+    <div
+      ref={onReady}
+      id={`decision-history-${decision.id}`}
+      tabIndex={-1}
+      aria-current={focused ? "true" : undefined}
+      className={cn(
+        "rounded-lg focus:outline-none",
+        focused && "ring-2 ring-primary/60 ring-offset-2 ring-offset-background",
+      )}
+    >
+      <DecisionResolver
+        companyId={companyId}
+        decisionId={decision.id}
+        agentMap={agentMap}
+        initialDecision={decision}
+      />
+    </div>
+  );
+}
+
 function findScrollContainer(element: HTMLElement | null): HTMLElement | null {
   if (!element || typeof window === "undefined") return null;
   let current = element.parentElement;
@@ -125,7 +200,8 @@ export function WhatNeedsMe() {
   // `?decisionId=` deep link (PAP-16032 §4.7) — focus/expand the referenced card.
   const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkDecisionId = searchParams.get("decisionId");
-  const [deepLinkConsumed, setDeepLinkConsumed] = useState(false);
+  /** The history row a deep link actually opened, kept marked after the param goes. */
+  const [deepLinkFocusedId, setDeepLinkFocusedId] = useState<string | null>(null);
   const requestedView = searchParams.get("view");
   const decisionView = useMemo<OperatorDecisionView>(() => {
     if (requestedView === "all" || requestedView === "mine" || requestedView === "fixing" || requestedView === "setup") {
@@ -158,6 +234,7 @@ export function WhatNeedsMe() {
   useEffect(() => {
     setFilters(loadAttentionFilters(selectedCompanyId));
     setCollapsedGroupKeys(loadCollapsedAttentionGroupKeys(selectedCompanyId));
+    setDeepLinkFocusedId(null);
   }, [selectedCompanyId]);
 
   const {
@@ -382,30 +459,111 @@ export function WhatNeedsMe() {
     document.getElementById(`attention-row-${selectedAttentionId}`)?.scrollIntoView({ block: "nearest" });
   }, [selectedAttentionId]);
 
-  // `?decisionId=` deep link (§4.7): focus and expand the referenced decision
-  // card once the feed lands, then drop the param so a later manual collapse is
-  // not re-forced on the next refetch. Wins over the generic auto-expand below.
-  useEffect(() => {
-    if (deepLinkConsumed || !deepLinkDecisionId || allItems.length === 0) return;
-    const target = allItems.find(
+  // `?decisionId=` deep link (§4.7): an open gate is focused in place; a decided
+  // or expired one is loaded from the canonical record — the open feed never
+  // carries terminal rows, and the history queries stay disabled until their
+  // curtain opens — then its row is opened and focused. The parameter is
+  // dropped only for a target that actually resolves.
+  const deepLinkOpenItem = useMemo(() => {
+    if (!deepLinkDecisionId) return null;
+    return feedItems.find(
       (item) => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId,
-    );
-    setDeepLinkConsumed(true);
-    setAutoExpandDone(true);
-    if (target) {
-      setExpandedId(target.id);
-      setSelectedAttentionId(target.id);
-      setSelectionFromKeyboard(true);
+    ) ?? null;
+  }, [feedItems, deepLinkDecisionId]);
+  const deepLinkOpenAttentionItemId = deepLinkOpenItem?.id ?? null;
+
+  const addressedDecisionId = deepLinkDecisionId ?? deepLinkFocusedId;
+  const deepLinkDetailQuery = useQuery({
+    queryKey: queryKeys.decisions.detail(addressedDecisionId ?? ""),
+    queryFn: () => decisionsApi.get(addressedDecisionId!),
+    enabled: Boolean(addressedDecisionId) && Boolean(selectedCompanyId) && deepLinkOpenAttentionItemId === null,
+    staleTime: 30_000,
+  });
+
+  const deepLinkResolution = useMemo<DecisionDeepLinkResolution>(
+    () =>
+      deepLinkDecisionId
+        ? resolveDecisionDeepLink({
+            decisionId: deepLinkDecisionId,
+            openAttentionItemId: deepLinkOpenAttentionItemId,
+            detail: deepLinkDetailQuery.data ?? undefined,
+            detailError: deepLinkDetailQuery.error ?? null,
+          })
+        : { kind: "pending" },
+    [deepLinkDecisionId, deepLinkOpenAttentionItemId, deepLinkDetailQuery.data, deepLinkDetailQuery.error],
+  );
+
+  const consumeDeepLink = useCallback(
+    (openInAllView: boolean) => {
       setSearchParams(
         (prev) => {
           const next = new URLSearchParams(prev);
           next.delete("decisionId");
+          if (openInAllView) next.set("view", "all");
           return next;
         },
         { replace: true },
       );
+    },
+    [setSearchParams],
+  );
+
+  useEffect(() => {
+    if (deepLinkResolution.kind === "open") {
+      setExpandedId(deepLinkResolution.attentionItemId);
+      setSelectedAttentionId(deepLinkResolution.attentionItemId);
+      setSelectionFromKeyboard(true);
+      setAutoExpandDone(true);
+      // An idle gate lives in the collapsed aging shelf, so the linked row has
+      // to be on screen before the focus/scroll effect can reach it.
+      if (deepLinkOpenItem && attentionIsAging(deepLinkOpenItem)) setAgingOpen(true);
+      consumeDeepLink(decisionView !== "all");
+      return;
     }
-  }, [allItems, deepLinkConsumed, deepLinkDecisionId, setSearchParams]);
+    if (deepLinkResolution.kind === "history") {
+      // The desk's generic auto-expand must not compete with the linked result.
+      setAutoExpandDone(true);
+      if (deepLinkResolution.status === "decided") setDecidedOpen(true);
+      else setExpiredOpen(true);
+    }
+  }, [consumeDeepLink, decisionView, deepLinkOpenItem, deepLinkResolution]);
+
+  // A decided/expired link can point past the rendered history window, so the
+  // record the detail query loaded is prepended when the list does not carry it.
+  const deepLinkHistoryDecision = useMemo<DecisionOutcome | null>(() => {
+    const decision = deepLinkDetailQuery.data;
+    if (!decision || decision.companyId !== selectedCompanyId) return null;
+    if (decision.status !== "decided" && decision.status !== "expired") return null;
+    return { ...decision, executions: decision.executions ?? [] };
+  }, [deepLinkDetailQuery.data, selectedCompanyId]);
+
+  const decidedHistoryRows = useMemo<DecisionOutcome[]>(() => {
+    const loaded = (decidedDecisions ?? [])
+      .slice(0, DECISION_HISTORY_VISIBLE_LIMIT)
+      .map((decision) => ({ ...decision, executions: decision.executions ?? [] }));
+    if (!deepLinkHistoryDecision || deepLinkHistoryDecision.status !== "decided") return loaded;
+    if (loaded.some((row) => row.id === deepLinkHistoryDecision.id)) return loaded;
+    return [deepLinkHistoryDecision, ...loaded].slice(0, DECISION_HISTORY_VISIBLE_LIMIT);
+  }, [decidedDecisions, deepLinkHistoryDecision]);
+
+  const expiredHistoryRows = useMemo<DecisionOutcome[]>(() => {
+    const loaded = (expiredDecisions ?? [])
+      .slice(0, DECISION_HISTORY_VISIBLE_LIMIT)
+      .map((decision) => ({ ...decision, executions: decision.executions ?? [] }));
+    if (!deepLinkHistoryDecision || deepLinkHistoryDecision.status !== "expired") return loaded;
+    if (loaded.some((row) => row.id === deepLinkHistoryDecision.id)) return loaded;
+    return [deepLinkHistoryDecision, ...loaded].slice(0, DECISION_HISTORY_VISIBLE_LIMIT);
+  }, [deepLinkHistoryDecision, expiredDecisions]);
+
+  // Collapsible content mounts after the parent effect. Focus the actual row
+  // through its ref, not a prediction that its data is ready to render.
+  const focusLinkedHistoryRow = useCallback((element: HTMLDivElement | null) => {
+    if (!element || deepLinkResolution.kind !== "history") return;
+    element.scrollIntoView({ block: "center" });
+    element.focus({ preventScroll: true });
+    setDeepLinkFocusedId(deepLinkResolution.decisionId);
+    consumeDeepLink(false);
+  }, [consumeDeepLink, deepLinkResolution]);
 
   // Auto-expand the topmost inline-capable decision, once.
   useEffect(() => {
@@ -600,6 +758,35 @@ export function WhatNeedsMe() {
 
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
 
+      {deepLinkResolution.kind === "unavailable" && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2.5"
+        >
+          <p className="text-xs text-muted-foreground">
+            {deepLinkResolution.reason === "error"
+              ? "Could not load the linked decision."
+              : deepLinkDetailQuery.data?.status === "open"
+                ? "That decision is still open, but it is not in the queue you are looking at — it may fall outside the date range or the active filters."
+                : "That decision has no recorded result to open."}
+          </p>
+          <span className="flex shrink-0 items-center gap-2">
+            {deepLinkResolution.reason === "error" ? (
+              <Button variant="outline" size="sm" onClick={() => void deepLinkDetailQuery.refetch()}>
+                Retry
+              </Button>
+            ) : deepLinkDetailQuery.data?.status === "open" && dateRange !== "all" ? (
+              <Button variant="outline" size="sm" onClick={() => setDateRange("all")}>
+                Show all dates
+              </Button>
+            ) : null}
+            <Button variant="ghost" size="sm" onClick={() => consumeDeepLink(false)}>
+              Dismiss
+            </Button>
+          </span>
+        </div>
+      )}
+
       {!hasAnything ? (
         decisionView === "all"
           ? <ZeroState />
@@ -767,27 +954,35 @@ export function WhatNeedsMe() {
         <p className="text-xs text-muted-foreground">Decision history across all views</p>
         <Curtain
           label="Decided"
-          count={decisionHistoryCount(decidedDecisions?.length)}
+          count={decisionHistoryCount(Math.max(decidedDecisions?.length ?? 0, decidedHistoryRows.length))}
           open={decidedOpen}
           onToggle={() => setDecidedOpen((prev) => !prev)}
         >
-          {decidedDecisionsLoading ? (
-            <p className="text-xs text-muted-foreground">Loading decided decisions…</p>
+          {decidedHistoryRows.length > 0 ? (
+            <>
+              {decidedDecisionsError ? (
+                <p className="text-xs text-muted-foreground">
+                  Older decided decisions could not be loaded: {decidedDecisionsError.message}.
+                </p>
+              ) : null}
+              {decidedHistoryRows.map((decision) => (
+                <DecisionHistoryRow
+                  key={decision.id}
+                  decision={decision}
+                  companyId={selectedCompanyId}
+                  agentMap={agentMap}
+                  focused={deepLinkFocusedId === decision.id}
+                  onReady={deepLinkResolution.kind === "history" && deepLinkResolution.decisionId === decision.id ? focusLinkedHistoryRow : undefined}
+                />
+              ))}
+            </>
           ) : decidedDecisionsError ? (
             <div role="alert" className="space-y-2">
               <p className="text-xs text-destructive">Decision history unavailable: {decidedDecisionsError.message}</p>
               <Button variant="outline" size="sm" onClick={() => void refetchDecidedDecisions()}>Retry history</Button>
             </div>
-          ) : (decidedDecisions?.length ?? 0) > 0 ? (
-            decidedDecisions!.slice(0, DECISION_HISTORY_VISIBLE_LIMIT).map((decision) => (
-              <DecisionResolver
-                key={decision.id}
-                companyId={selectedCompanyId}
-                decisionId={decision.id}
-                agentMap={agentMap}
-                initialDecision={{ ...decision, executions: decision.executions ?? [] }}
-              />
-            ))
+          ) : decidedDecisionsLoading ? (
+            <p className="text-xs text-muted-foreground">Loading decided decisions…</p>
           ) : (
             <p className="text-xs text-muted-foreground">No decided decisions.</p>
           )}
@@ -795,27 +990,35 @@ export function WhatNeedsMe() {
 
         <Curtain
           label="Expired"
-          count={decisionHistoryCount(expiredDecisions?.length)}
+          count={decisionHistoryCount(Math.max(expiredDecisions?.length ?? 0, expiredHistoryRows.length))}
           open={expiredOpen}
           onToggle={() => setExpiredOpen((prev) => !prev)}
         >
-          {expiredDecisionsLoading ? (
-            <p className="text-xs text-muted-foreground">Loading expired decisions…</p>
+          {expiredHistoryRows.length > 0 ? (
+            <>
+              {expiredDecisionsError ? (
+                <p className="text-xs text-muted-foreground">
+                  Older expired decisions could not be loaded: {expiredDecisionsError.message}.
+                </p>
+              ) : null}
+              {expiredHistoryRows.map((decision) => (
+                <DecisionHistoryRow
+                  key={decision.id}
+                  decision={decision}
+                  companyId={selectedCompanyId}
+                  agentMap={agentMap}
+                  focused={deepLinkFocusedId === decision.id}
+                  onReady={deepLinkResolution.kind === "history" && deepLinkResolution.decisionId === decision.id ? focusLinkedHistoryRow : undefined}
+                />
+              ))}
+            </>
           ) : expiredDecisionsError ? (
             <div role="alert" className="space-y-2">
               <p className="text-xs text-destructive">Expired decisions unavailable: {expiredDecisionsError.message}</p>
               <Button variant="outline" size="sm" onClick={() => void refetchExpiredDecisions()}>Retry expired decisions</Button>
             </div>
-          ) : (expiredDecisions?.length ?? 0) > 0 ? (
-            expiredDecisions!.slice(0, DECISION_HISTORY_VISIBLE_LIMIT).map((decision) => (
-              <DecisionResolver
-                key={decision.id}
-                companyId={selectedCompanyId}
-                decisionId={decision.id}
-                agentMap={agentMap}
-                initialDecision={{ ...decision, executions: decision.executions ?? [] }}
-              />
-            ))
+          ) : expiredDecisionsLoading ? (
+            <p className="text-xs text-muted-foreground">Loading expired decisions…</p>
           ) : (
             <p className="text-xs text-muted-foreground">No expired decisions.</p>
           )}

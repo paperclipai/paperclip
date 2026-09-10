@@ -58,6 +58,8 @@ export interface AttentionCoalescedRecoveryAction {
   /** `issue_recovery_actions.fingerprint`: the recorded failure generation. */
   fingerprint: string | null;
   ownerType: string | null;
+  /** User who owns the action, preserved when it is folded into a dependency row. */
+  ownerUserId: string | null;
   /** Durable `source_issue_id` that tied the action to the blocked issue. */
   sourceIssueId: string | null;
   recoveryIssueId: string | null;

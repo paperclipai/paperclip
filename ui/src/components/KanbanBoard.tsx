@@ -4,16 +4,17 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  KeyboardSensor,
   useSensor,
   useSensors,
   type DragStartEvent,
   type DragEndEvent,
-  type DragOverEvent,
 } from "@dnd-kit/core";
 import { useDroppable } from "@dnd-kit/core";
 import {
   SortableContext,
   verticalListSortingStrategy,
+  sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
 import { AlertTriangle } from "lucide-react";
 import { StatusIcon, isControllerOwnedIssueStatus } from "./StatusIcon";
@@ -209,15 +210,8 @@ export function resolveKanbanTargetStatus(
   if (isControllerOwnedIssueStatus(overIssue.status)) {
     return null;
   }
-  const overview = overviewsById?.get(overIssue.id);
-  if (overview) {
-    // A projected controller-owned phase is still controller-owned, even
-    // when the stored status reads `blocked`.
-    if (!overview.phase || isControllerOwnedIssueStatus(overview.phase)) return null;
-    return overview.phase;
-  }
-  if (overIssue.status === "blocked") return null;
-  return overIssue.status;
+  const phase = resolveCardPhase(overIssue, overviewsById?.get(overIssue.id));
+  return phase && !isControllerOwnedIssueStatus(phase) ? phase : null;
 }
 
 interface Agent {
@@ -504,7 +498,8 @@ export function KanbanBoard({
   const collapsedStatusSet = useMemo(() => new Set(collapsedStatuses), [collapsedStatuses]);
 
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } })
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
   // Overview read contract (Data-owned hook): batched, company-scoped,
@@ -598,7 +593,8 @@ export function KanbanBoard({
     const parentFallback = issue.parentId ? (issueById.get(issue.parentId) ?? null) : null;
     // Blocked and phase-unknown cards are drag-disabled with an explanation
     // instead of a draggable no-op: no false affordance.
-    const draggable = !blocked && phase != null;
+    const controllerOwned = phase != null && isControllerOwnedIssueStatus(phase);
+    const draggable = !blocked && phase != null && !controllerOwned;
     return {
       issue,
       agents,
@@ -622,7 +618,9 @@ export function KanbanBoard({
         ? "Blocked tasks stay in their stage until unblocked — unblock from task detail"
         : phase == null
           ? "Tasks without a recorded stage can't be dragged — triage first"
-          : null,
+          : controllerOwned
+            ? "Managed by the delivery controller — use the task's Delivery tab"
+            : null,
       expanded: expandedIds.has(issue.id),
       onToggleExpanded: () => toggleExpanded(issue.id),
     };
@@ -705,21 +703,16 @@ export function KanbanBoard({
     if (!targetStatus) return;
 
     const overview = overviewsById?.get(issueId);
-    const currentPhase = overview
-      ? overview.phase
-      : issue.status === "blocked" ? null : issue.status;
+    const currentPhase = resolveCardPhase(issue, overview);
     if (targetStatus === currentPhase) return;
 
     // Never silently clear blockage: a lane drop must not move a blocked card
     // off its blocked state. Unblocking stays an explicit status action.
-    if (overview ? overview.blocked : issue.status === "blocked") return;
+    if (isCardBlocked(issue, overview)) return;
 
     onUpdateIssue(issueId, { status: targetStatus });
   }
 
-  function handleDragOver(_event: DragOverEvent) {
-    // Could be used for visual feedback; keeping simple for now
-  }
 
   const totalVisibleCards = scopedIssues.length;
 
@@ -727,7 +720,6 @@ export function KanbanBoard({
     <DndContext
       sensors={sensors}
       onDragStart={handleDragStart}
-      onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
       onDragCancel={() => setActiveId(null)}
     >

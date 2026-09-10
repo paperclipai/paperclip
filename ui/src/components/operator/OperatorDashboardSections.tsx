@@ -13,6 +13,7 @@ import {
   OPERATOR_TIME_WINDOW_OPTIONS,
   loadOperatorEngineeringOpen,
   saveOperatorEngineeringOpen,
+  type DecisionPreviewCoverage,
   type DeliveredOutcome,
   type NextCandidate,
   type OperatorInventoryNote,
@@ -108,7 +109,7 @@ function OutcomeRow({ outcome }: { outcome: DeliveredOutcome }) {
       <StatusGlyph status="done" size="md" className="mt-0.5 shrink-0" />
       <div className="min-w-0 flex-1">
         <Link
-          to={createIssueDetailPath({ id: outcome.issueId, identifier: outcome.identifier })}
+          to={createIssueDetailPath(outcome.identifier ?? outcome.issueId)}
           className="line-clamp-2 text-sm font-medium text-foreground no-underline hover:underline"
         >
           {outcome.title || "Title not recorded"}
@@ -198,6 +199,7 @@ export function NeedsDecisionSection({
   companyId,
   items,
   totalOpenCount,
+  coverage,
   agentMap,
   agents,
   currentUserId,
@@ -207,12 +209,15 @@ export function NeedsDecisionSection({
   items: AttentionItem[];
   /** Company-wide open decision count from the feed, for the bounded disclosure. */
   totalOpenCount: number;
+  /** How much of the ranked queue the caller actually read, when it read any. */
+  coverage: DecisionPreviewCoverage | null;
   agentMap: Map<string, Agent>;
   agents: Agent[] | undefined;
   currentUserId: string | null;
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const { dismiss, snooze } = useInboxDismissals(companyId);
+  const partial = coverage?.partial === true;
 
   if (items.length === 0) {
     return (
@@ -224,7 +229,21 @@ export function NeedsDecisionSection({
           </Link>
         }
       >
-        <OperatorEmpty>No decisions need you right now. New gates land here the moment they surface.</OperatorEmpty>
+        {partial && coverage ? (
+          <>
+            <OperatorEmpty>
+              No decision of yours among the {coverage.scannedCount}{" "}
+              most urgent of {coverage.totalCount} open decision
+              {coverage.totalCount === 1 ? "" : "s"} — the rest were not scanned.
+            </OperatorEmpty>
+            <p className="text-(length:--text-nano) text-muted-foreground">
+              This preview reads the ranked queue in bounded pages, so your gate may sit below them.
+              Open the full queue to see everything.
+            </p>
+          </>
+        ) : (
+          <OperatorEmpty>No decisions need you right now. New gates land here the moment they surface.</OperatorEmpty>
+        )}
       </OperatorSection>
     );
   }
@@ -256,7 +275,7 @@ export function NeedsDecisionSection({
       </div>
       <p className="text-(length:--text-nano) text-muted-foreground">
         Showing {items.length} of {totalOpenCount} open decision{totalOpenCount === 1 ? "" : "s"} — your
-        gates first, the rest under All.
+        gates first, the rest under All.{partial && coverage?.note ? ` ${coverage.note}` : ""}
       </p>
     </OperatorSection>
   );
@@ -370,7 +389,7 @@ export function StuckTasksSection({ stuck }: { stuck: StuckTask[] }) {
             <StatusGlyph status="blocked" size="md" className="mt-0.5 shrink-0" />
             <div className="min-w-0 flex-1">
               <Link
-                to={createIssueDetailPath({ id: task.issueId, identifier: task.identifier })}
+                to={createIssueDetailPath(task.identifier ?? task.issueId)}
                 className="line-clamp-2 text-sm font-medium text-foreground no-underline hover:underline"
               >
                 {task.title || "Title not recorded"}
@@ -420,7 +439,7 @@ export function NextCandidatesSection({ candidates }: { candidates: NextCandidat
             <StatusGlyph status={candidate.status} size="md" className="mt-0.5 shrink-0" />
             <div className="min-w-0 flex-1">
               <Link
-                to={createIssueDetailPath({ id: candidate.issueId, identifier: candidate.identifier })}
+                to={createIssueDetailPath(candidate.identifier ?? candidate.issueId)}
                 className="line-clamp-2 text-sm font-medium text-foreground no-underline hover:underline"
               >
                 {candidate.title || "Title not recorded"}
@@ -469,11 +488,10 @@ export function ProjectRollupsSection({ rollups }: { rollups: ProjectRollup[] })
         {visible.map((rollup) => {
           const inner = (
             <>
-              {/* token-extraction: allowlisted — project accent dot mirrors the sanctioned IssueColumns pattern. */}
               <span
                 aria-hidden
-                className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ backgroundColor: rollup.color ?? "#64748b" }}
+                className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground"
+                style={rollup.color ? { backgroundColor: rollup.color } : undefined}
               />
               <div className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium text-foreground">{rollup.name}</span>

@@ -42,7 +42,7 @@ const RESULT_BADGE: Record<
   done_with_code: { status: "ok", label: "Done · code changes recorded" },
   done_noncode: { status: "info", label: "Done · no code delivery" },
   done_unclassified: { status: "unclassified", label: "Marked done" },
-  in_progress_with_evidence: { status: "info", label: "In progress" },
+  recorded_evidence: { status: "info", label: "Evidence recorded" },
   unknown: { status: "unknown", label: "No recorded result" },
 };
 
@@ -91,6 +91,27 @@ function BoundedText({ text }: { text: string }) {
   );
 }
 
+function EvidenceRow({ item }: { item: TaskOutcomeModel["evidence"][number] }) {
+  return (
+    <div className="min-w-0">
+      <span className="text-xs text-muted-foreground">{item.label} · </span>
+      {item.href ? (
+        <a
+          href={item.href}
+          target="_blank"
+          rel="noreferrer"
+          className="font-medium underline-offset-2 hover:underline"
+        >
+          {item.title}
+        </a>
+      ) : (
+        <span className="font-medium">{item.title}</span>
+      )}
+      {item.detail ? <BoundedText text={item.detail} /> : null}
+    </div>
+  );
+}
+
 export const TaskOutcomeSummary = memo(function TaskOutcomeSummary({
   model,
   linkState,
@@ -130,10 +151,11 @@ export const TaskOutcomeSummary = memo(function TaskOutcomeSummary({
     >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <h2 className="text-sm font-semibold">Outcome</h2>
+        {model.currentStatus !== "done" ? <StatusBadge status={model.currentStatus} /> : null}
         <StatusBadge status={badge.status} label={badge.label} />
         {model.workKind === "noncode" ? (
           <span className="text-xs text-muted-foreground">
-            (non-code completion)
+            (non-code work)
           </span>
         ) : null}
         <span className="ml-auto text-xs text-muted-foreground">
@@ -203,24 +225,7 @@ export const TaskOutcomeSummary = memo(function TaskOutcomeSummary({
               </p>
             ) : null}
             {visibleEvidence.map((item, index) => (
-              <div key={`${item.label}-${index}`} className="min-w-0">
-                <span className="text-xs text-muted-foreground">
-                  {item.label} ·{" "}
-                </span>
-                {item.href ? (
-                  <a
-                    href={item.href}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="font-medium underline-offset-2 hover:underline"
-                  >
-                    {item.title}
-                  </a>
-                ) : (
-                  <span className="font-medium">{item.title}</span>
-                )}
-                {item.detail ? <BoundedText text={item.detail} /> : null}
-              </div>
+              <EvidenceRow key={`${item.label}-${index}`} item={item} />
             ))}
             {overflowEvidence.length > 0 ? (
               <details>
@@ -230,15 +235,7 @@ export const TaskOutcomeSummary = memo(function TaskOutcomeSummary({
                 </summary>
                 <div className="mt-1 space-y-1.5">
                   {overflowEvidence.map((item, index) => (
-                    <div key={`overflow-${item.label}-${index}`}>
-                      <span className="text-xs text-muted-foreground">
-                        {item.label} ·{" "}
-                      </span>
-                      <span className="font-medium">{item.title}</span>
-                      {item.detail ? (
-                        <BoundedText text={item.detail} />
-                      ) : null}
-                    </div>
+                    <EvidenceRow key={`overflow-${item.label}-${index}`} item={item} />
                   ))}
                 </div>
               </details>

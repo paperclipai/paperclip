@@ -40,7 +40,7 @@ export type TaskOutcomeResultKind =
   | "done_with_code"
   | "done_noncode"
   | "done_unclassified"
-  | "in_progress_with_evidence"
+  | "recorded_evidence"
   | "unknown";
 
 export interface TaskOutcomeEvidence {
@@ -77,6 +77,7 @@ export interface TaskOutcomeLink {
 }
 
 export interface TaskOutcomeModel {
+  currentStatus: Issue["status"];
   requestedText: string | null;
   requestedTruncated: boolean;
   resultKind: TaskOutcomeResultKind;
@@ -239,8 +240,8 @@ export function buildTaskOutcomeModel(
     } else {
       resultKind = "done_unclassified";
     }
-  } else if (workProducts.length > 0) {
-    resultKind = "in_progress_with_evidence";
+  } else if (workProducts.length > 0 || overviewCodeSignals) {
+    resultKind = "recorded_evidence";
   } else {
     resultKind = "unknown";
   }
@@ -280,9 +281,8 @@ export function buildTaskOutcomeModel(
     } else if (resultKind === "done_noncode") {
       resultNote =
         "Marked done with no code delivery — outcome is the completed task itself.";
-    } else if (resultKind === "in_progress_with_evidence") {
-      resultNote =
-        "Work products recorded without stored summaries — see evidence links below.";
+    } else if (resultKind === "recorded_evidence") {
+      resultNote = "Evidence recorded — no stored result summary. See the evidence links below.";
     }
   }
 
@@ -474,6 +474,7 @@ export function buildTaskOutcomeModel(
   }
 
   return {
+    currentStatus: issue.status,
     requestedText: description,
     requestedTruncated,
     resultKind,

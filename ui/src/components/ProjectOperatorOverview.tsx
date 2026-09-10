@@ -1,22 +1,27 @@
 import { useMemo } from "react";
 import type { Issue, IssueOverview, IssueOverviewPullRequest } from "@paperclipai/shared";
-import { AlertTriangle, CheckCircle2, GitPullRequest, Loader2, RefreshCw } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ExternalLink, GitPullRequest, Loader2, RefreshCw } from "lucide-react";
 import { Link } from "@/lib/router";
 import { formatDateTime, issueUrl, relativeTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { IssueStatusBadge } from "./StatusBadge";
+import { prDisplayRef, prStateLabel } from "./kanbanOverviewModel";
 import {
   PROJECT_OPERATOR_BLOCKER_ROW_LIMIT,
   PROJECT_OPERATOR_COMPLETED_ROW_LIMIT,
   PROJECT_OPERATOR_LANE_ROW_LIMIT,
+  PROJECT_OPERATOR_PR_PREVIEW_LIMIT,
   collectCompletedTasks,
   collectProjectBlockers,
   groupProjectTasks,
+  resolveCompletionState,
+  resolveDeliveryCoverage,
   summarizeProjectOutcomes,
   summarizePullRequests,
   type OperatorBlocker,
   type OperatorCompletedTask,
+  type OperatorCompletionState,
   type OperatorRootOutcome,
   type OperatorSnapshotTask,
 } from "./project-operator-overview";
@@ -89,6 +94,7 @@ function toSnapshotTask(issue: Issue): OperatorSnapshotTask {
     priority: issue.priority,
     parentId: issue.parentId,
     updatedAt: toIsoString(issue.updatedAt),
+    completedAt: toIsoOrNull(issue.completedAt),
     deliveryKind: issue.deliveryKind ?? null,
     labelNames: (issue.labels ?? []).map((label) => label.name),
     unblockOwnerLabel: issue.unblockDescriptor ? formatUnblockOwner(issue.unblockDescriptor.owner) : null,
@@ -130,29 +136,78 @@ function TaskTitleLink({ href, identifier, title }: { href: string; identifier: 
   );
 }
 
+/**
+ * One PR chip: canonical display ref, canonical state label, stale flag, and a
+ * direct link when one is recorded. A PR without a URL still shows its state —
+ * the chip just has nothing to link to. Mirrors the board's PR chip vocabulary.
+ */
+function PullRequestChip({ pr }: { pr: IssueOverviewPullRequest }) {
+  const label = `${prDisplayRef(pr)} · ${prStateLabel(pr.state)}${pr.stale ? " · stale" : ""}`;
+  const title = pr.url ? `${label} — open pull request` : `${label} — link unavailable`;
+  const chip = (
+    <Badge
+      variant="outline"
+      data-pr-state={pr.state}
+      data-pr-stale={pr.stale ? "true" : undefined}
+      className="max-w-full gap-1 border-border px-1.5 text-(length:--text-nano) font-medium text-muted-foreground"
+      title={title}
+    >
+      {pr.repository ? <span className="min-w-0 max-w-20 truncate">{pr.repository}</span> : null}
+      <span className="shrink-0">{pr.number !== null ? `#${pr.number}` : "PR"}</span>
+      <span className="shrink-0">{prStateLabel(pr.state)}</span>
+      {pr.stale ? <span className="shrink-0">stale</span> : null}
+    </Badge>
+  );
+  return pr.url ? (
+    <a
+      href={pr.url}
+      target="_blank"
+      rel="noreferrer"
+      title={title}
+      aria-label={`Pull request ${label}`}
+      className="inline-flex min-w-0 max-w-full rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      {chip}
+      <ExternalLink className="ml-0.5 h-3 w-3 shrink-0 self-center text-muted-foreground" aria-hidden="true" />
+    </a>
+  ) : (
+    <span title={title} aria-label={`Pull request ${label}`}>
+      {chip}
+    </span>
+  );
+}
+
+/**
+ * Every recorded pull request with its canonical state. A bounded preview
+ * stays inline; the rest sit behind a native disclosure so keyboard and touch
+ * users reach each state and link without an opaque count.
+ */
 function PullRequestMarkers({ prs }: { prs: IssueOverviewPullRequest[] }) {
   if (prs.length === 0) return null;
-  const [first, ...rest] = prs;
+  const preview = prs.slice(0, PROJECT_OPERATOR_PR_PREVIEW_LIMIT);
+  const overflow = prs.slice(PROJECT_OPERATOR_PR_PREVIEW_LIMIT);
   return (
-    <span className="inline-flex flex-wrap items-center gap-x-2">
-      <GitPullRequest className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
-      {first.url ? (
-        <a
-          href={first.url}
-          target="_blank"
-          rel="noreferrer"
-          className="underline decoration-dotted underline-offset-2"
-          title={first.repository ?? undefined}
-        >
-          {first.number !== null ? `PR #${first.number}` : "Pull request"}
-        </a>
-      ) : (
-        <span>{first.number !== null ? `PR #${first.number}` : "Pull request"}</span>
-      )}
-      {first.state === "merged" ? <span className="text-muted-foreground">(merged)</span> : null}
-      {first.stale ? <span>(stale)</span> : null}
-      {rest.length > 0 ? <span className="text-muted-foreground">+{rest.length} more</span> : null}
-    </span>
+    <div
+      data-testid="pull-request-markers"
+      className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1"
+    >
+      <GitPullRequest className="h-3 w-3 shrink-0 text-muted-foreground" aria-hidden="true" />
+      {preview.map((pr, index) => (
+        <PullRequestChip key={pr.url ?? `${pr.repository ?? "pr"}#${pr.number ?? index}`} pr={pr} />
+      ))}
+      {overflow.length > 0 ? (
+        <details data-testid="pull-request-overflow" className="min-w-0">
+          <summary className="cursor-pointer text-(length:--text-nano) text-muted-foreground underline decoration-dotted underline-offset-2">
+            {overflow.length} more {overflow.length === 1 ? "pull request" : "pull requests"}
+          </summary>
+          <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            {overflow.map((pr, index) => (
+              <PullRequestChip key={pr.url ?? `${pr.repository ?? "pr"}#${pr.number ?? index}`} pr={pr} />
+            ))}
+          </span>
+        </details>
+      ) : null}
+    </div>
   );
 }
 
@@ -213,15 +268,13 @@ function BlockerRow({ blocker }: { blocker: OperatorBlocker }) {
   return (
     <li className="min-w-0 space-y-1 border-b border-border pb-2 last:border-b-0 last:pb-0">
       <div className="flex items-start gap-2">
-        <TaskTitleLink href={taskHref(blocker)} identifier={blocker.identifier} title={blocker.title} />
+        <TaskTitleLink href={taskHref({ id: blocker.taskId, identifier: blocker.identifier })} identifier={blocker.identifier} title={blocker.title} />
         <IssueStatusBadge status={blocker.status} />
       </div>
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         {blocker.needsDecision ? (
           <Badge variant="destructive">Needs decision</Badge>
-        ) : (
-          <Badge variant="outline">Blocked</Badge>
-        )}
+        ) : null}
         {blocker.ownerLabel ? (
           <span className="break-words">Owner: {blocker.ownerLabel}</span>
         ) : (
@@ -256,27 +309,39 @@ function BlockerRow({ blocker }: { blocker: OperatorBlocker }) {
   );
 }
 
+const COMPLETION_COPY: Record<OperatorCompletionState, string> = {
+  merged: "Merged",
+  non_code: "Done",
+  code_unverified: "Code completion · merge unverified",
+  unclassified: "Marked done · delivery evidence not recorded",
+};
+
 function CompletedRow({ completed }: { completed: OperatorCompletedTask }) {
+  const completion = resolveCompletionState(completed);
   return (
-    <li className="min-w-0 space-y-1 border-b border-border pb-2 last:border-b-0 last:pb-0">
+    <li
+      className="min-w-0 space-y-1 border-b border-border pb-2 last:border-b-0 last:pb-0"
+      data-completion-state={completion}
+    >
       <div className="flex items-start gap-2">
         <TaskTitleLink
-          href={taskHref(completed)}
+          href={taskHref({ id: completed.taskId, identifier: completed.identifier })}
           identifier={completed.identifier}
           title={completed.title}
         />
-        {completed.merged ? (
-          <span className="inline-flex shrink-0 items-center gap-1 text-xs font-medium">
+        <span
+          data-testid="project-operator-overview-completion"
+          className={
+            completion === "merged"
+              ? "inline-flex shrink-0 items-center gap-1 text-xs font-medium"
+              : "shrink-0 text-xs text-muted-foreground"
+          }
+        >
+          {completion === "merged" ? (
             <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-            Merged
-          </span>
-        ) : completed.deliveryKind === "non_code" ? (
-          <span className="shrink-0 text-xs text-muted-foreground">Done</span>
-        ) : (
-          <span className="shrink-0 text-xs text-muted-foreground">
-            Marked done · delivery evidence not recorded
-          </span>
-        )}
+          ) : null}
+          {COMPLETION_COPY[completion]}
+        </span>
       </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
         {completed.completedAt ? (
@@ -335,6 +400,11 @@ export function ProjectOperatorOverview(props: ProjectOperatorOverviewProps) {
     [overviewsById],
   );
   const refreshing = issuesRefreshing || overviewsPending;
+  const deliveryCoverage = resolveDeliveryCoverage({
+    pending: overviewsPending,
+    failed: overviewsError !== null,
+    observedAt: overviewsObservedAt,
+  });
   const donePercent = outcome.total === 0 ? 0 : Math.round((outcome.done / outcome.total) * 100);
 
   return (
@@ -508,8 +578,18 @@ export function ProjectOperatorOverview(props: ProjectOperatorOverviewProps) {
                 Needs attention <span className="font-normal text-muted-foreground">({blockers.length})</span>
               </h3>
               {blockers.length === 0 ? (
-                <p className="text-xs text-muted-foreground">
-                  {overviewsPending ? "Checking for blockers…" : "No recorded blockers."}
+                <p
+                  data-testid="project-operator-overview-blockers-empty"
+                  data-delivery-coverage={deliveryCoverage}
+                  className="text-xs text-muted-foreground"
+                >
+                  {deliveryCoverage === "loading"
+                    ? "Checking for blockers…"
+                    : deliveryCoverage === "complete"
+                      ? "No recorded blockers."
+                      : deliveryCoverage === "partial"
+                        ? "Delivery detail is partial, so blockers recorded outside these task rows may be missing."
+                        : "Blocker detail unavailable — this snapshot cannot confirm there are none."}
                 </p>
               ) : (
                 <>
@@ -541,22 +621,40 @@ export function ProjectOperatorOverview(props: ProjectOperatorOverviewProps) {
             </div>
           </div>
 
-          <div data-testid="project-operator-overview-evidence" className="space-y-1 text-xs text-muted-foreground">
+          <div
+            data-testid="project-operator-overview-evidence"
+            data-delivery-coverage={deliveryCoverage}
+            className="space-y-1 text-xs text-muted-foreground"
+          >
             <p>
               {planTaskIds !== undefined ? (
-                <>Plans recorded on {planTaskIds.size} {planTaskIds.size === 1 ? "task" : "tasks"} · </>
-              ) : null}
-              {pullRequests.total}{" "}
-              pull {pullRequests.total === 1 ? "request" : "requests"}
-              {pullRequests.total > 0 ? (
                 <>
-                  {" "}
-                  ({pullRequests.merged} merged · {pullRequests.open} open
-                  {pullRequests.closedUnmerged > 0 ? ` · ${pullRequests.closedUnmerged} closed unmerged` : null}
-                  {pullRequests.unknown > 0 ? ` · ${pullRequests.unknown} unknown` : null})
+                  Plans recorded on {planTaskIds.size} {planTaskIds.size === 1 ? "task" : "tasks"}.{" "}
                 </>
               ) : null}
-              . Specs and files live on each task.
+              {deliveryCoverage === "complete" ? (
+                <>
+                  {pullRequests.total} pull {pullRequests.total === 1 ? "request" : "requests"}
+                  {pullRequests.total > 0 ? (
+                    <>
+                      {" "}
+                      ({pullRequests.merged} merged · {pullRequests.open} open
+                      {pullRequests.closedUnmerged > 0 ? ` · ${pullRequests.closedUnmerged} closed unmerged` : null}
+                      {pullRequests.unknown > 0 ? ` · ${pullRequests.unknown} unknown` : null})
+                    </>
+                  ) : null}
+                  .{" "}
+                </>
+              ) : deliveryCoverage === "loading" ? (
+                <>Delivery detail is still loading — pull request totals are not final.{" "}</>
+              ) : deliveryCoverage === "partial" ? (
+                <>
+                  Pull request totals are partial: {pullRequests.total} recorded so far.{" "}
+                </>
+              ) : (
+                <>Pull request totals unavailable — delivery detail could not be loaded.{" "}</>
+              )}
+              Specs and files live on each task.
             </p>
           </div>
 
@@ -567,8 +665,9 @@ export function ProjectOperatorOverview(props: ProjectOperatorOverviewProps) {
               className="flex flex-col items-start gap-2 rounded-md border border-border bg-muted/30 p-3 text-sm sm:flex-row sm:items-center sm:justify-between"
             >
               <span className="break-words text-muted-foreground">
-                Delivery detail unavailable: {overviewsError.message} Lanes and counts above still reflect
-                current task records.
+                {deliveryCoverage === "partial"
+                  ? `Delivery detail is partial: ${overviewsError.message} The rows already loaded are real; pull requests, merges, and delivery-only blockers may be missing.`
+                  : `Delivery detail unavailable: ${overviewsError.message} Lanes and counts above still reflect current task records; pull requests, merges, and delivery-only blockers may be missing.`}
               </span>
               <Button type="button" variant="outline" size="sm" onClick={onRetryOverviews}>
                 Retry
@@ -584,10 +683,12 @@ export function ProjectOperatorOverview(props: ProjectOperatorOverviewProps) {
               <li>Completed means task status done — not business acceptance or operational readiness.</li>
               <li>
                 Merged appears only with a recorded delivery merge on the current outcome; pull requests
-                are listed per task for context.
+                are listed per task with their recorded state for context.
               </li>
               <li>
-                “Delivery evidence not recorded” is unclassified: it does not prove the work was non-code.
+                “Code completion · merge unverified” means the task is recorded as code work without a
+                verified current merge. “Delivery evidence not recorded” is unclassified: it does not
+                prove the work was non-code.
               </li>
               <li>Subtask counts describe children only; the parent's own status stands.</li>
             </ul>

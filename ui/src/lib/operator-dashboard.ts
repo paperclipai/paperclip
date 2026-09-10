@@ -647,13 +647,40 @@ export type DecisionViewItem = Pick<AttentionItem, "sourceKind" | "resolverAudie
 
 export type AttentionOwnership = "human" | "system" | "unknown";
 
+type AttentionMetadataShape = NonNullable<AttentionItem["subject"]["metadata"]>;
+
+function readOwnershipPair(value: unknown): { ownerType: string | null; ownerUserId: string | null } {
+  if (value === null || typeof value !== "object") return { ownerType: null, ownerUserId: null };
+  const record = value as Record<string, unknown>;
+  return {
+    ownerType: typeof record.ownerType === "string" ? record.ownerType : null,
+    ownerUserId: typeof record.ownerUserId === "string" ? record.ownerUserId : null,
+  };
+}
+
+/**
+ * The ownership a row records, in the two shapes the feed uses: directly on
+ * `subject.metadata` for company-wide rows, and on the absorbed recovery
+ * action (`subject.metadata.recoveryAction`) for a dependency row that folded
+ * one open human action into itself.
+ */
+function readAttentionOwnership(
+  metadata: AttentionMetadataShape | undefined,
+): { ownerType: string | null; ownerUserId: string | null } {
+  const direct = readOwnershipPair(metadata);
+  if (direct.ownerType !== null) return direct;
+  return readOwnershipPair(metadata?.recoveryAction);
+}
+
 /**
  * Who actually owns the next step on a decision row, from canonical row data.
  * Source kind alone is not enough: failed runs and recovery actions can be
  * human-owned, while reviews and blockers can be system-owned. Resolution
- * order: the server-evaluated resolver audience first, then subject metadata
- * ownership, then source kinds whose native contract requires a human verdict.
- * Unknown ownership is never inferred from explanatory prose.
+ * order: the server-evaluated resolver audience first, then recorded ownership
+ * — where a `user` owner counts as this viewer's own gate only when the
+ * recorded `ownerUserId` is that user, while a `board` gate is shared — then
+ * source kinds whose native contract requires a human verdict. Unknown
+ * ownership is never inferred from explanatory prose.
  */
 export function resolveAttentionOwnership(
   item: DecisionViewItem,
@@ -665,9 +692,14 @@ export function resolveAttentionOwnership(
     if (audience.effectiveResolverPolicy === "human_only") return "human";
     return "unknown";
   }
-  const metadata = item.subject?.metadata;
-  const ownerType = metadata !== undefined && typeof metadata.ownerType === "string" ? metadata.ownerType : null;
-  if (ownerType === "user" || ownerType === "board") return "human";
+  const { ownerType, ownerUserId } = readAttentionOwnership(item.subject?.metadata);
+  if (ownerType === "board") return "human";
+  if (ownerType === "user") {
+    // Reviews, recovery actions and blocked-work gates record the user they
+    // were assigned to. Another user's row belongs to that user, never to this
+    // viewer; an unrecorded or unmatched owner stays unclaimed.
+    return ownerUserId !== null && ownerUserId === currentUserId ? "human" : "unknown";
+  }
   if (ownerType === "agent" || ownerType === "system") return "system";
   switch (item.sourceKind) {
     case "approval":
@@ -723,6 +755,103 @@ export function countDecisionViews<T extends DecisionViewItem>(
   }
   return counts;
 }
+
+// ---------------------------------------------------------------------------
+// Bounded personal preview — scan past the ranked page before calling it clear
+// ---------------------------------------------------------------------------
+
+/**
+ * How many server-ranked pages the dashboard may read while looking for the
+ * viewer's own gates. The attention feed ranks and paginates company-wide
+ * before the client can filter by ownership, so a preview that stopped at page
+ * one would claim "no decisions need you" whenever the top rows belong to
+ * someone else (or to the system).
+ */
+export const OPERATOR_DECISION_PREVIEW_MAX_PAGES = 4;
+
+/** One server-ranked page, as the bounded scan consumes it. */
+export interface DecisionPreviewFeedPage<T> {
+  items: readonly T[];
+  /** Company-wide open decisions, counted by the server before pagination. */
+  totalCount: number;
+  nextCursor: string | null;
+}
+
+export interface DecisionPreviewScan<T> {
+  /** The viewer's own gates found so far, in server rank order. */
+  items: T[];
+  /** Rows examined across every page read. */
+  scannedCount: number;
+  /** Company-wide open decisions, from the server's own count. */
+  totalCount: number;
+  /** Pages read so far. */
+  pages: number;
+  /** Cursor of the next unread page; null once the ranked feed is exhausted. */
+  cursor: string | null;
+}
+
+export interface DecisionPreviewCoverage {
+  /** True when the ranked feed was not read to its end. */
+  partial: boolean;
+  scannedCount: number;
+  totalCount: number;
+  /** Honest scope sentence, null when nothing needs disclosing. */
+  note: string | null;
+}
+
+/**
+ * What the preview may claim about the company-wide queue. A partial scan must
+ * never read as an all-clear: the note says how many of how many rows were
+ * actually read.
+ */
+export function describeDecisionPreviewCoverage<T>(
+  scan: DecisionPreviewScan<T>,
+  limit: number = OPERATOR_DECISION_PREVIEW_LIMIT,
+): DecisionPreviewCoverage {
+  if (scan.cursor === null) {
+    return { partial: false, scannedCount: scan.scannedCount, totalCount: scan.totalCount, note: null };
+  }
+  const plural = scan.totalCount === 1 ? "" : "s";
+  const scope = `Checked the ${scan.scannedCount} most urgent of ${scan.totalCount} open decision${plural}`;
+  return {
+    partial: true,
+    scannedCount: scan.scannedCount,
+    totalCount: scan.totalCount,
+    note: scan.items.length >= limit ? `${scope}.` : `${scope}; the rest were not scanned.`,
+  };
+}
+
+/**
+ * Read the ranked feed until the viewer's quota is filled, the feed ends, or
+ * the page budget is spent. `fetchPage` takes the cursor to continue from (null
+ * for the first page), so the caller owns the transport.
+ */
+export async function scanDecisionPreview<T extends DecisionViewItem>(
+  fetchPage: (cursor: string | null) => Promise<DecisionPreviewFeedPage<T>>,
+  currentUserId: string | null,
+  limit: number = OPERATOR_DECISION_PREVIEW_LIMIT,
+  maxPages: number = OPERATOR_DECISION_PREVIEW_MAX_PAGES,
+): Promise<DecisionPreviewScan<T>> {
+  let scan: DecisionPreviewScan<T> = {
+    items: [],
+    scannedCount: 0,
+    totalCount: 0,
+    pages: 0,
+    cursor: null,
+  };
+  do {
+    const page = await fetchPage(scan.cursor);
+    scan = {
+      items: [...scan.items, ...filterDecisionView(page.items, "mine", currentUserId)],
+      scannedCount: scan.scannedCount + page.items.length,
+      totalCount: page.totalCount,
+      pages: scan.pages + 1,
+      cursor: page.nextCursor,
+    };
+  } while (scan.items.length < limit && scan.cursor !== null && scan.pages < maxPages);
+  return scan;
+}
+
 export function loadOperatorDecisionView(companyId: string | null | undefined): OperatorDecisionView {
   if (!companyId) return "all";
   try {
