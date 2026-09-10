@@ -464,9 +464,17 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueue
       // claimed value stays. One reader can observe a null value: runsForIssue
       // projects the column with no status filter, so the issue run ledger
       // can show a recovery run with no responsible user. That projection
-      // displays attribution and makes no authorization decision. Every
-      // authorization and audit read keys on a running or an authenticated
-      // run instead. The immediate-recovery writer takes an already-resolved
+      // displays attribution and makes no authorization decision. No
+      // authorization read uses this column for a queued or a cancelled run.
+      // Each one keys on a running or an authenticated run. The audit feed is
+      // the other reader that can observe a cancelled run: claimQueuedRun
+      // cancels a queued run when an active subtree pause hold holds the
+      // issue, and it writes an activity log event for that cancelled run.
+      // agentActionAuditService prefers the responsible user that the activity
+      // log row carries. resolveResponsibleUserIdForActivity sets that value,
+      // and it finds no responsible user on the cancelled run. It falls back
+      // to the issue, then to the agent API key, then to the company default.
+      // The immediate-recovery writer takes an already-resolved
       // responsibleUserId as an input parameter, because its caller must
       // resolve one before it can call that writer. This writer's input
       // carries no such parameter. It leaves resolution to claimQueuedRun,
