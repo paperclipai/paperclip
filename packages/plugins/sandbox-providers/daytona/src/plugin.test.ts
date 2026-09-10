@@ -1503,6 +1503,21 @@ describe("Daytona sandbox provider plugin", () => {
       code: "PROCESS_NOT_FOUND", statusCode: 404,
     });
 
+    it("redirects empty stdin so a session command receives EOF", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+
+      await plugin.definition.onEnvironmentExecute?.(sessionExecParams({ stdin: "" }));
+
+      expect(sandbox.fs.uploadFile).toHaveBeenCalledWith(
+        Buffer.alloc(0), expect.stringMatching(/^\/tmp\/paperclip-stdin-/), 1,
+      );
+      const [, params] = sandbox.process.executeSessionCommand.mock.calls[0]!;
+      expect(params.command).toMatch(/< '\/tmp\/paperclip-stdin-/);
+      expect(sandbox.fs.deleteFile).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/paperclip-stdin-/));
+    });
+
     it("replaces a disappeared session only when dispatch was rejected", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox();
@@ -2272,7 +2287,7 @@ describe("Daytona sandbox provider plugin", () => {
     expect(mockGet).toHaveBeenCalledTimes(1);
   });
 
-  it("stages stdin in the sandbox filesystem when execution needs redirected input", async () => {
+  it.each(["input payload", ""])("stages redirected stdin, including EOF-only input (%j)", async (stdin) => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     mockGet.mockResolvedValue(sandbox);
@@ -2290,12 +2305,12 @@ describe("Daytona sandbox provider plugin", () => {
       command: "cat",
       args: [],
       cwd: "/workspace",
-      stdin: "input payload",
+      stdin,
       timeoutMs: 1000,
     });
 
     expect(sandbox.fs.uploadFile).toHaveBeenCalledWith(
-      Buffer.from("input payload", "utf8"),
+      Buffer.from(stdin, "utf8"),
       expect.stringMatching(/^\/tmp\/paperclip-stdin-/),
       1,
     );
