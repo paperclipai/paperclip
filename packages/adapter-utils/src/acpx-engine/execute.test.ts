@@ -6129,6 +6129,7 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     let lossOrdered = false;
     let lossReason: string | null = null;
     let completionOrdered = false;
+    let lossListener: ((reason: string) => void) | null = null;
     const readDisposition = () => ({ failed: lossOrdered, lossReason });
     const markOrderlyCompletion = vi.fn(() => {
       if (completionOrdered || lossOrdered) return;
@@ -6137,6 +6138,12 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     const settleRunDisposition = vi.fn(() => {
       markOrderlyCompletion();
       return readDisposition();
+    });
+    const onLoss = vi.fn((listener: (reason: string) => void) => {
+      lossListener = listener;
+      return () => {
+        if (lossListener === listener) lossListener = null;
+      };
     });
     const stop = vi.fn(async () => {});
     const handle = {
@@ -6148,19 +6155,25 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
       readRunDisposition: () => readDisposition(),
       settleRunDisposition,
       markOrderlyCompletion,
+      onLoss,
       stop,
     };
     return {
       handle,
       markOrderlyCompletion,
       settleRunDisposition,
+      onLoss,
       readDisposition,
       // Record the first ordered loss. A loss ordered after a completion, or a
       // second loss, is a no-op — the same rule the real transport applies.
+      // A loss that latches here (the first ordered call) also pushes the
+      // reason to the one registered listener, the same way the real HTTP/2
+      // transport's disposition latch does.
       emitLoss: (reason: string) => {
         if (lossOrdered || completionOrdered) return;
         lossOrdered = true;
         lossReason = reason;
+        lossListener?.(reason);
       },
     };
   }
@@ -6209,6 +6222,39 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
           return { status: "failed" as const, error: new Error("agent failed") };
         })(),
         cancel: async () => {},
+      }),
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+  }
+
+  // A runtime whose one turn never resolves on its own — it hangs exactly
+  // like a turn whose sandbox duplex channel died mid-turn produces no
+  // terminal result. The turn only ends when something calls `cancel()`, the
+  // same mechanism the push seam calls. `onCancel` observes each call.
+  function hangingTurnRuntime(onCancel: (reason: string | undefined) => void) {
+    let release: (() => void) | null = null;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return {
+      ensureSession: async () => ({
+        backendSessionId: "backend-session",
+        agentSessionId: "agent-session",
+        runtimeSessionName: "runtime-session",
+      }),
+      startTurn: () => ({
+        events: (async function* () {
+          await released;
+        })(),
+        result: (async () => {
+          await released;
+          return { status: "cancelled" as const, stopReason: "cancelled" };
+        })(),
+        cancel: async (input?: { reason?: string }) => {
+          onCancel(input?.reason);
+          release?.();
+        },
       }),
       setConfigOption: async () => {},
       close: async () => {},
@@ -6435,6 +6481,73 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     expect(result.errorCode).not.toBe("acpx_session_init_failed");
     expect(result.errorCode).not.toBe("acpx_handshake_timeout");
   }, 10000);
+
+  it("aborts an in-flight turn and fails the run when the duplex channel latches a loss mid-turn", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    const cancelReasons: (string | undefined)[] = [];
+    // This turn never returns a terminal result on its own: without a push
+    // seam it would wait for the wall-clock adapter execution timeout. It
+    // ends only once something calls `cancel()`.
+    const runtime = hangingTurnRuntime((reason) => cancelReasons.push(reason));
+
+    const resultPromise = runRemote(fake.handle, runtime, sandbox);
+    // Wait until the turn registers its loss listener, then latch the loss —
+    // the same order a real mid-turn channel death follows: the turn starts,
+    // then later the channel is lost.
+    await vi.waitFor(() => expect(fake.onLoss).toHaveBeenCalled());
+    fake.emitLoss("provider_exit");
+
+    const result = await resultPromise;
+
+    // The push seam cancelled the hanging turn instead of waiting for the
+    // turn to return a terminal result on its own, so the run ends promptly
+    // instead of waiting for the adapter execution timeout.
+    expect(cancelReasons).toHaveLength(1);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.errorCode).toBe("duplex_channel_lost");
+    // The failure message carries only the closed loss-reason enum, never
+    // raw provider text.
+    expect(result.errorMessage).toContain("provider_exit");
+    expect(result.resultJson).toMatchObject({ status: "failed" });
+  }, 5000);
+
+  it("does not abort or fail an already-completed run when the duplex channel loses after an orderly completion", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    const cancelReasons: (string | undefined)[] = [];
+    const runtime = {
+      ensureSession: async () => ({
+        backendSessionId: "backend-session",
+        agentSessionId: "agent-session",
+        runtimeSessionName: "runtime-session",
+      }),
+      startTurn: () => ({
+        events: (async function* () {
+          yield { type: "done", stopReason: "end_turn" };
+        })(),
+        result: Promise.resolve({ status: "completed" as const, stopReason: "end_turn" }),
+        cancel: async (input?: { reason?: string }) => {
+          cancelReasons.push(input?.reason);
+        },
+      }),
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+
+    const result = await runRemote(fake.handle, runtime, sandbox);
+    expect(result.exitCode).toBe(0);
+    expect(result.errorCode ?? null).toBeNull();
+
+    // The channel dies only after the turn already completed cleanly. The
+    // loss listener the turn registered is still live at this point, but the
+    // latch already marked the orderly completion, so the loss cannot relatch
+    // and must never reach a cancel call on the (already-finished) turn.
+    fake.emitLoss("provider_exit");
+
+    expect(cancelReasons).toHaveLength(0);
+    expect(fake.readDisposition().failed).toBe(false);
+  });
 });
 
 describe("ACPX startup handshake guard and late-completion fence", () => {

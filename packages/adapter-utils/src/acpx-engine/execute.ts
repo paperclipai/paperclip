@@ -3800,6 +3800,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let releaseStagingLease: (() => void) | null = null;
     let stopTimer: ReturnType<typeof setTimeout> | undefined;
     let removeStopListener: (() => void) | undefined;
+    // Unregisters the sandbox duplex bridge's loss listener (below, in
+    // `stepTurnStart`). Set only on a sandbox target whose bridge exposes
+    // `onLoss`; stays undefined everywhere else, so the cleanup call is a
+    // no-op there.
+    let removeLossListener: (() => void) | undefined;
     let forcedStop = false;
     let runtimeStopConfirmed = false;
     let safeInterruptedSession = false;
@@ -4606,6 +4611,26 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           signal,
         });
         activeTurn = turn;
+        // A latched sandbox duplex-channel loss otherwise has no way to reach
+        // this turn: the bridge only exposes a pull read, and the engine
+        // pulls it at the terminal-finalization boundary, which runs only
+        // after the turn already returned a terminal result. A channel that
+        // dies mid-turn then leaves the turn with no terminal result to
+        // return, so it waits for the wall-clock adapter execution timeout
+        // instead of failing fast. Cancel the turn the moment a terminal loss
+        // latches — whether it latches from here on, or already latched
+        // before this turn started — so the turn returns a terminal result
+        // right away. `turnFinalize` reads the same latch and builds the
+        // failure from the typed loss reason alone.
+        const bridge = prepared.paperclipBridge;
+        if (bridge?.onLoss) {
+          const cancelForLoss = (reason: DuplexLossReason) => {
+            void turn.cancel({ reason: `paperclip sandbox duplex channel lost (${reason})` }).catch(() => {});
+          };
+          removeLossListener = bridge.onLoss(cancelForLoss);
+          const alreadyLatched = bridge.readRunDisposition?.();
+          if (alreadyLatched?.failed) cancelForLoss(alreadyLatched.lossReason ?? "other");
+        }
         // ACP can resolve the turn before its provider exits. Keep the Stop
         // deadline armed through settlement, including provider cleanup.
         const armStopDeadline = () => {
@@ -4673,33 +4698,23 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         const terminal = input.terminal;
         const timedOut = input.timedOut;
         // Read the sandbox duplex control-channel disposition at the ACP
-        // terminal-finalization boundary, before the bridge teardown. A control
-        // channel that died mid-turn latches a failure with a typed loss reason;
-        // a healthy channel or a normal-teardown loss reports a success. Only a
-        // nominally completed, non-timed-out terminal is success-eligible, so the
-        // seam reads the disposition only there. For that success-eligible
-        // terminal the seam marks the host-observed orderly completion, so a later
-        // teardown loss cannot flip the run to a failure. The file bridge path
-        // never sets these methods, so the optional calls no-op there.
+        // terminal-finalization boundary, before the bridge teardown, on every
+        // terminal outcome. A control channel that died before this point
+        // latches a failure with a typed loss reason; a healthy channel or a
+        // normal-teardown loss reports a success. The read and the mark of the
+        // host-observed orderly completion happen atomically in one broker
+        // step, with no `await` between them, so a teardown loss cannot slip
+        // in between. This stops a later teardown `channel_exit` from latching
+        // a false loss. The mark no-ops once a loss already latched, so a real
+        // mid-turn loss still fails the run — including a loss that arrived
+        // through the in-flight-turn cancel this seam issues, which surfaces
+        // here as a `cancelled` (not `completed`) terminal, not just through a
+        // nominally completed terminal. The file bridge path never sets this
+        // method, so the optional call no-ops there.
         let duplexLossReason: DuplexLossReason | null = null;
-        if (terminal.status === "completed" && !timedOut) {
-          // Success-eligible terminal. Atomically read the disposition and mark
-          // the orderly completion in one broker step. No `await` separates the
-          // read from the mark, so a teardown loss cannot slip in between them. A
-          // latched loss fails the run closed; a healthy channel marks its
-          // orderly completion, so a later teardown loss stays a normal teardown.
-          const disposition = prepared.paperclipBridge?.settleRunDisposition?.() ?? null;
-          if (disposition?.failed) {
-            duplexLossReason = disposition.lossReason ?? "other";
-          }
-        } else {
-          // Non-success-eligible terminal (failed, cancelled, or timed out). A
-          // deliberate host teardown follows, so mark the orderly completion now.
-          // This stops the teardown `channel_exit` from latching `lossSeq`, from
-          // emitting a false loss event, and from incrementing the loss counters.
-          // The mark no-ops once a loss latched, so a real mid-run loss still
-          // fails the run.
-          prepared.paperclipBridge?.markOrderlyCompletion?.();
+        const disposition = prepared.paperclipBridge?.settleRunDisposition?.() ?? null;
+        if (disposition?.failed) {
+          duplexLossReason = disposition.lossReason ?? "other";
         }
         // A terminal that reports "completed" but whose duplex control channel
         // died before the completion is not a success. The seam fails it closed.
@@ -5195,6 +5210,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     } finally {
       clearTimeout(stopTimer);
       removeStopListener?.();
+      removeLossListener?.();
       // End the run root span exactly once, on every return and on a throw.
       runRootSpan.end(runFailed);
       // Release the per-session staging lease as the run's final act, AFTER the
