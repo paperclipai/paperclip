@@ -1,0 +1,138 @@
+name: Storybook Pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Repository branch to publish (empty uses the selected workflow branch)"
+        type: string
+        default: ""
+  # Also exposed by Storybook Visual, which is already available on master.
+  workflow_call:
+    inputs:
+      branch:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# One Pages site per repository: the latest successful requested branch wins.
+concurrency:
+  group: storybook-pages
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    name: Authorize Storybook publisher
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      branch: ${{ steps.source.outputs.branch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Require CODEOWNER initiator and rerunner
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const authorize = require('./.github/scripts/authorize-storybook-pages.cjs');
+            await authorize({ github, context });
+
+      - name: Pin requested repository branch
+        id: source
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          SOURCE_BRANCH: ${{ inputs.branch }}
+        with:
+          script: |
+            const branch = process.env.SOURCE_BRANCH || context.ref.slice('refs/heads/'.length);
+            const { data } = await github.rest.git.getRef({ ...context.repo, ref: `heads/${branch}` });
+            if (data.ref !== `refs/heads/${branch}` || data.object.type !== 'commit') {
+              throw new Error('Select an existing branch in this repository.');
+            }
+            // With no source override, preserve the exact dispatched commit.
+            core.setOutput('sha', process.env.SOURCE_BRANCH ? data.object.sha : context.sha);
+            core.setOutput('branch', branch);
+
+  build:
+    name: Build selected branch Storybook
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      artifact_name: ${{ steps.artifact.outputs.name }}
+    env:
+      STORYBOOK_DISABLE_TELEMETRY: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Pin the dispatched commit even if the selected branch advances.
+          ref: ${{ needs.authorize.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build-storybook
+      - name: Record source and validate output
+        id: artifact
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
+          SOURCE_BRANCH: ${{ needs.authorize.outputs.branch }}
+        run: |
+          test -s ui/storybook-static/index.html
+          test -s ui/storybook-static/iframe.html
+          test -s ui/storybook-static/index.json
+          jq -n --arg sha "$SOURCE_SHA" --arg branch "$SOURCE_BRANCH" \
+            '{sha: $sha, branch: $branch}' > ui/storybook-static/deployment.json
+          echo "name=storybook-pages-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: ui/storybook-static
+
+  deploy:
+    name: Publish Storybook to Pages
+    needs: [authorize, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: storybook-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Recheck CODEOWNER access before publishing
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const authorize = require('./.github/scripts/authorize-storybook-pages.cjs');
+            await authorize({ github, context });
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+        with:
+          # Reuse the successful build's artifact when only deployment is rerun.
+          artifact_name: ${{ needs.build.outputs.artifact_name }}
+      - name: Report published source
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
+          SOURCE_BRANCH: ${{ needs.authorize.outputs.branch }}
+        run: |
+          # shellcheck disable=SC2016
+          printf 'Storybook: %s\n\nBranch: `%s`\n\nCommit: `%s`\n' \
+            "$PAGE_URL" "$SOURCE_BRANCH" "$SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
