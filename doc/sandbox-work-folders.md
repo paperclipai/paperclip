@@ -517,3 +517,9 @@ requires an explicit controller rotation event for that exact transition before
 accepting a changed PID/process fingerprint; other process changes still fail.
 See [GitHub execution identity](execution-github-identity.md) and the
 [run-log contract](run-log-events.md#native-process-rotation).
+
+Process metadata updates apply only while their run is active and unfinished.
+Late callbacks from warm-session inspection or maintenance cannot rewrite a
+completed run's process identity. Remote native process timestamps come from
+the validated remote marker; an unrelated host process with the same PID must
+not replace them. Active local execution retains its host process lookup.

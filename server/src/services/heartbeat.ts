@@ -7813,10 +7813,13 @@ export async function persistHeartbeatRunProcessMetadata(
   db: Db,
   runId: string,
   meta: { pid: number; processGroupId: number | null; startedAt: string },
+  processLocation: "local" | "remote" = "local",
 ) {
-  const observedStartedAt = await readProcessStartedAt(meta.pid).catch(
-    () => null,
-  );
+  // A remote PID can collide with an unrelated control-plane process. Its
+  // validated remote marker, not the host's process table, owns this identity.
+  const observedStartedAt = processLocation === "local"
+    ? await readProcessStartedAt(meta.pid).catch(() => null)
+    : null;
   const startedAt = new Date(observedStartedAt ?? meta.startedAt);
   return db
     .update(heartbeatRuns)
@@ -7828,7 +7831,14 @@ export async function persistHeartbeatRunProcessMetadata(
         : startedAt,
       updatedAt: new Date(),
     })
-    .where(eq(heartbeatRuns.id, runId))
+    // Warm-session inspection and idle maintenance can invoke a captured spawn
+    // callback after this run ended. Keep completed process history immutable,
+    // including when finalization races the asynchronous identity lookup above.
+    .where(and(
+      eq(heartbeatRuns.id, runId),
+      eq(heartbeatRuns.status, "running"),
+      isNull(heartbeatRuns.finishedAt),
+    ))
     .returning()
     .then((rows) => rows[0] ?? null);
 }
@@ -11923,8 +11933,9 @@ export function heartbeatService(
   async function persistRunProcessMetadata(
     runId: string,
     meta: { pid: number; processGroupId: number | null; startedAt: string },
+    processLocation: "local" | "remote" = "local",
   ) {
-    return persistHeartbeatRunProcessMetadata(db, runId, meta);
+    return persistHeartbeatRunProcessMetadata(db, runId, meta, processLocation);
   }
 
   async function clearDetachedRunWarning(runId: string) {
@@ -21560,7 +21571,7 @@ export function heartbeatService(
                       enqueueWakeup,
                       onSpawn: async (meta) => {
                         markDispatchStarted();
-                        await measureSandboxOperation("heartbeat.persist_run_process_metadata", { operationIndex: 141 }, async () => (persistRunProcessMetadata(run.id, meta)));
+                        await measureSandboxOperation("heartbeat.persist_run_process_metadata", { operationIndex: 141 }, async () => (persistRunProcessMetadata(run.id, meta, executionTarget?.kind === "remote" ? "remote" : "local")));
                       },
                     }),
                 )));
