@@ -154,6 +154,30 @@ A configuration-incomplete result is a gate outcome, not a runtime failure. It i
 
 An unresolved workspace base ref is another configuration-incomplete condition. A `git_worktree` workspace bases a fresh worktree on a configured base ref. Paperclip first fetches a remote-only ref before dispatch: it maps an unqualified name (for example `fix/foo`) or a remote-tracking name (for example `origin/fix/foo`) to `origin/<branch>`, runs the authenticated fetch, and re-checks the commit. A ref that resolves lets work continue on the resolved commit. A ref that is still unresolvable after the fetch produces a configuration-incomplete blocker that names the requested ref, rather than a dispatched-then-failed run. Because the adapter never started, Paperclip queues no missing-comment retry. The recovery action dedupes by the canonical remote ref (`origin/<branch>`), not the operator spelling. Two equivalent spellings of one remote branch, for example `fix/foo` and `origin/fix/foo`, share one recovery identity, so a repeated failure reuses the active action and does not reset the attempt count or post a second notice. A different remote branch is a distinct blocker. Paperclip resolves the prior recovery action, creates a new action for the new ref, and notifies the operator with the new ref instead of overwriting the active action of the prior ref.
 
+### Pre-start capacity admission
+
+Hosts may install a process-wide hook with `registerPreStartAdmissionHook`, or
+inject `HeartbeatServiceOptions.preStartAdmission` for an isolated host/test, as
+the supported last gate before adapter, native-runner, or provider execution.
+The hook receives
+the company, agent, issue, run, wake request, provider, model, and a previously
+observed capacity snapshot. Its snapshot reader must use existing telemetry; it
+must not make a model/provider call while deciding whether another call may start.
+
+The default mode is `observe`. In that mode the hook's decision is audited but a
+veto cannot stop execution. Enforcement must be activated explicitly after the
+operator's rollout gates pass. Once enforcement is active, missing, mismatched,
+future-dated, stale, or windowless telemetry vetoes the run. The host selects the
+newest current model-specific window after a quota reset and ignores expired
+windows. Hook evaluation must atomically reserve capacity or veto and must be
+idempotent by `runId`.
+
+Wake callers that supply an idempotency key receive the first matching run for
+that company and agent. The issue or agent row lock serializes concurrent
+duplicates, so a repeated wake cannot create a second run or re-evaluate a veto.
+An enforced veto terminalizes the claimed run with
+`pre_start_admission_<reason>` before any execution boundary is crossed.
+
 ## 6. Parent/Sub-Issue vs Blockers
 
 Paperclip uses two different relationships for different jobs.
