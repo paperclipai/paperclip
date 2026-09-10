@@ -5,6 +5,7 @@ import { logger } from "../middleware/logger.js";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   environmentLeases,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueRecoveryActions,
   issues,
@@ -27,6 +28,7 @@ export async function validateExecutionReconciliation(input: {
   agentId: string | null;
   sourceRunId: unknown;
   decision: ExecutionReconciliation | undefined;
+  requireNeverStarted?: boolean;
 }) {
   const { db, companyId, issueId, agentId, decision } = input;
   if (!decision || decision.runId !== input.sourceRunId || !agentId) {
@@ -47,6 +49,25 @@ export async function validateExecutionReconciliation(input: {
     .select()
     .from(issues)
     .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+  const providerInvocations = input.requireNeverStarted
+    ? await db
+      .select({ id: heartbeatRunEvents.id })
+      .from(heartbeatRunEvents)
+      .where(and(
+        eq(heartbeatRunEvents.companyId, companyId),
+        eq(heartbeatRunEvents.runId, decision.runId),
+        eq(heartbeatRunEvents.eventType, "adapter.invoke"),
+      ))
+      .limit(1)
+    : [];
+  if (
+    input.requireNeverStarted &&
+    ((run != null && run.startedAt !== null) || providerInvocations.length > 0)
+  ) {
+    throw conflict(
+      "The reviewer run has provider-start evidence and cannot be reconciled as not performed.",
+    );
+  }
   const review =
     task?.status === "in_review"
       ? parseIssueExecutionState(task.executionState)
@@ -133,6 +154,7 @@ export async function markExecutionReconciliation(
   >,
   decision: ExecutionReconciliation,
   actorId: string,
+  deliveryMode: "review" | "todo" = "todo",
 ) {
   await db
     .update(nativeRunFinalizations)
@@ -157,6 +179,7 @@ export async function markExecutionReconciliation(
           recordedAt: new Date().toISOString(),
         },
         continuationDelivery: "pending",
+        continuationDeliveryMode: deliveryMode,
       },
     })
     .where(
@@ -185,7 +208,7 @@ export async function deliverReconciledExecutions(
     try {
       const decision = action.evidence.executionReconciliation as
         ExecutionReconciliation | undefined;
-      if (!decision || !action.returnOwnerAgentId) continue;
+      if (!decision) continue;
       const pendingDecision = and(
         eq(issueRecoveryActions.companyId, action.companyId),
         eq(issueRecoveryActions.id, action.id),
@@ -202,9 +225,38 @@ export async function deliverReconciledExecutions(
             eq(issues.id, action.sourceIssueId),
           ),
         );
+      const reviewState = task?.status === "in_review"
+        ? parseIssueExecutionState(task.executionState)
+        : null;
+      const reviewParticipantAgentId =
+        reviewState?.status === "pending" &&
+        reviewState.currentStageId != null &&
+        reviewState.currentStageType === "review" &&
+        reviewState.currentParticipant?.type === "agent"
+          ? reviewState.currentParticipant.agentId
+          : null;
+      const reviewReconciliation =
+        action.evidence.continuationDeliveryMode === "review";
+      const deliveryAgentId = reviewReconciliation
+        ? reviewParticipantAgentId
+        : action.returnOwnerAgentId;
+      if (!deliveryAgentId) {
+        await db
+          .update(issueRecoveryActions)
+          .set({
+            evidence: sql`${issueRecoveryActions.evidence} || '{"continuationDelivery":"invalidated"}'::jsonb`,
+          })
+          .where(pendingDecision);
+        continue;
+      }
       if (
         !task ||
-        task.assigneeAgentId !== action.returnOwnerAgentId ||
+        task.assigneeAgentId !== deliveryAgentId ||
+        (reviewReconciliation &&
+          (task.status !== "in_review" ||
+            reviewState?.status !== "pending" ||
+            reviewState.currentStageType !== "review" ||
+            reviewState.currentParticipant?.type !== "agent")) ||
         ["done", "cancelled"].includes(task.status)
       ) {
         await db
@@ -215,7 +267,7 @@ export async function deliverReconciledExecutions(
           .where(pendingDecision);
         continue;
       }
-      const run = await wake(action.returnOwnerAgentId, {
+      const run = await wake(deliveryAgentId, {
         source: "automation",
         triggerDetail: "system",
         reason: "issue_recovery_action_restored",
@@ -233,6 +285,17 @@ export async function deliverReconciledExecutions(
           wakeReason: "issue_recovery_action_restored",
           source: "execution.reconciled",
         },
+        issueStateGuard: reviewReconciliation
+          ? {
+              statuses: ["in_review"],
+              assigneeAgentId: deliveryAgentId,
+              execution: {
+                currentStageId: reviewState!.currentStageId!,
+                currentStageType: "review",
+                participantAgentId: deliveryAgentId,
+              },
+            }
+          : undefined,
       });
       if (run)
         await db.transaction(async (tx) => {
@@ -243,7 +306,7 @@ export async function deliverReconciledExecutions(
               and(
                 eq(heartbeatRuns.companyId, action.companyId),
                 eq(heartbeatRuns.id, run.id),
-                eq(heartbeatRuns.agentId, action.returnOwnerAgentId!),
+                eq(heartbeatRuns.agentId, deliveryAgentId),
                 sql`${heartbeatRuns.contextSnapshot}->>'recoveryActionId' = ${action.id}`,
                 sql`${heartbeatRuns.contextSnapshot}->>'previousRunId' = ${decision.runId}`,
               ),
