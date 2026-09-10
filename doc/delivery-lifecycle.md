@@ -76,6 +76,14 @@ One policy per project (`delivery_policies`), versioned on every write. Auto-mer
 requires a persisted policy with an `authorization` record naming the approving
 operator, and the connection/repository must resolve.
 
+An explicit GitHub connection resolves its Authorization binding from its grant,
+not an arbitrary connection-row secret. System delivery accepts exactly one
+active personal grant owned by an active non-viewer company member, or one active
+default organization grant. Personal secret ownership and declarations are
+checked through audited user-secret resolution. Ambiguous, revoked, disabled,
+wrong-company, or per-agent authorization fails closed without falling back to
+company tokens. This connection boundary currently supports GitHub.com only.
+
 Any material scope change — repository, target branch, merge method or mode,
 required checks, Greptile/independent-approval requirements, connections, or
 deployment disposition — voids the standing authorization. The operator must

@@ -1,8 +1,10 @@
-import { and, eq } from "drizzle-orm";
 import { secretService } from "../secrets.js";
-import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "../git-credentials.js";
-import { gitHubApiBase } from "../github-fetch.js";
-import { toolConnections, type Db } from "@paperclipai/db";
+import {
+  DEFAULT_GITHUB_TOKEN_SECRET_NAMES,
+  resolveGitHubConnectionCredential,
+} from "../git-credentials.js";
+import { gitHubApiBase, isGitHubDotCom } from "../github-fetch.js";
+import { type Db } from "@paperclipai/db";
 import type { DeliveryCheck } from "@paperclipai/shared";
 
 /**
@@ -192,48 +194,51 @@ export function createGitHubDeliveryClient(
 ): GitHubDeliveryClient {
   const fetchImpl = options.fetch ?? fetch;
 
-  async function resolveToken(companyId: string, connectionId: string | null): Promise<GitHubResult<string>> {
-    const secrets = secretService(db);
-    if (connectionId) {
-      const [connection] = await db
-        .select({
-          companyId: toolConnections.companyId,
-          enabled: toolConnections.enabled,
-          status: toolConnections.status,
-          credentialSecretRefs: toolConnections.credentialSecretRefs,
-        })
-        .from(toolConnections)
-        .where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.id, connectionId)))
-        .limit(1);
-      if (!connection) {
-        return { ok: false, status: null, errorCode: "connection_missing", message: "GitHub connection not found for this company", retryAfterSeconds: null };
-      }
-      if (!connection.enabled) {
-        return { ok: false, status: null, errorCode: "connection_missing", message: "GitHub connection is disabled", retryAfterSeconds: null };
-      }
-      for (const ref of connection.credentialSecretRefs ?? []) {
-        if (ref.required === false) continue;
-        try {
-          const value = (await secrets.resolveSecretValue(companyId, ref.secretId, ref.versionSelector ?? "latest")).trim();
-          if (value) return { ok: true, value };
-        } catch {
-          // Try the next ref; a partially configured connection may still have a usable token.
-        }
-      }
+  async function resolveCredential(
+    companyId: string,
+    connectionId: string | null,
+    host: string,
+  ): Promise<GitHubResult<{ token: string; authorization: string }>> {
+    if (!isGitHubDotCom(host)) {
       return {
         ok: false,
         status: null,
         errorCode: "connection_missing",
-        message: "GitHub connection has no resolvable credential",
+        message: "GitHub connection does not match the repository host",
         retryAfterSeconds: null,
       };
     }
+    if (connectionId) {
+      const credential = await resolveGitHubConnectionCredential(db, companyId, connectionId);
+      if (!credential.ok) {
+        return {
+          ok: false,
+          status: null,
+          errorCode: "connection_missing",
+          message: credential.error,
+          retryAfterSeconds: null,
+        };
+      }
+      return {
+        ok: true,
+        value: {
+          token: credential.token,
+          authorization: credential.authorization,
+        },
+      };
+    }
+    const secrets = secretService(db);
     for (const name of DEFAULT_GITHUB_TOKEN_SECRET_NAMES) {
       const secret = await secrets.getByName(companyId, name);
       if (!secret) continue;
       try {
         const value = (await secrets.resolveSecretValue(companyId, secret.id, "latest")).trim();
-        if (value) return { ok: true, value };
+        if (value) {
+          return {
+            ok: true,
+            value: { token: value, authorization: `Bearer ${value}` },
+          };
+        }
       } catch {
         // Fall through to the next configured name.
       }
@@ -247,6 +252,13 @@ export function createGitHubDeliveryClient(
     };
   }
 
+  async function resolveToken(companyId: string, connectionId: string | null): Promise<GitHubResult<string>> {
+    const credential = await resolveCredential(companyId, connectionId, "github.com");
+    return credential.ok
+      ? { ok: true, value: credential.value.token }
+      : credential;
+  }
+
   async function request<T>(
     companyId: string,
     connectionId: string | null,
@@ -255,13 +267,13 @@ export function createGitHubDeliveryClient(
     path: string,
     body?: unknown,
   ): Promise<GitHubResult<T>> {
-    const token = await resolveToken(companyId, connectionId);
-    if (!token.ok) return token;
+    const credential = await resolveCredential(companyId, connectionId, host);
+    if (!credential.ok) return credential;
     const headers: Record<string, string> = {
       accept: "application/vnd.github+json",
       "user-agent": "paperclip-delivery-controller",
       "x-github-api-version": "2022-11-28",
-      authorization: `Bearer ${token.value}`,
+      authorization: credential.value.authorization,
     };
     if (body !== undefined) headers["content-type"] = "application/json";
     let response: Response;
@@ -514,8 +526,8 @@ export function createGitHubDeliveryClient(
     host: string;
     pullRequestNodeId: string;
   }): Promise<GitHubResult<{ enqueued: boolean; position: number | null }>> {
-    const token = await resolveToken(input.companyId, input.connectionId);
-    if (!token.ok) return token;
+    const credential = await resolveCredential(input.companyId, input.connectionId, input.host);
+    if (!credential.ok) return credential;
     let response: Response;
     try {
       response = await fetchImpl(`${apiBase(input.host)}/graphql`, {
@@ -524,7 +536,7 @@ export function createGitHubDeliveryClient(
           accept: "application/json",
           "content-type": "application/json",
           "user-agent": "paperclip-delivery-controller",
-          authorization: `Bearer ${token.value}`,
+          authorization: credential.value.authorization,
         },
         body: JSON.stringify({
           query: `mutation EnqueuePullRequest($id: ID!) {

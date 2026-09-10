@@ -12,6 +12,7 @@ import { and, eq, inArray, or } from "drizzle-orm";
 import { isGitHubDotCom } from "./github-fetch.js";
 import { secretService } from "./secrets.js";
 import { toolAccessService } from "./tool-access.js";
+import type { ToolCredentialSecretRef } from "@paperclipai/shared";
 
 /**
  * Server-side git credentials for managed project checkouts and execution-workspace base
@@ -196,6 +197,258 @@ type GitCredentialSecretsDeps = {
   resolveUserSecretValue?: SecretServiceLike["resolveUserSecretValue"];
 };
 
+export type GitHubConnectionCredentialResolution =
+  | { ok: true; token: string; authorization: string }
+  | { ok: false; error: string };
+
+function githubConnectionSourceMatches(connection: { config?: unknown; transportConfig?: unknown }): boolean {
+  const config = connection.config && typeof connection.config === "object"
+    ? connection.config as Record<string, unknown>
+    : {};
+  const transportConfig = connection.transportConfig && typeof connection.transportConfig === "object"
+    ? connection.transportConfig as Record<string, unknown>
+    : {};
+  return config.sourceTemplateKey === "github" || transportConfig.sourceTemplateKey === "github";
+}
+
+async function refreshManagedGitHubGrantIfNeeded(
+  db: Db,
+  companyId: string,
+  grant: typeof connectionGrants.$inferSelect,
+  context: {
+    actorId: string;
+    issueId?: string | null;
+    heartbeatRunId?: string | null;
+  },
+): Promise<typeof connectionGrants.$inferSelect> {
+  const expiresAt = grant.providerTenant?.oauth?.accessTokenExpiresAt;
+  const refreshedAt = grant.providerTenant?.oauth?.refreshedAt;
+  const expiryMs = typeof expiresAt === "string" ? Date.parse(expiresAt) : Number.NaN;
+  const refreshedMs = typeof refreshedAt === "string" ? Date.parse(refreshedAt) : Number.NaN;
+  if (!Number.isFinite(expiryMs) || (
+    expiryMs > Date.now() + 60 * 60_000
+    && Number.isFinite(refreshedMs)
+    && refreshedMs > Date.now() - 30 * 24 * 60 * 60_000
+  )) {
+    return grant;
+  }
+  return toolAccessService(db).refreshOAuthGrantCredentials({
+    companyId,
+    connectionId: grant.connectionId,
+    grantId: grant.id,
+    actor: { actorType: "system", actorId: context.actorId },
+    issueId: context.issueId,
+    heartbeatRunId: context.heartbeatRunId,
+  });
+}
+
+
+/**
+ * Resolve the credential behind one policy-selected GitHub connection.
+ *
+ * A connection row declares where a credential is projected, while the selected
+ * grant owns the secret reference. Personal connections deliberately keep their
+ * secret refs off the connection row, so a system consumer may use one only when
+ * exactly one active personal grant exists. That is the same background
+ * resolution rule used by connection health and catalog checks: zero or multiple
+ * active owners fail closed rather than silently becoming a shared credential.
+ */
+export async function resolveGitHubConnectionCredential(
+  db: Db,
+  companyId: string,
+  connectionId: string,
+): Promise<GitHubConnectionCredentialResolution> {
+  const secrets = secretService(db);
+  const [connection] = await db.select().from(toolConnections).where(and(
+    eq(toolConnections.companyId, companyId),
+    eq(toolConnections.id, connectionId),
+  )).limit(1);
+  if (!connection) {
+    return { ok: false, error: "GitHub connection not found for this company" };
+  }
+  if (!githubConnectionSourceMatches(connection)) {
+    return { ok: false, error: "Selected connection is not a GitHub connection" };
+  }
+  if (!connection.enabled) {
+    return { ok: false, error: "GitHub connection is disabled" };
+  }
+  if (connection.status !== "active") {
+    return { ok: false, error: "GitHub connection is not active" };
+  }
+  if (connection.credentialSource !== "paperclip_vault") {
+    return { ok: false, error: "GitHub connection credential source is unavailable" };
+  }
+  if (connection.authKind !== "api_key" && connection.authKind !== "oauth") {
+    return { ok: false, error: "GitHub connection has no supported authorization" };
+  }
+
+  const grants = await db.select().from(connectionGrants).where(and(
+    eq(connectionGrants.companyId, companyId),
+    eq(connectionGrants.connectionId, connection.id),
+  ));
+  let candidates: Array<typeof connectionGrants.$inferSelect>;
+  if (connection.credentialPolicy === "per_user") {
+    candidates = grants.filter((grant) => grant.kind === "user" && grant.status === "active");
+  } else if (connection.credentialPolicy === "per_agent") {
+    return { ok: false, error: "A dedicated agent GitHub credential cannot authorize system delivery" };
+  } else {
+    candidates = grants.filter((grant) =>
+      grant.kind === "organization" && grant.isDefault && grant.status === "active",
+    );
+  }
+  if (candidates.length !== 1) {
+    return {
+      ok: false,
+      error: candidates.length === 0
+        ? "GitHub connection has no active authorization"
+        : "GitHub connection authorization is ambiguous",
+    };
+  }
+  let grant = candidates[0]!;
+
+  if (grant.kind === "user") {
+    if (!grant.subjectUserId) {
+      return { ok: false, error: "GitHub connection authorization has no owner" };
+    }
+    const [membership] = await db.select({
+      role: companyMemberships.membershipRole,
+    }).from(companyMemberships).where(and(
+      eq(companyMemberships.companyId, companyId),
+      eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.principalId, grant.subjectUserId),
+      eq(companyMemberships.status, "active"),
+    )).limit(1);
+    if (!membership || membership.role === "viewer") {
+      return { ok: false, error: "GitHub connection owner is not authorized for company delivery" };
+    }
+  }
+  const responsibleUserId = grant.kind === "user" ? grant.subjectUserId : null;
+
+  if (connection.authKind === "oauth") {
+    try {
+      grant = await refreshManagedGitHubGrantIfNeeded(db, companyId, grant, {
+        actorId: "delivery-github-client",
+      });
+    } catch {
+      return { ok: false, error: "GitHub connection authorization could not be refreshed" };
+    }
+    if (grant.status !== "active") {
+      return { ok: false, error: "GitHub connection authorization is not active" };
+    }
+    const github = grant.providerTenant?.github;
+    if (!github || github.installationCount < 1 || github.repositoryCount < 1) {
+      return { ok: false, error: "GitHub connection authorization has no repository access" };
+    }
+  }
+  if (
+    (responsibleUserId && (grant.kind !== "user" || grant.subjectUserId !== responsibleUserId))
+    || (!responsibleUserId && grant.kind !== "organization")
+  ) {
+    return { ok: false, error: "GitHub connection authorization identity changed during resolution" };
+  }
+
+  const authorizationRefs = connection.credentialRefs.filter((ref) =>
+    ref.placement === "header" && ref.key.toLowerCase() === "authorization",
+  );
+  let secretRef: ToolCredentialSecretRef;
+  let prefix: string;
+  if (authorizationRefs.length === 1) {
+    const authorizationRef = authorizationRefs[0]!;
+    const matches = grant.credentialSecretRefs.filter((candidate) =>
+      candidate.configPath === authorizationRef.name
+      || candidate.configPath === `credentials.${authorizationRef.name}`,
+    );
+    if (matches.length !== 1) {
+      return {
+        ok: false,
+        error: matches.length === 0
+          ? "GitHub connection Authorization credential is missing"
+          : "GitHub connection Authorization credential is ambiguous",
+      };
+    }
+    secretRef = matches[0]!;
+    prefix = authorizationRefs[0]!.prefix ?? "";
+  } else if (authorizationRefs.length === 0 && connection.authKind === "oauth") {
+    const accessRefs = grant.credentialSecretRefs.filter((ref) => ref.configPath === "oauth.access_token");
+    if (accessRefs.length !== 1) {
+      return {
+        ok: false,
+        error: accessRefs.length === 0
+          ? "GitHub connection access token is missing"
+          : "GitHub connection access token is ambiguous",
+      };
+    }
+    secretRef = accessRefs[0]!;
+    prefix = "Bearer ";
+  } else {
+    return { ok: false, error: "GitHub connection Authorization binding is ambiguous" };
+  }
+  if (/[\r\n]/.test(prefix)) {
+    return { ok: false, error: "GitHub connection Authorization binding is invalid" };
+  }
+
+  const [secret] = await db.select({
+    scope: companySecrets.scope,
+    ownerUserId: companySecrets.ownerUserId,
+    userSecretDefinitionId: companySecrets.userSecretDefinitionId,
+  }).from(companySecrets).where(and(
+    eq(companySecrets.companyId, companyId),
+    eq(companySecrets.id, secretRef.secretId),
+  )).limit(1);
+  if (!secret) {
+    return { ok: false, error: "GitHub connection credential is missing" };
+  }
+
+  const accessContext = {
+    consumerType: "tool_connection" as const,
+    consumerId: connection.id,
+    configPath: secretRef.configPath,
+    actorType: "system" as const,
+    actorId: "delivery-github-client",
+    responsibleUserId,
+  };
+  let token: string;
+  try {
+    if (grant.kind === "user") {
+      if (
+        !responsibleUserId
+        || secret.scope !== "user"
+        || secret.ownerUserId !== responsibleUserId
+        || !secret.userSecretDefinitionId
+        || !secrets.resolveUserSecretValue
+      ) {
+        return { ok: false, error: "GitHub connection credential owner does not match its authorization" };
+      }
+      const resolved = await secrets.resolveUserSecretValue(companyId, {
+        definitionId: secret.userSecretDefinitionId,
+        responsibleUserId,
+        version: secretRef.versionSelector ?? "latest",
+        required: true,
+      }, accessContext);
+      if (!resolved) {
+        return { ok: false, error: "GitHub connection credential is missing" };
+      }
+      token = resolved.value.trim();
+    } else {
+      if (secret.scope !== "company") {
+        return { ok: false, error: "GitHub connection credential owner does not match its authorization" };
+      }
+      token = (await secrets.resolveSecretValue(
+        companyId,
+        secretRef.secretId,
+        secretRef.versionSelector ?? "latest",
+        { accessContext },
+      )).trim();
+    }
+  } catch {
+    return { ok: false, error: "GitHub connection credential could not be resolved" };
+  }
+  if (!token) {
+    return { ok: false, error: "GitHub connection credential is empty" };
+  }
+  return { ok: true, token, authorization: `${prefix}${token}` };
+}
+
 /**
  * Build the credential provider for one run. Resolution order: the managed GitHub identity
  * resolver, then a company secret by well-known name, then the server process environment
@@ -303,13 +556,7 @@ export async function resolveManagedGitHubIdentitySelection(
   const connections = await db.select().from(toolConnections).where(and(
     eq(toolConnections.companyId, companyId),
   ));
-  const githubConnections = connections.filter((connection) => {
-    const config = connection.config && typeof connection.config === "object" ? connection.config as Record<string, unknown> : {};
-    const transportConfig = connection.transportConfig && typeof connection.transportConfig === "object"
-      ? connection.transportConfig as Record<string, unknown>
-      : {};
-    return config.sourceTemplateKey === "github" || transportConfig.sourceTemplateKey === "github";
-  });
+  const githubConnections = connections.filter(githubConnectionSourceMatches);
   if (githubConnections.length === 0) return { configured: false };
 
   const connectionIds = githubConnections.map((connection) => connection.id);
@@ -382,15 +629,7 @@ export async function filterResolvedGitHubConnectionsForRun<T extends {
   responsibleUserId?: string | null;
   connections: T[];
 }): Promise<T[]> {
-  const githubConnections = input.connections.filter((connection) => {
-    const config = connection.config && typeof connection.config === "object"
-      ? connection.config as Record<string, unknown>
-      : {};
-    const transportConfig = connection.transportConfig && typeof connection.transportConfig === "object"
-      ? connection.transportConfig as Record<string, unknown>
-      : {};
-    return config.sourceTemplateKey === "github" || transportConfig.sourceTemplateKey === "github";
-  });
+  const githubConnections = input.connections.filter(githubConnectionSourceMatches);
   if (githubConnections.length === 0) return input.connections;
   const selection = await resolveManagedGitHubIdentitySelection(input.db, input.companyId, {
     agentId: input.agentId,
@@ -428,24 +667,11 @@ export async function resolveManagedGitHubCredential(
     )).limit(1);
     if (!membership || membership.role === "viewer") return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity owner is not an authorized company member" };
   }
-  const expiresAt = grant.providerTenant?.oauth?.accessTokenExpiresAt;
-  const refreshedAt = grant.providerTenant?.oauth?.refreshedAt;
-  const expiryMs = typeof expiresAt === "string" ? Date.parse(expiresAt) : Number.NaN;
-  const refreshedMs = typeof refreshedAt === "string" ? Date.parse(refreshedAt) : Number.NaN;
-  if (Number.isFinite(expiryMs) && (
-    expiryMs <= Date.now() + 60 * 60_000
-    || !Number.isFinite(refreshedMs)
-    || refreshedMs <= Date.now() - 30 * 24 * 60 * 60_000
-  )) {
-    grant = await toolAccessService(db).refreshOAuthGrantCredentials({
-      companyId,
-      connectionId: grant.connectionId,
-      grantId: grant.id,
-      actor: { actorType: "system", actorId: "workspace-git-credential" },
-      issueId: context.issueId,
-      heartbeatRunId: context.heartbeatRunId,
-    });
-  }
+  grant = await refreshManagedGitHubGrantIfNeeded(db, companyId, grant, {
+    actorId: "workspace-git-credential",
+    issueId: context.issueId,
+    heartbeatRunId: context.heartbeatRunId,
+  });
   const accessRef = grant.credentialSecretRefs.find((ref) => ref.configPath === "oauth.access_token");
   const github = grant.providerTenant?.github;
   if (!accessRef || !github) return { configured: true, identitySource: selection.identitySource, error: "The managed GitHub identity is incomplete" };
