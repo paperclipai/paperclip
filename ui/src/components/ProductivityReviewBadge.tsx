@@ -15,6 +15,8 @@ const REVIEW_STATUS_LABELS: Record<string, string> = {
   todo: "Open",
   in_progress: "In progress",
   in_review: "In review",
+  ready_to_merge: "Ready to merge",
+  merging: "Merging",
   blocked: "Blocked",
   backlog: "Open",
 };

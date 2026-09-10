@@ -64,6 +64,8 @@ function RelationNavigationList({
 const NEXT_SUBTASK_STATUS_ORDER: IssueStatus[] = [
   "in_progress",
   "in_review",
+  "ready_to_merge",
+  "merging",
   "todo",
   "backlog",
   "blocked",

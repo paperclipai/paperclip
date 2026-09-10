@@ -76,12 +76,19 @@ export function externalObjectFilterLabel(value: string): string {
   return EXTERNAL_OBJECT_FILTER_LABELS[value] ?? issueFilterLabel(value);
 }
 
-export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
+export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "ready_to_merge", "merging", "blocked", "done", "cancelled"];
 export const issuePriorityOrder = ["critical", "high", "medium", "low"];
+
+/**
+ * The "Active" quick filter — open work, including the delivery lanes that are
+ * still in flight. Exported so surfaces that describe the applied filter (the
+ * inbox toolbar) key off the same list instead of a hardcoded length.
+ */
+export const ACTIVE_ISSUE_STATUS_FILTER = ["todo", "in_progress", "in_review", "ready_to_merge", "merging", "blocked"];
 
 export const issueQuickFilterPresets = [
   { label: "All", statuses: [] as string[] },
-  { label: "Active", statuses: ["todo", "in_progress", "in_review", "blocked"] },
+  { label: "Active", statuses: ACTIVE_ISSUE_STATUS_FILTER },
   { label: "Backlog", statuses: ["backlog"] },
   { label: "Done", statuses: ["done", "cancelled"] },
 ];

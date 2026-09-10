@@ -715,7 +715,7 @@ export function DesignGuide() {
             {[
               "active", "running", "paused", "idle", "archived", "planned",
               "achieved", "completed", "failed", "timed_out", "succeeded", "error",
-              "pending_approval", "backlog", "todo", "in_progress", "in_review", "blocked",
+              "pending_approval", "backlog", "todo", "in_progress", "in_review", "ready_to_merge", "merging", "blocked",
               "done", "terminated", "cancelled", "pending", "revision_requested",
               "approved", "rejected",
             ].map((s) => (
@@ -726,7 +726,7 @@ export function DesignGuide() {
 
         <SubSection title="IssueStatusBadge (brand chip + glyph — PAP-75)">
           <div className="flex items-center gap-2 flex-wrap">
-            {["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"].map(
+            {["backlog", "todo", "in_progress", "in_review", "ready_to_merge", "merging", "done", "blocked", "cancelled"].map(
               (s) => (
                 <IssueStatusBadge key={s} status={s} />
               )
@@ -736,7 +736,7 @@ export function DesignGuide() {
 
         <SubSection title="StatusIcon (interactive)">
           <div className="flex items-center gap-3 flex-wrap">
-            {["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"].map(
+            {["backlog", "todo", "in_progress", "in_review", "ready_to_merge", "merging", "done", "cancelled", "blocked"].map(
               (s) => (
                 <div key={s} className="flex items-center gap-1.5">
                   <StatusIcon status={s} />

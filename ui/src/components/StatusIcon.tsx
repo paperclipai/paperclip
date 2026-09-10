@@ -1,11 +1,22 @@
 import { useState } from "react";
-import type { IssueBlockerAttention } from "@paperclipai/shared";
+import { DELIVERY_ISSUE_STATUSES, ISSUE_STATUSES, type IssueBlockerAttention } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
 import { StatusGlyph, type StatusGlyphSize } from "./StatusGlyph";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 
-const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "cancelled", "blocked"];
+const controllerOwnedStatuses: readonly string[] = DELIVERY_ISSUE_STATUSES;
+
+/** Delivery lanes are displayable but not user-selectable mutation targets. */
+
+export function isControllerOwnedIssueStatus(status: string): boolean {
+  return controllerOwnedStatuses.includes(status);
+}
+
+
+const userSelectableStatuses = ISSUE_STATUSES.filter(
+  (status) => !isControllerOwnedIssueStatus(status),
+);
 
 function statusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
@@ -125,7 +136,7 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent className="w-40 p-1" align="start">
-        {allStatuses.map((s) => (
+        {userSelectableStatuses.map((s) => (
           <Button
             key={s}
             variant="ghost"

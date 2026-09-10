@@ -18,6 +18,8 @@ const STATUS_ICON_CLASS: Record<string, string> = {
   todo: "lucide-circle",
   in_progress: "lucide-rotate-cw",
   in_review: "lucide-circle-dot",
+  ready_to_merge: "lucide-git-pull-request",
+  merging: "lucide-git-merge",
   done: "lucide-circle-check",
   blocked: "lucide-circle-minus",
   cancelled: "lucide-ban",

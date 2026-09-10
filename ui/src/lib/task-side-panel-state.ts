@@ -8,6 +8,7 @@ export type TaskSidePanelTabPayload =
   | { kind: "properties" }
   | { kind: "subtasks" }
   | { kind: "artifacts" }
+  | { kind: "delivery" }
   | { kind: "issue-document"; documentKey: string }
   | {
       kind: "files-browser";
@@ -65,6 +66,7 @@ function parsePayload(value: unknown): TaskSidePanelTabPayload | null {
   if (kind === "properties") return { kind };
   if (kind === "subtasks") return { kind };
   if (kind === "artifacts") return { kind };
+  if (kind === "delivery") return { kind };
   if (kind === "issue-document") {
     return typeof input.documentKey === "string" && input.documentKey.length > 0
       ? { kind, documentKey: input.documentKey }
@@ -192,6 +194,10 @@ export function taskPanelSubtasksTab(): SidePanelTabRecord<TaskSidePanelTabPaylo
 
 export function taskPanelArtifactsTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {
   return { id: "artifacts", type: "artifacts", label: "Artifacts", closable: true, contentMode: "padded", payload: { kind: "artifacts" } };
+}
+
+export function taskPanelDeliveryTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {
+  return { id: "delivery", type: "delivery", label: "Delivery", closable: true, contentMode: "padded", payload: { kind: "delivery" } };
 }
 
 export function taskPanelDocumentTab(documentKey: string, label: string): SidePanelTabRecord<TaskSidePanelTabPayload> {

@@ -20,7 +20,7 @@ const SEARCH_FILTER_PARAM_KEYS = [
   "updatedAfter",
 ] as const;
 
-const OPEN_STATUSES: IssueStatus[] = ["backlog", "todo", "in_progress", "in_review", "blocked"];
+const OPEN_STATUSES: IssueStatus[] = ["backlog", "todo", "in_progress", "in_review", "ready_to_merge", "merging", "blocked"];
 const CLOSED_STATUSES: IssueStatus[] = ["done", "cancelled"];
 
 export type SearchOperatorKey = "status" | "assignee" | "project" | "label" | "priority" | "updated" | "is";

@@ -18,6 +18,7 @@ import {
   FileCode2,
   FileText,
   FolderOpen,
+  GitPullRequest,
   Lightbulb,
   ListTree,
   Plus,
@@ -29,6 +30,7 @@ import { PROPERTIES_PANE_HEADER_SLOT_ID } from "@/components/PropertiesPanel";
 import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
 import { IssuePropertiesArtifactsTab } from "@/components/issue-properties/IssuePropertiesArtifactsTab";
 import { IssuePropertiesPlansTab } from "@/components/issue-properties/IssuePropertiesPlansTab";
+import { TaskDeliveryPanel } from "@/components/delivery/TaskDeliveryPanel";
 import { TaskDetailSubtasksPanel } from "@/components/task-detail/TaskDetailRelationsPanel";
 import {
   SidePanelLauncher,
@@ -62,6 +64,7 @@ import { useLocation, useNavigate } from "@/lib/router";
 import {
   readTaskSidePanelState,
   taskPanelArtifactsTab,
+  taskPanelDeliveryTab,
   taskPanelDocumentTab,
   taskPanelFilesTab,
   taskPanelPropertiesTab,
@@ -103,6 +106,7 @@ function tabIcon(tab: SidePanelTabRecord<TaskSidePanelTabPayload>): ReactNode {
     case "properties": return <SlidersHorizontal />;
     case "subtasks": return <ListTree />;
     case "artifacts": return <Box />;
+    case "delivery": return <GitPullRequest />;
     case "files-browser": return <FolderOpen />;
     case "workspace-file": return <FileCode2 />;
     case "issue-document": return tab.payload.documentKey === "plan" ? <Lightbulb /> : <FileText />;
@@ -500,6 +504,7 @@ export function TaskSidePanel({
       { id: "properties", label: "Properties", icon: <SlidersHorizontal />, alreadyOpen: controller.tabs.some((tab) => tab.id === "properties") },
       ...(subtasksAvailable ? [{ id: "subtasks", label: "Subtasks", description: `${childIssues.length} total`, icon: <ListTree />, alreadyOpen: controller.tabs.some((tab) => tab.id === "subtasks") }] : []),
       { id: "artifacts", label: "Artifacts", icon: <Box />, alreadyOpen: controller.tabs.some((tab) => tab.id === "artifacts") },
+      { id: "delivery", label: "Delivery", icon: <GitPullRequest />, alreadyOpen: controller.tabs.some((tab) => tab.id === "delivery") },
     ];
     if (fileTabsEnabled) {
       primary.push({ id: "files", label: "Files", icon: <FolderOpen />, shortcut: "G F", alreadyOpen: controller.tabs.some((tab) => tab.id === "files") });
@@ -563,6 +568,7 @@ export function TaskSidePanel({
       });
     }
     else if (item.id === "artifacts") controller.openTab(taskPanelArtifactsTab());
+    else if (item.id === "delivery") controller.openTab(taskPanelDeliveryTab());
     else if (item.id === "files") {
       controller.openTab(taskPanelFilesTab());
       viewer.openBrowse();
@@ -656,6 +662,8 @@ export function TaskSidePanel({
     );
   } else if (activeTab.payload.kind === "artifacts") {
     content = <IssuePropertiesArtifactsTab issue={issue} onOpenDocument={openDocument} />;
+  } else if (activeTab.payload.kind === "delivery") {
+    content = <TaskDeliveryPanel issueId={issue.id} companyId={issue.companyId} />;
   } else if (
     activeTab.payload.kind === "issue-document"
     && isPlanningDocumentKey(activeTab.payload.documentKey)

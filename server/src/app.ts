@@ -43,6 +43,8 @@ import { environmentService } from "./services/environments.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
+import { deliveryRoutes } from "./routes/delivery.js";
+import { deliveryService } from "./services/delivery/index.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
@@ -595,10 +597,20 @@ export async function createApp(
     pluginWorkerManager: workerManager,
     approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),
   }));
+  // Delivery routes need the governed MCP gateway for scoped Greptile reads, so
+  // they mount after the gateway exists. Their prefixes are distinct.
+  const delivery = deliveryService(db, { toolGateway });
+  api.use(deliveryRoutes(db, { delivery }));
+  // The GitHub event pipeline (constructed in index.ts, after createApp
+  // resolves) reads the controller from app.locals for event-driven following.
+  app.locals.paperclipDeliveryService = delivery;
   app.use(mcpGatewayProtocolRoutes(toolGateway));
   const connectionIntentHeartbeat = heartbeatService(db, {
     pluginWorkerManager: workerManager,
   });
+  // Real owner feedback: delivery repair and artifact wakes queue actual
+  // heartbeat runs through the scheduler instead of bare wakeup rows.
+  delivery.setWakeDispatcher((agentId, opts) => connectionIntentHeartbeat.wakeup(agentId, opts));
   api.use(toolAccessRoutes(db, {
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,

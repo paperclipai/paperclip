@@ -71,7 +71,9 @@ export function serviceWorkerBuildIdPlugin(
         buildId = deriveBuildIdFromEntryFileName(entry.fileName);
       }
     },
-    closeBundle() {
+    closeBundle(error?: unknown) {
+      // Failed builds have no public assets to stamp; preserve the original error.
+      if (error) return;
       const swPath = path.resolve(outDir, serviceWorkerFileName);
       const source = fs.readFileSync(swPath, "utf8");
       const stamped = stampServiceWorkerBuildId(source, buildId ?? "build");

@@ -226,7 +226,7 @@ Routine execution issues add a routine-scoped env overlay after project env and 
 - `parent_id` uuid fk `issues.id` null
 - `title` text not null
 - `description` text null
-- `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
+- `status` enum: `backlog | todo | in_progress | in_review | ready_to_merge | merging | done | blocked | cancelled`
 - `priority` enum: `critical | high | medium | low`
 - `review_policy` nullable enum: `anyone | not_creator | human_only`; null is equivalent to `anyone`
 - `assignee_agent_id` uuid fk `agents.id` null
@@ -261,6 +261,8 @@ Invariants:
 - accepting a fresh `request_confirmation` for the current issue's `plan` revision changes `work_mode = planning` to `work_mode = standard` in the same transaction as the accepted interaction; the existing agent-return transition also moves an eligible `in_review` issue to `todo` without changing its agent owner
 - while a restrictive review policy is stored, changing it requires an actor who is allowed by that row-locked policy
 - the transition into `in_review` and its requester activity record commit atomically, including transitions without an explicit review-interaction binding
+- `ready_to_merge` and `merging` are written only by the delivery controller; no API, agent, bulk, or recovery caller may set them
+- a code-delivery issue may only enter `done` when the delivery unit covering it has a verified merge receipt (remote inclusion in the intended target branch); non-code closure requires an explicit persisted disposition. See `doc/delivery-lifecycle.md`
 - terminal states: `done | cancelled`
 
 ## 7.7 `issue_comments`
@@ -493,6 +495,10 @@ Allowed transitions:
 - `todo -> in_progress | blocked | cancelled`
 - `in_progress -> in_review | blocked | done | cancelled`
 - `in_review -> in_progress | done | cancelled`
+- `in_review -> ready_to_merge` (delivery controller only, after checks and review acceptance)
+- `ready_to_merge -> merging` (delivery controller only, when the repository queue leases the unit)
+- `ready_to_merge | merging -> in_review` (delivery controller only, when a new head or blocking finding revokes readiness)
+- `merging -> done` (delivery controller only, after verified remote inclusion)
 - `blocked -> todo | in_progress | cancelled`
 - terminal: `done`, `cancelled`
 

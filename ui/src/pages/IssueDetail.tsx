@@ -276,6 +276,7 @@ import {
   buildIssueThreadInteractionSummary,
 } from "../lib/issue-thread-interactions";
 import { resolveIssueDocumentDeepLink } from "../lib/issue-document-deep-link";
+import { TaskDeliveryPanel } from "../components/delivery/TaskDeliveryPanel";
 import {
   buildIssueSiblingNavigation,
   shouldRenderRichSubIssuesSection,
@@ -301,6 +302,7 @@ import {
   ScanEye,
   Flag,
   FileCode2,
+  GitPullRequest,
   ListTree,
   MessageSquare,
   MoreHorizontal,
@@ -7614,6 +7616,10 @@ export function IssueDetail() {
                 <ListTree className="h-3.5 w-3.5" />
                 Related work
               </TabsTrigger>
+              <TabsTrigger value="delivery" className="gap-1.5">
+                <GitPullRequest className="h-3.5 w-3.5" />
+                Delivery
+              </TabsTrigger>
               {issuePluginTabItems.map((item) => (
                 <TabsTrigger key={item.value} value={item.value}>
                   {item.label}
@@ -7883,6 +7889,12 @@ export function IssueDetail() {
                   : undefined
               }
             />
+          </TabsContent>
+
+          <TabsContent value="delivery" className={shellSectionClass}>
+            {detailTab === "delivery" ? (
+              <TaskDeliveryPanel issueId={issue.id} companyId={issue.companyId} />
+            ) : null}
           </TabsContent>
 
           {activePluginTab && (

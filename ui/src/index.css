@@ -178,6 +178,12 @@
   --status-task-todo: #f59e0b;
   --status-task-in_progress: #2563eb;
   --status-task-in_review: #7c3aed;
+  /* Delivery lifecycle lanes (automated delivery): ready_to_merge is teal —
+     distinct from done green and review violet — and merging is indigo —
+     distinct from in_progress blue. Both extend the PAP-75 vocabulary with the
+     same color-mix chip recipe as the other statuses. */
+  --status-task-ready_to_merge: #0d9488;
+  --status-task-merging: #4f46e5;
   --status-task-done: #22c55e;
   --status-task-blocked: #dc2626;
   --status-task-cancelled: #a8aeb2;
@@ -196,6 +202,8 @@
   --status-task-icon-todo: #cc7a00;       /* amber darkened — clears 3:1 */
   --status-task-icon-in_progress: var(--status-task-in_progress); /* #2563eb both modes */
   --status-task-icon-in_review: var(--status-task-in_review);     /* #7c3aed (light) */
+  --status-task-icon-ready_to_merge: #0f766e; /* teal darkened — 4.96:1 on paper */
+  --status-task-icon-merging: var(--status-task-merging);         /* #4f46e5 — 5.67:1 */
   --status-task-icon-done: #16a34a;       /* green darkened — clears 3:1 */
   --status-task-icon-blocked: var(--status-task-blocked);         /* #dc2626 both modes */
   --status-task-icon-cancelled: #52585d;
@@ -407,6 +415,8 @@
   --status-task-icon-backlog: #9a958a;
   --status-task-icon-todo: #fbbf24;
   --status-task-icon-in_review: #9474f0;  /* deeper than violet-400, reads purple */
+  --status-task-icon-ready_to_merge: #2dd4bf; /* teal-400 */
+  --status-task-icon-merging: #818cf8;    /* indigo-400 */
   --status-task-icon-done: #34d06f;
   --status-task-icon-cancelled: #9a958a;
 }

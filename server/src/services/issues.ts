@@ -67,6 +67,7 @@ import {
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { createDeliveryDoneGate, type DeliveryControllerContext } from "./delivery/done-gate.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -137,7 +138,7 @@ import {
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
 
-const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
+const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "ready_to_merge", "merging", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
@@ -3248,6 +3249,8 @@ const issueListSelect = {
   status: issues.status,
   statusVersion: issues.statusVersion,
   lastStatusDecisionId: issues.lastStatusDecisionId,
+  deliveryKind: issues.deliveryKind,
+  deliveryDisposition: issues.deliveryDisposition,
   workMode: issues.workMode,
   harnessKind: issues.harnessKind,
   priority: issues.priority,
@@ -7194,6 +7197,11 @@ export function issueService(db: Db) {
       if (data.status === "in_progress" && !data.assigneeAgentId && !data.assigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
+      if (data.status === "ready_to_merge" || data.status === "merging") {
+        throw unprocessable("Issues cannot be created directly in a delivery status", {
+          reasonCode: "delivery_status_controller_only",
+        });
+      }
       return db.transaction(async (tx) => {
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
@@ -7775,6 +7783,7 @@ export function issueService(db: Db) {
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
       postCommitActions?: IssuePostCommitAction[],
+      options?: { deliveryController?: DeliveryControllerContext | null },
     ) => {
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications = postCommitActivityPublications ?? ownedActivityPublications;
@@ -7974,6 +7983,17 @@ export function issueService(db: Db) {
           projectGoalId: nextProjectGoalId,
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
+        // The code-delivery Done gate runs under the same row lock as the write,
+        // so a concurrent delivery reconciliation cannot race it. The controller
+        // context is server-only and cannot arrive from an API body.
+        if (patch.status && patch.status !== receiptExisting.status) {
+          await createDeliveryDoneGate(tx as unknown as Db).assertStatusWriteAllowed({
+            companyId: receiptExisting.companyId,
+            issue: receiptExisting,
+            nextStatus: patch.status,
+            controller: options?.deliveryController ?? null,
+          });
+        }
         const updated = await tx
           .update(issues)
           .set(patch)

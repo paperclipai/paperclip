@@ -560,6 +560,13 @@ export function Routines() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"] });
     },
+    onError: (err) => {
+      pushToast({
+        title: "Task update failed",
+        body: err instanceof Error ? err.message : "Unable to save task changes",
+        tone: "error",
+      });
+    },
   });
 
   const updateRoutineStatus = useMutation({

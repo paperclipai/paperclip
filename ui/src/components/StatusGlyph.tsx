@@ -6,6 +6,8 @@ import {
   CircleDashed,
   CircleDot,
   CircleMinus,
+  GitMerge,
+  GitPullRequest,
   RotateCw,
   type LucideIcon,
 } from "lucide-react";
@@ -19,7 +21,8 @@ import { taskStatusIconVar, taskStatusIconVarDefault } from "../lib/status-color
  * set reads as one consistent icon family:
  *
  *   backlog → circle-dashed · todo → circle · in_progress → rotate-cw ·
- *   in_review → circle-dot · done → circle-check · blocked → circle-minus ·
+ *   in_review → circle-dot · ready_to_merge → git-pull-request ·
+ *   merging → git-merge · done → circle-check · blocked → circle-minus ·
  *   cancelled → ban · in_queue → circle-minus (blocked recoloured blue).
  *
  * Colour comes from the `--status-task-icon-*` CSS vars (AA-tuned, mode-aware;
@@ -39,6 +42,8 @@ export type StatusGlyphStatus =
   | "todo"
   | "in_progress"
   | "in_review"
+  | "ready_to_merge"
+  | "merging"
   | "done"
   | "blocked"
   | "cancelled"
@@ -50,6 +55,8 @@ const STATUS_ICON: Record<string, LucideIcon> = {
   todo: Circle,
   in_progress: RotateCw,
   in_review: CircleDot,
+  ready_to_merge: GitPullRequest,
+  merging: GitMerge,
   done: CircleCheck,
   blocked: CircleMinus,
   cancelled: Ban,

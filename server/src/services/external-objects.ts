@@ -753,7 +753,7 @@ export function externalObjectService(
     const projectIssues = await db
       .select({ id: issues.id, companyId: issues.companyId })
       .from(issues)
-      .where(and(eq(issues.projectId, projectId), inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"])));
+      .where(and(eq(issues.projectId, projectId), inArray(issues.status, ["todo", "in_progress", "in_review", "ready_to_merge", "merging", "blocked"])));
     if (projectIssues.length === 0) return { ...summarizeObjects([]), objects: [] };
     const companyIds = new Set(projectIssues.map((issue) => issue.companyId));
     if (companyIds.size !== 1) return { ...summarizeObjects([]), objects: [] };

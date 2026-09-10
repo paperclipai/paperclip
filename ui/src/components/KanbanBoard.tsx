@@ -17,7 +17,7 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
-import { StatusIcon } from "./StatusIcon";
+import { StatusIcon, isControllerOwnedIssueStatus } from "./StatusIcon";
 import { PriorityIcon } from "./PriorityIcon";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
 import { Identity } from "./Identity";
@@ -42,6 +42,8 @@ export const boardStatuses = [
   "todo",
   "in_progress",
   "in_review",
+  "ready_to_merge",
+  "merging",
   "blocked",
   "done",
   "cancelled",
@@ -106,6 +108,24 @@ export const kanbanColumnTones: Partial<Record<IssueStatus, typeof defaultKanban
     bodyOver: "bg-violet-100/70 ring-1 ring-inset ring-violet-500/25 dark:bg-violet-950/30",
     card: "",
   },
+  ready_to_merge: {
+    rail: "border-teal-500/25 bg-teal-50/60 dark:bg-teal-950/20",
+    railOver: "bg-teal-100/70 ring-1 ring-teal-500/25 dark:bg-teal-950/35",
+    header: "text-teal-700 dark:text-teal-300",
+    count: "text-teal-700/65 dark:text-teal-300/65",
+    body: "bg-teal-50/45 ring-1 ring-inset ring-teal-500/15 dark:bg-teal-950/15",
+    bodyOver: "bg-teal-100/70 ring-1 ring-inset ring-teal-500/25 dark:bg-teal-950/30",
+    card: "",
+  },
+  merging: {
+    rail: "border-indigo-500/25 bg-indigo-50/60 dark:bg-indigo-950/20",
+    railOver: "bg-indigo-100/70 ring-1 ring-indigo-500/25 dark:bg-indigo-950/35",
+    header: "text-indigo-700 dark:text-indigo-300",
+    count: "text-indigo-700/65 dark:text-indigo-300/65",
+    body: "bg-indigo-50/45 ring-1 ring-inset ring-indigo-500/15 dark:bg-indigo-950/15",
+    bodyOver: "bg-indigo-100/70 ring-1 ring-inset ring-indigo-500/25 dark:bg-indigo-950/30",
+    card: "",
+  },
   done: {
     rail: "border-green-500/25 bg-green-50/60 dark:bg-green-950/20",
     railOver: "bg-green-100/70 ring-1 ring-green-500/25 dark:bg-green-950/35",
@@ -134,11 +154,24 @@ function statusLabel(status: string): string {
   return status.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/**
+ * Controller-owned lanes render for visibility but are never valid drop
+ * targets: only the delivery controller may move tasks into ready_to_merge
+ * or merging. Lanes stay registered for hit-testing; the drop resolver rejects
+ * them so a drag cannot fall through to an adjacent writable lane.
+ */
 export function resolveKanbanTargetStatus(overId: string, issues: Issue[]): IssueStatus | null {
+  if (isControllerOwnedIssueStatus(overId)) {
+    return null;
+  }
   if ((boardStatuses as readonly string[]).includes(overId)) {
     return overId as IssueStatus;
   }
-  return issues.find((issue) => issue.id === overId)?.status ?? null;
+  const overIssue = issues.find((issue) => issue.id === overId);
+  if (overIssue && isControllerOwnedIssueStatus(overIssue.status)) {
+    return null;
+  }
+  return overIssue?.status ?? null;
 }
 
 interface Agent {
@@ -182,7 +215,11 @@ function KanbanColumn({
   revealIncrement: number;
   onShowMore: () => void;
 }) {
+  const controllerOwned = isControllerOwnedIssueStatus(status);
+  // Keep read-only lanes in hit-testing so a drag cannot fall through to an
+  // adjacent writable lane. resolveKanbanTargetStatus rejects their drops.
   const { setNodeRef, isOver } = useDroppable({ id: status });
+  const controllerTitle = `${statusLabel(status)} — owned by the delivery controller; cards land here automatically`;
 
   const isEmpty = issues.length === 0;
   const visibleIssues = collapsed ? [] : issues.slice(0, visibleCount);
@@ -197,9 +234,9 @@ function KanbanColumn({
         className={cn(
           "flex min-h-(--sz-220px) w-(--sz-52px) shrink-0 flex-col items-center rounded-md border px-1.5 py-2 transition-colors",
           tone.rail,
-          isOver && tone.railOver,
+          isOver && !controllerOwned && tone.railOver,
         )}
-        title={`${statusLabel(status)}: ${issues.length}`}
+        title={controllerOwned ? controllerTitle : `${statusLabel(status)}: ${issues.length}`}
       >
         <StatusIcon status={status} />
         <span className={cn("mt-2 [writing-mode:vertical-rl] rotate-180 text-(length:--text-nano) font-semibold uppercase tracking-wide", tone.header)}>
@@ -214,11 +251,16 @@ function KanbanColumn({
 
   return (
     <div className="flex flex-col shrink-0 min-w-(--sz-260px) w-(--sz-260px)">
-      <div className="flex items-center gap-2 px-3 py-2 mb-1">
+      <div className="flex items-center gap-2 px-3 py-2 mb-1" title={controllerOwned ? controllerTitle : undefined}>
         <StatusIcon status={status} />
         <span className={cn("text-xs font-semibold uppercase tracking-wide", tone.header)}>
           {statusLabel(status)}
         </span>
+        {controllerOwned ? (
+          <span className="text-(length:--text-nano) font-medium uppercase tracking-wide text-muted-foreground">
+            Controller
+          </span>
+        ) : null}
         <span className={cn("ml-auto text-xs tabular-nums", tone.count)}>
           {issues.length}
         </span>
@@ -227,7 +269,7 @@ function KanbanColumn({
         ref={setNodeRef}
         className={cn(
           "flex-1 min-h-(--sz-120px) rounded-md p-2 space-y-1 transition-colors",
-          isOver ? tone.bodyOver : tone.body,
+          isOver && !controllerOwned ? tone.bodyOver : tone.body,
         )}
       >
         {/* Hidden cards are intentionally excluded from sort targets until revealed. */}

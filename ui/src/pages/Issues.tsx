@@ -6,6 +6,7 @@ import { agentsApi } from "../api/agents";
 import { projectsApi } from "../api/projects";
 import { heartbeatsApi } from "../api/heartbeats";
 import { useCompany } from "../context/CompanyContext";
+import { useToastActions } from "../context/ToastContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
@@ -189,11 +190,19 @@ export function Issues() {
     });
   }, [fetchNextPage, hasNextPage, isFetchingNextPage]);
 
+  const { pushToast } = useToastActions();
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
       issuesApi.update(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Task update failed",
+        body: err instanceof Error ? err.message : "Unable to save task changes",
+        tone: "error",
+      });
     },
   });
 

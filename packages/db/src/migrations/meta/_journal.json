@@ -1723,6 +1723,13 @@
       "when": 1788972162387,
       "tag": "0247_recovery_engineer",
       "breakpoints": true
+    },
+    {
+      "idx": 248,
+      "version": "7",
+      "when": 1788991985591,
+      "tag": "0248_delivery_lifecycle",
+      "breakpoints": true
     }
   ]
 }

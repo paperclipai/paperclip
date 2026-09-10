@@ -32,7 +32,7 @@ import { PageTabBar } from "@/components/PageTabBar";
 import { useHiddenSettings } from "@/hooks/useHiddenSettings";
 import { InvitesSection } from "@/components/access/InvitesSection";
 
-const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
+const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,ready_to_merge,merging,blocked,failed,timed_out";
 type EditableMemberStatus = "pending" | "active" | "suspended";
 
 export function CompanyAccess() {

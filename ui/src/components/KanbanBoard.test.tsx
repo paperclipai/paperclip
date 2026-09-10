@@ -193,6 +193,8 @@ describe("KanbanBoard", () => {
     expect(getKanbanColumnTone("todo").body).toContain("amber");
     expect(getKanbanColumnTone("in_progress").body).toContain("blue");
     expect(getKanbanColumnTone("in_review").body).toContain("violet");
+    expect(getKanbanColumnTone("ready_to_merge").body).toContain("teal");
+    expect(getKanbanColumnTone("merging").body).toContain("indigo");
     expect(getKanbanColumnTone("blocked").body).toContain("red");
     expect(getKanbanColumnTone("done").body).toContain("green");
     expect(getKanbanColumnTone("cancelled").body).toContain("bg-muted/25");
@@ -222,14 +224,29 @@ describe("KanbanBoard", () => {
     expect(container.textContent).toContain("Live");
   });
 
-  it("resolves drop targets from status rails and cards", () => {
+  it("never resolves controller-owned lanes as drop targets", () => {
     const issues = [
       createIssue(1, "todo"),
       createIssue(2, "blocked"),
+      createIssue(3, "ready_to_merge"),
     ];
 
+    expect(resolveKanbanTargetStatus("ready_to_merge", issues)).toBeNull();
+    expect(resolveKanbanTargetStatus("merging", issues)).toBeNull();
+    expect(resolveKanbanTargetStatus("issue-ready_to_merge-3", issues)).toBeNull();
     expect(resolveKanbanTargetStatus("done", issues)).toBe("done");
     expect(resolveKanbanTargetStatus("issue-blocked-2", issues)).toBe("blocked");
+    expect(resolveKanbanTargetStatus("issue-todo-1", issues)).toBe("todo");
     expect(resolveKanbanTargetStatus("missing", issues)).toBeNull();
+  });
+
+  it("marks controller-owned lanes as controller-managed", () => {
+    const { container } = renderBoard({
+      issues: [createIssue(1, "ready_to_merge"), createIssue(2, "todo")],
+    });
+
+    const controllerHeader = container.querySelector('[title*="delivery controller"]');
+    expect(controllerHeader?.textContent).toContain("Controller");
+    expect(controllerHeader?.textContent).toContain("Ready To Merge");
   });
 });

@@ -34,6 +34,7 @@ import { ProjectDetail } from "./pages/ProjectDetail";
 import { ProjectWorkspaceDetail } from "./pages/ProjectWorkspaceDetail";
 import { Workspaces } from "./pages/Workspaces";
 import { Issues } from "./pages/Issues";
+import { Delivery } from "./pages/Delivery";
 import { Search } from "./pages/Search";
 import { IssueDetail } from "./pages/IssueDetail";
 import { IssueChatLongThreadPerf } from "./pages/IssueChatLongThreadPerf";
@@ -285,7 +286,9 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         <Route path="workspaces" element={<Workspaces />} />
       </Route>
       <Route path="issues" element={<Issues />} />
+      <Route path="delivery" element={<Delivery />} />
       <Route path="tasks" element={<Navigate to="/issues" replace />} />
+      <Route path="tasks/:issueId" element={<TaskDetailRedirect />} />
       <Route path="search" element={<Search />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />
       <Route path="issues/active" element={<Navigate to="/issues" replace />} />
@@ -436,6 +439,18 @@ function AppsConnectEntryRoute({
 
 function InboxRootRedirect() {
   return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
+}
+
+/**
+ * `/tasks/:issueId` is the task-named alias for the canonical task detail
+ * route. Query state (filters, deep links) rides along so a shared task link
+ * keeps its context.
+ */
+function TaskDetailRedirect() {
+  const location = useLocation();
+  const { issueId } = useParams<{ issueId?: string }>();
+  if (!issueId) return <Navigate to="/issues" replace />;
+  return <Navigate to={`/issues/${issueId}${location.search}`} replace />;
 }
 
 function LegacySkillStudioRedirect() {

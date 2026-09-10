@@ -20,6 +20,7 @@ import { InlineEditor } from "../components/InlineEditor";
 import { StatusBadge } from "../components/StatusBadge";
 import { ProjectTile } from "../components/ProjectTile";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
+import { ProjectDeliveryPolicyCard } from "../components/delivery/ProjectDeliveryPolicyCard";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { PageTabBar } from "../components/PageTabBar";
@@ -266,12 +267,20 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
+  const { pushToast } = useToastActions();
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
       issuesApi.update(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Task update failed",
+        body: err instanceof Error ? err.message : "Unable to save task changes",
+        tone: "error",
+      });
     },
   });
 
@@ -336,6 +345,7 @@ function ProjectPluginOperationsList({
   });
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
+  const { pushToast: pushPluginListToast } = useToastActions();
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
       issuesApi.update(id, data),
@@ -343,6 +353,13 @@ function ProjectPluginOperationsList({
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
+    },
+    onError: (err) => {
+      pushPluginListToast({
+        title: "Task update failed",
+        body: err instanceof Error ? err.message : "Unable to save task changes",
+        tone: "error",
+      });
     },
   });
 
@@ -936,7 +953,7 @@ export function ProjectDetail() {
       ) : null}
 
       {activeTab === "configuration" && (
-        <div className="max-w-4xl">
+        <div className="max-w-4xl space-y-8">
           <ProjectProperties
             project={project}
             onUpdate={(data) => updateProject.mutate(data)}
@@ -945,6 +962,9 @@ export function ProjectDetail() {
             onArchive={(archived) => archiveProject.mutate(archived)}
             archivePending={archiveProject.isPending}
           />
+          {resolvedCompanyId ? (
+            <ProjectDeliveryPolicyCard companyId={resolvedCompanyId} projectId={project.id} />
+          ) : null}
         </div>
       )}
 

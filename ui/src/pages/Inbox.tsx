@@ -28,6 +28,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { useDialogActions } from "../context/DialogContext";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
 import {
+  ACTIVE_ISSUE_STATUS_FILTER,
   applyIssueFilters,
   countActiveIssueFilters,
   defaultIssueFilterState,
@@ -2387,8 +2388,8 @@ function StreamlinedInbox() {
   const activeFilterCount = activeIssueFilterCount + activeInboxScopeFilterCount;
   const showGeneralIssueToolbarControls = tab !== "blocked";
   const activeStatusFilterApplied =
-    issueFilters.statuses.length === 4
-    && ["todo", "in_progress", "in_review", "blocked"].every((status) =>
+    issueFilters.statuses.length === ACTIVE_ISSUE_STATUS_FILTER.length
+    && ACTIVE_ISSUE_STATUS_FILTER.every((status) =>
       issueFilters.statuses.includes(status as IssueFilterState["statuses"][number]),
     );
   const issueFilterFeedback = issueFilters.liveOnly

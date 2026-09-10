@@ -137,7 +137,7 @@ async function loadWindowStats(
   from: Date | null,
 ): Promise<UserProfileWindowStats> {
   const involvement = userIssueInvolvementSql(companyId, userId);
-  const openStatuses = ["backlog", "todo", "in_progress", "in_review", "blocked"];
+  const openStatuses = ["backlog", "todo", "in_progress", "in_review", "ready_to_merge", "merging", "blocked"];
   const fromIso = from?.toISOString();
 
   const [issueStats] = await db

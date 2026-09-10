@@ -192,3 +192,16 @@ export {
   recoveryEngineerProcedures,
   recoveryEngineerVerifications,
 } from "./recovery_engineer.js";
+export {
+  deliveryRepositories,
+  deliveryUnits,
+  deliveryUnitIssues,
+  deliveryDependencies,
+  deliveryQueueEntries,
+  deliveryPolicies,
+  deliveryFindings,
+  deliveryEvents,
+  deliveryReceipts,
+  deliveryReconciliations,
+  deliveryRepairAttempts,
+} from "./delivery.js";

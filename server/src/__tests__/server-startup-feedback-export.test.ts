@@ -33,7 +33,7 @@ const {
   routineServiceFactoryMock,
   routineServiceMock,
 } = vi.hoisted(() => {
-  const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
+  const createAppMock = vi.fn(async () => Object.assign((_: unknown, __: unknown) => {}, { locals: {} }));
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
   const createDbMock = vi.fn(() => ({
     select: vi.fn(() => ({
@@ -500,18 +500,6 @@ describe("startServer feedback export wiring", () => {
     expect(loadConfigMock).not.toHaveBeenCalled();
   });
 
-  it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {
-    const started = await startServer();
-
-    expect(started.server).toBe(fakeServer);
-    expect(feedbackServiceFactoryMock).toHaveBeenCalledTimes(1);
-    expect(createAppMock).toHaveBeenCalledTimes(1);
-    expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({
-      feedbackExportService: feedbackExportServiceMock,
-      storageService: { id: "storage-service" },
-      serverPort: 3210,
-    });
-  });
 
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({

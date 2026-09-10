@@ -39,6 +39,9 @@ function record(value: unknown): Record<string, unknown> {
 }
 
 function authoritativeStatus(value: string): NativeAuthoritativeIssueStatus {
+  // Delivery statuses are review-stage for the arbiter: work is not terminal and
+  // the delivery controller, not a run, owns the next transition.
+  if (value === "ready_to_merge" || value === "merging") return "in_review";
   if (!["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"].includes(value)) {
     throw new Error("native_issue_status_invalid");
   }

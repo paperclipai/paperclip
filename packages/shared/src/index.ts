@@ -2735,3 +2735,6 @@ export {
 export { ACCOUNT_HANDLE_MAX_LENGTH, toAccountHandle } from "./account-handle.js";
 export * from "./types/recovery-engineer.js";
 export * from "./validators/recovery-engineer.js";
+
+export * from "./types/delivery.js";
+export * from "./validators/delivery.js";

@@ -576,6 +576,7 @@ function ExecutionWorkspaceIssuesList({
 
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
+  const { pushToast } = useToastActions();
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) => issuesApi.update(id, data),
     onSuccess: () => {
@@ -584,6 +585,13 @@ function ExecutionWorkspaceIssuesList({
       if (project?.id) {
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, project.id) });
       }
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Task update failed",
+        body: err instanceof Error ? err.message : "Unable to save task changes",
+        tone: "error",
+      });
     },
   });
 

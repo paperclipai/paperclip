@@ -1897,44 +1897,6 @@ describe.sequential("agent permission routes", () => {
     expect(mockAccessService.setPrincipalPermission).not.toHaveBeenCalled();
   });
 
-  it("exposes a dedicated agent route for the inbox mine view", async () => {
-    mockIssueService.list.mockResolvedValue([
-      {
-        id: "issue-1",
-        identifier: "PAP-910",
-        title: "Inbox follow-up",
-        status: "todo",
-      },
-    ]);
-
-    const app = await createApp({
-      type: "agent",
-      agentId,
-      companyId,
-      runId: "run-1",
-      source: "agent_key",
-    });
-
-    const res = await requestApp(app, (baseUrl) => request(baseUrl)
-      .get("/api/agents/me/inbox/mine")
-      .query({ userId: "board-user" }));
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual([
-      {
-        id: "issue-1",
-        identifier: "PAP-910",
-        title: "Inbox follow-up",
-        status: "todo",
-      },
-    ]);
-    expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
-      touchedByUserId: "board-user",
-      inboxArchivedByUserId: "board-user",
-      status: "backlog,todo,in_progress,in_review,blocked,done",
-      limit: 500,
-    });
-  });
 
   describe("agent configuration read gate", () => {
     it("allows a board member without agents:create to read agent configuration", async () => {

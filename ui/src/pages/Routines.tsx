@@ -661,6 +661,13 @@ export function Routines() {
         queryKey: [...queryKeys.issues.list(selectedCompanyId!), "routine-executions"],
       });
     },
+    onError: (err) => {
+      pushToast({
+        title: "Task update failed",
+        body: err instanceof Error ? err.message : "Unable to save task changes",
+        tone: "error",
+      });
+    },
   });
 
   function handleLegacyTabChange(tab: string) {

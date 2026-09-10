@@ -6412,6 +6412,219 @@ export function createToolGatewayService(
       };
     },
 
+    /**
+     * Company-scoped, read-only invocation of a connected MCP tool by the
+     * control plane (no agent run, no gateway session). The caller allowlists
+     * both the tool name and the argument keys, the tool's declared risk must be
+     * `read`, and every call is recorded as a system invocation in the tool call
+     * ledger. Used by the delivery controller for scoped Greptile reads.
+     */
+    async readConnectedTool(input: {
+      companyId: string;
+      connectionId: string;
+      toolName: string;
+      allowedToolNames: readonly string[];
+      allowedParameterKeys: readonly string[];
+      parameters?: Record<string, unknown>;
+      timeoutMs?: number;
+      reason: string;
+    }): Promise<{ ok: true; result: unknown } | { ok: false; errorCode: string; message: string }> {
+      const [connection] = await db
+        .select()
+        .from(toolConnections)
+        .where(and(eq(toolConnections.companyId, input.companyId), eq(toolConnections.id, input.connectionId)))
+        .limit(1);
+      if (!connection || !connection.enabled) {
+        return { ok: false, errorCode: "connection_missing", message: "Connection is not available for this company" };
+      }
+      if (!input.allowedToolNames.includes(input.toolName)) {
+        return { ok: false, errorCode: "tool_not_allowed", message: `Tool ${input.toolName} is not allowed for this read` };
+      }
+      const parameters = input.parameters ?? {};
+      const unexpected = Object.keys(parameters).filter((key) => !input.allowedParameterKeys.includes(key));
+      if (unexpected.length > 0) {
+        return { ok: false, errorCode: "argument_not_allowed", message: `Unsupported arguments: ${unexpected.join(", ")}` };
+      }
+      const tool = (await connectedMcpToolsForConnection(input.companyId, input.connectionId))
+        .find((candidate) => candidate.name === input.toolName || candidate.upstreamToolName === input.toolName);
+      if (!tool) {
+        return { ok: false, errorCode: "tool_not_found", message: `Tool ${input.toolName} is not available on this connection` };
+      }
+      if (tool.risk !== "read") {
+        return { ok: false, errorCode: "tool_not_read_only", message: `Tool ${input.toolName} is not read-only` };
+      }
+      const session: ToolGatewaySession = {
+        id: `delivery-read:${randomUUID()}`,
+        token: "delivery-read",
+        companyId: input.companyId,
+        agentId: null,
+        runId: null,
+        issueId: null,
+        projectId: null,
+        actorType: "system",
+        actorId: "delivery-controller",
+        responsibleUserId: null,
+        createdAt: new Date(),
+        expiresAt: new Date(Date.now() + DEFAULT_SESSION_TTL_MS),
+      };
+      const argumentValidation = validateToolContent({
+        value: parameters,
+        direction: "arguments",
+        sensitiveMode: "redact",
+        promptInjectionMode: "ignore",
+      });
+      // Governed like every other tool call: operator tool policies and rate
+      // limits apply to control-plane reads too. A deny or a spent budget
+      // fails closed here instead of executing behind the policy engine.
+      const accessDecision = await policyService.decide(policyInputForTool({
+        session,
+        tool,
+        parameters,
+        consumeRateLimit: true,
+      }));
+      if (!accessDecision.allowed) {
+        const denied = accessDecision.decision === "rate_limited" ? "rate_limited" : "denied";
+        const [recorded] = await db.insert(toolInvocations).values({
+          companyId: input.companyId,
+          actorType: "system",
+          actorId: "delivery-controller",
+          providerType: tool.providerType,
+          upstreamToolName: tool.upstreamToolName ?? tool.name,
+          riskLevel: tool.risk,
+          toolName: tool.name,
+          argumentsHash: argumentValidation.summary.sha256 ?? null,
+          argumentsSummary: argumentValidation.summary,
+          policyDecision: accessDecision.decision,
+          matchedPolicyIds: accessDecision.matchedPolicyIds,
+          approvalState: "not_required",
+          status: denied,
+          errorCode: accessDecision.reasonCode,
+          errorMessage: accessDecision.explanation,
+          connectionId: connection.id,
+          catalogEntryId: tool.catalogEntryId ?? null,
+          startedAt: new Date(),
+          completedAt: new Date(),
+        }).returning();
+        if (recorded) {
+          await writeToolCallEvent({
+            invocationId: recorded.id,
+            session,
+            eventType: "call_failed",
+            outcome: "failure",
+            toolName: tool.name,
+            policyDecision: accessDecision.decision === "require_approval" ? "require_approval" : "deny",
+            reasonCode: accessDecision.reasonCode,
+            argumentsSummary: argumentValidation.summary,
+            metadata: { source: "delivery-controller", reason: input.reason, rateLimited: denied === "rate_limited" },
+            tool,
+          });
+        }
+        return {
+          ok: false,
+          errorCode: denied === "rate_limited" ? "rate_limited" : "tool_denied",
+          message: accessDecision.explanation,
+        };
+      }
+      const [invocation] = await db.insert(toolInvocations).values({
+        companyId: input.companyId,
+        actorType: "system",
+        actorId: "delivery-controller",
+        providerType: tool.providerType,
+        upstreamToolName: tool.upstreamToolName ?? tool.name,
+        riskLevel: tool.risk,
+        toolName: tool.name,
+        argumentsHash: argumentValidation.summary.sha256 ?? null,
+        argumentsSummary: argumentValidation.summary,
+        policyDecision: "allow",
+        matchedPolicyIds: accessDecision.matchedPolicyIds,
+        approvalState: "not_required",
+        status: "executing",
+        connectionId: connection.id,
+        catalogEntryId: tool.catalogEntryId ?? null,
+        startedAt: new Date(),
+      }).returning();
+      if (!invocation) {
+        return { ok: false, errorCode: "invocation_not_recorded", message: "Tool invocation could not be recorded" };
+      }
+      await writeToolCallEvent({
+        invocationId: invocation.id,
+        session,
+        eventType: "call_started",
+        outcome: "pending",
+        toolName: tool.name,
+        policyDecision: "allow",
+        reasonCode: input.reason,
+        argumentsSummary: argumentValidation.summary,
+        metadata: { source: "delivery-controller", reason: input.reason },
+        tool,
+      });
+      const startedAt = Date.now();
+      try {
+        const executionTimeoutMs = timeoutMs(input.timeoutMs);
+        const execution = tool.providerType === "mcp_remote_http"
+          ? await executeRemoteHttpTool(session, tool, parameters, executionTimeoutMs, invocation.id)
+          : tool.providerType === "mcp_local_stdio"
+            ? await executeLocalStdioTool(session, tool, parameters, executionTimeoutMs)
+            : null;
+        if (!execution) {
+          throw new ToolGatewayHttpError(404, `Tool "${input.toolName}" not found`, "tool_not_found");
+        }
+        const resultValidation = validateToolContent({
+          value: execution.result,
+          direction: "result",
+          sensitiveMode: "redact",
+          promptInjectionMode: "ignore",
+        });
+        await db.update(toolInvocations).set({
+          status: "succeeded",
+          resultHash: resultValidation.summary.sha256 ?? null,
+          resultSummary: resultValidation.summary,
+          resultSizeBytes: resultValidation.summary.sizeBytes ?? null,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        }).where(eq(toolInvocations.id, invocation.id));
+        await writeToolCallEvent({
+          invocationId: invocation.id,
+          session,
+          eventType: "call_completed",
+          outcome: "success",
+          toolName: tool.name,
+          policyDecision: "allow",
+          reasonCode: input.reason,
+          argumentsSummary: argumentValidation.summary,
+          resultSummary: resultValidation.summary,
+          metadata: { source: "delivery-controller", durationMs: Date.now() - startedAt },
+          tool,
+        });
+        return { ok: true, result: execution.result };
+      } catch (error) {
+        const reasonCode = error instanceof ToolGatewayHttpError ? error.reasonCode : "tool_call_failed";
+        const message = error instanceof Error && error.message.length <= 400
+          ? error.message
+          : "Connected read failed";
+        await db.update(toolInvocations).set({
+          status: "failed",
+          errorCode: reasonCode,
+          errorMessage: message,
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        }).where(eq(toolInvocations.id, invocation.id));
+        await writeToolCallEvent({
+          invocationId: invocation.id,
+          session,
+          eventType: "call_failed",
+          outcome: "failure",
+          toolName: tool.name,
+          policyDecision: "allow",
+          reasonCode,
+          argumentsSummary: argumentValidation.summary,
+          metadata: { source: "delivery-controller", durationMs: Date.now() - startedAt },
+          tool,
+        });
+        return { ok: false, errorCode: reasonCode, message };
+      }
+    },
+
     async executeTestCall(input: ExecuteTestCallInput) {
       await assertAgentInCompany(input.companyId, input.agentId);
       const session: ToolGatewaySession = {

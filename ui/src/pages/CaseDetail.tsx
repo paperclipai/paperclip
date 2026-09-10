@@ -49,7 +49,7 @@ const STATUS_LABEL: Record<CaseStatus, string> = {
 };
 
 const PRIMARY_FIELD_KEYS = ["name", "title", "body", "description"] as const;
-const ISSUE_REFERENCE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "done", "blocked", "cancelled"] as const;
+const ISSUE_REFERENCE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "ready_to_merge", "merging", "done", "blocked", "cancelled"] as const;
 
 type CasePropertyDisplayMode = "compact" | "full";
 type IssueReferenceStatus = (typeof ISSUE_REFERENCE_STATUSES)[number];

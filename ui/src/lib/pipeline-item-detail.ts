@@ -85,6 +85,8 @@ export function humanizePipelineItemStatus(status: string | null | undefined) {
     in_review: "In review",
     review: "In review",
     in_progress: "In progress",
+    ready_to_merge: "Ready to merge",
+    merging: "Merging",
   };
   return labels[normalized] ?? humanizeKey(normalized);
 }

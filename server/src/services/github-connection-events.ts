@@ -214,6 +214,20 @@ export function githubConnectionEventService(
     env?: NodeJS.ProcessEnv;
     now?: () => Date;
     wakeup?: NonNullable<Parameters<typeof issueThreadInteractionService>[1]>["wakeup"];
+    /**
+     * Event-driven delivery following. Called after the pull request snapshot is
+     * persisted; the delivery controller then reconciles the matching unit. It
+     * is optional so the event pipeline keeps working without the controller.
+     */
+    onPullRequestEvent?: (input: {
+      companyId: string;
+      owner: string;
+      repo: string;
+      number: number;
+      action: string | null;
+      merged: boolean;
+      headSha: string | null;
+    }) => Promise<void>;
   } = {},
 ) {
   const now = options.now ?? (() => new Date());
@@ -266,6 +280,22 @@ export function githubConnectionEventService(
           repo: snapshot.repo,
           number: snapshot.number,
         }]);
+    }
+    if (options.onPullRequestEvent) {
+      // Delivery following is best-effort at the event boundary: a failure here
+      // must not fail the webhook delivery, because the periodic reconciliation
+      // sweep is the fallback that makes progress.
+      await options.onPullRequestEvent({
+        companyId,
+        owner: snapshot.owner,
+        repo: snapshot.repo,
+        number: snapshot.number,
+        action: stringValue(event.payload.action),
+        merged: snapshot.merged,
+        headSha: stringValue(event.payload.headSha),
+      }).catch((error) => {
+        logger.warn({ err: error, companyId, owner: snapshot.owner, repo: snapshot.repo, number: snapshot.number }, "delivery reconcile from pull request event failed");
+      });
     }
   }
 

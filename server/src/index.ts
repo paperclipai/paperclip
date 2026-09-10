@@ -1160,6 +1160,19 @@ export async function startServer(): Promise<StartedServer> {
   };
   const githubConnectionEvents = githubConnectionEventService(db as any, {
     wakeup: environmentLeaseCleanupHeartbeat.wakeup,
+    onPullRequestEvent: (event) => {
+      const delivery = (app.locals as { paperclipDeliveryService?: import("./services/delivery/index.js").DeliveryService })
+        .paperclipDeliveryService;
+      if (!delivery) return Promise.resolve();
+      return delivery.services.reconciler
+        .reconcilePullRequest({
+          companyId: event.companyId,
+          owner: event.owner,
+          repo: event.repo,
+          number: event.number,
+        })
+        .then(() => undefined);
+    },
   });
   const tools = toolAccessService(db as any, {
     deploymentMode: config.deploymentMode,
@@ -1168,6 +1181,22 @@ export async function startServer(): Promise<StartedServer> {
       ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
       ?? null,
   });
+  const scheduleDeliverySweep = () => {
+    if (heartbeatSchedulerStopped) return;
+    const delivery = (app.locals as { paperclipDeliveryService?: import("./services/delivery/index.js").DeliveryService })
+      .paperclipDeliveryService;
+    if (!delivery) return;
+    trackHeartbeatSchedulerWork(delivery
+      .sweepAllCompanies()
+      .then((result) => {
+        if (result.reconciled > 0 || result.merged > 0) {
+          logger.info(result, "delivery reconciliation sweep completed");
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "delivery reconciliation sweep failed");
+      }));
+  };
   const scheduleGitHubConnectionEventPoll = () => {
     if (heartbeatSchedulerStopped) return;
     trackHeartbeatSchedulerWork(githubConnectionEvents.pollOnce()
@@ -1571,6 +1600,7 @@ export async function startServer(): Promise<StartedServer> {
         scheduleMergedPullRequestConfirmationSweep();
         scheduleGitHubConnectionEventPoll();
         scheduleGitHubConnectionContinuitySweep();
+        scheduleDeliverySweep();
         scheduleTerminalWorkspaceSweep();
         scheduleAdapterLoginReaperSweep();
         scheduleSetupTokenReaperSweep();
@@ -1745,6 +1775,7 @@ export async function startServer(): Promise<StartedServer> {
       scheduleEnvironmentLeaseCleanupSweep();
       scheduleGitHubConnectionEventPoll();
       scheduleGitHubConnectionContinuitySweep();
+      scheduleDeliverySweep();
     });
   }
   

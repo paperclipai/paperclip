@@ -13,6 +13,7 @@ import {
   Repeat,
   Layers,
   GitBranch,
+  GitPullRequest,
   Package,
   Settings,
   FolderOpen,
@@ -191,6 +192,7 @@ export function Sidebar() {
 
         <SidebarSection label="Work" collapsible={{ open: workOpen, onOpenChange: setWorkOpen }}>
           <SidebarNavItem to="/issues" label="Tasks" icon={CircleCheck} />
+          <SidebarNavItem to="/delivery" label="Delivery" icon={GitPullRequest} />
           {streamlinedUiEnabled ? (
             <>
               <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />

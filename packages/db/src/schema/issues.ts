@@ -19,7 +19,7 @@ import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
 import { projectWorkspaces } from "./project_workspaces.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
-import type { IssueReviewPolicy, IssueUnblockDescriptor, SourceTrustMetadata } from "@paperclipai/shared";
+import type { IssueReviewPolicy, IssueUnblockDescriptor, SourceTrustMetadata, DeliveryDisposition } from "@paperclipai/shared";
 
 export const issues = pgTable(
   "issues",
@@ -73,6 +73,13 @@ export const issues = pgTable(
     executionWorkspaceSettings: jsonb("execution_workspace_settings").$type<Record<string, unknown>>(),
     sourceTrust: jsonb("source_trust").$type<SourceTrustMetadata | null>(),
     unblockDescriptor: jsonb("unblock_descriptor").$type<IssueUnblockDescriptor | null>(),
+    // Explicit delivery classification. Null means "not yet classified": the
+    // Done gate then derives code-delivery from linked delivery units, linked
+    // pull-request artifacts, or project delivery enrollment. A non-code
+    // closure is never inferred from status or title — it must be recorded here
+    // through the governed delivery route.
+    deliveryKind: text("delivery_kind").$type<"code" | "non_code" | null>(),
+    deliveryDisposition: jsonb("delivery_disposition").$type<DeliveryDisposition | null>(),
     blockedTransitionAt: timestamp("blocked_transition_at", { withTimezone: true }),
     blockedOwnerNotifiedAt: timestamp("blocked_owner_notified_at", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),

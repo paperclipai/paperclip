@@ -22,6 +22,8 @@ export const issueStatusIcon: Record<string, string> = {
   todo: "text-amber-600 border-amber-600 dark:text-amber-400 dark:border-amber-400",
   in_progress: "text-blue-600 border-blue-600 dark:text-blue-400 dark:border-blue-400",
   in_review: "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400",
+  ready_to_merge: "text-teal-600 border-teal-600 dark:text-teal-400 dark:border-teal-400",
+  merging: "text-indigo-600 border-indigo-600 dark:text-indigo-400 dark:border-indigo-400",
   done: "text-green-600 border-green-600 dark:text-green-400 dark:border-green-400",
   cancelled: "text-neutral-500 border-neutral-500",
   blocked: "text-red-600 border-red-600 dark:text-red-400 dark:border-red-400",
@@ -35,6 +37,8 @@ export const issueStatusText: Record<string, string> = {
   todo: "text-amber-600 dark:text-amber-400",
   in_progress: "text-blue-600 dark:text-blue-400",
   in_review: "text-violet-600 dark:text-violet-400",
+  ready_to_merge: "text-teal-600 dark:text-teal-400",
+  merging: "text-indigo-600 dark:text-indigo-400",
   done: "text-green-600 dark:text-green-400",
   cancelled: "text-neutral-500",
   blocked: "text-red-600 dark:text-red-400",
@@ -51,7 +55,7 @@ export const issueStatusTextDefault = "text-muted-foreground";
 // `in_review`.
 // ---------------------------------------------------------------------------
 
-export type BrandChipColor = "gray" | "blue" | "amber" | "green" | "violet" | "red";
+export type BrandChipColor = "gray" | "blue" | "amber" | "green" | "violet" | "red" | "teal" | "indigo";
 
 export const brandChipBadge: Record<BrandChipColor, string> = {
   gray: "bg-[#F5F3F0] text-[#52585D] border-[#A8AEB2] dark:bg-[#6e696024] dark:text-[#9A958A] dark:border-[#9e958a73]",
@@ -60,6 +64,12 @@ export const brandChipBadge: Record<BrandChipColor, string> = {
   green: "bg-[#DCFCE7] text-[#188A3C] border-[#22C55E] dark:bg-[#22c55e1f] dark:text-[#22C55E] dark:border-[#22c55e73]",
   violet: "bg-[#EDE9FE] text-[#5B21B6] border-[#7C3AED] dark:bg-[#7c3aed2e] dark:text-[#7C3AED] dark:border-[#7c3aed73]",
   red: "bg-[#FEE2E2] text-[#991B1B] border-[#DC2626] dark:bg-[#dc26262e] dark:text-[#DC2626] dark:border-[#dc262673]",
+  // Delivery lifecycle lanes (automated delivery). Same chip recipe as the
+  // six brand colours above — teal reads as "approved, not yet landed" and
+  // indigo as "merge in flight", so neither collides with done green,
+  // in_progress blue, or in_review violet.
+  teal: "bg-[#CCFBF1] text-[#0F766E] border-[#14B8A6] dark:bg-[#14b8a62e] dark:text-[#2DD4BF] dark:border-[#14b8a673]",
+  indigo: "bg-[#E0E7FF] text-[#4338CA] border-[#6366F1] dark:bg-[#6366f12e] dark:text-[#818CF8] dark:border-[#6366f173]",
 };
 
 // ---------------------------------------------------------------------------
@@ -115,6 +125,8 @@ export const statusBadge: Record<string, string> = {
   todo: "bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300",
   in_progress: "bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300",
   in_review: "bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300",
+  ready_to_merge: "bg-teal-100 text-teal-700 dark:bg-teal-900/50 dark:text-teal-300",
+  merging: "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50 dark:text-indigo-300",
   blocked: "bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300",
   done: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   cancelled: "bg-muted text-muted-foreground",
@@ -223,6 +235,8 @@ export const issueStatusColor: Record<string, BrandChipColor> = {
   todo: "amber",
   in_progress: "blue",
   in_review: "violet",
+  ready_to_merge: "teal",
+  merging: "indigo",
   done: "green",
   blocked: "red",
   cancelled: "gray",
@@ -256,6 +270,8 @@ export const taskStatusVar: Record<string, string> = {
   todo: "--status-task-todo",
   in_progress: "--status-task-in_progress",
   in_review: "--status-task-in_review",
+  ready_to_merge: "--status-task-ready_to_merge",
+  merging: "--status-task-merging",
   done: "--status-task-done",
   blocked: "--status-task-blocked",
   cancelled: "--status-task-cancelled",
@@ -274,6 +290,8 @@ export const taskStatusIconVar: Record<string, string> = {
   todo: "--status-task-icon-todo",
   in_progress: "--status-task-icon-in_progress",
   in_review: "--status-task-icon-in_review",
+  ready_to_merge: "--status-task-icon-ready_to_merge",
+  merging: "--status-task-icon-merging",
   done: "--status-task-icon-done",
   blocked: "--status-task-icon-blocked",
   cancelled: "--status-task-icon-cancelled",
