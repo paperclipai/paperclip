@@ -97,6 +97,9 @@ command, and deletes the sandbox. It therefore uses real provider resources.
   output still uses that journal and fails explicitly if unread data is evicted.
   Outbound archives are validated before extraction and limited to 10 GiB of
   declared file data; absolute/traversing paths and escaping links are rejected.
+  Host directory uploads preserve symlinks without reading their targets.
+  `followSymlinks: true` is rejected before any transfer in the batch; assets
+  requiring dereferencing must first be staged as files inside the source directory.
 
 ## Capability boundaries
 

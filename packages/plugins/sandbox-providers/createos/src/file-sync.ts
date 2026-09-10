@@ -92,6 +92,9 @@ export async function syncFiles(
   for (const operation of params.operations) {
     for (const mapping of operation.files) {
       if (!["file", "directory"].includes(mapping.kind)) throw new Error("Unsupported CreateOS transfer kind.");
+      if (direction === "in" && mapping.kind === "directory" && mapping.followSymlinks) {
+        throw new Error("CreateOS does not support followSymlinks for host directory uploads; stage files inside the source directory and omit this option.");
+      }
       if (!path.isAbsolute(direction === "in" ? mapping.sourcePath : mapping.targetPath)) throw new Error("CreateOS transfer requires an absolute host path.");
       if (mapping.mode != null && (!Number.isInteger(mapping.mode) || mapping.mode < 0 || mapping.mode > 0o777)) throw new Error("Invalid CreateOS file mode.");
       assertRemotePath(direction === "in" ? mapping.targetPath : mapping.sourcePath);
@@ -120,7 +123,9 @@ export async function syncFiles(
         if (direction === "in") {
           let source = local;
           if (mapping.kind === "directory") {
-            await tar.c({ file: transferFile, cwd: local, follow: mapping.followSymlinks === true,
+            // Never dereference host links: their targets may be outside the
+            // selected source, and a pre-scan would race with archive creation.
+            await tar.c({ file: transferFile, cwd: local, follow: false,
               filter: (name) => !excluded(name, mapping.exclude ?? []) }, ["."]);
             source = transferFile;
           }

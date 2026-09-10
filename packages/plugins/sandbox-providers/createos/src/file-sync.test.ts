@@ -99,6 +99,26 @@ it("preserves directory files, modes, and internal symlinks while honoring exclu
   expect(await fs.readlink(path.join(target, "link"))).toBe("keep");
 });
 
+it.each(["file", "directory"])("rejects following a host symlink to an outside %s before any upload", async (kind) => {
+  const source = path.join(temp, "source");
+  const outside = path.join(temp, "outside");
+  await fs.mkdir(source);
+  await fs.mkdir(outside);
+  const secret = path.join(outside, "secret");
+  await fs.writeFile(secret, "sensitive host contents must never be uploaded");
+  await fs.writeFile(path.join(source, "safe"), "safe");
+  await fs.symlink(kind === "file" ? secret : outside, path.join(source, "escape"));
+
+  await expect(syncFiles(client(), { ...params, operations: [{ operationId: "directory", files: [
+    // A later unsafe mapping must also prevent earlier uploads in the batch.
+    { sourcePath: path.join(source, "safe"), targetPath: "/paperclip-workspace/safe", kind: "file" },
+    { sourcePath: source, targetPath: "/paperclip-workspace/project", kind: "directory", followSymlinks: true },
+  ] }] }, "in", AbortSignal.timeout(5000))).rejects.toThrow("does not support followSymlinks for host directory uploads");
+  expect(uploads).toEqual([]);
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(run).not.toHaveBeenCalled();
+});
+
 it("rejects an archive carrying an escaping symlink before extracting any files", async () => {
   const source = path.join(temp, "malicious");
   await fs.mkdir(source);
