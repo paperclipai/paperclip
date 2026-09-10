@@ -105,6 +105,18 @@ export interface ManagedSandboxEnvironmentInput {
   extraMetadata?: Record<string, unknown>;
   /** Version label recorded with the stock binding; hashes remain the drift authority. */
   stockVersion?: string;
+  /**
+   * Asserts the caller's deployment gives no operator any path to hand-edit
+   * this row (currently only true for the PAPERCLIP_MANAGED_CONFIG applier,
+   * where `enableManagedSandboxOnly` removes the tenant's own environment
+   * choice entirely). When set, a plain content-hash mismatch against a real
+   * prior binding is treated as ordinary stock drift instead of an operator
+   * customization to protect — see the `operator_modified` handling below.
+   * Leave unset for any caller (self-hosted `kubernetes-execution-mode`
+   * bootstrap, tests, admin routes) where an operator could realistically
+   * have edited the row through the normal environments UI/API.
+   */
+  platformFullyManaged?: boolean;
 }
 
 export type ManagedSandboxEnvironmentReconcileAction =
@@ -539,6 +551,26 @@ export function environmentService(db: Db) {
           },
         );
         if (operatorReaffirmedArchive) stockStatus = "operator_modified";
+
+        // `platformFullyManaged` callers (currently: the PAPERCLIP_MANAGED_CONFIG
+        // applier) assert that nothing in their deployment can hand-edit this
+        // row — the product gives a cloud-harness tenant no path to it, unlike
+        // the general self-hosted contract this function otherwise protects
+        // (see "classifies operator drift" and "preserves an existing
+        // unmanaged sandbox row" in environment-service.test.ts, both of which
+        // exercise a real operator edit and must keep winning). Under that
+        // assertion, a plain content-hash mismatch against a real prior
+        // binding can only be drift between two platform-driven reconciliation
+        // passes (e.g. a stock hash recorded by an older app build before a
+        // later stock field was added), never a customization to protect —
+        // apply it like any other stock-outdated row. Archive-reaffirmation is
+        // a distinct, still-real signal even here — a `sandbox_image` update
+        // must never resurrect a row something else deliberately kept
+        // archived after Paperclip's own provider-unavailability archival —
+        // so that path still skips below regardless of this flag.
+        if (input.platformFullyManaged && stockStatus === "operator_modified" && !operatorReaffirmedArchive) {
+          stockStatus = "stock_update_available";
+        }
 
         if (stockStatus === "operator_modified") {
           const baseline = matchingBindings[0];
