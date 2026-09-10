@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { readTranscriptRequest } from "./read-transcript-request";
 import { useQuery } from "@tanstack/react-query";
 import type { LiveEvent } from "@paperclipai/shared";
 import { ApiError } from "../../api/client";
@@ -123,6 +124,12 @@ export function useLiveRunTranscripts({
   const normalizedRuns = useMemo(() => runs.map((run) => ({ ...run })), [runsKey]);
   const [chunksByRun, setChunksByRun] = useState<Map<string, RunLogChunk[]>>(new Map());
   const [hydratedRunIds, setHydratedRunIds] = useState<Set<string>>(new Set());
+  const [errorsByRun, setErrorsByRun] = useState<ReadonlyMap<string, Error>>(new Map());
+  const [retryGeneration, setRetryGeneration] = useState(0);
+  const retry = useCallback(() => {
+    missingTerminalLogRunIdsRef.current.clear();
+    setRetryGeneration((value) => value + 1);
+  }, []);
   const seenChunkKeysRef = useRef(new Set<string>());
   // Highest sequenced chunk trimmed out of a run's retained window; older
   // records re-delivered by the other transport are dropped instead of being
@@ -242,6 +249,11 @@ export function useLiveRunTranscripts({
       return next.size === prev.size ? prev : next;
     });
 
+    setErrorsByRun((previous) => {
+      const next = new Map([...previous].filter(([id]) => retainedRunIds.has(id)));
+      return next.size === previous.size ? previous : next;
+    });
+
     for (const key of pendingLogRowsByRunRef.current.keys()) {
       const runId = key.replace(/:records$/, "");
       if (!retainedRunIds.has(runId)) {
@@ -285,16 +297,28 @@ export function useLiveRunTranscripts({
     if (readableRuns.length === 0) return;
 
     let cancelled = false;
+    const controller = new AbortController();
+    const inFlightRunIds = new Set<string>();
 
     const readRunLog = async (run: RunTranscriptSource) => {
-      if (missingTerminalLogRunIdsRef.current.has(run.id)) {
+      if (missingTerminalLogRunIdsRef.current.has(run.id) || inFlightRunIds.has(run.id)) {
         return;
       }
+      inFlightRunIds.add(run.id);
       const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
       try {
-        const result = await heartbeatsApi.log(run.id, offset, logReadLimitBytes);
+        const result = await readTranscriptRequest(
+          (signal) => heartbeatsApi.log(run.id, offset, logReadLimitBytes, { signal }),
+          controller.signal,
+        );
         if (cancelled) return;
 
+        setErrorsByRun((previous) => {
+          if (!previous.has(run.id)) return previous;
+          const next = new Map(previous);
+          next.delete(run.id);
+          return next;
+        });
         appendChunks(run.id, parsePersistedLogContent(run.id, result.content, pendingLogRowsByRunRef.current));
 
         if (result.nextOffset !== undefined) {
@@ -305,10 +329,26 @@ export function useLiveRunTranscripts({
           logOffsetByRunRef.current.set(run.id, offset + result.content.length);
         }
       } catch (error) {
-        if (error instanceof ApiError && error.status === 404 && isTerminalStatus(run.status)) {
-          missingTerminalLogRunIdsRef.current.add(run.id);
+        if (cancelled) return;
+        if (error instanceof ApiError && error.status === 404) {
+          setErrorsByRun((previous) => {
+            if (!previous.has(run.id)) return previous;
+            const next = new Map(previous);
+            next.delete(run.id);
+            return next;
+          });
+          // A newly started run may not have created its log yet.
+          if (isTerminalStatus(run.status)) missingTerminalLogRunIdsRef.current.add(run.id);
+        } else {
+          setErrorsByRun((previous) => {
+            if (previous.has(run.id)) return previous;
+            const next = new Map(previous);
+            next.set(run.id, error instanceof Error ? error : new Error("Run history could not be loaded"));
+            return next;
+          });
         }
       } finally {
+        inFlightRunIds.delete(run.id);
         if (!cancelled) {
           setHydratedRunIds((prev) => {
             if (prev.has(run.id)) return prev;
@@ -340,9 +380,10 @@ export function useLiveRunTranscripts({
 
     return () => {
       cancelled = true;
+      controller.abort();
       if (interval !== null) window.clearInterval(interval);
     };
-  }, [enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey]);
+  }, [enableRealtimeUpdates, logPollIntervalMs, logReadLimitBytes, normalizedRuns, runIdsKey, retryGeneration]);
 
   useEffect(() => {
     if (!enableRealtimeUpdates) return;
@@ -519,6 +560,7 @@ export function useLiveRunTranscripts({
 
   return {
     transcriptByRun,
+    hydratedRunIds, errorsByRun, retry,
     isInitialHydrating: normalizedRuns.some((run) => canReadPersistedLog(run) && !hydratedRunIds.has(run.id)),
     hasOutputForRun(runId: string) {
       return (chunksByRun.get(runId)?.length ?? 0) > 0 || runById.get(runId)?.hasStoredOutput === true;

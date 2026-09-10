@@ -40,6 +40,7 @@ export type {
   NativeRuntimeContextSnapshot,
   NativeSession,
   NativeSessionBackend,
+  NativeSessionGoalControl,
   OpenControlPlaneRunInput,
   PersistedNativeSession,
   PrpEvent,
@@ -67,6 +68,10 @@ const sourceUrl = new URL(
 const runner = (await import(sourceUrl.href)) as RunnerModule;
 
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
+export const NativeSessionCleanupQuarantinedError =
+  runner.NativeSessionCleanupQuarantinedError;
+export const NativeSessionProtocolIntegrityError =
+  runner.NativeSessionProtocolIntegrityError;
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
 export const CAPABILITY_SEMANTIC_TOOL_CATALOG =
   runner.CAPABILITY_SEMANTIC_TOOL_CATALOG;
@@ -90,6 +95,8 @@ export const createRunnerdCodexTransport: (
 export const defaultCapabilityRunnerdBinary =
   runner.defaultCapabilityRunnerdBinary;
 export const executeNativeSession = runner.executeNativeSession;
+export const applyNativeSessionGoalControl =
+  runner.applyNativeSessionGoalControl;
 export const nativeRuntimePromptDigest = runner.nativeRuntimePromptDigest;
 export const normalizePrpResultSignals = runner.normalizePrpResultSignals;
 export const parseCodexTurnDiff = runner.parseCodexTurnDiff;
@@ -105,3 +112,5 @@ export const resolveSourceCodexHome = runner.resolveSourceCodexHome;
 export const validatePrpEvent = runner.validatePrpEvent;
 export const validatePrpStructuredRunResult =
   runner.validatePrpStructuredRunResult;
+
+export const NativeProviderTerminalFailure = runner.NativeProviderTerminalFailure;

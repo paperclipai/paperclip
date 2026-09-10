@@ -1,4 +1,23 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+export {
+  RUNNER_GOAL_MAX_OBJECTIVE_CHARS,
+  runnerGoalAvailabilitySchema,
+  runnerGoalCapabilityActionSchema,
+  runnerGoalStatusSchema,
+  runnerGoalActionSchema,
+  runnerGoalPendingActionSchema,
+  runnerGoalActionRequestSchema,
+  type RunnerGoalAvailability,
+  type RunnerGoalCapabilityAction,
+  type RunnerGoalStatus,
+  type RunnerGoalAction,
+  type RunnerGoalPendingAction,
+  type RunnerGoalCapability,
+  type RunnerGoalSnapshot,
+  type RunnerGoalProjection,
+  type RunnerGoalActionRequest,
+  type RunnerGoalActionAccepted,
+} from "./runner-goal.js";
 export { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./adapter-auth-check-code.js";
 export {
   CONNECTION_INTENT_AGENT_GUIDANCE,
@@ -49,6 +68,7 @@ export type {
   ConnectionsSearchResult,
   ConnectionRequestResult,
   ConnectionIntentSetupOptions,
+  ConnectionIntentSetupConnection,
   CompleteConnectionIntentInput,
   DeclineConnectionIntentInput,
 } from "./types/connection-intent.js";
@@ -321,6 +341,8 @@ export {
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
 export * from "./validators/status-card.js";
+export * from "./types/chat-channels.js";
+export * from "./validators/chat-channels.js";
 export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
 export {
   humanizeConnectionDisplayName,
@@ -928,6 +950,8 @@ export type {
   AssetImage,
   Project,
   ProjectBudgetSummary,
+  ProjectRepository,
+  ProjectRepositoryOptions,
   ProjectCodebase,
   ProjectCodebaseOrigin,
   ProjectGoalRef,
@@ -1198,6 +1222,7 @@ export type {
   IssueLabel,
   IssueTreeControlPreview,
   IssueTreeHold,
+  ReleaseIssueTreeHoldResponse,
   IssueTreeHoldMember,
   IssueTreeHoldReleasePolicy,
   IssueTreePreviewAgent,
@@ -1418,6 +1443,7 @@ export type {
   ToolConnectionCredentialSource,
   ToolConnectionCredentialPolicy,
   ToolConnectionOwnership,
+  ToolConnectionPurpose,
   ToolConnectionTransport,
   ToolConnectionStatus,
   ToolConnectionKind,
@@ -2728,3 +2754,7 @@ export {
   rewriteUrlHostToLoopback,
 } from "./runtime-exposure/loopback-bind.js";
 export { ACCOUNT_HANDLE_MAX_LENGTH, toAccountHandle } from "./account-handle.js";
+export type { ExecutionContinuationEnvelope } from "./types/execution-continuation.js";
+export type { ExecutionProjection, ExecutionReconciliation, ExecutionBlocker } from "./types/execution-projection.js";
+
+export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from "./types/execution-projection.js";

@@ -1,3 +1,5 @@
+import { executionProjectionsForRuns } from "./execution-projection.js";
+import type { ExecutionProjection } from "@paperclipai/shared";
 import { Buffer } from "node:buffer";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
@@ -31,6 +33,7 @@ import {
   issueWorkProducts,
   issueReadStates,
   issueThreadInteractions,
+  toolActionRequests,
   issues,
   labels,
   projectWorkspaces,
@@ -626,6 +629,7 @@ type IssueRow = typeof issues.$inferSelect;
 type IssueLabelRow = typeof labels.$inferSelect;
 type IssuePlanDecompositionRow = typeof issuePlanDecompositions.$inferSelect;
 type IssueActiveRunRow = {
+  execution?: ExecutionProjection;
   id: string;
   status: string;
   agentId: string;
@@ -2039,6 +2043,14 @@ async function activeRunMapForIssues(
 
     for (const row of rows) {
       map.set(row.id, row);
+    }
+  }
+  for (const companyId of new Set(issueRows.map(row => row.companyId))) {
+    const scopedIds = issueRows.filter(row => row.companyId === companyId).flatMap(row => row.executionRunId && map.has(row.executionRunId) ? [row.executionRunId] : []);
+    const projections = await executionProjectionsForRuns(dbOrTx, companyId, scopedIds);
+    for (const [runId, execution] of projections) {
+      const row = map.get(runId);
+      if (row) row.execution = execution;
     }
   }
   return map;
@@ -5626,7 +5638,7 @@ export function issueService(db: Db) {
     return row;
   }
 
-  return {
+  const service = {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
     addStopRelayCommentIfNeeded,
@@ -7771,6 +7783,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        companyGuard?: string;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -7780,10 +7793,18 @@ export function issueService(db: Db) {
       const activityPublications = postCommitActivityPublications ?? ownedActivityPublications;
       const ownedPostCommitActions: IssuePostCommitAction[] = [];
       const queuedPostCommitActions = postCommitActions ?? ownedPostCommitActions;
+      // A caller that supplies `companyGuard` gets the company added to
+      // every read, lock, and write predicate below. A check before this
+      // call is not a boundary: `issues.company_id` can change between
+      // that check and this write, so the predicate must carry the
+      // company itself.
+      const idPredicate = data.companyGuard !== undefined
+        ? and(eq(issues.id, id), eq(issues.companyId, data.companyGuard))
+        : eq(issues.id, id);
       const existing = await dbOrTx
         .select()
         .from(issues)
-        .where(eq(issues.id, id))
+        .where(idPredicate)
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
 
@@ -7792,6 +7813,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        companyGuard,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -7943,10 +7965,15 @@ export function issueService(db: Db) {
         const receiptExisting = await tx
           .select()
           .from(issues)
-          .where(eq(issues.id, id))
+          .where(idPredicate)
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (actorAgentId && patch.status === "done") {
+          const [review] = await tx.select({ id: toolActionRequests.id }).from(toolActionRequests).where(and(eq(toolActionRequests.companyId, existing.companyId), eq(toolActionRequests.issueId, id), inArray(toolActionRequests.status, ["pending", "approved", "executing"]))).limit(1);
+          if (review) throw conflict("This task is waiting for a connection review. Finish unrelated work, then yield in_review without retrying the governed call.", { code: "tool_review_pending", actionRequestId: review.id });
+        }
+
         const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([
           nextLabelIds !== undefined
             ? labelMapForIssues(tx, [id])
@@ -7977,10 +8004,14 @@ export function issueService(db: Db) {
         const updated = await tx
           .update(issues)
           .set(patch)
-          .where(eq(issues.id, id))
+          .where(idPredicate)
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        if (updated.assigneeAgentId !== existing.assigneeAgentId || updated.assigneeUserId !== existing.assigneeUserId) {
+          const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+          await issueThreadInteractionService(tx).expireConnectionIntentsForOwnershipChange(updated);
+        }
         if (existing.status !== updated.status) {
           if (
             (existing.status === "done" || existing.status === "cancelled")
@@ -9514,4 +9545,38 @@ export function issueService(db: Db) {
       }));
     },
   };
+
+  type IssueServiceApi = typeof service & {
+    updateForCompany: (
+      id: string,
+      companyId: string,
+      data: Parameters<typeof service.update>[1],
+      dbOrTx?: any,
+      postCommitActivityPublications?: ActivityPublication[],
+      postCommitActions?: IssuePostCommitAction[],
+    ) => ReturnType<typeof service.update>;
+  };
+  const serviceApi = service as IssueServiceApi;
+
+  // A company-scoped wrapper around `update`. It passes the company as a
+  // guard on every read, lock, and write predicate, so a caller with only
+  // a company id and an issue id cannot update an issue in another company.
+  serviceApi.updateForCompany = async (
+    id,
+    companyId,
+    data,
+    dbOrTx = db,
+    postCommitActivityPublications,
+    postCommitActions,
+  ) => {
+    return service.update(
+      id,
+      { ...data, companyGuard: companyId },
+      dbOrTx,
+      postCommitActivityPublications,
+      postCommitActions,
+    );
+  };
+
+  return serviceApi;
 }

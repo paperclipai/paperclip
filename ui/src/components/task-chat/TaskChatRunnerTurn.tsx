@@ -1,4 +1,5 @@
 import { useRef, useState, type ComponentType, type SVGProps } from "react";
+import type { ExecutionProjection } from "@paperclipai/shared";
 import { Brain, OctagonX } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { useSecondTick } from "@/hooks/useSecondTick";
@@ -14,7 +15,9 @@ import type {
   TaskChatThinkingItem,
   TaskChatToolItem,
 } from "./task-chat-model";
-import { TaskChatAgentIdentity } from "./TaskChatBubble";
+import { TaskChatAgentIdentity, TaskChatBubble } from "./TaskChatBubble";
+import { TaskChatBubbleActions } from "./TaskChatBubbleActions";
+import { formatTaskChatTimestamp } from "./task-chat-adapter";
 import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
 import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
@@ -237,7 +240,7 @@ function RunnerActivityTimeline({ items }: { items: readonly TaskChatItem[] }) {
           <li className="min-w-0" key={item.id} data-activity-item-id={item.id}>
             {item.kind === "message" ? (
               <div
-                className="tc-enter-cot-line min-w-0 px-1 text-sm text-foreground/90"
+                className="min-w-0 px-1 text-sm text-foreground/90"
                 data-testid="task-chat-activity-commentary"
               >
                 <MarkdownBody softBreaks linkIssueReferences>
@@ -289,11 +292,13 @@ function RunnerActivityMarker({ item }: { item: TaskChatMarkerItem }) {
 
 function RunnerTurnStatus({
   status,
+  execution,
   startedAtMs,
   finishedAtMs,
   continuedAfterSteering = false,
 }: {
   status: string;
+  execution?: ExecutionProjection | null;
   startedAtMs: number | null;
   finishedAtMs?: number | null;
   continuedAfterSteering?: boolean;
@@ -310,8 +315,9 @@ function RunnerTurnStatus({
   const elapsed = formatCompactDuration(elapsedMs);
 
   const failed = terminalStatusFailed(status);
-  const label = terminal ? (failed ? "Stopped" : "Worked") : "Working";
-  const semanticLabel = terminal
+  const reconnecting = execution?.phase === "reconnecting" || execution?.phase === "retry_scheduled";
+  const label = reconnecting ? "Reconnecting…" : (terminal ? (failed ? "Stopped" : "Worked") : "Working");
+  const semanticLabel = reconnecting ? label : terminal
     ? elapsed
       ? `${label} ${failed ? "after" : "for"} ${elapsed}`
       : label
@@ -425,6 +431,7 @@ export function TaskChatRunnerTurn({
   agentIcon,
   items,
   status,
+  execution,
   startedAtMs,
   finishedAtMs,
   activityUnavailable = false,
@@ -438,6 +445,7 @@ export function TaskChatRunnerTurn({
   agentIcon?: string | null;
   items: readonly TaskChatItem[];
   status: string;
+  execution?: ExecutionProjection | null;
   startedAtMs: number | null;
   finishedAtMs?: number | null;
   activityUnavailable?: boolean;
@@ -522,6 +530,7 @@ export function TaskChatRunnerTurn({
         ) : null}
         <RunnerTurnStatus
           status={status}
+          execution={execution}
           startedAtMs={startedAtMs}
           finishedAtMs={finishedAtMs}
           continuedAfterSteering={continuedAfterSteering}
@@ -555,6 +564,7 @@ export function TaskChatRunnerTurn({
               key={`${runId ?? "run"}:${row.id}`}
               data-testid="task-chat-turn-timeline-row"
               data-timeline-row-id={row.id}
+              data-thread-anchor={row.id}
             >
               {row.kind === "activity_phase" ? (
                 <TaskChatActivityPhase
@@ -588,20 +598,18 @@ export function TaskChatRunnerTurn({
       ) : null}
       {final ? (
         <div
-          className="tc-enter-bubble w-full"
+          className="w-full"
           data-testid="task-chat-final-response"
         >
-          <div
-            className="break-words px-1 py-2 text-sm text-foreground"
-            data-testid="task-chat-agent-bubble"
-          >
-            <MarkdownBody softBreaks linkIssueReferences>
-              {final.text}
-            </MarkdownBody>
-          </div>
+          <TaskChatBubble
+            item={{ ...final, authorName: agentName ?? undefined, agentIcon, timestamp: final.timestamp ?? formatTaskChatTimestamp(final.atMs) }}
+            animateEntry={false}
+            hideAgentIdentity={!continuedAfterSteering}
+            actions={<TaskChatBubbleActions copyText={final.text} />}
+          />
         </div>
       ) : null}
-      <RunnerCurrentActivityTail items={currentActivityItems} status={status} />
+      {!final && (!execution || execution.phase === "working") ? <RunnerCurrentActivityTail items={currentActivityItems} status={status} /> : null}
     </div>
   );
 }

@@ -18,6 +18,13 @@ describe("qualified ACPX profiles", () => {
     }
   });
 
+  it.each(["claude-opus-5", "custom-model-not-in-catalog"])("accepts the exact Claude model %s", (model) => {
+    expect(resolveQualifiedAcpxProfile("claude", model)).toMatchObject({
+      qualificationModel: model, reportedModelId: model,
+      commandDigest: QUALIFIED_ACPX_PROFILES.claude.commandDigest,
+    });
+  });
+
   it("rejects unqualified model substitutions", () => {
     expect(() =>
       resolveQualifiedAcpxProfile("codex", "some-other-model"),

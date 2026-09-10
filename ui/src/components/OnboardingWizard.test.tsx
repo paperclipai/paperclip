@@ -56,6 +56,10 @@ const mockAgentsApi = vi.hoisted(() => ({
     }),
   ),
   hire: vi.fn(async () => ({ agent: { id: "agent-1" }, approval: null })),
+  // The hire step lists the company's agents first and adopts one that already
+  // carries the typed name on the same source, so a wizard that reopens on the
+  // agent step cannot hire "Ada 2". Empty by default: the company is new.
+  list: vi.fn(async () => [] as Array<{ id: string; name: string; adapterType: string }>),
   instructionsBundle: vi.fn(async () => ({ entryFile: "AGENTS.md" })),
   saveInstructionsFile: vi.fn(async () => ({})),
   // No default implementation: the top-level `beforeEach` sets the "no
@@ -225,7 +229,6 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
 }));
 // Animation / canvas-ish children that add nothing to the logic under test.
 vi.mock("./AsciiArtAnimation", () => ({ AsciiArtAnimation: () => null }));
-vi.mock("./FrontDoor", () => ({ FrontDoor: () => null }));
 vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
 import { ApiError } from "../api/client";
@@ -373,16 +376,16 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
     vi.clearAllMocks();
   });
 
-  describe("step 2, which is two screens wearing one number", () => {
-    // The create path's step 2 was the mission question and is skipped now. The
-    // grow path's step 2 is "tell us about your team", whose answers seed the
-    // lead agent — a different screen that happens to share the number, and one
-    // nothing covered until skipping the first nearly took it along.
+  describe("step 1 leads straight to the agent — there is no mission step 2", () => {
+    // One path now: Name your organization → Name your agent → Connect → Get
+    // started. The Build / Grow front door and both mission screens are gone,
+    // so "Continue" on step 1 creates the organization and lands on the agent
+    // step with no mission question in between.
 
-    async function openStepOne(path: "create" | "grow") {
+    async function openStepOne() {
       window.localStorage.setItem(
         ONBOARDING_STORAGE_KEY,
-        JSON.stringify({ step: 1, onboardingPath: path, companyName: "Initech" }),
+        JSON.stringify({ step: 1, companyName: "Initech" }),
       );
       mockDialog.onboardingOptions = {};
       mockCompany.companies = [];
@@ -416,24 +419,15 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await flushReact();
     }
 
-    it("keeps the grow path's questionnaire", async () => {
-      const { root } = await openStepOne("grow");
-      await clickByText((t) => t.startsWith("Continue"));
-
-      expect(document.body.textContent).toContain("Tell us about your team");
-      expect(mockCompaniesApi.create).not.toHaveBeenCalled();
-
-      await act(async () => root.unmount());
-    });
-
-    it("skips it on the create path, creating the company on the way", async () => {
+    it("creates the organization on Continue and lands on the agent step, no mission", async () => {
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
-      const { root } = await openStepOne("create");
+      const { root } = await openStepOne();
       await clickByText((t) => t.startsWith("Continue"));
 
       expect(mockCompaniesApi.create).toHaveBeenCalledWith({ name: "Initech" });
       expect(document.body.textContent).toContain("Create your first agent");
       expect(document.body.textContent).not.toContain("Define your mission");
+      expect(document.body.textContent).not.toContain("Tell us about your team");
 
       await act(async () => root.unmount());
     });
@@ -446,7 +440,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // render unchecked. Both asserted against positive anchors so an
       // unrendered step cannot pass as an absence.
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
-      const { root } = await openStepOne("create");
+      const { root } = await openStepOne();
       await clickByText((t) => t.startsWith("Continue"));
       expect(document.body.textContent).toContain("Create your first agent");
 
@@ -481,6 +475,77 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("adopts an agent the company already has under that name instead of hiring it twice", async () => {
+      // The wizard can reopen on the agent step for a company that just got
+      // its first agent — the dashboard's agentless offer on a stale list is
+      // one way — with nothing in its state to say the hire happened. The
+      // server numbers a repeat name, so without this the walk produced
+      // "Ada" and "Ada 2". Same name on the same source is the same agent.
+      mockDialog.onboardingOptions = {};
+      mockCompany.companies = [];
+      mockCompany.loading = false;
+      mockCompaniesApi.list.mockResolvedValue([]);
+      mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
+      mockAgentsApi.list.mockResolvedValueOnce([
+        { id: "agent-existing", name: "Ada", adapterType: "claude_local" },
+      ]);
+      mockAdapterRegistry.list = [{ type: "claude_local" }, { type: "codex_local" }];
+      const { root, queryClient } = render();
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <OnboardingWizard />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+
+      const clickText = async (match: (t: string) => boolean) => {
+        const el = [...document.body.querySelectorAll("button")].find((b) =>
+          match(b.textContent?.trim() ?? ""),
+        )!;
+        await act(async () => {
+          el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushReact();
+      };
+
+      const nameField = document.body.querySelector(
+        "#onboarding-company-name",
+      ) as HTMLInputElement | null;
+      if (nameField) {
+        await act(async () => {
+          setControlledValue(nameField, "Initech");
+        });
+        await flushReact();
+      } else {
+        const anyName = document.body.querySelector(
+          'input[placeholder="e.g. Northwind Labs"]',
+        ) as HTMLInputElement;
+        await act(async () => {
+          setControlledValue(anyName, "Initech");
+        });
+        await flushReact();
+      }
+      await clickText((t) => t.startsWith("Continue"));
+      const agentField = document.body.querySelector(
+        "#onboarding-agent-name",
+      ) as HTMLInputElement;
+      await act(async () => {
+        setControlledValue(agentField, "ada ");
+      });
+      await flushReact();
+      await clickText((t) => isArcPrimary(t));
+      await pickFirstSource(clickText);
+      await clickText((t) => isArcPrimary(t));
+
+      expect(mockAgentsApi.list).toHaveBeenCalledWith("company-new");
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain("ada is ready to work!");
+
+      await act(async () => root.unmount());
+    });
+
     it("hires from a legacy draft that saved an empty role", async () => {
       // `agentRole: ""` was this field's default before the arc stopped asking
       // for a role, so every draft saved by an earlier build carries it. `??`
@@ -489,7 +554,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // through a restored draft instead of a fresh one.
       window.localStorage.setItem(
         ONBOARDING_STORAGE_KEY,
-        JSON.stringify({ step: 1, onboardingPath: "create", companyName: "Initech", agentRole: "" }),
+        JSON.stringify({ step: 1, companyName: "Initech", agentRole: "" }),
       );
       mockDialog.onboardingOptions = {};
       mockCompany.companies = [];
@@ -556,7 +621,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         }),
       );
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
-      const { root } = await openStepOne("create");
+      const { root } = await openStepOne();
       await clickByText((t) => t.startsWith("Continue"));
       const agentField = document.body.querySelector(
         "#onboarding-agent-name",
@@ -593,7 +658,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // while the same event is still bubbling — so the second caller reads a
       // value the first has not written. Two companies, one keystroke.
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
-      const { root } = await openStepOne("create");
+      const { root } = await openStepOne();
 
       const nameInput = document.body.querySelector(
         'input[placeholder="e.g. Northwind Labs"]',
@@ -624,7 +689,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           resolveCreate = resolve;
         }),
       );
-      const { root } = await openStepOne("create");
+      const { root } = await openStepOne();
 
       const nameInput = document.body.querySelector(
         'input[placeholder="e.g. Northwind Labs"]',
@@ -650,7 +715,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // A create run reached the agent step from step 1, so Back owes it step 1 —
       // not the mission screen it never saw.
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
-      const { root } = await openStepOne("create");
+      const { root } = await openStepOne();
       await clickByText((t) => t.startsWith("Continue"));
       expect(document.body.textContent).toContain("Create your first agent");
 
@@ -674,7 +739,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockCompaniesApi.create.mockResolvedValue({ id: "company-new", issuePrefix: "INI" });
       window.localStorage.setItem(
         ONBOARDING_STORAGE_KEY,
-        JSON.stringify({ step: 1, onboardingPath: "create", companyName: "Initech" }),
+        JSON.stringify({ step: 1, companyName: "Initech" }),
       );
       mockDialog.onboardingOptions = {};
       mockCompany.companies = [];
@@ -1912,7 +1977,6 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         ONBOARDING_STORAGE_KEY,
         JSON.stringify({
           step: 4,
-          onboardingPath: "create",
           companyName: "Initech",
           agentName: "Ada",
           createdCompanyId: "company-new",

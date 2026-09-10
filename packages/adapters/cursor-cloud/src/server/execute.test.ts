@@ -207,6 +207,33 @@ describe("cursor_cloud execute", () => {
     );
   });
 
+  it("omits empty environment values while preserving nonempty values exactly", async () => {
+    createMock.mockResolvedValue(createMockSdkAgent());
+    const ctx = createContext();
+    ctx.config.env = {
+      CURSOR_API_KEY: "cursor-secret",
+      GH_TOKEN: "",
+      GITHUB_TOKEN: "",
+      GIT_AUTHOR_NAME: "",
+      SSH_AUTH_SOCK: "",
+      EMPTY_PLAIN: { type: "plain", value: "" },
+      EXTRA_FLAG: "0",
+      PADDED_VALUE: "  retain whitespace  ",
+    };
+
+    await execute(ctx);
+
+    const env = createMock.mock.calls[0]?.[0]?.cloud?.envVars;
+    expect(env).not.toHaveProperty("GH_TOKEN");
+    expect(env).not.toHaveProperty("GITHUB_TOKEN");
+    expect(env).not.toHaveProperty("GIT_AUTHOR_NAME");
+    expect(env).not.toHaveProperty("SSH_AUTH_SOCK");
+    expect(env).not.toHaveProperty("EMPTY_PLAIN");
+    expect(env).not.toHaveProperty("CURSOR_API_KEY");
+    expect(env).toMatchObject({ EXTRA_FLAG: "0", PADDED_VALUE: "  retain whitespace  " });
+    expect(Object.values(env).every((value) => value !== "")).toBe(true);
+  });
+
   it("reports dispatch before starting the first remote SDK operation", async () => {
     const run = createMockRun({ agentId: "agent-dispatch" });
     const sdkAgent = createMockSdkAgent({ agentId: "agent-dispatch", sendRun: run });
@@ -352,6 +379,36 @@ describe("cursor_cloud execute", () => {
         repoUrl: "https://github.com/paperclipai/paperclip.git",
       },
     });
+  });
+
+  it("explains a rejected Cursor default without silently choosing another model", async () => {
+    const sdkAgent = createMockSdkAgent();
+    sdkAgent.send.mockRejectedValue(new Error("[invalid_model] Model 'gpt-5' is not available or invalid."));
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext();
+    delete ctx.config.model;
+
+    const result = await execute(ctx);
+
+    expect(createMock.mock.calls[0]?.[0]).not.toHaveProperty("model");
+    expect(sdkAgent.send).toHaveBeenCalledWith(expect.any(String), {});
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toContain("Cursor rejected its configured default model");
+    expect(result.errorMessage).toContain("https://cursor.com/dashboard/cloud-agents");
+    expect(sdkAgent.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes Cursor repository setup failures actionable without launching another run", async () => {
+    const sdkAgent = createMockSdkAgent();
+    sdkAgent.send.mockRejectedValue(new Error("[validation_error] Failed to determine repository default branch"));
+    createMock.mockResolvedValue(sdkAgent);
+
+    const result = await execute(createContext());
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toContain("Cursor's GitHub integration can access https://github.com/paperclipai/paperclip.git");
+    expect(result.errorMessage).toContain("https://cursor.com/dashboard/cloud-agents");
+    expect(sdkAgent.send).toHaveBeenCalledTimes(1);
   });
 
   it("maps non-finished Cursor results to failing Paperclip runs", async () => {

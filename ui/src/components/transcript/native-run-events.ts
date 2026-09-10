@@ -784,6 +784,22 @@ export function nativeRunEventsToTranscript(events: readonly HeartbeatRunEvent[]
       continue;
     }
 
+    // Notices are provider diagnostics, not tool calls. Preserve their message
+    // and category for the shared notice row instead of serializing an input blob.
+    if (event.eventType === "provider.notice.recorded" && payload.schema === "paperclip.provider.notice.v1") {
+      entries.push({
+        kind: "provider_activity",
+        ts,
+        family: "provider_notice",
+        eventType: event.eventType,
+        status: payload.severity === "error" ? "failed" : "informational",
+        title: "Provider notice",
+        summary: text(payload.summary)?.trim() || text(payload.message)?.trim() || "Provider notice",
+        payload,
+      });
+      continue;
+    }
+
     const providerActivity = providerActivityPresentation(event, payload);
     if (providerActivity) {
       if (!startedToolIds.has(providerActivity.id)) {

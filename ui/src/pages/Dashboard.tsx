@@ -80,7 +80,10 @@ export function Dashboard() {
   const hydratedActivityRef = useRef(false);
   const activityAnimationTimersRef = useRef<number[]>([]);
 
-  const { data: agents } = useQuery({
+  // `isFetching` is read alongside the data: a cached list is served while its
+  // refetch runs, and an empty one from before the first hire must not pass
+  // for the company's current state — see `shouldRouteAgentlessCompanyToOnboarding`.
+  const { data: agents, isFetching: agentsRefreshing } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -132,6 +135,7 @@ export function Dashboard() {
   const shouldOpenOnboarding = shouldRouteAgentlessCompanyToOnboarding({
     pathname: location.pathname,
     agentsLoaded: agents !== undefined,
+    agentsRefreshing,
     agentCount: agents?.length ?? 0,
   });
   // Auto-open once per company. Every input to the effect sits behind a query,
@@ -308,7 +312,10 @@ export function Dashboard() {
     return <PageSkeleton variant="dashboard" />;
   }
 
-  const hasNoAgents = agents !== undefined && agents.length === 0;
+  // Same rule as the auto-offer above: a list still being refreshed may be the
+  // empty one cached before the first hire, and the banner's "Create one here"
+  // opens the same agent step the offer does.
+  const hasNoAgents = agents !== undefined && !agentsRefreshing && agents.length === 0;
   const pausedBanner = derivePausedAgentBanner(agents);
   const pausedImportedCount =
     pausedBanner?.kind === "imported" ? pausedBanner.pausedImportedAgentIds.length : 0;

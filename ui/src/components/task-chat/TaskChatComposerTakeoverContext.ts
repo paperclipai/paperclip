@@ -8,6 +8,8 @@ import { createPortal } from "react-dom";
 
 interface TaskChatComposerTakeoverActions {
   skipButton: ReactNode;
+  /** Hides the takeover without resolving it, returning the plain composer. */
+  dismiss: () => void;
   headerSlot: HTMLElement | null;
   controlsSlot: HTMLElement | null;
   setHeaderClaimed: (claimed: boolean) => void;

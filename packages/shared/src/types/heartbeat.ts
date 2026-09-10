@@ -159,6 +159,7 @@ export interface GitWorktreeBranchIncoherenceEvidence {
 }
 
 export interface HeartbeatRun {
+  execution?: import("./execution-projection.js").ExecutionProjection | null;
   id: string;
   companyId: string;
   agentId: string;
@@ -170,7 +171,7 @@ export interface HeartbeatRun {
   identityHistory?: Array<{
     id: string; revision: number; responsibleUserId: string | null; messageId: string | null;
     parentContextId: string | null; cause: string; status: string; acceptedAt: Date | string | null;
-    github: { status: "available" | "absent" | "unavailable"; login?: string; source?: "personal" | "dedicated"; reason?: string } | null;
+    github: { status: "available" | "absent" | "unavailable"; login?: string; source?: "personal" | "dedicated"; reason?: string; connectionId?: string; grantId?: string; authenticationMode?: "managed" | "host" | "anonymous" } | null;
   }>;
   startedAt: Date | null;
   finishedAt: Date | null;

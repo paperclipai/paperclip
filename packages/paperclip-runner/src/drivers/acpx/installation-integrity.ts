@@ -1,3 +1,4 @@
+import { MAX_ACPX_RUNTIME_EXECUTABLE_BYTES, ACPX_PRIVATE_SNAPSHOT_ENV, createAcpxPrivateSnapshot, type AcpxPrivateSnapshot } from "./private-snapshot.js";
 import { createHash } from "node:crypto";
 import {
   spawn as spawnChildProcess,
@@ -25,7 +26,7 @@ import {
 } from "node:path";
 import type { Readable, Writable } from "node:stream";
 
-import type { QualifiedAcpxProfile } from "./qualified-profiles.js";
+import { resolveQualifiedAcpxProfile, type QualifiedAcpxProfile } from "./qualified-profiles.js";
 import {
   VERIFIED_RUNTIME_EXECUTABLE_ENV,
   verifiedRuntimeExecutableHandoff,
@@ -33,7 +34,6 @@ import {
 
 const MAX_PACKAGE_JSON_BYTES = 256 * 1024;
 const MAX_AGENT_COMMAND_BYTES = 16 * 1024 * 1024;
-const MAX_RUNTIME_EXECUTABLE_BYTES = 384 * 1024 * 1024;
 const COMMAND_SOURCE_FD = 3;
 const COMMAND_DIRECTORY_FD = 4;
 const DEPENDENCY_ANCESTOR_FD_START = 5;
@@ -54,6 +54,19 @@ const QUALIFIED_CLAUDE_LINUX_X64_RUNTIME = Object.freeze({
     "sha256:26d020351e8112f4006790f3cfce43b4c9df0c1bb1d0e542364d64151b81d5ba",
   environmentVariable: "CLAUDE_CODE_EXECUTABLE",
 });
+
+const QUALIFIED_CLAUDE_DARWIN_RUNTIMES = {
+  arm64: Object.freeze({
+    ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
+    packageName: "@anthropic-ai/claude-agent-sdk-darwin-arm64",
+    executableDigest: "sha256:ef5d2909c8af49f31ab6d5487e90316777bc2fac170adfe8160716caa8aaf4f9",
+  }),
+  x64: Object.freeze({
+    ...QUALIFIED_CLAUDE_LINUX_X64_RUNTIME,
+    packageName: "@anthropic-ai/claude-agent-sdk-darwin-x64",
+    executableDigest: "sha256:a94a8b229fa85c3a316c6b4a35e0aa22bec1aabbd3d1422826ce1d10ddc88751",
+  }),
+};
 
 const QUALIFIED_CODEX_LINUX_X64_RUNTIME = Object.freeze({
   runtimePackageName: "@openai/codex",
@@ -725,6 +738,27 @@ export async function verifyQualifiedAcpxInstallation(
             "ACPX provider executable identity changed after verification",
           );
         }
+        const privateSnapshot = process.platform === "darwin"
+          ? await createAcpxPrivateSnapshot([commandDirectory, ...dependencyAncestors.map((root) => root.path)], currentRuntimeExecutable)
+          : null;
+        if (privateSnapshot) {
+          try {
+            // Bind copied trees to the identities retained by the verified lease.
+            const paths = [commandDirectory, ...dependencyAncestors.map((root) => root.path)];
+            const handles = [currentDirectory.handle, ...currentDependencyAncestors];
+            for (let index = 0; index < paths.length; index++) {
+              const lexical = await lstat(paths[index]!, { bigint: true });
+              const held = await handles[index]!.stat({ bigint: true });
+              if (lexical.isSymbolicLink() || !sameIdentity(fileIdentity(lexical), fileIdentity(held))) {
+                throw new Error("ACPX package directory changed while snapshotting");
+              }
+            }
+            if (runtimeExecutable && privateSnapshot.executable &&
+              `sha256:${privateSnapshot.digests[privateSnapshot.executable]}` !== runtimeExecutable.digest) {
+              throw new Error("ACPX runtime snapshot digest mismatch");
+            }
+          } catch (error) { await privateSnapshot.close(); throw error; }
+        }
         return commandLease(
           commandDirectory,
           basename(commandPath),
@@ -737,6 +771,7 @@ export async function verifyQualifiedAcpxInstallation(
           dependencyAncestorFormats,
           currentRuntimeExecutable,
           runtimeExecutable?.environmentVariable ?? null,
+          privateSnapshot,
         );
       } catch (error) {
         await Promise.all([
@@ -800,7 +835,9 @@ async function verifyQualifiedRuntimeExecutable(input: {
 }): Promise<VerifiedAcpxRuntimeExecutable | null> {
   const qualification =
     input.profile.agent === "claude"
-      ? QUALIFIED_CLAUDE_LINUX_X64_RUNTIME
+      ? process.platform === "darwin" && (process.arch === "arm64" || process.arch === "x64")
+        ? QUALIFIED_CLAUDE_DARWIN_RUNTIMES[process.arch]
+        : QUALIFIED_CLAUDE_LINUX_X64_RUNTIME
       : input.profile.agent === "codex"
         ? QUALIFIED_CODEX_LINUX_X64_RUNTIME
         : null;
@@ -813,9 +850,10 @@ async function verifyQualifiedRuntimeExecutable(input: {
       `ACPX ${input.profile.agent} runtime does not match its qualified profile`,
     );
   }
-  if (process.platform !== "linux" || process.arch !== "x64") {
+  if (!((process.platform === "linux" && process.arch === "x64")
+    || (input.profile.agent === "claude" && process.platform === "darwin" && (process.arch === "arm64" || process.arch === "x64")))) {
     throw new Error(
-      `ACPX ${input.profile.agent} verified runtime executable requires qualified Linux x64`,
+      `ACPX ${input.profile.agent} verified runtime executable is unavailable for ${process.platform} ${process.arch}`,
     );
   }
 
@@ -829,7 +867,7 @@ async function verifyQualifiedRuntimeExecutable(input: {
     ] !== qualification.dependencyDeclaration
   ) {
     throw new Error(
-      `ACPX ${input.profile.agent} runtime omitted its qualified Linux executable package`,
+      `ACPX ${input.profile.agent} runtime omitted its verified platform executable package`,
     );
   }
 
@@ -1007,7 +1045,7 @@ async function openVerifiedRuntimeExecutable(
     if (
       !before.isFile() ||
       before.size < 1n ||
-      before.size > BigInt(MAX_RUNTIME_EXECUTABLE_BYTES) ||
+      before.size > BigInt(MAX_ACPX_RUNTIME_EXECUTABLE_BYTES) ||
       (before.mode & 0o111n) === 0n
     ) {
       throw new Error(
@@ -1247,6 +1285,7 @@ function commandLease(
   providerRuntimeExecutable: FileHandle | null,
   providerRuntimeEnvironmentVariable:
     VerifiedAcpxRuntimeExecutable["environmentVariable"] | null,
+  privateSnapshot: AcpxPrivateSnapshot | null,
 ): VerifiedAcpxCommandLease {
   let consumed = false;
   let directoriesReleased = false;
@@ -1269,6 +1308,7 @@ function commandLease(
     consumed = true;
     verifiedBytes.fill(0);
     await releaseDirectories();
+    await privateSnapshot?.close();
   };
   return {
     spawn(
@@ -1317,6 +1357,8 @@ function commandLease(
         const runtimeHandoff =
           verifiedRuntimeExecutableHandoff(runtimeTargetFd);
         const environment = sanitizedNodeEnvironment(options.env);
+        delete environment[ACPX_PRIVATE_SNAPSHOT_ENV];
+        if (privateSnapshot) environment[ACPX_PRIVATE_SNAPSHOT_ENV] = JSON.stringify(privateSnapshot.handoff);
         if (runtimeHandoff.environmentValue === undefined) {
           delete environment[VERIFIED_RUNTIME_EXECUTABLE_ENV];
         } else {
@@ -1440,9 +1482,12 @@ function commandLease(
       } catch (error) {
         verifiedBytes.fill(0);
         releaseDirectoriesBestEffort();
+        void privateSnapshot?.close();
         throw error;
       }
       releaseDirectoriesBestEffort();
+      child.once("exit", () => { void privateSnapshot?.close(); });
+      child.once("error", () => { void privateSnapshot?.close(); });
       const sourceInput = child.stdio[COMMAND_SOURCE_FD] as Writable | null;
       if (sourceInput === null) {
         verifiedBytes.fill(0);
@@ -1628,13 +1673,18 @@ function snapshotBootstrap(format: AcpxCommandFormat, guarded = false): string {
     "const providerRuntimeExecutableCount = Number.parseInt(process.argv[7], 10);",
     `const providerRuntimeEnvironmentVariable = process.env.${VERIFIED_PROVIDER_RUNTIME_TARGET_ENV};`,
     `delete process.env.${VERIFIED_PROVIDER_RUNTIME_TARGET_ENV};`,
-    'if (process.platform !== "linux") throw new Error("ACPX provider relative module loading requires Linux descriptor-pinned paths");',
+    `const snapshotHandoff = process.platform === "darwin" ? JSON.parse(process.env.${ACPX_PRIVATE_SNAPSHOT_ENV} || "null") : null;`,
+    'let privateSnapshot = null; if (snapshotHandoff) { const manifest = fs.readFileSync(snapshotHandoff.path); if (require("node:crypto").createHash("sha256").update(manifest).digest("hex") !== snapshotHandoff.digest) throw new Error("ACPX snapshot manifest digest mismatch"); privateSnapshot = JSON.parse(manifest); }',
+    `delete process.env.${ACPX_PRIVATE_SNAPSHOT_ENV};`,
+    'if (process.platform !== "linux" && !(process.platform === "darwin" && privateSnapshot && Array.isArray(privateSnapshot.roots) && privateSnapshot.roots.length === dependencyAncestorCount + 1)) throw new Error("ACPX provider requires verified package snapshots");',
+    'const verifySnapshotBytes = (path, bytes) => { if (privateSnapshot && require("node:crypto").createHash("sha256").update(bytes).digest("hex") !== privateSnapshot.digests[path]) throw new Error("ACPX private snapshot digest mismatch"); };',
+    'if (privateSnapshot && providerRuntimeExecutableCount === 1) verifySnapshotBytes(privateSnapshot.executable, fs.readFileSync(privateSnapshot.executable));',
     `if (!Number.isSafeInteger(dependencyAncestorCount) || dependencyAncestorCount < 0 || dependencyAncestorCount > ${MAX_DEPENDENCY_ANCESTORS}) throw new Error("ACPX provider dependency ancestry is invalid");`,
     'if (!Number.isSafeInteger(serverDependencyAncestorCount) || serverDependencyAncestorCount < 0 || serverDependencyAncestorCount > dependencyAncestorCount) throw new Error("ACPX provider package ancestry is invalid");',
     'if ((serverPackageFormat !== "module" && serverPackageFormat !== "commonjs") || !Array.isArray(dependencyAncestorFormats) || dependencyAncestorFormats.length !== dependencyAncestorCount || dependencyAncestorFormats.some((value) => value !== "module" && value !== "commonjs")) throw new Error("ACPX provider package formats are invalid");',
     'if (providerRuntimeExecutableCount !== 0 && providerRuntimeExecutableCount !== 1) throw new Error("ACPX provider runtime executable count is invalid");',
     `const providerRuntimeExecutableFd = ${DEPENDENCY_ANCESTOR_FD_START} + dependencyAncestorCount;`,
-    'if (providerRuntimeExecutableCount === 1) { if (providerRuntimeEnvironmentVariable !== "CODEX_PATH" && providerRuntimeEnvironmentVariable !== "CLAUDE_CODE_EXECUTABLE") throw new Error("ACPX provider runtime environment target is invalid"); fs.fstatSync(providerRuntimeExecutableFd); process.env[providerRuntimeEnvironmentVariable] = "/proc/" + process.pid + "/fd/" + providerRuntimeExecutableFd; } else if (providerRuntimeEnvironmentVariable !== undefined) throw new Error("ACPX provider runtime environment target is unexpected");',
+    'if (providerRuntimeExecutableCount === 1) { if (providerRuntimeEnvironmentVariable !== "CODEX_PATH" && providerRuntimeEnvironmentVariable !== "CLAUDE_CODE_EXECUTABLE") throw new Error("ACPX provider runtime environment target is invalid"); fs.fstatSync(providerRuntimeExecutableFd); process.env[providerRuntimeEnvironmentVariable] = privateSnapshot ? privateSnapshot.executable : "/proc/" + process.pid + "/fd/" + providerRuntimeExecutableFd; } else if (providerRuntimeEnvironmentVariable !== undefined) throw new Error("ACPX provider runtime environment target is unexpected");',
     ...(guarded
       ? [
           `const guardianFd = ${DEPENDENCY_ANCESTOR_FD_START} + dependencyAncestorCount + providerRuntimeExecutableCount;`,
@@ -1654,13 +1704,14 @@ function snapshotBootstrap(format: AcpxCommandFormat, guarded = false): string {
         ]
       : []),
     "const commandPath = resolve(commandDirectory, commandName);",
-    `const guardSnapshotModuleLookup = ${guardSnapshotModuleLookup.toString()};`,
-    `const directory = process.platform === "linux" ? "/proc/self/fd/${COMMAND_DIRECTORY_FD}" : commandDirectory;`,
+    `const guardSnapshotModuleLookupImpl = ${guardSnapshotModuleLookup.toString()};`,
+    "const guardSnapshotModuleLookup = (platform, filesystemLookup, lookup) => guardSnapshotModuleLookupImpl(platform, filesystemLookup, lookup, privateSnapshot !== null);",
+    `const directory = process.platform === "linux" ? "/proc/self/fd/${COMMAND_DIRECTORY_FD}" : privateSnapshot.roots[0];`,
     "const directoryUrl = pathToFileURL(`${directory}/`).href;",
     "const pinnedTarget = new URL(commandName, directoryUrl).href;",
-    'const target = process.platform === "linux" ? pinnedTarget : pathToFileURL(commandPath).href;',
+    'const target = pinnedTarget;',
     "process.argv.splice(1, 7, fileURLToPath(target));",
-    `const dependencyDirectoryUrls = Array.from({ length: dependencyAncestorCount }, (_, index) => pathToFileURL("/proc/self/fd/" + (${DEPENDENCY_ANCESTOR_FD_START} + index) + "/").href);`,
+    `const dependencyDirectoryUrls = Array.from({ length: dependencyAncestorCount }, (_, index) => pathToFileURL((privateSnapshot ? privateSnapshot.roots[index + 1] : "/proc/self/fd/" + (${DEPENDENCY_ANCESTOR_FD_START} + index)) + "/").href);`,
     'const canonicalRootUrl = (url) => pathToFileURL(fs.realpathSync(fileURLToPath(url))).href.replace(/\\/?$/, "/");',
     'const canonicalDirectoryUrl = process.platform === "linux" ? canonicalRootUrl(directoryUrl) : directoryUrl;',
     'const canonicalDependencyDirectoryUrls = process.platform === "linux" ? dependencyDirectoryUrls.map(canonicalRootUrl) : dependencyDirectoryUrls;',
@@ -1730,7 +1781,7 @@ function snapshotBootstrap(format: AcpxCommandFormat, guarded = false): string {
     "try {",
     "const metadataBefore = fs.fstatSync(moduleFd, { bigint: true });",
     `if (!metadataBefore.isFile() || metadataBefore.size > BigInt(${MAX_AGENT_COMMAND_BYTES})) { const error = new Error("ACPX provider module is not a bounded regular file"); error.code = "ERR_ACPX_UNVERIFIED_MODULE"; throw error; }`,
-    'const openedUrl = pathToFileURL(fs.realpathSync("/proc/self/fd/" + moduleFd)).href;',
+    'const openedUrl = pathToFileURL(fs.realpathSync(privateSnapshot ? fileURLToPath(url) : "/proc/self/fd/" + moduleFd)).href;',
     'if (typeof canonicalRootUrl !== "string" || !openedUrl.startsWith(canonicalRootUrl)) { const error = new Error("ACPX provider module escaped descriptor-pinned ancestry"); error.code = "ERR_ACPX_UNVERIFIED_MODULE"; throw error; }',
     "const packageFormat = url.startsWith(directoryUrl) ? serverPackageFormat : dependencyAncestorFormats[dependencyDescriptorIndex];",
     "const hintedFormat = descriptorFormatByUrl.get(url) || context.format;",
@@ -1743,6 +1794,7 @@ function snapshotBootstrap(format: AcpxCommandFormat, guarded = false): string {
     "while (moduleBytesRead < moduleBuffer.length) { const bytesRead = fs.readSync(moduleFd, moduleBuffer, moduleBytesRead, moduleBuffer.length - moduleBytesRead, moduleBytesRead); if (bytesRead === 0) break; moduleBytesRead += bytesRead; }",
     "const moduleSource = moduleBuffer.subarray(0, moduleBytesRead);",
     "const metadataAfter = fs.fstatSync(moduleFd, { bigint: true });",
+    "verifySnapshotBytes(fileURLToPath(url), moduleSource);",
     `if (moduleSource.length > ${MAX_AGENT_COMMAND_BYTES} || moduleSource.length !== admittedModuleBytes || BigInt(moduleSource.length) !== metadataAfter.size || metadataBefore.dev !== metadataAfter.dev || metadataBefore.ino !== metadataAfter.ino || metadataBefore.size !== metadataAfter.size || metadataBefore.mtimeNs !== metadataAfter.mtimeNs || metadataBefore.ctimeNs !== metadataAfter.ctimeNs) { const error = new Error("ACPX provider module changed while it was read"); error.code = "ERR_ACPX_UNVERIFIED_MODULE"; throw error; }`,
     "return { format: moduleFormat, source: moduleSource, shortCircuit: true };",
     "} finally { fs.closeSync(moduleFd); }",
@@ -1756,8 +1808,9 @@ export function guardSnapshotModuleLookup<T>(
   platform: NodeJS.Platform,
   filesystemLookup: boolean,
   lookup: () => T,
+  privateSnapshot = false,
 ): T {
-  if (platform !== "linux" && filesystemLookup) {
+  if (platform !== "linux" && !(platform === "darwin" && privateSnapshot) && filesystemLookup) {
     throw new Error(
       "ACPX provider relative module loading requires Linux descriptor-pinned paths",
     );
@@ -1953,4 +2006,11 @@ function isInside(parent: string, child: string): boolean {
 
 function isInsideOrEqual(parent: string, child: string): boolean {
   return resolve(parent) === resolve(child) || isInside(parent, child);
+}
+
+/** Verify the installed platform artifacts without starting a billable session. */
+export async function probeAcpxClaudeInstallation(model: string): Promise<void> {
+  const installation = await verifyQualifiedAcpxInstallation(resolveQualifiedAcpxProfile("claude", model));
+  const lease = await installation.openCommand();
+  await lease.close();
 }

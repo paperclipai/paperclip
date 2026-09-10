@@ -2983,7 +2983,7 @@ rl.on("line", (line) => {
         issueId: issue.id,
         interactionId: actionRequest.interactionId!,
         actionRequestId: actionRequest.id,
-        actor: { agentId: agent.id },
+        actor: { userId: "board-user" },
       })).resolves.toMatchObject({ status: "expired" });
 
       expect(fake.requests).toHaveLength(0);
@@ -3337,7 +3337,7 @@ rl.on("line", (line) => {
         continuationPolicy: "wake_assignee",
         payload: {
           version: 1,
-          prompt: `Approve ${approvalToolName}?`,
+          prompt: "Approve KV Set?",
           detailsMarkdown: expect.stringContaining('"value":"original"'),
           target: {
             type: "custom",
@@ -3521,7 +3521,7 @@ rl.on("line", (line) => {
       await gateway.declineActionRequest({
         companyId: company.id,
         actionRequestId: rejectedRequest.id,
-        actor: { agentId: agent.id },
+        actor: { userId: "board-user" },
       });
       await gateway.executeTool({
         sessionToken: session.token,

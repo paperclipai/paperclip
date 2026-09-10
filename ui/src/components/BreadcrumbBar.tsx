@@ -108,6 +108,23 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
     </Button>
   );
 
+  const currentCrumb = breadcrumbs[breadcrumbs.length - 1];
+  if (isMobile && breadcrumbs[0]?.label === "Tasks" && currentCrumb.identifier) {
+    return (
+      <div className="h-(--sz-60px) shrink-0 flex items-center border-b border-border px-4">
+        {menuButton}
+        <h1 className="flex min-w-0 flex-1 items-center gap-1.5 text-sm">
+          {currentCrumb.leading ? (
+            <span className="flex shrink-0 items-center">{currentCrumb.leading}</span>
+          ) : null}
+          <span className="min-w-0 truncate" title={currentCrumb.label}>{currentCrumb.label}</span>
+          <CrumbIdentifier identifier={currentCrumb.identifier} />
+        </h1>
+        {globalToolbarSlots}
+      </div>
+    );
+  }
+
   const breadcrumbTrail = (
     <div className="min-w-0 overflow-hidden flex-1">
       <Breadcrumb className="min-w-0 overflow-hidden">

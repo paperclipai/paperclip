@@ -1,3 +1,6 @@
+import { requiresExecutionReconciliation } from "@paperclipai/shared";
+import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
+import { TaskChatScrollReady } from "@/components/task-chat/scroll-navigation";
 import {
   useCallback,
   useEffect,
@@ -78,11 +81,16 @@ import {
   taskChatContentKey,
 } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import {
+  RunnerGoalWidget,
+  useRunnerGoalControl,
+} from "@/components/task-chat/RunnerGoalWidget";
 import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMessages";
-import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
+import { TaskChatWindowScroll } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
@@ -100,6 +108,9 @@ import {
   workProductHref,
 } from "@/lib/issue-artifacts";
 import { heartbeatsApi, type RuntimeRequestResolution } from "@/api/heartbeats";
+import { issuesApi } from "@/api/issues";
+import { queryKeys } from "@/lib/queryKeys";
+import { useQueryClient } from "@tanstack/react-query";
 import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
 
 function toMs(value: Date | string | null | undefined): number {
@@ -381,7 +392,11 @@ function resolvedWithoutUserFacingResponse(value: unknown): boolean {
   );
 }
 
-export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
+export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread> & {
+  initialHistoryPending?: boolean;
+  initialHistoryError?: boolean;
+  onRetryInitialHistory?: () => void;
+};
 
 type PendingComposerInput =
   | {
@@ -448,6 +463,9 @@ function durableInputLabel(
 export function TaskChatThread(props: TaskChatThreadProps) {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const {
+    initialHistoryPending = false,
+    initialHistoryError = false,
+    onRetryInitialHistory,
     comments,
     interactions,
     documents = [],
@@ -460,6 +478,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     userProfileMap,
     currentUserId,
     onAdd,
+    onCancelRun,
+    stopPending,
+    stopScope,
     issueWorkMode = "standard",
     onWorkModeChange,
     composerAccessory,
@@ -511,6 +532,36 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onResumeAssignee,
     resumeAssigneePending = false,
   } = props;
+  const queryClient = useQueryClient();
+  const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
+    string | null
+  >(null);
+  const effectiveGoalAgentId =
+    pendingComposerAssignee === null
+      ? issueAssigneeAgentId
+      : pendingComposerAssignee.startsWith("agent:")
+        ? pendingComposerAssignee.slice("agent:".length) || null
+        : null;
+  const runnerGoal = useRunnerGoalControl(issueId, effectiveGoalAgentId);
+
+  useEffect(() => {
+    setPendingComposerAssignee(null);
+  }, [currentAssigneeValue, issueId]);
+
+  const reassignForRunnerGoal = useCallback(
+    async (reassignment: {
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    }) => {
+      if (!issueId)
+        throw new Error("The task is not available for reassignment.");
+      await issuesApi.update(issueId, { ...reassignment, deferWakeForGoal: true });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.detail(issueId),
+      });
+    },
+    [issueId, queryClient],
+  );
 
   const queuedMessageQueue =
     queuedCommentQueue && queuedCommentQueue.entries.length > 0
@@ -777,6 +828,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const {
     transcriptByRun: logTranscriptByRun,
     isInitialHydrating: logsAreInitiallyHydrating,
+    hydratedRunIds: hydratedLogRunIds,
+    errorsByRun: logErrorsByRun,
+    retry: retryLogs,
   } = useLiveRunTranscripts({
     // Native events are authoritative, but the persisted/live log remains a
     // compatibility source when an upgraded server has no event history or
@@ -787,19 +841,33 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const {
     transcriptByRun: nativeTranscriptByRun,
     errorsByRun: nativeTranscriptErrorsByRun,
+    isInitialHydrating: nativeEventsAreInitiallyHydrating,
+    hydratedRunIds: hydratedNativeRunIds,
+    retry: retryNativeEvents,
   } = useNativeRunTranscripts(nativeRuns);
+  const fallbackByRunRef = useRef(new Map<string, NonNullable<ReturnType<typeof logTranscriptByRun.get>>>());
   const transcriptByRun = useMemo(() => {
     const next = new Map(logTranscriptByRun);
     for (const run of nativeRuns) {
-      const logTranscript = logTranscriptByRun.get(run.id) ?? [];
       const nativeTranscript = nativeTranscriptByRun.get(run.id) ?? [];
-      const nativeEventsUnavailable = nativeTranscriptErrorsByRun.has(run.id);
-      if (
-        nativeTranscript.length > 0 &&
-        (!nativeEventsUnavailable || logTranscript.length === 0)
-      ) {
+      const logTranscript = logTranscriptByRun.get(run.id) ?? [];
+      if (nativeTranscriptErrorsByRun.has(run.id) && logTranscript.length > 0) {
+        fallbackByRunRef.current.set(run.id, logTranscript);
+      }
+      const fallback = fallbackByRunRef.current.get(run.id);
+      const lastTimestamp = (entries: typeof nativeTranscript) =>
+        entries.reduce((latest, entry) => Math.max(latest, toMs(entry.ts)), 0);
+      // Keep a newer fallback visible through native transport recovery. An
+      // empty successful poll must not rewind a response the reader just saw.
+      if (fallback && (nativeTranscriptErrorsByRun.has(run.id) || lastTimestamp(nativeTranscript) < lastTimestamp(fallback))) {
+        next.set(run.id, fallback);
+      } else if (nativeTranscript.length > 0) {
+        fallbackByRunRef.current.delete(run.id);
         next.set(run.id, nativeTranscript);
       }
+    }
+    for (const id of fallbackByRunRef.current.keys()) {
+      if (!nativeRuns.some((run) => run.id === id)) fallbackByRunRef.current.delete(id);
     }
     return next;
   }, [
@@ -920,7 +988,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return map;
   }, [comments]);
 
-  const { data: planDocument } = useIssuePlanDocument(issueId);
+  const { data: planDocument, isLoading: planLoading, isError: planError, refetch: retryPlan } = useIssuePlanDocument(issueId);
 
   // A native-runner Plan is part of the turn that wrote its current revision.
   // Legacy adapters do not expose the semantic write_document boundary needed
@@ -1369,6 +1437,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? `The run was cancelled ${responseBoundary}.`
             : source.status === "interrupted"
               ? `The run was interrupted ${responseBoundary}.`
+              : code === "native_provider_model_rejected"
+                ? "The provider rejected the selected model. Check the model ID and your account's access, save the agent configuration, then retry. View the run for the provider's full error."
               : code === "provider_frame_too_large"
                 ? "Provider output exceeded the safe limit."
                 : source.status === "timed_out"
@@ -1388,6 +1458,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             id,
             kind: "marker",
             variant: "interrupted",
+            tone: source.status === "cancelled" ? "neutral" : "error",
             label,
             detail,
             collapsible: true,
@@ -1402,6 +1473,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         });
       }
       if (entries.length === 0) {
+        // A queued continuation cancelled after the task was completed or parked
+        // never produced a provider turn. Keep its record in the run log without
+        // presenting it as a completed chat response.
+        if (source.status === "cancelled" && meta?.errorCode === "issue_not_in_progress") {
+          settledRunIds.add(source.id);
+          continue;
+        }
         if (sourceIsPaperclipRunner && sourceYielded) {
           settledRunIds.add(source.id);
           continue;
@@ -1451,7 +1529,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           settledRunIds.add(source.id);
         } else if (
           !sourceIsPaperclipRunner &&
-          (source.status === "failed" || source.status === "timed_out")
+          (source.status === "failed" || source.status === "timed_out" || source.status === "cancelled")
         ) {
           settledRunIds.add(source.id);
           const code = meta?.errorCode ?? "native_runner_process_exited";
@@ -1459,7 +1537,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? "Retry scheduled automatically."
             : "You can retry this message now.";
           const detail =
-            code === "provider_frame_too_large"
+            source.status === "cancelled"
+              ? code === "execution_reconciliation_required"
+                ? "The previous execution must be checked before this task can continue. Your message is preserved. View the stopped run for details."
+                : "Execution was stopped before returning an answer."
+              : code === "provider_frame_too_large"
               ? `Provider output exceeded the safe limit. ${retryDetail}`
               : `The runner stopped before returning an answer (${code}). ${retryDetail}`;
           const id = `${source.id}:failure`;
@@ -1471,7 +1553,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               id,
               kind: "marker",
               variant: "interrupted",
-              label: "Run failed",
+              label: source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
+              tone: source.status === "cancelled" ? "neutral" : "error",
               detail,
             },
           });
@@ -2081,6 +2164,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       .filter(
         (interaction) =>
           interaction.status === "pending" &&
+          interaction.kind !== "connection_intent" &&
           !shouldHideInteractionCard(interaction),
       )
       .sort((left, right) => toMs(right.createdAt) - toMs(left.createdAt));
@@ -2259,10 +2343,16 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     [interruptingQueuedRunId, onInterruptQueued],
   );
 
+  const reopenToolReview = useCallback((interactionId: string) => {
+    setSelectedPendingKey(`interaction:${interactionId}`);
+    setTakeoverMode("open");
+  }, []);
+
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (
       <TaskChatInteractionCard
         item={item}
+        onReviewRequest={reopenToolReview}
         planDocument={planDocument}
         showPlanPreview={
           !threadOwnsPlanPreview(
@@ -2302,6 +2392,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       planDocumentSourceRunId,
       settledRunIds,
       tailRunId,
+      reopenToolReview,
     ],
   );
 
@@ -2349,6 +2440,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       ? {
           id: selectedPendingInput.key,
           label: selectedPendingInput.label,
+          hideLabel: selectedPendingInput.kind === "durable" && selectedPendingInput.interaction.kind === "request_confirmation" && Boolean(selectedPendingInput.interaction.payload.toolAction),
           pendingCount: pendingComposerInputs.length,
           content: takeoverContent,
           onDismiss: () => setTakeoverMode("normal"),
@@ -2370,6 +2462,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               : runtimeRequestReplacesComposerSkip(selectedPendingInput.item),
         }
       : null;
+  const expansionState = useRef(new Map<string, boolean>());
   const autoFollowContentKey = `${threadContentKey}:${composerTakeover?.id ?? "composer"}`;
 
   // Mobile (PAP-360): the app shell scrolls the DOCUMENT (Layout's main is
@@ -2379,9 +2472,53 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // and track auto-follow against window scroll. Both paths include takeover
   // state so opening or closing composer input preserves bottom pinning.
   const { isMobile } = useSidebar();
-  useWindowAutoFollow(isMobile ? autoFollowContentKey : 0, isMobile);
+  const initialCommentWindow = useRef<{ oldestAt: number; ids: Set<string> } | null>(null);
+  if (!initialCommentWindow.current && comments.length > 0) {
+    initialCommentWindow.current = {
+      oldestAt: Math.min(...comments.map((comment) => toMs(comment.createdAt))),
+      ids: new Set(comments.map((comment) => comment.id)),
+    };
+  }
+  const initialCommentRunIds = new Set(comments
+    .filter((comment) => initialCommentWindow.current?.ids.has(comment.id))
+    .flatMap((comment) => [comment.runId, comment.createdByRunId, comment.derivedCreatedByRunId]));
+  const initialRuns = runs.filter((run) => {
+    if (!initialCommentWindow.current || !isTerminalRunStatus(run.status) || initialCommentRunIds.has(run.id)) return true;
+    const metadata = linkedRunMetaById.get(run.id);
+    return !metadata || toMs(metadata.finishedAt ?? metadata.startedAt ?? metadata.createdAt) >= initialCommentWindow.current.oldestAt;
+  });
+  const historyPending = initialHistoryPending || planLoading ||
+    initialRuns.some((run) => {
+      if (run.runtimeMode === "native" && (hydratedNativeRunIds ? !hydratedNativeRunIds.has(run.id) : nativeEventsAreInitiallyHydrating)) return true;
+      if (run.runtimeMode === "native" && (nativeTranscriptByRun.get(run.id)?.length ?? 0) > 0) return false;
+      return run.status !== "queued" && hydratedLogRunIds ? !hydratedLogRunIds.has(run.id) : logsAreInitiallyHydrating;
+    });
+  const historyError = initialHistoryError || planError || runs.some((run) =>
+    run.runtimeMode === "native"
+      ? nativeTranscriptErrorsByRun.has(run.id) && (logTranscriptByRun.get(run.id)?.length ?? 0) === 0
+      : Boolean(logErrorsByRun?.has(run.id)),
+  );
+  const [revealedIssue, setRevealedIssue] = useState<string | null | undefined>(() => historyPending ? undefined : issueId);
+  const historyRevealed = revealedIssue === issueId;
+  // Mount and measure the real thread while concealed, then reveal in one
+  // commit. A frame also lets ancestor navigation scroll restoration finish.
+  // Readiness is latched per issue: refetches never hide existing conversation.
+  useEffect(() => {
+    if (historyRevealed || historyPending) return;
+    const frame = requestAnimationFrame(() => setRevealedIssue(issueId));
+    return () => cancelAnimationFrame(frame);
+  }, [historyPending, historyRevealed, issueId]);
+  const retryHistory = () => {
+    onRetryInitialHistory?.();
+    retryLogs?.();
+    retryNativeEvents?.();
+    void retryPlan();
+  };
 
   return (
+    <TaskChatExpansionState.Provider value={expansionState.current}>
+    <TaskChatScrollReady.Provider value={!historyPending}>
+    <TaskChatWindowScroll contentKey={isMobile ? autoFollowContentKey : 0} enabled={isMobile && historyRevealed} />
     <TaskChatPresentationProvider
       mode={streamlinedUiEnabled ? "streamlined" : "production"}
     >
@@ -2392,7 +2529,24 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         )}
         data-testid="task-chat-thread"
       >
-        <div className={cn("flex flex-col", !isMobile && "min-h-0 flex-1")}>
+        <div className={cn("relative flex flex-col", !isMobile && "min-h-0 flex-1")} aria-busy={!historyRevealed}>
+          {historyError ? (
+            <div role="status" className="absolute inset-x-0 top-0 z-20 mx-auto flex w-full max-w-(--tc-shell-max-w) items-center gap-2 border border-border bg-background px-4 py-2 text-sm text-muted-foreground">
+              Some task history could not be loaded.
+              <Button variant="ghost" size="sm" onClick={retryHistory}>Retry</Button>
+            </div>
+          ) : null}
+          {!historyRevealed ? (
+            <div className="absolute inset-0 z-10 overflow-hidden bg-background" data-testid="task-chat-history-loading" role="status" aria-label="Loading conversation">
+              <div className="mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-4 px-4 py-3">
+                {threadHeader}
+                <Skeleton className="h-16 w-3/4 animate-none" />
+                <Skeleton className="h-24 w-4/5 self-end animate-none" />
+                <Skeleton className="h-16 w-3/4 animate-none" />
+              </div>
+            </div>
+          ) : null}
+          <div className={cn("flex flex-col", !isMobile && "min-h-0 flex-1", !historyRevealed && "invisible")} inert={!historyRevealed}>
           {items.length === 0 && !tailRunId ? (
             <div
               className={
@@ -2439,14 +2593,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               renderMessageActions={renderMessageActions}
               renderQueuedAction={renderQueuedAction}
               onTryAgainNoLiveExecutionPath={
-                issueStatus === "blocked"
+                issueStatus === "blocked" && !requiresExecutionReconciliation(props.recoveryAction?.cause) && !linkedRuns?.some(run => run.execution?.phase === "recovery_needed")
                   ? onTryAgainNoLiveExecutionPath
                   : undefined
               }
               tryAgainNoLiveExecutionPathPending={
                 tryAgainNoLiveExecutionPathPending
               }
-              onRetryFailedRun={onRetryFailedRun}
+              onRetryFailedRun={isTerminalIssueStatus(issueStatus) || interactions?.some(interaction => interaction.status === "pending") || requiresExecutionReconciliation(props.recoveryAction?.cause) || props.scheduledRetry || linkedRuns?.some(run => ["working", "retry_scheduled", "reconnecting", "finishing", "queued", "recovery_needed"].includes(run.execution?.phase ?? "")) ? undefined : onRetryFailedRun}
               retryFailedRunId={retryFailedRunId}
               tail={
                 tailRunId || optimisticRunnerStartup || bottomBlockerLinks ? (
@@ -2456,6 +2610,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         {paperclipRunnerTail || optimisticRunnerStartup ? (
                           <TaskChatRunnerTurn
                             runId={tailRunId}
+                            execution={liveRun?.id === tailRunId ? liveRun.execution : null}
                             agentName={visibleTailAgentName}
                             agentIcon={visibleTailAgentIcon}
                             items={tailItems}
@@ -2478,6 +2633,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                           <>
                             <TaskChatLiveRunPill
                               status={tailStatus}
+                              execution={liveRun?.id === tailRunId ? liveRun.execution : null}
                               startedAtMs={tailStartedAtMs}
                               finishedAtMs={tailFinishedAtMs}
                               toolSummary={tailToolSummary}
@@ -2500,11 +2656,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   </>
                 ) : null
               }
-              contentKey={autoFollowContentKey}
+              contentKey={`${autoFollowContentKey}:${historyRevealed}`}
               className={isMobile ? undefined : "pt-3"}
               scroll={!isMobile}
             />
           )}
+          </div>
         </div>
         {assignedAgentForNotice?.status === "paused" ? (
           <div className="mx-auto w-full max-w-(--tc-shell-max-w) px-4 pt-2">
@@ -2532,16 +2689,17 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               isMobile
                 ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
                 : "bottom-0 z-10",
-              "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 px-4 pb-2",
+              "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 px-2 pb-2 md:px-4",
               streamlinedUiEnabled && "md:px-0 md:pb-0",
               (!streamlinedUiEnabled || isMobile) &&
-                "bg-background/80 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
+                "bg-background/80 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60 dark:bg-transparent dark:backdrop-blur-none dark:supports-[backdrop-filter]:bg-transparent",
             )}
           >
             {composerAccessory}
             {tailTurnStatus ? (
               <TaskChatTurnStatusIsland model={tailTurnStatus} />
             ) : null}
+            <RunnerGoalWidget control={runnerGoal} />
             <div
               className="relative isolate flex flex-col"
               data-testid="task-chat-composer-stack"
@@ -2587,6 +2745,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               <div className="relative z-10">
                 <TaskChatComposer
                   onAdd={handleThreadAdd}
+                  onStop={liveRun ? onCancelRun : undefined}
+                  stopPending={stopPending}
+                  stopScope={stopScope}
                   workMode={issueWorkMode}
                   onWorkModeChange={onWorkModeChange}
                   disabled={Boolean(runtimeComposerDisabledReason)}
@@ -2599,6 +2760,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   agentMap={agentMap}
                   userProfileMap={userProfileMap}
                   currentAssigneeValue={currentAssigneeValue}
+                  onPendingAssigneeChange={setPendingComposerAssignee}
                   issueStatus={issueStatus}
                   mobile={isMobile}
                   draftKey={draftKey}
@@ -2606,6 +2768,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   onSaveQueuedEdit={saveQueuedEdit}
                   onCancelQueuedEdit={() => setQueuedEdit(null)}
                   takeover={composerTakeover}
+                  runnerGoalCapability={runnerGoal.data?.capability ?? null}
+                  onRunnerGoalCommand={runnerGoal.executeComposerCommand}
+                  onRunnerGoalReassign={reassignForRunnerGoal}
                   pendingTakeover={
                     pendingComposerInputs.length > 0
                       ? {
@@ -2623,5 +2788,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         ) : null}
       </div>
     </TaskChatPresentationProvider>
+    </TaskChatScrollReady.Provider>
+    </TaskChatExpansionState.Provider>
   );
 }

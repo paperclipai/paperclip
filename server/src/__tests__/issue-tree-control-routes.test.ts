@@ -1,4 +1,5 @@
 import express from "express";
+import { PgDialect } from "drizzle-orm/pg-core";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -15,6 +16,9 @@ const mockTreeControlService = vi.hoisted(() => ({
   releaseHold: vi.fn(),
   cancelUnclaimedWakeupsForTree: vi.fn(),
 }));
+
+const mockReplayBlocks = vi.hoisted(() => vi.fn());
+const mockReplayWhere = vi.hoisted(() => vi.fn());
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -40,7 +44,13 @@ async function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueTreeControlRoutes({} as any));
+  const query = {
+    from: () => query,
+    innerJoin: () => query,
+    where: (predicate: unknown) => { mockReplayWhere(predicate); return query; },
+    limit: mockReplayBlocks,
+  };
+  app.use("/api", issueTreeControlRoutes({ select: () => query } as any));
   app.use(errorHandler);
   return app;
 }
@@ -48,12 +58,17 @@ async function createApp(actor: Record<string, unknown>) {
 describe("issue tree control routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockReplayBlocks.mockResolvedValue([]);
+    mockTreeControlService.getHold.mockResolvedValue(null);
     mockIssueService.getById.mockResolvedValue({
       id: "11111111-1111-4111-8111-111111111111",
       companyId: "company-2",
     });
     mockTreeControlService.cancelUnclaimedWakeupsForTree.mockResolvedValue([]);
-    mockTreeControlService.cancelIssueStatusesForHold.mockResolvedValue({ updatedIssueIds: [], updatedIssues: [] });
+    mockTreeControlService.cancelIssueStatusesForHold.mockResolvedValue({
+      updatedIssueIds: [],
+      updatedIssues: [],
+    });
     mockTreeControlService.restoreIssueStatusesForHold.mockResolvedValue({
       updatedIssueIds: [],
       updatedIssues: [],
@@ -62,6 +77,173 @@ describe("issue tree control routes", () => {
     });
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
     mockHeartbeatService.wakeup.mockResolvedValue(null);
+  });
+
+  it.each([false, true])(
+    "only wakes eligible current assignees when resume requests wakeAgents=%s",
+    async (wakeAgents) => {
+      const rootId = "11111111-1111-4111-8111-111111111111";
+      const holdId = "33333333-3333-4333-8333-333333333333";
+      const root = {
+        id: rootId,
+        companyId: "company-2",
+        status: "todo",
+        assigneeAgentId: "agent-parent",
+      };
+      const issues = [
+        root,
+        {
+          id: "child",
+          companyId: "company-2",
+          status: "in_progress",
+          assigneeAgentId: "agent-child",
+        },
+        {
+          id: "backlog-task",
+          companyId: "company-2",
+          status: "backlog",
+          assigneeAgentId: "parked-agent",
+        },
+        {
+          id: "blocked-task",
+          companyId: "company-2",
+          status: "blocked",
+          assigneeAgentId: "blocked-agent",
+        },
+        {
+          id: "done",
+          companyId: "company-2",
+          status: "done",
+          assigneeAgentId: "agent-done",
+        },
+        {
+          id: "cancelled",
+          companyId: "company-2",
+          status: "cancelled",
+          assigneeAgentId: "agent-cancelled",
+        },
+        {
+          id: "foreign",
+          companyId: "company-3",
+          status: "todo",
+          assigneeAgentId: "agent-foreign",
+        },
+      ];
+      mockIssueService.getById.mockImplementation(async (id: string) =>
+        issues.find((issue) => issue.id === id),
+      );
+      mockTreeControlService.releaseHold.mockResolvedValue({
+        id: holdId,
+        mode: "pause",
+        status: "released",
+        members: issues.map((issue) => ({ issueId: issue.id })),
+      });
+      mockTreeControlService.getHold.mockResolvedValue({
+        id: holdId,
+        rootIssueId: rootId,
+        mode: "pause",
+        members: issues.map((issue) => ({ issueId: issue.id })),
+      });
+      const app = await createApp({
+        type: "board",
+        userId: "user-1",
+        companyIds: ["company-2"],
+        source: "session",
+        isInstanceAdmin: false,
+      });
+      const response = await request(app)
+        .post(`/api/issues/${rootId}/tree-holds/${holdId}/release`)
+        .send({ metadata: { wakeAgents } });
+      expect(response.status).toBe(200);
+      expect(mockHeartbeatService.wakeup.mock.calls.map(([id]) => id)).toEqual(
+        wakeAgents ? ["agent-parent", "agent-child"] : [],
+      );
+      if (wakeAgents) {
+        const { params } = new PgDialect().sqlToQuery(mockReplayWhere.mock.calls[0]![0]);
+        expect(params).toEqual(expect.arrayContaining(["todo", "in_progress", "in_review"]));
+        expect(params).not.toContain("blocked");
+        expect(params).not.toContain("backlog");
+      }
+      if (wakeAgents)
+        expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+          "agent-child",
+          expect.objectContaining({
+            reason: "issue_tree_resumed",
+            contextSnapshot: expect.objectContaining({
+              issueId: "child",
+              holdId,
+            }),
+          }),
+        );
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ action: "issue.tree_hold_released" }),
+      );
+    },
+  );
+
+  it("reports wake failures without undoing release or skipping other assignees", async () => {
+    const rootId = "11111111-1111-4111-8111-111111111111";
+    const holdId = "33333333-3333-4333-8333-333333333333";
+    mockTreeControlService.releaseHold.mockResolvedValue({
+      id: holdId,
+      mode: "pause",
+      status: "released",
+      members: [{ issueId: rootId }, { issueId: "child" }],
+    });
+    mockIssueService.getById.mockImplementation(async (id) => ({
+      id,
+      companyId: "company-2",
+      status: "todo",
+      assigneeAgentId: id,
+    }));
+    mockHeartbeatService.wakeup.mockRejectedValueOnce(
+      new Error("Agent unavailable"),
+    );
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["company-2"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const response = await request(app)
+      .post(`/api/issues/${rootId}/tree-holds/${holdId}/release`)
+      .send({ metadata: { wakeAgents: true } });
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      status: "released",
+      wakeFailures: [{ issueId: rootId, message: "Agent unavailable" }],
+    });
+    expect(
+      mockHeartbeatService.wakeup.mock.calls.map(([agent]) => agent),
+    ).toEqual([rootId, "child"]);
+  });
+
+  it("keeps the hold active when resume requests an unsafe execution replay", async () => {
+    const rootId = "11111111-1111-4111-8111-111111111111";
+    const holdId = "33333333-3333-4333-8333-333333333333";
+    mockTreeControlService.getHold.mockResolvedValue({
+      id: holdId,
+      rootIssueId: rootId,
+      mode: "pause",
+      members: [{ issueId: rootId }],
+    });
+    mockReplayBlocks.mockResolvedValue([{ identifier: "TEST-1" }]);
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["company-2"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    const response = await request(app)
+      .post(`/api/issues/${rootId}/tree-holds/${holdId}/release`)
+      .send({ metadata: { wakeAgents: true } });
+    expect(response.status).toBe(409);
+    expect(response.body.error).toContain("Resume without waking agents");
+    expect(mockTreeControlService.releaseHold).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("rejects cross-company preview requests with a uniform 404 before calling the preview service", async () => {

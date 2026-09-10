@@ -49,6 +49,18 @@ diff --git a/dist/acp-agent.js b/dist/acp-agent.js
                  ...mcpServers,
                  ...(fileChangeAuditSupport
                      ? { [FILE_CHANGE_AUDIT_SERVER_NAME]: fileChangeAuditSupport.mcpServer }
+@@ -3776,6 +3776,11 @@
+             ? option.options.flatMap((o) => ("options" in o ? o.options : [o]))
+             : [];
+         let validValue = allValues.find((o) => o.value === params.value);
++        // Paperclip's model field is an exact provider request, not a fuzzy picker
++        // search. Forward custom IDs to the SDK and let the provider reject them.
++        if (params.configId === MODEL_CONFIG_ID && process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT === "1" && params.value.trim()) {
++            validValue = { value: params.value, name: params.value };
++        }
+         // The option's reported currentValue is always a valid target, even when
+         // it has no options entry: a session running an out-of-picker model
+         // (resumed onto an allowlist-excluded model, or a refusal fallback)
 diff --git a/package.json b/package.json
 --- a/package.json
 +++ b/package.json

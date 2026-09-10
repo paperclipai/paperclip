@@ -1,13 +1,16 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+  requiresExecutionReconciliation,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
 } from "@paperclipai/shared";
 import {
   agents,
+  agentTaskSessions,
   agentWakeupRequests,
   approvals,
   activityLog,
@@ -36,6 +39,7 @@ import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { budgetService } from "../budgets.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { legacyExecutionNeedsReconciliation, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
 import {
@@ -60,6 +64,8 @@ import {
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
 import {
+  SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON,
+  sandboxProviderPluginRemedy,
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
@@ -297,9 +303,13 @@ function readWorkspaceValidationFingerprint(latestRun: LatestIssueRun): string |
   return readNonEmptyString(payload?.fingerprint);
 }
 
-function readConfigurationIncompleteFingerprint(latestRun: LatestIssueRun): string | null {
+function readConfigurationIncompletePayload(latestRun: LatestIssueRun): Record<string, unknown> | null {
   const payload = parseObject(parseObject(latestRun?.resultJson).configurationIncomplete);
-  return readNonEmptyString(payload?.fingerprint);
+  return Object.keys(payload).length > 0 ? payload : null;
+}
+
+function readConfigurationIncompleteFingerprint(latestRun: LatestIssueRun): string | null {
+  return readNonEmptyString(readConfigurationIncompletePayload(latestRun)?.fingerprint);
 }
 
 export type { RunOutputSilenceSummary, WatchdogDecisionActor };
@@ -347,6 +357,7 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
 ]);
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
+  "adapter_engine_unavailable",
   "agent_not_invokable",
   "agent_not_found",
   "budget_blocked",
@@ -449,6 +460,11 @@ export function classifyAdapterFailureForRecovery(
   latestRun: Pick<NonNullable<LatestIssueRun>, "error" | "errorCode" | "resultJson">,
   now = new Date(),
 ): AdapterFailureRecoveryClassification {
+  // An engine prerequisite cannot be repaired by asking the same unavailable
+  // engine to retry. Use the existing configuration-blocker path.
+  if (latestRun.errorCode === "adapter_engine_unavailable") {
+    return { kind: "configuration_incomplete" };
+  }
   if (
     latestRun.errorCode !== "adapter_failed" &&
     latestRun.errorCode !== "provider_quota" &&
@@ -647,6 +663,7 @@ export function recoveryService(
   db: Db,
   deps: {
     enqueueWakeup: RecoveryWakeup;
+    scheduleRecoveryRetry?: (runId: string) => Promise<typeof heartbeatRuns.$inferSelect | null>;
     liveRunExecutions?: Readonly<{ has(id: string): boolean }>;
   },
 ) {
@@ -1037,6 +1054,22 @@ export function recoveryService(
     retryOfRunId?: string | null;
     extraContext?: Record<string, unknown>;
   }) {
+    if (input.retryOfRunId) {
+      const [predecessor] = await db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.id, input.retryOfRunId), eq(heartbeatRuns.agentId, input.agentId),
+      ));
+      if (predecessor && ["failed", "timed_out", "interrupted", "cancelled"].includes(predecessor.status)) {
+        // Failure recovery shares the durable incident budget and delay. It
+        // cannot fall through into the productive-work continuation queue.
+        if (predecessor.runtimeMode === "native") return null;
+        if (legacyExecutionNeedsReconciliation(predecessor)) {
+          await terminalizeLegacyExecution({ db, run: predecessor, status: predecessor.status });
+          return null;
+        }
+        if (deps.scheduleRecoveryRetry) return deps.scheduleRecoveryRetry(predecessor.id);
+        return null;
+      }
+    }
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
       triggerDetail: "system",
@@ -1092,6 +1125,45 @@ export function recoveryService(
         source: "issue.assigned_todo_liveness_dispatch",
       }, "normal_model"),
     });
+  }
+
+  // The onboarding first task (origin `onboarding_first_task`) is created with
+  // its greeting pre-seeded and *no* assignment wake on purpose: the product
+  // contract is that nothing runs until the user types. Until a user-authored
+  // comment exists on it, the issue is intentionally idle rather than stranded.
+  async function isOnboardingFirstTaskAwaitingUser(issue: typeof issues.$inferSelect) {
+    if (issue.originKind !== ONBOARDING_FIRST_TASK_ORIGIN_KIND) return false;
+    const userComment = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, issue.companyId),
+          eq(issueComments.issueId, issue.id),
+          or(
+            eq(issueComments.authorType, "user"),
+            and(isNull(issueComments.authorType), sql`${issueComments.authorUserId} is not null`),
+          ),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (userComment !== null) return false;
+    // Answering the seeded opening card ("interview me" / "I have a task in
+    // mind") is the user's first input too, even though it is not a comment.
+    const userResolvedInteraction = await db
+      .select({ id: issueThreadInteractions.id })
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          sql`${issueThreadInteractions.resolvedByUserId} is not null`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return userResolvedInteraction === null;
   }
 
   async function isInvocationBudgetBlocked(issue: typeof issues.$inferSelect, agentId: string) {
@@ -1479,7 +1551,11 @@ export function recoveryService(
               ? "Board operator: repair the project workspace repository URL or clone access, or configure a local checkout cwd, then explicitly retry or reassign."
               : "Board operator: repair the source task workspace link, project workspace cwd, or git checkout, then explicitly retry or reassign."
         : recoveryCause === "configuration_incomplete"
-          ? "Board operator: bind the missing secret(s) named in the run failure, then explicitly retry the original owner or reassign."
+          ? readConfigurationIncompletePayload(input.latestRun)?.reason === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON
+            ? `Board operator: the sandbox provider plugin named in the run failure is not ready; ${sandboxProviderPluginRemedy(
+              readNonEmptyString(readConfigurationIncompletePayload(input.latestRun)?.pluginStatus) ?? "error",
+            )}, then explicitly retry the original owner or reassign.`
+            : "Board operator: bind the missing secret(s) named in the run failure, then explicitly retry the original owner or reassign."
         : recoveryCause === "execution_review_participant_recovery"
           ? "Board operator: repair the failed review participant path, restore a live reviewer, explicitly reassign, or record an intentional resolution."
         : "Board operator: inspect the evidence, repair the runtime if appropriate, then explicitly retry the original owner, reassign, or intentionally resolve the task.",
@@ -2214,6 +2290,13 @@ export function recoveryService(
         continue;
       }
 
+      // A queued comment or healthy child cannot establish what the stopped
+      // provider already did. Only execution reconciliation can clear this hold.
+      if (requiresExecutionReconciliation(action.cause)) {
+        result.skipped += 1;
+        continue;
+      }
+
       const [sourceState, healthyChildren, hasNewSourcePath] = await Promise.all([
         collectDispositionRepairSourceState(db, { issue }),
         healthyOpenChildIssues(issue),
@@ -2872,9 +2955,34 @@ export function recoveryService(
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
       operatorCancelExempted: 0,
+      onboardingFirstTaskExempted: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
+
+    const candidateIssueIds = candidates.map((issue) => issue.id);
+    const unfinishedGoalBindings = new Set<string>();
+    if (candidateIssueIds.length > 0) {
+      const pausedGoals = await db
+        .select({
+          companyId: agentTaskSessions.companyId,
+          agentId: agentTaskSessions.agentId,
+          taskKey: agentTaskSessions.taskKey,
+        })
+        .from(agentTaskSessions)
+        .where(
+          and(
+            inArray(agentTaskSessions.taskKey, candidateIssueIds),
+            sql`${agentTaskSessions.goalStatus} is not null`,
+            sql`${agentTaskSessions.goalStatus} <> 'complete'`,
+          ),
+        );
+      for (const goal of pausedGoals) {
+        unfinishedGoalBindings.add(
+          `${goal.companyId}:${goal.taskKey}:${goal.agentId}`,
+        );
+      }
+    }
 
     for (const issue of candidates) {
       const executionState = issue.status === "in_review"
@@ -2889,6 +2997,19 @@ export function recoveryService(
         ? participantAgentId
         : issue.assigneeAgentId;
       if (!agentId) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // An unfinished durable session goal owns its continuation lifecycle.
+      // A paused goal waits for explicit resume; an active goal is handled by
+      // dedicated goal recovery. Generic stranded-work recovery would race
+      // either authority and can replace the provider session owning the goal.
+      if (
+        unfinishedGoalBindings.has(
+          `${issue.companyId}:${issue.id}:${agentId}`,
+        )
+      ) {
         result.skipped += 1;
         continue;
       }
@@ -2963,9 +3084,22 @@ export function recoveryService(
         continue;
       }
 
-      if (isOperatorCancelledRun(latestRun)) {
+      const participantLatestRunForRecovery = issue.status === "in_review" && participantAgentId
+        ? await getLatestIssueRunForAgent(issue.companyId, issue.id, participantAgentId)
+        : null;
+      const executionRecoverySource = issue.status === "in_review" ? participantLatestRunForRecovery : latestRun;
+      if (isOperatorCancelledRun(executionRecoverySource)) {
         result.operatorCancelExempted += 1;
         continue;
+      }
+      if (executionRecoverySource && executionRecoverySource.agentId === agentId && ["failed", "timed_out", "interrupted", "cancelled"].includes(executionRecoverySource.status)) {
+        const [source] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.id, executionRecoverySource.id)));
+        if (source && legacyExecutionNeedsReconciliation(source)) {
+          await terminalizeLegacyExecution({ db, run: source, status: source.status, fromStatuses: [source.status] });
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+          continue;
+        }
       }
       if (await isInvocationBudgetBlocked(issue, agentId)) {
         const classification = classifyContinuationFailure(latestRun);
@@ -3006,9 +3140,6 @@ export function recoveryService(
         continue;
       }
       const recoveryNow = new Date();
-      const participantLatestRunForRecovery = issue.status === "in_review" && participantAgentId
-        ? await getLatestIssueRunForAgent(issue.companyId, issue.id, participantAgentId)
-        : null;
       const providerQuotaMonitorRun = issue.status === "in_review"
         ? participantLatestRunForRecovery
         : latestRun;
@@ -3338,6 +3469,17 @@ export function recoveryService(
 
       if (issue.status === "todo") {
         if (!latestRun) {
+          // The onboarding first task is deliberately created without a wake:
+          // nothing runs and no token is spent until the user types. It is not
+          // stranded work, so liveness dispatch must leave it alone until a
+          // user comment exists (that comment wakes the assignee through the
+          // normal comment path, and only then may recovery treat a lost wake
+          // as stranded).
+          if (await isOnboardingFirstTaskAwaitingUser(issue)) {
+            result.onboardingFirstTaskExempted += 1;
+            continue;
+          }
+
           if (await hasQueuedIssueWake(issue.companyId, issue.id)) {
             result.skipped += 1;
             continue;
@@ -3940,10 +4082,21 @@ export function recoveryService(
     // when an active issue still references the run. The run is live for that
     // active issue, so a terminal issue named in the context snapshot must not
     // terminalize it.
+    const runContext = parseObject(run.contextSnapshot);
+    const isTerminalSessionGoalControl =
+      runContext.resumeIntent === true &&
+      readNonEmptyString(runContext.goalControlRequestId) !== null;
     let issueTerminalStatus: "succeeded" | "cancelled" | null =
-      options?.referencingIssueTerminalStatus ?? null;
+      isTerminalSessionGoalControl
+        ? null
+        : (options?.referencingIssueTerminalStatus ?? null);
     const issueId = issueIdFromRunContext(run.contextSnapshot);
-    if (!issueTerminalStatus && !options?.runReferencedByActiveIssue && issueId) {
+    if (
+      !isTerminalSessionGoalControl &&
+      !issueTerminalStatus &&
+      !options?.runReferencedByActiveIssue &&
+      issueId
+    ) {
       const issueStatus = await db
         .select({ status: issues.status })
         .from(issues)

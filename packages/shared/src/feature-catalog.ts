@@ -56,7 +56,10 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
       "Allow explicitly configured local Codex, OpenCode, and qualified ACPX agents to use the experimental Rust Paperclip Runner, including authenticated sandbox ingress when required. Onboarding remains on legacy adapters.",
     tier: "managed",
     cloudDefault: false,
-    selfHostedDefault: false,
+    // On by default for self-hosted instances. Requires a Rust toolchain (or
+    // PAPERCLIP_RUNNER_BINARY) for `pnpm dev`, which builds runnerd whenever
+    // this is on.
+    selfHostedDefault: true,
   },
   enableManagedSandboxOnly: {
     title: "Managed Environment Only",
@@ -282,6 +285,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     description:
       "Let the scheduler execute runs inside an isolated git-worktree preview instance for tasks created after activation.",
     tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableFirstTaskPlanProposal: {
+    title: "First task: propose with a plan document",
+    description:
+      "When the user's first request is a single task, the chief of staff writes a short plan document and a checkbox card instead of a one-card confirmation. Applies to organizations created after the toggle is flipped.",
+    tier: "preference",
     cloudDefault: false,
     selfHostedDefault: false,
   },
