@@ -1,3 +1,5 @@
+import { executeCancellableSandboxCommand } from "./cancellable-sandbox-command.js";
+import { bindAdapterRunStop, throwIfAdapterRunCancelled } from "./adapter-run-cancellation.js";
 import fs from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -835,6 +837,7 @@ export async function runAdapterExecutionTargetProcess(
   options: AdapterExecutionTargetProcessOptions,
 ): Promise<RunProcessResult> {
   if (target?.kind === "remote" && target.transport === "sandbox") {
+    throwIfAdapterRunCancelled(runId);
     const runner = requireSandboxRunner(target);
     const env = sanitizeRemoteExecutionEnv(options.env);
     await options.onRuntimeProgress?.({
@@ -849,7 +852,7 @@ export async function runAdapterExecutionTargetProcess(
       runLogTail.start(options.onLog);
     }
     try {
-      const result = await runner.execute({
+      const result = await executeCancellableSandboxCommand(runId, runner, {
         command: execCommand,
         args: execArgs,
         cwd: target.workFolderHome ?? target.remoteCwd,
@@ -862,7 +865,7 @@ export async function runAdapterExecutionTargetProcess(
         onSpawn: options.onSpawn
           ? async (meta) => options.onSpawn?.({ ...meta, processGroupId: null })
           : undefined,
-      });
+      }, options.graceSec * 1000);
       // Settle the duplex run disposition synchronously at the clean-completion
       // boundary, before the run-log tail finishes. The atomic settle marks the
       // host-observed orderly completion in one broker step, so a gateway exit
@@ -1780,6 +1783,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     return null;
   }
 
+  throwIfAdapterRunCancelled(input.runId);
   const target = input.target;
   const onLog = input.onLog ?? (async () => {});
   const runner = requireSandboxRunner(target);
@@ -2255,82 +2259,80 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     })();
   };
 
-  return {
-    agentCommand,
-    stop: async () => {
-      stopping = true;
-      // End the `sandbox.agentProcess` span now, before the caller ends the run
-      // root span, even if the remote command has not resolved yet.
-      signalStopped();
-      if (pollTimer) clearTimeout(pollTimer);
-      for (const liveSocket of liveSockets) liveSocket.destroy();
-      await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
-      // Wait for every accepted stdin write before `stdinEnd`. The socket handler
-      // fires each chunk write un-awaited through `stdinWriteChain`, so an earlier
-      // chunk can still be pending here. Chain the `stdinEnd` write onto the same
-      // per-session chain, so its file rename never finishes before an earlier
-      // chunk. `stdinSeq` is stable now, because the sockets are destroyed and the
-      // server is closed, so no new message can increment it.
-      const stdinEndPath = path.posix.join(
-        stdinDir,
-        `${String(stdinSeq + 1).padStart(12, "0")}.json`,
-      );
-      const stdinEndWrite = stdinWriteChain.then(() =>
-        client.writeTextFile(stdinEndPath, jsonLine({ type: "stdinEnd" })),
-      );
-      stdinWriteChain = stdinEndWrite.then(() => undefined, () => undefined);
-      await stdinEndWrite.catch(() => undefined);
-      // The `shutdown` control message tells the wrapper to terminate itself
-      // and its own child (I3: no operating-system signal and no process
-      // identifier cross this boundary — only a file-queue message does).
-      // Chain it onto the same per-session write order as `stdinEnd`, so its
-      // file never lands before the earlier one.
-      const shutdownPath = path.posix.join(
-        stdinDir,
-        `${String(stdinSeq + 2).padStart(12, "0")}.json`,
-      );
-      const shutdownWrite = stdinWriteChain.then(() =>
-        client.writeTextFile(shutdownPath, jsonLine({ type: "shutdown" })),
-      );
-      stdinWriteChain = shutdownWrite.then(() => undefined, () => undefined);
-      await shutdownWrite.catch(() => undefined);
-      // Wait a bounded budget for a hint that the wrapper stopped: only the
-      // `shutdownAck` event counts; an `exit` or `error` event is untrusted
-      // telemetry from inside the sandbox and never shortens this wait or
-      // suppresses the warning below. `shutdownAck` itself is ALSO an
-      // untrusted hint, not proof: any process that shares the sandbox can
-      // write the same event under this session's event directory. It can
-      // only shorten this wait and suppress the warning below; it never
-      // gates, shortens, or replaces the unconditional removal further down.
-      // What actually makes the wrapper's own termination deterministic is
-      // the wrapper-side session-identity latch, not this event.
-      let acknowledgedInTime = false;
-      readShutdownAckUntil(Date.now() + DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS);
-      await Promise.race([
-        shutdownAcknowledged.then(() => {
-          acknowledgedInTime = true;
-        }),
-        new Promise<void>((resolve) => {
-          const budgetTimer = setTimeout(resolve, DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS);
-          budgetTimer.unref?.();
-        }),
-      ]);
-      stopReadingForShutdownAck = true;
-      if (!acknowledgedInTime) {
-        await onLog(
-          "stderr",
-          `[paperclip] ACP process session wrapper did not acknowledge shutdown within ${DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS}ms; removing the session directory anyway.\n`,
-        ).catch(() => undefined);
-      }
-      // Unconditional: this removal runs whether or not the wrapper
-      // acknowledged, and whether or not any event (real or forged) arrived
-      // under `sessionDir`. `stop()` runs during run teardown and must stay
-      // non-fatal, so every step above is best-effort and this step never
-      // throws.
-      await client.remove(sessionDir).catch(() => undefined);
-      await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
-    },
-  };
+  const stop = await bindAdapterRunStop(input.runId, async () => {
+    stopping = true;
+    // End the `sandbox.agentProcess` span now, before the caller ends the run
+    // root span, even if the remote command has not resolved yet.
+    signalStopped();
+    if (pollTimer) clearTimeout(pollTimer);
+    for (const liveSocket of liveSockets) liveSocket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
+    // Wait for every accepted stdin write before `stdinEnd`. The socket handler
+    // fires each chunk write un-awaited through `stdinWriteChain`, so an earlier
+    // chunk can still be pending here. Chain the `stdinEnd` write onto the same
+    // per-session chain, so its file rename never finishes before an earlier
+    // chunk. `stdinSeq` is stable now, because the sockets are destroyed and the
+    // server is closed, so no new message can increment it.
+    const stdinEndPath = path.posix.join(
+      stdinDir,
+      `${String(stdinSeq + 1).padStart(12, "0")}.json`,
+    );
+    const stdinEndWrite = stdinWriteChain.then(() =>
+      client.writeTextFile(stdinEndPath, jsonLine({ type: "stdinEnd" })),
+    );
+    stdinWriteChain = stdinEndWrite.then(() => undefined, () => undefined);
+    await stdinEndWrite.catch(() => undefined);
+    // The `shutdown` control message tells the wrapper to terminate itself
+    // and its own child (I3: no operating-system signal and no process
+    // identifier cross this boundary — only a file-queue message does).
+    // Chain it onto the same per-session write order as `stdinEnd`, so its
+    // file never lands before the earlier one.
+    const shutdownPath = path.posix.join(
+      stdinDir,
+      `${String(stdinSeq + 2).padStart(12, "0")}.json`,
+    );
+    const shutdownWrite = stdinWriteChain.then(() =>
+      client.writeTextFile(shutdownPath, jsonLine({ type: "shutdown" })),
+    );
+    stdinWriteChain = shutdownWrite.then(() => undefined, () => undefined);
+    await shutdownWrite.catch(() => undefined);
+    // Wait a bounded budget for a hint that the wrapper stopped: only the
+    // `shutdownAck` event counts; an `exit` or `error` event is untrusted
+    // telemetry from inside the sandbox and never shortens this wait or
+    // suppresses the warning below. `shutdownAck` itself is ALSO an
+    // untrusted hint, not proof: any process that shares the sandbox can
+    // write the same event under this session's event directory. It can
+    // only shorten this wait and suppress the warning below; it never
+    // gates, shortens, or replaces the unconditional removal further down.
+    // What actually makes the wrapper's own termination deterministic is
+    // the wrapper-side session-identity latch, not this event.
+    let acknowledgedInTime = false;
+    readShutdownAckUntil(Date.now() + DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS);
+    await Promise.race([
+      shutdownAcknowledged.then(() => {
+        acknowledgedInTime = true;
+      }),
+      new Promise<void>((resolve) => {
+        const budgetTimer = setTimeout(resolve, DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS);
+        budgetTimer.unref?.();
+      }),
+    ]);
+    stopReadingForShutdownAck = true;
+    if (!acknowledgedInTime) {
+      await onLog(
+        "stderr",
+        `[paperclip] ACP process session wrapper did not acknowledge shutdown within ${DEFAULT_PROCESS_SESSION_SHUTDOWN_WAIT_MS}ms; removing the session directory anyway.\n`,
+      ).catch(() => undefined);
+    }
+    // Unconditional: this removal runs whether or not the wrapper
+    // acknowledged, and whether or not any event (real or forged) arrived
+    // under `sessionDir`. `stop()` runs during run teardown and must stay
+    // non-fatal, so every step above is best-effort and this step never
+    // throws.
+    await client.remove(sessionDir).catch(() => undefined);
+    await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
+  });
+  return { agentCommand, stop };
 }
 
 function getProcessSessionProxySource(input: { port: number; token: string }): string {
@@ -4465,6 +4467,10 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
             settleRunDisposition: (): DuplexBrokerRunDisposition => dispositionLatch.settleRunDisposition(),
             markOrderlyCompletion: (): void => dispositionLatch.markOrderlyCompletion(),
             stop: async () => {
+              // A controller-requested shutdown is not a provider failure. The
+              // native Git bridge also stops here without the CLI/ACP result
+              // seam. Preserve any earlier loss before closing the channel.
+              dispositionLatch.markOrderlyCompletion();
               // Close the HTTP/2 server's sessions, then the channel, before
               // lease release, so no live provider session remains when the
               // caller releases the lease.

@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { beginAdapterRunCancellation, cancelAdapterRunExecution, finishAdapterRunCancellation } from "./adapter-run-cancellation.js";
 import { createServer } from "node:http";
 import http2 from "node:http2";
 import net from "node:net";
@@ -873,6 +875,40 @@ describe("sandbox adapter execution targets", () => {
       await bridge?.stop();
     }
   });
+
+  it.each([false, true])("cancels the actual ACP child through its existing shutdown protocol (streamed=%s)", async (streamOutputViaSession) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-acp-cancel-"));
+    cleanupDirs.push(rootDir);
+    const runId = `cancel-${rootDir}`;
+    const readyPath = path.join(rootDir, "ready"), stoppedPath = path.join(rootDir, "stopped");
+    const childPath = path.join(rootDir, "child.cjs");
+    await writeFile(childPath, `const fs=require('node:fs');
+process.on('SIGTERM',()=>{fs.writeFileSync(${JSON.stringify(stoppedPath)},'stopped');process.exit(0)});
+fs.writeFileSync(${JSON.stringify(readyPath)},'ready');
+process.stdin.resume();setTimeout(()=>process.exit(2),20000);`);
+    beginAdapterRunCancellation(runId);
+    let bridge: Awaited<ReturnType<typeof startAdapterExecutionTargetProcessSessionBridge>> = null;
+    let cancelling: Promise<void> | undefined;
+    try {
+      bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId, target: { kind: "remote", transport: "sandbox", providerKey: "local-test", remoteCwd: rootDir,
+          timeoutMs: 30_000, runner: createLocalSandboxRunner() },
+        runtimeRootDir: path.join(rootDir, ".paperclip-runtime"), adapterKey: "acpx",
+        command: process.execPath, args: [childPath], cwd: rootDir, env: {}, timeoutSec: 10,
+        streamOutputViaSession,
+      });
+      await waitForCondition(() => existsSync(readyPath), "ACP child never started", 5_000);
+      cancelling = cancelAdapterRunExecution(runId);
+      await waitForCondition(() => existsSync(stoppedPath), "Cancellation did not reach the ACP child", 5_000);
+      finishAdapterRunCancellation(runId);
+      await cancelling;
+      expect(await readFile(stoppedPath, "utf8")).toBe("stopped");
+    } finally {
+      await bridge?.stop();
+      finishAdapterRunCancellation(runId);
+      await cancelling;
+    }
+  }, 15_000);
 
   it("bridges bidirectional sandbox process sessions through a local ACPX-spawnable proxy", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-"));
@@ -5311,6 +5347,63 @@ describe("sandbox adapter execution targets", () => {
       expect(counters.some((c) => c.metric === DUPLEX_COUNTER_LOSS_TOTAL)).toBe(false);
     } finally {
       await bridge?.stop();
+      await api.close();
+    }
+  }, 20000);
+
+  it.each([false, true])("controller bridge shutdown preserves prior loss without inventing one (priorLoss=%s)", async (priorLoss) => {
+    // A loss ordered after a host-observed orderly completion is a normal
+    // teardown, not a failure: the run already completed. The disposition
+    // latch must keep the success and emit no loss event for it.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-http2-orderly-close-"));
+    cleanupDirs.push(rootDir);
+    const remoteCwd = path.join(rootDir, "workspace");
+    await mkdir(remoteCwd, { recursive: true });
+    const api = await startRecordingApiServer();
+    let emitExit: (() => void) | null = null;
+    const { runner } = makeHttp2SelectionRunner((ctx) => {
+      emitExit = ctx.emitExit;
+      ctx.emitReady();
+      ctx.connectHttp2();
+    });
+    const open = runner.openDuplexChannel;
+    runner.openDuplexChannel = async (input) => {
+      const channel = await open(input);
+      return { ...channel, close: async () => { emitExit!(); await channel.close(); } };
+    };
+    const { recorder, events, counters } = createRecordingDuplexRecorder();
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd,
+      timeoutMs: 30_000,
+      runner,
+      effectiveCapabilities: duplexCapabilities(true),
+    };
+
+    const bridge = await startAdapterExecutionTargetPaperclipBridge({
+      runId: "run-orderly-close",
+      target,
+      runtimeRootDir: path.join(remoteCwd, ".paperclip-runtime", "codex"),
+      adapterKey: "codex",
+      hostApiToken: "real-run-jwt",
+      hostApiUrl: api.origin,
+      enableSandboxDuplexBridge: true,
+      duplexObservabilityRecorder: recorder,
+    });
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("http2_v1");
+      if (priorLoss) {
+        emitExit!();
+        await waitForCondition(() => events.some((event) => event.dimensions.loss_reason === "provider_exit"), "Expected real loss before shutdown", 4_000);
+      }
+      await bridge!.stop();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(bridge?.readRunDisposition?.()).toEqual({ failed: priorLoss, lossReason: priorLoss ? "provider_exit" : null });
+      expect(events.some((event) => event.dimensions.loss_reason !== undefined)).toBe(priorLoss);
+      expect(counters.some((counter) => counter.metric === DUPLEX_COUNTER_LOSS_TOTAL)).toBe(priorLoss);
+    } finally {
       await api.close();
     }
   }, 20000);

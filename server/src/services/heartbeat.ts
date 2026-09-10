@@ -1,3 +1,4 @@
+import { beginAdapterRunCancellation, cancelAdapterRunExecution, finishAdapterRunCancellation, hasAdapterRunCancellation } from "@paperclipai/adapter-utils/adapter-run-cancellation";
 import { measureSandboxOperation, runWithSandboxPerformanceTrace, setSandboxPerformanceRunAttributes } from "./sandbox-performance.js";
 import { initializeRunIdentity } from "./run-identity.js";
 import { startNativeGitHubCallbackBridge } from "./native-github-bridge.js";
@@ -13410,6 +13411,7 @@ export function heartbeatService(
         },
       );
       if (!interruptedStatus.updated || !interruptedStatus.run) continue;
+      if (run.runtimeMode !== "native") await cancelAdapterRunExecution(run.id);
       let interrupted = interruptedStatus.run;
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
         finishedAt: now,
@@ -17990,10 +17992,14 @@ export function heartbeatService(
 
   // The diagnostic path is opt-in and persists bounded batches after execution.
   async function executeRun(runId: string, runOptions: Parameters<typeof executeRunMeasured>[1] = {}) {
-    return runWithSandboxPerformanceTrace({ runId, onBatch: async (batch) => {
-      const observed = await getRun(runId);
-      if (observed) await appendRunEvent(observed, { eventType: "sandbox.performance.batch", stream: "system", level: "info", payload: batch });
-    } }, () => executeRunMeasured(runId, runOptions));
+    try {
+      return await runWithSandboxPerformanceTrace({ runId, onBatch: async (batch) => {
+        const observed = await getRun(runId);
+        if (observed) await appendRunEvent(observed, { eventType: "sandbox.performance.batch", stream: "system", level: "info", payload: batch });
+      } }, () => executeRunMeasured(runId, runOptions));
+    } finally {
+      finishAdapterRunCancellation(runId);
+    }
   }
 
   async function executeRunMeasured(
@@ -21142,6 +21148,10 @@ export function heartbeatService(
             .where(eq(heartbeatRuns.id, run.id))));
         }
         setSandboxPerformanceRunAttributes({ runtime: nativeRuntimeResolution.kind });
+        if (nativeRuntimeResolution.kind === "legacy"
+          && executionTarget?.kind === "remote" && executionTarget.transport === "sandbox") {
+          beginAdapterRunCancellation(run.id);
+        }
         const localAgentJwtScope =
           issueRef?.workMode === "skill_test"
             ? { kind: "skill_test" as const, issueId: issueRef.id }
@@ -26034,8 +26044,13 @@ export function heartbeatService(
       !CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(
         run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number],
       )
-    )
+    ) {
+      if (run.status === "cancelled" && hasAdapterRunCancellation(run.id)) {
+        await cancelAdapterRunExecution(run.id);
+        return await getRun(run.id);
+      }
       return run;
+    }
     const agent = await getAgent(run.agentId);
     const errorCode = options.errorCode ?? "cancelled";
     const resultJson = agent
@@ -26048,6 +26063,14 @@ export function heartbeatService(
           ...(options.resultJson ?? {}),
         }
       : options.resultJson;
+
+    if (run.runtimeMode !== "native" && hasAdapterRunCancellation(run.id)) {
+      await setRunStatus(run.id, "cancelled", {
+        finishedAt: new Date(), error: reason, errorCode,
+        ...(resultJson ? { resultJson } : {}),
+      });
+      await cancelAdapterRunExecution(run.id);
+    }
 
     const running = runningProcesses.get(run.id);
     try {
@@ -26186,6 +26209,7 @@ export function heartbeatService(
           graceMs: Math.max(1, running.graceSec) * 1000,
         });
       }
+      if (run.runtimeMode !== "native") await cancelAdapterRunExecution(run.id);
       runningProcesses.delete(run.id);
       await releaseIssueExecutionAndPromote(run);
     }

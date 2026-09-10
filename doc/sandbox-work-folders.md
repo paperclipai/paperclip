@@ -417,6 +417,18 @@ Only credential acquisition is retried, before starting Git or `gh`; repository
 operations are never replayed. Acceptance must exercise both transport paths
 and record which one was actually selected.
 
+Controller-requested bridge shutdown marks the transport complete before closing
+its provider channel. A connection loss observed earlier remains latched; closing
+the native Git bridge after execution must not invent a transport failure.
+
+Legacy sandbox cancellation stops the owned remote CLI process group or ACP
+process session before waiting for run teardown and the final file flush. The
+host sends a command-scoped cancellation marker for CLI execution; remote PIDs
+are never passed to the host process killer. Cancellation is persisted before
+stopping execution so its exit cannot admit an automatic retry. Failed stop
+requests remain visible and can be retried explicitly. Local and native runner
+cancellation retain their existing authorities.
+
 Automated tests do not qualify a deployed runner image. Before merging, use a
 new pinned staging stack with the branch's Cloud image and matching migrator.
 The deployed harness must target that tenant URL without launching a local

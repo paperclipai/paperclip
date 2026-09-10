@@ -5,6 +5,8 @@ import { agents, companies, createDb, heartbeatRuns, startEmbeddedPostgresTestDa
 import * as processes from "../services/hot-restart.js";
 import * as adapters from "../adapters/index.js";
 import * as orchestration from "../services/environment-run-orchestrator.js";
+import * as compatibility from "../services/legacy-sandbox-workspace.js";
+import { bindAdapterRunStop, hasAdapterRunCancellation } from "@paperclipai/adapter-utils/adapter-run-cancellation";
 import * as executionTargets from "@paperclipai/adapter-utils/execution-target";
 import { heartbeatService, persistHeartbeatRunProcessMetadata } from "../services/heartbeat.js";
 
@@ -62,6 +64,58 @@ describe("heartbeat process identity persistence", () => {
       expect(actual?.processStartedAt?.toISOString()).toBe(remoteStart);
     } finally {
       release();
+      await heartbeat.drainActiveRunExecutions();
+    }
+  }, 30_000);
+
+  it("cancels the remote adapter and waits for teardown before acknowledging", async () => {
+    const originalOrchestrator = orchestration.environmentRunOrchestrator;
+    vi.spyOn(orchestration, "environmentRunOrchestrator").mockImplementation((...args) => {
+      const actual = originalOrchestrator(...args);
+      return { ...actual, realizeForRun: async (input) => ({
+        ...await actual.realizeForRun(input),
+        executionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/remote/task", shellCommand: "sh" } as never,
+      }) };
+    });
+    vi.spyOn(compatibility, "hasLegacySandboxWorkspace").mockReturnValue(true);
+    vi.spyOn(executionTargets, "prepareGitHubOperationLaunchers").mockImplementation(async (input) => input.env);
+    vi.spyOn(executionTargets, "cleanupGitHubOperationLaunchers").mockResolvedValue(undefined);
+    let ready!: () => void, stopped!: () => void, release!: () => void;
+    const started = new Promise<void>((resolve) => { ready = resolve; });
+    const interrupted = new Promise<void>((resolve) => { stopped = resolve; });
+    const teardown = new Promise<void>((resolve) => { release = resolve; });
+    const heartbeat = heartbeatService(db);
+    vi.spyOn(adapters, "getServerAdapter").mockReturnValue({
+      supportsLocalAgentJwt: false,
+      execute: async (input) => {
+        expect(hasAdapterRunCancellation(input.runId)).toBe(true);
+        const cleanup = await bindAdapterRunStop(input.runId, async () => {
+          expect((await heartbeat.getRun(input.runId))?.status).toBe("cancelled");
+          stopped();
+        });
+        ready();
+        await interrupted;
+        await teardown;
+        await cleanup();
+        return { exitCode: 143, signal: "SIGTERM", timedOut: false };
+      },
+    } as ReturnType<typeof adapters.getServerAdapter>);
+    let pending: Promise<unknown> | undefined;
+    try {
+      const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+      expect(queued).not.toBeNull();
+      await started;
+      let acknowledged = false;
+      pending = heartbeat.cancelRun(queued!.id).then((result) => { acknowledged = true; return result; });
+      await interrupted;
+      expect(acknowledged).toBe(false);
+      release();
+      await pending;
+      expect((await heartbeat.getRun(queued!.id))?.status).toBe("cancelled");
+      expect(hasAdapterRunCancellation(queued!.id)).toBe(false);
+    } finally {
+      stopped(); release();
+      await pending;
       await heartbeat.drainActiveRunExecutions();
     }
   }, 30_000);
