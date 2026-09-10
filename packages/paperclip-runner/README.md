@@ -41,6 +41,14 @@ route/service authorities; it does not copy those rules into this package.
 
 ## Quick start
 
+Native provider debug-trace correlation uses a shared incremental index. Pending
+event lookups read only newly appended bytes, with a 1 MiB read budget per lookup;
+they retry until the observed suffix is indexed. Partial records remain pending,
+and trace replacement or truncation invalidates the index. Closing a transport
+releases its index, and the cache retains at most 16 traces. Do not restore a full
+synchronous trace scan for each pending event: it blocks event delivery and can
+leave the board showing an active run after the provider turn has already ended.
+
 The package also builds `paperclip-runner-acpx-sidecar`. This bounded v2
 stdin/stdout bridge admits the pinned Claude and Codex ACPX profiles. It
 validates the exact model, session identity, tool catalog, structured input,

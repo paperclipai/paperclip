@@ -1,3 +1,7 @@
+import {
+  locateRunnerdTraceFrame,
+  releaseRunnerdTraceFrameIndex,
+} from "./runnerd-trace-frame-index.js";
 import { codexExecutableReadOnlyRoots } from "../drivers/codex/codex-security-config.js";
 import { isCanonicalProviderEventType } from "../provider-events.js";
 import { execFileSync } from "node:child_process";
@@ -1508,33 +1512,6 @@ type PendingTraceRehydration = {
 };
 
 type PendingDriverTraceInterpretation = CodexTraceInterpretation;
-
-function locateRunnerdTraceFrame(
-  tracePath: string,
-  sourceEventId: string,
-): { frameId: number | null; nativeChannelSettled: boolean } {
-  const lines = readFileSync(tracePath, "utf8").split("\n");
-  let frameId: number | null = null;
-  let nativeChannelSettled = false;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (!lines[index]?.trim()) continue;
-    const entry = record(JSON.parse(lines[index]!));
-    if (entry.kind === "trace_status" && entry.debugChannel === "rust_native") {
-      nativeChannelSettled = true;
-    }
-    if (
-      entry.kind !== "interpretation" ||
-      !Array.isArray(entry.emittedEventIds)
-    ) {
-      continue;
-    }
-    if ((entry.emittedEventIds as unknown[]).includes(sourceEventId)) {
-      frameId = typeof entry.frameId === "number" ? entry.frameId : null;
-      break;
-    }
-  }
-  return { frameId, nativeChannelSettled };
-}
 
 function appendRunnerdRehydrationTrace(
   tracePath: string | undefined,
@@ -4219,6 +4196,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       }
       this.#pendingTraceRehydrations = [];
       this.#pendingDriverTraceInterpretations = [];
+      releaseRunnerdTraceFrameIndex(tracePath);
     }
     if (this.#pump !== null) clearInterval(this.#pump);
     this.#pump = null;
