@@ -2448,7 +2448,7 @@ export function renderPaperclipWakePrompt(
         ? [`- omitted unresolved interactions: ${unresolvedInteractionIdsOmittedCount}; more pending interactions exist than the list below shows`]
         : []),
       ...(recoveryOutcomesOmittedCount > 0
-        ? [`- omitted recovery outcomes: ${recoveryOutcomesOmittedCount}; fetch the recovery-action history for the rest`]
+        ? [`- omitted recovery outcomes: ${recoveryOutcomesOmittedCount}; call GET /issues/{id}/recovery-actions?status=resolved for the rest`]
         : []),
       "Completed actions contain durable results from prior runs. Use those results as completed work; do not issue the same mutation again under a new call id.");
     const { interactionOutcomes, completedActions, completedWork, recoveryOutcomes, ...requestContext } = continuation;

@@ -17,6 +17,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
 import { buildExecutionContinuation, currentContinuationOrigins } from "./execution-continuation.js";
+import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
   "authorized continuation context",
@@ -547,6 +548,10 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(context.recoveryOutcomes?.map((row) => row.recoveryActionId)).toEqual(
         recoveryActionIds.slice(10),
       );
+    });
+    it("recovers every dropped recovery outcome through the resolved-history retrieval path", async () => {
+      const resolved = await issueRecoveryActionService(db).listResolvedForIssue(companyId, issueId);
+      expect(resolved.map((row) => row.id)).toEqual(recoveryActionIds);
     });
   },
 );
