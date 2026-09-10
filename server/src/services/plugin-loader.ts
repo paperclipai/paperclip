@@ -1248,7 +1248,13 @@ export function pluginLoader(
           let existing = "";
           try {
             existing = await readFile(npmrcPath, "utf8");
-          } catch {
+          } catch (err) {
+            // Only treat missing files as empty. Other read failures (EACCES,
+            // EISDIR, etc.) must not wipe registry/auth/proxy settings on write.
+            const code = (err as NodeJS.ErrnoException | undefined)?.code;
+            if (code !== "ENOENT") {
+              throw err;
+            }
             existing = "";
           }
           await writeFile(npmrcPath, mergeIgnoreScriptsNpmrc(existing));
