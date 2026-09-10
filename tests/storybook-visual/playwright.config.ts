@@ -14,6 +14,17 @@ const snapshotDir = process.env.STORYBOOK_VISUAL_SNAPSHOT_DIR
 // 0 baseline downloaded by scripts/storybook-visual-baseline.mjs.
 export default defineConfig({
   testDir: ".",
+  projects: [
+    { name: "stories", testIgnore: "agent-personas.spec.ts" },
+    {
+      name: "agent-personas", testMatch: "agent-personas.spec.ts", fullyParallel: false,
+      snapshotPathTemplate: `${snapshotDir}/agent-personas/{arg}{ext}`,
+      use: {
+        viewport: { width: 1200, height: 900 },
+        launchOptions: { args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] },
+      },
+    },
+  ],
   outputDir: "./test-results",
   timeout: 60_000,
   retries: 1,

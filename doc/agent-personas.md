@@ -34,7 +34,11 @@ can be removed and regenerates on demand. Independent replicas can render the
 same key safely; successful writes are complete objects. ETags hash PNG bytes.
 A small `.png.json` sidecar stores the content digest and length; it is published
 after the complete PNG. Warm requests stream stored PNG bytes without re-rendering
-or buffering the image in the API process. Responses are immutable for one year. Render/storage failures return 503 with
+or buffering the image in the API process. Responses are immutable for one year.
+Cold renders are limited per client IP (32 outstanding keys and 256 new keys
+per minute per process); excess misses return 429 with Retry-After and no-store.
+Warm cache hits and requests joining the same in-flight key bypass admission.
+The route uses Express trust-proxy configuration, never an untrusted forwarded header. Render/storage failures return 503 with
 Retry-After and no-store rather than caching a broken image.
 
 cap-v1 is frozen: change the version when changing palette values, poses,
@@ -84,8 +88,7 @@ appearance after refresh alongside normal typecheck/test/build checks.
 Linux visual/performance checks (against the built Storybook with the API proxy):
 
 ```sh
-PAPERCLIP_PERSONA_STORYBOOK_URL=http://localhost:<storybook-port> \
-  pnpm exec playwright test --config tests/storybook-visual/agent-personas.config.ts
+pnpm exec playwright test --config tests/storybook-visual/agent-personas.config.ts
 ```
 
 Use the Playwright 1.62.1 Noble image for authoritative Linux baselines. The suite

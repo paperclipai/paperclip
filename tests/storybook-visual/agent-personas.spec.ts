@@ -79,8 +79,8 @@ const snapshotCases = [
   ...["idle", "listening", "thinking", "working", "success", "confused", "sleepy", "loading"].map(state => ({ size: 128, density: 2, state })),
 ];
 for (const { size, density, state } of snapshotCases) {
-    test(`front-facing SVG and WebGL ${state} at ${size}px density ${density}`, async ({ browser }) => {
-      const context = await browser.newContext({ deviceScaleFactor: density, reducedMotion: "reduce", baseURL: process.env.PAPERCLIP_PERSONA_STORYBOOK_URL ?? "http://127.0.0.1:6017" });
+    test(`front-facing SVG and WebGL ${state} at ${size}px density ${density}`, async ({ browser, baseURL }) => {
+      const context = await browser.newContext({ deviceScaleFactor: density, reducedMotion: "reduce", baseURL });
       const page = await context.newPage();
       await story(page, "snapshot-agreement", `size:${size};state:${state};density:${density}`); await imagesLoaded(page);
       await expect(page.locator("canvas")).toHaveCount(1);
@@ -124,8 +124,8 @@ for (const id of fullPages) {
   });
 }
 for (const density of [1, 2]) {
-  test(`onboarding supersamples and stays inside the canvas at density ${density}`, async ({ browser }) => {
-    const context = await browser.newContext({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: density, reducedMotion: "no-preference", baseURL: process.env.PAPERCLIP_PERSONA_STORYBOOK_URL ?? "http://127.0.0.1:6017" });
+  test(`onboarding supersamples and stays inside the canvas at density ${density}`, async ({ browser, baseURL }) => {
+    const context = await browser.newContext({ viewport: { width: 1200, height: 900 }, deviceScaleFactor: density, reducedMotion: "no-preference", baseURL });
     const page = await context.newPage();
     await page.goto("/iframe.html?id=agents-personas-full-pages--meet-your-next-agent&viewMode=story");
     await expect(page.locator("canvas")).toHaveCount(1);
