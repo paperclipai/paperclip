@@ -62,6 +62,9 @@ const NON_LIVE_STATUSES = ["done", "cancelled", "blocked"] as const;
 
 const HTTP_URL_PATTERN = /^https?:\/\//i;
 
+/** A repository is named `owner/name`; a URL or a bare name is not one. */
+const REPOSITORY_NAME_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
 type IssueRefRow = {
   id: string;
   identifier: string | null;
@@ -79,7 +82,12 @@ type PullRequestState = IssueOverviewPullRequest["state"];
 type PullRequestSource = "provider" | "local";
 
 type PullRequestCandidate = {
-  key: string;
+  /**
+   * Host a record names for the repository. It qualifies the repository facet and
+   * is never a wildcard: `null` means this record named no host, which is not
+   * proof that it shares one with a record that did.
+   */
+  host: string | null;
   repository: string | null;
   number: number | null;
   url: string | null;
@@ -88,6 +96,14 @@ type PullRequestCandidate = {
   stale: boolean;
   source: PullRequestSource;
   observedAt: number;
+};
+
+/** Normalized identity facets, computed once per record. */
+type PullRequestFacets = {
+  /** Canonical URL, folded for case and trailing slashes; `null` when unrecorded. */
+  urlKey: string | null;
+  /** `host/repository#number`; `null` until the record names a host. */
+  repoKey: string | null;
 };
 
 /**
@@ -236,60 +252,128 @@ function isNonBlockedStatus(value: string | null): value is Exclude<IssueStatus,
     && (ISSUE_STATUSES as readonly string[]).includes(value);
 }
 
-function pullRequestKey(input: { repository: string | null; number: number | null; url: string | null }) {
-  if (input.repository && input.number !== null) {
-    return `repo:${input.repository.toLowerCase()}#${input.number}`;
+/** Host of a canonical URL; `null` when the record never named a usable one. */
+function hostFacet(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).hostname.toLowerCase() || null;
+  } catch {
+    return null;
   }
-  if (input.url) return `url:${input.url.toLowerCase().replace(/\/+$/, "")}`;
-  return null;
-}
-
-function newestIso(left: string | null, right: string | null): string | null {
-  if (!left) return right;
-  if (!right) return left;
-  return Date.parse(left) >= Date.parse(right) ? left : right;
-}
-
-/** An observation that names a real provider state outranks one that does not. */
-function stateInformativeness(state: PullRequestState): number {
-  return state === "unknown" ? 0 : 1;
 }
 
 /**
- * Reconciles the records that describe one pull request.
+ * Identity facets of one record, normalized once so the grouping scan compares
+ * plain strings instead of re-parsing URLs per pair.
  *
- * Precedence follows what each record can actually prove, not a static ranking:
- * a provider-observed merge is irreversible and outranks everything; a provider
+ * The repository facet includes the host because `owner/name#43` on two forges is
+ * two pull requests, and it exists only when the record names a host: a record
+ * that mentions a repository without one has no proof of sharing an identity, so
+ * it stays its own chip rather than bridging records that do.
+ */
+function pullRequestFacets(input: {
+  host: string | null;
+  repository: string | null;
+  number: number | null;
+  url: string | null;
+}): PullRequestFacets {
+  return {
+    urlKey: input.url ? input.url.toLowerCase().replace(/\/+$/, "") : null,
+    repoKey: input.host && input.repository && input.number !== null
+      ? `${input.host.toLowerCase()}/${input.repository.toLowerCase()}#${input.number}`
+      : null,
+  };
+}
+
+/**
+ * Reconciles two records that are already known to describe one pull request.
+ *
+ * The winner is chosen by what each record can actually prove, not by recency: a
+ * provider-observed merge is irreversible and outranks everything; a provider
  * observation outranks a locally reported work product; among equals, a named
  * state outranks `unknown`, then the newer observation wins. So a stale open
  * observation can never undo a later merged receipt, and an agent-reported merge
  * can never override what the provider says.
+ *
+ * The winner keeps its own evidence — source, state, freshness and timestamp; a
+ * newer local timestamp never stamps provider state. Only identity the winner
+ * never learned is taken from the other record, and the host travels with the
+ * repository it was recorded with so a filled pair stays consistent.
  */
 export function choosePullRequest(
   left: PullRequestCandidate,
   right: PullRequestCandidate,
 ): PullRequestCandidate {
-  const leftProviderMerged = left.source === "provider" && left.state === "merged";
-  const rightProviderMerged = right.source === "provider" && right.state === "merged";
-  if (leftProviderMerged !== rightProviderMerged) return leftProviderMerged ? left : right;
+  // Authority as a rank: provider-observed merge (7), provider named state (3),
+  // provider unknown (2), local named state (1), local unknown (0).
+  const rank = (candidate: PullRequestCandidate) =>
+    (candidate.source === "provider" ? 2 : 0)
+    + (candidate.source === "provider" && candidate.state === "merged" ? 4 : 0)
+    + (candidate.state === "unknown" ? 0 : 1);
+  const leftRank = rank(left);
+  const rightRank = rank(right);
+  const winner = leftRank !== rightRank
+    ? leftRank > rightRank ? left : right
+    : right.observedAt > left.observedAt ? right : left;
+  if (winner.url !== null && winner.number !== null && winner.repository !== null) return winner;
 
-  const leftProvider = left.source === "provider";
-  const rightProvider = right.source === "provider";
-  if (leftProvider !== rightProvider) return leftProvider ? left : right;
-
-  const leftInformed = stateInformativeness(left.state);
-  const rightInformed = stateInformativeness(right.state);
-  if (leftInformed !== rightInformed) return leftInformed > rightInformed ? left : right;
-
-  const winner = right.observedAt > left.observedAt ? right : left;
   const other = winner === left ? right : left;
   return {
     ...winner,
     url: winner.url ?? other.url,
     number: winner.number ?? other.number,
     repository: winner.repository ?? other.repository,
-    updatedAt: newestIso(winner.updatedAt, other.updatedAt),
+    // A repository is only usable identity with the host it was recorded under.
+    host: winner.repository !== null ? winner.host : other.host ?? winner.host,
   };
+}
+
+/**
+ * Joins the records that describe one pull request and reconciles their evidence
+ * into a single chip.
+ *
+ * Facets are transitive, which is the point: a provider observation that knows
+ * both the URL and the repository bridges a URL-only record and a record that
+ * knows the same repository, so a partially populated record joins the same pull
+ * request instead of appearing beside it. Nothing else joins: an unknown host
+ * proves nothing about a shared one, and a record that names no URL, repository
+ * or number is dropped rather than rendered as a nameless chip.
+ */
+function dedupePullRequests(candidates: readonly PullRequestCandidate[]): PullRequestCandidate[] {
+  type FacetedCandidate = { candidate: PullRequestCandidate; facets: PullRequestFacets };
+  const clusters: FacetedCandidate[][] = [];
+  for (const candidate of candidates) {
+    if (candidate.url === null && (candidate.repository === null || candidate.number === null)) continue;
+    const record: FacetedCandidate = { candidate, facets: pullRequestFacets(candidate) };
+    const matched = clusters.filter((cluster) => cluster.some((member) =>
+      (record.facets.urlKey !== null && member.facets.urlKey === record.facets.urlKey)
+      || (record.facets.repoKey !== null && member.facets.repoKey === record.facets.repoKey)));
+    if (matched.length === 0) {
+      clusters.push([record]);
+      continue;
+    }
+    const [target, ...absorbed] = matched;
+    target!.push(record, ...absorbed.flat());
+    for (const cluster of absorbed) clusters.splice(clusters.indexOf(cluster), 1);
+  }
+  return clusters.map((cluster) =>
+    cluster.map((member) => member.candidate).reduce((winner, member) => choosePullRequest(winner, member)));
+}
+
+/**
+ * Repository named by a provider observation. Paperclip's own GitHub resolver
+ * records the split `owner`/`repo` pair, while other writers record one
+ * `repository` string; both state the same fact, and reading only the split form
+ * loses the repository — and with it the identity that joins this observation to
+ * the delivery record for the same pull request. Anything that is not a plain
+ * `owner/name` is ignored rather than guessed at.
+ */
+function externalObjectRepository(data: Record<string, unknown>): string | null {
+  const owner = asString(data.owner);
+  const repo = asString(data.repo);
+  if (owner && repo) return `${owner}/${repo}`;
+  const repository = asString(data.repository);
+  return repository && REPOSITORY_NAME_PATTERN.test(repository) ? repository : null;
 }
 
 /**
@@ -320,15 +404,13 @@ function externalObjectPullRequest(object: typeof externalObjects.$inferSelect, 
     : open
     ? "open"
     : "unknown";
-  const owner = asString(data.owner);
-  const repo = asString(data.repo);
   return {
     state: resolvedState,
     updatedAt: asString(object.remoteVersion)
       ?? iso(object.lastChangedAt)
       ?? iso(object.lastResolvedAt),
     stale: observedLiveness(object, now) !== "fresh",
-    repository: owner && repo ? `${owner}/${repo}` : null,
+    repository: externalObjectRepository(data),
     number: asNumber(data.number),
   };
 }
@@ -386,19 +468,20 @@ function workProductPullRequest(row: {
  */
 function deliveryUnitPullRequest(
   unit: DeliveryUnitRow,
-  repository: string | null,
-): Omit<PullRequestCandidate, "url"> & { url: string | null } | null {
+  repository: { owner: string; name: string; host: string } | null,
+): PullRequestCandidate | null {
   if (!unit.prUrl && unit.prNumber === null) return null;
   const merged = unit.status === "merged" && (unit.mergedAt !== null || unit.mergedSha !== null);
   const closedUnmerged = unit.status === "closed_unmerged";
   const cancelled = unit.status === "cancelled";
   const state: PullRequestState = merged ? "merged" : closedUnmerged ? "closed" : cancelled ? "unknown" : "open";
   const url = safeHttpUrl(unit.prUrl);
-  const key = pullRequestKey({ repository, number: unit.prNumber, url });
-  if (!key) return null;
   return {
-    key,
-    repository,
+    // The repository row is this unit's declared repository identity; the pull
+    // request URL is where the record links, and only hosts it when that is all
+    // the record knows.
+    host: repository ? repository.host.toLowerCase() : hostFacet(url),
+    repository: repository ? repositoryFullName(repository.owner, repository.name) : null,
     number: unit.prNumber,
     url,
     state,
@@ -616,9 +699,14 @@ export function issueOverviewService(db: Db): IssueOverviewService {
           .from(issues)
           .where(and(eq(issues.companyId, companyId), inArray(issues.id, blockerIds))),
       repositoryIds.length === 0
-        ? Promise.resolve([] as Array<{ id: string; owner: string; name: string }>)
+        ? Promise.resolve([] as Array<{ id: string; owner: string; name: string; host: string }>)
         : db
-          .select({ id: deliveryRepositories.id, owner: deliveryRepositories.owner, name: deliveryRepositories.name })
+          .select({
+            id: deliveryRepositories.id,
+            owner: deliveryRepositories.owner,
+            name: deliveryRepositories.name,
+            host: deliveryRepositories.host,
+          })
           .from(deliveryRepositories)
           .where(and(eq(deliveryRepositories.companyId, companyId), inArray(deliveryRepositories.id, repositoryIds))),
       unitIds.length === 0
@@ -647,9 +735,7 @@ export function issueOverviewService(db: Db): IssueOverviewService {
     const parentById = new Map(parentRows.map((row) => [row.id, row]));
     const projectById = new Map(projectRows.map((row) => [row.id, row]));
     const blockerById = new Map(blockerRows.map((row) => [row.id, row]));
-    const repositoryById = new Map(
-      repositoryRows.map((row) => [row.id, repositoryFullName(row.owner, row.name)]),
-    );
+    const repositoryById = new Map(repositoryRows.map((row) => [row.id, row]));
     const openFindingsByUnitId = new Map(findingRows.map((row) => [row.unitId, row.count]));
     const lastLiveTransitionAtByIssueId = new Map(
       lastLiveTransitionRows.map((row) => [row.issueId, toDate(row.at)]),
@@ -684,15 +770,14 @@ export function issueOverviewService(db: Db): IssueOverviewService {
     }
 
     // --- Pull requests ------------------------------------------------------
-    const pullRequestsByIssueId = new Map<string, Map<string, PullRequestCandidate>>();
+    // One bucket per issue, reconciled into chips once every canonical source
+    // has contributed: only then can a record that knows the URL join the record
+    // that knows the repository.
+    const pullRequestCandidatesByIssueId = new Map<string, PullRequestCandidate[]>();
     const addCandidate = (issueId: string, candidate: PullRequestCandidate) => {
-      let byKey = pullRequestsByIssueId.get(issueId);
-      if (!byKey) {
-        byKey = new Map<string, PullRequestCandidate>();
-        pullRequestsByIssueId.set(issueId, byKey);
-      }
-      const existing = byKey.get(candidate.key);
-      byKey.set(candidate.key, existing ? choosePullRequest(existing, candidate) : candidate);
+      const bucket = pullRequestCandidatesByIssueId.get(issueId);
+      if (bucket) bucket.push(candidate);
+      else pullRequestCandidatesByIssueId.set(issueId, [candidate]);
     };
 
     for (const row of unitIssueRows) {
@@ -739,10 +824,8 @@ export function issueOverviewService(db: Db): IssueOverviewService {
     for (const row of mentionRows) {
       const evidence = externalObjectPullRequest(row.object, now);
       const url = safeHttpUrl(row.object.sanitizedCanonicalUrl);
-      const key = pullRequestKey({ repository: evidence.repository, number: evidence.number, url });
-      if (!key) continue;
       addCandidate(row.issueId, {
-        key,
+        host: hostFacet(url),
         repository: evidence.repository,
         number: evidence.number,
         url,
@@ -757,10 +840,8 @@ export function issueOverviewService(db: Db): IssueOverviewService {
     for (const row of workProductRows) {
       const evidence = workProductPullRequest(row);
       const url = safeHttpUrl(row.url);
-      const key = pullRequestKey({ repository: evidence.repository, number: evidence.number, url });
-      if (!key) continue;
       addCandidate(row.issueId, {
-        key,
+        host: hostFacet(url),
         repository: evidence.repository,
         number: evidence.number,
         url,
@@ -883,9 +964,9 @@ export function issueOverviewService(db: Db): IssueOverviewService {
         };
       }
 
-      const candidateMap = pullRequestsByIssueId.get(row.id);
-      const pullRequests: IssueOverviewPullRequest[] = candidateMap
-        ? [...candidateMap.values()]
+      const candidates = pullRequestCandidatesByIssueId.get(row.id);
+      const pullRequests: IssueOverviewPullRequest[] = candidates
+        ? dedupePullRequests(candidates)
           .map((candidate) => ({
             url: candidate.url,
             number: candidate.number,

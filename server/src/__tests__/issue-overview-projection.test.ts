@@ -14,6 +14,7 @@ import {
   externalObjectMentions,
   externalObjects,
   issueRelations,
+  issueWorkProducts,
   issues,
   projects,
   type Db,
@@ -58,6 +59,7 @@ describeEmbeddedPostgres("issue overview projection", () => {
     await db.delete(deliveryRepositories);
     await db.delete(externalObjectMentions);
     await db.delete(externalObjects);
+    await db.delete(issueWorkProducts);
     await db.delete(issueRelations);
     await db.delete(activityLog);
     await db.delete(issues);
@@ -113,9 +115,9 @@ describeEmbeddedPostgres("issue overview projection", () => {
     return issueId;
   }
 
-  async function createRepository(companyId: string, owner = "acme", name = "widget") {
+  async function createRepository(companyId: string, owner = "acme", name = "widget", host = "github.com") {
     const repositoryId = randomUUID();
-    await db.insert(deliveryRepositories).values({ id: repositoryId, companyId, owner, name });
+    await db.insert(deliveryRepositories).values({ id: repositoryId, companyId, owner, name, host });
     return repositoryId;
   }
 
@@ -180,6 +182,12 @@ describeEmbeddedPostgres("issue overview projection", () => {
     statusKey: string;
     owner?: string;
     repo?: string;
+    host?: string;
+    /**
+     * Record the repository the way a non-GitHub provider does: one
+     * `repository` string instead of the split `owner`/`repo` pair.
+     */
+    repository?: string;
     state?: string;
     merged?: boolean;
     draft?: boolean;
@@ -189,13 +197,15 @@ describeEmbeddedPostgres("issue overview projection", () => {
     const objectId = randomUUID();
     const owner = input.owner ?? "acme";
     const repo = input.repo ?? "widget";
+    const host = input.host ?? "github.com";
+    const repository = input.repository ?? `${owner}/${repo}`;
     await db.insert(externalObjects).values({
       id: objectId,
       companyId: input.companyId,
       providerKey: "github",
       objectType: "pull_request",
-      externalId: `${owner}/${repo}#${input.number}`,
-      sanitizedCanonicalUrl: `https://github.com/${owner}/${repo}/pull/${input.number}`,
+      externalId: `${repository}#${input.number}`,
+      sanitizedCanonicalUrl: `https://${host}/${repository}/pull/${input.number}`,
       statusKey: input.statusKey,
       statusCategory: "open",
       liveness: input.liveness ?? "fresh",
@@ -205,8 +215,7 @@ describeEmbeddedPostgres("issue overview projection", () => {
       remoteVersion: "2026-02-01T10:00:00Z",
       data: {
         provider: "github",
-        owner,
-        repo,
+        ...(input.repository ? { repository: input.repository } : { owner, repo }),
         number: input.number,
         state: input.state ?? "open",
         merged: input.merged ?? false,
@@ -534,6 +543,136 @@ describeEmbeddedPostgres("issue overview projection", () => {
     expect(byId.get(closedId)!.delivery!.mergedAt).toBeNull();
     // A cancelled unit is not a closed pull request; its state is unknown.
     expect(byId.get(cancelledId)!.pullRequests.map((pr) => [pr.number, pr.state])).toEqual([[23, "unknown"]]);
+  });
+
+  it("shows one chip when a provider observation and a delivery unit record the same pull request", async () => {
+    const companyId = await createCompany();
+    const issueId = await createIssue({ companyId, status: "done", identifier: "OV-30" });
+    const repositoryId = await createRepository(companyId, "operator-fixtures", "never-publish", "example.test");
+    await createUnit({
+      companyId,
+      repositoryId,
+      primaryIssueId: issueId,
+      status: "merged",
+      prNumber: 43,
+      prUrl: "https://example.test/operator-fixtures/never-publish/pull/43",
+      mergedAt: new Date("2026-02-05T10:00:00Z"),
+      mergedSha: "f".repeat(40),
+      lastEventAt: new Date("2026-02-05T10:00:00Z"),
+    });
+    // The provider record names its repository the only way that writer does:
+    // one `repository` string, with no split `owner`/`repo` pair to read.
+    await createPullRequestObject({
+      companyId,
+      issueId,
+      number: 43,
+      statusKey: "merged",
+      state: "closed",
+      merged: true,
+      repository: "operator-fixtures/never-publish",
+      host: "example.test",
+    });
+
+    const [overview] = (await svc.list(companyId, [issueId])).items;
+
+    // Same URL, repository and number: one pull request, reported once, with the
+    // provider observation reconciled into the delivery record's merge.
+    expect(overview!.pullRequests).toEqual([
+      {
+        url: "https://example.test/operator-fixtures/never-publish/pull/43",
+        number: 43,
+        repository: "operator-fixtures/never-publish",
+        state: "merged",
+        updatedAt: "2026-02-05T10:00:00.000Z",
+        stale: false,
+      },
+    ]);
+    expect(overview!.delivery).toMatchObject({ phase: "merged", mergedAt: "2026-02-05T10:00:00.000Z" });
+  });
+
+  it("keeps the same repository and number on another host as a separate pull request", async () => {
+    const companyId = await createCompany();
+    const issueId = await createIssue({ companyId, status: "in_progress", identifier: "OV-31" });
+    const repositoryId = await createRepository(companyId, "operator-fixtures", "never-publish", "example.test");
+    await createUnit({
+      companyId,
+      repositoryId,
+      primaryIssueId: issueId,
+      status: "in_review",
+      prNumber: 43,
+      prUrl: "https://example.test/operator-fixtures/never-publish/pull/43",
+      lastEventAt: new Date("2026-02-05T10:00:00Z"),
+    });
+    // A mirror forge reuses the owner, name and number for a different pull
+    // request; joining on the host-blind repository name would collapse them.
+    await createPullRequestObject({
+      companyId,
+      issueId,
+      number: 43,
+      statusKey: "open",
+      owner: "operator-fixtures",
+      repo: "never-publish",
+      host: "mirror.test",
+    });
+
+    const [overview] = (await svc.list(companyId, [issueId])).items;
+
+    expect(overview!.pullRequests.map((pr) => pr.url)).toEqual([
+      "https://example.test/operator-fixtures/never-publish/pull/43",
+      "https://mirror.test/operator-fixtures/never-publish/pull/43",
+    ]);
+  });
+
+  it("never bridges two forges through a record that names no host", async () => {
+    const companyId = await createCompany();
+    const issueId = await createIssue({ companyId, status: "in_progress", identifier: "OV-32" });
+    const repositoryId = await createRepository(companyId, "operator-fixtures", "never-publish", "example.test");
+    await createUnit({
+      companyId,
+      repositoryId,
+      primaryIssueId: issueId,
+      status: "in_review",
+      prNumber: 43,
+      prUrl: "https://example.test/operator-fixtures/never-publish/pull/43",
+      lastEventAt: new Date("2026-02-05T10:00:00Z"),
+    });
+    await createPullRequestObject({
+      companyId,
+      issueId,
+      number: 43,
+      statusKey: "open",
+      owner: "operator-fixtures",
+      repo: "never-publish",
+      host: "mirror.test",
+    });
+    // A tracking link that names the repository and number but never a host. It
+    // proves no shared identity, so it must not become the bridge that merges the
+    // two forges — and it must stay visible on its own.
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId,
+      type: "pull_request",
+      provider: "local",
+      title: "Unresolved tracking link",
+      externalId: "operator-fixtures/never-publish#43",
+      url: null,
+      status: "open",
+      metadata: { number: 43 },
+      updatedAt: new Date("2026-01-15T10:00:00Z"),
+    });
+
+    const [overview] = (await svc.list(companyId, [issueId])).items;
+
+    expect(overview!.pullRequests.map((pr) => pr.url)).toEqual([
+      "https://example.test/operator-fixtures/never-publish/pull/43",
+      "https://mirror.test/operator-fixtures/never-publish/pull/43",
+      null,
+    ]);
+    expect(overview!.pullRequests.map((pr) => pr.repository)).toEqual([
+      "operator-fixtures/never-publish",
+      "operator-fixtures/never-publish",
+      "operator-fixtures/never-publish",
+    ]);
   });
 
   it("reads canonical provider state for draft, closed-unmerged, open and merged pull requests", async () => {
