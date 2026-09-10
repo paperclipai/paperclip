@@ -642,9 +642,6 @@ function parsePiLine(
             ? currentTurnAssistantMessage(state, message) ?? createMessage(state, role)
             : createMessage(state, role);
         entries.push(...reconcileMessageSnapshot(state, messageState, message, ts));
-        if (role === "assistant") {
-          entries.push(...emitUsageResult(state, extractUsage(message), ts));
-        }
       }
     }
 

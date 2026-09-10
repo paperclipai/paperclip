@@ -397,6 +397,33 @@ describe("process Pi transcript integration", () => {
       .toEqual(["Same answer.", "Same answer."]);
   });
 
+  it("emits the run summary only after the final assistant message", () => {
+    const first = {
+      role: "assistant",
+      timestamp: 1,
+      content: [{ type: "text", text: "Working." }],
+      usage: { input: 100, output: 10 },
+    };
+    const final = {
+      role: "assistant",
+      timestamp: 2,
+      content: [{ type: "text", text: "Finished." }],
+      usage: { input: 200, output: 20 },
+    };
+    const entries = buildTranscript(eventChunks([
+      { type: "turn_start" },
+      { type: "turn_end", message: first },
+      { type: "turn_start" },
+      { type: "turn_end", message: final },
+      { type: "agent_end", messages: [first, final] },
+    ]), processUIAdapter);
+
+    expect(entries.filter((entry) => entry.kind === "result")).toMatchObject([
+      { inputTokens: 200, outputTokens: 20 },
+    ]);
+    expect(entries.at(-1)?.kind).toBe("result");
+  });
+
   it("keeps an unseen same-role message from an agent-end subset", () => {
     const firstMessage = {
       role: "assistant",
