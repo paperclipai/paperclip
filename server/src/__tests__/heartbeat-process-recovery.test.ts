@@ -6009,6 +6009,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runningProcesses.has(runId)).toBe(false);
   });
 
+  it.each(["user", "board", "interrupt"])("does not immediately recover an operator-cancelled run (%s)", async (actor) => {
+    const { companyId, agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
+      agentStatus: "running", includeIssue: true,
+    });
+    const heartbeat = heartbeatService(db);
+    try {
+      const cancelled = await heartbeat.cancelRun(runId, "Operator stopped this run", actor === "interrupt"
+        ? { errorCode: "operator_interrupted" }
+        : { resultJson: { cancelledByActorType: actor } });
+      expect(cancelled?.status).toBe("cancelled");
+      const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+      expect(wakeups.map((wake) => wake.id)).toEqual([wakeupRequestId]);
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs.map((run) => run.id)).toEqual([runId]);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue).toMatchObject({ status: "in_progress", executionRunId: null, checkoutRunId: null });
+    } finally { await heartbeat.drainActiveRunExecutions(); }
+  });
+
   it("records manual cancellation stop metadata", async () => {
     const { runId } = await seedRunFixture({
       agentStatus: "running",

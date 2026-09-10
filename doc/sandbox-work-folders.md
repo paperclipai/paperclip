@@ -431,6 +431,9 @@ before acknowledgement, preventing cancelled startup work from dispatching.
 The supervisor preserves externally delivered child termination signals. Failed stop
 requests remain visible and can be retried explicitly. Local and native runner
 cancellation retain their existing authorities.
+Immediate recovery honors the same operator-cancellation attribution as periodic
+recovery, so cancelling a run does not synthesize a continuation that restarts its
+sandbox. Explicitly queued work can still run through normal promotion.
 
 Automated tests do not qualify a deployed runner image. Before merging, use a
 new pinned staging stack with the branch's Cloud image and matching migrator.

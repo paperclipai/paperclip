@@ -371,6 +371,7 @@ import {
 import { withRecoveryContext } from "./recovery/status-only-context.js";
 import {
   ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS,
+  isOperatorCancelledRun,
   recoveryService,
 } from "./recovery/service.js";
 import { collectDispositionRepairSourceState } from "./recovery/disposition-repair.js";
@@ -23688,6 +23689,11 @@ export function heartbeatService(
           reopenedActivity,
         };
       }
+
+      // Match the periodic recovery policy: an operator's stop must not create
+      // a fresh continuation that immediately resumes the cancelled sandbox.
+      // Explicit deferred wakes above remain eligible for normal promotion.
+      if (isOperatorCancelledRun(run)) return { kind: "released" as const };
 
       const findExistingExecutionPath = (agentId?: string | null) =>
         tx
