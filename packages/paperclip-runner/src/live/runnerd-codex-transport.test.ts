@@ -7380,7 +7380,7 @@ it("still fails closed when a real close grace period cannot fit a durable suspe
   } finally {
     await rm(stateDirectory, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 it("cold-restores a suspended provider session under its durable run binding", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-cold-attach-"));

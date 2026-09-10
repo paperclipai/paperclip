@@ -3828,9 +3828,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
   }
 
-  async #stopActiveProviderTurnBeforeSuspend(
-    deadline: number,
-  ): Promise<boolean> {
+  async #stopActiveProviderTurnBeforeSuspend(deadline: number): Promise<void> {
     const state = this.#providerDrainState();
     const core = this.#core;
     const inferredActiveProviderTurnId =
@@ -3848,7 +3846,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       activeProviderTurnId === null ||
       core === null
     ) {
-      return false;
+      return;
     }
     const commandId = `command_close_stop_${randomUUID().replaceAll("-", "")}`;
     core.queueCommand(
@@ -3866,19 +3864,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#diagnostic(
           `stopped active provider turn ${activeProviderTurnId} before runner suspension`,
         );
-        return true;
+        return;
       }
       if (command !== undefined && command.status !== "pending") {
         this.#diagnostic(
           `provider turn stop ${command.status} before runner suspension`,
         );
-        return false;
+        return;
       }
-      if (await this.#runnerHasExited()) return false;
+      if (await this.#runnerHasExited()) return;
       await new Promise((resolveWait) => setTimeout(resolveWait, 5));
     }
     this.#diagnostic("provider turn stop timed out before runner suspension");
-    return false;
   }
 
   async #drainSettledProviderEventsBeforeSuspend(
