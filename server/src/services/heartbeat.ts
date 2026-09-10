@@ -401,7 +401,9 @@ import {
 import {
   createWakeQueue,
   WakeQueueApplicationError,
+  type IssueSnapshot as WakeQueueIssueSnapshot,
   type PostCommitEffect as WakeQueuePostCommitEffect,
+  type RunSnapshot as WakeQueueRunSnapshot,
 } from "../modules/wake-queue/index.js";
 import {
   buildIssueReviewPathLostIdempotencyKey,
@@ -8446,6 +8448,26 @@ export function heartbeatService(
     }
   }
 
+  // The wake-queue module's plain snapshots hold only the fields the release
+  // decision needs; escalation needs the full row, so this re-reads both by
+  // id after the release transaction has committed. Returns null when either
+  // row is gone, so both escalation adapters below skip the escalation call.
+  async function loadStrandedEscalationRows(input: {
+    issue: WakeQueueIssueSnapshot;
+    latestRun: WakeQueueRunSnapshot;
+  }) {
+    const [issueRow] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)));
+    const [runRow] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.id, input.latestRun.id), eq(heartbeatRuns.companyId, input.latestRun.companyId)));
+    if (!issueRow || !runRow) return null;
+    return { issueRow, runRow };
+  }
+
   const wakeQueue = createWakeQueue(db, {
     resolveResponsibleUserId: async (input) => {
       // `input.issue` is the wake-queue module's own transaction-scoped
@@ -8489,23 +8511,13 @@ export function heartbeatService(
       return resolveSessionBeforeForWakeup(agent, input.taskKey);
     },
     recovery: {
-      // The wake-queue module's plain snapshots hold only the fields the
-      // release decision needs; escalation needs the full row, so this
-      // re-reads both by id after the release transaction has committed.
       escalateStrandedAssignedIssue: async (input) => {
-        const [issueRow] = await db
-          .select()
-          .from(issues)
-          .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)));
-        const [runRow] = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(and(eq(heartbeatRuns.id, input.latestRun.id), eq(heartbeatRuns.companyId, input.latestRun.companyId)));
-        if (!issueRow || !runRow) return;
+        const rows = await loadStrandedEscalationRows(input);
+        if (!rows) return;
         await recovery.escalateStrandedAssignedIssue({
-          issue: issueRow,
+          issue: rows.issueRow,
           previousStatus: input.previousStatus,
-          latestRun: runRow,
+          latestRun: rows.runRow,
           notice: input.notice as StrandedRecoveryNoticeSeed,
           recoveryCause: (input.recoveryCause ?? undefined) as
             | typeof WORKSPACE_VALIDATION_RECOVERY_CAUSE
@@ -8515,19 +8527,12 @@ export function heartbeatService(
         });
       },
       escalateStrandedRecoveryIssueInPlace: async (input) => {
-        const [issueRow] = await db
-          .select()
-          .from(issues)
-          .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)));
-        const [runRow] = await db
-          .select()
-          .from(heartbeatRuns)
-          .where(and(eq(heartbeatRuns.id, input.latestRun.id), eq(heartbeatRuns.companyId, input.latestRun.companyId)));
-        if (!issueRow || !runRow) return;
+        const rows = await loadStrandedEscalationRows(input);
+        if (!rows) return;
         await recovery.escalateStrandedRecoveryIssueInPlace({
-          issue: issueRow,
+          issue: rows.issueRow,
           previousStatus: input.previousStatus,
-          latestRun: runRow,
+          latestRun: rows.runRow,
         });
       },
     },
