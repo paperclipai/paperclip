@@ -7600,6 +7600,17 @@ export function issueRoutes(
         .then((rows) => rows[0] ?? null);
       if (!lockedIssue) throw notFound("Issue not found");
 
+      const reviewState = parseIssueExecutionState(lockedIssue.executionState);
+      const isPendingReviewReconciliation =
+        sourceIssueStatus === "in_review" &&
+        outcome === "restored" &&
+        executionReconciliation != null &&
+        executionReconciliation.providerStopped === true &&
+        executionReconciliation.actionOutcome === "not_performed" &&
+        lockedIssue.status === "in_review" &&
+        reviewState?.status === "pending" &&
+        reviewState.currentParticipant?.type === "agent";
+
       let activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
         lockedIssue.companyId,
         lockedIssue.id,
@@ -7618,7 +7629,9 @@ export function issueRoutes(
             // An automatic no-replay disposition is final until new evidence
             // arrives. Keep the supported evidence API usable without a dialog.
             assertBoard(req);
-            if (activeRecoveryAction || sourceIssueStatus !== "todo" || outcome !== "restored") {
+            const canReopenForPendingReview =
+              sourceIssueStatus === "todo" || isPendingReviewReconciliation;
+            if (activeRecoveryAction || !canReopenForPendingReview || outcome !== "restored") {
               throw conflict("Verified outcomes must restore this source recovery without replacing another active recovery action.");
             }
             const [reopened] = await tx.update(issueRecoveryActions).set({ status: "active", outcome: null, resolvedAt: null })
@@ -7639,7 +7652,9 @@ export function issueRoutes(
         { source: "recovery_action_resolution" },
       );
 
-      if (sourceIssueStatus === "todo" && requiresExecutionReconciliation(activeRecoveryAction.cause)) {
+      const canValidateExecutionReconciliation =
+        sourceIssueStatus === "todo" || isPendingReviewReconciliation;
+      if (canValidateExecutionReconciliation && requiresExecutionReconciliation(activeRecoveryAction.cause)) {
         assertBoard(req);
         await validateExecutionReconciliation({ db: tx as unknown as Db,
           companyId: lockedIssue.companyId, issueId: lockedIssue.id, agentId: lockedIssue.assigneeAgentId,

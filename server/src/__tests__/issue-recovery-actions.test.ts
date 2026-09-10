@@ -1660,6 +1660,100 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id)))[0]).toEqual(recorded);
   });
 
+  it("reconciles a never-started legacy reviewer run without bypassing the pending review stage", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const stageId = randomUUID();
+    const runId = randomUUID();
+    await db.update(issues).set({
+      status: "in_review",
+      assigneeAgentId: managerId,
+      executionState: {
+        status: "pending",
+        currentStageId: stageId,
+        currentStageType: "review",
+        currentStageIndex: 0,
+        completedStageIds: [],
+        currentParticipant: { type: "agent", agentId: managerId, userId: null },
+        returnAssignee: { type: "agent", agentId: coderId, userId: null },
+        reviewRequest: null,
+        lastDecisionOutcome: null,
+        changesRequestedCount: 0,
+        lastDecisionId: null,
+      },
+    }).where(eq(issues.id, sourceIssueId));
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: managerId,
+      invocationSource: "manual",
+      status: "cancelled",
+      errorCode: "execution_reconciliation_required",
+      resultJson: {
+        stopReason: "execution_reconciliation_required",
+        timeoutSource: "stale_queued_run_gate",
+      },
+      startedAt: null,
+      finishedAt: new Date("2026-05-13T18:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId,
+      kind: "active_run_watchdog",
+      status: "resolved",
+      outcome: "blocked",
+      ownerType: "board",
+      returnOwnerAgentId: coderId,
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${runId}`,
+      nextAction: "Reconcile the stopped legacy reviewer run.",
+      evidence: {
+        runId,
+        automaticRecovery: { replay: "blocked", actionOutcome: "unknown" },
+      },
+    }).returning();
+    const app = createApp();
+
+    const resolved = await request(app)
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: action!.id,
+        outcome: "restored",
+        sourceIssueStatus: "in_review",
+        resolutionNote: "The reviewer run never started; preserve the pending CTO review stage.",
+        executionReconciliation: {
+          runId,
+          providerStopped: true,
+          actionOutcome: "not_performed",
+          outcomeEvidence: "startedAt is null, no process or lease exists, and the run stopped at stale_queued_run_gate.",
+        },
+      })
+      .expect(200);
+
+    expect(resolved.body.issue).toMatchObject({
+      id: sourceIssueId,
+      status: "in_review",
+      assigneeAgentId: managerId,
+      activeRecoveryAction: null,
+    });
+    expect(resolved.body.issue.executionState).toMatchObject({
+      status: "pending",
+      currentParticipant: { type: "agent", agentId: managerId },
+      returnAssignee: { type: "agent", agentId: coderId },
+    });
+    expect(resolved.body.recoveryAction).toMatchObject({
+      id: action!.id,
+      status: "resolved",
+      outcome: "restored",
+    });
+    const [recorded] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    expect(recorded!.evidence).not.toHaveProperty("automaticRecovery");
+    expect(recorded!.evidence).toMatchObject({
+      executionReconciliation: { runId, actionOutcome: "not_performed" },
+      continuationDelivery: "pending",
+    });
+  });
+
   async function seedReconciledDelivery() {
     const fixture = await seedCompany();
     const { companyId, coderId, sourceIssueId } = fixture;
