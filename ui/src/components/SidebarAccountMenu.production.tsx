@@ -18,6 +18,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
+import { useSupportChatLauncherActive } from "@/lib/plain-chat";
 import { ThemeToggle } from "./ThemeToggle";
 import { SidebarServerInfo } from "./SidebarServerInfo";
 
@@ -118,6 +119,10 @@ export function SidebarAccountMenu({
   });
 
   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
+  // When the Plain support chat launcher is live (Cloud instances), it is the
+  // support entry point and the flag hides. Any widget/config failure keeps
+  // the flag as the discoverable fallback.
+  const supportChatActive = useSupportChatLauncherActive();
 
   const displayName = session?.user.name?.trim() || "Board";
   const secondaryLabel =
@@ -227,7 +232,7 @@ export function SidebarAccountMenu({
           </div>
         </PopoverContent>
         </Popover>
-        {!rail ? (
+        {!rail && !supportChatActive ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <a
