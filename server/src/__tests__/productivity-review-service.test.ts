@@ -505,6 +505,80 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(hold.held).toBe(false);
   });
 
+  it("does not repost a notice after its review is hidden (durable, visibility-independent dedup)", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const service = productivityReviewService(db);
+    const first = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    expect(first.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+
+    // Simulate a moderation/cleanup pass that hides (soft-deletes) the notice.
+    // It stays open (todo) so it is not treated as a recently-terminal snooze,
+    // isolating the creation-cap dedup path. Under the old visible-only dedup
+    // the hidden notice would vanish and repost on the next tick.
+    await db
+      .update(issues)
+      .set({ hiddenAt: now })
+      .where(eq(issues.id, review!.id));
+
+    const second = await service.reconcileProductivityReviews({
+      now: new Date(now.getTime() + 30 * 60 * 1000),
+      companyId: seeded.companyId,
+    });
+
+    expect(second.created).toBe(0);
+    expect(second.creationCapped).toBe(1);
+    // No repost: still exactly one review row (the hidden one).
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
+  });
+
+  it("caps long_active_duration at a durable lifetime ceiling and returns creation_capped", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue({
+      status: "in_progress",
+      startedAt: new Date(now.getTime() - 7 * 60 * 60 * 1000),
+    });
+
+    // Three long_active notices were already created for this source over the
+    // issue's lifetime. Their review issues may since have been hidden/deleted,
+    // but the append-only activity log preserves the durable count.
+    await db.insert(activityLog).values(
+      [72, 48, 24].map((hoursAgo) => ({
+        companyId: seeded.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_created",
+        entityType: "issue",
+        entityId: randomUUID(),
+        details: {
+          source: "productivity_review.reconcile",
+          sourceIssueId: seeded.issueId,
+          trigger: "long_active_duration",
+        },
+        createdAt: new Date(now.getTime() - hoursAgo * 60 * 60 * 1000),
+      })),
+    );
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(0);
+    expect(result.creationCapped).toBe(1);
+    // Lifetime ceiling reached: no new notice is created.
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+  });
+
   it("skips a long-active candidate while its assignee is paused and reviews it once unpaused", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");
     const seeded = await seedAssignedIssue({
