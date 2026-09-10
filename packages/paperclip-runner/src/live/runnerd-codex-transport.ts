@@ -1030,7 +1030,7 @@ export interface CapabilityRunnerdCodexTransportOptions {
   /** Active-connection recovery budget. Omitted for the existing local mode. */
   runnerReconnectGraceMs?: number;
   /**
-   * A verified local runner that outlived its controller. Adoption registers
+   * A verified runner that outlived its controller. Adoption registers
    * the durable authority and waits for this exact process to reconnect; it
    * never calls the process launcher while the process remains alive.
    */

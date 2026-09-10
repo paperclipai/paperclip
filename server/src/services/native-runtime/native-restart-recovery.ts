@@ -36,6 +36,15 @@ export type NativeRestartRecoveryClaim =
       };
     }
   | {
+      kind: "reconcile_remote_runner";
+      runId: string;
+      leaseOwner: string;
+      controllerGeneration: number;
+      providerAttempt: number;
+      restartKind: NativeRestartKind;
+      recoveryRequestId: string | null;
+    }
+  | {
       kind: "resume_dead_runner";
       runId: string;
       leaseOwner: string;
@@ -67,6 +76,7 @@ export function nextNativeProviderAttempt(
   recoveryKind?: NativeRestartRecoveryClaim["kind"],
 ): number {
   return recoveryKind === "reattach_existing_runner" ||
+    recoveryKind === "reconcile_remote_runner" ||
     recoveryKind === "bootstrap_incomplete"
     ? currentAttempt
     : currentAttempt + 1;
@@ -266,6 +276,7 @@ export async function evaluateNativeProviderProcesses(input: {
 }
 
 export function classifyNativeRunnerRecoveryEvidence(input: {
+  remote?: boolean;
   runnerPidAlive: boolean;
   runnerGroupAlive: boolean;
   processStartMatches: boolean;
@@ -278,6 +289,20 @@ export function classifyNativeRunnerRecoveryEvidence(input: {
   claimKind: NativeRestartRecoveryClaim["kind"] | null;
   reason: string;
 } {
+  if (input.remote) {
+    // Host PIDs say nothing about a sandbox or SSH process. Claim only the
+    // exact persisted run; the executor must inspect its remote authority
+    // before deciding whether to adopt a live runner or resume suspended work.
+    return input.hasCheckpoint && input.checkpointIdentityMatches === true && input.hasProviderEvidence
+      ? {
+          claimKind: "reconcile_remote_runner",
+          reason: "remote_authority_requires_verification",
+        }
+      : {
+          claimKind: null,
+          reason: "remote_recovery_checkpoint_unverified",
+        };
+  }
   if (input.runnerPidAlive && input.processStartMatches) {
     return {
       claimKind: "reattach_existing_runner",
@@ -357,7 +382,8 @@ function historyEntry(input: {
     stateRootAction:
       input.disposition === "reattach_existing_runner"
         ? "reopen_exact_root"
-        : input.disposition === "resume_dead_runner"
+        : input.disposition === "resume_dead_runner" ||
+            input.disposition === "reconcile_remote_runner"
           ? "reuse_exact_root"
           : input.disposition === "bootstrap_incomplete"
             ? "quarantine_incomplete_root_then_bootstrap"
@@ -546,8 +572,13 @@ export async function claimNativeRestartRecoveries(input: {
         } as const;
       }
 
-      const runnerPidAlive = processIsAlive(row.run.processPid);
-      const runnerGroupAlive = processGroupIsAlive(row.run.processGroupId);
+      const environment = row.run.contextSnapshot?.paperclipEnvironment;
+      const remote = environment !== null &&
+        typeof environment === "object" &&
+        !Array.isArray(environment) &&
+        ["sandbox", "ssh"].includes(String((environment as Record<string, unknown>).driver));
+      const runnerPidAlive = !remote && processIsAlive(row.run.processPid);
+      const runnerGroupAlive = !remote && processGroupIsAlive(row.run.processGroupId);
       const observedRunnerStart =
         row.run.processPid && runnerPidAlive
           ? await observedProcessStart(row.run.processPid)
@@ -671,14 +702,17 @@ export async function claimNativeRestartRecoveries(input: {
         }
       }
       const providerProcesses = await evaluateNativeProviderProcesses({
-        identities: providerProcessIdentities.filter(
+        identities: (remote ? [] : providerProcessIdentities).filter(
           (identity) => identity.pid !== row.run.processPid,
         ),
       });
       const hasProviderEvidence =
         hasCheckpointProviderIdentity || providerEvents.length > 0;
 
-      const classification = classifyNativeRunnerRecoveryEvidence({
+      const classification = remote && (environment as Record<string, unknown>).driver === "ssh"
+        ? { claimKind: null, reason: "remote_recovery_transport_unsupported" }
+        : classifyNativeRunnerRecoveryEvidence({
+        remote,
         runnerPidAlive,
         runnerGroupAlive,
         processStartMatches: exactRunnerIdentity,
@@ -765,7 +799,8 @@ export async function claimNativeRestartRecoveries(input: {
           controllerProcessStartedAt: controller.processStartedAt,
           controllerGeneration: generation,
           recoveryState:
-            claimKind === "reattach_existing_runner"
+            claimKind === "reattach_existing_runner" ||
+            claimKind === "reconcile_remote_runner"
               ? "awaiting_runner_reattach"
               : claimKind === "resume_dead_runner"
                 ? "resuming_session"
@@ -808,7 +843,7 @@ export async function claimNativeRestartRecoveries(input: {
           errorCode: null,
           nativePhase: "observed",
           nativePhaseUpdatedAt: now,
-          ...(claimKind === "reattach_existing_runner"
+          ...(claimKind === "reattach_existing_runner" || claimKind === "reconcile_remote_runner"
             ? {}
             : {
                 processPid: null,

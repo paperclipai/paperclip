@@ -352,13 +352,17 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       .where(eq(nativeRunFinalizations.runId, input.fixture.runId));
   }
 
-  realProcessIt("adopts one active runner across hot and hard controller restarts without duplicating steering", async () => {
-    const fixture = await seedRun("LIVE");
+  realProcessIt.each([false, true])("adopts one active runner across hot and hard controller restarts without duplicating steering (external state: %s)", async (externalState) => {
+    const fixture = await seedRun(externalState ? "LIVE-REMOTE" : "LIVE");
     const stateDirectory = resolve(runtimeRoot, fixture.runId);
     const baseOptions = transportOptions(fixture, stateDirectory);
     const options = {
       ...baseOptions,
       codexArgs: [...baseOptions.codexArgs, "--linger-after-turn-start"],
+      ...(externalState ? {
+        runnerStateDirectory: resolve(stateDirectory, "external-runner"),
+        readRunnerState: async () => JSON.parse(await readFile(resolve(stateDirectory, "external-runner", "runner-state.json"), "utf8")),
+      } : {}),
     };
     const first = createRunnerdCodexTransport(options);
     let runnerPid: number | null = null;
@@ -392,6 +396,17 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         providerPid: first.evidence().providerPid,
         providerSessionId: String(thread.id),
       });
+      const processIdentity = {
+        pid: runnerPid,
+        processGroupId: first.evidence().runnerProcessGroupId,
+        startedAt: (await readProcessStartedAt(runnerPid))!,
+      };
+      if (externalState) {
+        await fixture.db.update(heartbeatRuns).set({
+          contextSnapshot: { paperclipEnvironment: { driver: "sandbox" } },
+        }).where(eq(heartbeatRuns.id, fixture.runId));
+        expect(existsSync(resolve(stateDirectory, "runner", "runner-state.json"))).toBe(false);
+      }
 
       await first.detachControllerForRestart();
       const [claim] = await claimNativeRestartRecoveries({
@@ -403,13 +418,13 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         runIds: [fixture.runId],
       });
       expect(claim).toMatchObject({
-        kind: "reattach_existing_runner",
+        kind: externalState ? "reconcile_remote_runner" : "reattach_existing_runner",
         runId: fixture.runId,
         controllerGeneration: 2,
         providerAttempt: 0,
-        process: { pid: runnerPid },
+        ...(externalState ? {} : { process: { pid: runnerPid } }),
       });
-      if (!claim || claim.kind !== "reattach_existing_runner") {
+      if (!claim || (claim.kind !== "reattach_existing_runner" && claim.kind !== "reconcile_remote_runner")) {
         throw new Error("Expected live-runner recovery claim");
       }
 
@@ -421,7 +436,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         resumeDynamicTools: [],
         runnerProcessLauncher: duplicateLauncher,
         adoptExistingRunner: {
-          ...claim.process,
+          ...(claim.kind === "reattach_existing_runner" ? claim.process : processIdentity),
           isAlive: () => processAlive(runnerPid),
         },
       });
@@ -460,13 +475,13 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         runIds: [fixture.runId],
       });
       expect(hardClaim).toMatchObject({
-        kind: "reattach_existing_runner",
+        kind: externalState ? "reconcile_remote_runner" : "reattach_existing_runner",
         runId: fixture.runId,
         controllerGeneration: 3,
         providerAttempt: 0,
-        process: { pid: runnerPid },
+        ...(externalState ? {} : { process: { pid: runnerPid } }),
       });
-      if (!hardClaim || hardClaim.kind !== "reattach_existing_runner") {
+      if (!hardClaim || (hardClaim.kind !== "reattach_existing_runner" && hardClaim.kind !== "reconcile_remote_runner")) {
         throw new Error("Expected second live-runner recovery claim");
       }
       const secondDuplicateLauncher = vi.fn(() => {
@@ -477,7 +492,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         resumeDynamicTools: [],
         runnerProcessLauncher: secondDuplicateLauncher,
         adoptExistingRunner: {
-          ...hardClaim.process,
+          ...(hardClaim.kind === "reattach_existing_runner" ? hardClaim.process : processIdentity),
           isAlive: () => processAlive(runnerPid),
         },
       });
