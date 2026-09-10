@@ -55,11 +55,49 @@ export type PolicyWriteInput = {
 };
 
 /**
- * Whether a policy write changes the authorized scope: repository identity,
- * target branch, merge mechanics, acceptance criteria, connections, or
- * deployment disposition. Any such change voids the standing authorization
+ * The authorized scope fields a policy write actually changes: repository
+ * identity, target branch, merge mechanics, acceptance criteria, connections,
+ * or deployment disposition. Any such change voids the standing authorization
  * unless the same write carries a fresh one.
  */
+export function materialPolicyScopeChanges(input: {
+  existing: Pick<
+    DeliveryPolicyRow,
+    "repositoryId" | "targetBranch" | "mergeMethod" | "mergeQueueMode" | "requiredChecks"
+    | "requireGreptile" | "requireIndependentApproval" | "githubConnectionId"
+    | "greptileConnectionId" | "autoDeployDisposition"
+  >;
+  patch: PolicyWriteInput;
+  nextRepositoryId: string | null;
+}): string[] {
+  const { existing, patch } = input;
+  const changes: string[] = [];
+  if (patch.repositoryUrl !== undefined && (input.nextRepositoryId ?? null) !== (existing.repositoryId ?? null)) {
+    changes.push("repository");
+  }
+  if (patch.targetBranch !== undefined && patch.targetBranch !== existing.targetBranch) changes.push("targetBranch");
+  if (patch.mergeMethod !== undefined && patch.mergeMethod !== existing.mergeMethod) changes.push("mergeMethod");
+  if (patch.mergeQueueMode !== undefined && patch.mergeQueueMode !== existing.mergeQueueMode) changes.push("mergeQueueMode");
+  if (patch.requiredChecks !== undefined && JSON.stringify(patch.requiredChecks) !== JSON.stringify(existing.requiredChecks)) {
+    changes.push("requiredChecks");
+  }
+  if (patch.requireGreptile !== undefined && patch.requireGreptile !== existing.requireGreptile) changes.push("requireGreptile");
+  if (patch.requireIndependentApproval !== undefined && patch.requireIndependentApproval !== existing.requireIndependentApproval) {
+    changes.push("requireIndependentApproval");
+  }
+  if (patch.githubConnectionId !== undefined && (patch.githubConnectionId ?? null) !== (existing.githubConnectionId ?? null)) {
+    changes.push("githubConnectionId");
+  }
+  if (patch.greptileConnectionId !== undefined && (patch.greptileConnectionId ?? null) !== (existing.greptileConnectionId ?? null)) {
+    changes.push("greptileConnectionId");
+  }
+  if (patch.autoDeployDisposition !== undefined && patch.autoDeployDisposition !== existing.autoDeployDisposition) {
+    changes.push("autoDeployDisposition");
+  }
+  return changes;
+}
+
+/** Boolean form; true when any material scope field changes. */
 export function isMaterialPolicyScopeChange(input: {
   existing: Pick<
     DeliveryPolicyRow,
@@ -70,19 +108,7 @@ export function isMaterialPolicyScopeChange(input: {
   patch: PolicyWriteInput;
   nextRepositoryId: string | null;
 }): boolean {
-  const { existing, patch } = input;
-  return (
-    (patch.repositoryUrl !== undefined && (input.nextRepositoryId ?? null) !== (existing.repositoryId ?? null))
-    || (patch.targetBranch !== undefined && patch.targetBranch !== existing.targetBranch)
-    || (patch.mergeMethod !== undefined && patch.mergeMethod !== existing.mergeMethod)
-    || (patch.mergeQueueMode !== undefined && patch.mergeQueueMode !== existing.mergeQueueMode)
-    || (patch.requiredChecks !== undefined && JSON.stringify(patch.requiredChecks) !== JSON.stringify(existing.requiredChecks))
-    || (patch.requireGreptile !== undefined && patch.requireGreptile !== existing.requireGreptile)
-    || (patch.requireIndependentApproval !== undefined && patch.requireIndependentApproval !== existing.requireIndependentApproval)
-    || (patch.githubConnectionId !== undefined && (patch.githubConnectionId ?? null) !== (existing.githubConnectionId ?? null))
-    || (patch.greptileConnectionId !== undefined && (patch.greptileConnectionId ?? null) !== (existing.greptileConnectionId ?? null))
-    || (patch.autoDeployDisposition !== undefined && patch.autoDeployDisposition !== existing.autoDeployDisposition)
-  );
+  return materialPolicyScopeChanges(input).length > 0;
 }
 export type PolicyDecision = {
   allowed: boolean;
@@ -235,6 +261,16 @@ export function deliveryPolicyService(db: Db, deps: { github?: GitHubDeliveryCli
       greptileConnectionId: row.greptileConnectionId,
       autoDeployDisposition: row.autoDeployDisposition as DeliveryAutoDeployDisposition,
       authorization: row.authorization,
+      // Whether authority is absent because it was never recorded or because a
+      // material scope change voided a standing authorization. The board must
+      // never present the second as the first.
+      authorizationState: row.authorization
+        ? "recorded"
+        : row.authorizationInvalidatedAt
+          ? "invalidated"
+          : "missing",
+      authorizationInvalidatedAt: row.authorizationInvalidatedAt?.toISOString() ?? null,
+      authorizationInvalidatedScope: row.authorizationInvalidatedScope ?? [],
       version: row.version,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
@@ -434,11 +470,14 @@ export function deliveryPolicyService(db: Db, deps: { github?: GitHubDeliveryCli
         throw unprocessable("Authorization must name the approving operator");
       }
     }
-    const materialScopeChanged = existing != null && isMaterialPolicyScopeChange({
-      existing,
-      patch: input.patch,
-      nextRepositoryId: repository?.id ?? null,
-    });
+    const scopeChanges = existing != null && input.patch.authorization === undefined
+      ? materialPolicyScopeChanges({
+        existing,
+        patch: input.patch,
+        nextRepositoryId: repository?.id ?? null,
+      })
+      : [];
+    const materialScopeChanged = scopeChanges.length > 0;
     // A standing authorization names the scope it approved. Any material scope
     // change voids it: the operator must re-authorize the new target,
     // repository, acceptance criteria, or deployment disposition explicitly.
@@ -448,6 +487,25 @@ export function deliveryPolicyService(db: Db, deps: { github?: GitHubDeliveryCli
       : materialScopeChanged
         ? null
         : existing?.authorization ?? null;
+    // Record why authority is absent, so "never recorded" and "voided by this
+    // scope change" are distinguishable facts rather than the same null.
+    let authorizationInvalidatedAt: Date | null;
+    let authorizationInvalidatedScope: string[] | null;
+    if (authorization != null) {
+      // A recorded authorization is authoritative; no invalidation stands.
+      authorizationInvalidatedAt = null;
+      authorizationInvalidatedScope = null;
+    } else if (materialScopeChanged) {
+      authorizationInvalidatedAt = new Date();
+      authorizationInvalidatedScope = scopeChanges;
+    } else if (input.patch.authorization === null && existing?.authorization != null) {
+      // The operator explicitly removed the standing authorization.
+      authorizationInvalidatedAt = new Date();
+      authorizationInvalidatedScope = ["authorization"];
+    } else {
+      authorizationInvalidatedAt = existing?.authorizationInvalidatedAt ?? null;
+      authorizationInvalidatedScope = existing?.authorizationInvalidatedScope ?? null;
+    }
     const values = {
       companyId: input.companyId,
       projectId: input.projectId,
@@ -466,6 +524,8 @@ export function deliveryPolicyService(db: Db, deps: { github?: GitHubDeliveryCli
         : existing?.greptileConnectionId ?? null,
       autoDeployDisposition: input.patch.autoDeployDisposition ?? existing?.autoDeployDisposition ?? "none",
       authorization,
+      authorizationInvalidatedAt,
+      authorizationInvalidatedScope,
       version: (existing?.version ?? 0) + 1,
       createdByUserId: existing?.createdByUserId ?? input.actorUserId,
       updatedByUserId: input.actorUserId,
@@ -529,15 +589,41 @@ export function deliveryPolicyService(db: Db, deps: { github?: GitHubDeliveryCli
       };
     }
     if (!row.authorization) {
+      const invalidatedScope = row.authorizationInvalidatedScope ?? [];
+      const invalidated = row.authorizationInvalidatedAt != null;
+      // Merge authority lives in the authorization record; deployment
+      // behaviour is stated separately by the disposition below. An operator
+      // must be able to tell a scope that was never authorized from one whose
+      // standing authority a material change voided.
+      const scopeChanged = invalidatedScope.filter((field) => field !== "authorization");
       return {
         allowed: false, repository, policy: row,
-        blocker: { reasonCode: "deployment_authority_missing", message: "Delivery policy has no operator authorization record", owner: null, nextAction: "Record operator authorization on the delivery policy." },
+        blocker: invalidated
+          ? {
+            reasonCode: "deployment_authority_missing",
+            message: scopeChanged.length > 0
+              ? `Policy authorization was voided by a material scope change (${scopeChanged.join(", ")}); the changed scope is not authorized`
+              : "The standing delivery authorization was removed by an operator",
+            owner: null,
+            nextAction: "Re-authorize the delivery policy scope before this candidate can merge.",
+          }
+          : {
+            reasonCode: "deployment_authority_missing",
+            message: "Delivery policy has no operator authorization record",
+            owner: null,
+            nextAction: "Record operator authorization on the delivery policy.",
+          },
       };
     }
     if (row.autoDeployDisposition === "block_merge") {
       return {
         allowed: false, repository, policy: row,
-        blocker: { reasonCode: "deployment_authority_missing", message: "Policy blocks merging to this target", owner: null, nextAction: "Record a verified deployment disposition before permitting merges." },
+        blocker: {
+          reasonCode: "deployment_authority_missing",
+          message: "Policy blocks merging to this target: merge authority is recorded, deployment behaviour is not approved",
+          owner: null,
+          nextAction: "Record a verified deployment disposition (no_auto_deploy after verifying trigger separation, or authorized) before permitting merges.",
+        },
       };
     }
     if (row.autoDeployDisposition === "none" && repository.defaultBranch === input.targetBranch) {

@@ -3,6 +3,7 @@ import { and, eq, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
+  agents,
   approvals,
   heartbeatRuns,
   issueApprovals,
@@ -37,6 +38,10 @@ export type DispositionRepairSourceState = {
   hasActiveExecutionPath: boolean;
   hasDurableWaitingPath: boolean;
   durablePathReason: string | null;
+  /** False only when the chosen durable path names an actor who cannot make the
+   * next move (today: a delivery unit whose implementation owner cannot run).
+   * Callers must not treat such a path as a resolution. */
+  durablePathActorCapable: boolean;
 };
 
 function stableJson(value: unknown): string {
@@ -74,6 +79,30 @@ export function dispositionRepairDelayMs(attempt: number, fingerprint: string) {
     DISPOSITION_REPAIR_BASE_DELAYS_MS,
     "disposition repair",
   );
+}
+
+export async function isDeliveryWaitActorCapable(
+  db: Db,
+  input: {
+    companyId: string;
+    nextActor: "controller" | "implementation_owner";
+    ownerAgentId: string | null;
+  },
+): Promise<boolean> {
+  if (input.nextActor === "controller") return true;
+  if (!input.ownerAgentId) return false;
+  const owner = await db
+    .select({ status: agents.status })
+    .from(agents)
+    .where(and(eq(agents.id, input.ownerAgentId), eq(agents.companyId, input.companyId)))
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  if (!owner) return false;
+  // Same bar the handoff skip uses for any agent actor: parked, revoked, or
+  // still awaiting approval means the owner cannot make the next move.
+  return owner.status !== "paused" &&
+    owner.status !== "terminated" &&
+    owner.status !== "pending_approval";
 }
 
 export async function collectDispositionRepairSourceState(
@@ -195,21 +224,41 @@ export async function collectDispositionRepairSourceState(
   const pendingApproval = linkedApprovals.some((row) =>
     row.status === "pending" || row.status === "revision_requested",
   );
+  const pendingParticipant = pendingExecutionState?.currentParticipant ?? null;
+  const hasRoutableExecutionParticipant = Boolean(
+    pendingParticipant &&
+      (pendingParticipant.type === "user" ||
+        (pendingParticipant.type === "agent" && pendingParticipant.agentId)),
+  );
+  // A linked delivery unit only owns the next move while its next actor can
+  // actually make it. Counting a unit whose owner cannot run turns a stalled
+  // handoff into a false "live path", and the issue then never gets the one
+  // routable action that would repair it.
+  const nativeDeliveryOwnerCapable = nativeDeliveryWait
+    ? await isDeliveryWaitActorCapable(db, {
+        companyId: issue.companyId,
+        nextActor: nativeDeliveryWait.nextActor,
+        ownerAgentId: nativeDeliveryWait.ownerAgentId,
+      })
+    : false;
   const durablePathReason = issue.assigneeUserId
     ? "user_owner"
     : blockers.length > 0
       ? "blocker"
       : issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()
         ? "monitor"
-        : pendingExecutionState?.status === "pending"
+        : pendingExecutionState?.status === "pending" && hasRoutableExecutionParticipant
           ? "execution_stage"
           : pendingInteraction
             ? "interaction"
             : pendingApproval
               ? "approval"
-              : nativeDeliveryWait
+              : nativeDeliveryOwnerCapable
                 ? "native_delivery"
                 : null;
+  const durablePathActorCapable = durablePathReason !== "native_delivery"
+    ? true
+    : nativeDeliveryOwnerCapable;
 
   const durableState = {
     source: {
@@ -257,5 +306,6 @@ export async function collectDispositionRepairSourceState(
     hasActiveExecutionPath: activeRuns.length > 0 || queuedWakes.length > 0,
     hasDurableWaitingPath: durablePathReason !== null,
     durablePathReason,
+    durablePathActorCapable,
   };
 }

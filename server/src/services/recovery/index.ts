@@ -43,6 +43,27 @@ export type {
   RunContinuationDecision,
 } from "./run-liveness-continuations.js";
 export {
+  DEFAULT_MAX_RUNNER_TIMEOUT_CONTINUATIONS,
+  RUNNER_TIMEOUT_CONTINUATION_REASON,
+  buildRunnerTimeoutContinuationIdempotencyKey,
+  buildRunnerTimeoutContinuationInstruction,
+  decideRunnerTimeoutContinuation,
+  findExistingRunnerTimeoutContinuationWake,
+  readPersistedRunnerTimeout,
+} from "./runner-timeout-continuation.js";
+export type {
+  RunnerTimeoutContinuationDecision,
+} from "./runner-timeout-continuation.js";
+export {
+  readDeliveryRepairContext,
+  readDeliveryRepairIntent,
+  readExecutableRepairIntent,
+} from "./executable-repair-intent.js";
+export type {
+  DeliveryRepairContext,
+  DeliveryRepairIntent,
+} from "./executable-repair-intent.js";
+export {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   LEGACY_SUCCESSFUL_RUN_HANDOFF_NOTICE_PREFIXES,

@@ -1,5 +1,10 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import {
+  RUNNER_RESOURCE_WAIT_ERROR_CODE,
+  readRunnerResourceWait,
+  readRunnerTimeoutEvidence,
+} from "../../services/execution-resource-admission.js";
+import {
   asString,
   asNumber,
   asStringArray,
@@ -71,12 +76,57 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     onSpawn: ctx.onSpawn,
   });
 
+  // A contained runner that refused before model launch reports the outcome as
+  // a structured envelope with a reserved exit code. Native maps that onto its
+  // workspace-busy deferral so contention costs no failure attempt; both the
+  // reserved code and the envelope are required, so a worker cannot manufacture
+  // a deferral and a real failure that merely exits 95 stays a failure.
+  const runnerResourceWait = readRunnerResourceWait({
+    exitCode: proc.exitCode,
+    stdout: proc.stdout,
+    runId,
+  });
+
   if (proc.timedOut) {
+    // A timeout is still a timeout. The evidence only says whether the worker
+    // reached the model and how much it did, so the bounded continuation can
+    // resume the same session instead of restarting the task.
+    const runnerTimeout = readRunnerTimeoutEvidence({
+      exitCode: proc.exitCode,
+      stdout: proc.stdout,
+      runId,
+    });
     return {
       exitCode: proc.exitCode,
       signal: proc.signal,
       timedOut: true,
       errorMessage: `Timed out after ${timeoutSec}s`,
+      ...(runnerTimeout
+        ? {
+            resultJson: {
+              stdout: proc.stdout,
+              stderr: proc.stderr,
+              runnerTimeout,
+            },
+          }
+        : {}),
+    };
+  }
+
+  if (runnerResourceWait) {
+    return {
+      exitCode: proc.exitCode,
+      signal: proc.signal,
+      timedOut: false,
+      errorCode: RUNNER_RESOURCE_WAIT_ERROR_CODE,
+      errorMessage: `Run deferred before model launch: ${
+        runnerResourceWait.detail ?? runnerResourceWait.reasonCode
+      }`,
+      resultJson: {
+        stdout: proc.stdout,
+        stderr: proc.stderr,
+        runnerResourceWait,
+      },
     };
   }
 

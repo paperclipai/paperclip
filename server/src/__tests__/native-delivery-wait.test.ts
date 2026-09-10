@@ -306,6 +306,9 @@ describeEmbeddedPostgres("native delivery wait", () => {
       unitId: unit.id,
       unitStatus: "in_review",
       phase: "in_review",
+      // Consumers that act on the wait re-validate against this generation, so
+      // evidence for a replaced candidate can never describe the current one.
+      candidateGeneration: 1,
       repository: "acme/widget",
       prNumber: 54,
       prUrl: "https://github.com/acme/widget/pull/54",

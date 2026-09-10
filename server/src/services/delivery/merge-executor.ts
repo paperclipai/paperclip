@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { deliveryFindings, deliveryUnits, type Db } from "@paperclipai/db";
 import type { DeliveryBlocker } from "@paperclipai/shared";
 import type { DeliveryEventService } from "./events.js";
@@ -77,14 +77,69 @@ export function deliveryMergeExecutor(
       && (entry.leaseExpiresAt == null || entry.leaseExpiresAt.getTime() > Date.now());
   }
 
-  async function blockMerge(companyId: string, unit: { id: string; primaryIssueId: string }, reasonCode: string, message: string) {
-    await units.markBlocked({
+  async function blockMerge(
+    companyId: string,
+    unit: { id: string; primaryIssueId: string; candidateGeneration: number },
+    reasonCode: string,
+    message: string,
+  ) {
+    const applied = await units.markBlocked({
       companyId,
       unitId: unit.id,
       blocker: blocker(reasonCode, message),
+      candidateGeneration: unit.candidateGeneration,
     });
+    // A dropped blocker write (replaced candidate, or a unit that has since
+    // gone terminal) must not touch the unit's queue entry either.
+    if (!applied) {
+      return {
+        unitId: unit.id,
+        leased: false,
+        merged: false,
+        queued: false,
+        blocked: false,
+        reasonCode: await fencedWriteMiss({ companyId, unitId: unit.id, generation: unit.candidateGeneration }),
+      };
+    }
     await queue.setStatus({ companyId, unitId: unit.id, status: "blocked", lastErrorCode: reasonCode, lastError: message });
     return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode };
+  }
+
+  /**
+   * Why a generation-fenced write matched no row. The candidate can have been
+   * replaced, or the unit can have left the open set (merged, cancelled, closed
+   * unmerged) while this attempt was in flight; both mean the write was
+   * correctly refused, and the outcome names which one so operators are not
+   * left guessing.
+   */
+  async function fencedWriteMiss(input: {
+    companyId: string;
+    unitId: string;
+    generation: number;
+  }): Promise<"unit_missing" | "candidate_replaced" | "unit_not_open"> {
+    const current = await units.getUnit(input.companyId, input.unitId);
+    if (!current) return "unit_missing";
+    if (current.candidateGeneration !== input.generation) return "candidate_replaced";
+    return "unit_not_open";
+  }
+
+  /**
+   * Whether the accepted candidate this attempt was planned for is still the
+   * unit's current candidate. Merge decisions are made from asynchronous
+   * provider reads; a candidate registered in the meantime owns the unit and
+   * must not be merged under — or blocked by — the replaced candidate's
+   * evidence.
+   */
+  async function candidateStillCurrent(input: {
+    companyId: string;
+    unitId: string;
+    generation: number;
+    acceptedHeadSha: string | null;
+  }): Promise<boolean> {
+    const current = await units.getUnit(input.companyId, input.unitId);
+    return current != null
+      && current.candidateGeneration === input.generation
+      && current.acceptedHeadSha === input.acceptedHeadSha;
   }
 
   async function attemptMerge(input: { companyId: string; unitId: string; lease?: { leaseOwner: string; leaseEpoch: number } }): Promise<DeliveryMergeOutcome> {
@@ -107,6 +162,7 @@ export function deliveryMergeExecutor(
     const policyRow = await policy.getRowForIssueProject(input.companyId, unit.projectId);
     if (!repository || !policyRow) {
       await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blocker("policy_missing", "Delivery policy or repository is missing"),
@@ -118,6 +174,7 @@ export function deliveryMergeExecutor(
     }
     if (unit.mergeAttemptCount >= DELIVERY_MAX_MERGE_ATTEMPTS) {
       await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blocker("repair_attempts_exhausted", "Merge attempts exhausted", "Escalate to the operator."),
@@ -145,6 +202,7 @@ export function deliveryMergeExecutor(
     const pullRequest = pr.value;
     if (!pullRequest) {
       await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blocker("candidate_required", "No open pull request to merge"),
@@ -152,7 +210,7 @@ export function deliveryMergeExecutor(
       return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: "candidate_required" };
     }
     if (pullRequest.merged) {
-      await db
+      const updated = await db
         .update(deliveryUnits)
         .set({
           headSha: pullRequest.headSha,
@@ -160,7 +218,17 @@ export function deliveryMergeExecutor(
           mergeCommitSha: pullRequest.mergeCommitSha,
           updatedAt: new Date(),
         })
-        .where(eq(deliveryUnits.id, unit.id));
+        .where(and(
+          eq(deliveryUnits.id, unit.id),
+          eq(deliveryUnits.candidateGeneration, unit.candidateGeneration),
+          // Terminal is permanent: an attempt that was planned while the unit
+          // was open never restates a unit that has since merged or closed.
+          notInArray(deliveryUnits.status, ["merged", "cancelled", "closed_unmerged"]),
+        ))
+        .returning({ id: deliveryUnits.id });
+      if (updated.length === 0) {
+        return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: false, reasonCode: await fencedWriteMiss({ companyId: input.companyId, unitId: unit.id, generation: unit.candidateGeneration }) };
+      }
       const outcome = await reconciler.verifyMergedUnit({ companyId: input.companyId, unitId: unit.id });
       return { unitId: unit.id, leased: false, merged: outcome.merged, queued: false, blocked: false, reasonCode: null };
     }
@@ -168,12 +236,15 @@ export function deliveryMergeExecutor(
       return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: "pr_closed_unmerged" };
     }
     if (!unit.acceptedHeadSha || pullRequest.headSha !== unit.acceptedHeadSha) {
-      await units.markBlocked({
+      const applied = await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blocker("head_stale", "The remote head no longer matches the accepted revision"),
       });
-      await queue.setStatus({ companyId: input.companyId, unitId: unit.id, status: "blocked", lastErrorCode: "head_stale" });
+      if (applied) {
+        await queue.setStatus({ companyId: input.companyId, unitId: unit.id, status: "blocked", lastErrorCode: "head_stale" });
+      }
       await events.append({
         companyId: input.companyId,
         unitId: unit.id,
@@ -278,12 +349,23 @@ export function deliveryMergeExecutor(
     });
     if (!decision.allowed) {
       const blockerValue = decision.blocker!;
-      await units.markBlocked({
+      const applied = await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blockerValue,
         nextAction: blockerValue.nextAction,
       });
+      if (!applied) {
+        return {
+          unitId: unit.id,
+          leased: false,
+          merged: false,
+          queued: false,
+          blocked: false,
+          reasonCode: await fencedWriteMiss({ companyId: input.companyId, unitId: unit.id, generation: unit.candidateGeneration }),
+        };
+      }
       await queue.setStatus({
         companyId: input.companyId,
         unitId: unit.id,
@@ -306,6 +388,18 @@ export function deliveryMergeExecutor(
     if (input.lease && !(await leaseHeld(input.companyId, input.unitId, input.lease))) {
       return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: "lease_lost" };
     }
+    // The candidate can be replaced while the evidence is being read. A GitHub
+    // merge is an external side effect that cannot be fenced by a database
+    // write, so the candidate identity is re-read immediately before it: if a
+    // submission replaced it, this attempt performs no remote write at all.
+    if (!(await candidateStillCurrent({
+      companyId: input.companyId,
+      unitId: input.unitId,
+      generation: unit.candidateGeneration,
+      acceptedHeadSha: unit.acceptedHeadSha,
+    }))) {
+      return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: false, reasonCode: await fencedWriteMiss({ companyId: input.companyId, unitId: unit.id, generation: unit.candidateGeneration }) };
+    }
 
     if (policyRow.mergeQueueMode === "native_merge_queue") {
       if (!pullRequest.nodeId) {
@@ -318,7 +412,7 @@ export function deliveryMergeExecutor(
         host: repository.host,
         pullRequestNodeId: pullRequest.nodeId,
       });
-      await db
+      const recorded = await db
         .update(deliveryUnits)
         .set({
           status: enqueued.ok ? "merging" : undefined,
@@ -327,14 +421,49 @@ export function deliveryMergeExecutor(
           lastEventAt: enqueued.ok ? now : undefined,
           updatedAt: now,
         })
-        .where(eq(deliveryUnits.id, unit.id));
+        .where(and(
+          eq(deliveryUnits.id, unit.id),
+          eq(deliveryUnits.candidateGeneration, unit.candidateGeneration),
+          // Terminal is permanent: an attempt that was planned while the unit
+          // was open never restates a unit that has since merged or closed.
+          notInArray(deliveryUnits.status, ["merged", "cancelled", "closed_unmerged"]),
+        ))
+        .returning({ id: deliveryUnits.id });
+      if (recorded.length === 0) {
+        // The candidate was replaced while the enqueue was in flight. The
+        // remote merge-queue entry is already a reality that no database fence
+        // can undo; state the ambiguity instead of attributing it to the new
+        // candidate.
+        await events.append({
+          companyId: input.companyId,
+          unitId: unit.id,
+          issueId: unit.primaryIssueId,
+          type: "merge_queued",
+          message: `Merge queue entry for the replaced revision ${unit.acceptedHeadSha.slice(0, 12)} was submitted; the new candidate is unaffected`,
+          dedupeKey: `merge_queued_stale:${unit.acceptedHeadSha}`,
+          url: pullRequest.url,
+          payload: { reasonCode: "candidate_replaced" },
+        });
+        return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: false, reasonCode: await fencedWriteMiss({ companyId: input.companyId, unitId: unit.id, generation: unit.candidateGeneration }) };
+      }
       if (!enqueued.ok) {
         const mapped = mergeFailureReason(enqueued.status, enqueued.message);
-        await units.markBlocked({
+        const applied = await units.markBlocked({
+          candidateGeneration: unit.candidateGeneration,
           companyId: input.companyId,
           unitId: unit.id,
           blocker: blocker(mapped.reasonCode, mapped.message),
         });
+        if (!applied) {
+          return {
+            unitId: unit.id,
+            leased: false,
+            merged: false,
+            queued: false,
+            blocked: false,
+            reasonCode: await fencedWriteMiss({ companyId: input.companyId, unitId: unit.id, generation: unit.candidateGeneration }),
+          };
+        }
         await queue.setStatus({
           companyId: input.companyId, unitId: unit.id, status: "blocked",
           lastErrorCode: mapped.reasonCode, lastError: mapped.message,
@@ -345,6 +474,7 @@ export function deliveryMergeExecutor(
           reasonCode: mapped.reasonCode,
           message: mapped.message,
           signal: `native_queue:${unit.acceptedHeadSha}:${mapped.reasonCode}:${mapped.message}`,
+          candidateGeneration: unit.candidateGeneration,
         });
         return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: mapped.reasonCode };
       }
@@ -375,21 +505,54 @@ export function deliveryMergeExecutor(
         commitTitle: `${unit.sourceBranch} (#${pullRequest.number})`,
       },
     );
-    await db
+    const mergeRecorded = await db
       .update(deliveryUnits)
       .set({
         mergeAttemptCount: unit.mergeAttemptCount + 1,
         mergeRequestedAt: now,
         updatedAt: now,
       })
-      .where(eq(deliveryUnits.id, unit.id));
+      .where(and(
+        eq(deliveryUnits.id, unit.id),
+        eq(deliveryUnits.candidateGeneration, unit.candidateGeneration),
+        notInArray(deliveryUnits.status, ["merged", "cancelled", "closed_unmerged"]),
+      ))
+      .returning({ id: deliveryUnits.id });
+    if (mergeRecorded.length === 0) {
+      // The merge call was already issued for the previous candidate when the
+      // replacement landed: the remote effect exists, but this attempt owns no
+      // further state for it. Report the ambiguity instead of blocking or
+      // merging the new candidate under it.
+      await events.append({
+        companyId: input.companyId,
+        unitId: unit.id,
+        issueId: unit.primaryIssueId,
+        type: "merge_unknown",
+        message: `Merge of the replaced revision ${unit.acceptedHeadSha.slice(0, 12)} was attempted; verify the remote result before acting on the new candidate`,
+        dedupeKey: `merge_stale_candidate:${unit.acceptedHeadSha}`,
+        url: pullRequest.url,
+        payload: { reasonCode: "candidate_replaced" },
+      });
+      return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: false, reasonCode: await fencedWriteMiss({ companyId: input.companyId, unitId: unit.id, generation: unit.candidateGeneration }) };
+    }
     if (!merged.ok) {
       const mapped = mergeFailureReason(merged.status, merged.message);
-      await units.markBlocked({
+      const applied = await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blocker(mapped.reasonCode, mapped.message, "Repair and reconcile again."),
       });
+      if (!applied) {
+        return {
+          unitId: unit.id,
+          leased: false,
+          merged: false,
+          queued: false,
+          blocked: false,
+          reasonCode: await fencedWriteMiss({ companyId: input.companyId, unitId: unit.id, generation: unit.candidateGeneration }),
+        };
+      }
       await queue.setStatus({
         companyId: input.companyId,
         unitId: unit.id,
@@ -413,18 +576,20 @@ export function deliveryMergeExecutor(
         reasonCode: mapped.reasonCode,
         message: mapped.message,
         signal: `v1:${mapped.reasonCode}:${unit.acceptedHeadSha}:${mapped.message}`,
+        candidateGeneration: unit.candidateGeneration,
       });
       return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: mapped.reasonCode };
     }
     if (!merged.value.merged) {
       await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blocker("merge_unknown", merged.value.message || "GitHub did not confirm the merge"),
       });
       return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: "merge_unknown" };
     }
-    await db
+    const merging = await db
       .update(deliveryUnits)
       .set({
         status: "merging",
@@ -433,7 +598,25 @@ export function deliveryMergeExecutor(
         lastEventAt: now,
         updatedAt: now,
       })
-      .where(eq(deliveryUnits.id, unit.id));
+      .where(and(
+        eq(deliveryUnits.id, unit.id),
+        eq(deliveryUnits.candidateGeneration, unit.candidateGeneration),
+        notInArray(deliveryUnits.status, ["merged", "cancelled", "closed_unmerged"]),
+      ))
+      .returning({ id: deliveryUnits.id });
+    if (merging.length === 0) {
+      await events.append({
+        companyId: input.companyId,
+        unitId: unit.id,
+        issueId: unit.primaryIssueId,
+        type: "merge_unknown",
+        message: `Merged ${merged.value.sha?.slice(0, 12) ?? unit.acceptedHeadSha?.slice(0, 12) ?? ""} for the replaced revision; verify the remote result before acting on the new candidate`,
+        dedupeKey: `merge_stale_candidate:${unit.acceptedHeadSha}`,
+        url: pullRequest.url,
+        payload: { reasonCode: "candidate_replaced" },
+      });
+      return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: false, reasonCode: await fencedWriteMiss({ companyId: input.companyId, unitId: unit.id, generation: unit.candidateGeneration }) };
+    }
     await events.append({
       companyId: input.companyId,
       unitId: unit.id,

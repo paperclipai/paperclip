@@ -1,4 +1,23 @@
 import type { IssueStatus } from "../constants.js";
+import type {
+  DeliveryAutoDeployDisposition,
+  DeliveryPolicyAuthorizationState,
+} from "./delivery.js";
+
+/**
+ * Evidence readiness of the current delivery candidate, before the final
+ * authority gate. `accepted` means fresh evidence satisfied the acceptance
+ * criteria for the current head — it is readiness, never merge or deployment
+ * authority.
+ */
+export const ISSUE_DELIVERY_READINESS = [
+  "not_started",
+  "under_review",
+  "accepted",
+  "blocked",
+  "unknown",
+] as const;
+export type IssueDeliveryReadiness = (typeof ISSUE_DELIVERY_READINESS)[number];
 
 /**
  * Board read projection for one issue, batched over an explicit issue-id list.
@@ -60,6 +79,26 @@ export interface IssueOverview {
      */
     phase: string;
     artifactReady: boolean;
+    /** Candidate generation every fact in this block was read at. */
+    candidateGeneration: number;
+    /**
+     * Evidence readiness before the final gate: a candidate can be `accepted`
+     * on fresh review/check evidence and still be held by the authorization or
+     * deployment gate described below.
+     */
+    readiness: IssueDeliveryReadiness;
+    /**
+     * The standing policy facts the final gate reads. `authorizationState`
+     * distinguishes recorded authority from one that was never recorded and
+     * from one a material scope change voided; `autoDeployDisposition` states
+     * deployment behaviour, which is separate from merge authority.
+     */
+    policy: {
+      version: number;
+      authorizationState: DeliveryPolicyAuthorizationState;
+      authorizationInvalidatedScope: string[];
+      autoDeployDisposition: DeliveryAutoDeployDisposition;
+    } | null;
     reviewStatus: string;
     blockingFindings: number;
     queuePosition: number | null;

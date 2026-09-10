@@ -78,6 +78,13 @@ import {
   DISPOSITION_REPAIR_MAX_ATTEMPTS,
 } from "./disposition-repair.js";
 import {
+  buildRunnerTimeoutContinuationIdempotencyKey,
+  decideRunnerTimeoutContinuation,
+  findExistingRunnerTimeoutContinuationWake,
+  readPersistedRunnerTimeout,
+} from "./runner-timeout-continuation.js";
+import { readContinuationAttempt } from "./run-liveness-continuations.js";
+import {
   hasActiveRecoveryEngineerIncidentForIssue,
   isRecoveryEngineerIssueOrigin,
 } from "../recovery-engineer-policy.js";
@@ -142,6 +149,7 @@ type ResolvedDependencyWakeBackstopOptions = {
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
   | "id"
+  | "companyId"
   | "agentId"
   | "status"
   | "error"
@@ -673,6 +681,7 @@ export function recoveryService(
     return db
       .select({
         id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         error: heartbeatRuns.error,
@@ -703,6 +712,7 @@ export function recoveryService(
     return db
       .select({
         id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         error: heartbeatRuns.error,
@@ -972,6 +982,7 @@ export function recoveryService(
     return db
       .select({
         id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         error: heartbeatRuns.error,
@@ -1045,11 +1056,14 @@ export function recoveryService(
     source: string;
     retryOfRunId?: string | null;
     extraContext?: Record<string, unknown>;
+    /** Stable key for a wake whose attempt identity must not be duplicated. */
+    idempotencyKey?: string | null;
   }) {
     const queued = await deps.enqueueWakeup(input.agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
+      ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}),
       payload: withRecoveryContext({
         issueId: input.issueId,
         ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
@@ -3648,6 +3662,118 @@ export function recoveryService(
               continue;
             }
           }
+        }
+      }
+
+      // A contained run that timed out with real work behind it continues the
+      // SAME worker session from its checkpoint, bounded by its own attempt
+      // budget, instead of restarting the task (which repeats effects whose
+      // receipts already exist) or raising the timeout (which bounds nothing).
+      // No evidence of progress leaves the ordinary timeout handling untouched.
+      const runnerTimeoutEvidence = latestRun ? readPersistedRunnerTimeout(latestRun) : null;
+      if (runnerTimeoutEvidence && latestRun) {
+        const timeoutSourceRun = latestRun;
+        const timeoutIssue = await db
+          .select({
+            id: issues.id,
+            companyId: issues.companyId,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            executionState: issues.executionState,
+            projectId: issues.projectId,
+          })
+          .from(issues)
+          .where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id)))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        const timeoutAgent = await getAgent(agentId);
+        // The counter lives on the run row for runs heartbeat created, and in the
+        // persisted wake context for every retry of that chain; the narrow sweep
+        // projection carries the context, so read what is actually persisted.
+        const timeoutAttempt = readContinuationAttempt(
+          parseObject(timeoutSourceRun.contextSnapshot).livenessContinuationAttempt,
+        );
+        const existingTimeoutWake = await findExistingRunnerTimeoutContinuationWake(db, {
+          companyId: issue.companyId,
+          idempotencyKey: buildRunnerTimeoutContinuationIdempotencyKey({
+            issueId: issue.id,
+            sourceRunId: timeoutSourceRun.id,
+            nextAttempt: timeoutAttempt + 1,
+          }),
+        });
+        const timeoutDecision = decideRunnerTimeoutContinuation({
+          run: timeoutSourceRun,
+          issue: timeoutIssue,
+          agent: timeoutAgent,
+          evidence: runnerTimeoutEvidence,
+          continuationAttempt: timeoutAttempt,
+          budgetBlocked: await isInvocationBudgetBlocked(issue, agentId),
+          idempotentWakeExists: Boolean(existingTimeoutWake),
+        });
+        if (timeoutDecision.kind === "exhausted") {
+          // The bounded session chain is spent. Falling through to the generic
+          // continuation here would enqueue a run with no attempt counter, so the
+          // next timeout would read attempt 0 and the whole chain would restart.
+          // Escalate once, visibly, the way every other bounded recovery ends.
+          const previousStatus: StrandedPreviousStatus =
+            issue.status === "todo"
+              ? "todo"
+              : issue.status === "in_review"
+                ? "in_review"
+                : "in_progress";
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus,
+            latestRun: timeoutSourceRun,
+            comment: timeoutDecision.comment,
+            notice: {
+              body:
+                "Paperclip exhausted the bounded continuation of this issue's timed-out contained run without a durable next step. " +
+                "Moving it to `blocked` so it is visible for intervention.",
+              title: "Timeout continuation exhausted",
+              tone: "danger",
+            },
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+        if (timeoutDecision.kind === "duplicate") {
+          // This source run already owns a live continuation wake for this
+          // attempt. Enqueueing anything else would duplicate the wake and reset
+          // the counter, so the sweep simply leaves it alone.
+          result.skipped += 1;
+          continue;
+        }
+        if (timeoutDecision.kind === "enqueue") {
+          const queued = await enqueueStrandedIssueRecovery({
+            issueId: issue.id,
+            agentId,
+            reason: "issue_continuation_needed",
+            retryReason: "issue_continuation_needed",
+            source: "issue.runner_timeout_continuation",
+            retryOfRunId: timeoutSourceRun.id,
+            idempotencyKey: timeoutDecision.idempotencyKey,
+            extraContext: {
+              ...timeoutDecision.extraContext,
+              // Advances the run's own continuation counter, so the next timeout
+              // sees this attempt instead of restarting the budget.
+              livenessContinuationAttempt: timeoutDecision.nextAttempt,
+              livenessContinuationMaxAttempts: timeoutDecision.maxAttempts,
+              livenessContinuationSourceRunId: timeoutSourceRun.id,
+            },
+          });
+          if (queued) {
+            result.continuationRequeued += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
         }
       }
 

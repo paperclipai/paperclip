@@ -369,7 +369,22 @@ import {
   recoveryService,
 } from "./recovery/service.js";
 import { recoveryEngineerService } from "./recovery-engineer.js";
-import { collectDispositionRepairSourceState } from "./recovery/disposition-repair.js";
+import {
+  EXECUTION_WRITER_RESOURCE_ACCESS,
+  NATIVE_WRITER_ROOT_BUSY_REASON_CODE,
+  RUNNER_RESOURCE_WAIT_ERROR_CODE,
+  admitCanonicalWriterRoot,
+  readExecutionResourceResolverConfig,
+  readRunnerResourceWait,
+  resolveExecutionWriterResourceReceipt,
+  type ExecutionWriterResourceReceipt,
+  type WriterRootWaitEvidence,
+} from "./execution-resource-admission.js";
+import {
+  collectDispositionRepairSourceState,
+  isDeliveryWaitActorCapable,
+} from "./recovery/disposition-repair.js";
+import { readExecutableRepairIntent } from "./recovery/executable-repair-intent.js";
 import {
   buildIssueReviewPathLostIdempotencyKey,
   decideIssueReviewPathRecovery,
@@ -687,7 +702,9 @@ const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = [
 ] as const;
 export const WORKSPACE_BUSY_RETRY_REASON = "workspace_busy";
 export const WORKSPACE_BUSY_RETRY_WAKE_REASON = "workspace_busy_retry";
-export const WORKSPACE_BUSY_ERROR_CODE = "workspace_busy";
+// One name for one condition, shared with the contained runner's refusal
+// envelope so native and framework contention are never two different codes.
+export const WORKSPACE_BUSY_ERROR_CODE = RUNNER_RESOURCE_WAIT_ERROR_CODE;
 export const WORKSPACE_BUSY_RETRY_BASE_DELAY_MS = 60 * 1000;
 export const WORKSPACE_BUSY_RETRY_JITTER_MS = 60 * 1000;
 // A running run stops counting as a shared-workspace holder once it has been
@@ -788,26 +805,45 @@ export interface SharedWorkspaceHolder {
 // shared project workspace. Not a failure — the run is parked as a bounded
 // scheduled retry and re-attempted once the holder finishes, so two agents
 // never mutate the same working tree concurrently.
+//
+// The same deferral carries a contained runner's own refusal: a framework
+// launcher (legacy `process` adapter) that found another live container on its
+// canonical writer root, or that lost the in-container canonical target lease
+// before the model started. That is the same contention in a different
+// location, so it takes the same terminal handling instead of becoming a
+// failed run that consumes an attempt.
 export class WorkspaceBusyDeferral extends Error {
   code = WORKSPACE_BUSY_ERROR_CODE;
-  holder: SharedWorkspaceHolder;
-  projectWorkspaceId: string;
+  holder: SharedWorkspaceHolder | null;
+  resourceWait: WriterRootWaitEvidence | null;
+  projectWorkspaceId: string | null;
   deferralAttempt: number;
   wasIssueAssignee: boolean;
 
-  constructor(input: {
-    holder: SharedWorkspaceHolder;
-    projectWorkspaceId: string;
-    deferralAttempt: number;
-    wasIssueAssignee: boolean;
-  }) {
+  constructor(
+    input: {
+      projectWorkspaceId: string | null;
+      deferralAttempt: number;
+      wasIssueAssignee: boolean;
+    } & (
+      | { holder: SharedWorkspaceHolder; resourceWait?: never }
+      | { resourceWait: WriterRootWaitEvidence; holder?: never }
+    ),
+  ) {
+    const holder = input.holder ?? null;
+    const resourceWait = input.resourceWait ?? null;
     super(
-      `Shared project workspace is busy: run ${input.holder.runId} (issue ${
-        input.holder.issueIdentifier ?? input.holder.issueId
-      }) is still running`,
+      holder
+        ? `Shared project workspace is busy: run ${holder.runId} (issue ${
+            holder.issueIdentifier ?? holder.issueId
+          }) is still running`
+        : `Canonical writer root is busy: another contained run holds it (${
+            resourceWait?.reasonCode ?? "unknown"
+          })`,
     );
     this.name = "WorkspaceBusyDeferral";
-    this.holder = input.holder;
+    this.holder = holder;
+    this.resourceWait = resourceWait;
     this.projectWorkspaceId = input.projectWorkspaceId;
     this.deferralAttempt = input.deferralAttempt;
     this.wasIssueAssignee = input.wasIssueAssignee;
@@ -11682,6 +11718,18 @@ export function heartbeatService(
         : Promise.resolve(null),
     ]);
 
+    // A linked delivery unit owns the next handoff action only while its next
+    // actor can actually make it. A unit whose implementation owner cannot run
+    // is not a live path, so it must not mask a missing disposition.
+    const nativeDeliveryWaitOwned =
+      issue && nativeDeliveryWait
+        ? await isDeliveryWaitActorCapable(db, {
+            companyId: issue.companyId,
+            nextActor: nativeDeliveryWait.nextActor,
+            ownerAgentId: nativeDeliveryWait.ownerAgentId,
+          })
+        : false;
+
     const decision = decideSuccessfulRunHandoff({
       run,
       issue,
@@ -11697,7 +11745,7 @@ export function heartbeatService(
         pendingInteraction || pendingApproval,
       ),
       hasPersistedMonitor: Boolean(issue?.monitorNextCheckAt),
-      hasNativeDeliveryWait: Boolean(nativeDeliveryWait),
+      hasNativeDeliveryWait: Boolean(nativeDeliveryWait) && nativeDeliveryWaitOwned,
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
@@ -14848,29 +14896,54 @@ export function heartbeatService(
   }
 
   // Terminal handling for a WorkspaceBusyDeferral thrown by the pre-dispatch
-  // gate: cancel the run (contention is not a failure), schedule a
-  // workspace_busy retry, and leave the agent idle. The issue execution lock
-  // transfers to the scheduled retry run inside scheduleBoundedRetryForRun, so
-  // the issue keeps an active execution path and recovery leaves it alone.
-  // Deferral has no attempt ceiling — the retry keeps rescheduling while a
-  // live holder exists, and holder staleness (not a counter) is what prevents
-  // waiting on a zombie. If no retry could be scheduled (agent no longer
-  // invokable), the lock is released so the issue does not strand on a
-  // cancelled run.
+  // gate or reported by a contained runner that refused before model launch:
+  // cancel the run (contention is not a failure), schedule a workspace_busy
+  // retry, and leave the agent idle. The issue execution lock transfers to the
+  // scheduled retry run inside scheduleBoundedRetryForRun, so the issue keeps
+  // an active execution path and recovery leaves it alone. Deferral has no
+  // attempt ceiling — the retry keeps rescheduling while a live owner exists,
+  // and owner liveness (not a counter) is what prevents waiting on a zombie.
+  // A native holder stops counting once silent past the recovery suspicion bar;
+  // a contained runner's container self-terminates when its launcher dies,
+  // because PID1 tears the namespace down on control-stream EOF or heartbeat
+  // expiry. Neither is ever evicted for age alone. If no retry could be
+  // scheduled (agent no longer invokable), the lock is released so the issue
+  // does not strand on a cancelled run.
   async function finalizeWorkspaceBusyDeferral(
     run: typeof heartbeatRuns.$inferSelect,
     deferral: WorkspaceBusyDeferral,
   ) {
     const now = new Date();
+    const resourceWait = deferral.resourceWait;
+    const busyEvidence = deferral.holder
+      ? {
+          source: "native_shared_workspace" as const,
+          projectWorkspaceId: deferral.projectWorkspaceId,
+          holderRunId: deferral.holder.runId,
+          holderIssueId: deferral.holder.issueId,
+        }
+      : resourceWait && resourceWait.reasonCode === NATIVE_WRITER_ROOT_BUSY_REASON_CODE
+        ? {
+            source: "native_canonical_writer_root" as const,
+            projectWorkspaceId: deferral.projectWorkspaceId,
+            holderRunId: resourceWait.holderRunId,
+            holderIssueId: resourceWait.holderIssueId,
+            reasonCode: resourceWait.reasonCode,
+          }
+        : {
+            source: "runner_containment" as const,
+            projectWorkspaceId: deferral.projectWorkspaceId,
+            reasonCode: resourceWait?.reasonCode ?? null,
+            containerName: resourceWait?.containerName ?? null,
+            detail: resourceWait?.detail ?? null,
+          };
     const cancelWrite = await setRunStatusIfRunning(run.id, "cancelled", {
       error: deferral.message,
       errorCode: WORKSPACE_BUSY_ERROR_CODE,
       finishedAt: now,
       resultJson: {
         workspaceBusy: {
-          projectWorkspaceId: deferral.projectWorkspaceId,
-          holderRunId: deferral.holder.runId,
-          holderIssueId: deferral.holder.issueId,
+          ...busyEvidence,
           deferralAttempt: deferral.deferralAttempt,
         },
       },
@@ -14931,9 +15004,7 @@ export function heartbeatService(
             ? `Deferred: ${deferral.message}. Retry ${deferral.deferralAttempt + 1} scheduled; the run waits for the workspace to free.`
             : `Deferred: ${deferral.message}. No retry could be scheduled; releasing the issue for other runs.`,
         payload: {
-          projectWorkspaceId: deferral.projectWorkspaceId,
-          holderRunId: deferral.holder.runId,
-          holderIssueId: deferral.holder.issueId,
+          ...busyEvidence,
           deferralAttempt: deferral.deferralAttempt,
           retryScheduled: scheduleOutcome === "scheduled",
         },
@@ -16343,10 +16414,14 @@ export function heartbeatService(
     const issue = await dbOrTx
       .select({
         id: issues.id,
+        companyId: issues.companyId,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
         executionRunId: issues.executionRunId,
+        executionPolicy: issues.executionPolicy,
         executionState: issues.executionState,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -16429,18 +16504,42 @@ export function heartbeatService(
       const continuationSummaryBody =
         queuedContinuationSummary ?? currentContinuationSummary?.body ?? null;
       if (continuationSummaryParksExecutor(continuationSummaryBody)) {
-        return {
-          stale: true,
-          errorCode: "issue_continuation_waiting_on_review",
-          reason:
-            "Cancelled because the continuation summary says the executor should wait for reviewer feedback or approval before more work starts",
-          details: {
+        // Saved prose never outranks an executable repair the controller issued
+        // for the current durable state. Without this check a process loss
+        // re-derives a generic continuation, the stale summary parks it as a
+        // review wait, and the bounded repair budget stays spent on a wake no
+        // run will ever consume.
+        const executableRepairIntent = await readExecutableRepairIntent(dbOrTx, {
+          companyId: run.companyId,
+          issueId,
+          agentId: run.agentId,
+          issue,
+          context,
+        });
+        if (!executableRepairIntent) {
+          return {
+            stale: true,
+            errorCode: "issue_continuation_waiting_on_review",
+            reason:
+              "Cancelled because the continuation summary says the executor should wait for reviewer feedback or approval before more work starts",
+            details: {
+              issueId,
+              wakeReason,
+              retryReason,
+              nextAction: continuationSummaryBody,
+            },
+          };
+        }
+        logger.info(
+          {
+            event: "continuation_park_superseded_by_executable_repair",
+            runId: run.id,
             issueId,
-            wakeReason,
-            retryReason,
-            nextAction: continuationSummaryBody,
+            agentId: run.agentId,
+            repairKind: executableRepairIntent.kind,
           },
-        };
+          "queued continuation proceeds because a current executable repair intent owns the work",
+        );
       }
     }
 
@@ -19554,6 +19653,144 @@ export function heartbeatService(
           );
         }
       }
+      // Canonical writer-root admission, before any adapter or model work.
+      //
+      // The framework resolves the exact writable lane a run may mutate; two
+      // runs that share one physical writer root must be serialized by native
+      // scheduling, not by a collision inside the VM. Only an operator-configured
+      // resolver enables this (an adapter without it is unchanged), and the
+      // in-container canonical lease remains the race backstop for the read-only
+      // and revision-moved cases this gate cannot see.
+      const executionResourceResolver = readExecutionResourceResolverConfig(
+        config.executionResourceResolver ?? null,
+      );
+      if (executionResourceResolver) {
+        const writerScopeProjectId = issueRef?.projectId ?? null;
+        if (!writerScopeProjectId) {
+          throw new ConfigurationIncompleteFailure(
+            "Run requires canonical writer-root admission but its issue has no project identity",
+            {
+              configurationIncomplete: {
+                reason: "execution_resource_resolver_scope_incomplete",
+                companyId: agent.companyId,
+                agentId: agent.id,
+                issueId: issueRef?.id ?? issueId ?? null,
+                missingBindings: ["projectId"],
+              },
+            },
+          );
+        }
+        let receipt: ExecutionWriterResourceReceipt;
+        try {
+          receipt = await resolveExecutionWriterResourceReceipt({
+            resolver: executionResourceResolver,
+            scope: {
+              companyId: agent.companyId,
+              projectId: writerScopeProjectId,
+              workMode: issueRef?.workMode ?? null,
+            },
+          });
+        } catch (error) {
+          // Provisioning exists to be enforced: a run that cannot prove its
+          // writer identity is a configuration blocker for its human owner, not
+          // a dispatched-then-failed run that spends retry budget.
+          throw new ConfigurationIncompleteFailure(
+            error instanceof Error
+              ? error.message
+              : "Canonical writer-root resolution failed",
+            {
+              configurationIncomplete: {
+                reason: "execution_resource_resolver_failed",
+                companyId: agent.companyId,
+                agentId: agent.id,
+                issueId: issueRef?.id ?? issueId ?? null,
+                projectId: writerScopeProjectId,
+                resolverCommand: executionResourceResolver.command,
+                resolverEntry: executionResourceResolver.entry,
+                missingBindings: [],
+              },
+            },
+          );
+        }
+        const previousReceipt = parseObject(context.executionWriterResource);
+        if (
+          readNonEmptyString(previousReceipt.configIdentity) &&
+          previousReceipt.configIdentity !== receipt.configIdentity
+        ) {
+          await appendRunEvent(run, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "info",
+            message:
+              "Canonical writer-resource identity changed since this run was queued; admitting the current identity",
+            payload: {
+              previousConfigIdentity: readNonEmptyString(previousReceipt.configIdentity),
+              configIdentity: receipt.configIdentity,
+              access: receipt.access,
+            },
+          }).catch(() => undefined);
+        }
+        if (receipt.access === EXECUTION_WRITER_RESOURCE_ACCESS.isolated) {
+          // No canonical lane: record the receipt so the decision stays
+          // auditable across retries, and reserve nothing.
+          context.executionWriterResource = receipt;
+          await db
+            .update(heartbeatRuns)
+            .set({
+              contextSnapshot: {
+                ...context,
+                executionWriterResource: receipt,
+              },
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, run.id),
+                eq(heartbeatRuns.companyId, agent.companyId),
+              ),
+            );
+        } else {
+          // Read-only and exclusive both name a canonical lane, so both take the
+          // reservation: a writer conflicts with any live holder, while two
+          // readers of one root stay concurrent. A reader that did not record
+          // itself could not be seen by a writer arriving later.
+          const admission = await db.transaction(async (tx) =>
+            admitCanonicalWriterRoot(tx, {
+              companyId: agent.companyId,
+              runId: run.id,
+              receipt,
+            }),
+          );
+          if (!admission.admitted) {
+            throw new WorkspaceBusyDeferral({
+              resourceWait: {
+                reasonCode: NATIVE_WRITER_ROOT_BUSY_REASON_CODE,
+                detail: `canonical writer root is held by live run ${admission.holder.runId} (${receipt.access} requested)`,
+                owner: "technical-recovery",
+                nextAction:
+                  "Re-admit this run after the canonical writer root is released by its current owner.",
+                retryCondition: "after the canonical writer root is free",
+                containerName: null,
+                holderRunId: admission.holder.runId,
+                holderIssueId: admission.holder.issueId,
+              },
+              projectWorkspaceId: issueRef?.projectWorkspaceId ?? null,
+              deferralAttempt:
+                run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON
+                  ? (run.scheduledRetryAttempt ?? 0)
+                  : 0,
+              wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
+            });
+          }
+          // The reservation must survive the rest of the run's lifecycle: the
+          // dispatch path persists this context object wholesale in several
+          // places, so a reservation that only lived in the row's JSON would be
+          // dropped by the next such write and a live holder would become
+          // invisible to another admission.
+          context.executionWriterResource = receipt;
+        }
+      }
+
       const workspaceManagedConfig = buildExecutionWorkspaceAdapterConfig({
         agentConfig: config,
         projectPolicy: projectExecutionWorkspacePolicy,
@@ -22316,6 +22553,53 @@ export function heartbeatService(
             await nativeWorkspaceSync.restoreWorkspace();
           }
           await recordWorkspaceFinalize("succeeded");
+          // A contained runner may have refused before any model started
+          // because another live writer owns its canonical writer root. Native
+          // parks that as the same workspace-busy deferral the pre-dispatch gate
+          // produces, so contention costs no failure attempt and the run is
+          // re-admitted once the owner finishes. Only the legacy (non-native)
+          // dispatch can report this: the native path never runs the contained
+          // launcher.
+          if (!adapterResult.nativeFinalization) {
+            const runnerWait = readRunnerResourceWait({
+              exitCode: adapterResult.exitCode,
+              stdout: readNonEmptyString(adapterResult.resultJson?.stdout),
+              runId: run.id,
+            });
+            if (runnerWait) {
+              await appendRunEvent(run, {
+                eventType: "lifecycle",
+                stream: "system",
+                level: "info",
+                message:
+                  "Contained runner refused before model launch; parking the run as a workspace-busy deferral",
+                payload: {
+                  reasonCode: runnerWait.reasonCode,
+                  containerName: runnerWait.containerName,
+                  detail: runnerWait.detail,
+                  modelStarted: false,
+                },
+              }).catch(() => undefined);
+              await finalizeWorkspaceBusyDeferral(
+                run,
+                new WorkspaceBusyDeferral({
+                  resourceWait: runnerWait,
+                  projectWorkspaceId: issueRef?.projectWorkspaceId ?? null,
+                  deferralAttempt:
+                    run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON
+                      ? (run.scheduledRetryAttempt ?? 0)
+                      : 0,
+                  wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
+                }),
+              ).catch((deferralErr) => {
+                logger.error(
+                  { err: deferralErr, runId },
+                  "failed to finalize runner workspace-busy deferral",
+                );
+              });
+              return;
+            }
+          }
           if (adapterResult.nativeFinalization) {
             adapterResult.nativeFinalization.workspaceFinalizeStatus =
               "succeeded";

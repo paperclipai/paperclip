@@ -20,6 +20,7 @@ import {
   DELIVERY_MERGE_METHOD_LABELS,
   DELIVERY_MERGE_QUEUE_MODE_LABELS,
   authorizationLabel,
+  authorizationStateMessage,
 } from "../../lib/delivery-display";
 import { useOptionalToastActions } from "../../context/ToastContext";
 import { InlineBanner } from "../InlineBanner";
@@ -535,11 +536,16 @@ export function ProjectDeliveryPolicyCard({ companyId, projectId }: ProjectDeliv
               ? `${authorizationLabel(authorization)}${policy?.version ? ` · policy version ${policy.version}` : ""}${
                   policy?.updatedAt ? ` · updated ${formatDateTime(policy.updatedAt)}` : ""
                 }.`
-              : "No standing authorization recorded. The delivery service keeps automated merge off until an operator records one."}
+              : authorizationStateMessage(policy)}
           </p>
           {authorization ? (
             <p className="break-words" title={authorization.statement}>
               {authorization.statement}
+            </p>
+          ) : policy?.authorizationState === "invalidated" && policy.authorizationInvalidatedAt ? (
+            <p className="break-words">
+              Voided {formatDateTime(policy.authorizationInvalidatedAt)} by the scope change above; the previous
+              approval does not carry over.
             </p>
           ) : null}
           <p>

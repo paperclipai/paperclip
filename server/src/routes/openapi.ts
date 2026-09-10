@@ -198,6 +198,7 @@ import {
   DELIVERY_MERGE_METHODS,
   DELIVERY_MERGE_QUEUE_MODES,
   DELIVERY_PHASES,
+  DELIVERY_POLICY_AUTHORIZATION_STATES,
   DELIVERY_RECONCILIATION_CLASSIFICATIONS,
   DELIVERY_RECONCILIATION_OUTCOMES,
   // Issue recovery and decomposition
@@ -3822,6 +3823,7 @@ const deliverySummaryReviewSchema = z.object({
   status: z.string(),
   headSha: z.string().nullable(),
   blockingFindings: z.number().int().nonnegative(),
+  candidateGeneration: z.number().int().positive().nullable(),
 }).strict();
 
 const deliveryBlockerSchema = z.object({
@@ -3848,6 +3850,7 @@ const deliverySummarySchema = z.object({
   repository: z.string().nullable(),
   targetBranch: z.string().nullable(),
   unitId: z.string().nullable(),
+  candidateGeneration: z.number().int().positive().nullable(),
   prUrl: z.string().nullable(),
   prNumber: z.number().int().positive().nullable(),
   headSha: z.string().nullable(),
@@ -3895,6 +3898,9 @@ const deliveryPolicySchema = z.object({
   greptileConnectionId: z.string().nullable(),
   autoDeployDisposition: z.enum(DELIVERY_AUTO_DEPLOY_DISPOSITIONS),
   authorization: deliveryPolicyAuthorizationSchema.nullable(),
+  authorizationState: z.enum(DELIVERY_POLICY_AUTHORIZATION_STATES),
+  authorizationInvalidatedAt: z.string().nullable(),
+  authorizationInvalidatedScope: z.array(z.string()),
   version: z.number().int().nonnegative(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -3910,6 +3916,7 @@ const deliveryFindingSchema = z.object({
   line: z.number().int().nullable(),
   url: z.string().nullable(),
   headSha: z.string().nullable(),
+  candidateGeneration: z.number().int().positive(),
   state: z.enum(DELIVERY_FINDING_STATES),
   disposition: z.enum(DELIVERY_FINDING_DISPOSITIONS).nullable(),
   dispositionExplanation: z.string().nullable(),

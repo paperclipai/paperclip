@@ -48,6 +48,7 @@ function unit(overrides: Partial<DeliveryUnitRow>): DeliveryUnitRow {
     mergedSha: null,
     mergeCommitSha: null,
     status: "in_review",
+    candidateGeneration: 1,
     artifactReady: true,
     prNumber: 7,
     prUrl: "https://github.com/acme/widget/pull/7",
@@ -375,6 +376,11 @@ describe("delivery regression corrections", () => {
     expect(deliverySubmitActionSchema.safeParse({ ...submit, headSha: "abc1234" }).success).toBe(false);
     expect(deliverySubmitActionSchema.safeParse({ ...submit, headSha: ` ${"a".repeat(40)} ` }).success).toBe(true);
     expect(deliverySubmitActionSchema.safeParse({ ...submit, headSha: "g".repeat(40) }).success).toBe(false);
+    // Coverage is an explicit handoff: a repeated task id is ambiguous and
+    // rejected at the boundary instead of being silently collapsed.
+    const covered = "22222222-2222-4222-8222-222222222222";
+    expect(deliverySubmitActionSchema.safeParse({ ...submit, coveredIssueIds: [covered] }).success).toBe(true);
+    expect(deliverySubmitActionSchema.safeParse({ ...submit, coveredIssueIds: [covered, covered] }).success).toBe(false);
     expect(deliveryReconciliationWriteSchema.safeParse({
       idempotencyKey: "k",
       issueId: "11111111-1111-4111-8111-111111111111",

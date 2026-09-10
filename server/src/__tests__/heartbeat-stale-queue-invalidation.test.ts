@@ -7,6 +7,10 @@ import {
   companies,
   costEvents,
   createDb,
+  deliveryRepairAttempts,
+  deliveryRepositories,
+  deliveryUnitIssues,
+  deliveryUnits,
   documentRevisions,
   documents,
   heartbeatRuns,
@@ -2013,6 +2017,223 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.resultJson).toMatchObject({ stopReason: "issue_continuation_waiting_on_review" });
     expect(wakeup?.status).toBe("skipped");
     expect(wakeup?.error).toContain("continuation summary says the executor should wait");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  /**
+   * A live delivery unit for this issue with one actionable repair attempt.
+   * The attempt carries the candidate generation and head it was dispatched
+   * for, which is what the queued-run check fences against.
+   */
+  async function seedDeliveryRepairIntent(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    unitStatus?: string;
+    unitGeneration?: number;
+    attemptGeneration?: number;
+    headSha?: string;
+  }) {
+    const repositoryId = randomUUID();
+    const unitId = randomUUID();
+    const headSha = input.headSha ?? "a".repeat(40);
+    const unitGeneration = input.unitGeneration ?? 2;
+    await db.insert(deliveryRepositories).values({
+      id: repositoryId,
+      companyId: input.companyId,
+      provider: "github",
+      host: "github.com",
+      owner: "example",
+      name: `repo-${repositoryId.slice(0, 8)}`,
+    });
+    await db.insert(deliveryUnits).values({
+      id: unitId,
+      companyId: input.companyId,
+      repositoryId,
+      primaryIssueId: input.issueId,
+      targetBranch: "main",
+      sourceBranch: `delivery/${input.issueId}`,
+      status: input.unitStatus ?? "blocked",
+      headSha,
+      candidateGeneration: unitGeneration,
+      ownerAgentId: input.agentId,
+    });
+    await db.insert(deliveryUnitIssues).values({
+      companyId: input.companyId,
+      unitId,
+      issueId: input.issueId,
+      role: "primary",
+    });
+    await db.insert(deliveryRepairAttempts).values({
+      companyId: input.companyId,
+      unitId,
+      reasonCode: "review_blocking_findings",
+      attempt: 1,
+      status: "dispatched",
+      candidateGeneration: input.attemptGeneration ?? unitGeneration,
+      headSha,
+      ownerAgentId: input.agentId,
+    });
+    return { unitId, repositoryId, headSha };
+  }
+
+  /** The saved prose that parks executor work: "wait for reviewer feedback". */
+  async function seedParkingContinuationSummary(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+  }) {
+    await seedContinuationSummary({
+      companyId: input.companyId,
+      issueId: input.issueId,
+      agentId: input.agentId,
+      body: [
+        "# Continuation Summary",
+        "",
+        "## Next Action",
+        "",
+        "- Wait for reviewer feedback or approval before continuing executor work.",
+      ].join("\n"),
+    });
+  }
+
+  async function seedParkedContinuation(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    contextExtras?: Record<string, unknown>;
+  }) {
+    await seedParkingContinuationSummary(input);
+    return await seedQueuedRun({
+      companyId: input.companyId,
+      agentId: input.agentId,
+      issueId: input.issueId,
+      wakeReason: "issue_continuation_needed",
+      invocationSource: "automation",
+      contextExtras: {
+        retryReason: "issue_continuation_needed",
+        ...(input.contextExtras ?? {}),
+      },
+    });
+  }
+
+  async function settledRun(runId: string) {
+    return await db
+      .select({
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        resultJson: heartbeatRuns.resultJson,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function seedParkableIssue(companyId: string, agentId: string) {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Implementation parked for review",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    return issueId;
+  }
+
+  it("runs the parked continuation when a current delivery repair intent owns the work", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = await seedParkableIssue(companyId, agentId);
+    await seedDeliveryRepairIntent({ companyId, agentId, issueId });
+    await seedParkingContinuationSummary({ companyId, issueId, agentId });
+
+    // Production wake path: the continuation is queued, claimed, and only then
+    // asked whether the saved prose should park it.
+    const run = await heartbeat.invoke(
+      agentId,
+      "automation",
+      {
+        issueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+      },
+      "system",
+    );
+    expect(run).not.toBeNull();
+    await waitForCondition(async () => {
+      const settled = await settledRun(run!.id);
+      return settled !== null && !["queued", "running"].includes(settled.status);
+    });
+
+    const settled = await settledRun(run!.id);
+    // The saved prose says "wait for review", but the controller has a live
+    // repair wake for the current candidate: parking it would strand the issue.
+    expect(settled?.errorCode).not.toBe("issue_continuation_waiting_on_review");
+    expect(
+      countExecuteCallsForRun(run!.id),
+      `continuation did not reach the adapter (status=${settled?.status}, errorCode=${settled?.errorCode ?? "none"})`,
+    ).toBe(1);
+  });
+
+  it("keeps parking the continuation when the repair attempt is from an older candidate generation", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = await seedParkableIssue(companyId, agentId);
+    // A -> B -> A: the unit is back at generation 2, the attempt was dispatched
+    // for generation 1, so it is not the current repair intent.
+    await seedDeliveryRepairIntent({ companyId, agentId, issueId, attemptGeneration: 1 });
+    const { runId } = await seedParkedContinuation({ companyId, agentId, issueId });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => (await settledRun(runId))?.status === "cancelled");
+
+    const run = await settledRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_continuation_waiting_on_review");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("keeps parking the continuation when the declared repair carrier is stale", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = await seedParkableIssue(companyId, agentId);
+    const { unitId, headSha } = await seedDeliveryRepairIntent({ companyId, agentId, issueId });
+    // The wake declares a generation the persisted unit has moved past.
+    const { runId } = await seedParkedContinuation({
+      companyId,
+      agentId,
+      issueId,
+      contextExtras: {
+        deliveryRepair: {
+          unitId,
+          candidateGeneration: 1,
+          headSha,
+          reasonCode: "review_blocking_findings",
+          attempt: 1,
+        },
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => (await settledRun(runId))?.status === "cancelled");
+
+    const run = await settledRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_continuation_waiting_on_review");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("keeps parking the continuation when the linked delivery unit is terminal", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = await seedParkableIssue(companyId, agentId);
+    await seedDeliveryRepairIntent({ companyId, agentId, issueId, unitStatus: "merged" });
+    const { runId } = await seedParkedContinuation({ companyId, agentId, issueId });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => (await settledRun(runId))?.status === "cancelled");
+
+    const run = await settledRun(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(run?.errorCode).toBe("issue_continuation_waiting_on_review");
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   activityLog,
   authUsers,
@@ -7,6 +8,7 @@ import {
   companyMemberships,
   createDb,
   deliveryFindings,
+  deliveryPolicies,
   deliveryQueueEntries,
   deliveryRepositories,
   deliveryUnitIssues,
@@ -56,6 +58,7 @@ describeEmbeddedPostgres("issue overview projection", () => {
     await db.delete(deliveryQueueEntries);
     await db.delete(deliveryUnitIssues);
     await db.delete(deliveryUnits);
+    await db.delete(deliveryPolicies);
     await db.delete(deliveryRepositories);
     await db.delete(externalObjectMentions);
     await db.delete(externalObjects);
@@ -140,6 +143,7 @@ describeEmbeddedPostgres("issue overview projection", () => {
     mergedAt?: Date | null;
     mergedSha?: string | null;
     lastEventAt?: Date | null;
+    candidateGeneration?: number;
   }) {
     const unitId = randomUUID();
     await db.insert(deliveryUnits).values({
@@ -151,6 +155,7 @@ describeEmbeddedPostgres("issue overview projection", () => {
       targetBranch: input.targetBranch ?? "main",
       sourceBranch: "feat/overview",
       status: input.status,
+      candidateGeneration: input.candidateGeneration ?? 1,
       prNumber: input.prNumber ?? null,
       prUrl: input.prUrl ?? null,
       blocker: input.blocker ?? null,
@@ -263,7 +268,14 @@ describeEmbeddedPostgres("issue overview projection", () => {
         nextAction: "Address the review finding.",
       },
       nextAction: "Address the review finding.",
-      metadata: { blockedPhase: "in_review", reviewStatus: "changes_requested", blockingFindings: 1 },
+      metadata: {
+        blockedPhase: "in_review",
+        reviewStatus: "changes_requested",
+        reviewHeadSha: "a".repeat(40),
+        checksHeadSha: "a".repeat(40),
+        evidenceGeneration: 1,
+        blockingFindings: 1,
+      },
       artifactReady: true,
       headSha: "a".repeat(40),
       acceptedHeadSha: "a".repeat(40),
@@ -276,6 +288,8 @@ describeEmbeddedPostgres("issue overview projection", () => {
       title: "Unbounded query",
       severity: "high",
       state: "open",
+      headSha: "a".repeat(40),
+      candidateGeneration: 1,
     });
     await db.insert(deliveryFindings).values({
       companyId,
@@ -284,6 +298,8 @@ describeEmbeddedPostgres("issue overview projection", () => {
       title: "Already fixed",
       severity: "low",
       state: "fixed",
+      headSha: "a".repeat(40),
+      candidateGeneration: 1,
     });
 
     const [overview] = (await svc.list(companyId, [issueId])).items;
@@ -307,6 +323,9 @@ describeEmbeddedPostgres("issue overview projection", () => {
     expect(overview!.delivery).toEqual({
       phase: "in_review",
       artifactReady: true,
+      candidateGeneration: 1,
+      readiness: "accepted",
+      policy: null,
       reviewStatus: "changes_requested",
       blockingFindings: 1,
       queuePosition: null,
@@ -811,8 +830,10 @@ describeEmbeddedPostgres("issue overview projection", () => {
     expect(overview!.phase).toBe("in_review");
     expect(overview!.phaseSource).toBe("delivery");
     expect(overview!.blocker!.issues.map((ref) => ref.identifier)).toEqual(["OV-24"]);
-    expect(overview!.blocker!.message).toBe("Blocked by OV-24");
-    expect(overview!.blocker!.nextAction).toBe("Fix the failing check.");
+    // The named task is the current cause; the unit's unrelated check action
+    // must not be presented as the action for that task dependency.
+    expect(overview!.blocker!.ownerLabel).toBeNull();
+    expect(overview!.blocker!.nextAction).toBeNull();
   });
 
   it("caps children per parent so a large subtree cannot starve a later parent", async () => {
@@ -1033,5 +1054,220 @@ describeEmbeddedPostgres("issue overview projection", () => {
     // The same ids under another company reveal nothing.
     expect((await svc.list(otherCompanyId, [issueId])).items).toEqual([]);
     expect((await svc.list(companyId, [randomUUID(), issueId])).items).toHaveLength(1);
+  });
+
+  it("shows a superseded candidate's evidence as history, never as the current review", async () => {
+    const companyId = await createCompany();
+    const projectId = await createProject(companyId, "Delivery");
+    const issueId = await createIssue({ companyId, status: "in_review", projectId });
+    const repositoryId = await createRepository(companyId);
+    const oldHead = "b".repeat(40);
+    const currentHead = "c".repeat(40);
+    // The unit is on its second candidate, but the cached display evidence and
+    // the open finding still belong to the first one.
+    const unitId = await createUnit({
+      companyId,
+      repositoryId,
+      primaryIssueId: issueId,
+      status: "in_review",
+      projectId,
+      prNumber: 31,
+      prUrl: "https://github.com/acme/widget/pull/31",
+      candidateGeneration: 2,
+      headSha: currentHead,
+      metadata: {
+        evidenceGeneration: 1,
+        checksHeadSha: oldHead,
+        reviewStatus: "approved",
+        reviewHeadSha: oldHead,
+        blockingFindings: 3,
+      },
+      lastEventAt: new Date("2026-03-01T10:00:00Z"),
+    });
+    await db.insert(deliveryFindings).values({
+      companyId,
+      unitId,
+      externalId: "old-finding",
+      title: "Raised against the first candidate",
+      severity: "high",
+      state: "open",
+      headSha: oldHead,
+      candidateGeneration: 1,
+    });
+
+    const [overview] = (await svc.list(companyId, [issueId])).items;
+    const delivery = overview!.delivery!;
+    expect(delivery.candidateGeneration).toBe(2);
+    // Not a cached pass, not the old head's findings: unknown until fresh
+    // evidence for generation 2 is read.
+    expect(delivery.reviewStatus).toBe("unknown");
+    expect(delivery.blockingFindings).toBe(0);
+    expect(delivery.readiness).toBe("unknown");
+    expect(delivery.artifactReady).toBe(false);
+  });
+
+  it("reads a failed authoritative read of the current candidate as unknown rather than a pass", async () => {
+    const companyId = await createCompany();
+    const projectId = await createProject(companyId, "Delivery");
+    const issueId = await createIssue({ companyId, status: "in_review", projectId });
+    const repositoryId = await createRepository(companyId);
+    const head = "d".repeat(40);
+    await createUnit({
+      companyId,
+      repositoryId,
+      primaryIssueId: issueId,
+      status: "blocked",
+      projectId,
+      prNumber: 32,
+      prUrl: "https://github.com/acme/widget/pull/32",
+      candidateGeneration: 1,
+      headSha: head,
+      blocker: {
+        reasonCode: "provider_unknown",
+        message: "Checks could not be read from GitHub for the current head",
+        owner: null,
+        nextAction: "Reconcile again once GitHub is reachable.",
+      },
+      metadata: {
+        evidenceGeneration: 1,
+        lastReadFailed: true,
+        checksHeadSha: head,
+        reviewStatus: "approved",
+        reviewHeadSha: head,
+        blockingFindings: 0,
+      },
+      lastEventAt: new Date("2026-03-02T10:00:00Z"),
+    });
+
+    const [overview] = (await svc.list(companyId, [issueId])).items;
+    expect(overview!.delivery).toMatchObject({
+      reviewStatus: "unknown",
+      readiness: "unknown",
+      blockingFindings: 0,
+    });
+    // The current blocker is the controller's failed read, and it names the
+    // owner/action the board must act on.
+    expect(overview!.blocker).toMatchObject({
+      message: "Checks could not be read from GitHub for the current head",
+      nextAction: "Reconcile again once GitHub is reachable.",
+    });
+  });
+
+  it("lets the current unit blocker supersede a historical unblock descriptor", async () => {
+    const companyId = await createCompany();
+    const projectId = await createProject(companyId, "Delivery");
+    // The descriptor was written before the unit existed and names an old
+    // concern; the unit now records the authoritative blocker.
+    const issueId = await createIssue({
+      companyId,
+      status: "in_review",
+      projectId,
+      unblockDescriptor: {
+        action: "Resolve the old Greptile comment on the previous revision.",
+        owner: "board",
+      },
+    });
+    const repositoryId = await createRepository(companyId);
+    const unitId = await createUnit({
+      companyId,
+      repositoryId,
+      primaryIssueId: issueId,
+      status: "blocked",
+      projectId,
+      prNumber: 33,
+      prUrl: "https://github.com/acme/widget/pull/33",
+      candidateGeneration: 1,
+      headSha: "e".repeat(40),
+      blocker: {
+        reasonCode: "deployment_authority_missing",
+        message: "Policy authorization was voided by a material scope change (targetBranch); the changed scope is not authorized",
+        owner: "Operator",
+        nextAction: "Re-authorize the delivery policy scope before this candidate can merge.",
+      },
+      metadata: { blockedPhase: "in_review", evidenceGeneration: 1 },
+      lastEventAt: new Date("2026-03-03T10:00:00Z"),
+    });
+
+    const [overview] = (await svc.list(companyId, [issueId])).items;
+    expect(overview!.blocked).toBe(true);
+    expect(overview!.blocker).toEqual({
+      message: "Policy authorization was voided by a material scope change (targetBranch); the changed scope is not authorized",
+      ownerLabel: "Operator",
+      nextAction: "Re-authorize the delivery policy scope before this candidate can merge.",
+      issues: [],
+    });
+
+    await db.update(deliveryUnits).set({
+      blocker: {
+        reasonCode: "provider_unknown",
+        message: "The current provider response does not identify an actionable owner.",
+        owner: null,
+        nextAction: null,
+      },
+    }).where(eq(deliveryUnits.id, unitId));
+    const [unowned] = (await svc.list(companyId, [issueId])).items;
+    expect(unowned!.blocker).toEqual({
+      message: "The current provider response does not identify an actionable owner.",
+      ownerLabel: null,
+      nextAction: null,
+      issues: [],
+    });
+  });
+
+  it("projects the standing policy's authority state and keeps readiness separate from it", async () => {
+    const companyId = await createCompany();
+    const projectId = await createProject(companyId, "Delivery");
+    const issueId = await createIssue({ companyId, status: "in_review", projectId });
+    const repositoryId = await createRepository(companyId);
+    const head = "f".repeat(40);
+    await db.insert(deliveryPolicies).values({
+      companyId,
+      projectId,
+      repositoryId,
+      targetBranch: "main",
+      enabled: true,
+      autoDeployDisposition: "no_auto_deploy",
+      authorization: null,
+      authorizationInvalidatedAt: new Date("2026-03-04T00:00:00Z"),
+      authorizationInvalidatedScope: ["targetBranch"],
+    });
+    const unitId = await createUnit({
+      companyId,
+      repositoryId,
+      primaryIssueId: issueId,
+      status: "ready_to_merge",
+      projectId,
+      prNumber: 34,
+      prUrl: "https://github.com/acme/widget/pull/34",
+      candidateGeneration: 1,
+      headSha: head,
+      acceptedHeadSha: head,
+      metadata: { evidenceGeneration: 1, reviewStatus: "approved", reviewHeadSha: head, checksHeadSha: head },
+      lastEventAt: new Date("2026-03-04T10:00:00Z"),
+    });
+
+    const [overview] = (await svc.list(companyId, [issueId])).items;
+    // Readiness is the evidence fact; authority is the policy fact, and the
+    // board shows both instead of collapsing them.
+    expect(overview!.delivery).toMatchObject({
+      readiness: "accepted",
+      policy: {
+        authorizationState: "invalidated",
+        authorizationInvalidatedScope: ["targetBranch"],
+        autoDeployDisposition: "no_auto_deploy",
+      },
+    });
+
+    // A policy that was never authorized reads as `missing`, not `invalidated`.
+    await db
+      .update(deliveryPolicies)
+      .set({ authorizationInvalidatedAt: null, authorizationInvalidatedScope: null })
+      .where(eq(deliveryPolicies.projectId, projectId));
+    const [unrecorded] = (await svc.list(companyId, [issueId])).items;
+    expect(unrecorded!.delivery).toMatchObject({
+      readiness: "accepted",
+      policy: { authorizationState: "missing", authorizationInvalidatedScope: [] },
+    });
+    expect(unitId).toBeTruthy();
   });
 });

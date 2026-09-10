@@ -22,6 +22,7 @@ import {
   authUsers,
   companyMemberships,
   deliveryFindings,
+  deliveryPolicies,
   deliveryQueueEntries,
   deliveryRepositories,
   deliveryUnitIssues,
@@ -35,8 +36,11 @@ import {
   type Db,
 } from "@paperclipai/db";
 import type {
+  DeliveryAutoDeployDisposition,
   DeliveryPhase,
+  DeliveryPolicyAuthorizationState,
   ExternalObjectLivenessState,
+  IssueDeliveryReadiness,
   IssueExecutionStageType,
   IssueOverview,
   IssueOverviewPullRequest,
@@ -665,6 +669,7 @@ export function issueOverviewService(db: Db): IssueOverviewService {
     const units = unitIssueRows.map((row) => row.unit);
     const repositoryIds = [...new Set(units.map((unit) => unit.repositoryId))];
     const unitIds = [...new Set(units.map((unit) => unit.id))];
+    const policyProjectIds = [...new Set(units.flatMap((unit) => unit.projectId ? [unit.projectId] : []))];
 
     // --- Queue positions ----------------------------------------------------
     // Positions come from the same ordering the queue itself uses, ranked in SQL
@@ -691,7 +696,7 @@ export function issueOverviewService(db: Db): IssueOverviewService {
       ))
       .as("ranked_queue");
 
-    const [blockerRows, repositoryRows, findingRows, queueRows] = await Promise.all([
+    const [blockerRows, repositoryRows, findingRows, queueRows, policyRows] = await Promise.all([
       blockerIds.length === 0
         ? Promise.resolve([] as IssueRefRow[])
         : db
@@ -709,15 +714,28 @@ export function issueOverviewService(db: Db): IssueOverviewService {
           })
           .from(deliveryRepositories)
           .where(and(eq(deliveryRepositories.companyId, companyId), inArray(deliveryRepositories.id, repositoryIds))),
+      // Open findings of the unit's *current* candidate generation and head
+      // only: findings reported for a replaced candidate are history and must
+      // not read as the current candidate's unresolved review.
       unitIds.length === 0
         ? Promise.resolve([] as Array<{ unitId: string; count: number }>)
         : db
           .select({ unitId: deliveryFindings.unitId, count: sql<number>`count(*)::int` })
           .from(deliveryFindings)
+          .innerJoin(
+            deliveryUnits,
+            and(
+              eq(deliveryUnits.id, deliveryFindings.unitId),
+              eq(deliveryUnits.companyId, companyId),
+              eq(deliveryUnits.candidateGeneration, deliveryFindings.candidateGeneration),
+              eq(deliveryUnits.headSha, deliveryFindings.headSha),
+            ),
+          )
           .where(and(
             eq(deliveryFindings.companyId, companyId),
             inArray(deliveryFindings.unitId, unitIds),
-            eq(deliveryFindings.state, "open"),
+            // `disputed` still blocks: it is unresolved, not dismissed.
+            inArray(deliveryFindings.state, ["open", "disputed"]),
           ))
           .groupBy(deliveryFindings.unitId),
       unitIds.length === 0
@@ -726,6 +744,32 @@ export function issueOverviewService(db: Db): IssueOverviewService {
           .select({ unitId: rankedQueue.unitId, rank: rankedQueue.rank })
           .from(rankedQueue)
           .where(inArray(rankedQueue.unitId, unitIds)),
+      // Standing delivery policy per project: the authorization fact the final
+      // gate reads, so the board shows authority state rather than inferring it
+      // from prose or from an old pull request.
+      policyProjectIds.length === 0
+        ? Promise.resolve([] as Array<{
+          projectId: string;
+          version: number;
+          authorization: unknown;
+          authorizationInvalidatedAt: Date | null;
+          authorizationInvalidatedScope: string[] | null;
+          autoDeployDisposition: string;
+        }>)
+        : db
+          .select({
+            projectId: deliveryPolicies.projectId,
+            version: deliveryPolicies.version,
+            authorization: deliveryPolicies.authorization,
+            authorizationInvalidatedAt: deliveryPolicies.authorizationInvalidatedAt,
+            authorizationInvalidatedScope: deliveryPolicies.authorizationInvalidatedScope,
+            autoDeployDisposition: deliveryPolicies.autoDeployDisposition,
+          })
+          .from(deliveryPolicies)
+          .where(and(
+            eq(deliveryPolicies.companyId, companyId),
+            inArray(deliveryPolicies.projectId, policyProjectIds),
+          )),
     ]);
 
     // `row_number()` comes back as a bigint, which the driver hands over as a
@@ -736,6 +780,7 @@ export function issueOverviewService(db: Db): IssueOverviewService {
     const projectById = new Map(projectRows.map((row) => [row.id, row]));
     const blockerById = new Map(blockerRows.map((row) => [row.id, row]));
     const repositoryById = new Map(repositoryRows.map((row) => [row.id, row]));
+    const policyByProjectId = new Map(policyRows.map((row) => [row.projectId, row]));
     const openFindingsByUnitId = new Map(findingRows.map((row) => [row.unitId, row.count]));
     const lastLiveTransitionAtByIssueId = new Map(
       lastLiveTransitionRows.map((row) => [row.issueId, toDate(row.at)]),
@@ -955,11 +1000,25 @@ export function issueOverviewService(db: Db): IssueOverviewService {
       if (blocked) {
         const descriptorAction = asString(readRecord(row.unblockDescriptor)?.action);
         const taskCause = blockerRefs.length > 0 ? `Blocked by ${blockerRefs[0]!.identifier ?? blockerRefs[0]!.title}` : null;
-        const issueMessage = taskCause ?? descriptorAction;
+        // A live task relation and the controller's machine blocker are both
+        // current facts; the unit blocker is authoritative for the delivery and
+        // supersedes the historical unblock descriptor (its message, owner and
+        // next action), which was recorded before the unit existed. The
+        // descriptor only speaks when neither a blocking task nor a unit
+        // blocker exists.
         blocker = {
-          message: issueMessage ?? unitBlocker?.message ?? "Blocked without a recorded reason",
-          ownerLabel: (issueMessage ? descriptorOwnerLabel(row.unblockDescriptor) : null) ?? unitBlocker?.owner ?? null,
-          nextAction: (issueMessage ? descriptorAction : null) ?? unitBlocker?.nextAction ?? null,
+          message: taskCause
+            ?? unitBlocker?.message
+            ?? descriptorAction
+            ?? "Blocked without a recorded reason",
+          ownerLabel: taskCause
+            ? null
+            : unitBlocker
+              ? unitBlocker.owner ?? null
+              : descriptorAction ? descriptorOwnerLabel(row.unblockDescriptor) : null,
+          nextAction: taskCause
+            ? null
+            : unitBlocker ? unitBlocker.nextAction ?? null : descriptorAction,
           issues: blockerRefs,
         };
       }
@@ -985,6 +1044,49 @@ export function issueOverviewService(db: Db): IssueOverviewService {
       // A superseded merge is history, not a current candidate: its pull request
       // stays in `pullRequests` and no merged delivery result is claimed here.
       const staleMerge = deliveryMerged && mergeSuperseded;
+      const policyRow = selectedUnit?.projectId ? policyByProjectId.get(selectedUnit.projectId) ?? null : null;
+      const policyProjection = policyRow
+        ? {
+          version: policyRow.version,
+          authorizationState: (policyRow.authorization
+            ? "recorded"
+            : policyRow.authorizationInvalidatedAt
+              ? "invalidated"
+              : "missing") as DeliveryPolicyAuthorizationState,
+          authorizationInvalidatedScope: policyRow.authorizationInvalidatedScope ?? [],
+          autoDeployDisposition: policyRow.autoDeployDisposition as DeliveryAutoDeployDisposition,
+        }
+        : null;
+      // Readiness is evidence readiness before the final gate: the accepted
+      // head standing on the current revision. It never implies that merge or
+      // deployment authority exists — that is the policy block above. Both it
+      // and the review status describe a *candidate*, so they are computed only
+      // when an issue actually has a unit; an issue with no delivery unit has
+      // no candidate to be ready or reviewed, and its delivery block is null.
+      const acceptedHead = selectedUnit?.acceptedHeadSha ?? null;
+      const evidenceGeneration = unitMetadata?.evidenceGeneration ?? null;
+      const evidenceCurrent = selectedUnit != null
+        && evidenceGeneration != null
+        && evidenceGeneration === selectedUnit.candidateGeneration;
+      const unitHeadSha = selectedUnit?.headSha ?? null;
+      const readiness: IssueDeliveryReadiness = selectedUnit == null || unitHeadSha == null
+        ? "not_started"
+        : acceptedHead !== null && acceptedHead === unitHeadSha
+          ? "accepted"
+          : !evidenceCurrent || unitMetadata?.lastReadFailed === true
+            ? "unknown"
+            : selectedUnit.status === "blocked"
+              ? "blocked"
+              : "under_review";
+      // Review status is fenced by the generation it was read at: an approval
+      // recorded for a replaced candidate is history, and a revision whose
+      // evidence was never read (or failed to read) shows `unknown`, never a
+      // cached pass.
+      const reviewStatus = selectedUnit == null || unitHeadSha == null
+        ? "none"
+        : evidenceCurrent && unitMetadata?.lastReadFailed !== true
+          ? unitMetadata?.reviewStatus ?? "none"
+          : "unknown";
       const delivery: IssueOverview["delivery"] = selectedUnit && deliveryPhase && !staleMerge
         ? {
           // `merged` names the current delivery outcome the board reads for a
@@ -995,10 +1097,13 @@ export function issueOverviewService(db: Db): IssueOverviewService {
             && selectedUnit.acceptedHeadSha !== null
             && selectedUnit.acceptedHeadSha === selectedUnit.headSha,
           ),
-          reviewStatus: unitMetadata?.reviewStatus ?? "none",
+          candidateGeneration: selectedUnit.candidateGeneration,
+          readiness,
+          policy: policyProjection,
+          reviewStatus,
           blockingFindings: Math.max(
             openFindingsByUnitId.get(selectedUnit.id) ?? 0,
-            unitMetadata?.blockingFindings ?? 0,
+            evidenceCurrent ? unitMetadata?.blockingFindings ?? 0 : 0,
           ),
           queuePosition: queuePositionByUnitId.get(selectedUnit.id) ?? null,
           nextAction: selectedUnit.nextAction ?? selectedUnit.blocker?.nextAction ?? null,

@@ -177,6 +177,10 @@ Tasks carry a **billing code** so that token spend during execution can be attri
 
 When code review is requested, the handoff identifies an exact admitted candidate rather than a mutable workspace or a prose path. Trusted operator policy selects the independent reviewer and required model. Acceptance resumes the original owner; it does not itself authorize publication, merge, deployment, or business acceptance.
 
+Delivery evidence belongs to an exact candidate generation, not just a task or a head SHA. Replacing a candidate revokes its readiness; old findings remain inspectable history and cannot become evidence for the replacement. Explicit covered-task links share the candidate's receipts without requiring duplicate pull requests. Unknown review evidence is not acceptance, and merge authorization is distinct from deployment authorization.
+
+Recovery follows current executable intent and an authorized next actor. A stale saved summary must not cancel a valid repair, while a linked delivery or recovery record without a capable actor is not a live continuation. Resource contention waits without spending failure retries: readers may share one physical workspace, but a writer requires exclusive access until verified release.
+
 ### Open Questions
 
 - Is this a strict tree or can agents report to multiple managers?

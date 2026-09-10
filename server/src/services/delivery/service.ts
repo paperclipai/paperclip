@@ -3,7 +3,6 @@ import {
   deliveryPolicies,
   deliveryUnitIssues,
   deliveryUnits,
-  issueWorkProducts,
   issues,
   type Db,
 } from "@paperclipai/db";
@@ -340,10 +339,14 @@ export function deliveryService(
         ne(issues.status, "cancelled"),
         ...(projectId ? [eq(issues.projectId, projectId)] : []),
         or(
+          // Explicit enrollment only: a durable unit link (candidate or
+          // covered-by handoff), an operator-classified delivery kind, or a
+          // project whose delivery policy is enabled. A pull request that
+          // merely mentions or links the issue is not a delivery candidate and
+          // never enrolls it.
           sql`exists (select 1 from ${deliveryUnitIssues} dui where dui.issue_id = ${issues.id})`,
           sql`${issues.deliveryKind} is not null`,
           enrolledIds.length > 0 ? inArray(issues.projectId, enrolledIds) : sql`false`,
-          sql`exists (select 1 from ${issueWorkProducts} iwp where iwp.issue_id = ${issues.id} and iwp.type = 'pull_request')`,
         ),
       ))
       .orderBy(desc(issues.updatedAt))
@@ -428,6 +431,7 @@ export function deliveryService(
     await recordObservedFindings(db, {
       companyId,
       unitId: unit.id,
+      candidateGeneration: unit.candidateGeneration,
       headSha: result.headSha,
       findings: result.findings,
     });

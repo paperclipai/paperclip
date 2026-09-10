@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne, notInArray, sql } from "drizzle-orm";
 import {
   agentWakeupRequests,
   deliveryDependencies,
@@ -53,6 +53,12 @@ export type DeliveryWakeEnqueue = (
     triggerDetail: "system";
     reason: string;
     payload: Record<string, unknown>;
+    /**
+     * Controller-owned context the run must carry (for example the exact
+     * `deliveryRepair` identity). Forwarded verbatim to the heartbeat
+     * dispatcher; never derived from worker-authored text.
+     */
+    contextSnapshot?: Record<string, unknown>;
     idempotencyKey: string;
     requestedByActorType: "system";
     requestedByActorId: "delivery-controller";
@@ -69,6 +75,21 @@ export type DeliveryUnitMetadata = {
   greptileFetchedAt?: string | null;
   /** Latest governed Greptile review state (`completed` | `pending`). */
   greptileReviewState?: "completed" | "pending";
+  /**
+   * Candidate generation the cached display evidence (`checks`,
+   * `reviewStatus`, `reviewHeadSha`, `blockingFindings`, `checksHeadSha`) was
+   * read at. Evidence from an older generation is history: it is retained for
+   * the timeline but never presented as the current candidate's review.
+   */
+  evidenceGeneration?: number;
+  /** Head the cached checks were read for; null when never read. */
+  checksHeadSha?: string | null;
+  /**
+   * The most recent authoritative evidence read for the current generation
+   * failed. Cached display evidence must then present as unknown, never as a
+   * pass, until a fresh read succeeds.
+   */
+  lastReadFailed?: boolean;
   /** Revision Greptile's findings were correlated to, never a candidate guess. */
   greptileReviewedHeadSha?: string | null;
   /** Findings the provider reports across the pull request. */
@@ -86,6 +107,14 @@ export type DeliveryUnitMetadata = {
 };
 
 const TERMINAL_UNIT_STATUSES = ["merged", "cancelled", "closed_unmerged"] as const;
+
+/**
+ * Unit statuses that still describe a live candidate. The complement of
+ * {@link TERMINAL_UNIT_STATUSES}: a write that may only apply to a live
+ * candidate carries this set as an atomic predicate so a unit that became
+ * terminal mid-flight is never resurrected.
+ */
+const OPEN_UNIT_STATUSES = ["submitted", "in_review", "ready_to_merge", "merging", "blocked"] as const;
 
 export function readUnitMetadata(value: unknown): DeliveryUnitMetadata {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -156,6 +185,7 @@ export interface DeliveryUnitService {
     agentId: string;
     reason: string;
     payload: Record<string, unknown>;
+    contextSnapshot?: Record<string, unknown>;
     idempotencyKey: string;
   }): Promise<{ intentId: string | null; dispatched: boolean }>;
   pauseUnit(input: { companyId: string; unitId: string; actor: DeliveryActor; reason?: string }): Promise<DeliveryUnitRow>;
@@ -167,13 +197,16 @@ export interface DeliveryUnitService {
     unitId: string;
     blocker: DeliveryBlocker;
     nextAction?: string | null;
-  }): Promise<void>;
-  clearBlocker(companyId: string, unitId: string): Promise<void>;
+    /** Read generation fence; a stale write is dropped. */
+    candidateGeneration?: number | null;
+  }): Promise<boolean>;
+  clearBlocker(companyId: string, unitId: string, candidateGeneration?: number | null): Promise<void>;
   setUnitStatus(input: {
     companyId: string;
     unitId: string;
     status: DeliveryUnitRow["status"];
     nextAction?: string | null;
+    candidateGeneration?: number | null;
   }): Promise<DeliveryUnitRow | null>;
 }
 
@@ -226,6 +259,7 @@ export function deliveryUnitService(
     agentId: string;
     reason: string;
     payload: Record<string, unknown>;
+    contextSnapshot?: Record<string, unknown>;
     idempotencyKey: string;
   }): Promise<{ intentId: string | null; dispatched: boolean }> {
     const [existing] = await db
@@ -267,6 +301,7 @@ export function deliveryUnitService(
         triggerDetail: "system",
         reason: input.reason,
         payload: input.payload,
+        ...(input.contextSnapshot ? { contextSnapshot: input.contextSnapshot } : {}),
         idempotencyKey: input.idempotencyKey,
         requestedByActorType: "system",
         requestedByActorId: "delivery-controller",
@@ -360,6 +395,7 @@ export function deliveryUnitService(
       line: row.line,
       url: row.url,
       headSha: row.headSha,
+      candidateGeneration: row.candidateGeneration,
       state: row.state,
       disposition: row.disposition,
       dispositionExplanation: row.dispositionExplanation,
@@ -400,11 +436,12 @@ export function deliveryUnitService(
         prUrl: null,
         prNumber: null,
         headSha: null,
+        candidateGeneration: null,
         mergedSha: null,
         ownerAgentId: issue.assigneeAgentId ?? null,
         queuePosition: null,
         checks: [],
-        review: { status: "none", headSha: null, blockingFindings: 0 },
+        review: { status: "none", headSha: null, blockingFindings: 0, candidateGeneration: null },
         blocker,
         nextAction: blocker?.nextAction ?? (codeDelivery ? "Publish a candidate revision for this issue." : null),
         lastEventAt: eventsForIssue.at(-1)?.createdAt ?? null,
@@ -418,17 +455,37 @@ export function deliveryUnitService(
     const queueEntry = await queue.getEntry(companyId, unit.id);
     const queuePosition = queueEntry ? await queue.position({ companyId, unitId: unit.id }) : null;
     const unitEvents = await events.list(companyId, unit.id);
-    const openFindings = await db
+    // Only findings reported for this unit's current candidate generation and
+    // current head count as unresolved evidence. Older findings stay as history
+    // in `listFindings` but never block or explain the current candidate. A
+    // `disputed` finding is unresolved too: a human dispute still blocks, so it
+    // is counted here exactly as the reconciler counts it.
+    const unresolvedFindings = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(deliveryFindings)
       .where(and(
         eq(deliveryFindings.companyId, companyId),
         eq(deliveryFindings.unitId, unit.id),
-        eq(deliveryFindings.state, "open"),
+        eq(deliveryFindings.candidateGeneration, unit.candidateGeneration),
+        unit.headSha != null ? eq(deliveryFindings.headSha, unit.headSha) : sql`true`,
+        inArray(deliveryFindings.state, ["open", "disputed"]),
       ))
       .then((rows) => rows[0]?.count ?? 0);
     const phase = deriveDeliveryPhase(unit);
     const blocker = unit.blocker ?? null;
+    // Display evidence is fenced by the generation it was read at and by the
+    // head it was read for. A cached pass for an older generation, or a failed
+    // read of the current generation, presents as unknown — never as a pass.
+    const evidenceGeneration = metadata.evidenceGeneration ?? null;
+    const evidenceFresh = evidenceGeneration != null && evidenceGeneration === unit.candidateGeneration;
+    const readFailed = evidenceFresh && metadata.lastReadFailed === true;
+    const reviewHeadSha = evidenceFresh ? metadata.reviewHeadSha ?? null : null;
+    const reviewCurrent = !readFailed && reviewHeadSha !== null && reviewHeadSha === unit.headSha;
+    const checksCurrent = !readFailed
+      && evidenceFresh
+      && metadata.checksHeadSha != null
+      && metadata.checksHeadSha === unit.headSha;
+    const reviewUnknown = unit.headSha != null && !reviewCurrent;
     return {
       issueId,
       codeDelivery,
@@ -441,17 +498,19 @@ export function deliveryUnitService(
       repository: repository ? repositoryFullName(repository.owner, repository.name) : null,
       targetBranch: unit.targetBranch,
       unitId: unit.id,
+      candidateGeneration: unit.candidateGeneration,
       prUrl: unit.prUrl,
       prNumber: unit.prNumber,
       headSha: unit.headSha,
       mergedSha: unit.mergedSha ?? receipt?.mergedSha ?? null,
       ownerAgentId: unit.ownerAgentId ?? issue.assigneeAgentId ?? null,
       queuePosition,
-      checks: metadata.checks ?? [],
+      checks: checksCurrent ? metadata.checks ?? [] : [],
       review: {
-        status: metadata.reviewStatus ?? "none",
-        headSha: metadata.reviewHeadSha ?? null,
-        blockingFindings: Math.max(openFindings, metadata.blockingFindings ?? 0),
+        status: reviewCurrent ? metadata.reviewStatus ?? "none" : reviewUnknown ? "unknown" : "none",
+        headSha: reviewCurrent ? reviewHeadSha : null,
+        blockingFindings: Math.max(unresolvedFindings, reviewCurrent ? metadata.blockingFindings ?? 0 : 0),
+        candidateGeneration: reviewCurrent ? unit.candidateGeneration : null,
       },
       blocker,
       nextAction: unit.nextAction ?? blocker?.nextAction ?? defaultNextAction(phase),
@@ -559,6 +618,7 @@ export function deliveryUnitService(
       issueId: unit.primaryIssueId,
       coveredIssueIds: covered.map((row) => row.issueId),
       status: unit.status,
+      candidateGeneration: unit.candidateGeneration,
       repository: repository ? repositoryFullName(repository.owner, repository.name) : "",
       targetBranch: unit.targetBranch,
       sourceBranch: unit.sourceBranch,
@@ -692,18 +752,36 @@ export function deliveryUnitService(
       .then((rows) => rows[0] ?? null);
 
     const now = new Date();
-    const headChanged = existing != null && existing.headSha != null && existing.headSha !== headSha;
     const ownerAgentId = input.issue.assigneeAgentId ?? input.actor.agentId ?? null;
+    // Material candidate identity: the reviewed revision, the pull request it
+    // is published on, the source/target branch pair, and the repository the
+    // unit delivers into. Submission on the same pull request always counts,
+    // because re-registering a candidate is itself a new review cycle.
+    const materialChanges: string[] = [];
+    if (existing) {
+      if (existing.headSha !== headSha) materialChanges.push("head");
+      if (existing.prNumber !== pullRequest.number) materialChanges.push("pullRequest");
+      if (existing.sourceBranch !== sourceBranch) materialChanges.push("sourceBranch");
+      if (existing.targetBranch !== targetBranch) materialChanges.push("targetBranch");
+      if (existing.repositoryId !== repository.id) materialChanges.push("repository");
+    }
+    const identityChanged = materialChanges.length > 0;
+    const headChanged = existing?.headSha != null && existing.headSha !== headSha;
     const metadata = { ...readUnitMetadata(existing?.metadata) };
-    if (headChanged) {
+    if (identityChanged) {
+      // Evidence belongs to the candidate it was read for. The generation
+      // increment below makes any in-flight write for the previous candidate
+      // stale; the display state is reset with it so nothing is inherited.
       metadata.checks = [];
       metadata.reviewStatus = "none";
       metadata.reviewHeadSha = null;
+      metadata.checksHeadSha = null;
       metadata.blockingFindings = 0;
+      metadata.lastReadFailed = false;
       delete metadata.blockedPhase;
     }
     if (input.artifactRoot !== undefined) metadata.artifactRoot = input.artifactRoot;
-    if (!metadata.submittedHeadSha || headChanged) metadata.submittedHeadSha = headSha;
+    if (!metadata.submittedHeadSha || identityChanged) metadata.submittedHeadSha = headSha;
 
     const basePatch = {
       // Submission records the candidate head only. `acceptedHeadSha` is set by
@@ -736,11 +814,44 @@ export function deliveryUnitService(
         .update(deliveryUnits)
         .set({
           ...basePatch,
-          ...(headChanged ? { readyAt: null, queueEnteredAt: null, mergeRequestedAt: null, pausedAt: null } : {}),
+          // The increment is a single atomic SQL expression, so two racing
+          // submissions can never share one generation, and every in-flight
+          // write fenced at the previous generation is voided.
+          ...(identityChanged ? {
+            candidateGeneration: sql`${deliveryUnits.candidateGeneration} + 1`,
+            readyAt: null,
+            queueEnteredAt: null,
+            mergeRequestedAt: null,
+            pausedAt: null,
+          } : {}),
         })
-        .where(eq(deliveryUnits.id, existing.id))
+        // The write is conditional on the unit still being open. The candidate
+        // was verified against GitHub before this statement, so the unit can
+        // have merged, been cancelled, or closed unmerged in the meantime — a
+        // submission must never resurrect a terminal unit (nor steal its
+        // accepted head).
+        .where(and(
+          eq(deliveryUnits.id, existing.id),
+          inArray(deliveryUnits.status, [...OPEN_UNIT_STATUSES]),
+        ))
         .returning();
-      unit = updated!;
+      if (updated) {
+        unit = updated;
+      } else {
+        // The unit left the open set while the candidate was being verified: it
+        // is terminal now, so this candidate registers as a new unit instead.
+        const [inserted] = await db
+          .insert(deliveryUnits)
+          .values({
+            companyId: input.companyId,
+            repositoryId: repository.id,
+            primaryIssueId: input.issue.id,
+            ...basePatch,
+          })
+          .returning();
+        unit = inserted!;
+        created = true;
+      }
     } else {
       const [inserted] = await db
         .insert(deliveryUnits)
@@ -786,17 +897,33 @@ export function deliveryUnitService(
       lastError: "Awaiting fresh review/check acceptance",
     });
 
+    // Findings belong to the candidate that reported them. When the identity
+    // changed, the previous generation's unresolved findings become history in
+    // the same transition that replaces the candidate: they stay visible in the
+    // timeline and never block or explain the new one.
+    if (identityChanged) {
+      await db
+        .update(deliveryFindings)
+        .set({ state: "stale", updatedAt: now })
+        .where(and(
+          eq(deliveryFindings.companyId, input.companyId),
+          eq(deliveryFindings.unitId, unit.id),
+          ne(deliveryFindings.candidateGeneration, unit.candidateGeneration),
+          inArray(deliveryFindings.state, ["open"]),
+        ));
+    }
+
     await events.append({
       companyId: input.companyId,
       unitId: unit.id,
       issueId: input.issue.id,
-      type: headChanged ? "head_changed" : "candidate_submitted",
-      message: headChanged
-        ? `Candidate head changed to ${headSha.slice(0, 12)}; readiness was revoked`
+      type: identityChanged ? "head_changed" : "candidate_submitted",
+      message: identityChanged
+        ? `Candidate ${headSha.slice(0, 12)} registered as generation ${unit.candidateGeneration} (${materialChanges.join(", ")}); readiness was revoked`
         : `Candidate ${headSha.slice(0, 12)} submitted on ${sourceBranch}`,
-      dedupeKey: `head:${headSha}`,
+      dedupeKey: `candidate:${unit.candidateGeneration}`,
       url: unit.prUrl,
-      payload: { sourceBranch, targetBranch, headSha, artifactReady: unit.artifactReady },
+      payload: { sourceBranch, targetBranch, headSha, artifactReady: unit.artifactReady, candidateGeneration: unit.candidateGeneration, materialChanges },
     });
     // `artifactReady` records worker development readiness only. It never wakes
     // dependents here: the reconciler wakes `needs_artifact` dependents after
@@ -1130,18 +1257,25 @@ export function deliveryUnitService(
     unitId: string;
     blocker: DeliveryBlocker;
     nextAction?: string | null;
-  }) {
+    /**
+     * Candidate generation the caller read its evidence at. A write fenced at
+     * an older generation is dropped: evidence read for a previous candidate
+     * must never describe — or block — the current one.
+     */
+    candidateGeneration?: number | null;
+  }): Promise<boolean> {
     const unit = await getUnit(input.companyId, input.unitId);
-    if (!unit) return;
+    if (!unit) return false;
+    if (input.candidateGeneration != null && unit.candidateGeneration !== input.candidateGeneration) return false;
     // Terminal units and operator pauses are never overwritten by in-flight
     // reconciliation writes. A paused unit keeps its operator blocker until an
     // explicit resume; a merged or cancelled unit keeps its terminal state.
-    if (unit.status === "merged" || unit.status === "cancelled") return;
-    if (unit.pausedAt != null) return;
-    if (unit.blocker?.reasonCode === input.blocker.reasonCode) return;
+    if (unit.status === "merged" || unit.status === "cancelled") return false;
+    if (unit.pausedAt != null) return false;
+    if (unit.blocker?.reasonCode === input.blocker.reasonCode) return false;
     const metadata = blockerToMetadataPhase(unit, readUnitMetadata(unit.metadata));
     const now = new Date();
-    await db
+    const updated = await db
       .update(deliveryUnits)
       .set({
         status: "blocked",
@@ -1151,25 +1285,38 @@ export function deliveryUnitService(
         lastEventAt: now,
         updatedAt: now,
       })
-      .where(eq(deliveryUnits.id, unit.id));
+      .where(and(
+        eq(deliveryUnits.id, unit.id),
+        // Terminal is permanent. The status is re-checked inside the write, not
+        // only before it: a merge that commits between the read above and this
+        // statement would otherwise be overwritten back to `blocked`.
+        notInArray(deliveryUnits.status, [...TERMINAL_UNIT_STATUSES]),
+        ...(input.candidateGeneration != null
+          ? [eq(deliveryUnits.candidateGeneration, input.candidateGeneration)]
+          : []),
+      ))
+      .returning({ id: deliveryUnits.id });
+    if (updated.length === 0) return false;
     await events.append({
       companyId: input.companyId,
       unitId: unit.id,
       issueId: unit.primaryIssueId,
       type: "blocked",
       message: input.blocker.message,
-      dedupeKey: `blocked:${input.blocker.reasonCode}`,
-      payload: { reasonCode: input.blocker.reasonCode },
+      dedupeKey: `blocked:${input.blocker.reasonCode}:g${unit.candidateGeneration}`,
+      payload: { reasonCode: input.blocker.reasonCode, candidateGeneration: unit.candidateGeneration },
     });
+    return true;
   }
 
-  async function clearBlocker(companyId: string, unitId: string) {
+  async function clearBlocker(companyId: string, unitId: string, candidateGeneration?: number | null) {
     const unit = await getUnit(companyId, unitId);
     if (!unit || !unit.blocker) return;
+    if (candidateGeneration != null && unit.candidateGeneration !== candidateGeneration) return;
     const metadata = { ...readUnitMetadata(unit.metadata) };
     delete metadata.blockedPhase;
     const now = new Date();
-    await db
+    const updated = await db
       .update(deliveryUnits)
       .set({
         status: unit.status === "blocked" ? "in_review" : unit.status,
@@ -1179,7 +1326,13 @@ export function deliveryUnitService(
         lastEventAt: now,
         updatedAt: now,
       })
-      .where(eq(deliveryUnits.id, unitId));
+      .where(and(
+        eq(deliveryUnits.id, unitId),
+        notInArray(deliveryUnits.status, [...TERMINAL_UNIT_STATUSES]),
+        ...(candidateGeneration != null ? [eq(deliveryUnits.candidateGeneration, candidateGeneration)] : []),
+      ))
+      .returning({ id: deliveryUnits.id });
+    if (updated.length === 0) return;
     await events.append({
       companyId,
       unitId,
@@ -1195,11 +1348,15 @@ export function deliveryUnitService(
     unitId: string;
     status: DeliveryUnitRow["status"];
     nextAction?: string | null;
+    /** Read generation fence; see `markBlocked`. */
+    candidateGeneration?: number | null;
   }) {
     const unit = await getUnit(input.companyId, input.unitId);
+    if (!unit) return unit;
+    if (input.candidateGeneration != null && unit.candidateGeneration !== input.candidateGeneration) return unit;
     // Terminal units never leave their state via a status sync: a merged or
     // cancelled unit that receives a late event keeps its terminal state.
-    if (!unit || unit.status === "merged" || unit.status === "cancelled") return unit;
+    if (unit.status === "merged" || unit.status === "cancelled") return unit;
     const now = new Date();
     const [updated] = await db
       .update(deliveryUnits)
@@ -1209,7 +1366,14 @@ export function deliveryUnitService(
         lastEventAt: now,
         updatedAt: now,
       })
-      .where(and(eq(deliveryUnits.companyId, input.companyId), eq(deliveryUnits.id, input.unitId)))
+      .where(and(
+        eq(deliveryUnits.companyId, input.companyId),
+        eq(deliveryUnits.id, input.unitId),
+        notInArray(deliveryUnits.status, [...TERMINAL_UNIT_STATUSES]),
+        ...(input.candidateGeneration != null
+          ? [eq(deliveryUnits.candidateGeneration, input.candidateGeneration)]
+          : []),
+      ))
       .returning();
     return updated ?? null;
   }
@@ -1238,8 +1402,17 @@ export function deliveryUnitService(
         lastEventAt: now,
         updatedAt: now,
       })
-      .where(eq(deliveryUnits.id, unit.id))
+      .where(and(
+        eq(deliveryUnits.id, unit.id),
+        // Atomically non-terminal and still unpaused: a merge that lands during
+        // this write must not be paused back into an open state.
+        notInArray(deliveryUnits.status, [...TERMINAL_UNIT_STATUSES]),
+        isNull(deliveryUnits.pausedAt),
+      ))
       .returning();
+    if (!updated) {
+      throw conflict("Delivery unit is no longer open to pause", { unitId: unit.id });
+    }
     await queue.setStatus({ companyId: input.companyId, unitId: unit.id, status: "blocked" });
     await events.append({
       companyId: input.companyId,
@@ -1249,7 +1422,7 @@ export function deliveryUnitService(
       message: input.reason?.trim() || "Delivery paused by operator",
       dedupeKey: `paused:${now.getTime()}`,
     });
-    return updated!;
+    return updated;
   }
 
   async function resumeUnit(input: { companyId: string; unitId: string; actor: DeliveryActor }) {
@@ -1267,8 +1440,17 @@ export function deliveryUnitService(
     const [updated] = await db
       .update(deliveryUnits)
       .set({ status: "in_review", pausedAt: null, blocker: null, nextAction: null, metadata, lastEventAt: now, updatedAt: now })
-      .where(eq(deliveryUnits.id, unit.id))
+      .where(and(
+        eq(deliveryUnits.id, unit.id),
+        // Still non-terminal and still the paused row this resume was decided
+        // from; a concurrent terminal transition is never reopened.
+        notInArray(deliveryUnits.status, [...TERMINAL_UNIT_STATUSES]),
+        isNotNull(deliveryUnits.pausedAt),
+      ))
       .returning();
+    if (!updated) {
+      throw conflict("Delivery unit is no longer paused", { unitId: unit.id });
+    }
     await events.append({
       companyId: input.companyId,
       unitId: unit.id,
@@ -1291,8 +1473,15 @@ export function deliveryUnitService(
     const [updated] = await db
       .update(deliveryUnits)
       .set({ status: "cancelled", cancelledAt: now, nextAction: null, lastEventAt: now, updatedAt: now })
-      .where(eq(deliveryUnits.id, unit.id))
+      .where(and(
+        eq(deliveryUnits.id, unit.id),
+        // A merge that lands between the read and this write keeps its state.
+        ne(deliveryUnits.status, "merged"),
+      ))
       .returning();
+    if (!updated) {
+      throw conflict("Merged delivery units cannot be cancelled", { unitId: unit.id });
+    }
     await queue.setStatus({ companyId: input.companyId, unitId: unit.id, status: "cancelled" });
     await events.append({
       companyId: input.companyId,

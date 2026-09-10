@@ -359,6 +359,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    // `clearAllMocks` drops recorded calls but NOT queued once-implementations.
+    // A test that arms one and never reaches the adapter — for example because
+    // its own deadline fires first — would otherwise leak that body into the
+    // next test's adapter call. The default body is reinstalled just below.
+    mockAdapterExecute.mockReset();
     const localServiceSupervisor = await vi.importActual<
       typeof import("../services/local-service-supervisor.js")
     >("../services/local-service-supervisor.js");
@@ -567,7 +572,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       triggerDetail: "system",
       reason: "issue_assigned",
       payload: input?.includeIssue === false ? {} : { issueId },
-      status: "claimed",
+      // A queued run is claimable only while its wake is still queued: the claim
+      // refuses a claimed wake as `queue_changed`, so the fixture must not seed a
+      // queued run with an already-claimed wake.
+      status: input?.runStatus === "queued" ? "queued" : "claimed",
       runId,
       claimedAt: now,
     });
@@ -5170,6 +5178,151 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             "recovery.reconcile_continuation_waiting_on_review",
       ),
     ).toBe(true);
+  });
+
+  /** Wakes created by the bounded timeout-continuation chain for one agent. */
+  async function timeoutContinuationWakes(companyId: string, agentId: string) {
+    return await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          sql`${agentWakeupRequests.idempotencyKey} LIKE 'runner_timeout_continuation:%'`,
+        ),
+      );
+  }
+
+  function timedOutContainedRunEvidence() {
+    return {
+      runnerTimeout: {
+        sessionId: "paperclip-fixture-lane",
+        modelStarted: true,
+        resumable: true,
+        progress: {
+          requests: 9,
+          denials: 0,
+          lastRequestAt: "2026-03-19T00:04:00.000Z",
+        },
+      },
+    };
+  }
+
+  it("continues a timed-out contained run in the same session through one bounded wake", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "timed_out",
+      runErrorCode: "timeout",
+      resultJson: timedOutContainedRunEvidence(),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(1);
+    const wakes = await timeoutContinuationWakes(companyId, agentId);
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.idempotencyKey).toBe(
+      `runner_timeout_continuation:${issueId}:${runId}:1`,
+    );
+
+    const continuation = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.retryOfRunId, runId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    // The continuation resumes the checkpoint session AND advances the bounded
+    // counter, so the next timeout sees attempt 1 rather than restarting at 0.
+    // Its scheduling state is not the contract (it may already be running).
+    expect(continuation?.continuationAttempt).toBe(1);
+    expect(continuation?.contextSnapshot ?? {}).toMatchObject({
+      runnerTimeoutContinuation: true,
+      resumeFromCheckpoint: true,
+      resumeSessionId: "paperclip-fixture-lane",
+      livenessContinuationAttempt: 1,
+    });
+
+    // A second sweep over the same source run must not mint a second wake nor a
+    // second session continuation (which would restart the counter at 0).
+    await heartbeat.reconcileStrandedAssignedIssues();
+    expect(await timeoutContinuationWakes(companyId, agentId)).toHaveLength(1);
+    const timeoutContinuations = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'runnerTimeoutContinuation' = 'true'`,
+        ),
+      );
+    expect(timeoutContinuations).toHaveLength(1);
+  });
+
+  it("escalates once instead of restarting the bounded timeout-continuation chain", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "timed_out",
+      runErrorCode: "timeout",
+      resultJson: timedOutContainedRunEvidence(),
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "issue_assigned",
+          livenessContinuationAttempt: 2,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    // The bound is spent: the issue gets one visible escalation, and no wake that
+    // would carry a fresh counter.
+    expect(result.escalated).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+    expect(await timeoutContinuationWakes(companyId, agentId)).toHaveLength(0);
+    const source = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(source).toMatchObject({ status: "blocked", assigneeAgentId: agentId });
+  });
+
+  it("keeps generic timeout handling when the timed-out run reports no progress evidence", async () => {
+    const { companyId, agentId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "timed_out",
+      runErrorCode: "timeout",
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(1);
+    expect(await timeoutContinuationWakes(companyId, agentId)).toHaveLength(0);
+    const continuation = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.retryOfRunId, runId),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+    // No session continuation marker and no attempt override: this is the plain
+    // timeout retry, exactly as before the contained-run evidence existed.
+    expect(continuation?.contextSnapshot ?? {}).not.toHaveProperty("runnerTimeoutContinuation");
+    expect(continuation?.contextSnapshot ?? {}).not.toHaveProperty("resumeSessionId");
   });
 
   it("converts a continuation parked for review into a dependency wait on its existing blockers", async () => {

@@ -28,6 +28,7 @@ import {
   findingDispositionLabel,
   findingStateLabel,
   isReviewStale,
+  reviewStatusTone,
   shortSha,
 } from "../../lib/delivery-display";
 import { InlineBanner } from "../InlineBanner";
@@ -338,12 +339,15 @@ function ReviewSection({
         </Button>
       </div>
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <ToneChip tone={blockingFindings > 0 ? "failure" : "success"}>{reviewStatus || "unknown"}</ToneChip>
+        <ToneChip tone={reviewStatusTone(reviewStatus, blockingFindings)}>{reviewStatus || "unknown"}</ToneChip>
         <span className="text-muted-foreground">
           {blockingFindings === 0
             ? "No blocking findings"
             : `${blockingFindings} blocking ${blockingFindings === 1 ? "finding" : "findings"}`}
         </span>
+        {summary.candidateGeneration !== null ? (
+          <span className="text-xs text-muted-foreground">candidate #{summary.candidateGeneration}</span>
+        ) : null}
         {reviewedHeadSha ? (
           <span className="text-xs text-muted-foreground">
             reviewed head <MonoValue value={shortSha(reviewedHeadSha) ?? reviewedHeadSha} />
@@ -355,6 +359,12 @@ function ReviewSection({
           </span>
         ) : null}
       </div>
+      {reviewStatus === "unknown" && branchHeadSha ? (
+        <InlineBanner tone="warning" compact title="Review evidence is unknown">
+          No fresh review evidence has been read for head <MonoValue value={shortSha(branchHeadSha) ?? ""} />, or
+          the last read failed. This is not a pass: readiness stays revoked until an authoritative read succeeds.
+        </InlineBanner>
+      ) : null}
       {stale ? (
         <InlineBanner tone="warning" compact title="Review is stale">
           The recorded review is against head <MonoValue value={shortSha(reviewedHeadSha) ?? ""} />, but the

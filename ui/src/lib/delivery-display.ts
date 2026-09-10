@@ -15,6 +15,7 @@ import type {
   DeliveryMergeMethod,
   DeliveryMergeQueueMode,
   DeliveryAutoDeployDisposition,
+  DeliveryPolicy,
   DeliveryPolicyAuthorization,
   DeliveryProvenance,
   DeliveryReconciliationClassification,
@@ -271,4 +272,54 @@ export function dispositionDetail(disposition: DeliveryDisposition | null | unde
 export function authorizationLabel(authorization: DeliveryPolicyAuthorization | null | undefined): string | null {
   if (!authorization) return null;
   return `Approved by ${authorization.approvedByUserId} · ${authorization.approvedAt} · ${authorization.scope} scope`;
+}
+
+/** Scope fields that voided a standing authorization, in operator words. */
+export function authorizationScopeLabel(scope: readonly string[] | null | undefined): string | null {
+  if (!scope || scope.length === 0) return null;
+  return scope.map((field) => AUTHORIZATION_SCOPE_LABELS[field] ?? field).join(", ");
+}
+
+const AUTHORIZATION_SCOPE_LABELS: Record<string, string> = {
+  repository: "repository identity",
+  targetBranch: "target branch",
+  mergeMethod: "merge method",
+  mergeQueueMode: "merge queue mode",
+  requiredChecks: "required checks",
+  requireGreptile: "Greptile requirement",
+  requireIndependentApproval: "independent approval requirement",
+  githubConnectionId: "GitHub connection",
+  greptileConnectionId: "Greptile connection",
+  autoDeployDisposition: "deployment disposition",
+  authorization: "the authorization record itself",
+};
+
+/**
+ * Why there is no standing authority. `missing` and `invalidated` are different
+ * operator facts and are never rendered as the same sentence: the first needs
+ * a first decision, the second needs a re-decision for the scope that changed.
+ */
+export function authorizationStateMessage(
+  policy: Pick<DeliveryPolicy, "authorization" | "authorizationState" | "authorizationInvalidatedScope"> | null | undefined,
+): string {
+  if (policy?.authorizationState === "invalidated") {
+    const scope = authorizationScopeLabel(policy.authorizationInvalidatedScope);
+    return scope
+      ? `No standing authorization: a material scope change (${scope}) voided the recorded authorization. Re-authorize the changed scope.`
+      : "No standing authorization: the recorded authorization was removed. Re-authorize before automated merge resumes.";
+  }
+  return "No standing authorization recorded. The delivery service keeps automated merge off until an operator records one.";
+}
+
+/**
+ * Review tone. Only an explicit approval reads as success: `unknown` (a failed
+ * or superseded read) is never painted as a pass.
+ */
+export function reviewStatusTone(status: string | null | undefined, blockingFindings: number): DeliveryTone {
+  if (blockingFindings > 0) return "failure";
+  const normalized = (status ?? "").toLowerCase();
+  if (normalized === "approved") return "success";
+  if (normalized === "unknown") return "warning";
+  if (normalized === "changes_requested") return "failure";
+  return "pending";
 }

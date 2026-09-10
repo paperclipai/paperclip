@@ -91,6 +91,14 @@ export const deliveryUnits = pgTable(
     mergedSha: text("merged_sha"),
     mergeCommitSha: text("merge_commit_sha"),
     status: text("status").$type<DeliveryUnitStatus>().notNull().default("submitted"),
+    /**
+     * Candidate identity epoch. Material candidate changes (repository, pull
+     * request, head, source or target branch) increment this atomically, and
+     * every asynchronous evidence write is fenced by the generation it was
+     * read at. Ids and heads are not enough: a revision that moves A -> B -> A
+     * would otherwise let generation-A evidence pass as current.
+     */
+    candidateGeneration: integer("candidate_generation").notNull().default(1),
     artifactReady: boolean("artifact_ready").notNull().default(false),
     prNumber: integer("pr_number"),
     prUrl: text("pr_url"),
@@ -240,6 +248,15 @@ export const deliveryPolicies = pgTable(
     greptileConnectionId: uuid("greptile_connection_id").references(() => toolConnections.id, { onDelete: "set null" }),
     autoDeployDisposition: text("auto_deploy_disposition").notNull().default("none"),
     authorization: jsonb("authorization").$type<DeliveryPolicyAuthorization | null>(),
+    /**
+     * Why a standing authorization is absent. `authorization` null with no
+     * invalidation record is "never recorded"; a material scope change voids a
+     * recorded authorization and stamps what changed, so the board can tell a
+     * policy that was never authorized from one whose authority was revoked by
+     * a repository, target, criteria or deployment change.
+     */
+    authorizationInvalidatedAt: timestamp("authorization_invalidated_at", { withTimezone: true }),
+    authorizationInvalidatedScope: jsonb("authorization_invalidated_scope").$type<string[]>(),
     version: integer("version").notNull().default(1),
     createdByUserId: text("created_by_user_id"),
     updatedByUserId: text("updated_by_user_id"),
@@ -274,6 +291,12 @@ export const deliveryFindings = pgTable(
     line: integer("line"),
     url: text("url"),
     headSha: text("head_sha"),
+    /**
+     * The candidate generation the snapshot that reported this finding belongs
+     * to. Findings of an older generation stay as history and never count as
+     * current evidence, which keeps an A -> B -> A revision history honest.
+     */
+    candidateGeneration: integer("candidate_generation").notNull().default(1),
     state: text("state").$type<DeliveryFindingState>().notNull().default("open"),
     disposition: text("disposition").$type<DeliveryFindingDisposition | null>(),
     dispositionExplanation: text("disposition_explanation"),
@@ -290,7 +313,11 @@ export const deliveryFindings = pgTable(
       "delivery_findings_state_check",
       sql`${table.state} in ('open','fixed','disputed','already_addressed','stale')`,
     ),
-    unique("delivery_findings_external_uq").on(table.unitId, table.source, table.externalId),
+    // One row per (unit, provider finding, candidate generation): a finding the
+    // provider reports again on a later candidate gets its own row so the
+    // earlier candidate's evidence survives as history instead of being
+    // overwritten.
+    unique("delivery_findings_external_uq").on(table.unitId, table.source, table.externalId, table.candidateGeneration),
     index("delivery_findings_unit_state_idx").on(table.companyId, table.unitId, table.state),
   ],
 );
@@ -395,6 +422,14 @@ export const deliveryRepairAttempts = pgTable(
     reasonCode: text("reason_code").notNull(),
     attempt: integer("attempt").notNull(),
     status: text("status").notNull().default("requested"),
+    /**
+     * Evidence identity this attempt was dispatched for. A repeated signal is
+     * only already-handled while the attempt that dispatched it still has a
+     * live execution; a vanished run releases the signal for a bounded retry.
+     */
+    signal: text("signal"),
+    /** Candidate generation the dispatch decision was read at. */
+    candidateGeneration: integer("candidate_generation").notNull().default(1),
     headSha: text("head_sha"),
     ownerAgentId: uuid("owner_agent_id").references(() => agents.id, { onDelete: "set null" }),
     wakeRequestId: uuid("wake_request_id"),
@@ -408,5 +443,6 @@ export const deliveryRepairAttempts = pgTable(
     check("delivery_repair_attempts_status_check", sql`${table.status} in ('requested','dispatched','resolved','exhausted')`),
     unique("delivery_repair_attempts_uq").on(table.unitId, table.reasonCode, table.attempt),
     index("delivery_repair_attempts_unit_idx").on(table.companyId, table.unitId, table.status),
+    index("delivery_repair_attempts_signal_idx").on(table.unitId, table.reasonCode, table.signal),
   ],
 );

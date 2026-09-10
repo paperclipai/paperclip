@@ -181,6 +181,12 @@ export type DeliveryReview = {
   status: string;
   headSha: string | null;
   blockingFindings: number;
+  /**
+   * Candidate generation the presented review evidence belongs to. Evidence
+   * recorded for an older generation is history and is never projected as the
+   * current candidate's review.
+   */
+  candidateGeneration: number | null;
 };
 
 export type DeliveryBlocker = {
@@ -209,6 +215,11 @@ export type DeliverySummary = {
   repository: string | null;
   targetBranch: string | null;
   unitId: string | null;
+  /**
+   * Candidate identity epoch of the current unit. Evidence, blockers and
+   * review state shown with this summary belong to this generation.
+   */
+  candidateGeneration: number | null;
   prUrl: string | null;
   prNumber: number | null;
   headSha: string | null;
@@ -238,6 +249,14 @@ export type DeliveryPolicyAuthorization = {
   scope: "project" | "repository";
 };
 
+/**
+ * Whether standing authority exists, is absent because it was never recorded,
+ * or is absent because a material scope change (or an explicit removal) voided
+ * it. The three are different operator facts and are never collapsed.
+ */
+export const DELIVERY_POLICY_AUTHORIZATION_STATES = ["recorded", "missing", "invalidated"] as const;
+export type DeliveryPolicyAuthorizationState = (typeof DELIVERY_POLICY_AUTHORIZATION_STATES)[number];
+
 export type DeliveryPolicy = {
   id: string;
   companyId: string;
@@ -260,6 +279,11 @@ export type DeliveryPolicy = {
   greptileConnectionId: string | null;
   autoDeployDisposition: DeliveryAutoDeployDisposition;
   authorization: DeliveryPolicyAuthorization | null;
+  authorizationState: DeliveryPolicyAuthorizationState;
+  /** When the standing authorization was voided; null when never recorded. */
+  authorizationInvalidatedAt: string | null;
+  /** Scope fields that voided it, or `authorization` for an explicit removal. */
+  authorizationInvalidatedScope: string[];
   version: number;
   createdAt: string;
   updatedAt: string;
@@ -276,6 +300,8 @@ export type DeliveryFinding = {
   line: number | null;
   url: string | null;
   headSha: string | null;
+  /** Candidate generation the reporting snapshot belongs to. */
+  candidateGeneration: number;
   state: DeliveryFindingState;
   disposition: DeliveryFindingDisposition | null;
   dispositionExplanation: string | null;
@@ -375,6 +401,8 @@ export type DeliveryUnitDetail = {
   issueId: string;
   coveredIssueIds: string[];
   status: DeliveryUnitStatus;
+  /** Candidate identity epoch; see DeliverySummary.candidateGeneration. */
+  candidateGeneration: number;
   repository: string;
   targetBranch: string;
   sourceBranch: string;

@@ -262,6 +262,9 @@ describe("ProjectOperatorOverview", () => {
               delivery: {
                 phase: "review",
                 artifactReady: true,
+                candidateGeneration: 1,
+                readiness: "under_review",
+                policy: null,
                 reviewStatus: "stalled",
                 blockingFindings: 2,
                 queuePosition: null,
@@ -330,6 +333,9 @@ describe("ProjectOperatorOverview", () => {
               delivery: {
                 phase: "merged",
                 artifactReady: true,
+                candidateGeneration: 1,
+                readiness: "accepted",
+                policy: null,
                 reviewStatus: "approved",
                 blockingFindings: 0,
                 queuePosition: null,
@@ -349,6 +355,9 @@ describe("ProjectOperatorOverview", () => {
               delivery: {
                 phase: "done",
                 artifactReady: false,
+                candidateGeneration: 1,
+                readiness: "accepted",
+                policy: null,
                 reviewStatus: "none",
                 blockingFindings: 0,
                 queuePosition: null,

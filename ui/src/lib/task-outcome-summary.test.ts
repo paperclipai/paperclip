@@ -201,6 +201,9 @@ describe("buildTaskOutcomeModel result", () => {
           delivery: {
             phase: "merged",
             artifactReady: true,
+            candidateGeneration: 1,
+            readiness: "accepted",
+            policy: null,
             reviewStatus: "approved",
             blockingFindings: 0,
             queuePosition: null,
@@ -265,6 +268,9 @@ describe("buildTaskOutcomeModel result", () => {
           delivery: {
             phase: "merged",
             artifactReady: true,
+            candidateGeneration: 1,
+            readiness: "accepted",
+            policy: null,
             reviewStatus: "approved",
             blockingFindings: 0,
             queuePosition: null,

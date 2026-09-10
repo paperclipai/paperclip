@@ -1,0 +1,2 @@
+ALTER TABLE "delivery_findings" DROP CONSTRAINT "delivery_findings_external_uq";--> statement-breakpoint
+ALTER TABLE "delivery_findings" ADD CONSTRAINT "delivery_findings_external_uq" UNIQUE("unit_id","source","external_id","candidate_generation");

@@ -23,7 +23,14 @@ export const deliverySubmitActionSchema = z.object({
   baseSha: shaSchema.nullable().optional(),
   sourceBranch: branchSchema,
   artifactReady: z.boolean().default(false),
-  coveredIssueIds: z.array(uuidSchema).max(200).optional(),
+  /**
+   * Explicit coverage handoff: every entry is a task this candidate delivers.
+   * A repeated id is ambiguous and rejected rather than silently collapsed.
+   */
+  coveredIssueIds: z.array(uuidSchema)
+    .max(200)
+    .refine((ids) => new Set(ids).size === ids.length, "coveredIssueIds must not repeat an issue")
+    .optional(),
   targetBranch: branchSchema.optional(),
 }).strict();
 

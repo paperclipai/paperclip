@@ -1,11 +1,13 @@
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import {
+  agentWakeupRequests,
   deliveryFindings,
   deliveryRepositories,
   deliveryReceipts,
   deliveryRepairAttempts,
   deliveryUnitIssues,
   deliveryUnits,
+  heartbeatRuns,
   issues,
   type Db,
 } from "@paperclipai/db";
@@ -20,7 +22,7 @@ import type { DeliveryEventService } from "./events.js";
 import type { DeliveryPolicyService, DeliveryRepositoryRow } from "./policy.js";
 import type { DeliveryQueueService } from "./queue.js";
 import type { DeliveryUnitService, DeliveryUnitRow } from "./units.js";
-import { readUnitMetadata } from "./units.js";
+import { deriveDeliveryPhase, readUnitMetadata } from "./units.js";
 import type { GitHubDeliveryClient } from "./github-client.js";
 import type { GreptileFinding, GreptileReviewService, GreptileReviewState } from "./greptile.js";
 import { GREPTILE_BLOCKING_SEVERITIES } from "./greptile.js";
@@ -46,6 +48,12 @@ export type DeliveryRepairRequest = {
   message: string;
   signal: string;
   detail?: string;
+  /**
+   * Candidate generation the actionable evidence was read at. A request for an
+   * older generation is dropped: it cannot dispatch work for a candidate that
+   * has been replaced.
+   */
+  candidateGeneration?: number | null;
 };
 
 export type DeliveryRepairOutcome = {
@@ -61,6 +69,11 @@ export type DeliveryReconcileOutcome = {
   blocker: DeliveryBlocker | null;
   merged: boolean;
   changed: boolean;
+  /**
+   * The evidence read belonged to a candidate generation that has since been
+   * replaced. Every write derived from that read was discarded.
+   */
+  stale?: boolean;
 };
 
 export interface DeliveryReconciler {
@@ -135,6 +148,80 @@ export function deliveryReconciler(
   },
 ): DeliveryReconciler {
   const { policy, queue, events, units, github, greptile, setIssueStatus } = deps;
+
+  /**
+   * Fence a delivery-unit write to the candidate generation its evidence was
+   * read at.
+   *
+   * Delivery reconciliation is asynchronous: a GitHub read can outlive the
+   * candidate it was started for. Ids and head SHAs are not sufficient fences
+   * (a revision that moves A -> B -> A would let generation-A evidence pass as
+   * current), so every evidence-derived write compares the durable
+   * `candidateGeneration` and is discarded when it no longer matches. A
+   * discarded write is never retried against the new candidate — the next
+   * reconcile reads fresh evidence for it.
+   */
+  async function writeUnitFenced(input: {
+    companyId: string;
+    unitId: string;
+    generation: number;
+    set: Partial<typeof deliveryUnits.$inferInsert>;
+  }): Promise<DeliveryUnitRow | null> {
+    const [row] = await db
+      .update(deliveryUnits)
+      .set(input.set)
+      .where(and(
+        eq(deliveryUnits.companyId, input.companyId),
+        eq(deliveryUnits.id, input.unitId),
+        eq(deliveryUnits.candidateGeneration, input.generation),
+        // Terminal is permanent, and it is checked *inside* the write rather
+        // than only in the caller's earlier read: a merge that commits while
+        // this evidence is in flight must never be reopened or restated by it.
+        notInArray(deliveryUnits.status, ["merged", "cancelled", "closed_unmerged"]),
+      ))
+      .returning();
+    return row ?? null;
+  }
+
+  /**
+   * Outcome for a reconciliation whose writes were fenced out: the evidence
+   * belonged to a candidate that has since been replaced, so nothing was
+   * changed and the caller must not treat the read as a result for the unit's
+   * current generation.
+   */
+  function staleOutcome(unit: DeliveryUnitRow): DeliveryReconcileOutcome {
+    return {
+      unitId: unit.id,
+      status: unit.status,
+      phase: deriveDeliveryPhase(unit),
+      blocker: unit.blocker ?? null,
+      merged: false,
+      changed: false,
+      stale: true,
+    };
+  }
+
+  /**
+   * Record that the current candidate's authoritative evidence could not be
+   * read. Fenced like every other evidence write: a failed read of an older
+   * generation must not mark the current candidate unknown.
+   */
+  async function recordEvidenceReadFailure(input: {
+    companyId: string;
+    unit: DeliveryUnitRow;
+    generation: number;
+  }): Promise<void> {
+    const metadata = readUnitMetadata(input.unit.metadata);
+    await writeUnitFenced({
+      companyId: input.companyId,
+      unitId: input.unit.id,
+      generation: input.generation,
+      set: {
+        metadata: { ...metadata, evidenceGeneration: input.generation, lastReadFailed: true },
+        updatedAt: new Date(),
+      },
+    });
+  }
 
   async function coveredIssueIds(companyId: string, unitId: string) {
     return await db
@@ -224,26 +311,39 @@ export function deliveryReconciler(
     dedupeKey: string;
     eventType: string;
     message?: string;
-  }) {
+    /** Generation the failing evidence was read at; see `writeUnitFenced`. */
+    generation: number;
+  }): Promise<boolean> {
     const now = new Date();
-    await db
-      .update(deliveryUnits)
-      .set({
+    const revoked = await writeUnitFenced({
+      companyId: input.companyId,
+      unitId: input.unit.id,
+      generation: input.generation,
+      set: {
         acceptedHeadSha: null,
         readyAt: null,
         queueEnteredAt: null,
         updatedAt: now,
-      })
-      .where(eq(deliveryUnits.id, input.unit.id));
+      },
+    });
+    // A newer candidate owns this unit now: the failure describes evidence for
+    // a candidate that no longer exists, so nothing is revoked or blocked.
+    if (!revoked) return false;
     await units.markBlocked({
       companyId: input.companyId,
       unitId: input.unit.id,
       blocker: input.blocker,
       nextAction: input.blocker.nextAction,
+      candidateGeneration: input.generation,
     });
     await holdQueue(input.companyId, input.unit, input.blocker.reasonCode, input.blocker.message);
     if (input.unit.status === "ready_to_merge" || input.unit.status === "merging") {
-      await units.setUnitStatus({ companyId: input.companyId, unitId: input.unit.id, status: "in_review" });
+      await units.setUnitStatus({
+        companyId: input.companyId,
+        unitId: input.unit.id,
+        status: "in_review",
+        candidateGeneration: input.generation,
+      });
       await syncIssueStatus(input.companyId, input.unit, "in_review");
     }
     await events.append({
@@ -254,8 +354,74 @@ export function deliveryReconciler(
       message: input.message ?? input.blocker.message,
       dedupeKey: input.dedupeKey,
       url: input.unit.prUrl,
-      payload: { reasonCode: input.blocker.reasonCode },
+      payload: { reasonCode: input.blocker.reasonCode, candidateGeneration: input.generation },
     });
+    return true;
+  }
+
+  /** Run statuses whose execution is still in flight or still promotable. */
+  const LIVE_RUN_STATUSES: Record<string, true> = {
+    queued: true,
+    running: true,
+    scheduled_retry: true,
+    claimed: true,
+    pending: true,
+  };
+
+  /**
+   * Whether a recorded repair dispatch still has an executable outcome.
+   *
+   * Delivery dedupe must survive duplicate sweeps, but it must never confuse
+   * "we asked the owner" with "the owner's execution still exists". A wake
+   * intent that was never picked up, or a run that ended without completing
+   * (cancelled, failed, process loss) and has no live retry, is a vanished
+   * execution: the signal is unhandled again and a bounded re-dispatch is the
+   * only thing that keeps the repair loop alive. A completed run is a real
+   * outcome and keeps the signal handled.
+   */
+  async function repairDispatchOutcome(input: {
+    companyId: string;
+    wakeRequestId: string | null;
+  }): Promise<"live" | "completed" | "vanished"> {
+    if (!input.wakeRequestId) return "vanished";
+    const [wake] = await db
+      .select({
+        id: agentWakeupRequests.id,
+        status: agentWakeupRequests.status,
+        runId: agentWakeupRequests.runId,
+      })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.id, input.wakeRequestId),
+      ))
+      .limit(1);
+    if (!wake) return "vanished";
+    if (wake.runId == null) {
+      // The intent itself is the pending execution: a queued or claimed wake
+      // is still promotable, so it stays live. A cancelled, failed, skipped, or
+      // coalesced wake with no run has no execution left.
+      return wake.status === "queued" || wake.status === "claimed" ? "live" : "vanished";
+    }
+    const [run] = await db
+      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, wake.runId))
+      .limit(1);
+    if (!run) return "vanished";
+    if (LIVE_RUN_STATUSES[run.status] === true) return "live";
+    if (run.status === "completed") return "completed";
+    // Terminal without completing: only a live retry of that exact run keeps
+    // the signal handled. Otherwise the execution vanished.
+    const [retry] = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.retryOfRunId, run.id),
+        inArray(heartbeatRuns.status, Object.keys(LIVE_RUN_STATUSES)),
+      ))
+      .limit(1);
+    return retry ? "live" : "vanished";
   }
 
   /**
@@ -268,6 +434,8 @@ export function deliveryReconciler(
     reasonCode: string;
     message: string;
     detail?: string;
+    signal: string;
+    generation: number;
   }) {
     const [attemptsRow] = await db
       .select({ count: sql<number>`count(*)::int` })
@@ -286,6 +454,8 @@ export function deliveryReconciler(
         reasonCode: input.reasonCode,
         attempt,
         status: "exhausted",
+        signal: input.signal,
+        candidateGeneration: input.generation,
         headSha: input.unit.headSha,
         ownerAgentId: input.unit.ownerAgentId,
         requestedByActorType: "system",
@@ -298,8 +468,15 @@ export function deliveryReconciler(
         "Inspect the repair results and explicitly retry after resolving the failure.",
       );
       exhaustedBlocker.owner = input.unit.ownerAgentId;
-      await units.markBlocked({ companyId: input.companyId, unitId: input.unit.id, blocker: exhaustedBlocker });
-      await holdQueue(input.companyId, input.unit, exhaustedBlocker.reasonCode, exhaustedBlocker.message);
+      const applied = await units.markBlocked({
+        companyId: input.companyId,
+        unitId: input.unit.id,
+        blocker: exhaustedBlocker,
+        candidateGeneration: input.generation,
+      });
+      if (applied) {
+        await holdQueue(input.companyId, input.unit, exhaustedBlocker.reasonCode, exhaustedBlocker.message);
+      }
       await events.append({
         companyId: input.companyId,
         unitId: input.unit.id,
@@ -307,7 +484,7 @@ export function deliveryReconciler(
         type: "repair_exhausted",
         message: `Repair attempts exhausted for ${input.reasonCode}`,
         dedupeKey: `repair_exhausted:${input.reasonCode}`,
-        payload: { reasonCode: input.reasonCode, attempts: DELIVERY_MAX_REPAIR_ATTEMPTS },
+        payload: { reasonCode: input.reasonCode, attempts: DELIVERY_MAX_REPAIR_ATTEMPTS, candidateGeneration: input.generation },
       });
       return { attempted: false, attempt, exhausted: true };
     }
@@ -319,7 +496,9 @@ export function deliveryReconciler(
       // Real idempotent heartbeat wake through the injected dispatcher. The
       // durable intent row is the idempotency record; `dispatched` reports
       // whether a run was actually queued, so a bare row is never mistaken
-      // for owner feedback.
+      // for owner feedback. The wake carries the controller's own repair
+      // intent as a context snapshot: unit, candidate generation, head, reason
+      // and attempt are minted here and never taken from worker-supplied text.
       const wake = await units.dispatchOwnerWake({
         companyId: input.companyId,
         agentId: ownerAgentId,
@@ -331,6 +510,17 @@ export function deliveryReconciler(
           reasonCode: input.reasonCode,
           message: input.message,
           attempt,
+          candidateGeneration: input.generation,
+          headSha: input.unit.headSha,
+        },
+        contextSnapshot: {
+          deliveryRepair: {
+            unitId: input.unit.id,
+            candidateGeneration: input.generation,
+            headSha: input.unit.headSha,
+            reasonCode: input.reasonCode,
+            attempt,
+          },
         },
         idempotencyKey,
       });
@@ -345,6 +535,8 @@ export function deliveryReconciler(
         reasonCode: input.reasonCode,
         attempt,
         status: dispatched ? "dispatched" : "requested",
+        signal: input.signal,
+        candidateGeneration: input.generation,
         headSha: input.unit.headSha,
         ownerAgentId,
         wakeRequestId,
@@ -360,7 +552,7 @@ export function deliveryReconciler(
       type: "repair_requested",
       message: `Repair requested (attempt ${attempt}): ${input.message}`,
       dedupeKey: `repair_requested:${input.reasonCode}:${attempt}`,
-      payload: { reasonCode: input.reasonCode, attempt, wakeRequestId, dispatched },
+      payload: { reasonCode: input.reasonCode, attempt, wakeRequestId, dispatched, candidateGeneration: input.generation },
     });
     if (!ownerAgentId || !dispatched) {
       await events.append({
@@ -388,15 +580,60 @@ export function deliveryReconciler(
    * repeated signal returns without dispatching. New actionable evidence — a
    * new head, a new or changed finding, a new failing check — carries a new
    * signal and does request a wake.
+   *
+   * Dedupe is bound to the durable execution, not to the recorded string: when
+   * the run that was supposed to handle the signal vanished (cancelled, failed
+   * by process loss, never picked up) and has no live retry, the signal is
+   * unhandled again and a bounded re-dispatch follows. Retry creation stays
+   * idempotent because every attempt carries its own deterministic
+   * `(unit, reason, attempt)` key and the intent row is unique per key.
    */
   async function requestRepair(input: DeliveryRepairRequest): Promise<DeliveryRepairOutcome> {
     if (!REPAIRABLE_REASON_CODES[input.reasonCode]) {
       return { requested: false, attempt: 0, exhausted: false };
     }
+    if (input.candidateGeneration != null && input.unit.candidateGeneration !== input.candidateGeneration) {
+      // Evidence for a replaced candidate never dispatches work on the new one.
+      return { requested: false, attempt: 0, exhausted: false };
+    }
     const metadata = readUnitMetadata(input.unit.metadata);
     if (metadata.lastRepairSignal?.[input.reasonCode] === input.signal
       && (input.unit.blocker as DeliveryBlocker | null)?.reasonCode !== "repair_attempts_exhausted") {
-      return { requested: false, attempt: 0, exhausted: false };
+      const [recorded] = await db
+        .select({
+          attempt: deliveryRepairAttempts.attempt,
+          wakeRequestId: deliveryRepairAttempts.wakeRequestId,
+        })
+        .from(deliveryRepairAttempts)
+        .where(and(
+          eq(deliveryRepairAttempts.companyId, input.companyId),
+          eq(deliveryRepairAttempts.unitId, input.unit.id),
+          eq(deliveryRepairAttempts.reasonCode, input.reasonCode),
+          eq(deliveryRepairAttempts.signal, input.signal),
+          inArray(deliveryRepairAttempts.status, ["requested", "dispatched"]),
+        ))
+        .orderBy(desc(deliveryRepairAttempts.attempt))
+        .limit(1);
+      const outcome = recorded
+        ? await repairDispatchOutcome({ companyId: input.companyId, wakeRequestId: recorded.wakeRequestId })
+        : "vanished";
+      if (outcome !== "vanished") {
+        return { requested: false, attempt: recorded?.attempt ?? 0, exhausted: false };
+      }
+      await events.append({
+        companyId: input.companyId,
+        unitId: input.unit.id,
+        issueId: input.unit.primaryIssueId,
+        type: "repair_requested",
+        message: `Repair execution for ${input.reasonCode} vanished; re-dispatching the same signal`,
+        dedupeKey: `repair_vanished:${input.reasonCode}:${recorded?.attempt ?? 0}`,
+        payload: {
+          reasonCode: input.reasonCode,
+          signal: input.signal,
+          priorAttempt: recorded?.attempt ?? null,
+          candidateGeneration: input.unit.candidateGeneration,
+        },
+      });
     }
     const result = await wakeOwnerForRepair({
       companyId: input.companyId,
@@ -404,19 +641,23 @@ export function deliveryReconciler(
       reasonCode: input.reasonCode,
       message: input.message,
       detail: input.detail,
+      signal: input.signal,
+      generation: input.unit.candidateGeneration,
     });
     // Failed dispatches remain retryable within the bound. Only a real queued
     // owner run handles the signal; exhaustion stays visible as a blocker.
-    if (result.attempted) await db
-      .update(deliveryUnits)
-      .set({
+    if (result.attempted) await writeUnitFenced({
+      companyId: input.companyId,
+      unitId: input.unit.id,
+      generation: input.unit.candidateGeneration,
+      set: {
         metadata: {
           ...metadata,
           lastRepairSignal: { ...(metadata.lastRepairSignal ?? {}), [input.reasonCode]: input.signal },
         },
         updatedAt: new Date(),
-      })
-      .where(eq(deliveryUnits.id, input.unit.id));
+      },
+    });
     return { requested: result.attempted, attempt: result.attempt, exhausted: result.exhausted };
   }
 
@@ -479,14 +720,18 @@ export function deliveryReconciler(
     signal: string;
     dedupeKey: string;
     eventType: string;
+    generation: number;
   }): Promise<void> {
-    await revokeAcceptance({
+    const revoked = await revokeAcceptance({
       companyId: input.companyId,
       unit: input.unit,
       blocker: input.blocker,
       dedupeKey: input.dedupeKey,
       eventType: input.eventType,
+      generation: input.generation,
     });
+    // A newer candidate replaced this one while the evidence was being read.
+    if (!revoked) return;
     if (!REPAIRABLE_REASON_CODES[input.blocker.reasonCode]) return;
     await requestRepair({
       companyId: input.companyId,
@@ -495,6 +740,7 @@ export function deliveryReconciler(
       message: input.blocker.message,
       signal: input.signal,
       detail: input.blocker.nextAction ?? undefined,
+      candidateGeneration: input.generation,
     });
   }
 
@@ -565,6 +811,7 @@ export function deliveryReconciler(
     if (!repository) throw new Error("delivery_repository_not_found");
     if (!unit.acceptedHeadSha || unit.acceptedHeadSha !== unit.headSha) {
       await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blocker(
@@ -578,6 +825,7 @@ export function deliveryReconciler(
     const mergedSha = unit.mergedSha ?? unit.mergeCommitSha ?? unit.headSha;
     if (!mergedSha) {
       await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blocker("merge_unknown", "Merge outcome is unknown; no revision is available to verify"),
@@ -595,6 +843,7 @@ export function deliveryReconciler(
     );
     if (!included.ok || !included.value.included) {
       await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blocker(
@@ -640,6 +889,7 @@ export function deliveryReconciler(
       : null;
     if (!freshChecks.ok || !freshReviews || !freshReviews.ok) {
       await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blocker(
@@ -655,6 +905,7 @@ export function deliveryReconciler(
     if (policyRow?.requireGreptile) {
       if (!policyRow.greptileConnectionId) {
         await units.markBlocked({
+          candidateGeneration: unit.candidateGeneration,
           companyId: input.companyId,
           unitId: unit.id,
           blocker: blocker("greptile_required", "Policy requires a Greptile review", "Connect Greptile and reconcile again."),
@@ -663,6 +914,7 @@ export function deliveryReconciler(
       }
       if (!unit.prNumber) {
         await units.markBlocked({
+          candidateGeneration: unit.candidateGeneration,
           companyId: input.companyId,
           unitId: unit.id,
           blocker: blocker(
@@ -691,6 +943,7 @@ export function deliveryReconciler(
       });
       if (!freshGreptile.ok) {
         await units.markBlocked({
+          candidateGeneration: unit.candidateGeneration,
           companyId: input.companyId,
           unitId: unit.id,
           blocker: blocker(
@@ -703,6 +956,7 @@ export function deliveryReconciler(
       }
       if (freshGreptile.reviewState === "pending") {
         await units.markBlocked({
+          candidateGeneration: unit.candidateGeneration,
           companyId: input.companyId,
           unitId: unit.id,
           blocker: blocker(
@@ -715,6 +969,7 @@ export function deliveryReconciler(
       }
       if (freshGreptile.headSha !== unit.acceptedHeadSha) {
         await units.markBlocked({
+          candidateGeneration: unit.candidateGeneration,
           companyId: input.companyId,
           unitId: unit.id,
           blocker: blocker(
@@ -734,16 +989,11 @@ export function deliveryReconciler(
         ? "changes_requested"
         : "approved";
     }
-    await buildReceipt({
-      companyId: input.companyId,
-      unit,
-      repository,
-      prMergedSha: mergedSha,
-      mergeCommitSha: unit.mergeCommitSha,
-      checks: freshChecks.value,
-      reviewStatus: freshReviewStatus,
-      blockingFindings: freshBlocking,
-    });
+    // Claim the merged outcome under the generation fence *before* issuing the
+    // receipt: a candidate registered while the evidence was being read owns
+    // the unit now, and neither its status nor its receipt may describe the
+    // replaced candidate. Once claimed, the unit is terminal, so no later
+    // submission can reuse it (registration skips terminal units).
     const [updated] = await db
       .update(deliveryUnits)
       .set({
@@ -756,8 +1006,32 @@ export function deliveryReconciler(
         lastEventAt: now,
         updatedAt: now,
       })
-      .where(eq(deliveryUnits.id, unit.id))
+      .where(and(
+        eq(deliveryUnits.id, unit.id),
+        eq(deliveryUnits.candidateGeneration, unit.candidateGeneration),
+      ))
       .returning();
+    if (!updated) {
+      return {
+        unitId: unit.id,
+        status: unit.status,
+        phase: deriveDeliveryPhase(unit),
+        blocker: unit.blocker ?? null,
+        merged: false,
+        changed: false,
+        stale: true,
+      };
+    }
+    await buildReceipt({
+      companyId: input.companyId,
+      unit: updated,
+      repository,
+      prMergedSha: mergedSha,
+      mergeCommitSha: unit.mergeCommitSha,
+      checks: freshChecks.value,
+      reviewStatus: freshReviewStatus,
+      blockingFindings: freshBlocking,
+    });
     await queue.setStatus({ companyId: input.companyId, unitId: unit.id, status: "merged" });
     await events.append({
       companyId: input.companyId,
@@ -824,6 +1098,7 @@ export function deliveryReconciler(
 
     if (!policyRow) {
       await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blocker("policy_missing", "Project has no delivery policy"),
@@ -831,12 +1106,15 @@ export function deliveryReconciler(
       return { unitId: unit.id, status: "blocked", phase: "in_review", blocker: unit.blocker, merged: false, changed: true };
     }
     if (!policyRow.enabled) {
-      await units.markBlocked({
+      const applied = await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blocker("policy_disabled", "Delivery is not enabled for this project"),
       });
-      await holdQueue(input.companyId, unit, "policy_disabled", "Delivery is not enabled for this project");
+      if (applied) {
+        await holdQueue(input.companyId, unit, "policy_disabled", "Delivery is not enabled for this project");
+      }
       return { unitId: unit.id, status: "blocked", phase: "in_review", blocker: unit.blocker, merged: false, changed: true };
     }
     if (policyRow.paused || unit.pausedAt) {
@@ -854,45 +1132,61 @@ export function deliveryReconciler(
       );
     if (!pr.ok) {
       const reasonCode = pr.errorCode === "connection_missing" ? "connection_missing" : "provider_unknown";
-      await units.markBlocked({
+      // A failed provider read is recorded as such for the generation it was
+      // attempted for, so cached passes present as unknown instead of current.
+      await recordEvidenceReadFailure({
+        companyId: input.companyId,
+        unit,
+        generation: unit.candidateGeneration,
+      });
+      const applied = await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blocker(reasonCode, pr.message, "Reconcile again once GitHub is reachable."),
       });
-      await holdQueue(input.companyId, unit, reasonCode, pr.message);
+      if (applied) await holdQueue(input.companyId, unit, reasonCode, pr.message);
       return { unitId: unit.id, status: "blocked", phase: "in_review", blocker: unit.blocker, merged: false, changed: true };
     }
 
     const pullRequest = pr.value;
     if (!pullRequest) {
-      await units.markBlocked({
+      const applied = await units.markBlocked({
+        candidateGeneration: unit.candidateGeneration,
         companyId: input.companyId,
         unitId: unit.id,
         blocker: blocker("candidate_required", "No open pull request exists for the candidate branch", "Publish the candidate branch and open a pull request."),
       });
-      await holdQueue(input.companyId, unit, "candidate_required", "No open pull request exists for the candidate branch");
+      if (applied) {
+        await holdQueue(input.companyId, unit, "candidate_required", "No open pull request exists for the candidate branch");
+      }
       return { unitId: unit.id, status: "blocked", phase: "in_review", blocker: unit.blocker, merged: false, changed: true };
     }
 
     if (pullRequest.merged) {
-      const [merged] = await db
-        .update(deliveryUnits)
-        .set({
+      const merged = await writeUnitFenced({
+        companyId: input.companyId,
+        unitId: unit.id,
+        generation: unit.candidateGeneration,
+        set: {
           headSha: pullRequest.headSha,
           mergedSha: pullRequest.mergeCommitSha ?? pullRequest.headSha,
           mergeCommitSha: pullRequest.mergeCommitSha,
           lastReconciledAt: now,
           updatedAt: now,
-        })
-        .where(eq(deliveryUnits.id, unit.id))
-        .returning();
-      return await verifyMergedUnit({ companyId: input.companyId, unitId: merged?.id ?? unit.id });
+        },
+      });
+      if (!merged) return staleOutcome(unit);
+      return await verifyMergedUnit({ companyId: input.companyId, unitId: merged.id });
     }
     if (pullRequest.state === "closed") {
-      await db
-        .update(deliveryUnits)
-        .set({ status: "closed_unmerged", blocker: null, lastReconciledAt: now, updatedAt: now })
-        .where(eq(deliveryUnits.id, unit.id));
+      const closed = await writeUnitFenced({
+        companyId: input.companyId,
+        unitId: unit.id,
+        generation: unit.candidateGeneration,
+        set: { status: "closed_unmerged", blocker: null, lastReconciledAt: now, updatedAt: now },
+      });
+      if (!closed) return staleOutcome(unit);
       await queue.setStatus({ companyId: input.companyId, unitId: unit.id, status: "cancelled" });
       await events.append({
         companyId: input.companyId,
@@ -905,10 +1199,11 @@ export function deliveryReconciler(
       });
       await requestRepair({
         companyId: input.companyId,
-        unit: { ...unit, status: "closed_unmerged" },
+        unit: { ...closed, status: "closed_unmerged" },
         reasonCode: "pr_closed_unmerged",
         message: "The pull request was closed without merging; reopen it or publish a new candidate.",
         signal: `v1:${hashEvidence({ reasonCode: "pr_closed_unmerged", prNumber: pullRequest.number })}`,
+        candidateGeneration: closed.candidateGeneration,
       });
       return { unitId: unit.id, status: "closed_unmerged", phase: "in_review", blocker: null, merged: false, changed: true };
     }
@@ -916,12 +1211,14 @@ export function deliveryReconciler(
     let changed = false;
     let nextUnit = unit;
     if (pullRequest.headSha !== unit.headSha) {
-      const [updated] = await db
-        .update(deliveryUnits)
-        .set({ headSha: pullRequest.headSha, prNumber: pullRequest.number, prUrl: pullRequest.url, updatedAt: now })
-        .where(eq(deliveryUnits.id, unit.id))
-        .returning();
-      nextUnit = updated!;
+      const updated = await writeUnitFenced({
+        companyId: input.companyId,
+        unitId: unit.id,
+        generation: unit.candidateGeneration,
+        set: { headSha: pullRequest.headSha, prNumber: pullRequest.number, prUrl: pullRequest.url, updatedAt: now },
+      });
+      if (!updated) return staleOutcome(unit);
+      nextUnit = updated;
       changed = true;
       if (unit.acceptedHeadSha && pullRequest.headSha !== unit.acceptedHeadSha) {
         await failRequirements({
@@ -942,6 +1239,7 @@ export function deliveryReconciler(
           }),
           dedupeKey: `head_changed:${pullRequest.headSha}`,
           eventType: "head_changed",
+          generation: nextUnit.candidateGeneration,
         });
       }
     }
@@ -996,6 +1294,7 @@ export function deliveryReconciler(
         await recordObservedFindings(db, {
           companyId: input.companyId,
           unitId: unit.id,
+          candidateGeneration: unit.candidateGeneration,
           headSha: greptileRead.headSha,
           findings: greptileFindings,
         });
@@ -1024,6 +1323,10 @@ export function deliveryReconciler(
       greptileEvidenceAvailable = false;
     }
 
+    // Findings count only for the candidate that reported them: the current
+    // generation and the head under evaluation. Older findings stay in the
+    // timeline as history but never block a revision they were not reported on
+    // (an A -> B -> A revision history must not resurrect them).
     const openBlockingFindings = await db
       .select({
         source: deliveryFindings.source,
@@ -1039,6 +1342,8 @@ export function deliveryReconciler(
       .where(and(
         eq(deliveryFindings.companyId, input.companyId),
         eq(deliveryFindings.unitId, unit.id),
+        eq(deliveryFindings.candidateGeneration, unit.candidateGeneration),
+        eq(deliveryFindings.headSha, pullRequest.headSha),
         inArray(deliveryFindings.state, ["open", "disputed"]),
         inArray(deliveryFindings.severity, [...GREPTILE_BLOCKING_SEVERITIES]),
       ))
@@ -1074,38 +1379,29 @@ export function deliveryReconciler(
       blockingFindings,
     };
 
+    // Evidence-change detection happens before the fence so the write and the
+    // events derived from the same read are decided together; the events are
+    // appended only once the fenced write proves the read still describes the
+    // unit's current candidate.
+    let checksChanged = false;
+    let reviewChanged = false;
     if (checks.ok && reviews.ok) {
       const checkSignature = checks.value.map((check) => `${check.name}:${check.status}`).sort().join("|");
       const priorSignature = (metadata.checks ?? []).map((check) => `${check.name}:${check.status}`).sort().join("|");
-      if (checkSignature !== priorSignature) {
-        changed = true;
-        await events.append({
-          companyId: input.companyId,
-          unitId: unit.id,
-          issueId: unit.primaryIssueId,
-          type: "checks_changed",
-          message: `Checks on ${pullRequest.headSha.slice(0, 12)}: ${checks.value.filter((check) => !isCheckSuccessful(check.status)).map((check) => check.name).join(", ") || "all passing"}`,
-          dedupeKey: `checks:${pullRequest.headSha}:${hashEvidence(checkSignature).slice(0, 16)}`,
-          url: pullRequest.url,
-          payload: { checks: checks.value },
-        });
-      }
-      if (evidence.reviewStatus !== metadata.reviewStatus || evidence.reviewHeadSha !== metadata.reviewHeadSha) {
-        changed = true;
-        await events.append({
-          companyId: input.companyId,
-          unitId: unit.id,
-          issueId: unit.primaryIssueId,
-          type: "review_changed",
-          message: `Review status is now ${evidence.reviewStatus}`,
-          dedupeKey: `review:${pullRequest.headSha}:${evidence.reviewStatus}:${evidence.reviewHeadSha ?? "none"}`,
-          url: pullRequest.url,
-        });
-      }
+      checksChanged = checkSignature !== priorSignature;
+      reviewChanged = evidence.reviewStatus !== metadata.reviewStatus || evidence.reviewHeadSha !== metadata.reviewHeadSha;
     }
 
+    // Display evidence is stamped with the generation and head it was read at,
+    // and a failed authoritative read is recorded as such: the board must show
+    // unknown, never a cached pass, until a fresh read succeeds.
+    const evidenceReadFailed = !checks.ok || !reviews.ok
+      || (policyRow.requireGreptile && !greptileEvidenceAvailable);
     const nextMetadata = {
       ...metadata,
+      evidenceGeneration: unit.candidateGeneration,
+      lastReadFailed: evidenceReadFailed,
+      checksHeadSha: pullRequest.headSha,
       ...(checks.ok ? { checks: checks.value } : {}),
       ...(reviews.ok ? { approvals: reviews.value.approvals } : {}),
       // The effective verdict is persisted whenever either authoritative source
@@ -1118,12 +1414,47 @@ export function deliveryReconciler(
       authorLogin,
       lastRemoteUpdatedAt: pullRequest.updatedAt,
     };
-    await db
-      .update(deliveryUnits)
-      .set({ metadata: nextMetadata, prNumber: pullRequest.number, prUrl: pullRequest.url, lastReconciledAt: now, updatedAt: now })
-      .where(eq(deliveryUnits.id, unit.id));
-    const refreshed = await units.getUnit(input.companyId, unit.id);
-    if (!refreshed) throw new Error("delivery_unit_not_found");
+    const refreshed = await writeUnitFenced({
+      companyId: input.companyId,
+      unitId: unit.id,
+      generation: unit.candidateGeneration,
+      set: {
+        metadata: nextMetadata,
+        prNumber: pullRequest.number,
+        prUrl: pullRequest.url,
+        lastReconciledAt: now,
+        updatedAt: now,
+      },
+    });
+    // The candidate was replaced while its evidence was being read: nothing
+    // derived from this read is applied to the new candidate.
+    if (!refreshed) return staleOutcome(unit);
+    if (checks.ok && reviews.ok && checksChanged) {
+      changed = true;
+      await events.append({
+        companyId: input.companyId,
+        unitId: unit.id,
+        issueId: unit.primaryIssueId,
+        type: "checks_changed",
+        message: `Checks on ${pullRequest.headSha.slice(0, 12)}: ${checks.value.filter((check) => !isCheckSuccessful(check.status)).map((check) => check.name).join(", ") || "all passing"}`,
+        dedupeKey: `checks:${pullRequest.headSha}:${hashEvidence(checks.value.map((check) => `${check.name}:${check.status}`).sort().join("|")).slice(0, 16)}`,
+        url: pullRequest.url,
+        payload: { checks: checks.value, candidateGeneration: refreshed.candidateGeneration },
+      });
+    }
+    if (checks.ok && reviews.ok && reviewChanged) {
+      changed = true;
+      await events.append({
+        companyId: input.companyId,
+        unitId: unit.id,
+        issueId: unit.primaryIssueId,
+        type: "review_changed",
+        message: `Review status is now ${evidence.reviewStatus}`,
+        dedupeKey: `review:${pullRequest.headSha}:${evidence.reviewStatus}:${evidence.reviewHeadSha ?? "none"}`,
+        url: pullRequest.url,
+        payload: { candidateGeneration: refreshed.candidateGeneration },
+      });
+    }
     if (greptileGate) {
       await revokeAcceptance({
         companyId: input.companyId,
@@ -1131,6 +1462,7 @@ export function deliveryReconciler(
         blocker: greptileGate,
         dedupeKey: `${greptileGate.reasonCode}:${pullRequest.headSha}:${greptileReviewedHead ?? "none"}`,
         eventType: "readiness_revoked",
+        generation: refreshed.candidateGeneration,
       });
       return { unitId: unit.id, status: "blocked", phase: "in_review", blocker: greptileGate, merged: false, changed: true };
     }
@@ -1178,6 +1510,7 @@ export function deliveryReconciler(
         }),
         dedupeKey: `revoked:${blockerValue.reasonCode}:${pullRequest.headSha}`,
         eventType: "readiness_revoked",
+        generation: refreshed.candidateGeneration,
       });
       return {
         unitId: refreshed.id,
@@ -1191,24 +1524,26 @@ export function deliveryReconciler(
 
     let acceptedUnit = refreshed;
     if (acceptance.action === "accept" && acceptance.acceptedHeadSha) {
-      const [accepted] = await db
-        .update(deliveryUnits)
-        .set({
+      const accepted = await writeUnitFenced({
+        companyId: input.companyId,
+        unitId: refreshed.id,
+        generation: refreshed.candidateGeneration,
+        set: {
           acceptedHeadSha: acceptance.acceptedHeadSha,
           blocker: null,
           nextAction: null,
           updatedAt: now,
-        })
-        .where(eq(deliveryUnits.id, refreshed.id))
-        .returning();
-      if (accepted) acceptedUnit = accepted;
+        },
+      });
+      if (!accepted) return staleOutcome(refreshed);
+      acceptedUnit = accepted;
       await events.append({
         companyId: input.companyId,
         unitId: refreshed.id,
         issueId: refreshed.primaryIssueId,
         type: "artifact_ready",
         message: `Accepted ${acceptance.acceptedHeadSha.slice(0, 12)} after fresh review/check evidence`,
-        dedupeKey: `accepted:${acceptance.acceptedHeadSha}`,
+        dedupeKey: `accepted:${acceptance.acceptedHeadSha}:g${refreshed.candidateGeneration}`,
         url: refreshed.prUrl,
       });
       // Reviewed artifact readiness: dependents wake only now that the exact
@@ -1219,9 +1554,11 @@ export function deliveryReconciler(
     }
 
     if (acceptedUnit.status !== "ready_to_merge" && acceptedUnit.status !== "merging") {
-      const [ready] = await db
-        .update(deliveryUnits)
-        .set({
+      const ready = await writeUnitFenced({
+        companyId: input.companyId,
+        unitId: acceptedUnit.id,
+        generation: acceptedUnit.candidateGeneration,
+        set: {
           status: "ready_to_merge",
           blocker: null,
           nextAction: null,
@@ -1229,9 +1566,9 @@ export function deliveryReconciler(
           queueEnteredAt: acceptedUnit.queueEnteredAt ?? now,
           lastEventAt: now,
           updatedAt: now,
-        })
-        .where(eq(deliveryUnits.id, acceptedUnit.id))
-        .returning();
+        },
+      });
+      if (!ready) return staleOutcome(acceptedUnit);
       await queue.enqueue({
         companyId: input.companyId,
         repositoryId: repository.id,
@@ -1246,10 +1583,10 @@ export function deliveryReconciler(
         issueId: acceptedUnit.primaryIssueId,
         type: "queue_enqueued",
         message: `Ready to merge ${acceptedUnit.acceptedHeadSha?.slice(0, 12) ?? ""} under policy v${policyRow.version}`,
-        dedupeKey: `ready:${acceptedUnit.acceptedHeadSha}:${policyRow.version}`,
+        dedupeKey: `ready:${acceptedUnit.acceptedHeadSha}:${policyRow.version}:g${acceptedUnit.candidateGeneration}`,
         url: acceptedUnit.prUrl,
       });
-      if (ready) await syncIssueStatus(input.companyId, ready, "ready_to_merge");
+      await syncIssueStatus(input.companyId, ready, "ready_to_merge");
       return { unitId: acceptedUnit.id, status: "ready_to_merge", phase: "ready_to_merge", blocker: null, merged: false, changed: true };
     }
 

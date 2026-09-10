@@ -93,6 +93,13 @@ export type NativeDeliveryWait = {
   unitId: string;
   unitStatus: DeliveryUnitStatus;
   phase: DeliveryPhase;
+  /**
+   * Candidate identity epoch of the waited-on unit. A consumer that acts on
+   * this wait (queue parking, repair context) must re-validate against this
+   * generation: evidence for a replaced candidate never describes the current
+   * one.
+   */
+  candidateGeneration: number;
   repositoryId: string;
   repository: string;
   targetBranch: string;
@@ -200,6 +207,7 @@ function toWait(input: {
     unitId: input.unit.id,
     unitStatus: input.unit.status,
     phase: deriveDeliveryPhase(input.unit),
+    candidateGeneration: input.unit.candidateGeneration,
     repositoryId: input.unit.repositoryId,
     repository: input.repositoryOwner && input.repositoryName
       ? `${input.repositoryOwner}/${input.repositoryName}`

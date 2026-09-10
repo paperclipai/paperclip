@@ -18,6 +18,7 @@ import {
   deliveryRepositories,
   deliveryUnitIssues,
   deliveryUnits,
+  issueWorkProducts,
   issues,
   projectWorkspaces,
   projects,
@@ -159,6 +160,7 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     await db.delete(deliveryPolicies);
     await db.delete(activityLog);
     await db.delete(projectWorkspaces);
+    await db.delete(issueWorkProducts);
     await db.delete(issues);
     await db.delete(projects);
     await db.delete(agentWakeupRequests);
@@ -810,7 +812,12 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
       if (input.canDispatch && !input.canDispatch()) return null;
       const [run] = await db.insert(heartbeatRuns).values({
         companyId, agentId, invocationSource: "automation", triggerDetail: "system",
-        status: "queued", contextSnapshot: options.payload,
+        // Heartbeat builds the run context from the separate `contextSnapshot`
+        // option; the harness mirrors that so controller-owned context (for
+        // example `deliveryRepair`) is carried exactly as the real dispatcher
+        // carries it.
+        status: "queued",
+        contextSnapshot: { ...(options.payload ?? {}), ...(options.contextSnapshot ?? {}) },
       }).returning();
       return run;
     });
@@ -920,8 +927,659 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     return await db
       .select()
       .from(deliveryRepairAttempts)
-      .where(and(eq(deliveryRepairAttempts.companyId, companyId), eq(deliveryRepairAttempts.unitId, unitId)));
+      .where(and(eq(deliveryRepairAttempts.companyId, companyId), eq(deliveryRepairAttempts.unitId, unitId)))
+      .orderBy(deliveryRepairAttempts.attempt);
   }
+
+  it("re-dispatches a repair whose owner execution vanished while preserving dedupe for live and completed runs", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, unit } = pipeline;
+    const runs = async () => await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+
+    // First actionable evidence dispatches the owner with the controller's own
+    // repair context (unit, generation, head, reason, attempt).
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    const first = await runs();
+    expect(first).toHaveLength(1);
+    expect(first[0]?.contextSnapshot).toMatchObject({
+      deliveryRepair: {
+        unitId: unit.id,
+        candidateGeneration: 1,
+        headSha: HEAD,
+        reasonCode: "review_blocking_findings",
+        attempt: 1,
+      },
+    });
+
+    // A live execution handles the signal: repeated sweeps spend no attempt.
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    expect(await runs()).toHaveLength(1);
+    expect(await repairAttempts(companyId, unit.id)).toHaveLength(1);
+
+    // Process loss: the run ends without completing and has no live retry, so
+    // the unchanged signal is unhandled again and dispatches exactly once more.
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, first[0]!.id));
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    const afterLoss = await runs();
+    expect(afterLoss).toHaveLength(2);
+    const reDispatched = afterLoss.find((run) => run.status === "queued");
+    expect(reDispatched).toMatchObject({
+      agentId: unit.ownerAgentId,
+      contextSnapshot: { deliveryRepair: { unitId: unit.id, reasonCode: "review_blocking_findings", attempt: 2 } },
+    });
+    expect(await repairAttempts(companyId, unit.id)).toMatchObject([
+      { attempt: 1, status: "dispatched", signal: expect.stringContaining("v1:") },
+      { attempt: 2, status: "dispatched" },
+    ]);
+
+    // The re-dispatch deduplicates again while its execution is live.
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    expect(await runs()).toHaveLength(2);
+
+    // A completed execution is a real repair outcome: the signal stays handled
+    // even though the evidence has not changed.
+    await db.update(heartbeatRuns).set({ status: "completed" }).where(eq(heartbeatRuns.id, reDispatched!.id));
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    expect(await runs()).toHaveLength(2);
+  });
+
+  it("treats a vanished execution with a live retry as handled and escalates once the bound is reached", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, unit } = pipeline;
+    const runs = async () => await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    const [lost] = await runs();
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, lost!.id));
+    // A live retry of the exact lost run keeps the signal handled: the retry
+    // is the execution that will deliver the outcome.
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId: unit.ownerAgentId!,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      retryOfRunId: lost!.id,
+    });
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    expect(await runs()).toHaveLength(2);
+  });
+
+  it("does not let a vanished repair execution suppress the signal forever", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, unit } = pipeline;
+    // Every dispatch is lost to process loss; the bounded loop escalates
+    // instead of re-dispatching without limit.
+    for (let round = 1; round <= 4; round += 1) {
+      await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+      const dispatched = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "queued")));
+      for (const run of dispatched) {
+        await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, run.id));
+      }
+    }
+    const [escalated] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id));
+    expect(escalated).toMatchObject({ status: "blocked", blocker: { reasonCode: "repair_attempts_exhausted" } });
+    expect((await repairAttempts(companyId, unit.id)).filter((attempt) => attempt.status === "exhausted")).toHaveLength(1);
+  });
+
+  it("fences candidate evidence to its generation across head changes, PR replacement, and A -> B -> A", async () => {
+    const companyId = await seedCompany();
+    const projectId = await seedProject(companyId, "https://github.com/acme/widget");
+    const repository = await seedRepository(companyId);
+    const issue = await seedIssue(companyId, projectId);
+    await db.insert(deliveryPolicies).values({
+      companyId,
+      projectId,
+      repositoryId: repository.id,
+      targetBranch: "main",
+      enabled: true,
+      autoDeployDisposition: "authorized",
+      authorization: {
+        approvedByUserId: "user-1",
+        approvedAt: "2026-09-01T00:00:00Z",
+        statement: "Merge authorized",
+        scope: "project",
+      },
+    });
+    const remote = { headSha: HEAD, number: 7 };
+    const openRemote = () => {
+      const base = openPr(remote.headSha).value;
+      return {
+        ok: true as const,
+        value: {
+          ...base,
+          number: remote.number,
+          url: `https://github.com/acme/widget/pull/${remote.number}`,
+        },
+      };
+    };
+    const github = githubStub({
+      getPullRequest: async () => openRemote(),
+      findOpenPullRequest: async () => openRemote(),
+    });
+    const { units } = services(github);
+    const register = async (headSha: string) => await units.registerCandidate({
+      companyId, issue, actor: userActor, headSha, sourceBranch: "delivery/x", artifactReady: true,
+    });
+
+    await register(HEAD);
+    const first = await units.buildSummary(companyId, issue.id);
+    expect(first.candidateGeneration).toBe(1);
+    expect(first.headSha).toBe(HEAD);
+
+    // Evidence observed for generation 1 counts for generation 1 only.
+    await recordObservedFindings(db, {
+      companyId,
+      unitId: first.unitId!,
+      candidateGeneration: 1,
+      headSha: HEAD,
+      findings: [{
+        externalId: "scm-gen1", severity: "high", title: "P1: gen-1 defect", body: null,
+        filePath: null, line: null, url: null, blocking: true, addressed: false, commitSha: HEAD,
+      }],
+    });
+    expect((await units.buildSummary(companyId, issue.id)).review.blockingFindings).toBe(1);
+
+    // A new head is a new generation: readiness and evidence are revoked, and
+    // the replacement never inherits the previous candidate's approval.
+    remote.headSha = OTHER_HEAD;
+    await register(OTHER_HEAD);
+    const second = await units.buildSummary(companyId, issue.id);
+    expect(second.candidateGeneration).toBe(2);
+    expect(second.headSha).toBe(OTHER_HEAD);
+    expect(second.review.blockingFindings).toBe(0);
+    expect(second.review.status).toBe("unknown");
+    expect(second.checks).toEqual([]);
+    const [secondUnit] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, second.unitId!));
+    expect(secondUnit).toMatchObject({ candidateGeneration: 2, acceptedHeadSha: null });
+    // The worker's submit flag is recorded but never presented as an accepted
+    // artifact until the exact head is accepted on fresh evidence.
+    expect(secondUnit?.artifactReady).toBe(true);
+    expect(second.artifactReady).toBe(false);
+
+    // A write read at the previous generation is dropped, not retargeted.
+    await units.markBlocked({
+      companyId,
+      unitId: second.unitId!,
+      blocker: { reasonCode: "review_blocking_findings", message: "stale", owner: null, nextAction: null },
+      candidateGeneration: 1,
+    });
+    const [unchanged] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, second.unitId!));
+    expect(unchanged).toMatchObject({ status: "in_review", blocker: null, candidateGeneration: 2 });
+
+    // A replacement pull request is a material identity change in its own
+    // right, with the head unchanged.
+    remote.number = 9;
+    await register(remote.headSha);
+    const replaced = await units.buildSummary(companyId, issue.id);
+    expect(replaced.candidateGeneration).toBe(3);
+    expect(replaced.prNumber).toBe(9);
+    expect(replaced.headSha).toBe(OTHER_HEAD);
+
+    // A -> B -> A: the revision returns, the generation does not, so the
+    // generation-1 findings never surface as current evidence again.
+    remote.headSha = HEAD;
+    await register(HEAD);
+    const backToA = await units.buildSummary(companyId, issue.id);
+    expect(backToA.candidateGeneration).toBe(4);
+    expect(backToA.headSha).toBe(HEAD);
+    expect(backToA.review.blockingFindings).toBe(0);
+    expect(backToA.review.status).toBe("unknown");
+
+    // An observation that arrives after the candidate moved on is discarded
+    // rather than recorded as evidence for the new one.
+    expect(await recordObservedFindings(db, {
+      companyId,
+      unitId: backToA.unitId!,
+      candidateGeneration: 3,
+      headSha: "d".repeat(40),
+      findings: [{
+        externalId: "scm-late", severity: "high", title: "P1: late", body: null,
+        filePath: null, line: null, url: null, blocking: true, addressed: false, commitSha: "d".repeat(40),
+      }],
+    })).toEqual({ recorded: false });
+    expect((await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, backToA.unitId!)))
+      .map((row) => row.externalId)).toEqual(["scm-gen1"]);
+  });
+
+  /**
+   * Minimal candidate-generation fixture: one repository, one authorized
+   * policy, and a GitHub stub whose remote head and PR number the test owns.
+   */
+  async function candidateFixture() {
+    const companyId = await seedCompany();
+    const projectId = await seedProject(companyId, "https://github.com/acme/widget");
+    const repository = await seedRepository(companyId);
+    const issue = await seedIssue(companyId, projectId);
+    await db.insert(deliveryPolicies).values({
+      companyId,
+      projectId,
+      repositoryId: repository.id,
+      targetBranch: "main",
+      enabled: true,
+      autoDeployDisposition: "authorized",
+      authorization: {
+        approvedByUserId: "user-1",
+        approvedAt: "2026-09-01T00:00:00Z",
+        statement: "Merge authorized",
+        scope: "project",
+      },
+    });
+    const remote = { headSha: HEAD, number: 7 };
+    const openRemote = () => {
+      const base = openPr(remote.headSha).value;
+      return {
+        ok: true as const,
+        value: {
+          ...base,
+          number: remote.number,
+          url: `https://github.com/acme/widget/pull/${remote.number}`,
+        },
+      };
+    };
+    const github = githubStub({
+      getPullRequest: async () => openRemote(),
+      findOpenPullRequest: async () => openRemote(),
+    });
+    const { units } = services(github);
+    const register = async (headSha: string) => await units.registerCandidate({
+      companyId,
+      issue,
+      actor: userActor,
+      headSha,
+      sourceBranch: "delivery/x",
+      artifactReady: false,
+    });
+    return { companyId, projectId, repository, issue, remote, github, units, register };
+  }
+
+  function observedFinding(externalId: string, addressed = false) {
+    return {
+      externalId,
+      severity: "high",
+      title: `P1: ${externalId}`,
+      body: null,
+      filePath: null,
+      line: null,
+      url: null,
+      blocking: !addressed,
+      addressed,
+      commitSha: HEAD,
+    };
+  }
+
+  /**
+   * Blocks until `count` backends are provably waiting on a lock. The
+   * interleaving tests below must not depend on timing: they wait for the
+   * database to report the waiters before releasing the lock they hold.
+   */
+  async function waitForLockWaiters(count: number) {
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+      const result: unknown = await db.execute(sql`
+        select count(*)::int as waiting
+        from pg_stat_activity
+        where wait_event_type = 'Lock'
+          and query not ilike '%pg_stat_activity%'
+          and query ilike '%delivery_%'
+      `);
+      const rows = Array.isArray(result)
+        ? (result as Array<{ waiting: number }>)
+        : ((result as { rows?: Array<{ waiting: number }> }).rows ?? []);
+      const waiting = Number(rows[0]?.waiting ?? 0);
+      if (waiting >= count) return;
+      if (Date.now() > deadline) {
+        throw new Error(`timed out after ${waiting} lock waiters; expected ${count}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  /**
+   * Holds the unit row lock (as a competing transaction would while a write is
+   * in flight) until the returned `release` is called.
+   */
+  async function holdUnitRowLock(unitId: string) {
+    let release: () => void = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const held = db.transaction(async (tx) => {
+      await tx
+        .select({ id: deliveryUnits.id })
+        .from(deliveryUnits)
+        .where(eq(deliveryUnits.id, unitId))
+        .for("update");
+      await released;
+    });
+    return { release, held };
+  }
+
+  it("pauses an observation after its read, registers a replacement, then resumes it without touching the newer candidate", async () => {
+    const { companyId, issue, remote, units } = await candidateFixture();
+    const first = await units.registerCandidate({
+      companyId, issue, actor: userActor, headSha: HEAD, sourceBranch: "delivery/x", artifactReady: false,
+    });
+    const unitId = first.unit.id;
+
+    // The unit row is locked, so everything below is deterministic: the
+    // observation blocks first, the replacement queues behind it, and the
+    // release resumes them in that order.
+    const lock = await holdUnitRowLock(unitId);
+    const observation = recordObservedFindings(db, {
+      companyId,
+      unitId,
+      candidateGeneration: 1,
+      headSha: HEAD,
+      findings: [observedFinding("scm-1")],
+    });
+    await waitForLockWaiters(1);
+
+    remote.headSha = OTHER_HEAD;
+    remote.number = 9;
+    const replacement = units.registerCandidate({
+      companyId, issue, actor: userActor, headSha: OTHER_HEAD, sourceBranch: "delivery/x", artifactReady: false,
+    });
+    await waitForLockWaiters(2);
+    lock.release();
+    await lock.held;
+
+    expect(await observation).toEqual({ recorded: true });
+    const registered = await replacement;
+    expect(registered.unit.candidateGeneration).toBe(2);
+    expect(registered.unit.headSha).toBe(OTHER_HEAD);
+
+    // The earlier candidate's evidence survives as history...
+    const rows = (await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, unitId)))
+      .sort((left, right) => left.candidateGeneration - right.candidateGeneration);
+    expect(rows.map((row) => ({
+      externalId: row.externalId,
+      generation: row.candidateGeneration,
+      headSha: row.headSha,
+      state: row.state,
+    }))).toEqual([{ externalId: "scm-1", generation: 1, headSha: HEAD, state: "stale" }]);
+
+    // ...and the replacement owns no inherited evidence: nothing was written
+    // against generation 2 by the observation that belonged to generation 1.
+    const summaryAfterReplacement = await units.buildSummary(companyId, issue.id);
+    expect(summaryAfterReplacement.candidateGeneration).toBe(2);
+    expect(summaryAfterReplacement.review.blockingFindings).toBe(0);
+
+    // Newer evidence for the new candidate lands beside the history row and is
+    // the only row that counts as current.
+    await recordObservedFindings(db, {
+      companyId,
+      unitId,
+      candidateGeneration: 2,
+      headSha: OTHER_HEAD,
+      findings: [observedFinding("scm-1")],
+    });
+    const afterNewEvidence = (await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, unitId)))
+      .sort((left, right) => left.candidateGeneration - right.candidateGeneration);
+    expect(afterNewEvidence.map((row) => ({
+      generation: row.candidateGeneration,
+      headSha: row.headSha,
+      state: row.state,
+    }))).toEqual([
+      { generation: 1, headSha: HEAD, state: "stale" },
+      { generation: 2, headSha: OTHER_HEAD, state: "open" },
+    ]);
+    expect((await units.buildSummary(companyId, issue.id)).review.blockingFindings).toBe(1);
+  });
+
+  it("discards an observation whose candidate was replaced while it was paused", async () => {
+    const { companyId, issue, remote, units } = await candidateFixture();
+    const first = await units.registerCandidate({
+      companyId, issue, actor: userActor, headSha: HEAD, sourceBranch: "delivery/x", artifactReady: false,
+    });
+    const unitId = first.unit.id;
+
+    // This time the replacement is queued first: by the time the observation's
+    // read runs, the unit already describes generation 2.
+    const lock = await holdUnitRowLock(unitId);
+    remote.headSha = OTHER_HEAD;
+    remote.number = 9;
+    const replacement = units.registerCandidate({
+      companyId, issue, actor: userActor, headSha: OTHER_HEAD, sourceBranch: "delivery/x", artifactReady: false,
+    });
+    await waitForLockWaiters(1);
+    const observation = recordObservedFindings(db, {
+      companyId,
+      unitId,
+      candidateGeneration: 1,
+      headSha: HEAD,
+      findings: [observedFinding("scm-1")],
+    });
+    await waitForLockWaiters(2);
+    lock.release();
+    await lock.held;
+
+    const registered = await replacement;
+    expect(registered.unit.candidateGeneration).toBe(2);
+    expect(await observation).toEqual({ recorded: false });
+
+    // Nothing was written for the new candidate, and its own state is exactly
+    // what it registered — the stale snapshot neither blocked nor described it.
+    expect(await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, unitId))).toEqual([]);
+    const [after] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unitId));
+    expect(after).toMatchObject({
+      candidateGeneration: 2,
+      headSha: OTHER_HEAD,
+      prNumber: 9,
+      status: "in_review",
+      acceptedHeadSha: null,
+      blocker: null,
+    });
+    // The issue was not moved to review by the stale observation either.
+    expect((await units.buildSummary(companyId, issue.id)).review.status).toBe("unknown");
+  });
+
+  it("keeps generation-scoped finding history instead of overwriting the earlier candidate's rows", async () => {
+    const { companyId, issue, remote, units } = await candidateFixture();
+    const first = await units.registerCandidate({
+      companyId, issue, actor: userActor, headSha: HEAD, sourceBranch: "delivery/x", artifactReady: false,
+    });
+    const unitId = first.unit.id;
+    await recordObservedFindings(db, {
+      companyId, unitId, candidateGeneration: 1, headSha: HEAD, findings: [observedFinding("scm-1")],
+    });
+
+    remote.headSha = OTHER_HEAD;
+    remote.number = 9;
+    const replacement = await units.registerCandidate({
+      companyId, issue, actor: userActor, headSha: OTHER_HEAD, sourceBranch: "delivery/x", artifactReady: false,
+    });
+    expect(replacement.unit.candidateGeneration).toBe(2);
+    await recordObservedFindings(db, {
+      companyId, unitId, candidateGeneration: 2, headSha: OTHER_HEAD, findings: [observedFinding("scm-1")],
+    });
+
+    const rows = (await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, unitId)))
+      .sort((left, right) => left.candidateGeneration - right.candidateGeneration);
+    // One row per candidate: the first candidate's record is still there, with
+    // its own head and its own retirement, and the new candidate has its own.
+    expect(rows.map((row) => ({
+      externalId: row.externalId,
+      generation: row.candidateGeneration,
+      headSha: row.headSha,
+      state: row.state,
+    }))).toEqual([
+      { externalId: "scm-1", generation: 1, headSha: HEAD, state: "stale" },
+      { externalId: "scm-1", generation: 2, headSha: OTHER_HEAD, state: "open" },
+    ]);
+    // Only the current generation's row is live evidence.
+    const summary = await units.buildSummary(companyId, issue.id);
+    expect(summary.candidateGeneration).toBe(2);
+    expect(summary.review.blockingFindings).toBe(1);
+    expect(summary.review.headSha).toBeNull();
+  });
+
+  it("carries a recorded dispute onto the same finding's row for a new candidate", async () => {
+    const { companyId, issue, remote, units } = await candidateFixture();
+    const first = await units.registerCandidate({
+      companyId, issue, actor: userActor, headSha: HEAD, sourceBranch: "delivery/x", artifactReady: false,
+    });
+    const unitId = first.unit.id;
+    await recordObservedFindings(db, {
+      companyId, unitId, candidateGeneration: 1, headSha: HEAD, findings: [observedFinding("scm-1")],
+    });
+    const [gen1] = await db.select().from(deliveryFindings).where(and(
+      eq(deliveryFindings.unitId, unitId),
+      eq(deliveryFindings.candidateGeneration, 1),
+    ));
+    await units.recordFindingDisposition({
+      companyId,
+      unitId,
+      actor: userActor,
+      findingId: gen1!.id,
+      disposition: "disputed",
+      explanation: "Intentional retry: the duplicate dispatch is bounded.",
+    });
+
+    // The provider reports the same finding again on the replacement candidate.
+    remote.headSha = OTHER_HEAD;
+    remote.number = 9;
+    await units.registerCandidate({
+      companyId, issue, actor: userActor, headSha: OTHER_HEAD, sourceBranch: "delivery/x", artifactReady: false,
+    });
+    await recordObservedFindings(db, {
+      companyId, unitId, candidateGeneration: 2, headSha: OTHER_HEAD, findings: [observedFinding("scm-1")],
+    });
+
+    const rows = (await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, unitId)))
+      .sort((left, right) => left.candidateGeneration - right.candidateGeneration);
+    expect(rows).toMatchObject([
+      {
+        candidateGeneration: 1,
+        headSha: HEAD,
+        state: "disputed",
+        disposition: "disputed",
+        dispositionExplanation: "Intentional retry: the duplicate dispatch is bounded.",
+        dispositionActorType: "user",
+      },
+      {
+        candidateGeneration: 2,
+        headSha: OTHER_HEAD,
+        state: "disputed",
+        disposition: "disputed",
+        dispositionExplanation: "Intentional retry: the duplicate dispatch is bounded.",
+        dispositionActorType: "user",
+      },
+    ]);
+    // A resubmission never silently un-disputes a recorded human decision: the
+    // dispute still blocks, and it is visible as unresolved evidence.
+    const summary = await units.buildSummary(companyId, issue.id);
+    expect(summary.candidateGeneration).toBe(2);
+    expect(summary.review.blockingFindings).toBe(1);
+  });
+
+  it("never resurrects a terminal unit when a submission races the merge", async () => {
+    const { companyId, issue, remote, units } = await candidateFixture();
+    const first = await units.registerCandidate({
+      companyId, issue, actor: userActor, headSha: HEAD, sourceBranch: "delivery/x", artifactReady: false,
+    });
+    const unitId = first.unit.id;
+
+    // The unit merges while the next candidate is being verified (the submit
+    // path reads the unit before the GitHub bind, so this window is real).
+    await db.update(deliveryUnits).set({
+      status: "merged",
+      mergedAt: new Date(),
+      mergedSha: HEAD,
+      acceptedHeadSha: HEAD,
+    }).where(eq(deliveryUnits.id, unitId));
+
+    remote.headSha = OTHER_HEAD;
+    remote.number = 9;
+    const second = await units.registerCandidate({
+      companyId, issue, actor: userActor, headSha: OTHER_HEAD, sourceBranch: "delivery/x", artifactReady: false,
+    });
+
+    // The terminal unit keeps its merge, and the candidate registers as a new
+    // unit instead of reopening it.
+    expect(second.created).toBe(true);
+    expect(second.unit.id).not.toBe(unitId);
+    expect(second.unit.candidateGeneration).toBe(1);
+    const [merged] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unitId));
+    expect(merged).toMatchObject({
+      status: "merged",
+      candidateGeneration: 1,
+      headSha: HEAD,
+      acceptedHeadSha: HEAD,
+      mergedSha: HEAD,
+    });
+
+    // An in-flight evidence write is refused by the write itself, not only by
+    // the caller's earlier read: a merge that lands in between is never
+    // reopened by a blocker that was decided before it.
+    await units.markBlocked({
+      companyId,
+      unitId,
+      blocker: { reasonCode: "checks_failing", message: "stale blocker", owner: null, nextAction: null },
+      candidateGeneration: 1,
+    });
+    const [stillMerged] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unitId));
+    expect(stillMerged).toMatchObject({ status: "merged", blocker: null, mergedSha: HEAD });
+  });
+
+  it("entitles a task to delivery only through an explicit candidate or covered-by handoff", async () => {
+    const companyId = await seedCompany();
+    const projectId = await seedProject(companyId, "https://github.com/acme/widget");
+    const repository = await seedRepository(companyId);
+    const primary = await seedIssue(companyId, projectId, "in_progress");
+    const linkedOnly = await seedIssue(companyId, projectId, "in_progress");
+    // A pull request that merely links the task is not a delivery candidate.
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      projectId,
+      issueId: linkedOnly.id,
+      type: "pull_request",
+      provider: "github",
+      externalId: "99",
+      title: "Mentions the task",
+      url: "https://github.com/acme/widget/pull/99",
+      status: "open",
+    });
+    const github = githubStub({
+      findOpenPullRequest: async () => openPr(HEAD),
+      getPullRequest: async () => openPr(HEAD),
+    });
+    const { units } = services(github);
+    const delivery = deliveryService(db, { toolGateway: greptileToolGateway({}) });
+    // Registering a candidate needs a policy row naming a verified repository;
+    // the policy stays disabled so it does not enroll the whole project, which
+    // is what this test is about.
+    await db.insert(deliveryPolicies).values({
+      companyId,
+      projectId,
+      repositoryId: repository.id,
+      targetBranch: "main",
+      enabled: false,
+    });
+
+    // Nothing is enrolled while only the pull-request link exists.
+    expect((await delivery.listSummaries(companyId)).map((summary) => summary.issueId)).toEqual([]);
+
+    // An explicit candidate registers exactly its own issue.
+    await units.registerCandidate({
+      companyId, issue: primary, actor: userActor, headSha: HEAD, sourceBranch: "delivery/x", artifactReady: false,
+    });
+    expect((await delivery.listSummaries(companyId)).map((summary) => summary.issueId)).toEqual([primary.id]);
+
+    // An explicit covered-by handoff is what entitles the linked task — the
+    // pull-request mention never did.
+    await units.registerCandidate({
+      companyId, issue: primary, actor: userActor, headSha: HEAD, sourceBranch: "delivery/x",
+      artifactReady: false, coveredIssueIds: [linkedOnly.id],
+    });
+    expect((await delivery.listSummaries(companyId)).map((summary) => summary.issueId).sort())
+      .toEqual([primary.id, linkedOnly.id].sort());
+    expect(repository.id).toBeTruthy();
+  });
 
   it("drives governed Greptile evidence through repair, a fresh review, and a merged receipt", async () => {
     const pipeline = await governedPipeline();
@@ -1037,7 +1695,9 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     await seedFinding("scm-disputed", "disputed", "disputed");
     await seedFinding("scm-addressed", "already_addressed", "already_addressed");
 
-    await recordObservedFindings(db, { companyId, unitId: unit!.id, headSha: HEAD, findings: [] });
+    await recordObservedFindings(db, {
+      companyId, unitId: unit!.id, candidateGeneration: unit!.candidateGeneration, headSha: HEAD, findings: [],
+    });
 
     const rows = await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, unit!.id));
     const stateOf = (externalId: string) => rows.find((row) => row.externalId === externalId)?.state;
@@ -1072,7 +1732,7 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
       filePath: null, line: null, url: null, blocking: !addressed, addressed, commitSha: HEAD,
     });
     await recordObservedFindings(db, {
-      companyId, unitId: unit!.id, headSha: HEAD,
+      companyId, unitId: unit!.id, candidateGeneration: unit!.candidateGeneration, headSha: HEAD,
       findings: [finding("scm-fixed", false), finding("scm-disputed", true)],
     });
 

@@ -263,6 +263,9 @@ Invariants:
 - the transition into `in_review` and its requester activity record commit atomically, including transitions without an explicit review-interaction binding
 - `ready_to_merge` and `merging` are written only by the delivery controller; no API, agent, bulk, or recovery caller may set them
 - a code-delivery issue may only enter `done` when the delivery unit covering it has a verified merge receipt (remote inclusion in the intended target branch); non-code closure requires an explicit persisted disposition. See `doc/delivery-lifecycle.md`
+- delivery coverage is explicit: only a registered candidate and its validated covered-task links project review and merge receipts; mentioning a pull request never enrolls a task
+- candidate identity changes increment a durable generation; review findings, acceptance, repair attempts, and asynchronous delivery writes are fenced by that generation and exact head, including an A → B → A replacement
+- prior-generation evidence remains history; an unavailable current review is unknown, not acceptance. Merge authorization and deployment authorization remain separate, and material policy changes invalidate authorization with an inspectable changed scope
 - terminal states: `done | cancelled`
 
 ## 7.7 `issue_comments`
@@ -1221,6 +1224,12 @@ Behavior:
 - stream stdout/stderr to run logs
 - mark run status on exit code/timeout
 - cancel sends SIGTERM then SIGKILL after grace
+- an operator may configure `executionResourceResolver` with absolute `command`, `entry`, and `template` paths plus a bounded `timeoutMs`; the trusted resolver reports a canonical physical resource identity and its access mode before dispatch
+- canonical-resource admission is atomic across companies: readers may share a root, while an exclusive writer conflicts with every holder. Unknown ownership is not permission to overlap, and output age alone does not release a reservation
+- verified pre-model contention uses the existing resource-wait deferral without consuming execution-failure retries; an exit code without its validated run-bound evidence remains a failure
+- recovery evaluates current, row-validated repair intent rather than a saved prose wait instruction. Current generation, head, attempt, ownership, and lifecycle state must agree; malformed declared intent fails closed
+- timeout continuation is bounded and requires resumable progress evidence; a durable waiting path exempts missing-disposition recovery only when its next actor can actually perform the action
+- see `doc/execution-semantics.md` for the resolver receipt, contention evidence, and continuation contracts
 
 ## 11.3 HTTP Adapter
 

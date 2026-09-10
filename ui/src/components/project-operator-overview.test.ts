@@ -45,6 +45,9 @@ function deliveryOctane(
   return {
     phase: "merged",
     artifactReady: false,
+    candidateGeneration: 1,
+    readiness: "accepted",
+    policy: null,
     reviewStatus: "none",
     blockingFindings: 0,
     queuePosition: null,

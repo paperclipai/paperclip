@@ -35,6 +35,42 @@ Schema lives in `packages/db/src/schema/delivery.ts`. Contract types live in
 - **Repository identity** — `delivery_repositories` keyed by GitHub's immutable
   numeric id, with owner/name re-verified on every policy write so a rename
   cannot split the queue.
+- **Candidate generation** — durable integer `delivery_units.candidate_generation`
+  (default 1) naming the candidate identity epoch of a unit. A material identity
+  change — repository, pull request, head revision, source branch, or target
+  branch — increments it atomically in the registration statement itself.
+  Everything asynchronous is fenced by the generation it was *read* at: an
+  evidence write, acceptance, blocker, repair dispatch, or merge result that
+  belongs to a replaced candidate is discarded instead of being applied to the
+  new one. Ids and head SHAs alone are not a sufficient fence — a revision that
+  moves A → B → A would otherwise let generation-A evidence pass as current.
+  Findings carry their own `candidate_generation`; evidence from an older
+  generation remains as history (`delivery_findings`, delivery events) but never
+  counts as the current candidate's review, checks, or blocking findings.
+  Finding identity is `(unit, source, external_id, candidate_generation)`: the
+  same provider finding reported again on a later candidate gets its own row, so
+  the earlier candidate's record — its head, its state, its disposition — is
+  never overwritten. A recorded human `disputed` disposition is about the defect
+  rather than one revision, so it is carried onto the new candidate's row; while
+  the provider reports that finding against the candidate's current head it
+  keeps blocking, and a resubmission never silently resets it. It does not, by
+  itself, block a head the provider has not reported it on.
+  The fence is atomic, not a read followed by writes: an observation runs in one
+  transaction that takes the unit row lock first (`select … for update`) and
+  re-checks the generation there, and candidate replacement increments that same
+  row. So a replacement either commits before the observation (which is then
+  discarded) or waits until the snapshot and its sweep are durable — a snapshot
+  can never land as evidence for a candidate it did not describe. The same
+  applies to the block/unblock/status writes: terminal is checked inside the
+  write, so a merge that commits mid-flight is never reopened, and a submission
+  whose unit went terminal while the candidate was being verified registers a
+  new unit instead of resurrecting it.
+- **Evidence freshness** — a read is only display-current when it is stamped
+  with the unit's current generation *and* the head it was read for. A failed
+  authoritative read is recorded (`metadata.lastReadFailed`) and presents as
+  `unknown`, never as a cached pass; readiness stays revoked until a fresh read
+  succeeds. An unresolved-findings count includes `disputed` rows, because a
+  dispute still blocks.
 
 ## 2. Issue statuses
 
@@ -96,6 +132,23 @@ required checks, Greptile/independent-approval requirements, connections, or
 deployment disposition — voids the standing authorization. The operator must
 re-authorize the new scope explicitly; a fresh authorization in the same write
 re-authorizes at once. Pausing or resuming never changes the authorized scope.
+
+The voided scope is recorded, not just the absence: `authorization_invalidated_at`
+and `authorization_invalidated_scope` name when and which fields removed a
+standing authorization (`authorization` for an explicit operator removal).
+`authorizationState` therefore distinguishes three different facts — `recorded`
+(standing authority exists), `invalidated` (a recorded authorization was voided
+by a material change or removed), and `missing` (no authorization was ever
+recorded). The board and the policy surface show which one applies, and the gate
+message names the changed scope, because "re-authorize the changed scope" and
+"record a first authorization" are different operator actions.
+
+Merge authority and deployment authority stay separate facts:
+`authorization` (with `authorizationState`) governs whether the controller may
+merge, while `autoDeployDisposition` states what merging to the target does. The
+board projection reports evidence **readiness** (has fresh evidence satisfied the
+acceptance criteria for the current head?) separately from that authority block;
+`readiness: accepted` never means "authorized to merge".
 
 `autoDeployDisposition`:
 
@@ -191,15 +244,31 @@ Dependency edges are operator-governed.
   entry, and wakes the implementation owner with a bounded, deduplicated repair
   request (`delivery_repair_attempts`, max 3) through the real heartbeat
   dispatcher. Signals include blocking finding identities/content and required
-  failing checks, not unrelated check churn. Only a successfully queued owner
-  run handles a signal; failed dispatches remain retryable within the bound.
-  Exhaustion records `repair_attempts_exhausted` and releases the native waiting
-  claim so recovery can act. An explicit retry requests unchanged evidence
-  again without resetting the bound. Native merge-queue failures use the same
-  repair path and count toward the merge-attempt bound.
-- Findings are persisted in `delivery_findings`. A disposition is recorded but
-  never dismisses unilaterally: `disputed` findings keep blocking, and any
-  finding still reported on the accepted head reopens.
+  failing checks, not unrelated check churn. Exhaustion records
+  `repair_attempts_exhausted` and releases the native waiting claim so recovery
+  can act. An explicit retry requests unchanged evidence again without resetting
+  the bound. Native merge-queue failures use the same repair path and count
+  toward the merge-attempt bound.
+- Repair dedupe is bound to the durable execution, not to the recorded signal
+  string. Each attempt stores the evidence `signal` it was dispatched for and
+  the `candidate_generation` it was decided at, and the wake payload carries the
+  controller's own `contextSnapshot.deliveryRepair` identity (unit, generation,
+  head, reason, attempt). A repeated signal is only already handled while its
+  dispatch still has an executable outcome: a live or promotable wake/run, a
+  completed run (a real repair outcome), or a live retry of the lost run. When
+  the execution vanished — cancelled, failed by process loss, or never picked
+  up — with no live retry, the unchanged signal is unhandled again and one
+  bounded re-dispatch follows. Retry creation stays idempotent because every
+  attempt carries its own deterministic `(unit, reason, attempt)` intent key, so
+  concurrent sweeps cannot create two runs for the same attempt.
+- Findings are persisted in `delivery_findings`, one generation-scoped row per
+  `(unit, source, external_id, candidate_generation)`. A disposition is recorded
+  but never dismisses unilaterally: `disputed` findings keep blocking, any
+  finding still reported on the accepted head reopens, and a dispute recorded
+  for one candidate is carried onto the same finding's row when a later
+  candidate reports it again — a resubmission never silently un-disputes a
+  human decision. `fixed` and `already_addressed` are claims about a specific
+  revision and are never carried across candidates.
 - Only authoritative reads decide acceptance. If `getChecks` or `getReviews`
   fails, the evidence for that dimension is `null`, which the requirement
   evaluator blocks on (`provider_unknown`); cached metadata is display-only and
@@ -221,8 +290,17 @@ Dependency edges are operator-governed.
 
 All routes are company-scoped and activity-logged.
 
-- `GET /api/issues/:id/delivery` → `DeliverySummary`.
+- `GET /api/issues/:id/delivery` → `DeliverySummary`. Every delivery read
+  reports the candidate generation its facts belong to
+  (`candidateGeneration`), a generation-fenced review block
+  (`review.status: unknown` when fresh evidence for the current head is missing
+  or the last authoritative read failed), and findings carrying their own
+  generation so an operator can tell current evidence from history.
 - `GET /api/companies/:companyId/delivery?projectId=` → `{ items: DeliverySummary[] }`.
+- `GET /api/projects/:id/delivery-policy` → `DeliveryPolicy` with
+  `authorizationState`, `authorizationInvalidatedAt`, and
+  `authorizationInvalidatedScope`, so the board can show whether authority is
+  recorded, was voided (and by which scope fields), or was never recorded.
 - `POST /api/issues/:id/delivery` actions:
   - `submit` `{ headSha, baseSha?, sourceBranch, artifactReady, coveredIssueIds?, targetBranch? }`
     with exact 40-hex revisions. Submit binds the authoritative open pull
@@ -268,9 +346,15 @@ already-published candidate:
   the accepted head.
 
 The Delivery screen's merge queue includes only registered, non-terminal
-code-delivery candidates. Rows and counts represent covered tasks, so tasks
-sharing one PR do not imply independent candidates. Non-code, unsubmitted,
-and completed work remains visible in the reconciliation inventory.
+code-delivery candidates. Enrollment is explicit: a durable unit link (as
+primary or through a named `coveredIssueIds` handoff), an operator-recorded
+`delivery_kind`, or a project whose delivery policy is enabled. A pull request
+that merely mentions or links a task never enrolls it and never projects a
+merge receipt onto it: receipts are read through `delivery_unit_issues`, so only
+tasks the merged unit actually covers are delivered. Rows and counts represent
+covered tasks, so tasks sharing one PR do not imply independent candidates.
+Non-code, unsubmitted, and completed work remains visible in the reconciliation
+inventory.
 
 ## 10. Greptile
 
@@ -343,7 +427,23 @@ concurrent queue single-flight, lease revocation during review for both merge
 modes, Done through the real issue mutation on a GitHub project without a policy,
 atomic fail-closed submit, covered-issue authorization, Greptile
 partial-read failure, policy authorization invalidation, reconciliation
-downgrade, pause/disposition guards, and bounded retry.
+downgrade, pause/disposition guards, bounded retry, repair re-dispatch after a
+vanished execution (with dedupe preserved for live, completed, and live-retry
+dispatches, and bounded escalation once the bound is reached), candidate
+generation increments across head/PR changes and A → B → A, generation-fenced
+stale writes, discarded late observations, and explicit-coverage enrollment.
+Two lock-ordered interleaving regressions drive a real pause inside the
+observation: one resumes the observation ahead of a queued replacement and
+proves the newer candidate owns no inherited evidence while the earlier
+candidate's row survives as history, the other lets the replacement commit first
+and proves the stale snapshot is discarded without touching the new candidate.
+Generation-scoped finding history, the carried-forward human dispute, and the
+terminal-unit fence for a submission racing a merge are covered there too.
+`server/src/__tests__/issue-overview-projection.test.ts` covers the board
+projection: superseded-generation evidence shown as history (never as the
+current review), a failed current read shown as `unknown`, the current unit
+blocker superseding a historical unblock descriptor, and readiness projected
+separately from the policy's authority state.
 `server/src/__tests__/github-delivery-client.test.ts` exercises governed
 credentials and GitHub REST array decoding through the real client: pull
 requests remain discoverable, and review approvals and blocking findings are
