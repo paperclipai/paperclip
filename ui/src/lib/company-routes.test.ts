@@ -13,6 +13,14 @@ describe("company routes", () => {
     expect(applyCompanyPrefix("/tasks", "PAP")).toBe("/PAP/tasks");
   });
 
+  it("keeps delivery navigation inside the active company", () => {
+    expect(applyCompanyPrefix("/delivery", "COD")).toBe("/COD/delivery");
+    expect(isBoardPathWithoutPrefix("/delivery")).toBe(true);
+    expect(extractCompanyPrefixFromPath("/delivery")).toBeNull();
+    expect(toCompanyRelativePath("/COD/delivery")).toBe("/delivery");
+    expect(applyCompanyPrefix("/COD/delivery", "COD")).toBe("/COD/delivery");
+  });
+
   it("treats execution workspace paths as board routes that need a company prefix", () => {
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123")).toBe(true);
     expect(isBoardPathWithoutPrefix("/execution-workspaces/workspace-123/routines")).toBe(true);
