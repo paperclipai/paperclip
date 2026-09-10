@@ -1259,4 +1259,44 @@ describe("governed Greptile ingestion", () => {
     hasNewCommitsSinceReview = true;
     expect(await greptile.read(baseInput)).toMatchObject({ ok: true, reviewState: "pending" });
   });
+
+  it.each([
+    { content: "provider unavailable" },
+    { content: JSON.stringify({ comments: [] }), data: { isError: true }, error: "Provider failed" },
+    { content: JSON.stringify({ unexpected: [] }) },
+  ])("rejects an unreadable comments snapshot instead of clearing findings: %j", async (result) => {
+    const greptile = greptileReviewService({} as Db, {
+      github: greptileGitHub({ getReviewComments: async () => reviewComments([]) }, HEAD),
+      toolGateway: {
+        readConnectedTool: async ({ toolName }) => ({
+          ok: true,
+          result: toolName === "get_merge_request"
+            ? { content: JSON.stringify({ mergeRequest: { codeReviews: [{ status: "COMPLETED" }] } }) }
+            : result,
+        }),
+      },
+    });
+    expect(await greptile.read(baseInput)).toMatchObject({ ok: false, errorCode: "provider_unknown" });
+  });
+
+  it("does not accept an older completion when a pending review has no usable date", async () => {
+    let incompleteReview: Record<string, unknown> = { status: "IN_PROGRESS" };
+    const greptile = greptileReviewService({} as Db, {
+      github: greptileGitHub({ getReviewComments: async () => reviewComments([]) }, HEAD),
+      toolGateway: {
+        readConnectedTool: async ({ toolName }) => ({
+          ok: true,
+          result: { content: JSON.stringify(toolName === "get_merge_request"
+            ? { mergeRequest: { codeReviews: [
+              { status: "COMPLETED", createdAt: "2026-09-10T10:00:00Z" },
+              incompleteReview,
+            ] } }
+            : { comments: [] }) },
+        }),
+      },
+    });
+    expect(await greptile.read(baseInput)).toMatchObject({ ok: true, reviewState: "pending" });
+    incompleteReview = { createdAt: "2026-09-10T11:00:00Z" };
+    expect(await greptile.read(baseInput)).toMatchObject({ ok: false, errorCode: "provider_unknown" });
+  });
 });

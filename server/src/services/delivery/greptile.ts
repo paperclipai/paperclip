@@ -357,6 +357,30 @@ const MERGE_REQUEST_CONTAINER_KEYS: Record<string, true> = {
   pullRequest: true,
 };
 
+function hasReadableCommentCollection(value: unknown, depth = 0): boolean {
+  if (depth > MAX_PAYLOAD_DEPTH) return false;
+  if (Array.isArray(value)) {
+    return value.every((entry) => {
+      const row = record(entry);
+      if (!row || row.isError === true || row.error != null) return false;
+      if (hasReadableCommentCollection(row, depth + 1)) return true;
+      return identityOf(row) !== null && [
+        row.title, row.body, row.comment, row.details, row.description, row.message, row.summary,
+      ].some((text) => str(text) !== null);
+    });
+  }
+  const row = record(value);
+  if (!row || row.isError === true || row.error != null) return false;
+  let found = false;
+  for (const [key, child] of Object.entries(row)) {
+    if (FINDING_CONTAINER_KEYS[key] !== false && !MERGE_REQUEST_CONTAINER_KEYS[key]
+      && key !== "result" && key !== "human") continue;
+    if (!hasReadableCommentCollection(child, depth + 1)) return false;
+    found = true;
+  }
+  return found;
+}
+
 /**
  * Provider review status from `get_merge_request`.
  *
@@ -368,6 +392,7 @@ function readProviderReviewStatus(payload: unknown): ProviderReviewStatus | null
   const rows: Record<string, unknown>[] = [];
   let hasNewCommits = false;
   let emptyReviewCollection = false;
+  let invalidReviewEntry = false;
   const visit = (value: unknown, depth: number) => {
     if (depth > MAX_PAYLOAD_DEPTH) return;
     const container = record(value);
@@ -380,6 +405,7 @@ function readProviderReviewStatus(payload: unknown): ProviderReviewStatus | null
         for (const entry of Array.isArray(child) ? child : [child]) {
           const row = record(entry);
           if (row && str(row.status)) rows.push(row);
+          else invalidReviewEntry = true;
         }
       } else if (MERGE_REQUEST_CONTAINER_KEYS[key]) {
         visit(child, depth + 1);
@@ -387,6 +413,7 @@ function readProviderReviewStatus(payload: unknown): ProviderReviewStatus | null
     }
   };
   visit(payload, 0);
+  if (invalidReviewEntry) return null;
   if (rows.length === 0) return emptyReviewCollection
     ? { state: "pending", score: null, verdict: null }
     : null;
@@ -397,11 +424,12 @@ function readProviderReviewStatus(payload: unknown): ProviderReviewStatus | null
   rows.sort((a, b) => time(b) - time(a));
   const latest = rows[0]!;
   const latestTime = time(latest);
+  const orderingUnknown = rows.length > 1 && rows.some((row) => time(row) === 0);
   const pending = rows.some((row) =>
     time(row) === latestTime && str(row.status)?.toUpperCase() !== "COMPLETED");
   const verdict = str(latest.state) ?? str(latest.verdict) ?? str(latest.result) ?? str(latest.reviewStatus);
   return {
-    state: pending || hasNewCommits ? "pending" : "completed",
+    state: pending || orderingUnknown || hasNewCommits ? "pending" : "completed",
     score: num(latest.score) ?? num(latest.reviewScore),
     verdict: verdict?.trim().toLowerCase() ?? null,
   };
@@ -483,6 +511,17 @@ export function greptileReviewService(
     if (!comments.ok) return { ok: false, errorCode: comments.errorCode, message: comments.message };
     const reviewPayload = parseMcpToolPayload(review.result);
     const commentsPayload = parseMcpToolPayload(comments.result);
+    const failedEnvelope = [review.result, comments.result, reviewPayload].some((value) => {
+      const row = record(value);
+      return row?.isError === true || row?.error != null || record(row?.data)?.isError === true;
+    });
+    if (failedEnvelope || !hasReadableCommentCollection(commentsPayload)) {
+      return {
+        ok: false,
+        errorCode: "provider_unknown",
+        message: "Greptile returned an unreadable or failed review/comments response",
+      };
+    }
 
     const provider = readProviderReviewStatus(reviewPayload);
     if (!provider) {
