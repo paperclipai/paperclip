@@ -1,3 +1,4 @@
+import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKeySelect";
 import { RepositoryEditor } from "@/components/RepositoryEditor";
 import { TaskChatMarker } from "@/components/task-chat/TaskChatMarker";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
@@ -2177,6 +2178,12 @@ export function DesignGuide() {
           normal presentation. Recovery decisions and attempts belong in the run log;
           there is no execution status card or reconciliation form.
         </p>
+      </Section>
+
+      <Section title="Saved provider API keys">
+        <SavedProviderKeySelect options={[{ id: "example", label: "Claude API key (Your key)", binding: { type: "user_secret_ref", key: "ANTHROPIC_API_KEY", version: "latest" } }]} value="example" onChange={() => {}} loading={false} error={false} />
+        <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading error={false} />
+        <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading={false} error />
       </Section>
 
       <Section title="Connection Intent">

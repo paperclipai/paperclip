@@ -131,6 +131,8 @@ const mockApprovalsApi = vi.hoisted(() => ({
   create: vi.fn(),
 }));
 const mockSecretsApi = vi.hoisted(() => ({
+  list: vi.fn(),
+  removeUserSecretDefinition: vi.fn(),
   listMyUserSecrets: vi.fn(),
   createUserSecretDefinition: vi.fn(),
   createMyUserSecret: vi.fn(),
@@ -314,6 +316,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       session: { id: "session-b", userId: SESSION_USER_ID },
       user: { id: SESSION_USER_ID, name: "B", email: "b@example.com", image: null },
     });
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listMyUserSecrets.mockResolvedValue([]);
+    mockSecretsApi.removeUserSecretDefinition.mockResolvedValue({ ok: true });
     window.localStorage.clear();
     mockDialog.onboardingOpen = true;
     mockDialog.onboardingOptions = {};
@@ -855,6 +860,32 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
      * what this step did before, and what the Claude token path has always
      * avoided by holding a `user_secret_ref` instead.
      */
+    it.each(["personal", "organization"])("defaults to a saved %s API key and uses the same reference for probe and hire", async (scope) => {
+      const key = "ANTHROPIC_API_KEY";
+      const binding = scope === "personal"
+        ? { type: "user_secret_ref", key, version: "latest" }
+        : { type: "secret_ref", secretId: "saved-org-key", version: "latest" };
+      if (scope === "personal") {
+        mockSecretsApi.listMyUserSecrets.mockResolvedValue([{
+          definition: { id: "saved-key", companyId: "company-new", key, name: "Saved key", status: "active" },
+          secret: { companyId: "company-new", status: "active" },
+        }]);
+      } else {
+        mockSecretsApi.list.mockResolvedValue([{
+          id: "saved-org-key", companyId: "company-new", key, name: "Saved key", scope: "company", status: "active",
+        }]);
+      }
+      const { root, clickByText } = await openConnectStep();
+      const picker = document.body.querySelector('select[aria-label="Saved API key"]') as HTMLSelectElement;
+      expect(picker.value).toBe(scope === "personal" ? "user:saved-key" : "company:saved-org-key");
+      await clickByText((t) => isArcPrimary(t));
+      expect((mockAgentsApi.testEnvironment.mock.calls.at(-1) as unknown[])[2]).toMatchObject({ adapterConfig: { env: { [key]: binding } } });
+      expect((mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1]).toMatchObject({ adapterConfig: { env: { [key]: binding } } });
+      expect(mockSecretsApi.createMyUserSecret).not.toHaveBeenCalled();
+      expect(mockSecretsApi.rotateMyUserSecret).not.toHaveBeenCalled();
+      await act(async () => root.unmount());
+    });
+
     describe("an API key typed on the step", () => {
       const KEY = "sk-ant-typed-by-the-customer";
 
@@ -892,7 +923,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           string,
           { definitionKey: string; value: string },
         ];
-        expect(createBody.definitionKey).toBe("ANTHROPIC_API_KEY");
+        expect(createBody.definitionKey).toMatch(/^ANTHROPIC_API_KEY\.setup\./);
         expect(createBody.value).toBe(KEY);
 
         const hireBody = (mockAgentsApi.hire.mock.calls.at(-1) as unknown[])[1] as {
@@ -901,7 +932,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         // The same binding kind the subscription half of this step produces.
         expect(hireBody.adapterConfig.env?.ANTHROPIC_API_KEY).toEqual({
           type: "user_secret_ref",
-          key: "ANTHROPIC_API_KEY",
+          key: createBody.definitionKey,
           version: "latest",
         });
         // The whole payload, not just that one field: the point is that the key
@@ -911,39 +942,16 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         await act(async () => root.unmount());
       });
 
-      // Onboarding is the first thing to need this definition, so it creates it.
-      it("creates the definition once, then reuses it", async () => {
-        await connectWithApiKey();
-        expect(mockSecretsApi.createUserSecretDefinition).toHaveBeenCalledTimes(1);
-
+      it("creates a distinct definition instead of rotating an existing key", async () => {
         mockSecretsApi.listMyUserSecrets.mockResolvedValue([
-          { definition: { id: "def-1", key: "ANTHROPIC_API_KEY" }, secret: null },
+          { definition: { id: "old-def", key: "ANTHROPIC_API_KEY" }, secret: { id: "secret-existing" } },
         ]);
         const { root } = await connectWithApiKey();
-
-        expect(mockSecretsApi.createUserSecretDefinition).toHaveBeenCalledTimes(1);
-
-        await act(async () => root.unmount());
-      });
-
-      // A second value against one definition is what the server refuses, so a
-      // customer who already has a key stored must rotate rather than add.
-      it("rotates an existing value instead of storing a second one", async () => {
-        mockSecretsApi.listMyUserSecrets.mockResolvedValue([
-          {
-            definition: { id: "def-1", key: "ANTHROPIC_API_KEY" },
-            secret: { id: "secret-existing" },
-          },
-        ]);
-        const { root } = await connectWithApiKey();
-
-        expect(mockSecretsApi.rotateMyUserSecret).toHaveBeenCalledWith(
-          expect.any(String),
-          "secret-existing",
-          { value: KEY },
+        expect(mockSecretsApi.createUserSecretDefinition).toHaveBeenCalledWith(
+          expect.any(String), expect.objectContaining({ key: expect.stringMatching(/^ANTHROPIC_API_KEY\.setup\./) }),
         );
-        expect(mockSecretsApi.createMyUserSecret).not.toHaveBeenCalled();
-
+        expect(mockSecretsApi.rotateMyUserSecret).not.toHaveBeenCalled();
+        expect(mockSecretsApi.createMyUserSecret).toHaveBeenCalledTimes(1);
         await act(async () => root.unmount());
       });
 
@@ -1099,9 +1107,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await clickByText((t) => isArcPrimary(t));
 
       expect(mockAgentsApi.hire).toHaveBeenCalled();
-      // The status route must not even be asked — the conflict is decided
-      // from the adapter configuration alone, before any network round trip.
-      expect(mockAgentsApi.getClaudeOAuthTokenStatus).not.toHaveBeenCalled();
+      // Discovery reads saved-login metadata once; the hire does not re-read
+      // or apply it when the configuration already has an API key.
+      expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(1);
       const hireArgs = mockAgentsApi.hire.mock.calls.at(-1) as unknown[];
       const hireBody = hireArgs[1] as {
         adapterConfig: { env?: Record<string, unknown> };
@@ -1263,11 +1271,12 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockAgentsApi.hire.mockRejectedValue(new Error("hire failed"));
       const { root, clickByText } = await openConnectStep();
 
+      const discoveryReads = mockAgentsApi.getClaudeOAuthTokenStatus.mock.calls.length;
       await clickByText((t) => isArcPrimary(t));
-      expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(1);
+      expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(discoveryReads + 1);
 
       await clickByText((t) => isArcPrimary(t));
-      expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(2);
+      expect(mockAgentsApi.getClaudeOAuthTokenStatus).toHaveBeenCalledTimes(discoveryReads + 2);
 
       await act(async () => root.unmount());
     });
