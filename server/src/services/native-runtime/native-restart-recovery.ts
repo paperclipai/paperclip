@@ -436,6 +436,7 @@ export async function claimNativeRestartRecoveries(input: {
   controller?: NativeControllerIdentity;
   restartKind: NativeRestartKind;
   recoveryRequestId?: string | null;
+  remoteVerificationRetry?: boolean;
   runIds?: string[];
   now?: Date;
   limit?: number;
@@ -471,6 +472,10 @@ export async function claimNativeRestartRecoveries(input: {
             ),
           ),
         ),
+        ...(input.remoteVerificationRetry ? [
+          eq(nativeRunFinalizations.phase, "retryable_failure"),
+          eq(heartbeatRuns.errorCode, "runner_remote_recovery_unavailable"),
+        ] : []),
         ...(input.runIds?.length
           ? [inArray(heartbeatRuns.id, input.runIds)]
           : []),
@@ -512,6 +517,13 @@ export async function claimNativeRestartRecoveries(input: {
           runId: candidate.runId,
           reason: "recovery_rows_missing",
         } as const;
+      }
+      if (input.remoteVerificationRetry && (
+        row.coordinator.phase !== "retryable_failure" ||
+        row.run.errorCode !== "runner_remote_recovery_unavailable" ||
+        (row.coordinator.nextAttemptAt && row.coordinator.nextAttemptAt > now)
+      )) {
+        return { kind: "blocked", runId: row.run.id, reason: "remote_verification_retry_changed" } as const;
       }
       if (row.coordinator.resultId) {
         return {
@@ -577,8 +589,8 @@ export async function claimNativeRestartRecoveries(input: {
         typeof environment === "object" &&
         !Array.isArray(environment) &&
         ["sandbox", "ssh"].includes(String((environment as Record<string, unknown>).driver));
-      const runnerPidAlive = !remote && processIsAlive(row.run.processPid);
-      const runnerGroupAlive = !remote && processGroupIsAlive(row.run.processGroupId);
+      const runnerPidAlive = !remote && !input.remoteVerificationRetry && processIsAlive(row.run.processPid);
+      const runnerGroupAlive = !remote && !input.remoteVerificationRetry && processGroupIsAlive(row.run.processGroupId);
       const observedRunnerStart =
         row.run.processPid && runnerPidAlive
           ? await observedProcessStart(row.run.processPid)
@@ -702,14 +714,16 @@ export async function claimNativeRestartRecoveries(input: {
         }
       }
       const providerProcesses = await evaluateNativeProviderProcesses({
-        identities: (remote ? [] : providerProcessIdentities).filter(
+        identities: (remote || input.remoteVerificationRetry ? [] : providerProcessIdentities).filter(
           (identity) => identity.pid !== row.run.processPid,
         ),
       });
       const hasProviderEvidence =
         hasCheckpointProviderIdentity || providerEvents.length > 0;
 
-      const classification = remote && (environment as Record<string, unknown>).driver === "ssh"
+      const classification = input.remoteVerificationRetry && !remote
+        ? { claimKind: null, reason: "remote_recovery_environment_missing" }
+        : remote && (environment as Record<string, unknown>).driver === "ssh"
         ? { claimKind: null, reason: "remote_recovery_transport_unsupported" }
         : classifyNativeRunnerRecoveryEvidence({
         remote,

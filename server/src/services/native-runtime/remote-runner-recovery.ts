@@ -97,8 +97,11 @@ async function probe(
     args: ["-e", REMOTE_RECOVERY_PROBE, JSON.stringify(request)],
     bypassSession: true,
     timeoutMs: 10_000,
+  }).catch((cause: unknown) => {
+    throw new Error("runner_remote_recovery_unavailable", { cause });
   });
-  if (result.exitCode !== 0 || result.timedOut || result.stdout.length > 8192) {
+  if (result.timedOut) throw new Error("runner_remote_recovery_unavailable");
+  if (result.exitCode !== 0 || result.stdout.length > 8192) {
     throw new Error("runner_remote_recovery_unverified");
   }
   let value: RemoteRunnerRecovery;

@@ -2650,6 +2650,7 @@ export function nativeSessionFailureDisposition(
 ) {
   const permanentFailure =
     sourceFailureCode === "native_event_replay_conflict" ||
+    sourceFailureCode === "runner_remote_recovery_unverified" ||
     sourceFailureCode === "runner_remote_provider_artifact_incompatible";
   const exhausted = permanentFailure || attempt >= 3;
   return {
@@ -2690,6 +2691,8 @@ export function nativeSessionFailureSourceCode(
   error: unknown,
 ):
   | "runner_remote_provider_artifact_incompatible"
+  | "runner_remote_recovery_unverified"
+  | "runner_remote_recovery_unavailable"
   | "provider_process_exited"
   | "provider_stdout_closed"
   | "provider_process_output_closed"
@@ -2705,6 +2708,12 @@ export function nativeSessionFailureSourceCode(
   | "native_event_replay_conflict"
   | "native_session_interrupted" {
   const message = error instanceof Error ? error.message : String(error);
+  if (/runner_remote_recovery_unverified/i.test(message)) {
+    return "runner_remote_recovery_unverified";
+  }
+  if (/runner_remote_recovery_unavailable/i.test(message)) {
+    return "runner_remote_recovery_unavailable";
+  }
   if (/runner_remote_provider_artifact_incompatible/i.test(message)) {
     return "runner_remote_provider_artifact_incompatible";
   }
@@ -3853,23 +3862,37 @@ async function executePaperclipNativeSessionWithinScope(
     await trace.end(environmentScope, { endedAtMs: environmentEndedAtMs });
   }
   let verifiedRemoteRecovery: RemoteRunnerRecovery | undefined;
+  let remoteRecoveryVerificationError: Error | undefined;
   if (input.useRunnerd) {
-    verifiedRemoteRecovery = await migrateRunnerdStateRootForExecution({
-      db: input.db,
-      execution: input.execution,
-      allowVerifiedBackup:
-        input.runnerExecutionTarget?.kind === "remote" &&
-        input.runnerExecutionTarget.transport === "sandbox",
-      // A retained warm runner is deliberately still ready rather than
-      // suspended. Only the exact idle in-process owner may rotate that
-      // prior-run authority; after a hard restart the map is empty and the
-      // durable-state verifier continues to require a suspended runner.
-      allowRetainedWarmRunner: hasIdleWarmNativeSessionOwner(input),
-      restartRecovery: input.restartRecovery,
-      runnerExecutionTarget: input.runnerExecutionTarget,
-    });
+    try {
+      verifiedRemoteRecovery = await migrateRunnerdStateRootForExecution({
+        db: input.db,
+        execution: input.execution,
+        allowVerifiedBackup:
+          input.runnerExecutionTarget?.kind === "remote" &&
+          input.runnerExecutionTarget.transport === "sandbox",
+        // A retained warm runner is deliberately still ready rather than
+        // suspended. Only the exact idle in-process owner may rotate that
+        // prior-run authority; after a hard restart the map is empty and the
+        // durable-state verifier continues to require a suspended runner.
+        allowRetainedWarmRunner: hasIdleWarmNativeSessionOwner(input),
+        restartRecovery: input.restartRecovery,
+        runnerExecutionTarget: input.runnerExecutionTarget,
+      });
+    } catch (error) {
+      if (input.restartRecovery?.kind !== "reconcile_remote_runner") throw error;
+      // Restart recovery already owns a durable claim. Settle failed remote
+      // verification through the same fenced failure handler as execution,
+      // without loading unverified state or creating a provider session.
+      remoteRecoveryVerificationError = new Error(
+        nativeSessionFailureSourceCode(error) === "runner_remote_recovery_unavailable"
+          ? "runner_remote_recovery_unavailable"
+          : "runner_remote_recovery_unverified",
+        { cause: error },
+      );
+    }
   }
-  const durableRunnerBinding = input.useRunnerd
+  const durableRunnerBinding = input.useRunnerd && !remoteRecoveryVerificationError
     ? loadRunnerdDurableBinding(input.execution)
     : null;
   const effectiveRunnerInstanceId =
@@ -3998,7 +4021,7 @@ async function executePaperclipNativeSessionWithinScope(
           const nextAttempt = nextNativeProviderAttempt(
             coordinator.attempt,
             recovering?.kind === "reconcile_remote_runner" &&
-              verifiedRemoteRecovery?.alive === false
+              (verifiedRemoteRecovery?.alive === false || remoteRecoveryVerificationError !== undefined)
               ? "resume_dead_runner"
               : recovering?.kind,
           );
@@ -4369,7 +4392,7 @@ async function executePaperclipNativeSessionWithinScope(
   );
   let existingWarmSession: NativeSession | undefined;
   let persistedWarmSession: PersistedNativeSession | null | undefined;
-  if (warmSessionId !== null && warmConfigDigest !== null) {
+  if (!remoteRecoveryVerificationError && warmSessionId !== null && warmConfigDigest !== null) {
     const entry = warmNativeSessions.get(warmSessionId);
     if (entry) {
       // Run-scoped broker capabilities must rotate with the process, while the
@@ -4485,6 +4508,7 @@ async function executePaperclipNativeSessionWithinScope(
     controller,
   });
   try {
+    if (remoteRecoveryVerificationError) throw remoteRecoveryVerificationError;
     const runnerdBackend =
       input.useRunnerd && input.backend === undefined
         ? await createRunnerdBackend({
@@ -4762,6 +4786,7 @@ async function executePaperclipNativeSessionWithinScope(
     const { exhausted } = recoveryProjection;
     const integrityFailure =
       sourceFailureCode === "native_event_replay_conflict";
+    const remoteAuthorityFailure = sourceFailureCode === "runner_remote_recovery_unverified";
     const message =
       error instanceof Error
         ? error.message.slice(0, 2_000)
@@ -4852,13 +4877,15 @@ async function executePaperclipNativeSessionWithinScope(
             nextAction:
               recoveryEvidence.recoveryMode === "ambiguous_state"
                 ? "Inspect the original provider failure and durable events; state is ambiguous and a replacement provider session is forbidden."
-                : integrityFailure
-                  ? "Inspect the persisted runner events and checkpoint for a source-sequence integrity conflict; automatic recovery is stopped."
-                  : exhausted
-                    ? "Inspect the persisted native session after its bounded resume budget was exhausted."
-                    : recoveryEvidence.recoveryMode === "bootstrap_retry"
-                      ? "Retry provider bootstrap on this same run; durable evidence proves no provider session or provider event was created."
-                      : "Resume this same run from its exact persisted native provider checkpoint after the retry delay.",
+                : remoteAuthorityFailure
+                  ? "Inspect the original sandbox identity and durable runner state; automatic replacement is forbidden until authority is verified."
+                  : integrityFailure
+                    ? "Inspect the persisted runner events and checkpoint for a source-sequence integrity conflict; automatic recovery is stopped."
+                    : exhausted
+                      ? "Inspect the persisted native session after its bounded resume budget was exhausted."
+                      : recoveryEvidence.recoveryMode === "bootstrap_retry"
+                        ? "Retry provider bootstrap on this same run; durable evidence proves no provider session or provider event was created."
+                        : "Resume this same run from its exact persisted native provider checkpoint after the retry delay.",
           },
           nextAttemptAt,
           recoveryHistory: sql`(
@@ -4963,13 +4990,15 @@ async function executePaperclipNativeSessionWithinScope(
         nextAction:
           recoveryEvidence.recoveryMode === "ambiguous_state"
             ? "Inspect the original provider failure and explicitly resolve the ambiguous session state; do not open a replacement provider session."
-            : integrityFailure
-              ? "Inspect the persisted runner event collision and explicitly repair or replace the run; automatic retries are disabled."
-              : exhausted
-                ? "Inspect the provider trace and explicitly choose a replacement run or provider configuration; automatic provider work is stopped."
-                : recoveryEvidence.recoveryMode === "bootstrap_retry"
-                  ? "Retry bootstrap on the same run without manufacturing a provider checkpoint."
-                  : "Resume the exact persisted native session on the same heartbeat run.",
+            : remoteAuthorityFailure
+              ? "Inspect the original sandbox identity and durable runner state; do not launch a replacement provider session without verified authority."
+              : integrityFailure
+                ? "Inspect the persisted runner event collision and explicitly repair or replace the run; automatic retries are disabled."
+                : exhausted
+                  ? "Inspect the provider trace and explicitly choose a replacement run or provider configuration; automatic provider work is stopped."
+                  : recoveryEvidence.recoveryMode === "bootstrap_retry"
+                    ? "Retry bootstrap on the same run without manufacturing a provider checkpoint."
+                    : "Resume the exact persisted native session on the same heartbeat run.",
         wakePolicy: nextAttemptAt
           ? {
               kind: "resume_native_run",

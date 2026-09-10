@@ -147,7 +147,12 @@ runner. The runner must then authenticate to its existing durable PRP authority.
 Adoption preserves the provider attempt and does not launch another runner or
 replace its artifacts. A dead runner can restart only from verified suspended
 state. Missing or conflicting evidence preserves the controller journal and
-fails recovery. Host PID checks do not establish remote process ownership.
+fails recovery. Verification failures release the claimed execution lease and
+persist a recovery disposition. Temporary connection failures retry after 30
+seconds through the same remote verifier and consume the bounded attempt budget;
+missing or conflicting authority blocks automatic replacement. The retry keeps
+remote process identifiers and cannot launch a provider before verification.
+Host PID checks do not establish remote process ownership.
 Remote runners have a five-minute reconnect grace period for app replacement;
 liveness probes share one request in flight and run at most once per second.
 

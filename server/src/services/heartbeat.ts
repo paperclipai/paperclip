@@ -17137,6 +17137,12 @@ export function heartbeatService(
       );
     const claimableNativeRunIds = new Set<string>();
     for (const { run } of retryableNativeProcesses) {
+      if (run.errorCode === "runner_remote_recovery_unavailable") {
+        // Its PIDs belong to the sandbox. Only remote authority verification
+        // can establish whether that executor survived the interruption.
+        claimableNativeRunIds.add(run.id);
+        continue;
+      }
       if (!run.processPid && !run.processGroupId) {
         claimableNativeRunIds.add(run.id);
         continue;
@@ -17197,6 +17203,7 @@ export function heartbeatService(
             dispatch: (claim) => {
               const execution = executeRun(claim.runId, {
                 nativeLeaseOwner: claim.leaseOwner,
+                nativeRestartRecovery: claim.restartRecovery,
               }).catch((error) => {
                 logger.error(
                   { err: error, runId: claim.runId },
@@ -17960,6 +17967,7 @@ export function heartbeatService(
           dispatch: (claim) => {
             const execution = executeRun(claim.runId, {
               nativeLeaseOwner: claim.leaseOwner,
+              nativeRestartRecovery: claim.restartRecovery,
             }).catch((error) => {
               logger.error(
                 { err: error, runId: claim.runId },

@@ -122,6 +122,6 @@ describe("remote recovery evidence", () => {
     expect(await Promise.all([adopted.isAlive(), adopted.isAlive(), adopted.isAlive()])).toEqual([true, true, true]);
     expect(execute).toHaveBeenCalledOnce();
     execute.mockRejectedValueOnce(new Error("provider unavailable"));
-    await expect(adopted.signal("SIGTERM")).rejects.toThrow("provider unavailable");
+    await expect(adopted.signal("SIGTERM")).rejects.toThrow("runner_remote_recovery_unavailable");
   });
 });
