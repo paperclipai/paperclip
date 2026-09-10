@@ -6,7 +6,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { SentryGate } from "./components/SentryGate";
-import { SupportChatGate } from "./components/SupportChatGate";
 import { CompanyProvider, useCompany } from "./context/CompanyContext";
 import { LiveUpdatesProvider } from "./context/LiveUpdatesProvider";
 import { BreadcrumbProvider } from "./context/BreadcrumbContext";
@@ -69,8 +68,6 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
         <ThemeProvider>
           <BrowserRouter>
             <CompanyProvider>
-              {/* Mounts account-scoped support chat with name and verified email. */}
-              <SupportChatGate />
               <EditorAutocompleteProvider>
                 <ToastProvider>
                   <LiveUpdatesProvider>

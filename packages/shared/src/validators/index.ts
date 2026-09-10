@@ -975,6 +975,5 @@ export {
 } from "./tool-access.js";
 export * from "./skill-policy.js";
 export * from "./provider-trace.js";
-export * from "./support-chat.js";
 export * from "./app-definition.js";
 export * from "./chat-channels.js";

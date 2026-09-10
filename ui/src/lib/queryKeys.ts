@@ -590,11 +590,6 @@ export const queryKeys = {
   auth: {
     session: ["auth", "session"] as const,
   },
-  supportChat: {
-    // Account-scoped so sign-out clears the identity attestation.
-    session: (userId: string) =>
-      ["support-chat", "session", userId] as const,
-  },
   inboxAgentPolicy: {
     mine: (companyId: string) =>
       ["inbox-agent-policy", companyId, "me"] as const,

@@ -35,7 +35,6 @@ import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
 import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
 import { cloudRoutes } from "./routes/cloud.js";
-import { supportChatRoutes } from "./routes/support-chat.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
@@ -113,6 +112,7 @@ import { adapterRoutes } from "./routes/adapters.js";
 import { managedAgentProfileRoutes } from "./routes/managed-agent-profiles.js";
 import { remoteAgentProfileRoutes } from "./routes/remote-agent-profiles.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { injectCloudUiSnippet } from "./cloud-ui-snippet.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { staticUiCacheControl } from "./static-ui-cache.js";
 import { applyUiBranding } from "./ui-branding.js";
@@ -622,7 +622,6 @@ export async function createApp(
   );
   api.use(openApiRoutes());
   api.use("/cloud", cloudRoutes());
-  api.use("/support-chat", supportChatRoutes(db));
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(folderRoutes(db));
@@ -947,6 +946,10 @@ export async function createApp(
           immutable: true,
         }),
       );
+      // Serve root/index through the same runtime HTML transform as SPA routes.
+      app.get(["/", "/index.html"], (_req, res) => {
+        res.type("html").set("Cache-Control", "no-cache").send(readBrandedStaticIndexHtml(uiDist));
+      });
       // Non-hashed static files (favicon.ico, manifest, robots.txt, etc.):
       // short cache so operators who swap them out see the new version
       // reasonably fast, with must-revalidate overrides for index.html and
@@ -1055,7 +1058,7 @@ export async function createApp(
     viteHtmlRenderer = createCachedViteHtmlRenderer({
       vite,
       uiRoot,
-      brandHtml: applyUiBranding,
+      brandHtml: (html) => injectCloudUiSnippet(applyUiBranding(html)),
     });
     const renderViteHtml = viteHtmlRenderer;
 

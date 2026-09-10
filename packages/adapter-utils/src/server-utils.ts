@@ -3354,9 +3354,6 @@ export function sanitizeInheritedPaperclipEnv(
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   delete env.PAPERCLIPAI_CMD;
-  // Cloud support credentials belong to the server, never inherited agents.
-  delete env.PLAIN_CHAT_EMAIL_HMAC_SECRET;
-  delete env.PLAIN_API_KEY;
   for (const key of Object.keys(env)) {
     if (!key.startsWith("PAPERCLIP_")) continue;
     if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
