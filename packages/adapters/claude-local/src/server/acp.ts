@@ -43,6 +43,11 @@ import {
   prepareSandboxClaudeProbeRuntime,
 } from "./claude-config.js";
 import {
+  extractClaudeRetryNotBefore,
+  isClaudeProviderQuotaError,
+  isClaudeTransientUpstreamError,
+} from "./parse.js";
+import {
   buildAdapterTestTargetCheck,
   buildClaudeLoginRequiredHint,
   classifyThrownErrorClass,
@@ -339,6 +344,57 @@ export function mapClaudeAcpAuthErrorCode(
   return { ...result, errorCode: CLAUDE_AUTH_REQUIRED_ERROR_CODE };
 }
 
+/**
+ * The generic error code the shared acpx engine emits when the provider turn
+ * fails. Claude limit exhaustion ("You've hit your session limit · resets
+ * 1:30pm (Asia/Bangkok)") surfaces this way on the ACP lane, so without a
+ * Claude-specific translation the recovery sweep cannot classify it as a
+ * quota wait and strands the issue in `blocked` ("No live execution path").
+ */
+const ACPX_TURN_FAILED_ERROR_CODE = "acpx_turn_failed";
+
+/**
+ * Translate a generic acpx turn failure into the same limit classification the
+ * Claude CLI lane already emits (`execute.ts`): `provider_quota` /
+ * `claude_transient_upstream` plus the parsed `retryNotBefore` reset time, in
+ * both the result fields and the `resultJson` keys the server recovery sweep
+ * reads (`retryNotBefore`, `transientRetryNotBefore`,
+ * `providerQuotaRetryNotBefore`). Classification deliberately reads only the
+ * run's error surface (`errorMessage`), never the transcript/stdout, which
+ * routinely *mentions* limits it is merely talking about.
+ */
+export function mapClaudeAcpLimitErrorCode(
+  result: AdapterExecutionResult,
+  now = new Date(),
+): AdapterExecutionResult {
+  if (result.errorCode !== ACPX_TURN_FAILED_ERROR_CODE) return result;
+  const surface = { errorMessage: result.errorMessage ?? null };
+  const providerQuota = isClaudeProviderQuotaError(surface);
+  const transientUpstream = !providerQuota && isClaudeTransientUpstreamError(surface);
+  if (!providerQuota && !transientUpstream) return result;
+  const retryNotBefore = extractClaudeRetryNotBefore(surface, now);
+  const iso = retryNotBefore ? retryNotBefore.toISOString() : null;
+  const errorFamily = providerQuota ? "provider_quota" as const : "transient_upstream" as const;
+  const priorResultJson = parseObject(result.resultJson);
+  return {
+    ...result,
+    errorCode: providerQuota ? "provider_quota" : "claude_transient_upstream",
+    errorFamily,
+    ...(iso ? { retryNotBefore: iso } : {}),
+    resultJson: {
+      ...priorResultJson,
+      errorFamily,
+      ...(iso
+        ? {
+            retryNotBefore: iso,
+            transientRetryNotBefore: iso,
+            ...(providerQuota ? { providerQuotaRetryNotBefore: iso } : {}),
+          }
+        : {}),
+    },
+  };
+}
+
 export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}): ClaudeAcpExecutor {
   let executor: ClaudeAcpExecutor | null = null;
   return async (ctx) => {
@@ -356,7 +412,7 @@ export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}):
       ...ctx,
       config: buildClaudeAcpConfig(ctx.config, target?.kind === "remote" ? {} : process.env),
     });
-    return mapClaudeAcpAuthErrorCode(result);
+    return mapClaudeAcpLimitErrorCode(mapClaudeAcpAuthErrorCode(result));
   };
 }
 
