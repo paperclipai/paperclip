@@ -4609,6 +4609,64 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       expect(row).toMatchObject({ status: "pending", result: null });
     });
 
+    it.each(["matching review stage", "outside policy", "implementation owner"] as const)(
+      "resolves a temporarily assigned reviewer only with independent native stage evidence: %s", async (scenario) => {
+      const { companyId, goalId, issueId, authorAgentId, reviewerAgentId, reviewerRunId } =
+        await seedPinnedReview();
+      const stageId = randomUUID();
+      await issuesSvc.update(issueId, {
+        status: "in_progress",
+        assigneeAgentId: authorAgentId,
+        executionPolicy: {
+          mode: "normal",
+          commentRequired: true,
+          stages: [{
+            id: stageId,
+            type: "review",
+            participants: [{ id: randomUUID(), type: "agent", agentId: scenario === "outside policy" ? authorAgentId : reviewerAgentId, userId: null }],
+            approvalsNeeded: 1,
+          }],
+        },
+      });
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "request_confirmation",
+        addresseeAgentId: reviewerAgentId,
+        payload: pinnedReviewPayload(),
+      }, { agentId: authorAgentId });
+      await db.update(issues).set({
+        assigneeAgentId: reviewerAgentId,
+        executionState: {
+          status: "pending",
+          currentStageIndex: 0,
+          currentStageId: stageId,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: reviewerAgentId, userId: null },
+          returnAssignee: { type: "agent", agentId: scenario === "implementation owner" ? reviewerAgentId : authorAgentId, userId: null },
+          reviewRequest: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+          changesRequestedCount: 0,
+          monitor: null,
+        },
+      }).where(eq(issues.id, issueId));
+
+      const resolution = interactionsSvc.acceptInteraction(
+        { id: issueId, companyId, goalId, projectId: null },
+        created.id,
+        {},
+        { agentId: reviewerAgentId, runId: reviewerRunId },
+      );
+      if (scenario === "matching review stage") {
+        await expect(resolution).resolves.toMatchObject({ interaction: { status: "accepted" } });
+      } else {
+        await expect(resolution).rejects.toMatchObject({
+          status: 403,
+          details: expect.objectContaining({ requiredResolver: "reviewer_other_than_issue_assignee" }),
+        });
+      }
+    });
+
     it("refuses a tampered stored review:null pin instead of downgrading it to a generic confirmation", async () => {
       const { companyId, goalId, issueId, authorAgentId, reviewerAgentId, reviewerRunId } =
         await seedPinnedReview();

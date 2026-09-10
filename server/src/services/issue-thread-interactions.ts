@@ -75,6 +75,7 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
+import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "./issue-execution-policy.js";
 import {
   assertIssueReviewVerdictActorAllowed,
   isIssueReviewVerdictInteraction,
@@ -477,6 +478,8 @@ type IssueResolutionContext = {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   reviewPolicy: IssueReviewPolicy | null;
+  executionPolicy: unknown;
+  executionState: unknown;
   createdByAgentId: string | null;
   createdByUserId: string | null;
 };
@@ -498,10 +501,10 @@ async function assertRequestConfirmationResolutionAllowedUnderLock(
   assertInteractionResolutionAllowed(interaction, actor);
 
   // A pinned code review narrows resolution further than the stored resolver
-  // policy: only the addressed reviewer agent may resolve it, that reviewer must
-  // not be the issue's current assignee, and the reviewer's configured model
-  // must still match the pin. A pin that cannot be parsed fails closed rather
-  // than degrading to a generic confirmation.
+  // policy: only the addressed independent reviewer may resolve it, and the
+  // configured model must still match the pin. A native review stage may
+  // temporarily assign the issue to that reviewer without making them its
+  // implementation author. Unusable pins still fail closed.
   const codeReview = interaction.kind === "request_confirmation"
     ? readRequestConfirmationReview(interaction.payload)
     : { present: false, review: null as RequestConfirmationReview | null };
@@ -515,9 +518,25 @@ async function assertRequestConfirmationResolutionAllowedUnderLock(
       );
     }
     assertIssueThreadInteractionCodeReviewResolver({ actor: resolverActor(actor), interaction });
-    // Independence is re-evaluated against the locked issue row, so a
-    // reassignment after the request cannot hand the review to the assignee.
-    if (codeReviewReviewerIsIssueAssignee(interaction.addresseeAgentId, issue.assigneeAgentId)) {
+    // Ordinary reassignment must not permit self-review. Only a matching,
+    // pending native review stage proves this is a temporary reviewer assignment.
+    const state = parseIssueExecutionState(issue.executionState);
+    const policy = normalizeIssueExecutionPolicy(issue.executionPolicy);
+    const stage = state ? policy?.stages[state.currentStageIndex ?? -1] : null;
+    const assignedByReviewStage = (issue.status === "in_progress" || issue.status === "in_review")
+      && !issue.assigneeUserId
+      && state?.status === "pending"
+      && state.currentStageType === "review"
+      && state.currentParticipant?.type === "agent"
+      && state.currentParticipant.agentId === interaction.addresseeAgentId
+      && state.returnAssignee !== null
+      && !(state.returnAssignee.type === "agent" && state.returnAssignee.agentId === interaction.addresseeAgentId)
+      && stage?.id === state.currentStageId
+      && stage?.type === "review"
+      && !state.completedStageIds.includes(stage.id)
+      && stage.participants.some(participant =>
+        participant.type === "agent" && participant.agentId === interaction.addresseeAgentId);
+    if (codeReviewReviewerIsIssueAssignee(interaction.addresseeAgentId, issue.assigneeAgentId) && !assignedByReviewStage) {
       throw issueThreadInteractionResolutionError(
         403,
         "interaction_creator_excluded",
@@ -1863,6 +1882,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
           reviewPolicy: issues.reviewPolicy,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
         })
@@ -2069,6 +2090,8 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
           reviewPolicy: issues.reviewPolicy,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
           createdByAgentId: issues.createdByAgentId,
           createdByUserId: issues.createdByUserId,
         })

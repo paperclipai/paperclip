@@ -744,9 +744,12 @@ requires an agent addressee and cannot be combined with a document target, gover
 tool action, or secret proposal.
 
 Creation and resolution independently check the addressee's current exact model.
-The current issue assignee cannot be the candidate reviewer, including when a
-coordinator creates the interaction; resolution rechecks that separation under the
-issue lock. Existing creator/source-run exclusions also remain in force. Malformed
+At creation, the current issue assignee cannot be the candidate reviewer, including
+when a coordinator creates the interaction. Resolution rechecks separation under
+the issue lock, except when matching pending native review-stage policy and state
+temporarily assign the addressed reviewer and name a different return owner.
+Ordinary reassignment does not qualify. Existing creator/source-run exclusions
+also remain in force. Malformed
 stored review pins fail closed, and approval of one revision never approves a
 later revision. General confirmations and human-only plan approvals retain their
 existing contracts.
