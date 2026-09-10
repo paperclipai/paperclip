@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { URL } from "node:url";
 
 export class ApiRequestError extends Error {
@@ -70,21 +71,21 @@ export class PaperclipApiClient {
   post<T>(path: string, body?: unknown, opts?: RequestOptions): Promise<T | null> {
     return this.request<T>(path, {
       method: "POST",
-      body: body === undefined ? undefined : JSON.stringify(body),
+      ...jsonRequestBody(body),
     }, opts);
   }
 
   patch<T>(path: string, body?: unknown, opts?: RequestOptions): Promise<T | null> {
     return this.request<T>(path, {
       method: "PATCH",
-      body: body === undefined ? undefined : JSON.stringify(body),
+      ...jsonRequestBody(body),
     }, opts);
   }
 
   put<T>(path: string, body?: unknown, opts?: RequestOptions): Promise<T | null> {
     return this.request<T>(path, {
       method: "PUT",
-      body: body === undefined ? undefined : JSON.stringify(body),
+      ...jsonRequestBody(body),
     }, opts);
   }
 
@@ -120,7 +121,7 @@ export class PaperclipApiClient {
     };
 
     if (init.body !== undefined) {
-      headers["content-type"] = headers["content-type"] ?? "application/json";
+      headers["content-type"] = headers["content-type"] ?? "application/json; charset=utf-8";
     }
 
     if (this.apiKey) {
@@ -167,16 +168,155 @@ export class PaperclipApiClient {
     }
 
     if (response.status === 204) {
+      verifyTextMutationReadback(path, init.method, init.body, undefined);
       return null;
     }
 
     const text = await response.text();
     if (!text.trim()) {
+      verifyTextMutationReadback(path, init.method, init.body, undefined);
       return null;
     }
 
-    return safeParseJson(text) as T;
+    const parsed = safeParseJson(text) as T;
+    verifyTextMutationReadback(path, init.method, init.body, parsed);
+    return parsed;
   }
+}
+
+export class ApiReadbackMismatchError extends Error {
+  constructor(path: string, field: string) {
+    super(`Paperclip readback mismatch for ${field} after ${path}; stopping workflow.`);
+  }
+}
+
+function jsonRequestBody(body: unknown): Pick<RequestInit, "body" | "headers"> {
+  if (body === undefined) return {};
+  const bytes = new TextEncoder().encode(JSON.stringify(body));
+  return {
+    // Send JSON as bytes rather than a JavaScript string so transport encoding is
+    // explicit and cannot depend on a host shell or platform default code page.
+    body: bytes,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "content-digest": `sha-256=:${createHash("sha256").update(bytes).digest("base64")}:`,
+    },
+  };
+}
+
+function verifyTextMutationReadback(path: string, method: string | undefined, rawBody: BodyInit | null | undefined, response: unknown) {
+  if (!(rawBody instanceof Uint8Array)) return;
+  const request = safeParseJson(new TextDecoder("utf-8", { fatal: true }).decode(rawBody));
+  if (!request || typeof request !== "object" || Array.isArray(request)) return;
+  const requested = request as Record<string, unknown>;
+  const pathname = path.split("?")[0] ?? path;
+  const isIssueUpdate = method?.toUpperCase() === "PATCH" && /^\/api\/issues\/[^/]+$/.test(pathname);
+  const isCommentCreate = method?.toUpperCase() === "POST" && /^\/api\/issues\/[^/]+\/comments$/.test(pathname);
+  const isIssueCreate = method?.toUpperCase() === "POST" && /^\/api\/companies\/[^/]+\/issues$/.test(pathname);
+  const isChildCreate = method?.toUpperCase() === "POST" && /^\/api\/issues\/[^/]+\/children$/.test(pathname);
+  const isRecoveryResolve = method?.toUpperCase() === "POST" && /^\/api\/issues\/[^/]+\/recovery-actions\/resolve$/.test(pathname);
+  const isInteraction = /^\/api\/issues\/[^/]+\/interactions(?:\/[^/]+(?:\/(?:accept|reject|respond|verdicts|withdraw|cancel))?)?$/.test(pathname);
+  const isDecision = /^\/api\/(?:companies\/[^/]+\/(?:decisions|decision-bundles)|decisions\/[^/]+\/(?:decide|dismiss|cancel))$/.test(pathname);
+  const expectedText = collectSemanticText(requested);
+  const expectedContractText = isInteraction || isDecision ? collectContractText(requested) : [];
+  const requiresReadback = isIssueUpdate || isCommentCreate || isIssueCreate || isChildCreate || isRecoveryResolve || isInteraction || isDecision;
+  if (!response || typeof response !== "object") {
+    if (requiresReadback && (expectedText.length > 0 || expectedContractText.length > 0)) throw new ApiReadbackMismatchError(path, "authoritative response unavailable");
+    return;
+  }
+  const returned = response as Record<string, unknown>;
+
+  if (isCommentCreate) assertExactText(path, "body", requested.body, returned.body);
+  if (isIssueCreate || isIssueUpdate) {
+    assertExactText(path, "title", requested.title, returned.title);
+    assertExactText(path, "description", requested.description, returned.description);
+  }
+  if (isIssueUpdate) assertExactText(path, "comment", requested.comment, (returned.comment as Record<string, unknown> | undefined)?.body);
+  if (isRecoveryResolve) {
+    assertExactText(path, "resolutionNote", requested.resolutionNote, (returned.recoveryAction as Record<string, unknown> | undefined)?.resolutionNote);
+  }
+  if (isChildCreate) {
+    const child = isRecord(returned.issue) ? returned.issue : returned;
+    assertExactText(path, "title", requested.title, child.title);
+    assertExactText(path, "description", requested.description, child.description);
+  }
+  if (isInteraction || isDecision) {
+    const authoritative = isInteraction && isRecord(returned.interaction)
+      ? returned.interaction
+      : isDecision && isRecord(returned.decision)
+        ? returned.decision
+        : returned;
+    assertTextPaths(path, expectedContractText, authoritative);
+  }
+}
+
+function assertExactText(path: string, field: string, expected: unknown, actual: unknown) {
+  if (expected !== undefined && (typeof expected !== "string" || actual !== expected)) {
+    throw new ApiReadbackMismatchError(path, field);
+  }
+}
+
+const SEMANTIC_TEXT_FIELDS = new Set([
+  "title", "description", "comment", "body", "resolutionNote", "decisionNote", "reason", "summaryMarkdown",
+  "prompt", "question", "answer", "message", "text", "instructions", "summary",
+]);
+
+function collectSemanticText(value: unknown, fieldName?: string): string[] {
+  if (typeof value === "string") return fieldName && SEMANTIC_TEXT_FIELDS.has(fieldName) ? [value] : [];
+  if (Array.isArray(value)) return value.flatMap((item) => collectSemanticText(item, fieldName));
+  if (!isRecord(value)) return [];
+  return Object.entries(value).flatMap(([key, item]) => collectSemanticText(item, key));
+}
+
+// Interaction and decision endpoints persist their contract payloads verbatim.
+// These fields are identifiers, enum values, or normalized temporal metadata;
+// they are not user-authored text and therefore have no authoritative text
+// readback requirement. Every other string is checked recursively.
+const NON_TEXT_CONTRACT_FIELDS = new Set([
+  "id", "kind", "type", "key", "optionId", "clientKey", "revisionId",
+  "idempotencyKey", "sourceCommentId", "sourceRunId", "addresseeAgentId",
+  "continuationPolicy", "resolverPolicy", "expiresAt",
+]);
+
+interface TextPath {
+  path: readonly (string | number)[];
+  value: string;
+}
+
+function collectContractText(value: unknown, fieldName?: string, path: readonly (string | number)[] = []): TextPath[] {
+  if (typeof value === "string") return fieldName && NON_TEXT_CONTRACT_FIELDS.has(fieldName) ? [] : [{ path, value }];
+  if (Array.isArray(value)) return value.flatMap((item, index) => collectContractText(item, fieldName, [...path, index]));
+  if (!isRecord(value)) return [];
+  return Object.entries(value).flatMap(([key, item]) => collectContractText(item, key, [...path, key]));
+}
+
+function assertTextPaths(path: string, expectedText: readonly TextPath[], response: unknown) {
+  for (const expected of expectedText) {
+    const actual = readTextPath(response, expected.path);
+    if (actual !== expected.value) throw new ApiReadbackMismatchError(path, formatTextPath(expected.path));
+  }
+}
+
+function readTextPath(value: unknown, path: readonly (string | number)[]): unknown {
+  let current = value;
+  for (const segment of path) {
+    if (typeof segment === "number") {
+      if (!Array.isArray(current)) return undefined;
+      current = current[segment];
+    } else {
+      if (!isRecord(current)) return undefined;
+      current = current[segment];
+    }
+  }
+  return current;
+}
+
+function formatTextPath(path: readonly (string | number)[]): string {
+  return path.map((segment) => typeof segment === "number" ? `[${segment}]` : segment).join(".").replace(".[", "[");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function buildUrl(apiBase: string, path: string): string {

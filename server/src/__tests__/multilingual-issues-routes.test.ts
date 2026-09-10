@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -8,6 +9,11 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
+import {
+  agentTextMutationContentType,
+  agentTextMutationIntegrity,
+  captureAndValidateAgentTextMutationBody,
+} from "../middleware/agent-text-mutation-integrity.js";
 import { issueRoutes } from "../routes/issues.js";
 import type { StorageService } from "../storage/types.js";
 
@@ -25,6 +31,8 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let app!: ReturnType<typeof createApp>;
   let companyId!: string;
+  let actorType: "agent" | "board" = "board";
+  let genericMutationCount = 0;
 
   const title = "验证中文任务";
   const description = [
@@ -70,7 +78,7 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
       membershipRole: "owner",
       updatedAt: new Date(),
     });
-  }, 20_000);
+  }, 120_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -92,10 +100,9 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
 
   function createApp(companyId: string) {
     const app = express();
-    app.use(express.json());
     app.use((req, _res, next) => {
       (req as any).actor = {
-        type: "board",
+        type: actorType,
         userId: "cloud-user-1",
         companyIds: [companyId],
         memberships: [{ companyId, membershipRole: "owner", status: "active" }],
@@ -106,7 +113,25 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
       };
       next();
     });
+    // Keep this fixture in the production order: charset validation must run
+    // before express.json() gets a chance to emit its own 415 response.
+    app.use(agentTextMutationContentType);
+    const verifyAgentJsonBody = (req: IncomingMessage, _res: ServerResponse, buffer: Buffer) => {
+      captureAndValidateAgentTextMutationBody(req, buffer);
+    };
+    app.use(express.json({ verify: verifyAgentJsonBody }));
+    app.use(agentTextMutationIntegrity);
+    // The route fixture is board-authorized; retain the agent identity only for
+    // the integrity boundary, then exercise the normal persistence route.
+    app.use((req, _res, next) => {
+      if (req.actor.type === "agent") req.actor = { ...req.actor, type: "board" } as any;
+      next();
+    });
     app.use("/api", issueRoutes(db, createStorage()));
+    app.post("/api/integrity-probe", (_req, res) => {
+      genericMutationCount += 1;
+      res.status(201).json({ ok: true });
+    });
     app.use(errorHandler);
     return app;
   }
@@ -152,6 +177,83 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
     expect(commentRes.body.body).toBe(firstReply);
   });
 
+  it("rejects a PowerShell 5.1-style lossy agent comment before persistence", async () => {
+    actorType = "agent";
+    const lostJson = Buffer.from('{"body":"????????"}', "ascii");
+    const staleDigest = createHash("sha256").update(Buffer.from('{"body":"Кириллица сохранена"}', "utf8")).digest("base64");
+    const matchingLostDigest = createHash("sha256").update(lostJson).digest("base64");
+    const missingDigest = await request(app)
+      .post("/api/issues/LNG-1/comments")
+      .set("Content-Type", "application/json; charset=utf-8")
+      .send(lostJson.toString("utf8"));
+    const nonUtf8Charset = await request(app)
+      .post("/api/issues/LNG-1/comments")
+      .set("Content-Type", "application/json; charset=windows-1252")
+      .set("Content-Digest", `sha-256=:${staleDigest}:`)
+      .send(lostJson.toString("utf8"));
+    const mismatchedDigest = await request(app)
+      .post("/api/issues/LNG-1/comments")
+      .set("Content-Type", "application/json; charset=utf-8")
+      .set("Content-Digest", `sha-256=:${staleDigest}:`)
+      .send(lostJson.toString("utf8"));
+    const matchingDigest = await request(app)
+      .post("/api/issues/LNG-1/comments")
+      .set("Content-Type", "application/json; charset=utf-8")
+      .set("Content-Digest", `sha-256=:${matchingLostDigest}:`)
+      .send(lostJson.toString("utf8"));
+    const matchingPatchDigest = await request(app)
+      .patch("/api/issues/LNG-1")
+      .set("Content-Type", "application/json; charset=utf-8")
+      .set("Content-Digest", `sha-256=:${matchingLostDigest}:`)
+      .send(lostJson.toString("utf8"));
+    actorType = "board";
+
+    expect(missingDigest.status).toBe(400);
+    expect(nonUtf8Charset.status).toBe(428);
+    expect(mismatchedDigest.status).toBe(400);
+    expect(matchingDigest.status).toBe(422);
+    expect(matchingPatchDigest.status).toBe(422);
+    const comments = await request(app).get("/api/issues/LNG-1/comments").query({ order: "asc" });
+    expect(comments.body).toHaveLength(1);
+    expect(comments.body[0]?.body).toBe(firstReply);
+  });
+
+  it("enforces integrity on arbitrary agent JSON POST routes", async () => {
+    actorType = "agent";
+    const payload = Buffer.from('{"kind":"interaction"}', "utf8");
+    const digest = createHash("sha256").update(payload).digest("base64");
+    const missingDigest = await request(app)
+      .post("/api/integrity-probe")
+      .set("Content-Type", "application/json; charset=utf-8")
+      .send(payload.toString("utf8"));
+    const accepted = await request(app)
+      .post("/api/integrity-probe")
+      .set("Content-Type", "application/json; charset=utf-8")
+      .set("Content-Digest", `sha-256=:${digest}:`)
+      .send(payload.toString("utf8"));
+    actorType = "board";
+
+    expect(missingDigest.status).toBe(400);
+    expect(accepted.status).toBe(201);
+    expect(genericMutationCount).toBe(1);
+  });
+
+  it("accepts an agent UTF-8 byte payload and returns its text unchanged", async () => {
+    actorType = "agent";
+    const body = "Кириллица сохранена";
+    const bytes = Buffer.from(JSON.stringify({ body }), "utf8");
+    const digest = createHash("sha256").update(bytes).digest("base64");
+    const response = await request(app)
+      .post("/api/issues/LNG-1/comments")
+      .set("Content-Type", "application/json; charset=utf-8")
+      .set("Content-Digest", `sha-256=:${digest}:`)
+      .send(bytes.toString("utf8"));
+    actorType = "board";
+
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(response.body.body).toBe(body);
+  });
+
   it("preserves multilingual document bodies", async () => {
     const documentRes = await request(app)
       .put("/api/issues/LNG-1/documents/qa-notes")
@@ -178,6 +280,7 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
     expect(commentsRes.status, JSON.stringify(commentsRes.body)).toBe(200);
     expect(commentsRes.body.map((comment: { body: string }) => comment.body)).toEqual([
       firstReply,
+      "Кириллица сохранена",
       completionNote,
     ]);
   });
@@ -187,6 +290,6 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
     expect(heartbeatContextRes.status, JSON.stringify(heartbeatContextRes.body)).toBe(200);
     expect(heartbeatContextRes.body.issue.title).toBe(title);
     expect(heartbeatContextRes.body.issue.description).toBe(description);
-    expect(heartbeatContextRes.body.commentCursor.totalComments).toBe(2);
+    expect(heartbeatContextRes.body.commentCursor.totalComments).toBe(3);
   });
 });
