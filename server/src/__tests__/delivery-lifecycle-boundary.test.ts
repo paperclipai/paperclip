@@ -475,6 +475,96 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     expect(await gate.evaluateDone({ companyId, issue: first })).toMatchObject({ allowed: true });
   });
 
+  it("records remotely proven historical rewrites without inventing the merge method", async () => {
+    const companyId = await seedCompany();
+    const projectId = await seedProject(companyId, "https://github.com/acme/widget");
+    const repository = await seedRepository(companyId);
+    const issue = await seedIssue(companyId, projectId, "done");
+    await db.insert(deliveryPolicies).values({
+      companyId, projectId, repositoryId: repository.id, targetBranch: "main", mergeMethod: "merge",
+    });
+    const github = githubStub({
+      getPullRequest: async () => ({
+        ok: true,
+        value: { ...openPr(HEAD).value, state: "closed", merged: true, mergeCommitSha: OTHER_HEAD },
+      }),
+      compareCommits: async (_company, _connection, _host, _owner, _name, revision) => ({
+        ok: true,
+        value: { status: revision === OTHER_HEAD ? "ahead" : "diverged", aheadBy: 1, behindBy: revision === OTHER_HEAD ? 0 : 1, included: revision === OTHER_HEAD },
+      }),
+    });
+    const item = await deliveryReconciliationService(db as unknown as Db, { github }).record({
+      companyId, actor: userActor,
+      write: {
+        idempotencyKey: randomUUID(), issueId: issue.id, classification: "code_verified",
+        provenance: { repository: "acme/widget", targetBranch: "main", prNumber: 7, mergedSha: OTHER_HEAD, headSha: HEAD },
+      },
+    });
+    expect(item).toMatchObject({
+      classification: "code_verified",
+      provenance: { mergeMethod: "unknown", squashOrRebase: true, acceptedHeadSha: HEAD, mergedSha: OTHER_HEAD },
+    });
+    expect(await createDeliveryDoneGate(db as unknown as Db).evaluateDone({ companyId, issue })).toMatchObject({ allowed: true });
+  });
+
+  it("defers a historical PR already tracked by a live delivery unit", async () => {
+    const companyId = await seedCompany();
+    const projectId = await seedProject(companyId, "https://github.com/acme/widget");
+    const repository = await seedRepository(companyId);
+    const issue = await seedIssue(companyId, projectId, "done");
+    const active = await seedIssue(companyId, projectId);
+    await db.insert(deliveryPolicies).values({
+      companyId, projectId, repositoryId: repository.id, targetBranch: "main",
+    });
+    await db.insert(deliveryUnits).values({
+      companyId, projectId, repositoryId: repository.id, primaryIssueId: active.id,
+      targetBranch: "main", sourceBranch: "delivery/x", headSha: HEAD, prNumber: 7,
+    });
+    const github = githubStub({
+      getPullRequest: async () => ({
+        ok: true,
+        value: { ...openPr(HEAD).value, state: "closed", merged: true, mergeCommitSha: HEAD },
+      }),
+      compareCommits: async () => ({ ok: true, value: { status: "identical", aheadBy: 0, behindBy: 0, included: true } }),
+    });
+    const item = await deliveryReconciliationService(db as unknown as Db, { github }).record({
+      companyId, actor: userActor,
+      write: {
+        idempotencyKey: randomUUID(), issueId: issue.id, classification: "code_verified",
+        provenance: { repository: "acme/widget", targetBranch: "main", prNumber: 7, mergedSha: HEAD, headSha: HEAD },
+      },
+    });
+    expect(item).toMatchObject({ classification: "code_unverified", provenance: null });
+    expect(await createDeliveryDoneGate(db as unknown as Db).evaluateDone({ companyId, issue })).toMatchObject({ allowed: false });
+  });
+
+  it("rejects a replay key for another issue before importing its receipt", async () => {
+    const companyId = await seedCompany();
+    const projectId = await seedProject(companyId, "https://github.com/acme/widget");
+    const repository = await seedRepository(companyId);
+    const first = await seedIssue(companyId, projectId, "done");
+    const second = await seedIssue(companyId, projectId, "done");
+    await db.insert(deliveryPolicies).values({ companyId, projectId, repositoryId: repository.id, targetBranch: "main" });
+    const reconciliation = deliveryReconciliationService(db as unknown as Db, {
+      github: githubStub({
+        compareCommits: async () => ({ ok: true, value: { status: "identical", aheadBy: 0, behindBy: 0, included: true } }),
+      }),
+    });
+    const idempotencyKey = randomUUID();
+    await reconciliation.record({
+      companyId, actor: userActor,
+      write: { issueId: first.id, idempotencyKey, classification: "code_unverified" },
+    });
+    await expect(reconciliation.record({
+      companyId, actor: userActor,
+      write: {
+        issueId: second.id, idempotencyKey, classification: "code_verified",
+        provenance: { repository: "acme/widget", targetBranch: "main", mergedSha: HEAD, headSha: HEAD },
+      },
+    })).rejects.toMatchObject({ status: 409 });
+    expect(await createDeliveryDoneGate(db as unknown as Db).evaluateDone({ companyId, issue: second })).toMatchObject({ allowed: false });
+  });
+
   it("does not certify an unrelated historical head using an included target revision", async () => {
     const companyId = await seedCompany();
     const projectId = await seedProject(companyId, "https://github.com/acme/widget");

@@ -22,7 +22,7 @@ import type {
 import type { DeliveryActor } from "./units.js";
 import { createGitHubDeliveryClient, type GitHubDeliveryClient } from "./github-client.js";
 import type { DeliveryRepositoryRow } from "./policy.js";
-import { forbidden } from "../../errors.js";
+import { conflict, forbidden } from "../../errors.js";
 
 export type DeliveryReconciliationWriteInput = {
   idempotencyKey: string;
@@ -295,13 +295,21 @@ export function deliveryReconciliationService(
     );
     if (!included.ok) return reject(`remote inclusion check failed: ${included.message}`);
     if (!included.value.included) return reject("claimed revision is not included in the target branch");
+    let squashOrRebase = false;
+    if (headSha !== mergedSha) {
+      const headIncluded = await github.compareCommits(
+        input.companyId, repository.connectionId, repository.host, repository.owner, repository.name, headSha, policy.targetBranch,
+      );
+      if (!headIncluded.ok) return reject(`historical head inclusion check failed: ${headIncluded.message}`);
+      squashOrRebase = !headIncluded.value.included;
+    }
     const now = new Date();
     const provenance: DeliveryProvenance = {
       repository: `${repository.owner}/${repository.name}`, githubRepositoryId: repository.githubRepositoryId,
       targetBranch: policy.targetBranch, sourceBranch, submittedHeadSha: headSha, acceptedHeadSha: headSha,
       baseSha, mergedSha, mergeCommitSha: input.claim.prNumber ? mergedSha : null,
-      mergeMethod: input.claim.prNumber ? policy.mergeMethod : "merge",
-      squashOrRebase: Boolean(input.claim.prNumber && policy.mergeMethod !== "merge"),
+      mergeMethod: "unknown",
+      squashOrRebase,
       checks: [], reviewStatus: "historical", blockingFindings: 0, verifiedAt: now.toISOString(),
     };
     return db.transaction(async (tx) => {
@@ -329,6 +337,15 @@ export function deliveryReconciliationService(
           eq(deliveryUnits.targetBranch, policy.targetBranch), eq(deliveryUnits.status, "merged"),
           eq(deliveryUnits.headSha, headSha), eq(deliveryUnits.mergedSha, mergedSha),
         )).limit(1);
+      if (input.claim.prNumber) {
+        const [tracked] = await tx.select({ id: deliveryUnits.id }).from(deliveryUnits).where(and(
+          eq(deliveryUnits.companyId, input.companyId), eq(deliveryUnits.repositoryId, repository.id),
+          eq(deliveryUnits.prNumber, input.claim.prNumber),
+        )).limit(1);
+        if (tracked && tracked.id !== existing?.unit.id) {
+          return reject("pull request is already tracked by a delivery unit; reconcile that unit instead");
+        }
+      }
       let unitId = existing?.unit.id;
       if (!unitId) {
         const [unit] = await tx.insert(deliveryUnits).values({
@@ -336,7 +353,8 @@ export function deliveryReconciliationService(
           primaryIssueId: issue.id, targetBranch: policy.targetBranch, sourceBranch, baseSha, headSha,
           acceptedHeadSha: headSha, mergedSha, mergeCommitSha: provenance.mergeCommitSha,
           status: "merged", artifactReady: true, prNumber: input.claim.prNumber ?? null, prUrl,
-          mergeMethod: provenance.mergeMethod, ownerAgentId: issue.assigneeAgentId,
+          // This terminal unit never executes a merge; the receipt records the unknown historical method.
+          mergeMethod: "merge", ownerAgentId: issue.assigneeAgentId,
           mergedAt, lastReconciledAt: now, metadata: { historical: true, directPublication: !input.claim.prNumber },
         }).returning();
         if (!unit) throw new Error("Historical delivery unit was not persisted");
@@ -432,6 +450,31 @@ export function deliveryReconciliationService(
     };
   }
 
+  function reconciliationItem(
+    row: typeof deliveryReconciliations.$inferSelect,
+    issue: typeof issues.$inferSelect,
+  ): DeliveryReconciliationItem {
+    return {
+      issueId: row.issueId,
+      identifier: issue.identifier,
+      title: issue.title,
+      projectId: issue.projectId,
+      issueStatus: row.observedStatus,
+      classification: row.classification,
+      outcome: row.outcome as DeliveryReconciliationOutcome,
+      unitId: row.unitId,
+      repository: row.provenance?.repository ?? null,
+      targetBranch: row.provenance?.targetBranch ?? null,
+      prNumber: null,
+      prUrl: null,
+      headSha: row.provenance?.acceptedHeadSha ?? null,
+      mergedSha: row.provenance?.mergedSha ?? null,
+      provenance: row.provenance,
+      disposition: row.disposition,
+      reconciledAt: row.reconciledAt.toISOString(),
+    };
+  }
+
   async function record(input: {
     companyId: string;
     actor: DeliveryActor;
@@ -444,6 +487,14 @@ export function deliveryReconciliationService(
       .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.write.issueId)))
       .limit(1);
     if (!issue) throw new Error("Issue not found");
+    const [existing] = await db.select().from(deliveryReconciliations).where(and(
+      eq(deliveryReconciliations.companyId, input.companyId),
+      eq(deliveryReconciliations.idempotencyKey, input.write.idempotencyKey),
+    )).limit(1);
+    if (existing) {
+      if (existing.issueId !== issue.id) throw conflict("Reconciliation idempotency key belongs to another issue");
+      return reconciliationItem(existing, issue);
+    }
     let unit = await db
       .select({ unitId: deliveryUnitIssues.unitId })
       .from(deliveryUnitIssues)
@@ -517,25 +568,7 @@ export function deliveryReconciliationService(
       ))
       .limit(1);
     if (!row) throw new Error("Reconciliation was not persisted");
-    return {
-      issueId: row.issueId,
-      identifier: issue.identifier,
-      title: issue.title,
-      projectId: issue.projectId,
-      issueStatus: row.observedStatus,
-      classification: row.classification,
-      outcome: row.outcome as DeliveryReconciliationOutcome,
-      unitId: row.unitId,
-      repository: row.provenance?.repository ?? null,
-      targetBranch: row.provenance?.targetBranch ?? null,
-      prNumber: null,
-      prUrl: null,
-      headSha: row.provenance?.acceptedHeadSha ?? null,
-      mergedSha: row.provenance?.mergedSha ?? null,
-      provenance: row.provenance,
-      disposition: row.disposition,
-      reconciledAt: row.reconciledAt.toISOString(),
-    };
+    return reconciliationItem(row, issue);
   }
 
   async function list(input: { companyId: string; issueId?: string | null }) {

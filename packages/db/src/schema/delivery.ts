@@ -335,7 +335,7 @@ export const deliveryReceipts = pgTable(
     baseSha: text("base_sha"),
     mergedSha: text("merged_sha").notNull(),
     mergeCommitSha: text("merge_commit_sha"),
-    mergeMethod: text("merge_method").$type<DeliveryMergeMethod>().notNull(),
+    mergeMethod: text("merge_method").$type<DeliveryProvenance["mergeMethod"]>().notNull(),
     squashOrRebase: boolean("squash_or_rebase").notNull().default(false),
     checks: jsonb("checks").$type<DeliveryCheck[]>().notNull().default([]),
     reviewStatus: text("review_status").notNull().default("unknown"),

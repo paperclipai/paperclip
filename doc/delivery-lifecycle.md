@@ -256,6 +256,12 @@ historical receipt; related issues share the same verified unit. Direct publicat
 requires the submitted head to equal the included revision. A historical PR must
 also prove its merged state, target, head, and merge revision through GitHub.
 Historical receipts label review evidence as `historical`, not fresh approval.
+Their merge method is `unknown`: today's policy cannot describe an earlier
+publication. The rewrite flag comes from a separate remote head-inclusion check.
+A PR already tracked by another live unit must be reconciled there instead of
+being imported. Replayed keys return the original record before importing; a key
+belonging to another issue is rejected. Disabled or paused policies still permit
+read-only historical verification against their enrolled repository and target.
 Policy/issue changes during verification abort the import. Unverifiable claims
 remain `code_unverified`; reconciliation never republishes an old branch.
 

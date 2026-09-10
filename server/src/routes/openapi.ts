@@ -3942,7 +3942,7 @@ const deliveryProvenanceSchema = z.object({
   baseSha: z.string().nullable(),
   mergedSha: z.string(),
   mergeCommitSha: z.string().nullable(),
-  mergeMethod: z.enum(DELIVERY_MERGE_METHODS),
+  mergeMethod: z.enum([...DELIVERY_MERGE_METHODS, "unknown"]),
   squashOrRebase: z.boolean(),
   checks: z.array(deliveryCheckSchema),
   reviewStatus: z.string(),

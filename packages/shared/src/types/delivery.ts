@@ -326,7 +326,8 @@ export type DeliveryProvenance = {
   baseSha: string | null;
   mergedSha: string;
   mergeCommitSha: string | null;
-  mergeMethod: DeliveryMergeMethod;
+  /** Historical imports cannot infer a merge method from today's policy. */
+  mergeMethod: DeliveryMergeMethod | "unknown";
   squashOrRebase: boolean;
   checks: DeliveryCheck[];
   reviewStatus: string;
