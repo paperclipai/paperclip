@@ -67,16 +67,21 @@ export type {
 };
 
 export type ToolActorType = "agent" | "user" | "system" | "plugin";
-export type ToolConnectionTransport = "mcp_remote" | "rest_api" | "local_stdio";
+export type ToolConnectionTransport =
+  "mcp_remote" | "rest_api" | "local_stdio" | "chat_sdk";
 export type ToolConnectionPurpose = "tool" | "channel";
 export type ToolConnectionAuthKind = "oauth" | "api_key" | "none";
-export type ToolConnectionOwnership = "platform_shared" | "platform_provisioned" | "customer" | "dcr";
-export type ToolConnectionCredentialSource = "paperclip_vault" | "vercel_connect";
+export type ToolConnectionOwnership =
+  "platform_shared" | "platform_provisioned" | "customer" | "dcr";
+export type ToolConnectionCredentialSource =
+  "paperclip_vault" | "vercel_connect";
 export type ToolConnectionStatus = "draft" | "active" | "disabled" | "archived";
 export type ToolConnectionInstallTargetType = "company" | "agent";
 export type ConnectionGrantKind = "organization" | "user" | "agent";
-export type ConnectionGrantStatus = "active" | "revoked" | "expired" | "needs_reauthorization";
-export type ToolConnectionCredentialPolicy = "shared" | "per_user" | "per_user_with_fallback" | "per_agent";
+export type ConnectionGrantStatus =
+  "active" | "revoked" | "expired" | "needs_reauthorization";
+export type ToolConnectionCredentialPolicy =
+  "shared" | "per_user" | "per_user_with_fallback" | "per_agent";
 export type ConnectionGrantMemberSubjectType = "user";
 export type ToolCredentialPlacement = "header" | "env" | "url";
 
@@ -166,6 +171,7 @@ export interface ToolConnection {
   name: string;
   uid: string;
   connectionKind: ToolConnectionKind;
+  connectionPurpose: ToolConnectionPurpose;
   ownership: ToolConnectionOwnership;
   transport: ToolConnectionTransport;
   authKind: ToolConnectionAuthKind;
@@ -228,7 +234,12 @@ export interface ConnectionGrant {
       installationIds: string[];
       installationOwnerLogins: string[];
       /** Repository metadata visible to this credential; refreshed from GitHub. */
-      repositories?: Array<{ id: string; fullName: string; installationId: string; private?: boolean }>;
+      repositories?: Array<{
+        id: string;
+        fullName: string;
+        installationId: string;
+        private?: boolean;
+      }>;
       installationUrl?: string;
       managementUrl?: string;
       appSlug?: string;
@@ -396,7 +407,8 @@ export interface ToolConnectionRemovalResult {
 }
 
 export type ConnectionTokenScope = string | string[];
-export type ConnectionTokenSubject = { type: "app" } | { type: "user"; userId: string };
+export type ConnectionTokenSubject =
+  { type: "app" } | { type: "user"; userId: string };
 
 export const CONNECTION_RECOVERABLE_ERROR_CODES = [
   "user_authorization_required",
@@ -411,7 +423,8 @@ export const CONNECTION_RECOVERABLE_ERROR_CODES = [
   "standing_delegation_required",
 ] as const;
 
-export type ConnectionRecoverableErrorCode = typeof CONNECTION_RECOVERABLE_ERROR_CODES[number];
+export type ConnectionRecoverableErrorCode =
+  (typeof CONNECTION_RECOVERABLE_ERROR_CODES)[number];
 
 export interface ConnectionRecoverableErrorPayload {
   code: ConnectionRecoverableErrorCode;
@@ -464,7 +477,8 @@ export interface ConnectionTokenUseEnvLeaseResponse {
   attribution: ConnectionTokenAttribution;
 }
 
-export type ConnectionTokenResponse = ConnectionTokenMintedResponse | ConnectionTokenUseEnvLeaseResponse;
+export type ConnectionTokenResponse =
+  ConnectionTokenMintedResponse | ConnectionTokenUseEnvLeaseResponse;
 
 export interface StartConnectionAuthorizationRequest {
   subjectUserId: string;
@@ -478,7 +492,11 @@ export interface StartConnectionAuthorizationResponse {
 
 export interface ConnectionUsageDailyBucket {
   date: string;
-  issuances: { total: number; byOutcome: Record<string, number>; byPath: Record<string, number> };
+  issuances: {
+    total: number;
+    byOutcome: Record<string, number>;
+    byPath: Record<string, number>;
+  };
   invocations: { total: number; byRiskLevel: Record<string, number> };
   deliveries: { received: number; forwarded: number };
 }
@@ -1007,16 +1025,22 @@ export interface ToolConnectionActivityResponse {
   connectionId: string;
   events: ToolCallEvent[];
   lifecycleEvents: ToolConnectionLifecycleEvent[];
-  issues: Record<string, {
-    identifier: string;
-    title: string;
-  }>;
-  actionRequests: Record<string, {
-    status: ToolActionRequestStatus;
-    resolverDisplayName: string | null;
-    resolvedByAgentId: string | null;
-    resolvedByUserId: string | null;
-  }>;
+  issues: Record<
+    string,
+    {
+      identifier: string;
+      title: string;
+    }
+  >;
+  actionRequests: Record<
+    string,
+    {
+      status: ToolActionRequestStatus;
+      resolverDisplayName: string | null;
+      resolvedByAgentId: string | null;
+      resolvedByUserId: string | null;
+    }
+  >;
 }
 
 /**
@@ -1126,7 +1150,8 @@ export interface ToolAppConnectionActionSummary {
  * that issuer, then a Client ID Metadata Document, then dynamic registration,
  * then client credentials the operator preregistered and pasted in.
  */
-export type ToolOAuthClientRegistrationSource = "preconfigured" | "cimd" | "dcr" | "manual";
+export type ToolOAuthClientRegistrationSource =
+  "preconfigured" | "cimd" | "dcr" | "manual";
 
 /** Opaque managed-Cloud exchange; clients never treat the session as a URL. */
 export interface ToolOAuthHandoff {
@@ -1456,7 +1481,15 @@ export interface ToolPolicyConditions {
     isWrite?: boolean;
     isDestructive?: boolean;
   };
-  credentialScope?: Pick<ToolAccessSelector, "applicationId" | "applicationIds" | "connectionId" | "connectionIds" | "catalogEntryId" | "catalogEntryIds"> & {
+  credentialScope?: Pick<
+    ToolAccessSelector,
+    | "applicationId"
+    | "applicationIds"
+    | "connectionId"
+    | "connectionIds"
+    | "catalogEntryId"
+    | "catalogEntryIds"
+  > & {
     applicationKey?: string;
     applicationKeys?: string[];
     providerType?: string;
@@ -1648,12 +1681,7 @@ export interface ToolConnectionTestCallResult {
  * - `expired`   — the approval window lapsed.
  */
 export type ToolConnectionTestCallStatusPhase =
-  | "waiting"
-  | "running"
-  | "done"
-  | "denied"
-  | "cancelled"
-  | "expired";
+  "waiting" | "running" | "done" | "denied" | "cancelled" | "expired";
 
 /** Live status of an ask-first test call (`GET /tool-connections/:id/test-calls/:actionRequestId`). */
 export interface ToolConnectionTestCallStatus {

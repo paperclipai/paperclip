@@ -846,6 +846,14 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidations).toContainEqual({
       queryKey: queryKeys.issues.activeRun("issue-1"),
     });
+    // A native finalizer can persist its selected response without a separate
+    // comment_added event. Terminal refresh must pick up that canonical reply.
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.comments("PAP-759"),
+    });
+    expect(invalidations).toContainEqual({
+      queryKey: queryKeys.issues.comments("issue-1"),
+    });
     expect(cache.get(JSON.stringify(queryKeys.issues.activeRun("PAP-759")))).toBeNull();
     expect(cache.get(JSON.stringify(queryKeys.issues.liveRuns("PAP-759")))).toEqual([]);
     expect(cache.get(JSON.stringify(queryKeys.issues.detail("PAP-759")))).toMatchObject({
@@ -861,6 +869,34 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       executionLockedAt: null,
     });
   });
+
+  it.each(["running", "queued", undefined])(
+    "does not refetch comments on nonterminal run progress: %s",
+    (status) => {
+      const invalidations: unknown[] = [];
+      const queryClient = {
+        invalidateQueries: (input: unknown) => invalidations.push(input),
+        getQueryData: (key: unknown) => {
+          if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.detail("PAP-759"))) {
+            return { id: "issue-1", identifier: "PAP-759", assigneeAgentId: "agent-1" };
+          }
+          if (JSON.stringify(key) === JSON.stringify(queryKeys.issues.activeRun("PAP-759"))) {
+            return { id: "run-1" };
+          }
+          return undefined;
+        },
+      };
+      expect(__liveUpdatesTestUtils.invalidateVisibleIssueRunQueries(
+        queryClient as never,
+        "/PAP/issues/PAP-759",
+        { runId: "run-1", agentId: "agent-1", status },
+        { isForegrounded: true },
+      )).toBe(true);
+      for (const ref of ["PAP-759", "issue-1"]) {
+        expect(invalidations).not.toContainEqual({ queryKey: queryKeys.issues.comments(ref) });
+      }
+    },
+  );
 
   it("ignores run status events for other issues", () => {
     const invalidations: unknown[] = [];
@@ -1154,6 +1190,81 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
       title: "CodexCoder run failed",
       body: "boom",
       tone: "error",
+    });
+  });
+
+  it("turns an unlinked chat isolation precondition into one actionable warning without an agent UUID", () => {
+    expect(
+      __liveUpdatesTestUtils.buildRunStatusToast(
+        {
+          runId: "run-low-trust",
+          agentId: "31f56712-3944-423e-b7c7-404bb8fbb993",
+          status: "failed",
+          error: "Low-trust execution requires isolated workspaces to be enabled.",
+          errorCode: "low_trust_isolation_unavailable",
+          contextSource: "chat:slack",
+        },
+        () => "Maya E2E",
+      ),
+    ).toEqual({
+      title: "Maya E2E couldn't start this chat",
+      body: "This external chat identity isn't linked, and isolated guest workspaces are disabled. Link the identity in Connectors or enable isolated workspaces, then start a new task.",
+      tone: "warn",
+      ttlMs: 10_000,
+      action: { label: "Open chat connections", href: "/apps" },
+      dedupeKey: "run-status:run-low-trust:failed",
+    });
+
+    expect(
+      __liveUpdatesTestUtils.buildRunStatusToast(
+        {
+          runId: "run-low-trust-uncached",
+          agentId: "31f56712-3944-423e-b7c7-404bb8fbb993",
+          status: "failed",
+          errorCode: "low_trust_isolation_unavailable",
+          contextSource: "chat:slack",
+        },
+        () => null,
+      )?.title,
+    ).toBe("Agent couldn't start this chat");
+  });
+
+  it("keeps non-chat and genuine runtime failures on the ordinary error path", () => {
+    expect(
+      __liveUpdatesTestUtils.buildRunStatusToast(
+        {
+          runId: "run-low-trust-board",
+          agentId: "agent-1",
+          status: "failed",
+          error: "Low-trust execution requires isolated workspaces to be enabled.",
+          errorCode: "low_trust_isolation_unavailable",
+          contextSource: "issue.assignment",
+        },
+        () => "CodexCoder",
+      ),
+    ).toMatchObject({
+      title: "CodexCoder run failed",
+      tone: "error",
+      action: { label: "View run" },
+    });
+
+    expect(
+      __liveUpdatesTestUtils.buildRunStatusToast(
+        {
+          runId: "run-adapter-failure",
+          agentId: "agent-1",
+          status: "failed",
+          error: "Adapter process exited",
+          errorCode: "adapter_failed",
+          contextSource: "chat:slack",
+        },
+        () => "CodexCoder",
+      ),
+    ).toMatchObject({
+      title: "CodexCoder run failed",
+      body: "Adapter process exited",
+      tone: "error",
+      action: { label: "View run" },
     });
   });
 });

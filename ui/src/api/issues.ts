@@ -35,7 +35,37 @@ import type {
   UpsertIssueWatchdog,
   UpsertIssueDocument,
 } from "@paperclipai/shared";
-import { api, type RequestOptions } from "./client";
+import { api, ApiError, type RequestOptions } from "./client";
+import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
+
+function hasCommentReceipt(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+  return (
+    typeof row.id === "string" &&
+    uuid.test(row.id) &&
+    typeof row.issueId === "string" &&
+    uuid.test(row.issueId) &&
+    typeof row.body === "string"
+  );
+}
+
+async function confirmedCommentResponse<T>(
+  request: Promise<T>,
+  valid: (response: T) => boolean,
+): Promise<T> {
+  try {
+    const response = await request;
+    if (!valid(response)) throw new CommentSubmissionUnknownError();
+    return response;
+  } catch (error) {
+    // A rejected request is distinct from a lost/invalid receipt. A server 5xx
+    // may also happen after commit; it cannot establish that nothing was saved.
+    if (error instanceof ApiError && error.status < 500) throw error;
+    throw new CommentSubmissionUnknownError();
+  }
+}
 
 export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
@@ -84,29 +114,41 @@ function issueListSearchParams(filters?: IssueListFilters) {
   if (filters?.status) params.set("status", filters.status);
   if (filters?.projectId) params.set("projectId", filters.projectId);
   if (filters?.parentId) params.set("parentId", filters.parentId);
-  if (filters?.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
-  if (filters?.participantAgentId) params.set("participantAgentId", filters.participantAgentId);
-  if (filters?.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
-  if (filters?.touchedByUserId) params.set("touchedByUserId", filters.touchedByUserId);
-  if (filters?.inboxArchivedByUserId) params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
-  if (filters?.unreadForUserId) params.set("unreadForUserId", filters.unreadForUserId);
+  if (filters?.assigneeAgentId)
+    params.set("assigneeAgentId", filters.assigneeAgentId);
+  if (filters?.participantAgentId)
+    params.set("participantAgentId", filters.participantAgentId);
+  if (filters?.assigneeUserId)
+    params.set("assigneeUserId", filters.assigneeUserId);
+  if (filters?.touchedByUserId)
+    params.set("touchedByUserId", filters.touchedByUserId);
+  if (filters?.inboxArchivedByUserId)
+    params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
+  if (filters?.unreadForUserId)
+    params.set("unreadForUserId", filters.unreadForUserId);
   if (filters?.labelId) params.set("labelId", filters.labelId);
   if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
-  if (filters?.executionWorkspaceId) params.set("executionWorkspaceId", filters.executionWorkspaceId);
+  if (filters?.executionWorkspaceId)
+    params.set("executionWorkspaceId", filters.executionWorkspaceId);
   if (filters?.originKind) params.set("originKind", filters.originKind);
-  if (filters?.originKindPrefix) params.set("originKindPrefix", filters.originKindPrefix);
+  if (filters?.originKindPrefix)
+    params.set("originKindPrefix", filters.originKindPrefix);
   if (filters?.originId) params.set("originId", filters.originId);
   if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
-  if (filters?.includeRoutineExecutions) params.set("includeRoutineExecutions", "true");
+  if (filters?.includeRoutineExecutions)
+    params.set("includeRoutineExecutions", "true");
   if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
-  if (filters?.includeBlockedInboxAttention) params.set("includeBlockedInboxAttention", "true");
-  if (filters?.includeLiveDescendantSummary) params.set("includeLiveDescendantSummary", "true");
+  if (filters?.includeBlockedInboxAttention)
+    params.set("includeBlockedInboxAttention", "true");
+  if (filters?.includeLiveDescendantSummary)
+    params.set("includeLiveDescendantSummary", "true");
   if (filters?.hasPlanDocument !== undefined) {
     params.set("hasPlanDocument", filters.hasPlanDocument ? "true" : "false");
   }
   if (filters?.q) params.set("q", filters.q);
   if (filters?.limit) params.set("limit", String(filters.limit));
-  if (filters?.offset !== undefined) params.set("offset", String(filters.offset));
+  if (filters?.offset !== undefined)
+    params.set("offset", String(filters.offset));
   if (filters?.sortField) params.set("sortField", filters.sortField);
   if (filters?.sortDir) params.set("sortDir", filters.sortDir);
   return params;
@@ -123,11 +165,17 @@ export const issuesApi = {
     const path = `/companies/${companyId}/issues${qs ? `?${qs}` : ""}`;
     return options ? api.get<Issue[]>(path, options) : api.get<Issue[]>(path);
   },
-  listCompact: (companyId: string, filters?: IssueListFilters, options?: RequestOptions) => {
+  listCompact: (
+    companyId: string,
+    filters?: IssueListFilters,
+    options?: RequestOptions,
+  ) => {
     const params = issueListSearchParams(filters);
     params.set("view", "compact");
     const path = `/companies/${companyId}/issues?${params.toString()}`;
-    return options ? api.get<CompactIssue[]>(path, options) : api.get<CompactIssue[]>(path);
+    return options
+      ? api.get<CompactIssue[]>(path, options)
+      : api.get<CompactIssue[]>(path);
   },
   count: (
     companyId: string,
@@ -144,42 +192,69 @@ export const issuesApi = {
     const params = new URLSearchParams();
     params.set("attention", filters.attention);
     if (filters.status) params.set("status", filters.status);
-    if (filters.assigneeAgentId) params.set("assigneeAgentId", filters.assigneeAgentId);
-    if (filters.assigneeUserId) params.set("assigneeUserId", filters.assigneeUserId);
+    if (filters.assigneeAgentId)
+      params.set("assigneeAgentId", filters.assigneeAgentId);
+    if (filters.assigneeUserId)
+      params.set("assigneeUserId", filters.assigneeUserId);
     if (filters.projectId) params.set("projectId", filters.projectId);
     if (filters.labelId) params.set("labelId", filters.labelId);
     if (filters.q) params.set("q", filters.q);
-    return api.get<{ count: number }>(`/companies/${companyId}/issues/count?${params.toString()}`);
+    return api.get<{ count: number }>(
+      `/companies/${companyId}/issues/count?${params.toString()}`,
+    );
   },
-  listLabels: (companyId: string) => api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
+  listLabels: (companyId: string) =>
+    api.get<IssueLabel[]>(`/companies/${companyId}/labels`),
   createLabel: (companyId: string, data: { name: string; color: string }) =>
     api.post<IssueLabel>(`/companies/${companyId}/labels`, data),
   deleteLabel: (id: string) => api.delete<IssueLabel>(`/labels/${id}`),
-  get: (id: string, options?: RequestOptions) => options
-    ? api.get<Issue>(`/issues/${id}`, options)
-    : api.get<Issue>(`/issues/${id}`),
+  get: (id: string, options?: RequestOptions) =>
+    options
+      ? api.get<Issue>(`/issues/${id}`, options)
+      : api.get<Issue>(`/issues/${id}`),
   getRunnerGoal: (id: string, agentId?: string | null) => {
     const query = agentId ? `?agentId=${encodeURIComponent(agentId)}` : "";
     return api.get<RunnerGoalProjection>(`/issues/${id}/runner-goal${query}`);
   },
   actOnRunnerGoal: (id: string, request: RunnerGoalActionRequest) =>
-    api.post<RunnerGoalActionAccepted>(`/issues/${id}/runner-goal/actions`, request),
-  getWatchdog: (id: string) => api.get<IssueWatchdog | null>(`/issues/${id}/watchdog`),
+    api.post<RunnerGoalActionAccepted>(
+      `/issues/${id}/runner-goal/actions`,
+      request,
+    ),
+  getWatchdog: (id: string) =>
+    api.get<IssueWatchdog | null>(`/issues/${id}/watchdog`),
   upsertWatchdog: (id: string, data: UpsertIssueWatchdog) =>
     api.put<IssueWatchdog>(`/issues/${id}/watchdog`, data),
-  deleteWatchdog: (id: string) => api.delete<{ ok: true }>(`/issues/${id}/watchdog`),
-  markRead: (id: string) => api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
-  markUnread: (id: string) => api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
+  deleteWatchdog: (id: string) =>
+    api.delete<{ ok: true }>(`/issues/${id}/watchdog`),
+  markRead: (id: string) =>
+    api.post<{ id: string; lastReadAt: Date }>(`/issues/${id}/read`, {}),
+  markUnread: (id: string) =>
+    api.delete<{ id: string; removed: boolean }>(`/issues/${id}/read`),
   archiveFromInbox: (id: string) =>
-    api.post<{ id: string; archivedAt: Date }>(`/issues/${id}/inbox-archive`, {}),
+    api.post<{ id: string; archivedAt: Date }>(
+      `/issues/${id}/inbox-archive`,
+      {},
+    ),
   unarchiveFromInbox: (id: string) =>
-    api.delete<{ id: string; archivedAt: Date } | { ok: true }>(`/issues/${id}/inbox-archive`),
+    api.delete<{ id: string; archivedAt: Date } | { ok: true }>(
+      `/issues/${id}/inbox-archive`,
+    ),
   create: (companyId: string, data: Record<string, unknown>) =>
     api.post<Issue>(`/companies/${companyId}/issues`, data),
-  update: (id: string, data: Record<string, unknown>) =>
-    api.patch<IssueUpdateResponse>(`/issues/${id}`, data),
+  update: (id: string, data: Record<string, unknown>) => {
+    const response = api.patch<IssueUpdateResponse>(`/issues/${id}`, data);
+    return typeof data.comment === "string"
+      ? confirmedCommentResponse(response, (value) =>
+          hasCommentReceipt(value?.comment),
+        )
+      : response;
+  },
   decideStalledReview: (id: string, data: StalledReviewDecision) =>
-    api.post<StalledReviewDecisionResponse>(`/issues/${id}/stalled-review-decision`, data),
+    api.post<StalledReviewDecisionResponse>(
+      `/issues/${id}/stalled-review-decision`,
+      data,
+    ),
   resolveRecoveryAction: (
     id: string,
     data: {
@@ -189,11 +264,21 @@ export const issuesApi = {
       sourceIssueStatus: "todo" | "done" | "in_review" | "blocked";
       resolutionNote?: string | null;
     },
-  ) => api.post<ResolveRecoveryActionResponse>(`/issues/${id}/recovery-actions/resolve`, data),
+  ) =>
+    api.post<ResolveRecoveryActionResponse>(
+      `/issues/${id}/recovery-actions/resolve`,
+      data,
+    ),
   previewTreeControl: (id: string, data: PreviewIssueTreeControl) =>
-    api.post<IssueTreeControlPreview>(`/issues/${id}/tree-control/preview`, data),
+    api.post<IssueTreeControlPreview>(
+      `/issues/${id}/tree-control/preview`,
+      data,
+    ),
   createTreeHold: (id: string, data: CreateIssueTreeHold) =>
-    api.post<{ hold: IssueTreeHold; preview: IssueTreeControlPreview }>(`/issues/${id}/tree-holds`, data),
+    api.post<{ hold: IssueTreeHold; preview: IssueTreeControlPreview }>(
+      `/issues/${id}/tree-holds`,
+      data,
+    ),
   getTreeHold: (id: string, holdId: string) =>
     api.get<IssueTreeHold>(`/issues/${id}/tree-holds/${holdId}`),
   listTreeHolds: (
@@ -209,7 +294,9 @@ export const issuesApi = {
     if (filters?.mode) params.set("mode", filters.mode);
     if (filters?.includeMembers) params.set("includeMembers", "true");
     const qs = params.toString();
-    return api.get<IssueTreeHold[]>(`/issues/${id}/tree-holds${qs ? `?${qs}` : ""}`);
+    return api.get<IssueTreeHold[]>(
+      `/issues/${id}/tree-holds${qs ? `?${qs}` : ""}`,
+    );
   },
   getTreeControlState: (id: string) =>
     api.get<{
@@ -220,14 +307,24 @@ export const issuesApi = {
         isRoot: boolean;
         mode: "pause";
         reason: string | null;
-        releasePolicy: { strategy: "manual" | "after_active_runs_finish"; note?: string | null } | null;
+        releasePolicy: {
+          strategy: "manual" | "after_active_runs_finish";
+          note?: string | null;
+        } | null;
       } | null;
     }>(`/issues/${id}/tree-control/state`),
   releaseTreeHold: (id: string, holdId: string, data: ReleaseIssueTreeHold) =>
-    api.post<ReleaseIssueTreeHoldResponse>(`/issues/${id}/tree-holds/${holdId}/release`, data),
-  checkMonitorNow: (id: string) => api.post<{ ok: true }>(`/issues/${id}/monitor/check-now`, {}),
+    api.post<ReleaseIssueTreeHoldResponse>(
+      `/issues/${id}/tree-holds/${holdId}/release`,
+      data,
+    ),
+  checkMonitorNow: (id: string) =>
+    api.post<{ ok: true }>(`/issues/${id}/monitor/check-now`, {}),
   retryScheduledRetryNow: (id: string) =>
-    api.post<IssueRetryNowResponse>(`/issues/${id}/scheduled-retry/retry-now`, {}),
+    api.post<IssueRetryNowResponse>(
+      `/issues/${id}/scheduled-retry/retry-now`,
+      {},
+    ),
   remove: (id: string) => api.delete<Issue>(`/issues/${id}`),
   checkout: (id: string, agentId: string) =>
     api.post<Issue>(`/issues/${id}/checkout`, {
@@ -248,7 +345,9 @@ export const issuesApi = {
     if (filters?.order) params.set("order", filters.order);
     if (filters?.limit) params.set("limit", String(filters.limit));
     const qs = params.toString();
-    return api.get<IssueComment[]>(`/issues/${id}/comments${qs ? `?${qs}` : ""}`);
+    return api.get<IssueComment[]>(
+      `/issues/${id}/comments${qs ? `?${qs}` : ""}`,
+    );
   },
   getQueuedComments: (id: string) =>
     api.get<IssueQueuedCommentQueue>(`/issues/${id}/queued-comments`),
@@ -264,7 +363,11 @@ export const issuesApi = {
   reorderQueuedComments: (
     id: string,
     data: { orderedCommentIds: string[]; queueId: string; revision: string },
-  ) => api.put<IssueQueuedCommentQueue>(`/issues/${id}/queued-comments/order`, data),
+  ) =>
+    api.put<IssueQueuedCommentQueue>(
+      `/issues/${id}/queued-comments/order`,
+      data,
+    ),
   steerQueuedComment: (
     id: string,
     commentId: string,
@@ -286,48 +389,85 @@ export const issuesApi = {
   listInteractions: (id: string) =>
     api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
   listAcceptedPlanDecompositions: (id: string) =>
-    api.get<AcceptedPlanDecompositionSummary[]>(`/issues/${id}/accepted-plan-decompositions`),
+    api.get<AcceptedPlanDecompositionSummary[]>(
+      `/issues/${id}/accepted-plan-decompositions`,
+    ),
   createInteraction: (id: string, data: Record<string, unknown>) =>
     api.post<IssueThreadInteraction>(`/issues/${id}/interactions`, data),
   acceptInteraction: (
     id: string,
     interactionId: string,
-    data?: { selectedClientKeys?: string[]; selectedOptionIds?: string[]; rememberAction?: boolean },
+    data?: {
+      selectedClientKeys?: string[];
+      selectedOptionIds?: string[];
+      rememberAction?: boolean;
+    },
   ) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/accept`, data ?? {}),
+    api.post<IssueThreadInteraction>(
+      `/issues/${id}/interactions/${interactionId}/accept`,
+      data ?? {},
+    ),
   rejectInteraction: (id: string, interactionId: string, reason?: string) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/reject`, reason ? { reason } : {}),
+    api.post<IssueThreadInteraction>(
+      `/issues/${id}/interactions/${interactionId}/reject`,
+      reason ? { reason } : {},
+    ),
   cancelInteraction: (id: string, interactionId: string, reason?: string) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/cancel`, reason ? { reason } : {}),
+    api.post<IssueThreadInteraction>(
+      `/issues/${id}/interactions/${interactionId}/cancel`,
+      reason ? { reason } : {},
+    ),
   skipInteraction: (id: string, interactionId: string, reason?: string) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/skip`, reason ? { reason } : {}),
+    api.post<IssueThreadInteraction>(
+      `/issues/${id}/interactions/${interactionId}/skip`,
+      reason ? { reason } : {},
+    ),
   respondToInteraction: (
     id: string,
     interactionId: string,
-    data: { answers: AskUserQuestionsAnswer[]; summaryMarkdown?: string | null },
+    data: {
+      answers: AskUserQuestionsAnswer[];
+      summaryMarkdown?: string | null;
+    },
   ) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/respond`, data),
+    api.post<IssueThreadInteraction>(
+      `/issues/${id}/interactions/${interactionId}/respond`,
+      data,
+    ),
   submitInteractionVerdicts: (
     id: string,
     interactionId: string,
-    verdicts: { id: string; verdict: "approve" | "reject" | "defer"; reason?: string | null }[],
+    verdicts: {
+      id: string;
+      verdict: "approve" | "reject" | "defer";
+      reason?: string | null;
+    }[],
   ) =>
-    api.post<IssueThreadInteraction>(`/issues/${id}/interactions/${interactionId}/verdicts`, { verdicts }),
+    api.post<IssueThreadInteraction>(
+      `/issues/${id}/interactions/${interactionId}/verdicts`,
+      { verdicts },
+    ),
   getComment: (id: string, commentId: string) =>
     api.get<IssueComment>(`/issues/${id}/comments/${commentId}`),
-  listFeedbackVotes: (id: string) => api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
+  listFeedbackVotes: (id: string) =>
+    api.get<FeedbackVote[]>(`/issues/${id}/feedback-votes`),
   getCostSummary: (id: string, options: { excludeRoot?: boolean } = {}) => {
     const qs = options.excludeRoot ? "?excludeRoot=true" : "";
     return api.get<IssueCostSummary>(`/issues/${id}/cost-summary${qs}`);
   },
-  listFeedbackTraces: (id: string, filters?: Record<string, string | boolean | undefined>) => {
+  listFeedbackTraces: (
+    id: string,
+    filters?: Record<string, string | boolean | undefined>,
+  ) => {
     const params = new URLSearchParams();
     for (const [key, value] of Object.entries(filters ?? {})) {
       if (value === undefined) continue;
       params.set(key, String(value));
     }
     const qs = params.toString();
-    return api.get<FeedbackTrace[]>(`/issues/${id}/feedback-traces${qs ? `?${qs}` : ""}`);
+    return api.get<FeedbackTrace[]>(
+      `/issues/${id}/feedback-traces${qs ? `?${qs}` : ""}`,
+    );
   },
   upsertFeedbackVote: (
     id: string,
@@ -339,14 +479,21 @@ export const issuesApi = {
       allowSharing?: boolean;
     },
   ) => api.post<FeedbackVote>(`/issues/${id}/feedback-votes`, data),
-  addComment: (id: string, body: string, reopen?: boolean, interrupt?: boolean) =>
-    api.post<IssueComment>(
-      `/issues/${id}/comments`,
-      {
+  addComment: (
+    id: string,
+    body: string,
+    reopen?: boolean,
+    interrupt?: boolean,
+    attachmentIds?: string[],
+  ) =>
+    confirmedCommentResponse(
+      api.post<IssueComment>(`/issues/${id}/comments`, {
         body,
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
-      },
+        ...(attachmentIds?.length ? { attachmentIds } : {}),
+      }),
+      hasCommentReceipt,
     ),
   cancelComment: (id: string, commentId: string) =>
     api.delete<IssueComment>(`/issues/${id}/comments/${commentId}?mode=cancel`),
@@ -356,20 +503,40 @@ export const issuesApi = {
     api.get<IssueDocument[]>(
       `/issues/${id}/documents${options?.includeSystem ? "?includeSystem=true" : ""}`,
     ),
-  getDocument: (id: string, key: string) => api.get<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
+  getDocument: (id: string, key: string) =>
+    api.get<IssueDocument>(
+      `/issues/${id}/documents/${encodeURIComponent(key)}`,
+    ),
   upsertDocument: (id: string, key: string, data: UpsertIssueDocument) =>
-    api.put<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}`, data),
+    api.put<IssueDocument>(
+      `/issues/${id}/documents/${encodeURIComponent(key)}`,
+      data,
+    ),
   lockDocument: (id: string, key: string) =>
-    api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/lock`, {}),
+    api.post<IssueDocument>(
+      `/issues/${id}/documents/${encodeURIComponent(key)}/lock`,
+      {},
+    ),
   unlockDocument: (id: string, key: string) =>
-    api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/unlock`, {}),
+    api.post<IssueDocument>(
+      `/issues/${id}/documents/${encodeURIComponent(key)}/unlock`,
+      {},
+    ),
   listDocumentRevisions: (id: string, key: string) =>
-    api.get<DocumentRevision[]>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions`),
+    api.get<DocumentRevision[]>(
+      `/issues/${id}/documents/${encodeURIComponent(key)}/revisions`,
+    ),
   restoreDocumentRevision: (id: string, key: string, revisionId: string) =>
-    api.post<IssueDocument>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`, {}),
+    api.post<IssueDocument>(
+      `/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`,
+      {},
+    ),
   deleteDocument: (id: string, key: string) =>
-    api.delete<{ ok: true }>(`/issues/${id}/documents/${encodeURIComponent(key)}`),
-  listAttachments: (id: string) => api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
+    api.delete<{ ok: true }>(
+      `/issues/${id}/documents/${encodeURIComponent(key)}`,
+    ),
+  listAttachments: (id: string) =>
+    api.get<IssueAttachment[]>(`/issues/${id}/attachments`),
   uploadAttachment: (
     companyId: string,
     issueId: string,
@@ -381,9 +548,13 @@ export const issuesApi = {
     if (issueCommentId) {
       form.append("issueCommentId", issueCommentId);
     }
-    return api.postForm<IssueAttachment>(`/companies/${companyId}/issues/${issueId}/attachments`, form);
+    return api.postForm<IssueAttachment>(
+      `/companies/${companyId}/issues/${issueId}/attachments`,
+      form,
+    );
   },
-  deleteAttachment: (id: string) => api.delete<{ ok: true }>(`/attachments/${id}`),
+  deleteAttachment: (id: string) =>
+    api.delete<{ ok: true }>(`/attachments/${id}`),
   listApprovals: (id: string) => api.get<Approval[]>(`/issues/${id}/approvals`),
   linkApproval: (id: string, approvalId: string) =>
     api.post<Approval[]>(`/issues/${id}/approvals`, { approvalId }),
@@ -394,10 +565,14 @@ export const issuesApi = {
       `/issues/${id}/work-products${options?.refreshPullRequests ? "?refreshPullRequests=true" : ""}`,
     ),
   ensureWorkProductReviewDocument: (id: string, workProductId: string) =>
-    api.post<IssueDocument>(`/issues/${id}/work-products/${workProductId}/review-document`, {}),
+    api.post<IssueDocument>(
+      `/issues/${id}/work-products/${workProductId}/review-document`,
+      {},
+    ),
   createWorkProduct: (id: string, data: Record<string, unknown>) =>
     api.post<IssueWorkProduct>(`/issues/${id}/work-products`, data),
   updateWorkProduct: (id: string, data: Record<string, unknown>) =>
     api.patch<IssueWorkProduct>(`/work-products/${id}`, data),
-  deleteWorkProduct: (id: string) => api.delete<IssueWorkProduct>(`/work-products/${id}`),
+  deleteWorkProduct: (id: string) =>
+    api.delete<IssueWorkProduct>(`/work-products/${id}`),
 };

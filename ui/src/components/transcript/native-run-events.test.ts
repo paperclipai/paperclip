@@ -93,6 +93,160 @@ describe("provider notice presentation", () => {
 });
 
 describe("nativeRunEventsToTranscript", () => {
+  describe("accepted response-wake authority", () => {
+    function fixture() {
+      const result = {
+        ...runResult("The complete answer; the task remains open."),
+        reportedWorkDisposition: "yielded",
+        continuation: {
+          kind: "response_wake",
+          summary: "Wait for the next exact input.",
+          idempotencyKey: "next-input",
+        },
+      };
+      const accepted = event(2, "run.result.accepted", { result });
+      const terminal = event(3, "run.terminal", {
+        schema: "paperclip.prp.terminal.v1",
+        turnTerminalState: "completed",
+        runTerminalState: "succeeded",
+        reportedWorkDisposition: "yielded",
+      });
+      const acceptedEnvelope = accepted.payload!.prpEvent as Record<
+        string,
+        unknown
+      >;
+      const terminalEnvelope = terminal.payload!.prpEvent as Record<
+        string,
+        unknown
+      >;
+      for (const envelope of [acceptedEnvelope, terminalEnvelope]) {
+        envelope.sourceKind = "control_plane";
+        envelope.sourceInstanceId = "control-1";
+        envelope.turnId = "turn-1";
+      }
+      return { result, accepted, terminal, acceptedEnvelope, terminalEnvelope };
+    }
+
+    it("derives a closed marker only from a same-run accepted result and terminal", () => {
+      const { accepted, terminal } = fixture();
+      const entries = nativeRunEventsToTranscript([
+        accepted,
+        terminal,
+        structuredClone(accepted),
+      ]);
+      expect(
+        entries.find((entry) => entry.kind === "run_result"),
+      ).toMatchObject({
+        summary: "The complete answer; the task remains open.",
+        acceptedResponseWake: { runId: RUN_ID, sourceEventId: "event-2" },
+      });
+      expect(
+        entries.filter((entry) => entry.kind === "run_result"),
+      ).toHaveLength(1);
+    });
+
+    it.each([
+      "provider_acceptance",
+      "provider_terminal",
+      "proposal",
+      "forged_marker",
+      "missing_attention",
+      "attention",
+      "other_continuation",
+      "blank_key",
+      "blank_summary",
+      "missing_source",
+      "wrong_run",
+      "wrong_event_type",
+      "wrong_schema",
+      "terminal_other_run",
+      "terminal_other_owner",
+      "terminal_other_session",
+      "terminal_other_turn",
+      "terminal_earlier",
+      "terminal_failed",
+      "terminal_interrupted",
+      "terminal_other_disposition",
+      "missing_terminal",
+      "conflicting_acceptance",
+      "pending_question",
+      "pending_approval",
+    ])("does not derive response-wake authority from %s", (mode) => {
+      const { result, accepted, terminal, acceptedEnvelope, terminalEnvelope } =
+        fixture();
+      const mutableResult = result as Record<string, unknown>;
+      const terminalPayload = terminalEnvelope.payload as Record<
+        string,
+        unknown
+      >;
+      const events = [accepted, terminal];
+      if (mode === "provider_acceptance")
+        acceptedEnvelope.sourceKind = "runner";
+      if (mode === "provider_terminal") terminalEnvelope.sourceKind = "runner";
+        if (mode === "proposal") {
+          accepted.eventType = "run.result.proposed";
+          acceptedEnvelope.eventType = accepted.eventType;
+          acceptedEnvelope.payload = result;
+        }
+        if (mode === "forged_marker") {
+          result.continuation.kind = "monitor";
+          mutableResult.acceptedResponseWake = {
+          runId: RUN_ID,
+          sourceEventId: "event-2",
+        };
+      }
+      if (mode === "missing_attention") delete mutableResult.attentionRequests;
+      if (mode === "attention")
+        mutableResult.attentionRequests = [{ kind: "ask_user_questions" }];
+      if (mode === "other_continuation")
+        result.continuation.kind = "same_agent";
+      if (mode === "blank_key") result.continuation.idempotencyKey = " ";
+      if (mode === "blank_summary") mutableResult.summary = " ";
+      if (mode === "missing_source") acceptedEnvelope.sourceEventId = " ";
+      if (mode === "wrong_run") acceptedEnvelope.runId = "other-run";
+      if (mode === "wrong_event_type")
+        acceptedEnvelope.eventType = "item.completed";
+      if (mode === "wrong_schema") acceptedEnvelope.schema = "provider.result";
+      if (mode === "terminal_other_run")
+        terminal.runId = terminalEnvelope.runId = "other-run";
+      if (mode === "terminal_other_owner")
+        terminalEnvelope.sourceInstanceId = "other-owner";
+      if (mode === "terminal_other_session")
+        terminalEnvelope.normalizedSessionId = "other-session";
+      if (mode === "terminal_other_turn")
+        terminalEnvelope.turnId = "other-turn";
+      if (mode === "terminal_earlier") terminal.seq = 1;
+      if (mode === "terminal_failed")
+        terminalPayload.runTerminalState = "failed";
+      if (mode === "terminal_interrupted")
+        terminalPayload.turnTerminalState = "interrupted";
+      if (mode === "terminal_other_disposition")
+        terminalPayload.reportedWorkDisposition = "done";
+      if (mode === "missing_terminal") events.pop();
+      if (mode === "conflicting_acceptance") {
+        const other = structuredClone(accepted);
+        other.seq = 4;
+        (other.payload!.prpEvent as Record<string, unknown>).sourceEventId =
+          "other-accepted-result";
+        events.push(other);
+      }
+      if (mode === "pending_question" || mode === "pending_approval")
+        events.push(
+          event(4, "runtime_request.created", {
+            requestId: "pending-request",
+            requestKind:
+              mode === "pending_question" ? "user_input" : "command_approval",
+            status: "pending",
+          }),
+        );
+      expect(
+        nativeRunEventsToTranscript(events).find(
+          (entry) => entry.kind === "run_result",
+        )?.acceptedResponseWake,
+      ).toBeUndefined();
+    });
+  });
+
   it("projects the cross-language duplicate-delivery fixture exactly once", () => {
     const fixture = JSON.parse(readFileSync(
       new URL(

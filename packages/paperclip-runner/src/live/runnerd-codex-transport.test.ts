@@ -260,6 +260,33 @@ it("replaces an owned v1 runner with fresh v2 authorization before warm attachme
   }
 }, 30_000);
 
+function maintenanceFixtureBackendName(fixtureId: string): string {
+  return `maintenance-test-${fixtureId}`;
+}
+
+function maintenanceReplaySnapshot(directory: string) {
+  const bytes = [
+    "control-plane/control-plane-state.json",
+    "runner/runner-state.json",
+    "runner/codex-provider-state.json",
+  ].map((file) => readFileSync(join(directory, file)));
+  return {
+    control: JSON.parse(bytes[0]!.toString("utf8")),
+    runner: JSON.parse(bytes[1]!.toString("utf8")),
+    provider: JSON.parse(bytes[2]!.toString("utf8")),
+    providerFingerprint: createHash("sha256").update(bytes[2]!).digest("hex"),
+    fingerprint: createHash("sha256")
+      .update(
+        JSON.stringify(
+          bytes.map((value) =>
+            createHash("sha256").update(value).digest("hex"),
+          ),
+        ),
+      )
+      .digest("hex"),
+  };
+}
+
 it.each([
   { alreadyEnded: false, appendFailure: false },
   { alreadyEnded: true, appendFailure: false },
@@ -269,6 +296,12 @@ it.each([
   { alreadyEnded: true, appendFailure: false, epochFailure: "spawned" },
   { alreadyEnded: true, appendFailure: false, epochFailure: "retired" },
   { alreadyEnded: true, appendFailure: false, holdSpawned: true },
+  { alreadyEnded: true, appendFailure: false, completedTerminalAck: "pending" },
+  { alreadyEnded: true, appendFailure: false, completedTerminalAck: "completed" },
+  { alreadyEnded: true, appendFailure: false, completedTerminalAck: "repeat" },
+  { alreadyEnded: true, appendFailure: false, finalRetirementRevocation: "abort" },
+  { alreadyEnded: true, appendFailure: false, finalRetirementRevocation: "revoked" },
+  { alreadyEnded: true, appendFailure: false, finalRetirementRevocation: "during_authorize" },
   { alreadyEnded: true, appendFailure: false, homeScoped: true },
   { alreadyEnded: true, appendFailure: false, homeScoped: true, missingHome: true },
   { alreadyEnded: true, appendFailure: false, homeScoped: true, missingHome: true, unknownExit: true },
@@ -280,7 +313,7 @@ it.each([
     terminalReplay: true,
   },
 ])(
-  "settles only retained control authority without starting another provider turn ($alreadyEnded/$appendFailure/$bareCodex/$epochFailure/$terminalReplay/$holdSpawned/$homeScoped/$missingHome/$unknownExit) startup-failure-proof=$startupFailureProof",
+  "settles only retained control authority without starting another provider turn ($alreadyEnded/$appendFailure/$bareCodex/$epochFailure/$terminalReplay/$holdSpawned/$homeScoped/$missingHome/$unknownExit) startup-failure-proof=$startupFailureProof completed-ack=$completedTerminalAck retired-revocation=$finalRetirementRevocation",
   async ({
     alreadyEnded,
     appendFailure,
@@ -288,11 +321,23 @@ it.each([
     epochFailure,
     terminalReplay,
     holdSpawned,
+    completedTerminalAck,
+    finalRetirementRevocation,
     homeScoped,
     missingHome,
     unknownExit,
     startupFailureProof,
   }) => {
+    const replaySpyRestorers: Array<() => void> = [];
+    const replayRetirements: ReturnType<typeof maintenanceReplaySnapshot>[] = [];
+    const withheldTerminalFrames: Array<{
+      epoch: number;
+      direction: "inbound" | "outbound";
+      commandId: string;
+      controllerSeq: number;
+      count: number;
+    }> = [];
+    const fixtureId = randomUUID();
     const fixtureRunner = defaultCapabilityRunnerdBinary();
     const directory = await mkdtemp(join(tmpdir(), "runnerd-maintenance-"));
     const original = join(directory, "original");
@@ -506,7 +551,17 @@ it.each([
         )
         .digest("hex");
       const appendEvent = vi.fn(async (_event: PrpEvent) => {});
-      const authorize = vi.fn(async () => {});
+      const maintenanceAbort = new AbortController();
+      let finalAuthorityRevoked = false;
+      const authorize = vi.fn(async () => {
+        if (finalAuthorityRevoked) {
+          if (finalRetirementRevocation === "during_authorize") {
+            maintenanceAbort.abort(new Error("retirement_authority_revoked"));
+            return;
+          }
+          throw new Error("retirement_authority_revoked");
+        }
+      });
       const recordEpoch = vi.fn(
         async (_receipt: Record<string, unknown>) => {},
       );
@@ -521,13 +576,7 @@ it.each([
         },
         backend: {
           kind: "codex",
-          name: missingHome
-            ? `maintenance-test-missing-home-${Boolean(unknownExit)}${startupFailureProof ? "-startup-proof" : ""}`
-            : epochFailure
-            ? `maintenance-test-${epochFailure}`
-            : appendFailure
-              ? "maintenance-test-failure"
-              : "maintenance-test",
+          name: maintenanceFixtureBackendName(fixtureId),
         },
         identity,
         stateDirectory: copy,
@@ -542,6 +591,7 @@ it.each([
         authorize,
         appendEvent,
         recordEpoch,
+        signal: maintenanceAbort.signal,
       };
       const close = vi.fn(async () => {
         throw new NativeSessionCloseUnrecoverableError();
@@ -650,6 +700,38 @@ it.each([
         code: "native_session_cleanup_quarantined",
       });
       expect(start).toHaveBeenCalledOnce();
+      if (holdSpawned) {
+        // A preceding row can fail before its authenticated cleanup proof.
+        // That sticky quarantine must remain, but must not contaminate the
+        // next independent fixture's backend domain in the same worker.
+        const independentStart = vi.fn(async () => {
+          throw new Error("independent fixture admission reached");
+        });
+        const independentBackend: NativeSessionBackend = {
+          descriptor: async () => ({
+            ...(await backend.descriptor()),
+            name: maintenanceFixtureBackendName(`${fixtureId}-following`),
+          }),
+          openSession: async () => ({
+            ...session,
+            startTurn: independentStart,
+            close: async () => {},
+          }),
+        };
+        await expect(executeNativeSession({
+          input: nativeInput,
+          backend: independentBackend,
+          controlPlane: port,
+          runnerInstanceId: identity.runnerInstanceId,
+          controlPlaneInstanceId: "independent-control-maintenance",
+          requireSessionCloseBeforeReturn: true,
+        })).rejects.toThrow("independent fixture admission reached");
+        expect(independentStart).toHaveBeenCalledOnce();
+        await expect(execute()).rejects.toMatchObject({
+          code: "native_session_cleanup_quarantined",
+        });
+        expect(start).toHaveBeenCalledOnce();
+      }
       await expect(
         settleRetainedRunnerdSession({
           ...input,
@@ -1078,6 +1160,100 @@ it.each([
             await assertNoProviderBeforeSpawnedReceipt();
         });
       }
+      if (completedTerminalAck) {
+        const originalAttach =
+          DurablePrpControlPlane.prototype.attachWireConnection;
+        const attachSpy = vi
+          .spyOn(DurablePrpControlPlane.prototype, "attachWireConnection")
+          .mockImplementation(function (this: DurablePrpControlPlane, wire) {
+            const epoch = replayRetirements.length;
+            const direction =
+              completedTerminalAck === "completed" ? "outbound" : "inbound";
+            const inject =
+              this.store.path === join(copy, files[0]!) &&
+              (epoch === 0 ||
+                (completedTerminalAck === "repeat" && epoch === 1));
+            let attachment: ReturnType<typeof originalAttach> | undefined;
+            let withheld: (typeof withheldTerminalFrames)[number] | undefined;
+            const shouldWithhold = (candidate: typeof direction): boolean => {
+              if (
+                !inject ||
+                candidate !== direction ||
+                !attachment?.isAuthenticated()
+              )
+                return false;
+              if (withheld) {
+                withheld.count += 1;
+                return true;
+              }
+              const runner = JSON.parse(
+                readFileSync(join(copy, files[1]!), "utf8"),
+              );
+              const terminal = runner.pendingTerminalDelivery;
+              if (
+                terminal?.commandType !== "runner.suspend" ||
+                terminal.lifecycle !== "suspended"
+              )
+                return false;
+              const result = runner.processedCommands[terminal.commandId];
+              if (
+                result?.status !== "completed" ||
+                result.result?.status !== "completed" ||
+                result.commandType !== terminal.commandType ||
+                result.controllerSeq !== terminal.controllerSeq
+              )
+                return false;
+              const control = JSON.parse(readFileSync(this.store.path, "utf8"));
+              const command = control.commands.find(
+                (entry: { commandId: string }) =>
+                  entry.commandId === terminal.commandId,
+              );
+              if (
+                command?.type !== terminal.commandType ||
+                command.controllerSeq !== terminal.controllerSeq ||
+                command.status !==
+                  (direction === "inbound" ? "pending" : "completed")
+              )
+                return false;
+              if (direction === "outbound")
+                expect(command.result).toEqual(result);
+              else expect(command.result ?? null).toBeNull();
+              // Rust durably records this exact result before sending it.
+              // Withhold transport delivery only after that handshake, not
+              // after a guessed number of saves or an elapsed sleep. Pending
+              // mode loses the result; completed mode loses its outbound ACK.
+              // No retained journal/outbox bytes are removed or rewritten.
+              withheld = {
+                epoch,
+                direction,
+                commandId: terminal.commandId,
+                controllerSeq: terminal.controllerSeq,
+                count: 1,
+              };
+              withheldTerminalFrames.push(withheld);
+              return true;
+            };
+            attachment = originalAttach.call(this, {
+              sendJson(value) {
+                if (!shouldWithhold("outbound")) wire.sendJson(value);
+              },
+              close: (code) => wire.close(code),
+              onJson: (listener) =>
+                wire.onJson((value) => {
+                  if (!shouldWithhold("inbound")) listener(value);
+                }),
+              onClose: (listener) => wire.onClose(listener),
+            });
+            return attachment;
+          });
+        replaySpyRestorers.push(() => attachSpy.mockRestore());
+        recordEpoch.mockImplementation(async (receipt) => {
+          if (receipt.phase !== "retired") return;
+          const snapshot = maintenanceReplaySnapshot(copy);
+          expect(snapshot.fingerprint).toBe(receipt.finalFingerprint);
+          replayRetirements.push(snapshot);
+        });
+      }
       if (epochFailure) {
         const failure = new Error("injected epoch receipt persistence failure");
         const callsBefore = await readFile(calls, "utf8");
@@ -1114,6 +1290,28 @@ it.each([
         });
         expect(start).toHaveBeenCalledOnce();
         return;
+      }
+      if (finalRetirementRevocation) {
+        recordEpoch.mockImplementation(async (receipt) => {
+          if (receipt.phase !== "retired") return;
+          const state = maintenanceReplaySnapshot(copy);
+          if (
+            state.runner.pendingTerminalDelivery != null ||
+            state.runner.pendingProviderCleanup != null ||
+            state.runner.outbox.length !== 0 ||
+            state.provider.pendingEvents.length !== 0 ||
+            state.provider.queuedEvents.length !== 0 ||
+            state.control.commands.some(
+              (command: { status: string }) => command.status === "pending",
+            )
+          )
+            return;
+          expect(state.provider.lifecycle).toBe("prepared");
+          expect(state.fingerprint).toBe(receipt.finalFingerprint);
+          finalAuthorityRevoked = true;
+          if (finalRetirementRevocation === "abort")
+            maintenanceAbort.abort(new Error("retirement_authority_revoked"));
+        });
       }
       let failedAttempt: { directory: string; bytes: Buffer[] } | null = null;
       let failedStartupAttempt: {
@@ -1259,7 +1457,95 @@ it.each([
         recordEpoch.mockClear();
         appendEvent.mockClear();
       }
-      const proof = await settleRetainedRunnerdSession(input).catch(
+      const pendingProof = settleRetainedRunnerdSession(input);
+      if (finalRetirementRevocation) {
+        await expect(pendingProof).rejects.toThrow(
+          finalRetirementRevocation === "abort"
+            ? "native_cleanup_maintenance_unproven"
+            : "retirement_authority_revoked",
+        );
+        expect(finalAuthorityRevoked).toBe(true);
+        await expect(
+          readFile(join(activated, "runner/runner-state.json")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(execute()).rejects.toMatchObject({
+          code: "native_session_cleanup_quarantined",
+        });
+        expect(
+          await Promise.all(files.map((file) => readFile(join(original, file)))),
+        ).toEqual(bytes);
+        const methods = (await readFile(calls, "utf8")).trim().split("\n");
+        expect(methods.filter((method) => method === "turn/start")).toHaveLength(1);
+        return;
+      }
+      if (completedTerminalAck === "repeat") {
+        await expect(pendingProof).rejects.toThrow(
+          "native_cleanup_maintenance_unproven",
+        );
+        expect(replayRetirements).toHaveLength(2);
+        expect(
+          withheldTerminalFrames.map(({ epoch, direction }) => ({
+            epoch,
+            direction,
+          })),
+        ).toEqual([
+          { epoch: 0, direction: "inbound" },
+          { epoch: 1, direction: "inbound" },
+        ]);
+        for (const [epoch, state] of replayRetirements.entries()) {
+          expect(JSON.stringify(state.runner.diagnostics)).toContain(
+            "terminal command result acknowledgement timed out",
+          );
+          expect(state.runner.pendingTerminalDelivery).toMatchObject({
+            commandType: "runner.suspend",
+            lifecycle: "suspended",
+          });
+          const withheld = withheldTerminalFrames[epoch]!;
+          expect(withheld.count).toBeGreaterThan(0);
+          expect(state.runner.pendingTerminalDelivery).toMatchObject({
+            commandId: withheld.commandId,
+            controllerSeq: withheld.controllerSeq,
+          });
+          expect(
+            state.runner.processedCommands[withheld.commandId],
+          ).toMatchObject({
+            status: "completed",
+            result: { status: "completed" },
+          });
+          expect(
+            state.control.commands.find(
+              (command: { commandId: string }) =>
+                command.commandId === withheld.commandId,
+            ),
+          ).toMatchObject({ status: "pending" });
+        }
+        expect(replayRetirements[1]!.provider).toEqual(
+          replayRetirements[0]!.provider,
+        );
+        expect(recordEpoch.mock.calls).toHaveLength(6);
+        await expect(
+          readFile(join(activated, "runner/runner-state.json")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+        await expect(execute()).rejects.toMatchObject({
+          code: "native_session_cleanup_quarantined",
+        });
+        expect(
+          await Promise.all(
+            files.map((file) => readFile(join(original, file))),
+          ),
+        ).toEqual(bytes);
+        const methods = (await readFile(calls, "utf8")).trim().split("\n");
+        expect(
+          methods.filter((method) => method === "turn/start"),
+        ).toHaveLength(1);
+        // The first cleanup epoch restored the old provider solely to stop
+        // it; the failed delivery-only replay did not restore it again.
+        expect(
+          methods.filter((method) => method === "thread/resume"),
+        ).toHaveLength(1);
+        return;
+      }
+      const proof = await pendingProof.catch(
         async (error: unknown) => {
           const runner = JSON.parse(
             await readFile(join(copy, "runner/runner-state.json"), "utf8"),
@@ -1365,6 +1651,199 @@ it.each([
         ).toBe(true);
       }
       const epochReceipts = recordEpoch.mock.calls.map(([receipt]) => receipt);
+      if (completedTerminalAck) {
+        const before = replayRetirements[0]!;
+        const after = replayRetirements[1]!;
+        expect(withheldTerminalFrames).toHaveLength(1);
+        expect(withheldTerminalFrames[0]).toMatchObject({
+          epoch: 0,
+          direction:
+            completedTerminalAck === "completed" ? "outbound" : "inbound",
+        });
+        expect(withheldTerminalFrames[0]!.count).toBeGreaterThan(0);
+        expect(JSON.stringify(before.runner.diagnostics)).toContain(
+          "terminal command result acknowledgement timed out",
+        );
+        const pending = before.runner.pendingTerminalDelivery;
+        expect(pending).toMatchObject({
+          commandType: "runner.suspend",
+          lifecycle: "suspended",
+          commandId: withheldTerminalFrames[0]!.commandId,
+          controllerSeq: withheldTerminalFrames[0]!.controllerSeq,
+        });
+        expect(before.runner.processedCommands[pending.commandId].status).toBe(
+          "completed",
+        );
+        expect(
+          before.control.commands.find(
+            (command: { commandId: string }) =>
+              command.commandId === pending.commandId,
+          ).status,
+        ).toBe(completedTerminalAck);
+        expect(
+          runnerdRecoveryInternals.completedMaintenanceTerminalReceipt(before),
+        ).not.toBeNull();
+        expect(
+          runnerdRecoveryInternals.completedMaintenanceTerminalReplayMatches(
+            before,
+            after,
+          ),
+        ).toBe(true);
+        expect(after.provider).toEqual(before.provider);
+        expect(after.runner.pendingProviderCleanup ?? null).toBeNull();
+        // An actual completed receipt copied into an INITIAL invocation is
+        // not this invocation's joined retirement and cannot enable replay.
+        const initialTerminal = join(directory, "unproved-initial-terminal");
+        await mkdir(join(initialTerminal, "runner"), { recursive: true });
+        await mkdir(join(initialTerminal, "control-plane"));
+        for (const [index, value] of [
+          before.control,
+          before.runner,
+          before.provider,
+        ].entries())
+          await writeFile(
+            join(initialTerminal, files[index]!),
+            JSON.stringify(value),
+          );
+        const unproved = maintenanceReplaySnapshot(initialTerminal);
+        const initialEpoch = vi.fn(async () => {});
+        await expect(
+          settleRetainedRunnerdSession({
+            ...input,
+            stateDirectory: initialTerminal,
+            sourceFingerprint: unproved.fingerprint,
+            recordEpoch: initialEpoch,
+          }),
+        ).rejects.toThrow("native_cleanup_maintenance_unproven");
+        expect(initialEpoch).not.toHaveBeenCalled();
+        const receiptCases: Array<[string, (state: typeof before) => void]> = [
+          [
+            "missing result",
+            (state) => {
+              delete state.runner.processedCommands[pending.commandId];
+            },
+          ],
+          ...["pending", "failed", "rejected", "indeterminate"].map(
+            (status): [string, (state: typeof before) => void] => [
+              `outer ${status}`,
+              (state) => {
+                state.runner.processedCommands[pending.commandId].status = status;
+              },
+            ],
+          ),
+          ...["failed", "rejected", "indeterminate"].map(
+            (status): [string, (state: typeof before) => void] => [
+              `nested ${status}`,
+              (state) => {
+                state.runner.processedCommands[pending.commandId].result.status =
+                  status;
+              },
+            ],
+          ),
+          [
+            "terminal sequence",
+            (state) => {
+              state.runner.pendingTerminalDelivery.controllerSeq++;
+            },
+          ],
+          [
+            "terminal type",
+            (state) => {
+              state.runner.pendingTerminalDelivery.commandType = "runner.shutdown";
+            },
+          ],
+          [
+            "wire fingerprint",
+            (state) => {
+              state.control.commands.find(
+                (command: { commandId: string }) =>
+                  command.commandId === pending.commandId,
+              ).payload = { changed: true };
+            },
+          ],
+          [
+            "completed controller result",
+            (state) => {
+              const command = state.control.commands.find(
+                (entry: { commandId: string }) =>
+                  entry.commandId === pending.commandId,
+              );
+              command.status = "completed";
+              command.result = { changed: true };
+            },
+          ],
+          [
+            "earlier pending command",
+            (state) => {
+              const command = state.control.commands.find(
+                (entry: { commandId: string }) =>
+                  entry.commandId === pending.commandId,
+              );
+              command.status = "pending";
+              delete command.result;
+              state.control.commands[0].status = "pending";
+            },
+          ],
+          [
+            "active provider",
+            (state) => {
+              state.provider.activeProviderTurnId = "another-turn";
+            },
+          ],
+          [
+            "provider cleanup",
+            (state) => {
+              state.runner.pendingProviderCleanup = pending;
+            },
+          ],
+        ];
+        for (const [name, mutate] of receiptCases) {
+          const changed = structuredClone(before);
+          mutate(changed);
+          expect(
+            runnerdRecoveryInternals.completedMaintenanceTerminalReceipt(changed),
+            name,
+          ).toBeNull();
+        }
+        for (const [name, mutate] of [
+          [
+            "other command",
+            (state: typeof after) => {
+              state.control.commands[0].result = { changed: true };
+            },
+          ],
+          [
+            "provider bytes",
+            (state: typeof after) => {
+              state.providerFingerprint = "changed";
+            },
+          ],
+          [
+            "pending delivery",
+            (state: typeof after) => {
+              state.runner.pendingTerminalDelivery = pending;
+            },
+          ],
+          [
+            "processed receipt",
+            (state: typeof after) => {
+              state.runner.processedCommands[pending.commandId].result = {
+                changed: true,
+              };
+            },
+          ],
+        ] as const) {
+          const changed = structuredClone(after);
+          mutate(changed);
+          expect(
+            runnerdRecoveryInternals.completedMaintenanceTerminalReplayMatches(
+              before,
+              changed,
+            ),
+            name,
+          ).toBe(false);
+        }
+      }
       expect(epochReceipts.length).toBeGreaterThanOrEqual(3);
       for (let index = 0; index < epochReceipts.length; index += 3) {
         const [intent, spawned, retired] = epochReceipts.slice(
@@ -1458,6 +1937,7 @@ it.each([
       );
       expect(retainedRunnerdCleanupProofIsCurrent(proof)).toBe(false);
     } finally {
+      for (const restore of replaySpyRestorers.reverse()) restore();
       await bundle.transport.close().catch(() => undefined);
       for (const pid of [runnerPid, providerPid]) {
         if (pid > 0 && !dead(pid)) {
@@ -7337,6 +7817,47 @@ it("probes an exact-authority resume and confirms its live provider identity", a
     }, { timeout: 3_000, interval: 25 });
   } finally {
     await resumed.transport.close();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it("still fails closed when a real close grace period cannot fit a durable suspension round trip", async () => {
+  const stateDirectory = await mkdtemp(
+    join(tmpdir(), "runnerd-close-grace-too-small-"),
+  );
+  const identity = {
+    runnerInstanceId: "runner-close-grace-too-small",
+    environmentLeaseId: "lease-close-grace-too-small",
+    runId: "run-close-grace-too-small",
+    normalizedSessionId: "session-close-grace-too-small",
+    turnId: "turn-close-grace-too-small",
+    itemId: "item-close-grace-too-small",
+  };
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory),
+    stateDirectory,
+    // No real durable command round trip can complete this fast. A wider
+    // budget for the provider-drain proof must not turn this barrier into
+    // one that always passes; it still needs the actual proof to arrive.
+    closeGraceMs: 1,
+    lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+    prpIdentity: identity,
+  });
+  bundle.transport.setServerRequestHandler(async () => ({
+    success: true,
+    contentItems: [],
+  }));
+  try {
+    await bundle.transport.request("thread/start", {
+      cwd: tmpdir(),
+      dynamicTools: [],
+    });
+    await expect(bundle.transport.close()).rejects.toThrow(
+      "runner did not durably suspend before checkpoint",
+    );
+  } finally {
     await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 30_000);

@@ -7,10 +7,27 @@ import {
   useRef,
   type ReactNode,
 } from "react";
-import { useQuery, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
-import { createCoalescingQueryClient, createInvalidationBatcher } from "../lib/query-invalidation-batcher";
-import { patchRunStatusInList, removeRunFromList } from "../lib/live-runs-cache";
-import type { Agent, HeartbeatRun, Issue, IssueComment, LiveEvent } from "@paperclipai/shared";
+import {
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+  type QueryClient,
+} from "@tanstack/react-query";
+import {
+  createCoalescingQueryClient,
+  createInvalidationBatcher,
+} from "../lib/query-invalidation-batcher";
+import {
+  patchRunStatusInList,
+  removeRunFromList,
+} from "../lib/live-runs-cache";
+import type {
+  Agent,
+  HeartbeatRun,
+  Issue,
+  IssueComment,
+  LiveEvent,
+} from "@paperclipai/shared";
 import type { RunForIssue } from "../api/activity";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import type { CompanyUserDirectoryResponse } from "../api/access";
@@ -20,7 +37,10 @@ import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToastActions } from "./ToastContext";
 import { upsertIssueCommentInPages } from "../lib/optimistic-issue-comments";
-import { clearIssueExecutionRun, removeLiveRunById } from "../lib/optimistic-issue-runs";
+import {
+  clearIssueExecutionRun,
+  removeLiveRunById,
+} from "../lib/optimistic-issue-runs";
 import { queryKeys } from "../lib/queryKeys";
 import { toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
@@ -31,7 +51,13 @@ const TOAST_COOLDOWN_MAX = 3;
 const RECONNECT_SUPPRESS_MS = 2000;
 const SOCKET_CONNECTING = 0;
 const SOCKET_OPEN = 1;
-const TERMINAL_RUN_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
+const TERMINAL_RUN_STATUSES = new Set([
+  "succeeded",
+  "interrupted",
+  "failed",
+  "cancelled",
+  "timed_out",
+]);
 
 type LiveUpdatesSocketLike = {
   readyState: number;
@@ -48,7 +74,8 @@ interface LiveEventSubscription {
   subscribe: (handler: CompanyLiveEventHandler) => () => void;
 }
 
-const LiveEventSubscriptionContext = createContext<LiveEventSubscription | null>(null);
+const LiveEventSubscriptionContext =
+  createContext<LiveEventSubscription | null>(null);
 
 function dispatchLiveEventToSubscribers(
   subscribers: Set<CompanyLiveEventHandler>,
@@ -94,7 +121,8 @@ function readString(value: unknown): string | null {
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return null;
   return value as Record<string, unknown>;
 }
 
@@ -107,10 +135,15 @@ function resolveAgentName(
   companyId: string,
   agentId: string,
 ): string | null {
-  const agents = queryClient.getQueryData<Agent[]>(queryKeys.agents.list(companyId));
-  if (!agents) return null;
-  const agent = agents.find((a) => a.id === agentId);
-  return agent?.name ?? null;
+  const agents = queryClient.getQueryData<Agent[]>(
+    queryKeys.agents.list(companyId),
+  );
+  const listedAgent = agents?.find((a) => a.id === agentId);
+  if (listedAgent?.name) return listedAgent.name;
+  return (
+    queryClient.getQueryData<Agent>(queryKeys.agents.detail(agentId))?.name ??
+    null
+  );
 }
 
 function resolveUserName(
@@ -138,7 +171,10 @@ function resolveActorLabel(
   actorId: string | null,
 ): string {
   if (actorType === "agent" && actorId) {
-    return resolveAgentName(queryClient, companyId, actorId) ?? `Agent ${shortId(actorId)}`;
+    return (
+      resolveAgentName(queryClient, companyId, actorId) ??
+      `Agent ${shortId(actorId)}`
+    );
   }
   if (actorType === "system") return "System";
   if (actorType === "user" && actorId) {
@@ -175,11 +211,14 @@ function resolveIssueQueryRefs(
   details: Record<string, unknown> | null,
 ): string[] {
   const refs = new Set<string>([issueId]);
-  const detailIssue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueId));
-  const listIssues = queryClient.getQueryData<Issue[]>(queryKeys.issues.list(companyId));
+  const detailIssue = queryClient.getQueryData<Issue>(
+    queryKeys.issues.detail(issueId),
+  );
+  const listIssues = queryClient.getQueryData<Issue[]>(
+    queryKeys.issues.list(companyId),
+  );
   const detailsIdentifier =
-    readString(details?.identifier) ??
-    readString(details?.issueIdentifier);
+    readString(details?.identifier) ?? readString(details?.issueIdentifier);
 
   if (detailsIdentifier) refs.add(detailsIdentifier);
 
@@ -189,7 +228,8 @@ function resolveIssueQueryRefs(
   const listIssue = listIssues?.find((issue) => {
     if (issue.id === issueId) return true;
     if (issue.identifier && issue.identifier === issueId) return true;
-    if (detailsIdentifier && issue.identifier === detailsIdentifier) return true;
+    if (detailsIdentifier && issue.identifier === detailsIdentifier)
+      return true;
     return false;
   });
   if (listIssue?.id) refs.add(listIssue.id);
@@ -204,13 +244,20 @@ function resolveIssueToastContext(
   issueId: string,
   details: Record<string, unknown> | null,
 ): IssueToastContext {
-  const issueRefs = resolveIssueQueryRefs(queryClient, companyId, issueId, details);
+  const issueRefs = resolveIssueQueryRefs(
+    queryClient,
+    companyId,
+    issueId,
+    details,
+  );
   const detailIssue = issueRefs
     .map((ref) => queryClient.getQueryData<Issue>(queryKeys.issues.detail(ref)))
     .find((issue): issue is Issue => !!issue);
   const listIssue = queryClient
     .getQueryData<Issue[]>(queryKeys.issues.list(companyId))
-    ?.find((issue) => issueRefs.some((ref) => issue.id === ref || issue.identifier === ref));
+    ?.find((issue) =>
+      issueRefs.some((ref) => issue.id === ref || issue.identifier === ref),
+    );
   const cachedIssue = detailIssue ?? listIssue ?? null;
   const ref =
     readString(details?.identifier) ??
@@ -233,7 +280,8 @@ function resolveIssueToastContext(
 function isPageForegrounded(): boolean {
   if (typeof document === "undefined") return false;
   if (document.visibilityState !== "visible") return false;
-  if (typeof document.hasFocus === "function" && !document.hasFocus()) return false;
+  if (typeof document.hasFocus === "function" && !document.hasFocus())
+    return false;
   return true;
 }
 
@@ -250,23 +298,37 @@ function resolveVisibleIssueRouteContext(
   if (segments[0] !== "issues" || !segments[1]) return null;
 
   const issueRef = decodeURIComponent(segments[1]);
-  const issue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueRef)) ?? null;
+  const issue =
+    queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueRef)) ?? null;
   const issueRefs = new Set<string>([issueRef]);
   if (issue?.id) issueRefs.add(issue.id);
   if (issue?.identifier) issueRefs.add(issue.identifier);
 
-  const runIds = new Set<string>();
-  const activeRun = queryClient.getQueryData<ActiveRunForIssue | null>(queryKeys.issues.activeRun(issueRef));
-  const liveRuns = queryClient.getQueryData<LiveRunForIssue[]>(queryKeys.issues.liveRuns(issueRef)) ?? [];
-  const linkedRuns = queryClient.getQueryData<RunForIssue[]>(queryKeys.issues.runs(issueRef)) ?? [];
+  function collectCachedIssueRunIds(ref: string, target: Set<string>) {
+    const activeRun = queryClient.getQueryData<ActiveRunForIssue | null>(
+      queryKeys.issues.activeRun(ref),
+    );
+    const liveRuns =
+      queryClient.getQueryData<LiveRunForIssue[]>(
+        queryKeys.issues.liveRuns(ref),
+      ) ?? [];
+    const linkedRuns =
+      queryClient.getQueryData<RunForIssue[]>(queryKeys.issues.runs(ref)) ?? [];
 
-  if (activeRun?.id) runIds.add(activeRun.id);
-  for (const run of liveRuns) {
-    if (run.id) runIds.add(run.id);
+    if (activeRun?.id) target.add(activeRun.id);
+    for (const run of liveRuns) {
+      if (run.id) target.add(run.id);
+    }
+    for (const run of linkedRuns) {
+      if (run.runId) target.add(run.runId);
+    }
   }
-  for (const run of linkedRuns) {
-    if (run.runId) runIds.add(run.runId);
-  }
+
+  // The route may use an identifier while the conversation loads canonical
+  // UUID-keyed history. A retryable terminal event can omit issueId after its
+  // first delivery has already removed the run from the company live cache.
+  const runIds = new Set<string>();
+  for (const ref of issueRefs) collectCachedIssueRunIds(ref, runIds);
 
   // Notifications about descendants belong to the subtree already on screen.
   // Keep these separate from issueRefs, which also drives cache invalidation.
@@ -274,21 +336,33 @@ function resolveVisibleIssueRouteContext(
   const subtreeAgentIds = new Set<string>();
   const subtreeRunIds = new Set(runIds);
   if (issue?.companyId && issue.id) {
-    const descendants = queryClient.getQueryData<Issue[]>(
-      queryKeys.issues.listByDescendantRoot(issue.companyId, issue.id),
-    ) ?? [];
+    const descendants =
+      queryClient.getQueryData<Issue[]>(
+        queryKeys.issues.listByDescendantRoot(issue.companyId, issue.id),
+      ) ?? [];
     for (const descendant of descendants) {
       subtreeIssueRefs.add(descendant.id);
       if (descendant.identifier) subtreeIssueRefs.add(descendant.identifier);
-      if (descendant.assigneeAgentId) subtreeAgentIds.add(descendant.assigneeAgentId);
-      if (descendant.executionRunId) subtreeRunIds.add(descendant.executionRunId);
+      if (descendant.assigneeAgentId)
+        subtreeAgentIds.add(descendant.assigneeAgentId);
+      if (descendant.executionRunId)
+        subtreeRunIds.add(descendant.executionRunId);
+      // Only current descendants contribute history. Keep their run IDs out
+      // of runIds, which also drives invalidation of the root conversation.
+      collectCachedIssueRunIds(descendant.id, subtreeRunIds);
+      if (descendant.identifier)
+        collectCachedIssueRunIds(descendant.identifier, subtreeRunIds);
     }
   }
 
   if (issue?.companyId) {
-    const companyRuns = queryClient.getQueryData<LiveRunForIssue[]>(queryKeys.liveRuns(issue.companyId)) ?? [];
+    const companyRuns =
+      queryClient.getQueryData<LiveRunForIssue[]>(
+        queryKeys.liveRuns(issue.companyId),
+      ) ?? [];
     for (const run of companyRuns) {
-      if (run.issueId && subtreeIssueRefs.has(run.issueId)) subtreeRunIds.add(run.id);
+      if (run.issueId && subtreeIssueRefs.has(run.issueId))
+        subtreeRunIds.add(run.id);
     }
   }
   return {
@@ -302,9 +376,13 @@ function resolveVisibleIssueRouteContext(
   };
 }
 
-function buildIssueRefsForPayload(entityId: string, details: Record<string, unknown> | null): Set<string> {
+function buildIssueRefsForPayload(
+  entityId: string,
+  details: Record<string, unknown> | null,
+): Set<string> {
   const refs = new Set<string>([entityId]);
-  const identifier = readString(details?.identifier) ?? readString(details?.issueIdentifier);
+  const identifier =
+    readString(details?.identifier) ?? readString(details?.issueIdentifier);
   if (identifier) refs.add(identifier);
   return refs;
 }
@@ -326,10 +404,17 @@ function shouldSuppressActivityToastForVisibleIssue(
   const entityId = readString(payload.entityId);
   if (entityType !== "issue" || !entityId) return false;
 
-  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  const context = resolveVisibleIssueRouteContext(
+    queryClient,
+    pathname,
+    options,
+  );
   if (!context) return false;
 
-  return overlaps(context.subtreeIssueRefs, buildIssueRefsForPayload(entityId, readRecord(payload.details)));
+  return overlaps(
+    context.subtreeIssueRefs,
+    buildIssueRefsForPayload(entityId, readRecord(payload.details)),
+  );
 }
 
 function shouldSuppressRunStatusToastForVisibleIssue(
@@ -339,9 +424,19 @@ function shouldSuppressRunStatusToastForVisibleIssue(
   options?: VisibleRouteOptions,
 ): boolean {
   if (!(options?.isForegrounded ?? isPageForegrounded())) return false;
-  const visibleRunId = toCompanyRelativePath(pathname).match(/^\/agents\/[^/]+\/runs\/([^/]+)/)?.[1];
-  if (visibleRunId && decodeURIComponent(visibleRunId) === readString(payload.runId)) return true;
-  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  const visibleRunId = toCompanyRelativePath(pathname).match(
+    /^\/agents\/[^/]+\/runs\/([^/]+)/,
+  )?.[1];
+  if (
+    visibleRunId &&
+    decodeURIComponent(visibleRunId) === readString(payload.runId)
+  )
+    return true;
+  const context = resolveVisibleIssueRouteContext(
+    queryClient,
+    pathname,
+    options,
+  );
   if (!context) return false;
 
   const issueId = readString(payload.issueId);
@@ -350,7 +445,11 @@ function shouldSuppressRunStatusToastForVisibleIssue(
   if (runId) return context.subtreeRunIds.has(runId);
 
   const agentId = readString(payload.agentId);
-  return !!agentId && (agentId === context.assigneeAgentId || context.subtreeAgentIds.has(agentId));
+  return (
+    !!agentId &&
+    (agentId === context.assigneeAgentId ||
+      context.subtreeAgentIds.has(agentId))
+  );
 }
 
 function invalidateVisibleIssueRunQueries(
@@ -359,26 +458,40 @@ function invalidateVisibleIssueRunQueries(
   payload: Record<string, unknown>,
   options?: VisibleRouteOptions,
 ): boolean {
-  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  const context = resolveVisibleIssueRouteContext(
+    queryClient,
+    pathname,
+    options,
+  );
   if (!context) return false;
 
   const runId = readString(payload.runId);
   const agentId = readString(payload.agentId);
   const matchesVisibleIssue =
     (runId !== null && context.runIds.has(runId)) ||
-    (!!agentId && !!context.assigneeAgentId && agentId === context.assigneeAgentId);
+    (!!agentId &&
+      !!context.assigneeAgentId &&
+      agentId === context.assigneeAgentId);
   if (!matchesVisibleIssue) return false;
 
   const status = readString(payload.status);
   if (runId && status && TERMINAL_RUN_STATUSES.has(status)) {
     for (const issueRef of context.issueRefs) {
+      // Finalization may commit the selected reply without comment_added.
+      // Fetch the canonical comment before handing off the live transcript;
+      // progress/queued events must not refetch the whole conversation.
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.comments(issueRef),
+      });
       queryClient.setQueryData(
         queryKeys.issues.liveRuns(issueRef),
-        (current: LiveRunForIssue[] | undefined) => removeLiveRunById(current, runId),
+        (current: LiveRunForIssue[] | undefined) =>
+          removeLiveRunById(current, runId),
       );
       queryClient.setQueryData(
         queryKeys.issues.activeRun(issueRef),
-        (current: ActiveRunForIssue | null | undefined) => (current?.id === runId ? null : current),
+        (current: ActiveRunForIssue | null | undefined) =>
+          current?.id === runId ? null : current,
       );
       queryClient.setQueryData(
         queryKeys.issues.detail(issueRef),
@@ -388,11 +501,21 @@ function invalidateVisibleIssueRunQueries(
   }
 
   for (const issueRef of context.issueRefs) {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueRef) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueRef) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueRef) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueRef) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueRef) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.detail(issueRef),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.activity(issueRef),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.runs(issueRef),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.liveRuns(issueRef),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.activeRun(issueRef),
+    });
   }
   return true;
 }
@@ -516,19 +639,28 @@ function applyRunLiveStatusPatchToCaches(
 
   const issueRefs = new Set<string>();
   if (patch.issueId) {
-    for (const ref of resolveIssueQueryRefs(queryClient, companyId, patch.issueId, null)) {
+    for (const ref of resolveIssueQueryRefs(
+      queryClient,
+      companyId,
+      patch.issueId,
+      null,
+    )) {
       issueRefs.add(ref);
     }
   }
 
-  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  const context = resolveVisibleIssueRouteContext(
+    queryClient,
+    pathname,
+    options,
+  );
   if (
     context &&
-    (
-      context.runIds.has(patch.runId) ||
+    (context.runIds.has(patch.runId) ||
       (!!patch.issueId && context.issueRefs.has(patch.issueId)) ||
-      (!!patch.agentId && !!context.assigneeAgentId && patch.agentId === context.assigneeAgentId)
-    )
+      (!!patch.agentId &&
+        !!context.assigneeAgentId &&
+        patch.agentId === context.assigneeAgentId))
   ) {
     for (const ref of context.issueRefs) issueRefs.add(ref);
   }
@@ -561,11 +693,19 @@ function shouldSuppressAgentStatusToastForVisibleIssue(
   payload: Record<string, unknown>,
   options?: VisibleRouteOptions,
 ): boolean {
-  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  const context = resolveVisibleIssueRouteContext(
+    queryClient,
+    pathname,
+    options,
+  );
   if (!context) return false;
 
   const agentId = readString(payload.agentId);
-  return !!agentId && (agentId === context.assigneeAgentId || context.subtreeAgentIds.has(agentId));
+  return (
+    !!agentId &&
+    (agentId === context.assigneeAgentId ||
+      context.subtreeAgentIds.has(agentId))
+  );
 }
 
 function shouldDeferIssueRefetchForVisibleAgentActivity(
@@ -585,10 +725,17 @@ function shouldDeferIssueRefetchForVisibleAgentActivity(
   if (action !== "issue.updated") return false;
   if (readString(details?.source) === "comment") return false;
 
-  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  const context = resolveVisibleIssueRouteContext(
+    queryClient,
+    pathname,
+    options,
+  );
   if (!context) return false;
 
-  return overlaps(context.issueRefs, buildIssueRefsForPayload(entityId, details));
+  return overlaps(
+    context.issueRefs,
+    buildIssueRefsForPayload(entityId, details),
+  );
 }
 
 function shouldDeferVisibleIssueCommentActivity(
@@ -605,10 +752,17 @@ function shouldDeferVisibleIssueCommentActivity(
   if (entityType !== "issue" || !entityId) return false;
   if (action !== "issue.comment_added") return false;
 
-  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  const context = resolveVisibleIssueRouteContext(
+    queryClient,
+    pathname,
+    options,
+  );
   if (!context) return false;
 
-  return overlaps(context.issueRefs, buildIssueRefsForPayload(entityId, details));
+  return overlaps(
+    context.issueRefs,
+    buildIssueRefsForPayload(entityId, details),
+  );
 }
 
 async function hydrateVisibleIssueComment(
@@ -622,42 +776,58 @@ async function hydrateVisibleIssueComment(
   const details = readRecord(payload.details);
   const commentId = readString(details?.commentId);
 
-  if (entityType !== "issue" || action !== "issue.comment_added" || !commentId) return false;
+  if (entityType !== "issue" || action !== "issue.comment_added" || !commentId)
+    return false;
 
-  const context = resolveVisibleIssueRouteContext(queryClient, pathname, options);
+  const context = resolveVisibleIssueRouteContext(
+    queryClient,
+    pathname,
+    options,
+  );
   if (!context) return false;
 
   const entityId = readString(payload.entityId);
-  if (!entityId || !overlaps(context.issueRefs, buildIssueRefsForPayload(entityId, details))) {
+  if (
+    !entityId ||
+    !overlaps(context.issueRefs, buildIssueRefsForPayload(entityId, details))
+  ) {
     return false;
   }
 
   try {
-    const comment = await issuesApi.getComment(context.routeIssueRef, commentId);
-    queryClient.setQueryData<InfiniteData<IssueComment[], string | null> | undefined>(
-      queryKeys.issues.comments(context.routeIssueRef),
-      (current) => {
-        if (!current) {
-          return {
-            pages: [[comment]],
-            pageParams: [null],
-          };
-        }
-
-        return {
-          ...current,
-          pages: upsertIssueCommentInPages(current.pages, comment),
-        };
-      },
+    const comment = await issuesApi.getComment(
+      context.routeIssueRef,
+      commentId,
     );
+    queryClient.setQueryData<
+      InfiniteData<IssueComment[], string | null> | undefined
+    >(queryKeys.issues.comments(context.routeIssueRef), (current) => {
+      if (!current) {
+        return {
+          pages: [[comment]],
+          pageParams: [null],
+        };
+      }
+
+      return {
+        ...current,
+        pages: upsertIssueCommentInPages(current.pages, comment),
+      };
+    });
     return true;
   } catch {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(context.routeIssueRef) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.comments(context.routeIssueRef),
+    });
     return false;
   }
 }
 
-const ISSUE_TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
+const ISSUE_TOAST_ACTIONS = new Set([
+  "issue.created",
+  "issue.updated",
+  "issue.comment_added",
+]);
 const ISSUE_DOCUMENT_ACTIVITY_ACTIONS = new Set([
   "issue.document_created",
   "issue.document_updated",
@@ -688,22 +858,35 @@ const CASE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
 const AGENT_TOAST_STATUSES = new Set(["error"]);
 const RUN_TOAST_STATUSES = new Set(["failed", "timed_out", "cancelled"]);
 
-function describeIssueUpdate(details: Record<string, unknown> | null): string | null {
+function describeIssueUpdate(
+  details: Record<string, unknown> | null,
+): string | null {
   if (!details) return null;
   const changes: string[] = [];
-  if (typeof details.status === "string") changes.push(`status -> ${details.status.replace(/_/g, " ")}`);
-  if (typeof details.priority === "string") changes.push(`priority -> ${details.priority}`);
-  if (typeof details.assigneeAgentId === "string" || typeof details.assigneeUserId === "string") {
+  if (typeof details.status === "string")
+    changes.push(`status -> ${details.status.replace(/_/g, " ")}`);
+  if (typeof details.priority === "string")
+    changes.push(`priority -> ${details.priority}`);
+  if (
+    typeof details.assigneeAgentId === "string" ||
+    typeof details.assigneeUserId === "string"
+  ) {
     changes.push("reassigned");
-  } else if (details.assigneeAgentId === null || details.assigneeUserId === null) {
+  } else if (
+    details.assigneeAgentId === null ||
+    details.assigneeUserId === null
+  ) {
     changes.push("unassigned");
   }
   if (details.reopened === true) {
     const from = readString(details.reopenedFrom);
-    changes.push(from ? `reopened from ${from.replace(/_/g, " ")}` : "reopened");
+    changes.push(
+      from ? `reopened from ${from.replace(/_/g, " ")}` : "reopened",
+    );
   }
   if (typeof details.title === "string") changes.push("title changed");
-  if (typeof details.description === "string") changes.push("description changed");
+  if (typeof details.description === "string")
+    changes.push("description changed");
   if (changes.length > 0) return changes.join(", ");
   return null;
 }
@@ -721,15 +904,29 @@ function buildActivityToast(
   const actorId = readString(payload.actorId);
   const actorType = readString(payload.actorType);
 
-  if (entityType !== "issue" || !entityId || !action || !ISSUE_TOAST_ACTIONS.has(action)) {
+  if (
+    entityType !== "issue" ||
+    !entityId ||
+    !action ||
+    !ISSUE_TOAST_ACTIONS.has(action)
+  ) {
     return null;
   }
 
-  const issue = resolveIssueToastContext(queryClient, companyId, entityId, details);
+  const issue = resolveIssueToastContext(
+    queryClient,
+    companyId,
+    entityId,
+    details,
+  );
   const actor = resolveActorLabel(queryClient, companyId, actorType, actorId);
   const isSelfActivity =
-    (actorType === "user" && !!currentActor.userId && actorId === currentActor.userId) ||
-    (actorType === "agent" && !!currentActor.agentId && actorId === currentActor.agentId);
+    (actorType === "user" &&
+      !!currentActor.userId &&
+      actorId === currentActor.userId) ||
+    (actorType === "agent" &&
+      !!currentActor.agentId &&
+      actorId === currentActor.agentId);
   if (isSelfActivity) return null;
 
   if (action === "issue.created") {
@@ -787,7 +984,7 @@ function buildActivityToast(
       ? issue.title
         ? `${reopenedLabel} - ${issue.title}`
         : reopenedLabel
-      : issue.title ?? undefined;
+      : (issue.title ?? undefined);
   return {
     title,
     body: body ? truncate(body, 96) : undefined,
@@ -806,7 +1003,8 @@ function buildJoinRequestToast(
   const details = readRecord(payload.details);
 
   if (entityType !== "join_request" || !action || !entityId) return null;
-  if (action !== "join.requested" && action !== "join.request_replayed") return null;
+  if (action !== "join.requested" && action !== "join.request_replayed")
+    return null;
 
   const requestType = readString(details?.requestType);
   const label = requestType === "agent" ? "Agent" : "Someone";
@@ -832,12 +1030,11 @@ function buildAgentStatusToast(
 
   const tone = status === "error" ? "error" : "info";
   const name = nameOf(agentId) ?? `Agent ${shortId(agentId)}`;
-  const title =
-    status === "running"
-      ? `${name} started`
-      : `${name} errored`;
+  const title = status === "running" ? `${name} started` : `${name} errored`;
 
-  const agents = queryClient.getQueryData<Agent[]>(queryKeys.agents.list(companyId));
+  const agents = queryClient.getQueryData<Agent[]>(
+    queryKeys.agents.list(companyId),
+  );
   const agent = agents?.find((a) => a.id === agentId);
   const body = agent?.title ?? undefined;
 
@@ -857,16 +1054,41 @@ function buildRunStatusToast(
   const runId = readString(payload.runId);
   const agentId = readString(payload.agentId);
   const status = readString(payload.status);
-  if (!runId || !agentId || !status || !RUN_TOAST_STATUSES.has(status)) return null;
+  if (!runId || !agentId || !status || !RUN_TOAST_STATUSES.has(status))
+    return null;
 
   const error = readString(payload.error);
+  const errorCode = readString(payload.errorCode);
+  const contextSource = readString(payload.contextSource);
   const triggerDetail = readString(payload.triggerDetail);
-  const name = nameOf(agentId) ?? `Agent ${shortId(agentId)}`;
-  const tone = status === "succeeded" ? "success" : status === "cancelled" ? "info" : "error";
+  const name = nameOf(agentId) ?? "Agent";
+  if (
+    status === "failed" &&
+    errorCode === "low_trust_isolation_unavailable" &&
+    contextSource?.startsWith("chat:")
+  ) {
+    return {
+      title: `${name} couldn't start this chat`,
+      body: "This external chat identity isn't linked, and isolated guest workspaces are disabled. Link the identity in Connectors or enable isolated workspaces, then start a new task.",
+      tone: "warn",
+      ttlMs: 10_000,
+      action: { label: "Open chat connections", href: "/apps" },
+      dedupeKey: `run-status:${runId}:${status}`,
+    };
+  }
+  const tone =
+    status === "succeeded"
+      ? "success"
+      : status === "cancelled"
+        ? "info"
+        : "error";
   const statusLabel =
-    status === "succeeded" ? "succeeded"
-      : status === "failed" ? "failed"
-        : status === "timed_out" ? "timed out"
+    status === "succeeded"
+      ? "succeeded"
+      : status === "failed"
+        ? "failed"
+        : status === "timed_out"
+          ? "timed out"
           : "cancelled";
   const title = `${name} run ${statusLabel}`;
 
@@ -906,18 +1128,31 @@ function applyRunLifecycleToCompanyLiveRuns(
     queryKeys.runDetail(runId),
     (current: HeartbeatRun | undefined) => {
       if (!current) return current;
-      const has = (key: string) => Object.prototype.hasOwnProperty.call(payload, key);
+      const has = (key: string) =>
+        Object.prototype.hasOwnProperty.call(payload, key);
       return {
         ...current,
         status: status as HeartbeatRun["status"],
         ...(has("invocationSource")
-          ? { invocationSource: readString(payload.invocationSource) ?? current.invocationSource }
+          ? {
+              invocationSource:
+                readString(payload.invocationSource) ??
+                current.invocationSource,
+            }
           : {}),
-        ...(has("triggerDetail") ? { triggerDetail: readString(payload.triggerDetail) } : {}),
+        ...(has("triggerDetail")
+          ? { triggerDetail: readString(payload.triggerDetail) }
+          : {}),
         ...(has("error") ? { error: readString(payload.error) } : {}),
-        ...(has("errorCode") ? { errorCode: readString(payload.errorCode) } : {}),
-        ...(has("startedAt") ? { startedAt: readString(payload.startedAt) } : {}),
-        ...(has("finishedAt") ? { finishedAt: readString(payload.finishedAt) } : {}),
+        ...(has("errorCode")
+          ? { errorCode: readString(payload.errorCode) }
+          : {}),
+        ...(has("startedAt")
+          ? { startedAt: readString(payload.startedAt) }
+          : {}),
+        ...(has("finishedAt")
+          ? { finishedAt: readString(payload.finishedAt) }
+          : {}),
       };
     },
   );
@@ -925,7 +1160,8 @@ function applyRunLifecycleToCompanyLiveRuns(
   if (TERMINAL_RUN_STATUSES.has(status)) {
     queryClient.setQueryData(
       queryKeys.liveRuns(companyId),
-      (current: LiveRunForIssue[] | undefined) => removeRunFromList(current, runId),
+      (current: LiveRunForIssue[] | undefined) =>
+        removeRunFromList(current, runId),
     );
     // Always "handled": a terminal run must never be in the live list, so if it
     // wasn't present there is deliberately nothing to refetch (removeRunFromList
@@ -956,12 +1192,18 @@ function invalidateHeartbeatQueries(
   queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  queryClient.invalidateQueries({
+    queryKey: queryKeys.sidebarBadges(companyId),
+  });
 
   const agentId = readString(payload.agentId);
   if (agentId) {
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, agentId) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.detail(agentId),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.heartbeats(companyId, agentId),
+    });
   }
   const runId = readString(payload.runId);
   if (runId) {
@@ -976,7 +1218,9 @@ function invalidateHeartbeatProgressQueries(
 ) {
   const agentId = readString(payload.agentId);
   if (agentId) {
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.detail(agentId),
+    });
   }
 }
 
@@ -989,7 +1233,9 @@ function invalidateActivityQueries(
 ) {
   queryClient.invalidateQueries({ queryKey: queryKeys.activity(companyId) });
   queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(companyId) });
-  queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(companyId) });
+  queryClient.invalidateQueries({
+    queryKey: queryKeys.sidebarBadges(companyId),
+  });
 
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
@@ -998,27 +1244,46 @@ function invalidateActivityQueries(
   const actorId = readString(payload.actorId);
   const details = readRecord(payload.details);
   const ownActorActivity =
-    (actorType === "user" && !!currentActor.userId && actorId === currentActor.userId) ||
-    (actorType === "agent" && !!currentActor.agentId && actorId === currentActor.agentId);
+    (actorType === "user" &&
+      !!currentActor.userId &&
+      actorId === currentActor.userId) ||
+    (actorType === "agent" &&
+      !!currentActor.agentId &&
+      actorId === currentActor.agentId);
 
   if (action?.startsWith("resource_membership.")) {
     const targetUserId = readString(details?.userId);
     if (!targetUserId || targetUserId === currentActor.userId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.resourceMemberships.mine(companyId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.resourceMemberships.mine(companyId),
+      });
     }
   }
 
   if (entityType === "issue") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listTouchedByMe(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.list(companyId),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.listMineByMe(companyId),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.listTouchedByMe(companyId),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.issues.listUnreadTouchedByMe(companyId),
+    });
     if (entityId) {
       const selfCommentActivity =
-        ((action === "issue.comment_added") ||
-          (action === "issue.updated" && readString(details?.source) === "comment")) &&
-        ((actorType === "user" && !!currentActor.userId && actorId === currentActor.userId) ||
-          (actorType === "agent" && !!currentActor.agentId && actorId === currentActor.agentId));
+        (action === "issue.comment_added" ||
+          (action === "issue.updated" &&
+            readString(details?.source) === "comment")) &&
+        ((actorType === "user" &&
+          !!currentActor.userId &&
+          actorId === currentActor.userId) ||
+          (actorType === "agent" &&
+            !!currentActor.agentId &&
+            actorId === currentActor.agentId));
       const visibleIssueAgentActivity =
         !!options?.pathname &&
         shouldDeferIssueRefetchForVisibleAgentActivity(
@@ -1035,33 +1300,66 @@ function invalidateActivityQueries(
           payload,
           { isForegrounded: options.isForegrounded },
         );
-      const issueRefs = resolveIssueQueryRefs(queryClient, companyId, entityId, details);
+      const issueRefs = resolveIssueQueryRefs(
+        queryClient,
+        companyId,
+        entityId,
+        details,
+      );
       for (const ref of issueRefs) {
         const invalidationOptions =
-          (selfCommentActivity || visibleIssueAgentActivity || visibleIssueCommentActivity)
+          selfCommentActivity ||
+          visibleIssueAgentActivity ||
+          visibleIssueCommentActivity
             ? { refetchType: "inactive" as const }
             : undefined;
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), ...invalidationOptions });
-        queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.detail(ref),
+          ...invalidationOptions,
+        });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.issues.activity(ref),
+          ...invalidationOptions,
+        });
         if (action === "issue.comment_added") {
-          queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.issues.comments(ref),
+            ...invalidationOptions,
+          });
         }
         if (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action)) {
           const documentKey = readString(details?.key);
-          queryClient.invalidateQueries({ queryKey: queryKeys.issues.documents(ref), ...invalidationOptions });
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.issues.documents(ref),
+            ...invalidationOptions,
+          });
           if (documentKey) {
-            queryClient.invalidateQueries({ queryKey: queryKeys.issues.document(ref, documentKey), ...invalidationOptions });
-            queryClient.invalidateQueries({ queryKey: queryKeys.issues.documentRevisions(ref, documentKey), ...invalidationOptions });
+            queryClient.invalidateQueries({
+              queryKey: queryKeys.issues.document(ref, documentKey),
+              ...invalidationOptions,
+            });
+            queryClient.invalidateQueries({
+              queryKey: queryKeys.issues.documentRevisions(ref, documentKey),
+              ...invalidationOptions,
+            });
           } else {
-            queryClient.invalidateQueries({ queryKey: ["issues", "document", ref], ...invalidationOptions });
-            queryClient.invalidateQueries({ queryKey: ["issues", "document-revisions", ref], ...invalidationOptions });
+            queryClient.invalidateQueries({
+              queryKey: ["issues", "document", ref],
+              ...invalidationOptions,
+            });
+            queryClient.invalidateQueries({
+              queryKey: ["issues", "document-revisions", ref],
+              ...invalidationOptions,
+            });
           }
         }
         if (
           action &&
-          (ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action) || ISSUE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS.has(action))
+          (ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action) ||
+            ISSUE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS.has(action))
         ) {
-          const documentKey = readString(details?.key) ?? readString(details?.documentKey);
+          const documentKey =
+            readString(details?.key) ?? readString(details?.documentKey);
           queryClient.invalidateQueries({
             queryKey: documentKey
               ? ["issues", "document-annotations", ref, documentKey]
@@ -1070,18 +1368,27 @@ function invalidateActivityQueries(
           });
         }
         if (
-          action?.startsWith("issue.thread_interaction_")
-          || ((action === "issue.updated" || action === "issue.status_decision_recorded")
-            && readString(details?.source) === "native_status_decision")
+          action?.startsWith("issue.thread_interaction_") ||
+          ((action === "issue.updated" ||
+            action === "issue.status_decision_recorded") &&
+            readString(details?.source) === "native_status_decision")
         ) {
           // Native status decisions may materialize a review interaction in the
           // same transaction. Unlike run/activity rows, that card is not present
           // in the streamed PRP projection, so inactive-only invalidation leaves
           // the visible task stale until a full reload.
-          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
-          queryClient.invalidateQueries({ queryKey: queryKeys.tools.actionRequests(companyId, "pending") });
-          queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(companyId) });
-          queryClient.invalidateQueries({ queryKey: queryKeys.tools.trustRules(companyId) });
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.issues.interactions(ref),
+          });
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.tools.actionRequests(companyId, "pending"),
+          });
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.apps.attention(companyId),
+          });
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.tools.trustRules(companyId),
+          });
         }
       }
     }
@@ -1089,51 +1396,89 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "agent") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.list(companyId),
+    });
     queryClient.invalidateQueries({ queryKey: queryKeys.org(companyId) });
     if (entityId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(entityId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(companyId, entityId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(entityId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.heartbeats(companyId, entityId),
+      });
     }
     return;
   }
 
   if (entityType === "project") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(companyId) });
-    if (entityId) queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(entityId) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.projects.all(companyId),
+    });
+    if (entityId)
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.projects.detail(entityId),
+      });
     return;
   }
 
   if (entityType === "goal") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.goals.list(companyId) });
-    if (entityId) queryClient.invalidateQueries({ queryKey: queryKeys.goals.detail(entityId) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.goals.list(companyId),
+    });
+    if (entityId)
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.goals.detail(entityId),
+      });
     return;
   }
 
   if (entityType === "approval") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(companyId) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.approvals.list(companyId),
+    });
     return;
   }
 
   if (entityType === "join_request") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.access.joinRequests(companyId) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.access.joinRequests(companyId),
+    });
     return;
   }
 
   if (entityType === "cost_event") {
     queryClient.invalidateQueries({ queryKey: queryKeys.costs(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.usageByProvider(companyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.usageWindowSpend(companyId) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.usageByProvider(companyId),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.usageWindowSpend(companyId),
+    });
     // usageQuotaWindows is intentionally excluded: quota windows come from external provider
     // apis on a 5-minute poll and do not change in response to cost events logged by agents
     return;
   }
 
-  if (entityType === "routine" || entityType === "routine_trigger" || entityType === "routine_run") {
+  if (
+    entityType === "routine" ||
+    entityType === "routine_trigger" ||
+    entityType === "routine_run"
+  ) {
     queryClient.invalidateQueries({ queryKey: ["routines"] });
-    if (entityType === "routine" && action && ROUTINE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS.has(action) && entityId) {
-      const documentKey = readString(details?.key) ?? readString(details?.documentKey) ?? "description";
-      const routineInvalidationOptions = ownActorActivity ? { refetchType: "inactive" as const } : undefined;
+    if (
+      entityType === "routine" &&
+      action &&
+      ROUTINE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS.has(action) &&
+      entityId
+    ) {
+      const documentKey =
+        readString(details?.key) ??
+        readString(details?.documentKey) ??
+        "description";
+      const routineInvalidationOptions = ownActorActivity
+        ? { refetchType: "inactive" as const }
+        : undefined;
       queryClient.invalidateQueries({
         queryKey: ["routines", "document-annotations", entityId, documentKey],
         ...routineInvalidationOptions,
@@ -1143,13 +1488,22 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "case") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.cases.list(companyId) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.cases.list(companyId),
+    });
     if (entityId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.cases.detail(entityId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.cases.events(entityId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.cases.detail(entityId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.cases.events(entityId),
+      });
       if (action && CASE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS.has(action)) {
-        const documentKey = readString(details?.key) ?? readString(details?.documentKey);
-        const caseInvalidationOptions = ownActorActivity ? { refetchType: "inactive" as const } : undefined;
+        const documentKey =
+          readString(details?.key) ?? readString(details?.documentKey);
+        const caseInvalidationOptions = ownActorActivity
+          ? { refetchType: "inactive" as const }
+          : undefined;
         queryClient.invalidateQueries({
           queryKey: documentKey
             ? ["cases", "document-annotations", entityId, documentKey]
@@ -1170,10 +1524,20 @@ function invalidateActivityQueries(
     const scopeId = readString(details?.scopeId);
     if (scopeKind && slotKey) {
       queryClient.invalidateQueries({
-        queryKey: queryKeys.summarySlots.detail(companyId, scopeKind, slotKey, scopeId),
+        queryKey: queryKeys.summarySlots.detail(
+          companyId,
+          scopeKind,
+          slotKey,
+          scopeId,
+        ),
       });
       queryClient.invalidateQueries({
-        queryKey: queryKeys.summarySlots.revisions(companyId, scopeKind, slotKey, scopeId),
+        queryKey: queryKeys.summarySlots.revisions(
+          companyId,
+          scopeKind,
+          slotKey,
+          scopeId,
+        ),
       });
     }
     return;
@@ -1230,13 +1594,25 @@ function handleLiveEvent(
 ) {
   if (event.companyId !== expectedCompanyId) return;
 
-  const nameOf = (id: string) => resolveAgentName(queryClient, expectedCompanyId, id);
+  const nameOf = (id: string) =>
+    resolveAgentName(queryClient, expectedCompanyId, id);
   const payload = event.payload ?? {};
   // Resolve membership before terminal lifecycle patches remove live-run rows.
-  const suppressRunToast = event.type === "heartbeat.run.status" && shouldSuppressRunStatusToastForVisibleIssue(queryClient, pathname, payload);
-  const liveStatusPatch = readRunLiveStatusPatchFromPayload(payload, event.createdAt, event.type);
+  const suppressRunToast =
+    event.type === "heartbeat.run.status" &&
+    shouldSuppressRunStatusToastForVisibleIssue(queryClient, pathname, payload);
+  const liveStatusPatch = readRunLiveStatusPatchFromPayload(
+    payload,
+    event.createdAt,
+    event.type,
+  );
   if (liveStatusPatch) {
-    applyRunLiveStatusPatchToCaches(queryClient, expectedCompanyId, pathname, liveStatusPatch);
+    applyRunLiveStatusPatchToCaches(
+      queryClient,
+      expectedCompanyId,
+      pathname,
+      liveStatusPatch,
+    );
   }
   if (event.type === "heartbeat.run.log") {
     return;
@@ -1246,19 +1622,22 @@ function handleLiveEvent(
     event.type === "heartbeat.run.queued" ||
     event.type === "heartbeat.run.status"
   ) {
-    const liveRunsPatched = applyRunLifecycleToCompanyLiveRuns(queryClient, expectedCompanyId, payload);
+    const liveRunsPatched = applyRunLifecycleToCompanyLiveRuns(
+      queryClient,
+      expectedCompanyId,
+      payload,
+    );
     invalidateHeartbeatQueries(queryClient, expectedCompanyId, payload);
     if (!liveRunsPatched) {
       // A new run we couldn't reconstruct from the event — refetch once to add it.
-      queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(expectedCompanyId) });
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.liveRuns(expectedCompanyId),
+      });
     }
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     if (event.type === "heartbeat.run.status") {
       const toast = buildRunStatusToast(payload, nameOf);
-      if (
-        toast &&
-        !suppressRunToast
-      ) {
+      if (toast && !suppressRunToast) {
         gatedPushToast(gate, pushToast, "run-status", toast);
       }
     }
@@ -1276,15 +1655,33 @@ function handleLiveEvent(
   }
 
   if (event.type === "agent.status") {
-    queryClient.invalidateQueries({ queryKey: queryKeys.agents.list(expectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.dashboard(expectedCompanyId) });
-    queryClient.invalidateQueries({ queryKey: queryKeys.org(expectedCompanyId) });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.list(expectedCompanyId),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.dashboard(expectedCompanyId),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.org(expectedCompanyId),
+    });
     const agentId = readString(payload.agentId);
-    if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agentId) });
-    const toast = buildAgentStatusToast(payload, nameOf, queryClient, expectedCompanyId);
+    if (agentId)
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.agents.detail(agentId),
+      });
+    const toast = buildAgentStatusToast(
+      payload,
+      nameOf,
+      queryClient,
+      expectedCompanyId,
+    );
     if (
       toast &&
-      !shouldSuppressAgentStatusToastForVisibleIssue(queryClient, pathname, payload)
+      !shouldSuppressAgentStatusToastForVisibleIssue(
+        queryClient,
+        pathname,
+        payload,
+      )
     ) {
       gatedPushToast(gate, pushToast, "agent-status", toast);
     }
@@ -1292,17 +1689,33 @@ function handleLiveEvent(
   }
 
   if (event.type === "activity.logged") {
-    invalidateActivityQueries(queryClient, expectedCompanyId, payload, currentActor, { pathname });
-    if (shouldDeferVisibleIssueCommentActivity(queryClient, pathname, payload)) {
+    invalidateActivityQueries(
+      queryClient,
+      expectedCompanyId,
+      payload,
+      currentActor,
+      { pathname },
+    );
+    if (
+      shouldDeferVisibleIssueCommentActivity(queryClient, pathname, payload)
+    ) {
       void hydrateVisibleIssueComment(queryClient, pathname, payload);
     }
     const action = readString(payload.action);
     const toast =
-      buildActivityToast(queryClient, expectedCompanyId, payload, currentActor) ??
-      buildJoinRequestToast(payload);
+      buildActivityToast(
+        queryClient,
+        expectedCompanyId,
+        payload,
+        currentActor,
+      ) ?? buildJoinRequestToast(payload);
     if (
       toast &&
-      !shouldSuppressActivityToastForVisibleIssue(queryClient, pathname, payload)
+      !shouldSuppressActivityToastForVisibleIssue(
+        queryClient,
+        pathname,
+        payload,
+      )
     ) {
       gatedPushToast(gate, pushToast, `activity:${action ?? "unknown"}`, toast);
     }
@@ -1325,7 +1738,10 @@ function resetSocketHandlers(target: LiveUpdatesSocketLike) {
   target.onclose = null;
 }
 
-function closeSocketQuietly(target: LiveUpdatesSocketLike | null, reason: string) {
+function closeSocketQuietly(
+  target: LiveUpdatesSocketLike | null,
+  reason: string,
+) {
   if (!target) return;
 
   if (target.readyState === SOCKET_CONNECTING) {
@@ -1375,7 +1791,10 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const location = useLocation();
-  const gateRef = useRef<ToastGate>({ cooldownHits: new Map(), suppressUntil: 0 });
+  const gateRef = useRef<ToastGate>({
+    cooldownHits: new Map(),
+    suppressUntil: 0,
+  });
   const pathnameRef = useRef(location.pathname);
   const { data: session, status: sessionStatus } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -1384,9 +1803,16 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const socketAuthKey = session?.session?.id ?? currentUserId ?? "signed_out";
-  const liveCompanyId = resolveLiveCompanyId(selectedCompanyId, selectedCompany?.id ?? null);
-  const canConnectSocket = sessionStatus === "success" && session !== null && liveCompanyId !== null;
-  const currentActorRef = useRef<{ userId: string | null; agentId: string | null }>({
+  const liveCompanyId = resolveLiveCompanyId(
+    selectedCompanyId,
+    selectedCompany?.id ?? null,
+  );
+  const canConnectSocket =
+    sessionStatus === "success" && session !== null && liveCompanyId !== null;
+  const currentActorRef = useRef<{
+    userId: string | null;
+    agentId: string | null;
+  }>({
     userId: currentUserId,
     agentId: null,
   });
@@ -1397,12 +1823,18 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       subscribersRef.current.delete(handler);
     };
   }, []);
-  const subscriptionValue = useMemo<LiveEventSubscription>(() => ({ subscribe }), [subscribe]);
+  const subscriptionValue = useMemo<LiveEventSubscription>(
+    () => ({ subscribe }),
+    [subscribe],
+  );
 
   // Coalesce the per-event invalidation storm. Optimistic setQueryData writes
   // still pass straight through (immediate); only invalidateQueries is batched
   // and flushed at most a few times per second.
-  const invalidationBatcher = useMemo(() => createInvalidationBatcher(queryClient), [queryClient]);
+  const invalidationBatcher = useMemo(
+    () => createInvalidationBatcher(queryClient),
+    [queryClient],
+  );
   const coalescingClient = useMemo(
     () => createCoalescingQueryClient(queryClient, invalidationBatcher),
     [queryClient, invalidationBatcher],
@@ -1438,7 +1870,10 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     const scheduleReconnect = () => {
       if (closed) return;
       reconnectAttempt += 1;
-      const delayMs = Math.min(15000, 1000 * 2 ** Math.min(reconnectAttempt - 1, 4));
+      const delayMs = Math.min(
+        15000,
+        1000 * 2 ** Math.min(reconnectAttempt - 1, 4),
+      );
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
         connect();
@@ -1462,7 +1897,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
           // Reconcile after a gap: events missed while disconnected can't be
           // replayed yet, so refetch the event-sourced live-runs list once.
-          queryClient.invalidateQueries({ queryKey: queryKeys.liveRuns(liveCompanyId) });
+          queryClient.invalidateQueries({
+            queryKey: queryKeys.liveRuns(liveCompanyId),
+          });
         }
         reconnectAttempt = 0;
       };
@@ -1473,13 +1910,25 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
         try {
           const parsed = JSON.parse(raw) as LiveEvent;
-          handleLiveEvent(coalescingClient, liveCompanyId, pathnameRef.current, parsed, pushToast, gateRef.current, {
-            userId: currentActorRef.current.userId,
-            agentId: currentActorRef.current.agentId,
-          });
+          handleLiveEvent(
+            coalescingClient,
+            liveCompanyId,
+            pathnameRef.current,
+            parsed,
+            pushToast,
+            gateRef.current,
+            {
+              userId: currentActorRef.current.userId,
+              agentId: currentActorRef.current.agentId,
+            },
+          );
           // Fan the raw event out to component subscribers after cache
           // handling so any reader sees fresh query data.
-          dispatchLiveEventToSubscribers(subscribersRef.current, liveCompanyId, parsed);
+          dispatchLiveEventToSubscribers(
+            subscribersRef.current,
+            liveCompanyId,
+            parsed,
+          );
         } catch {
           // Ignore non-JSON payloads.
         }
@@ -1511,7 +1960,13 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       socket = null;
       closeSocketQuietly(activeSocket, "provider_unmount");
     };
-  }, [coalescingClient, liveCompanyId, pushToast, canConnectSocket, socketAuthKey]);
+  }, [
+    coalescingClient,
+    liveCompanyId,
+    pushToast,
+    canConnectSocket,
+    socketAuthKey,
+  ]);
 
   return (
     <LiveEventSubscriptionContext.Provider value={subscriptionValue}>

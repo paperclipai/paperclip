@@ -1,3 +1,5 @@
+import { storeProviderApiKey } from "../lib/provider-credential";
+import { SavedProviderKeySelect, useSavedProviderKeys } from "./onboarding/SavedProviderKeySelect";
 import { useEffect, useState, useMemo, useRef } from "react";
 import type { ComponentType, CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -620,8 +622,10 @@ function OnboardingWizardInner({
    * picked keys, left, and came back should not be handed a sign-in panel they
    * already said no to.
    */
-  const [credentialMode, setCredentialMode] = useState<CredentialMode>(
-    (saved?.credentialMode as CredentialMode) ?? "subscription",
+  const [credentialModeChoice, setCredentialMode] = useState<CredentialMode | null>(
+    (saved?.credentialModeChoice !== undefined
+      ? saved.credentialModeChoice as CredentialMode | null
+      : saved?.credentialMode as CredentialMode | undefined) ?? null,
   );
   /**
    * Where the connect step's sign-in sequence is.
@@ -660,6 +664,28 @@ function OnboardingWizardInner({
   // Created entity IDs — pre-populate from existing company when skipping step 1
   const [createdCompanyId, setCreatedCompanyId] = useState<string | null>(
     existingCompanyId ?? (saved?.createdCompanyId as string) ?? null
+  );
+  const savedKeys = useSavedProviderKeys(
+    createdCompanyId,
+    apiKeyEnvKeyFor(adapterType),
+    effectiveOnboardingOpen && step === 4,
+  );
+  const [subscriptionId, setSubscriptionId] = useState<{ companyId: string; id: string } | null>(null);
+  const savedSubscription = adapterType === "codex_local"
+    ? savedKeys.subscriptions.find((option) => option.id === (
+        subscriptionId?.companyId === createdCompanyId
+          ? subscriptionId.id
+          : savedKeys.subscriptions[0]?.id
+      ))
+    : undefined;
+  const [selectedSavedKey, setSelectedSavedKey] = useState<{ companyId: string; envKey: string; id: string } | null>(null);
+  const selectedApiKeyId = selectedSavedKey?.companyId === createdCompanyId && selectedSavedKey?.envKey === apiKeyEnvKeyFor(adapterType)
+    ? selectedSavedKey.id
+    : savedKeys.options[0]?.id;
+  const selectedApiKey = savedKeys.options.find((option) => option.id === selectedApiKeyId);
+  const credentialMode = credentialModeChoice ?? (
+    (adapterType === "claude_local" ? savedKeys.storedLogin.data : adapterType === "codex_local" && savedKeys.subscriptions.length)
+      ? "subscription" : savedKeys.options.length ? "api" : "subscription"
   );
   const [createdCompanyPrefix, setCreatedCompanyPrefix] = useState<
     string | null
@@ -706,7 +732,7 @@ function OnboardingWizardInner({
    * customer on the step to try again — and without this each press would store
    * another copy of the same credential.
    */
-  const apiKeySecretRef = useRef<{ key: string } | null>(null);
+  const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; binding: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"] } | null>(null);
   createdCompanyIdRef.current = createdCompanyId;
 
   // The step the request wants, mirrored for the same reason. `initialStep` is
@@ -843,7 +869,7 @@ function OnboardingWizardInner({
       step, companyName,
       agentName, agentRole, adapterType, cwd, model, command, args, url,
       // The mode, never the key: this blob is localStorage.
-      credentialMode,
+      credentialMode, credentialModeChoice,
       createdCompanyId, createdCompanyPrefix, createdAgentId,
       createdCompanyGoalId, createdProjectId, createdIssueRef,
     };
@@ -851,7 +877,7 @@ function OnboardingWizardInner({
   }, [
     effectiveOnboardingOpen, step, companyName,
     agentName, agentRole, adapterType, cwd, model, command, args, url,
-    credentialMode,
+    credentialMode, credentialModeChoice,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
   ]);
@@ -1009,7 +1035,7 @@ function OnboardingWizardInner({
       Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && canShowAdapterLogin,
   });
   useEffect(() => {
-    if (!activeLoginSessionQuery.data) return;
+    if (!activeLoginSessionQuery.data || credentialMode === "api" || savedSubscription || savedKeys.storedLogin.data) return;
     // Re-derive the row's answer along with the sequence: a resumed session
     // implies a source was already picked, and the row stays a question
     // otherwise (see `sourcePicked` above).
@@ -1020,7 +1046,7 @@ function OnboardingWizardInner({
     // prompt through `onPromptReady`, below, which is what moves this beat
     // from `loading` to `ready`, exactly as a fresh press would.
     setConnectPhase((phase) => (phase === "idle" ? "loading" : phase));
-  }, [activeLoginSessionQuery.data]);
+  }, [activeLoginSessionQuery.data, credentialMode, savedSubscription, savedKeys.storedLogin.data]);
   /**
    * The signal is being fetched and has not answered yet.
    *
@@ -1089,7 +1115,7 @@ function OnboardingWizardInner({
    * Anything that gates this step belongs in here, so the next one is added
    * once rather than twice.
    */
-  const connectStepReady = sourceSelected && !adapterEnvLoading;
+  const connectStepReady = sourceSelected && !adapterEnvLoading && !savedKeys.loading;
 
   /**
    * Whether this step has a sign-in to do before it can hire.
@@ -1102,7 +1128,10 @@ function OnboardingWizardInner({
    */
   const connectStepNeedsLogin = Boolean(
     credentialMode !== "api" &&
-      showAdapterLoginPanel &&
+      (showAdapterLoginPanel || (canShowAdapterLogin && adapterType === "codex_local" && subscriptionId?.companyId === createdCompanyId && subscriptionId.id === "")) &&
+      !savedSubscription &&
+      !(adapterType === "claude_local" && savedKeys.storedLogin.data) &&
+      !savedKeys.loading &&
       createdCompanyId &&
       resolvedLoginEnvironmentId,
   );
@@ -1258,7 +1287,7 @@ function OnboardingWizardInner({
                 label: "Connect",
                 icon: "arrow",
                 disabled:
-                  !connectStepReady || (credentialMode === "api" && !apiKey.trim()),
+                  !connectStepReady || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey),
               }
           : // Nothing is chosen on arrival, and the row is what chooses. Until
             // it has been answered the button has nothing to do.
@@ -1404,7 +1433,7 @@ function OnboardingWizardInner({
     setAdapterEnvResult(null);
     adapterEnvResultAppliedStoredLoginRef.current = false;
     setAdapterEnvError(null);
-  }, [step, adapterType, model, command, args, url, credentialMode, apiKey]);
+  }, [step, adapterType, model, command, args, url, credentialMode, apiKey, selectedSavedKey, selectedApiKey?.id, subscriptionId, savedSubscription?.id]);
 
   /**
    * Leaving the step puts the row back to a question.
@@ -1646,7 +1675,7 @@ function OnboardingWizardInner({
    *
    * A user secret needs a definition to hang off. The Claude token's is fixed
    * and server-owned; there is no such definition for API keys, so onboarding
-   * creates one on first use. That needs company owner or admin rights, which
+   * creates a distinct definition for each new key, preserving existing keys. That needs company owner or admin rights, which
    * whoever just created this company in onboarding has.
    *
    * Returns false on failure, having set the error. Callers must treat false as
@@ -1656,31 +1685,10 @@ function OnboardingWizardInner({
   async function storeApiKeyUserSecret(companyId: string): Promise<boolean> {
     const key = apiKey.trim();
     const envKey = apiKeyEnvKeyFor(adapterType);
-    if (apiKeySecretRef.current?.key === key) return true;
+    if (apiKeySecretRef.current?.key === key && apiKeySecretRef.current.companyId === companyId && apiKeySecretRef.current.envKey === envKey) return true;
     try {
-      const entries = await secretsApi.listMyUserSecrets(companyId);
-      const existing = entries.find((entry) => entry.definition.key === envKey);
-      const definitionId =
-        existing?.definition.id ??
-        (
-          await secretsApi.createUserSecretDefinition(companyId, {
-            key: envKey,
-            name: `${envKey} for onboarding`,
-            description: "Created while connecting a model during onboarding.",
-          })
-        ).id;
-      // Rotate rather than create when a value is already stored, because
-      // creating a second value for one definition is what the server refuses.
-      if (existing?.secret) {
-        await secretsApi.rotateMyUserSecret(companyId, existing.secret.id, { value: key });
-      } else {
-        await secretsApi.createMyUserSecret(companyId, {
-          definitionId,
-          definitionKey: envKey,
-          value: key,
-        });
-      }
-      apiKeySecretRef.current = { key };
+      const stored = await storeProviderApiKey(companyId, envKey, key);
+      apiKeySecretRef.current = { key, companyId, envKey, binding: stored.binding };
       return true;
     } catch (err) {
       setError(
@@ -1744,17 +1752,16 @@ function OnboardingWizardInner({
     // present. If storing failed this stays false, and the right outcome is a
     // configuration with no credential — which the hire then blocks on — rather
     // than one that quietly falls back to embedding the value.
-    if (credentialMode === "api" && bindApiKey) {
+    if (credentialMode === "api" && (bindApiKey || selectedApiKey)) {
       const env =
         typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
           ? { ...(config.env as Record<string, unknown>) }
           : {};
-      env[apiKeyEnvKeyFor(adapterType)] = {
-        type: "user_secret_ref",
-        key: apiKeyEnvKeyFor(adapterType),
-        version: "latest",
-      };
+      env[apiKeyEnvKeyFor(adapterType)] = selectedApiKey?.binding ?? apiKeySecretRef.current?.binding;
       config.env = env;
+    }
+    if (credentialMode === "subscription" && savedSubscription) {
+      config.env = { ...((config.env as object) ?? {}), CODEX_HOME: savedSubscription.binding };
     }
     return config;
   }
@@ -1958,7 +1965,7 @@ function OnboardingWizardInner({
       // hire describe it the same way — as a reference. A failure here stops the
       // hire rather than falling through to a configuration with no credential.
       let apiKeyStored = false;
-      if (credentialMode === "api" && apiKey.trim()) {
+      if (credentialMode === "api" && !selectedApiKey && apiKey.trim()) {
         apiKeyStored = await storeApiKeyUserSecret(createdCompanyId);
         if (!apiKeyStored) return;
       }
@@ -2514,6 +2521,20 @@ function OnboardingWizardInner({
                       }}
                     />
 
+                    {credentialMode === "subscription" && adapterType === "codex_local" && savedKeys.subscriptions.length > 0 && (
+                      <div className="mt-5">
+                        <SavedProviderKeySelect
+                          options={savedKeys.subscriptions}
+                          value={savedSubscription?.id ?? ""}
+                          onChange={(id) => setSubscriptionId(createdCompanyId ? { companyId: createdCompanyId, id } : null)}
+                          loading={false}
+                          error={false}
+                          kind="subscription"
+                          disabled={loading || adapterEnvLoading || connectPhase === "connecting"}
+                        />
+                      </div>
+                    )}
+
                     {/* Fades on the first beat but keeps its space until the
                         second, so pressing a tile moves nothing vertically.
                         Once a sign-in is running there is no switching to keys
@@ -2538,6 +2559,8 @@ function OnboardingWizardInner({
                     >
                       <div className="-ml-3 mt-1">
                         <CredentialModeLink mode={credentialMode} onChange={setCredentialMode} />
+                        {savedKeys.options.length > 0 && <p className="px-3 text-sm text-muted-foreground">{savedKeys.options.length} saved API {savedKeys.options.length === 1 ? "key available" : "keys available"}.</p>}
+                        {credentialMode === "subscription" && authSignalStatus === "present" && <p className="px-3 text-sm text-muted-foreground">An existing provider connection is available.</p>}
                       </div>
                     </motion.div>
                   </div>
@@ -2580,11 +2603,15 @@ function OnboardingWizardInner({
                     */}
                     {!connectCardMounted ? null : credentialMode === "api" ? (
                       <OnboardingLoginCard
-                        instruction={`Provide your ${
+                        instruction={savedKeys.options.length ? "Choose a saved API key or enter a new one" : `Provide your ${
                           CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
                         } API key to connect`}
                       >
-                        <OnboardingCardField
+                        <SavedProviderKeySelect {...savedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
+                          setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id } : null);
+                          setApiKey("");
+                        }} />
+                        {!selectedApiKey && <OnboardingCardField
                           label="API key"
                           placeholder="Enter API key here"
                           masked
@@ -2593,9 +2620,12 @@ function OnboardingWizardInner({
                           // over from the key field this card replaced.
                           autoFocus
                           value={apiKey}
-                          onChange={setApiKey}
+                          onChange={(value) => {
+                            setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id: "" } : null);
+                            setApiKey(value);
+                          }}
                           onSubmit={() => handleConnectStepPrimary()}
-                        />
+                        />}
                       </OnboardingLoginCard>
                     ) : connectStepNeedsLogin &&
                       createdCompanyId &&
@@ -2640,6 +2670,8 @@ function OnboardingWizardInner({
                           });
                         }}
                       />
+                    ) : adapterType === "claude_local" && savedKeys.storedLogin.data ? (
+                      <p className="text-sm text-muted-foreground">Use your saved Claude subscription for this agent.</p>
                     ) : connectStepHasNoSandbox ? (
                       /* The one thing that can be wrong here before anything is
                          pressed, and the one worth saying out loud: without a

@@ -172,6 +172,46 @@ test("the checked-in manifest loads and covers most of the current suite set", (
   );
 });
 
+test("the measured chat integration cohort does not share a general-server shard", () => {
+  const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
+  const durations = loadShardDurations(durationsManifest);
+  assert.ok(
+    Number.isFinite(durations[chatSuite]),
+    "the full chat cohort must have a measured duration, not the median fallback",
+  );
+  const unsharded = dryRunJson([
+    "--mode",
+    "general",
+    "--group",
+    "general-server",
+    "--shard-index",
+    "0",
+    "--shard-count",
+    "1",
+  ]);
+  const shards = partitionGeneralServerSuites(
+    unsharded.selectedGeneralServerSuites,
+    SHARD_COUNT,
+    durations,
+  );
+  const chatShards = shards.filter((shard) => shard.files.includes(chatSuite));
+  assert.equal(
+    chatShards.length,
+    1,
+    "the full chat cohort must run exactly once",
+  );
+  assert.deepEqual(
+    chatShards[0].files,
+    [chatSuite],
+    "its measured cost must reserve one existing shard without other suites",
+  );
+  assert.deepEqual(
+    shards.flatMap((shard) => shard.files).sort(),
+    [...unsharded.selectedGeneralServerSuites].sort(),
+    "duration balancing must not omit or duplicate any general-server suite",
+  );
+});
+
 test("the checked-in serialized manifest loads and covers most of the current suite set", () => {
   const durations = loadShardDurations(serializedDurationsManifest);
   assert.ok(Object.keys(durations).length > 0, "manifest must parse to a non-empty duration map");

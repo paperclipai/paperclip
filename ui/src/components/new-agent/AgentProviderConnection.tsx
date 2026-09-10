@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "motion/react";
+import {
+  SavedProviderKeySelect,
+  useSavedProviderKeys,
+} from "../onboarding/SavedProviderKeySelect";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { AdapterLoginPanel } from "../AgentConfigForm";
@@ -53,7 +57,7 @@ export function AgentProviderConnection({
     setBusy(false);
     setOpened(false);
   };
-  const [method, setMethod] = useState<"subscription" | "api">("subscription");
+  const [methodChoice, setMethod] = useState<"subscription" | "api" | null>(null);
   const [opened, setOpened] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
@@ -63,6 +67,24 @@ export function AgentProviderConnection({
   const provider = adapterType === "claude_local" ? "Claude" : "OpenAI";
   const envKey =
     adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+  const savedKeys = useSavedProviderKeys(companyId, envKey);
+  const [subscriptionId, setSubscriptionId] = useState<string | null>(null);
+  const savedSubscription =
+    adapterType === "codex_local"
+      ? savedKeys.subscriptions.find(
+          (option) =>
+            option.id === (subscriptionId ?? savedKeys.subscriptions[0]?.id),
+        )
+      : undefined;
+  const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null);
+  const selectedKey = savedKeys.options.find(
+    (option) => option.id === (selectedKeyId ?? savedKeys.options[0]?.id),
+  );
+  const storedLogin = savedKeys.storedLogin;
+  const method = methodChoice ?? (
+    (adapterType === "claude_local" ? storedLogin.data : savedKeys.subscriptions.length)
+      ? "subscription" : savedKeys.options.length ? "api" : "subscription"
+  );
   const auth = useQuery({
     queryKey: queryKeys.agents.authSignal(
       companyId,
@@ -85,15 +107,17 @@ export function AgentProviderConnection({
     try {
       const connection =
         method === "api"
-          ? (storedConnection ?? {
-              env: {},
-              credentials: { [envKey]: apiKey.trim() },
-            })
+          ? selectedKey
+            ? { env: { [envKey]: selectedKey.binding } }
+            : (storedConnection ?? {
+                env: {},
+                credentials: { [envKey]: apiKey.trim() },
+              })
           : {
-              env: {},
-              ...(adapterType === "claude_local" &&
-              canLogin &&
-              auth.data?.status === "present"
+              env: savedSubscription
+                ? { CODEX_HOME: savedSubscription.binding }
+                : {},
+              ...(adapterType === "claude_local" && storedLogin.data
                 ? {
                     env: buildFixedClaudeOAuthBinding(),
                     applyStoredClaudeLogin: true,
@@ -103,7 +127,7 @@ export function AgentProviderConnection({
       if (run !== epoch.current) return;
       if (method === "api") {
         setApiKey("");
-        setStoredConnection(connection);
+        if (!selectedKey) setStoredConnection(connection);
       }
       const connected = await testConnection(connection);
       if (run !== epoch.current) return;
@@ -127,7 +151,10 @@ export function AgentProviderConnection({
     method === "subscription" &&
     canLogin &&
     environmentId &&
-    auth.data?.status !== "present";
+    !savedSubscription &&
+    !savedKeys.loading &&
+    !storedLogin.data &&
+    (auth.data?.status !== "present" || subscriptionId === "");
   return (
     <div>
       <ModelSourceTiles
@@ -161,6 +188,25 @@ export function AgentProviderConnection({
           />
         </div>
       )}
+      {!opened && savedKeys.options.length > 0 && (
+        <p className="mt-2 text-sm text-muted-foreground">
+          {savedKeys.options.length} saved API{" "}
+          {savedKeys.options.length === 1 ? "key available" : "keys available"}.
+        </p>
+      )}
+      {method === "subscription" &&
+        adapterType === "codex_local" &&
+        savedKeys.subscriptions.length > 0 && (
+          <SavedProviderKeySelect
+            options={savedKeys.subscriptions}
+            value={savedSubscription?.id ?? ""}
+            onChange={setSubscriptionId}
+            loading={false}
+            error={false}
+            kind="subscription"
+            disabled={busy}
+          />
+        )}
       <motion.div
         initial={false}
         animate={{ height: opened ? "auto" : 0, opacity: opened ? 1 : 0 }}
@@ -171,25 +217,43 @@ export function AgentProviderConnection({
           <div className="pt-5">
             {method === "api" ? (
               <OnboardingLoginCard
-                instruction={`Provide your ${provider} API key to connect`}
+                instruction={
+                  savedKeys.options.length
+                    ? "Choose a saved API key or enter a new one"
+                    : `Provide your ${provider} API key to connect`
+                }
               >
-                <OnboardingCardField
-                  label="API key"
-                  masked
-                  autoFocus
-                  value={apiKey}
-                  placeholder={
-                    storedConnection
-                      ? "Key entered. Retry the connection."
-                      : "Enter API key here"
-                  }
-                  onChange={(value) => {
-                    setApiKey(value);
-                    setStoredConnection(null);
-                  }}
-                  onSubmit={() => void connect()}
+                <SavedProviderKeySelect
+                  {...savedKeys}
+                  value={selectedKey?.id ?? ""}
                   disabled={busy}
+                  onChange={(id) => {
+                    setSelectedKeyId(id);
+                    setApiKey("");
+                    setStoredConnection(null);
+                    setError(null);
+                  }}
                 />
+                {!selectedKey && (
+                  <OnboardingCardField
+                    label="API key"
+                    masked
+                    autoFocus
+                    value={apiKey}
+                    placeholder={
+                      storedConnection
+                        ? "Key entered. Retry the connection."
+                        : "Enter API key here"
+                    }
+                    onChange={(value) => {
+                      setSelectedKeyId("");
+                      setApiKey(value);
+                      setStoredConnection(null);
+                    }}
+                    onSubmit={() => void connect()}
+                    disabled={busy}
+                  />
+                )}
               </OnboardingLoginCard>
             ) : needsLogin ? (
               <AdapterLoginPanel
@@ -210,16 +274,23 @@ export function AgentProviderConnection({
                   if (adapterType === "codex_local") onConnected({ env: {} });
                 }}
               />
-            ) : (
+            ) : savedSubscription ? null : (
               <p className="text-sm text-muted-foreground">
-                {canLogin
-                  ? "Use the subscription already connected to this environment."
-                  : `Use the ${provider} login on this machine. If you haven’t signed in yet, run ${adapterType === "claude_local" ? "claude auth login" : "codex login"} in your terminal, then connect.`}
+                {storedLogin.data
+                  ? "Use your saved Claude subscription for this agent."
+                  : canLogin
+                    ? "Use the existing provider connection for this environment."
+                    : `Use the ${provider} login on this machine. If you haven’t signed in yet, run ${adapterType === "claude_local" ? "claude auth login" : "codex login"} in your terminal, then connect.`}
               </p>
             )}
           </div>
         )}
       </motion.div>
+      {method === "subscription" && storedLogin.isError && (
+        <p role="alert" className="mt-4 text-sm text-destructive">
+          Could not check your saved Claude subscription. Try again.
+        </p>
+      )}
       {error && (
         <p role="alert" className="mt-4 text-sm text-destructive">
           {testError ?? error}
@@ -230,12 +301,26 @@ export function AgentProviderConnection({
           if (opened) cancel();
           else onBack();
         }}
-        primaryLabel={busy ? "Connecting" : "Connect"}
+        primaryLabel={
+          busy
+            ? "Connecting"
+            : method === "subscription" &&
+                (storedLogin.data || savedSubscription)
+              ? "Use saved subscription"
+              : method === "api" && selectedKey
+                ? "Use saved API key"
+                : "Connect"
+        }
         primaryDisabled={
           auth.isPending ||
+          savedKeys.loading ||
+          (adapterType === "claude_local" && storedLogin.isPending) ||
           !opened ||
           Boolean(needsLogin) ||
-          (method === "api" && !apiKey.trim() && !storedConnection)
+          (method === "api" &&
+            !apiKey.trim() &&
+            !storedConnection &&
+            !selectedKey)
         }
         loading={busy}
         onPrimary={() => void connect()}

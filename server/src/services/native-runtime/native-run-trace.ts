@@ -22,6 +22,105 @@ export interface NativeRunHistoricalSpan {
   attributes?: Record<string, string | number | boolean>;
 }
 
+export function isNativeRunRootHistoricalSpan(name: string): boolean {
+  return (
+    name === "heartbeat.queue" ||
+    name === "comment.to_run_created" ||
+    name === "question_response.to_run_created"
+  );
+}
+
+/** Current causal ingress, not the older source comment kept for provenance. */
+export function buildNativeWakeIngressSpan(input: {
+  runCreatedAtMs: number;
+  wakeComments: readonly unknown[];
+  /** Attempt-local output of committed server authorization, never a wake marker. */
+  attestedQuestionResponseAtMs: number | null;
+}): NativeRunHistoricalSpan | null {
+  const answeredAt = input.attestedQuestionResponseAtMs;
+  if (answeredAt !== null && Number.isFinite(answeredAt) && answeredAt >= 0) {
+    return {
+      name: "question_response.to_run_created",
+      parentName: "task.run",
+      startedAtMs: answeredAt,
+      endedAtMs: Math.max(answeredAt, input.runCreatedAtMs),
+    };
+  }
+  const createdAt = input.wakeComments
+    .map((comment) => {
+      const value =
+        comment && typeof comment === "object" && !Array.isArray(comment)
+          ? (comment as Record<string, unknown>).createdAt
+          : null;
+      return typeof value === "string" ? Date.parse(value) : Number.NaN;
+    })
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b)[0];
+  return createdAt === undefined
+    ? null
+    : {
+        name: "comment.to_run_created",
+        parentName: "task.run",
+        startedAtMs: createdAt,
+        endedAtMs: Math.max(createdAt, input.runCreatedAtMs),
+      };
+}
+
+export function buildNativeHeartbeatPreparationSpans(input: {
+  runCreatedAtMs: number;
+  runStartedAtMs: number;
+  attemptStartedAtMs: number;
+  environmentAcquireStartedAtMs: number;
+  environmentRealizeEndedAtMs: number;
+  nativeDispatchAtMs: number;
+}): NativeRunHistoricalSpan[] {
+  return [
+    {
+      name: "heartbeat.queue",
+      parentName: "task.run",
+      startedAtMs: input.runCreatedAtMs,
+      endedAtMs: Math.max(input.runCreatedAtMs, input.runStartedAtMs),
+    },
+    {
+      name: "heartbeat.prepare_before_environment",
+      parentName: "task.run",
+      // A same-run resume retains startedAt for wall-time accounting; it is
+      // not the beginning of this dispatch attempt's preparation.
+      startedAtMs: input.attemptStartedAtMs,
+      endedAtMs: Math.max(
+        input.attemptStartedAtMs,
+        input.environmentAcquireStartedAtMs,
+      ),
+    },
+    {
+      name: "heartbeat.prepare_after_environment",
+      parentName: "task.run",
+      startedAtMs: Math.min(
+        input.nativeDispatchAtMs,
+        input.environmentRealizeEndedAtMs,
+      ),
+      endedAtMs: input.nativeDispatchAtMs,
+    },
+  ];
+}
+
+export function nativeRunPreparationStarts(
+  spans: NativeRunHistoricalSpan[],
+  nowMs: number,
+): { runStartedAtMs: number; preparationStartedAtMs: number } {
+  const runStartedAtMs = spans.reduce(
+    (earliest, span) => Math.min(earliest, span.startedAtMs),
+    nowMs,
+  );
+  // Queue and accepted-comment latency remain run-level history. Including
+  // them in task.prepare would charge previous attempts and recovery delays
+  // to every resumed attempt, even if its actual startup took milliseconds.
+  const preparationStartedAtMs = spans
+    .filter((span) => !isNativeRunRootHistoricalSpan(span.name))
+    .reduce((earliest, span) => Math.min(earliest, span.startedAtMs), nowMs);
+  return { runStartedAtMs, preparationStartedAtMs };
+}
+
 export interface NativeRunSpanScope {
   readonly name: string;
   readonly parentName: string;

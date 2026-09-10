@@ -1,18 +1,31 @@
 import { toolActionDeliveryService } from "./services/tool-action-delivery.js";
 import express, { Router, type Request as ExpressRequest } from "express";
-import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
+import {
+  createServer as createHttpServer,
+  type Server as HttpServer,
+} from "node:http";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@paperclipai/db";
-import { derivePaperclipViteHmrPort, type DeploymentExposure, type DeploymentMode } from "@paperclipai/shared";
+import {
+  derivePaperclipViteHmrPort,
+  type DeploymentExposure,
+  type DeploymentMode,
+} from "@paperclipai/shared";
 import type { InspectDatabaseBackupHealthOptions } from "./services/database-backup-health.js";
 import type { StorageService } from "./storage/types.js";
 import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
-import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
-import { applyTrustProxy, parseTrustProxyEnv } from "./middleware/trust-proxy.js";
+import {
+  privateHostnameGuard,
+  resolvePrivateHostnameAllowSet,
+} from "./middleware/private-hostname-guard.js";
+import {
+  applyTrustProxy,
+  parseTrustProxyEnv,
+} from "./middleware/trust-proxy.js";
 import {
   IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
   resolveDefaultImportTransferSpoolRoot,
@@ -57,6 +70,10 @@ import { boardChatRoutes } from "./routes/board-chat.js";
 import { approvalRoutes } from "./routes/approvals.js";
 import { secretRoutes } from "./routes/secrets.js";
 import { toolAccessRoutes } from "./routes/tool-access.js";
+import {
+  chatChannelRoutes,
+  chatWebhookRoutes,
+} from "./routes/chat-channels.js";
 import { smokeLabRoutes } from "./routes/smoke-lab.js";
 import { costRoutes } from "./routes/costs.js";
 import { activityRoutes } from "./routes/activity.js";
@@ -83,7 +100,10 @@ import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
-import { mcpGatewayProtocolRoutes, toolGatewayRoutes } from "./routes/tool-gateway.js";
+import {
+  mcpGatewayProtocolRoutes,
+  toolGatewayRoutes,
+} from "./routes/tool-gateway.js";
 import {
   connectionIntentBoardRoutes,
   runtimeConnectionIntentRoutes,
@@ -96,23 +116,41 @@ import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { staticUiCacheControl } from "./static-ui-cache.js";
 import { applyUiBranding } from "./ui-branding.js";
 import { logger } from "./middleware/logger.js";
-import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader, type PluginLoader } from "./services/plugin-loader.js";
+import {
+  DEFAULT_LOCAL_PLUGIN_DIR,
+  pluginLoader,
+  type PluginLoader,
+} from "./services/plugin-loader.js";
 import {
   SELF_HOSTED_AUTO_INSTALL_KEYS,
   ensureBundledPlugins,
   resolveBundledCatalogRoot,
   resolveBundledPluginInstalls,
 } from "./services/bundled-plugins.js";
-import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
+import {
+  createPluginWorkerManager,
+  type PluginWorkerManager,
+} from "./services/plugin-worker-manager.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
 import { createToolGatewayService } from "./services/tool-gateway.js";
 import { toolAccessService } from "./services/tool-access.js";
+import { chatChannelService } from "./services/chat-channels.js";
+import { deliverNativeQuestionResponse } from "./services/native-runtime/native-question-bridge.js";
+import { enqueueChatRunMilestones } from "./services/chat-run-publications.js";
+import {
+  createCoalescedAsyncTrigger,
+  isChatPublicationCommitSignal,
+} from "./services/chat-publication-reconciliation.js";
+import { subscribeAllCompanyLiveEvents } from "./services/live-events.js";
 import { heartbeatService } from "./services/heartbeat.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
 import { createPluginJobCoordinator } from "./services/plugin-job-coordinator.js";
-import { buildHostServices, flushPluginLogBuffer } from "./services/plugin-host-services.js";
+import {
+  buildHostServices,
+  flushPluginLogBuffer,
+} from "./services/plugin-host-services.js";
 import { createPluginEventBus } from "./services/plugin-event-bus.js";
 import { setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
@@ -121,12 +159,18 @@ import { pluginRegistryService } from "./services/plugin-registry.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
-import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
+import {
+  DEFAULT_JSON_BODY_LIMIT,
+  PORTABLE_JSON_BODY_LIMIT,
+} from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
+import { chatWebhookBodyParser } from "./middleware/chat-webhook-body.js";
+import { createChatWebhookDiagnostics } from "./services/chat-webhook-diagnostics.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
+const CHAT_PUBLICATION_FLUSH_INTERVAL_MS = 1_000;
 const VITE_DEV_ASSET_PREFIXES = [
   "/@fs/",
   "/@id/",
@@ -149,7 +193,9 @@ const VITE_DEV_STATIC_PATHS = new Set([
 export function isDatabaseConnectionUnavailableError(err: unknown): boolean {
   const error = err as { code?: unknown; message?: unknown; cause?: unknown };
   if (error?.code === "ECONNREFUSED") return true;
-  return Boolean(error?.cause && isDatabaseConnectionUnavailableError(error.cause));
+  return Boolean(
+    error?.cause && isDatabaseConnectionUnavailableError(error.cause),
+  );
 }
 
 export function resolveViteHmrPort(serverPort: number): number {
@@ -159,22 +205,29 @@ export function resolveViteHmrPort(serverPort: number): number {
 export function resolveViteHmrHost(bindHost: string): string | undefined {
   const normalized = bindHost.trim().toLowerCase();
   if (
-    normalized === "0.0.0.0"
-    || normalized === "::"
-    || normalized === "127.0.0.1"
-    || normalized === "::1"
-    || normalized === "localhost"
-  ) return undefined;
+    normalized === "0.0.0.0" ||
+    normalized === "::" ||
+    normalized === "127.0.0.1" ||
+    normalized === "::1" ||
+    normalized === "localhost"
+  )
+    return undefined;
   return bindHost;
 }
 
-export function resolveViteHmrProtocol(value: string | undefined): "ws" | "wss" | undefined {
+export function resolveViteHmrProtocol(
+  value: string | undefined,
+): "ws" | "wss" | undefined {
   if (!value) return undefined;
   if (value === "ws" || value === "wss") return value;
   throw new Error("PAPERCLIP_VITE_HMR_PROTOCOL must be ws or wss");
 }
 
-export function listenViteHmrServer(server: HttpServer, port: number, bindHost: string): Promise<void> {
+export function listenViteHmrServer(
+  server: HttpServer,
+  port: number,
+  bindHost: string,
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const onError = (error: Error) => {
       server.off("listening", onListening);
@@ -193,7 +246,8 @@ export function listenViteHmrServer(server: HttpServer, port: number, bindHost: 
 export function shouldServeViteDevHtml(req: ExpressRequest): boolean {
   const pathname = req.path;
   if (VITE_DEV_STATIC_PATHS.has(pathname)) return false;
-  if (VITE_DEV_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return false;
+  if (VITE_DEV_ASSET_PREFIXES.some((prefix) => pathname.startsWith(prefix)))
+    return false;
   return req.accepts(["html"]) === "html";
 }
 
@@ -203,13 +257,108 @@ export function shouldEnablePrivateHostnameGuard(opts: {
 }): boolean {
   return (
     opts.deploymentExposure === "private" &&
-    (opts.deploymentMode === "local_trusted" || opts.deploymentMode === "authenticated")
+    (opts.deploymentMode === "local_trusted" ||
+      opts.deploymentMode === "authenticated")
   );
+}
+
+type ChatReconciliationLane =
+  | "provider runtimes"
+  | "deliveries"
+  | "GitHub webhook recovery"
+  | "run milestones"
+  | "publications"
+  | "Slack file receipts"
+  | "Slack session status";
+
+/**
+ * Provider recovery can wait on slow external I/O. Keep each existing durable
+ * lane single-flight without making an optional provider effect suppress the
+ * next publication sweep for every endpoint.
+ */
+export function createChatReconciliationCoordinator(input: {
+  reconcileProviderRuntimes: () => Promise<unknown>;
+  processPendingDeliveries: () => Promise<unknown>;
+  processFailedGitHubWebhookDeliveries?: () => Promise<unknown>;
+  projectRunMilestones: () => Promise<number>;
+  flushPublications: () => Promise<unknown>;
+  processPendingSlackFileUploadReceipts: () => Promise<unknown>;
+  processPendingSlackSessionSyncs: () => Promise<unknown>;
+  onError: (lane: ChatReconciliationLane, error: unknown) => void;
+}) {
+  let stopped = false;
+  const inFlight = new Map<ChatReconciliationLane, Promise<void>>();
+  const publicationReconciliation = createCoalescedAsyncTrigger({
+    run: input.flushPublications,
+    onError: (error) => input.onError("publications", error),
+  });
+  const milestoneReconciliation = createCoalescedAsyncTrigger({
+    run: async () => {
+      const inserted = await input.projectRunMilestones();
+      // Existing final/question publications never wait on this optional
+      // projection. Newly committed milestones get a bounded dispatch wake;
+      // an empty/contended pass does not create a self-sustaining loop.
+      if (inserted > 0) publicationReconciliation.notify();
+    },
+    onError: (error) => input.onError("run milestones", error),
+  });
+  const start = (
+    lane: ChatReconciliationLane,
+    task: () => Promise<unknown>,
+  ) => {
+    if (stopped || inFlight.has(lane)) return;
+    const pending = Promise.resolve()
+      .then(task)
+      .then(() => undefined)
+      .catch((error) => input.onError(lane, error))
+      .finally(() => {
+        if (inFlight.get(lane) === pending) inFlight.delete(lane);
+      });
+    inFlight.set(lane, pending);
+  };
+  return {
+    reconcile() {
+      if (stopped) return;
+      start("provider runtimes", input.reconcileProviderRuntimes);
+      start("deliveries", input.processPendingDeliveries);
+      if (input.processFailedGitHubWebhookDeliveries) {
+        start(
+          "GitHub webhook recovery",
+          input.processFailedGitHubWebhookDeliveries,
+        );
+      }
+      milestoneReconciliation.poll();
+      publicationReconciliation.poll();
+      start("Slack file receipts", input.processPendingSlackFileUploadReceipts);
+      start("Slack session status", input.processPendingSlackSessionSyncs);
+    },
+    notifyPublications() {
+      milestoneReconciliation.notify();
+      publicationReconciliation.notify();
+    },
+    stop() {
+      stopped = true;
+      milestoneReconciliation.stop();
+      publicationReconciliation.stop();
+    },
+    async drain() {
+      await Promise.allSettled([
+        ...inFlight.values(),
+        milestoneReconciliation.drain(),
+      ]);
+      // Projecting the final batch can notify dispatch after an earlier drain
+      // would have returned. Join dispatch only after its producer has drained.
+      await publicationReconciliation.drain();
+    },
+  };
 }
 
 export function createManagedBundledPluginWorkerRecovery(input: {
   managedBundledPluginKeys: readonly string[];
-  workerManager: Pick<PluginWorkerManager, "getWorker" | "isRunning" | "stopWorker">;
+  workerManager: Pick<
+    PluginWorkerManager,
+    "getWorker" | "isRunning" | "stopWorker"
+  >;
   getLoader: () => Pick<PluginLoader, "loadSingle"> | null;
 }): (plugin: { id: string; pluginKey: string }) => Promise<boolean> {
   const recoverablePluginKeys = new Set(input.managedBundledPluginKeys);
@@ -223,9 +372,13 @@ export function createManagedBundledPluginWorkerRecovery(input: {
   // blocked by the handle-presence gate until the process restarts. Handles
   // in starting/running/backoff states belong to the worker manager's own
   // lifecycle and are left alone.
-  const discardDeadRecoveryHandle = async (plugin: { id: string; pluginKey: string }) => {
+  const discardDeadRecoveryHandle = async (plugin: {
+    id: string;
+    pluginKey: string;
+  }) => {
     const handle = input.workerManager.getWorker(plugin.id);
-    if (!handle || (handle.status !== "crashed" && handle.status !== "stopped")) return;
+    if (!handle || (handle.status !== "crashed" && handle.status !== "stopped"))
+      return;
     try {
       await input.workerManager.stopWorker(plugin.id);
     } catch (err) {
@@ -258,7 +411,10 @@ export function createManagedBundledPluginWorkerRecovery(input: {
         const result = await loader.loadSingle(plugin.id, {
           markErrorOnFailure: false,
         });
-        if (result.success === true || input.workerManager.isRunning(plugin.id)) {
+        if (
+          result.success === true ||
+          input.workerManager.isRunning(plugin.id)
+        ) {
           return true;
         }
         await discardDeadRecoveryHandle(plugin);
@@ -309,6 +465,7 @@ export async function createApp(
     allowedHostnames: string[];
     bindHost: string;
     authPublicBaseUrl?: string;
+    chatWebhookPublicBaseUrl?: string;
     authReady: boolean;
     companyDeletionEnabled: boolean;
     instanceId?: string;
@@ -318,7 +475,9 @@ export async function createApp(
     pluginWorkerManager?: PluginWorkerManager;
     decisionServiceOptions: DecisionServiceOptions;
     betterAuthHandler?: express.RequestHandler;
-    resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    resolveSession?: (
+      req: ExpressRequest,
+    ) => Promise<BetterAuthSessionResult | null>;
     /**
      * `plugins.autoInstall` from the managed config (PAPERCLIP_MANAGED_CONFIG).
      * `null`/absent ⇒ self-hosted: only the built-in kubernetes bundle is
@@ -332,7 +491,11 @@ export async function createApp(
 ) {
   const app = express();
   app.locals.paperclipDb = db;
-  const captureRawBody = (req: express.Request, _res: express.Response, buf: Buffer) => {
+  const captureRawBody = (
+    req: express.Request,
+    _res: express.Response,
+    buf: Buffer,
+  ) => {
     (req as unknown as { rawBody: Buffer }).rawBody = buf;
   };
 
@@ -341,14 +504,27 @@ export async function createApp(
   // when the server may be reachable without a known reverse proxy in front.
   applyTrustProxy(app, parseTrustProxyEnv(process.env.TRUST_PROXY));
 
-  app.use(COMPANY_IMPORT_API_PATH, express.json({
-    limit: PORTABLE_JSON_BODY_LIMIT,
-    verify: captureRawBody,
-  }));
-  app.use(express.json({
-    limit: DEFAULT_JSON_BODY_LIMIT,
-    verify: captureRawBody,
-  }));
+  app.use(
+    COMPANY_IMPORT_API_PATH,
+    express.json({
+      limit: PORTABLE_JSON_BODY_LIMIT,
+      verify: captureRawBody,
+    }),
+  );
+  // Chat providers sign the exact request bytes. Capture every webhook media
+  // type before the global JSON parser so JSON events and form-encoded action
+  // callbacks are verified against the provider's original body.
+  app.use(
+    "/api/chat-webhooks",
+    createChatWebhookDiagnostics(),
+    chatWebhookBodyParser,
+  );
+  app.use(
+    express.json({
+      limit: DEFAULT_JSON_BODY_LIMIT,
+      verify: captureRawBody,
+    }),
+  );
   app.use("/api", apiCompression());
   app.use(httpLogger);
   const privateHostnameGateEnabled = shouldEnablePrivateHostnameGuard({
@@ -385,6 +561,22 @@ export async function createApp(
 
   const hostServicesDisposers = new Map<string, () => void>();
   const workerManager = opts.pluginWorkerManager ?? createPluginWorkerManager();
+  const connectionIntentHeartbeat = heartbeatService(db, {
+    pluginWorkerManager: workerManager,
+  });
+  const chatChannels = chatChannelService(db, {
+    deferWebhookProcessing: true,
+    heartbeat: connectionIntentHeartbeat,
+    publicBaseUrl: opts.authPublicBaseUrl,
+    webhookPublicBaseUrl: opts.chatWebhookPublicBaseUrl,
+    resolveNativeQuestion: (interaction) =>
+      deliverNativeQuestionResponse(db, interaction),
+    storage: opts.storageService,
+  });
+  // Provider-authenticated ingress is intentionally outside the board
+  // mutation guard. The Chat SDK adapter verifies the provider signature
+  // before Paperclip persists or acts on any event.
+  app.use(chatWebhookRoutes(chatChannels));
   const managedAutoInstallKeys = opts.managedPluginAutoInstall ?? null;
   const bundledCatalogRoot =
     opts.bundledPluginCatalogRoot ?? resolveBundledCatalogRoot(process.env);
@@ -448,7 +640,9 @@ export async function createApp(
   // the guard; an operator sets this allowlist to the real TLS-terminating
   // proxy addresses. An empty value keeps the confidential responses on direct
   // TLS (or a `local_trusted` loopback peer) only.
-  const setupTokenLoginProxyAllowlist = (process.env.CLAUDE_LOGIN_TRUSTED_PROXIES ?? "")
+  const setupTokenLoginProxyAllowlist = (
+    process.env.CLAUDE_LOGIN_TRUSTED_PROXIES ?? ""
+  )
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
@@ -480,7 +674,9 @@ export async function createApp(
   const setupTokenLoginTransport = buildSetupTokenLoginTransport({
     sandbox: createProductionSetupTokenSandboxProvider({
       environments: environmentService(db),
-      environmentRuntime: environmentRuntimeService(db, { pluginWorkerManager: workerManager }),
+      environmentRuntime: environmentRuntimeService(db, {
+        pluginWorkerManager: workerManager,
+      }),
       openLivePtySession: createWorkerBoundLoginPtyOpener({
         workerManager,
         environments: environmentService(db),
@@ -504,6 +700,7 @@ export async function createApp(
   });
   api.use(
     agentRoutes(db, {
+      chatRunRetries: chatChannels,
       pluginWorkerManager: workerManager,
       deploymentMode: opts.deploymentMode,
       confidentialProxyAllowlist: setupTokenLoginProxyAllowlist,
@@ -524,15 +721,17 @@ export async function createApp(
   api.use(fileResourceRoutes(db));
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(pipelineRoutes(db));
-  api.use(environmentRoutes(db, {
-    pluginWorkerManager: workerManager,
-    recoverMissingPluginWorker: recoverManagedBundledPluginWorker
-      ? {
-        pluginKeys: managedBundledPluginKeys,
-        startWorker: recoverManagedBundledPluginWorker,
-      }
-      : undefined,
-  }));
+  api.use(
+    environmentRoutes(db, {
+      pluginWorkerManager: workerManager,
+      recoverMissingPluginWorker: recoverManagedBundledPluginWorker
+        ? {
+            pluginKeys: managedBundledPluginKeys,
+            startWorker: recoverManagedBundledPluginWorker,
+          }
+        : undefined,
+    }),
+  );
   api.use(executionWorkspaceRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(goalRoutes(db));
   api.use(onboardingSeedRoutes(db));
@@ -541,10 +740,18 @@ export async function createApp(
   api.use(secretRoutes(db));
   api.use(managedAgentProfileRoutes(db));
   api.use(remoteAgentProfileRoutes(db));
+  api.use(
+    chatChannelRoutes(db, {
+      heartbeat: connectionIntentHeartbeat,
+      publicBaseUrl: opts.authPublicBaseUrl,
+      storage: opts.storageService,
+      service: chatChannels,
+    }),
+  );
   const trustedLocalStdioRuntimeHost =
-    process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST
-    ?? process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST
-    ?? null;
+    process.env.PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST ??
+    process.env.PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST ??
+    null;
   api.use(costRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(activityRoutes(db));
   api.use(dashboardRoutes(db));
@@ -588,12 +795,14 @@ export async function createApp(
     deploymentMode: opts.deploymentMode,
     deploymentExposure: opts.deploymentExposure,
     trustedLocalStdioRuntimeHost,
-    oauthGrantRefresher: (input) => gatewayOAuthAccess.refreshOAuthGrantCredentials(input),
+    oauthGrantRefresher: (input) =>
+      gatewayOAuthAccess.refreshOAuthGrantCredentials(input),
   });
   // Issue routes are intentionally mounted after the gateway is constructed because
   // issue approval endpoints delegate to it. The intervening routers use distinct
   // route prefixes, so this dependency does not change issue-route precedence.
   api.use(issueRoutes(db, opts.storageService, {
+    chatRunRetries: chatChannels,
     feedbackExportService: opts.feedbackExportService,
     pluginWorkerManager: workerManager,
     approveToolActionRequest: (input) => toolGateway.approveActionRequest(input),
@@ -602,30 +811,35 @@ export async function createApp(
   app.locals.toolGateway = toolGateway;
   app.locals.toolActionDeliveries = toolActionDeliveries;
   app.use(mcpGatewayProtocolRoutes(toolGateway));
-  const connectionIntentHeartbeat = heartbeatService(db, {
-    pluginWorkerManager: workerManager,
-  });
-  api.use(toolAccessRoutes(db, {
-    deploymentMode: opts.deploymentMode,
-    deploymentExposure: opts.deploymentExposure,
-    authPublicBaseUrl: opts.authPublicBaseUrl,
-    trustedLocalStdioRuntimeHost,
-    toolGateway,
-    connectionIntentHeartbeat,
-  }));
+  api.use(
+    toolAccessRoutes(db, {
+      deploymentMode: opts.deploymentMode,
+      deploymentExposure: opts.deploymentExposure,
+      authPublicBaseUrl: opts.authPublicBaseUrl,
+      trustedLocalStdioRuntimeHost,
+      toolGateway,
+      connectionIntentHeartbeat,
+    }),
+  );
   api.use(connectionIntentBoardRoutes(db, connectionIntentHeartbeat));
-  api.use(smokeLabRoutes(db, {
-    deploymentMode: opts.deploymentMode,
-    deploymentExposure: opts.deploymentExposure,
-  }));
+  api.use(
+    smokeLabRoutes(db, {
+      deploymentMode: opts.deploymentMode,
+      deploymentExposure: opts.deploymentExposure,
+    }),
+  );
   const jobCoordinator = createPluginJobCoordinator({
     db,
     lifecycle,
     scheduler,
     jobStore,
   });
-  const hostServiceCleanup = createPluginHostServiceCleanup(lifecycle, hostServicesDisposers);
-  let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null = null;
+  const hostServiceCleanup = createPluginHostServiceCleanup(
+    lifecycle,
+    hostServicesDisposers,
+  );
+  let viteHtmlRenderer: ReturnType<typeof createCachedViteHtmlRenderer> | null =
+    null;
   let viteDevServer: { close(): Promise<void> } | null = null;
   let viteHmrServer: HttpServer | null = null;
   const loader = pluginLoader(
@@ -652,10 +866,17 @@ export async function createApp(
           const handle = workerManager.getWorker(pluginId);
           if (handle) handle.notify(method, params);
         };
-        const services = buildHostServices(db, pluginId, manifest.id, eventBus, notifyWorker, {
-          pluginWorkerManager: workerManager,
-          manifest,
-        });
+        const services = buildHostServices(
+          db,
+          pluginId,
+          manifest.id,
+          eventBus,
+          notifyWorker,
+          {
+            pluginWorkerManager: workerManager,
+            manifest,
+          },
+        );
         hostServicesDisposers.set(pluginId, () => services.dispose());
         return createHostClientHandlers({
           pluginId,
@@ -666,9 +887,7 @@ export async function createApp(
     },
   );
   runtimePluginLoader = loader;
-  api.use(
-    toolGatewayRoutes(db, toolGateway),
-  );
+  api.use(toolGatewayRoutes(db, toolGateway));
   api.use(
     pluginRoutes(
       db,
@@ -680,10 +899,13 @@ export async function createApp(
       { toolGateway },
     ),
   );
-  api.use(adapterRoutes({
-    getNativeRunnerEnabled: async () =>
-      (await instanceSettingsService(db).getExperimental()).enableNativeRunner === true,
-  }));
+  api.use(
+    adapterRoutes({
+      getNativeRunnerEnabled: async () =>
+        (await instanceSettingsService(db).getExperimental())
+          .enableNativeRunner === true,
+    }),
+  );
   api.use(
     accessRoutes(db, {
       deploymentMode: opts.deploymentMode,
@@ -697,9 +919,11 @@ export async function createApp(
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });
   });
-  app.use(pluginUiStaticRoutes(db, {
-    localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
-  }));
+  app.use(
+    pluginUiStaticRoutes(db, {
+      localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
+    }),
+  );
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   if (opts.uiMode === "static") {
@@ -708,7 +932,9 @@ export async function createApp(
       path.resolve(__dirname, "../ui-dist"),
       path.resolve(__dirname, "../../ui/dist"),
     ];
-    const uiDist = candidates.find((p) => fs.existsSync(path.join(p, "index.html")));
+    const uiDist = candidates.find((p) =>
+      fs.existsSync(path.join(p, "index.html")),
+    );
     if (uiDist) {
       // Hashed asset files (Vite emits them under /assets/<name>.<hash>.<ext>)
       // never change once built, so they can be cached aggressively.
@@ -764,7 +990,11 @@ export async function createApp(
         res.writeHead(426, { "Content-Type": "text/plain" });
         res.end("Upgrade Required");
       });
-      await listenViteHmrServer(hmrServer, resolveViteHmrPort(opts.serverPort), opts.bindHost);
+      await listenViteHmrServer(
+        hmrServer,
+        resolveViteHmrPort(opts.serverPort),
+        opts.bindHost,
+      );
       viteHmrServer = hmrServer;
     }
   }
@@ -774,7 +1004,9 @@ export async function createApp(
     const publicUiRoot = path.resolve(uiRoot, "public");
     const hmrPort = resolveViteHmrPort(opts.serverPort);
     const hmrHost = resolveViteHmrHost(opts.bindHost);
-    const hmrProtocol = resolveViteHmrProtocol(process.env.PAPERCLIP_VITE_HMR_PROTOCOL);
+    const hmrProtocol = resolveViteHmrProtocol(
+      process.env.PAPERCLIP_VITE_HMR_PROTOCOL,
+    );
     const hmrServer = createHttpServer((_req, res) => {
       res.writeHead(426, { "Content-Type": "text/plain" });
       res.end("Upgrade Required");
@@ -805,7 +1037,9 @@ export async function createApp(
           port: hmrPort,
           clientPort: hmrPort,
         },
-        allowedHosts: privateHostnameGateEnabled ? Array.from(privateHostnameAllowSet) : undefined,
+        allowedHosts: privateHostnameGateEnabled
+          ? Array.from(privateHostnameAllowSet)
+          : undefined,
       },
     });
     try {
@@ -861,7 +1095,10 @@ export async function createApp(
     } catch (err) {
       if (isDatabaseConnectionUnavailableError(err)) {
         disableFeedbackExportFlushes();
-        logger.warn({ err }, "Disabling pending feedback export flushes because the database is unavailable");
+        logger.warn(
+          { err },
+          "Disabling pending feedback export flushes because the database is unavailable",
+        );
         return;
       }
       logger.error({ err }, "Failed to flush pending feedback exports");
@@ -870,13 +1107,48 @@ export async function createApp(
 
   feedbackExportTimer = opts.feedbackExportService
     ? setInterval(() => {
-      void flushPendingFeedbackExports();
-    }, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS)
+        void flushPendingFeedbackExports();
+      }, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS)
     : null;
   feedbackExportTimer?.unref?.();
   if (opts.feedbackExportService) {
     void flushPendingFeedbackExports();
   }
+  const flushChatPublications = async () => {
+    await chatChannels.schedulePendingPublications();
+  };
+  const chatReconciliation = createChatReconciliationCoordinator({
+    reconcileProviderRuntimes: () => chatChannels.reconcileProviderRuntimes(),
+    processPendingDeliveries: () => chatChannels.processPendingDeliveries(),
+    processFailedGitHubWebhookDeliveries: () =>
+      chatChannels.processFailedGitHubWebhookDeliveries(),
+    projectRunMilestones: () =>
+      enqueueChatRunMilestones(db, {
+        publicBaseUrl: opts.authPublicBaseUrl,
+      }),
+    flushPublications: () => flushChatPublications(),
+    processPendingSlackFileUploadReceipts: () =>
+      chatChannels.processPendingSlackFileUploadReceipts(),
+    processPendingSlackSessionSyncs: () =>
+      chatChannels.processPendingSlackSessionSyncs(),
+    onError: (lane, err) => {
+      logger.error({ err, lane }, `Failed to reconcile chat ${lane}`);
+    },
+  });
+  const unsubscribeChatPublicationSignals = subscribeAllCompanyLiveEvents(
+    (event) => {
+      if (isChatPublicationCommitSignal(event))
+        chatReconciliation.notifyPublications();
+    },
+  );
+  let chatPublicationTimer: ReturnType<typeof setInterval> | null = setInterval(
+    () => {
+      chatReconciliation.reconcile();
+    },
+    CHAT_PUBLICATION_FLUSH_INTERVAL_MS,
+  );
+  chatPublicationTimer.unref?.();
+  chatReconciliation.reconcile();
   // Abandoned chunked-import spool sweep: hourly (plus once at startup),
   // deleting spool dirs whose transfer saw no activity for 24h and cancelling
   // their still-open ledger runs. Same setInterval + unref + shutdown-clear
@@ -890,13 +1162,17 @@ export async function createApp(
         }
       })
       .catch((err) => {
-        logger.error({ err }, "abandoned company import transfer spool sweep failed");
+        logger.error(
+          { err },
+          "abandoned company import transfer spool sweep failed",
+        );
       });
   };
-  let importTransferSweepTimer: ReturnType<typeof setInterval> | null = setInterval(
-    sweepImportTransferSpools,
-    IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
-  );
+  let importTransferSweepTimer: ReturnType<typeof setInterval> | null =
+    setInterval(
+      sweepImportTransferSpools,
+      IMPORT_TRANSFER_SPOOL_SWEEP_INTERVAL_MS,
+    );
   importTransferSweepTimer.unref?.();
   // Startup only (never on the hourly interval — that would kill live
   // applies): apply jobs are in-memory in this single process, so any run
@@ -924,7 +1200,8 @@ export async function createApp(
   });
   const devWatcher = createPluginDevWatcher(
     lifecycle,
-    async (pluginId) => (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
+    async (pluginId) =>
+      (await pluginRegistry.getById(pluginId))?.packagePath ?? null,
   );
   // Auto-provision bundled plugins so their providers are registered for
   // agent runs. Bundles are excluded from the pnpm
@@ -968,15 +1245,16 @@ export async function createApp(
   )
     .then(() => loader.loadAll())
     .then((result) => {
-    if (!result) return;
-    for (const loaded of result.results) {
-      if (devWatcher && loaded.success && loaded.plugin.packagePath) {
-        devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
+      if (!result) return;
+      for (const loaded of result.results) {
+        if (devWatcher && loaded.success && loaded.plugin.packagePath) {
+          devWatcher.watch(loaded.plugin.id, loaded.plugin.packagePath);
+        }
       }
-    }
-  }).catch((err) => {
-    logger.error({ err }, "Failed to load ready plugins on startup");
-  });
+    })
+    .catch((err) => {
+      logger.error({ err }, "Failed to load ready plugins on startup");
+    });
   app.locals.bundledPluginsStartup = bundledPluginsStartup;
   // The shutdown hook runs at most once. It caches the in-flight promise, so a
   // second caller (for example the `exit` handler) awaits the same completion
@@ -985,12 +1263,18 @@ export async function createApp(
   const shutdownAppServices = (): Promise<void> => {
     if (appServicesShutdown) return appServicesShutdown;
     appServicesShutdown = (async () => {
-      scheduler.stop();
-      jobCoordinator.stop();
-      disableFeedbackExportFlushes();
       // The scheduler tick queries the database. Stop it here, inside the
       // awaited teardown, so no tick runs after the caller ends the pool.
       scheduler.stop();
+      jobCoordinator.stop();
+      disableFeedbackExportFlushes();
+      unsubscribeChatPublicationSignals();
+      chatReconciliation.stop();
+      if (chatPublicationTimer) {
+        clearInterval(chatPublicationTimer);
+        chatPublicationTimer = null;
+      }
+      await chatReconciliation.drain();
       if (importTransferSweepTimer) {
         clearInterval(importTransferSweepTimer);
         importTransferSweepTimer = null;
@@ -1001,6 +1285,7 @@ export async function createApp(
       viteHmrServer?.close();
       hostServiceCleanup.disposeAll();
       hostServiceCleanup.teardown();
+      await chatChannels.shutdown();
       // Cancel every live setup-token login session and AWAIT the cancellation,
       // so each direct child stops and the server releases each lease before the
       // caller stops the database and the provider. A lease release that

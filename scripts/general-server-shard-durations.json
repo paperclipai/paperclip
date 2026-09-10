@@ -1,5 +1,6 @@
 {
   "$comment": "Per-suite wall-clock durations (ms) for the general-server vitest lane, used by scripts/general-server-shard.mjs to balance suites across the PR shard matrix. Sampled from a real PR run of .github/workflows/pr.yml (actions run 32708351172, 2026-08-24) by diffing consecutive per-suite completion timestamps in the 'Run grouped general test suites' logs \u2014 that captures each suite's true serial cost (import + collect + tests), not just the vitest-reported test time. Suites missing here get the median weight, so the manifest only needs occasional refreshes.",
+  "$chatSample": "chat-channels.integration.test.ts: actions run 34405038082, job 102646337040, 2026-09-09. The first suite completed at 21:19:52.9026416Z after Vitest RUN at 21:09:07.5491992Z: 645354ms rounded up, including startup/import/collection; the 985 tests themselves took 629654ms. All 2972 tests in the shard passed, but the job exceeded its unchanged 20-minute bound during cleanup. Recording this missing heavy-suite weight lets the existing LPT partition reserve one of the existing five shards without changing test coverage, isolation, or deadlines.",
   "durations": {
     "server/src/__tests__/access-service.test.ts": 4757,
     "server/src/__tests__/access-validators.test.ts": 645,
@@ -40,6 +41,7 @@
     "server/src/__tests__/built-in-agents.test.ts": 10282,
     "server/src/__tests__/bundled-plugins.test.ts": 235,
     "server/src/__tests__/change-consent-gate.test.ts": 4215,
+    "server/src/__tests__/chat-channels.integration.test.ts": 645354,
     "server/src/__tests__/claude-local-adapter-environment.test.ts": 1105,
     "server/src/__tests__/claude-local-adapter.test.ts": 751,
     "server/src/__tests__/claude-local-execute.test.ts": 3248,
