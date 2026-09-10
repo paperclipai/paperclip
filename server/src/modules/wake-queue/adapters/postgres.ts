@@ -456,10 +456,16 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueue
       // This insert does not set responsibleUserId. claimQueuedRun resolves the
       // responsible user and writes it in the same update that moves the run
       // from "queued" to "running", and initializeRunIdentity then overwrites
-      // it again from the run identity chain. No code reads responsibleUserId
-      // on a queued row. Resolving the responsible user here, like the other
-      // recovery writers do, would add a throw inside this release transaction
-      // — on the one path whose job is to un-stick a stalled review.
+      // it again from the run identity chain. The row therefore holds a null
+      // responsible user only while the run is queued. One reader can observe
+      // that null: runsForIssue projects the column with no status filter, so
+      // the issue run ledger can show a queued recovery run with no responsible
+      // user. That projection displays attribution and makes no authorization
+      // decision. Every authorization and audit read keys on a running or an
+      // authenticated run instead. Resolving the responsible user here, like
+      // the other recovery writers do, would add a throw inside this release
+      // transaction — on the one path whose job is to un-stick a stalled
+      // review.
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({
