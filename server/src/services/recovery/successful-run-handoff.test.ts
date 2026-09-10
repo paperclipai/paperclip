@@ -58,6 +58,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasQueuedWake: false,
     hasPendingInteractionOrApproval: false,
     hasPersistedMonitor: false,
+    hasNativeDeliveryWait: false,
     hasExplicitBlockerPath: false,
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
@@ -394,6 +395,31 @@ describe("successful run handoff decision", () => {
       reason: "source run is already a corrective handoff run",
     });
     expect(isSuccessfulRunHandoffValidPathSkip(proseOnly)).toBe(false);
+  });
+
+  it("skips the corrective wake while a native delivery unit owns the review", () => {
+    expect(decide({ hasNativeDeliveryWait: true })).toEqual({
+      kind: "skip",
+      reason: "native delivery owns the next action",
+    });
+    // The skip is a valid path, so an outstanding required handoff is resolved
+    // instead of leaving a stale "missing disposition" event behind.
+    expect(isSuccessfulRunHandoffValidPathSkip(decide({ hasNativeDeliveryWait: true }))).toBe(true);
+  });
+
+  it("never lets a delivery wait mask a human-owned or blocked issue", () => {
+    expect(decide({
+      issue: { ...issue, assigneeUserId: "operator-1" },
+      hasNativeDeliveryWait: true,
+    })).toEqual({ kind: "skip", reason: "issue is human-owned" });
+    expect(decide({
+      issue: { ...issue, status: "in_review" },
+      hasNativeDeliveryWait: true,
+    })).toEqual({ kind: "skip", reason: "issue status in_review is a valid disposition" });
+    expect(isSuccessfulRunHandoffValidPathSkip(decide({
+      issue: { ...issue, status: "blocked" },
+      hasNativeDeliveryWait: true,
+    }))).toBe(false);
   });
 
   it("does not treat killed background-task evidence as a missing live path when a durable monitor owns the wait", () => {

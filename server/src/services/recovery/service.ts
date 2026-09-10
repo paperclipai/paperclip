@@ -71,6 +71,7 @@ import {
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { getNativeDeliveryWait } from "../delivery/native-delivery-wait.js";
 import {
   collectDispositionRepairSourceState,
   dispositionRepairDelayMs,
@@ -854,6 +855,10 @@ export function recoveryService(
 
   async function hasPersistedDurableWaitPath(issue: typeof issues.$inferSelect) {
     if (issue.monitorNextCheckAt) return true;
+    // A linked native delivery unit under an enabled, unpaused policy owns the
+    // next action: the controller re-reads remote evidence on every sweep and
+    // wakes the implementation owner through its bounded repair loop.
+    if (await getNativeDeliveryWait(db, issue.companyId, issue.id)) return true;
 
     return db
       .select({ id: issueRelations.issueId })

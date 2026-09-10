@@ -71,7 +71,8 @@ export type IssueReviewPathFactKind =
   | "human_reviewer"
   | "active_run"
   | "queued_wake"
-  | "recovery";
+  | "recovery"
+  | "native_delivery";
 
 export interface IssueReviewPathFact {
   kind: IssueReviewPathFactKind;
@@ -126,6 +127,12 @@ export interface IssueGraphLivenessInput {
   pendingInteractions?: IssueLivenessWaitingPathInput[];
   pendingApprovals?: IssueLivenessWaitingPathInput[];
   openRecoveryIssues?: IssueLivenessWaitingPathInput[];
+  /**
+   * Issues whose linked native delivery unit owns the next action. Supplied by
+   * the caller from persisted delivery state (`listNativeDeliveryWaits`), never
+   * inferred from task text.
+   */
+  nativeDeliveryWaits?: IssueLivenessWaitingPathInput[];
   now?: Date | string;
 }
 
@@ -277,7 +284,7 @@ export function classifyIssueReviewPaths(
 
   const appendWaitingPaths = (
     entries: IssueLivenessWaitingPathInput[],
-    kind: "interaction" | "approval" | "recovery",
+    kind: "interaction" | "approval" | "recovery" | "native_delivery",
   ) => {
     for (const entry of entries) {
       if (entry.companyId !== issue.companyId || entry.issueId !== issue.id) continue;
@@ -293,6 +300,7 @@ export function classifyIssueReviewPaths(
   appendWaitingPaths(input.pendingInteractions ?? [], "interaction");
   appendWaitingPaths(input.pendingApprovals ?? [], "approval");
   appendWaitingPaths(input.openRecoveryIssues ?? [], "recovery");
+  appendWaitingPaths(input.nativeDeliveryWaits ?? [], "native_delivery");
 
   return paths;
 }
@@ -480,6 +488,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   const pendingInteractions = input.pendingInteractions ?? [];
   const pendingApprovals = input.pendingApprovals ?? [];
   const openRecoveryIssues = input.openRecoveryIssues ?? [];
+  const nativeDeliveryWaits = input.nativeDeliveryWaits ?? [];
 
   for (const relation of input.relations) {
     const list = blockersByBlockedIssueId.get(relation.blockedIssueId) ?? [];
@@ -517,7 +526,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
-      hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
+      hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues) ||
+      hasWaitingPath(issue.companyId, issue.id, nativeDeliveryWaits);
   }
 
   function reviewFinding(

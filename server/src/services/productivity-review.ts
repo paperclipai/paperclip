@@ -18,6 +18,7 @@ import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { withRecoveryContext } from "./recovery/status-only-context.js";
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
+import { listNativeDeliveryWaits } from "./delivery/native-delivery-wait.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
@@ -867,11 +868,19 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       snoozed: 0,
       creationCapped: 0,
       noActionSuppressed: 0,
+      deliveryWaitSkipped: 0,
       skipped: 0,
       failed: 0,
       reviewIssueIds: [] as string[],
       failedIssueIds: [] as string[],
     };
+
+    const candidateIdsByCompany = Map.groupBy(candidates, (candidate) => candidate.companyId);
+    const deliveryWaitIssueIds = new Set<string>();
+    await Promise.all([...candidateIdsByCompany].map(async ([companyId, companyCandidates]) => {
+      const waits = await listNativeDeliveryWaits(db, companyId, companyCandidates.map((candidate) => candidate.id));
+      for (const issueId of waits.keys()) deliveryWaitIssueIds.add(issueId);
+    }));
 
     const prefixCache = new Map<string, string>();
     for (const candidate of candidates) {
@@ -881,6 +890,11 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       }
       if (await isProductivityReviewDescendant(candidate)) {
         result.skipped += 1;
+        continue;
+      }
+      // Native delivery already owns the remote review and bounded repair path.
+      if (deliveryWaitIssueIds.has(candidate.id)) {
+        result.deliveryWaitSkipped += 1;
         continue;
       }
       if (await findRecentTerminalProductivityReview(candidate.companyId, candidate.id, thresholds, now)) {

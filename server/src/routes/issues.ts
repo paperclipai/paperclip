@@ -152,6 +152,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { questionResponseDeliveryService } from "../services/question-response-delivery.js";
+import { getNativeDeliveryWait } from "../services/delivery/native-delivery-wait.js";
 import { emitAgentTaskRun } from "../services/agent-task-run-telemetry.js";
 import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
@@ -3735,6 +3736,21 @@ export function issueRoutes(
     }
 
     if (input.actorType !== "agent") return null;
+
+    // A linked native delivery unit under an enabled, unpaused project policy
+    // already owns the next action for this review: the controller re-reads
+    // checks/review evidence, drives the merge queue, and wakes the
+    // implementation owner through its own bounded repair loop. An agent may
+    // therefore park the issue in review without minting a second, weaker
+    // review path. The wait is derived from persisted delivery state, so a
+    // disabled policy, an operator pause, or a terminal unit keeps the ordinary
+    // review-path requirement.
+    const nativeDeliveryWait = await getNativeDeliveryWait(
+      db,
+      input.existing.companyId,
+      input.existing.id,
+    );
+    if (nativeDeliveryWait) return null;
 
     const nextAssigneeUserId = input.updateFields.assigneeUserId === undefined
       ? input.existing.assigneeUserId

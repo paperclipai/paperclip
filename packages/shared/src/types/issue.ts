@@ -435,7 +435,9 @@ export type IssueReviewAttentionPathKind =
   | "human_reviewer"
   | "active_run"
   | "queued_wake"
-  | "recovery";
+  | "recovery"
+  /** Native GitHub delivery owns the next action for this review. */
+  | "native_delivery";
 
 export interface IssueReviewAttentionPath {
   kind: IssueReviewAttentionPathKind;

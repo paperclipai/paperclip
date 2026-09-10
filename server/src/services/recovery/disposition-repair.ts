@@ -12,6 +12,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import { parseIssueExecutionState } from "../issue-execution-policy.js";
+import { getNativeDeliveryWait } from "../delivery/native-delivery-wait.js";
 
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
@@ -84,7 +85,7 @@ export async function collectDispositionRepairSourceState(
   },
 ): Promise<DispositionRepairSourceState> {
   const issue = input.issue;
-  const [blockers, children, interactions, linkedApprovals, workProducts, activeRuns, queuedWakes] =
+  const [blockers, children, interactions, linkedApprovals, workProducts, activeRuns, queuedWakes, nativeDeliveryWait] =
     await Promise.all([
       db
         .select({ id: issues.id, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
@@ -186,6 +187,7 @@ export async function collectDispositionRepairSourceState(
               : sql`true`,
           ),
         ),
+      getNativeDeliveryWait(db, issue.companyId, issue.id),
     ]);
 
   const pendingExecutionState = parseIssueExecutionState(issue.executionState);
@@ -205,7 +207,9 @@ export async function collectDispositionRepairSourceState(
             ? "interaction"
             : pendingApproval
               ? "approval"
-              : null;
+              : nativeDeliveryWait
+                ? "native_delivery"
+                : null;
 
   const durableState = {
     source: {
@@ -227,6 +231,23 @@ export async function collectDispositionRepairSourceState(
     workProducts: workProducts
       .map((row) => ({ ...row, updatedAt: row.updatedAt.toISOString() }))
       .sort((a, b) => a.id.localeCompare(b.id)),
+    // The source state a decision was made under has to include the delivery
+    // unit: when the unit advances, blocks, or terminates, the fingerprint
+    // changes so the next reconcile re-evaluates instead of replaying a stale
+    // "covered by delivery" verdict.
+    nativeDeliveryWait: nativeDeliveryWait
+      ? {
+          unitId: nativeDeliveryWait.unitId,
+          unitStatus: nativeDeliveryWait.unitStatus,
+          phase: nativeDeliveryWait.phase,
+          repository: nativeDeliveryWait.repository,
+          targetBranch: nativeDeliveryWait.targetBranch,
+          headSha: nativeDeliveryWait.headSha,
+          acceptedHeadSha: nativeDeliveryWait.acceptedHeadSha,
+          nextActor: nativeDeliveryWait.nextActor,
+          blockerReasonCode: nativeDeliveryWait.blocker?.reasonCode ?? null,
+        }
+      : null,
   };
   const digest = createHash("sha256").update(stableJson(durableState)).digest("hex");
 

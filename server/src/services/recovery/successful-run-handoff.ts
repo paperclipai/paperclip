@@ -133,6 +133,7 @@ const SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS: Record<string, true> = {
   "issue already has a queued or deferred wake": true,
   "pending interaction or approval owns the next action": true,
   "persisted issue monitor owns the next action": true,
+  "native delivery owns the next action": true,
   "explicit blocker path owns the next action": true,
   "blocked issue has a durable waiting path": true,
   "open recovery issue owns the ambiguity": true,
@@ -460,6 +461,8 @@ export function decideSuccessfulRunHandoff(input: {
   hasQueuedWake: boolean;
   hasPendingInteractionOrApproval: boolean;
   hasPersistedMonitor: boolean;
+  /** A linked native delivery unit under an enabled, unpaused policy owns the next action. */
+  hasNativeDeliveryWait: boolean;
   hasExplicitBlockerPath: boolean;
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;
@@ -518,6 +521,7 @@ export function decideSuccessfulRunHandoff(input: {
     return { kind: "skip", reason: "pending interaction or approval owns the next action" };
   }
   if (input.hasPersistedMonitor) return { kind: "skip", reason: "persisted issue monitor owns the next action" };
+  if (input.hasNativeDeliveryWait) return { kind: "skip", reason: "native delivery owns the next action" };
   if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
   if (input.hasPauseHold) return { kind: "skip", reason: "issue is under an active pause hold" };

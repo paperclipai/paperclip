@@ -68,6 +68,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { createDeliveryDoneGate, type DeliveryControllerContext } from "./delivery/done-gate.js";
+import { listNativeDeliveryWaits } from "./delivery/native-delivery-wait.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -2929,6 +2930,8 @@ function reviewPathLabel(kind: IssueReviewAttentionPath["kind"], detail?: string
       return detail ? `Queued ${detail.replaceAll("_", " ")} wake` : "Queued review wake";
     case "recovery":
       return "Open review recovery";
+    case "native_delivery":
+      return detail ? `Native delivery · ${detail}` : "Native delivery";
   }
 }
 
@@ -2958,7 +2961,7 @@ async function listIssueReviewAttentionMap(
   }
   if (reviewIssues.length === 0) return result;
 
-  const [agentRows, activeRunRows, wakeRows, interactionRows, approvalRows, recoveryActionRows, recoveryIssueRows] = await Promise.all([
+  const [agentRows, activeRunRows, wakeRows, interactionRows, approvalRows, recoveryActionRows, recoveryIssueRows, nativeDeliveryWaitMap] = await Promise.all([
     dbOrTx
       .select({
         id: agents.id,
@@ -3078,6 +3081,7 @@ async function listIssueReviewAttentionMap(
         visibleIssueCondition(),
         notInArray(issues.status, ["done", "cancelled"]),
       )),
+    listNativeDeliveryWaits(dbOrTx, companyId, reviewIds),
   ]);
 
   const recoveryPaths = [
@@ -3127,6 +3131,13 @@ async function listIssueReviewAttentionMap(
     pendingInteractions: interactionRows,
     pendingApprovals: approvalRows,
     openRecoveryIssues: recoveryPaths,
+    nativeDeliveryWaits: [...nativeDeliveryWaitMap.values()].map((wait) => ({
+      id: wait.unitId,
+      companyId,
+      issueId: wait.issueId,
+      status: wait.unitStatus,
+      createdAt: wait.since,
+    })),
     now: new Date(),
   };
   const findingsByIssueId = new Map(
@@ -3156,6 +3167,10 @@ async function listIssueReviewAttentionMap(
     resolverPolicyProvenance: string | null;
   }>).map((row) => [row.id, row]));
   const wakeReasonById = new Map((wakeRows as Array<{ id: string; reason: string | null }>).map((row) => [row.id, row.reason]));
+  const nativeDeliveryLabelById = new Map([...nativeDeliveryWaitMap.values()].map((wait) => [
+    wait.unitId,
+    `${wait.repository}${wait.prNumber === null ? "" : ` #${wait.prNumber}`}`,
+  ]));
 
   for (const issue of reviewIssues) {
     const pathFacts = classifyIssueReviewPaths(livenessInput, livenessInput.issues.find((entry) => entry.id === issue.id)!);
@@ -3180,7 +3195,9 @@ async function listIssueReviewAttentionMap(
             ? interactionKindById.get(path.ref) ?? null
             : path.kind === "queued_wake" && path.ref
               ? wakeReasonById.get(path.ref) ?? null
-              : null,
+              : path.kind === "native_delivery" && path.ref
+                ? nativeDeliveryLabelById.get(path.ref) ?? null
+                : null,
         ),
         responder: path.agentId
           ? agentNameById.get(path.agentId) ?? path.agentId
@@ -3851,7 +3868,7 @@ async function listIssueBlockedInboxAttentionMap(
   const graphIssueIds = graphIssues.map((issue) => issue.id);
   const issuesById = new Map<string, IssueRow>(graphIssues.map((issue) => [issue.id, issue]));
 
-  const [activeRunRows, wakeRows, scheduledRetryRows, interactionRows, approvalRows, handoffMap] = await Promise.all([
+  const [activeRunRows, wakeRows, scheduledRetryRows, interactionRows, approvalRows, handoffMap, nativeDeliveryWaitMap] = await Promise.all([
     graphIssueIds.length === 0
       ? Promise.resolve([])
       : dbOrTx
@@ -3951,6 +3968,7 @@ async function listIssueBlockedInboxAttentionMap(
             inArray(issueApprovals.issueId, graphIssueIds),
           )),
     listSuccessfulRunHandoffMapForIssues(dbOrTx, companyId, rowIssueIds, { hydrateLiveness: false }),
+    listNativeDeliveryWaits(dbOrTx, companyId, rowIssueIds),
   ]);
 
   const pendingInteractions = (interactionRows as BlockedInboxInteractionRow[]).map((row) => ({
@@ -4016,6 +4034,13 @@ async function listIssueBlockedInboxAttentionMap(
     pendingInteractions,
     pendingApprovals,
     openRecoveryIssues,
+    nativeDeliveryWaits: [...nativeDeliveryWaitMap.values()].map((wait) => ({
+      id: wait.unitId,
+      companyId,
+      issueId: wait.issueId,
+      status: wait.unitStatus,
+      createdAt: wait.since,
+    })),
     now: new Date(),
   });
   const findingByIssueId = new Map<string, IssueLivenessFinding>();
@@ -4049,7 +4074,20 @@ async function listIssueBlockedInboxAttentionMap(
       (handoff?.state === "required" || handoff?.state === "escalated")
       && (liveHandoffRunIssueIds.has(row.id) || liveHandoffWakeIssueIds.has(row.id))
     );
-    if (handoff && !hasLiveHandoffContinuation && (handoff.required || handoff.state === "escalated")) {
+    // A linked native delivery unit under an enabled, unpaused policy supplies
+    // the disposition the handoff is asking for: the controller drives the
+    // exact-head review/merge the successful run handed off to. Surfacing
+    // "choose a disposition" on top of that is a spurious board recovery. An
+    // explicitly blocked issue keeps the card, because that row is an operator
+    // gate and the delivery controller never lowers it.
+    const nativeDeliveryWait = nativeDeliveryWaitMap.get(row.id);
+    const deliveryOwnsDisposition = Boolean(nativeDeliveryWait) && row.status !== "blocked";
+    if (
+      handoff
+      && !hasLiveHandoffContinuation
+      && !deliveryOwnsDisposition
+      && (handoff.required || handoff.state === "escalated")
+    ) {
       result.set(row.id, attentionBase({
         state: "missing_disposition",
         reason: "missing_successful_run_disposition",

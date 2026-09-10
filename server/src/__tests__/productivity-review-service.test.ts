@@ -6,9 +6,14 @@ import {
   agents,
   companies,
   createDb,
+  deliveryPolicies,
+  deliveryRepositories,
+  deliveryUnitIssues,
+  deliveryUnits,
   heartbeatRuns,
   issueComments,
   issues,
+  projects,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -253,6 +258,74 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(cappedRefresh.updated).toBe(0);
     expect(cappedRefresh.existing).toBe(1);
     expect(await listRefreshComments(review!.id)).toHaveLength(DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS);
+  });
+
+  it("skips an issue whose native delivery unit owns the wait", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const [repository] = await db.insert(deliveryRepositories).values({
+      companyId: seeded.companyId,
+      owner: "acme",
+      name: "widget",
+      githubRepositoryId: `repo-${seeded.companyId}`,
+      defaultBranch: "main",
+    }).returning();
+    const projectId = randomUUID();
+    await db.insert(projects).values({
+      id: projectId,
+      companyId: seeded.companyId,
+      name: "Widget",
+      status: "in_progress",
+    });
+    await db.update(issues).set({ projectId }).where(eq(issues.id, seeded.issueId));
+    const [policy] = await db.insert(deliveryPolicies).values({
+      companyId: seeded.companyId,
+      projectId,
+      repositoryId: repository!.id,
+      targetBranch: "main",
+      enabled: true,
+      paused: false,
+    }).returning();
+    const [unit] = await db.insert(deliveryUnits).values({
+      companyId: seeded.companyId,
+      projectId,
+      repositoryId: repository!.id,
+      primaryIssueId: seeded.issueId,
+      targetBranch: "main",
+      sourceBranch: "delivery/widget",
+      headSha: "a".repeat(40),
+      status: "in_review",
+    }).returning();
+    await db.insert(deliveryUnitIssues).values({
+      companyId: seeded.companyId,
+      unitId: unit!.id,
+      issueId: seeded.issueId,
+      role: "primary",
+    });
+
+    const service = productivityReviewService(db);
+    const withWait = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    expect(withWait.deliveryWaitSkipped).toBe(1);
+    expect(withWait.created).toBe(0);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(0);
+
+    // Disabling the policy withdraws the wait, so the ordinary review returns.
+    await db
+      .update(deliveryPolicies)
+      .set({ enabled: false })
+      .where(eq(deliveryPolicies.id, policy!.id));
+    const withoutWait = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+    expect(withoutWait.deliveryWaitSkipped).toBe(0);
+    expect(withoutWait.created).toBe(1);
+    expect(await listProductivityReviews(seeded.companyId)).toHaveLength(1);
   });
 
   it("allows only one productivity review per source issue in 24 hours", async () => {

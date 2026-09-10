@@ -378,6 +378,7 @@ import {
   REVIEW_PATH_RECOVERY_INSTRUCTION,
   reviewPathConsumedRefFromRun,
 } from "./recovery/review-path-recovery.js";
+import { getNativeDeliveryWait } from "./delivery/native-delivery-wait.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
@@ -11530,6 +11531,7 @@ export function heartbeatService(
       budgetBlock,
       pauseHold,
       activeRoutineContinuation,
+      nativeDeliveryWait,
     ] = await Promise.all([
       issue
         ? db
@@ -11675,6 +11677,9 @@ export function heartbeatService(
             .limit(1)
             .then((rows) => rows[0] ?? null)
         : Promise.resolve(null),
+      issue
+        ? getNativeDeliveryWait(db, issue.companyId, issue.id)
+        : Promise.resolve(null),
     ]);
 
     const decision = decideSuccessfulRunHandoff({
@@ -11692,6 +11697,7 @@ export function heartbeatService(
         pendingInteraction || pendingApproval,
       ),
       hasPersistedMonitor: Boolean(issue?.monitorNextCheckAt),
+      hasNativeDeliveryWait: Boolean(nativeDeliveryWait),
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
