@@ -6261,6 +6261,48 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     };
   }
 
+  // A runtime whose one turn hangs exactly like the real `acpx` shape: its
+  // `cancel()` only sends the cancel request and returns. It does NOT settle
+  // the turn — neither `events` nor `result` ever resolves on its own.
+  // `closeStream()` ends the event drain locally, with no agent cooperation,
+  // the same way the real runtime's does; it still leaves `result` pending.
+  // This is the sensitivity control for the fail-fast deadline: only the
+  // deadline, not the cancel request, can end this turn.
+  function unresponsiveCancelTurnRuntime(input: {
+    onCancel: (reason: string | undefined) => void;
+    onCloseStream: (reason: string | undefined) => void;
+  }) {
+    let endEvents: (() => void) | null = null;
+    const eventsEnded = new Promise<void>((resolve) => {
+      endEvents = resolve;
+    });
+    return {
+      ensureSession: async () => ({
+        backendSessionId: "backend-session",
+        agentSessionId: "agent-session",
+        runtimeSessionName: "runtime-session",
+      }),
+      startTurn: () => ({
+        events: (async function* () {
+          await eventsEnded;
+        })(),
+        // Never settles on its own. The real acpx result settles only when
+        // the provider process returns or rejects, bounded by the adapter
+        // execution timeout — not by a `session/cancel` request.
+        result: new Promise<never>(() => {}),
+        cancel: async (reasonInput?: { reason?: string }) => {
+          input.onCancel(reasonInput?.reason);
+        },
+        closeStream: async (reasonInput?: { reason?: string }) => {
+          input.onCloseStream(reasonInput?.reason);
+          endEvents?.();
+        },
+      }),
+      setConfigOption: async () => {},
+      close: async () => {},
+    };
+  }
+
   async function setupRemoteSandbox() {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
@@ -6284,6 +6326,7 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     handle: unknown,
     runtime: unknown,
     sandbox: Awaited<ReturnType<typeof setupRemoteSandbox>>,
+    deps: Partial<AcpxEngineExecutorOptions> = {},
   ) {
     vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementationOnce(
       async () => handle as never,
@@ -6293,6 +6336,7 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     );
     const execute = createAcpxEngineExecutor({
       createRuntime: () => runtime as never,
+      ...deps,
     });
     return await execute({
       runId: "run-duplex-seam",
@@ -6504,6 +6548,44 @@ describe("ACPX engine sandbox bridge run-disposition seam (fail-closed)", () => 
     // turn to return a terminal result on its own, so the run ends promptly
     // instead of waiting for the adapter execution timeout.
     expect(cancelReasons).toHaveLength(1);
+    expect(result.exitCode).not.toBe(0);
+    expect(result.errorCode).toBe("duplex_channel_lost");
+    // The failure message carries only the closed loss-reason enum, never
+    // raw provider text.
+    expect(result.errorMessage).toContain("provider_exit");
+    expect(result.resultJson).toMatchObject({ status: "failed" });
+  }, 5000);
+
+  it("bounds the wait with a deadline when a latched loss cancel gets no agent cooperation", async () => {
+    const sandbox = await setupRemoteSandbox();
+    const fake = createFakeBridgeHandle();
+    const cancelReasons: (string | undefined)[] = [];
+    const closeStreamReasons: (string | undefined)[] = [];
+    // The real acpx shape: `cancel()` only requests cancellation and returns.
+    // It settles neither `events` nor `result`. Only the fail-fast deadline
+    // can end this turn.
+    const runtime = unresponsiveCancelTurnRuntime({
+      onCancel: (reason) => cancelReasons.push(reason),
+      onCloseStream: (reason) => closeStreamReasons.push(reason),
+    });
+
+    const resultPromise = runRemote(fake.handle, runtime, sandbox, {
+      // Small and fake-time-free: real-timer test, so the deadline must stay
+      // short enough to run fast without waiting 60 real seconds.
+      duplexLossCancelDeadlineMs: 25,
+    });
+    await vi.waitFor(() => expect(fake.onLoss).toHaveBeenCalled());
+    fake.emitLoss("provider_exit");
+
+    const result = await resultPromise;
+
+    // The seam still tried the cooperative cancel first.
+    expect(cancelReasons).toHaveLength(1);
+    // The agent never answered the cancel, so the deadline ended the event
+    // drain locally instead of waiting for it.
+    expect(closeStreamReasons).toHaveLength(1);
+    // The run reached a failure terminal within the deadline, even though
+    // neither `events` nor `result` ever settled on their own.
     expect(result.exitCode).not.toBe(0);
     expect(result.errorCode).toBe("duplex_channel_lost");
     // The failure message carries only the closed loss-reason enum, never

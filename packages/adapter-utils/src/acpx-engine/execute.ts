@@ -92,6 +92,7 @@ import {
   type AcpSessionStore,
 } from "acpx/runtime";
 import {
+  ACPX_DUPLEX_LOSS_CANCEL_DEADLINE_MS,
   ACPX_HANDSHAKE_TIMEOUT_MS,
   ACPX_HANDSHAKE_TRANSPORT_POLL_MS,
   DEFAULT_ACP_ENGINE_AGENT,
@@ -342,6 +343,14 @@ export interface AcpxRemoteManagedHomeResult {
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
   now?: () => number;
+  /**
+   * The bound on how long the fail-fast seam waits for a cooperative
+   * `turn.cancel()` after a latched terminal sandbox duplex-channel loss,
+   * before it ends the turn without the agent's help. Defaults to
+   * {@link ACPX_DUPLEX_LOSS_CANCEL_DEADLINE_MS}. Tests inject a small value
+   * to drive the deadline without real time.
+   */
+  duplexLossCancelDeadlineMs?: number;
   warmHandles?: Map<string, RuntimeCacheEntry>;
   /**
    * Per-session staged-runtime cache for the remote runner-backed lane (PR 3).
@@ -3704,6 +3713,7 @@ function openTurnSpan(
 export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const createRuntime = deps.createRuntime ?? createAcpRuntime;
   const now = deps.now ?? (() => Date.now());
+  const duplexLossCancelDeadlineMs = deps.duplexLossCancelDeadlineMs ?? ACPX_DUPLEX_LOSS_CANCEL_DEADLINE_MS;
   const warmHandles = deps.warmHandles ?? defaultWarmHandles;
   const stagedRuntimes = deps.stagedRuntimes ?? defaultStagedRuntimes;
   const stagingLocks = deps.stagingLocks ?? defaultStagingLocks;
@@ -3805,6 +3815,19 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     // `onLoss`; stays undefined everywhere else, so the cleanup call is a
     // no-op there.
     let removeLossListener: (() => void) | undefined;
+    // Bounds the wait after a latched terminal duplex loss so a silent agent
+    // cannot hold the run open on the cooperative `turn.cancel()` request
+    // alone. `stepTurnStart` arms `lossDeadlineTimer` the moment a loss
+    // latches; it stays undefined everywhere else, so the cleanup call below
+    // is a no-op there. `stepEventRelay` races the turn against
+    // `lossDeadline` and, once it fires, ends the event drain and hands
+    // `turnFinalize` a host-built terminal instead of the agent's.
+    let lossDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    let lossDeadlineTripped = false;
+    let resolveLossDeadline: (() => void) | undefined;
+    const lossDeadline = new Promise<void>((resolve) => {
+      resolveLossDeadline = resolve;
+    });
     let forcedStop = false;
     let runtimeStopConfirmed = false;
     let safeInterruptedSession = false;
@@ -4626,6 +4649,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         if (bridge?.onLoss) {
           const cancelForLoss = (reason: DuplexLossReason) => {
             void turn.cancel({ reason: `paperclip sandbox duplex channel lost (${reason})` }).catch(() => {});
+            // `cancel()` only asks the agent to end the turn; it does not end
+            // the turn by itself. Start the fail-fast deadline the moment the
+            // loss latches, so the run does not wait past this bound for an
+            // agent that stopped answering.
+            if (!lossDeadlineTimer && !lossDeadlineTripped) {
+              lossDeadlineTimer = setTimeout(() => {
+                lossDeadlineTripped = true;
+                resolveLossDeadline?.();
+              }, duplexLossCancelDeadlineMs);
+            }
           };
           removeLossListener = bridge.onLoss(cancelForLoss);
           const alreadyLatched = bridge.readRunDisposition?.();
@@ -4656,40 +4689,74 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           },
         };
       };
+      // The host-built terminal `stepEventRelay` hands to `turnFinalize` once
+      // the fail-fast deadline fires with no agent-supplied terminal. Its
+      // `status` mirrors the shape a real cooperative cancel already
+      // produces, so `turnFinalize` needs no change: it reads the latched
+      // loss disposition, not this `stopReason`, to build the reported
+      // failure and its message.
+      const LOSS_DEADLINE_TERMINAL: AcpRuntimeTurnResult = {
+        status: "cancelled",
+        stopReason: "paperclip_duplex_loss_deadline",
+      };
       const stepEventRelay = async (): Promise<AcpRuntimeTurnResult> => {
         const turn = activeTurn as AcpRuntimeTurn;
         const toolTitles = new Map<string, string>();
-        for await (const event of turn.events) {
-          // ACPX currently flattens client-side filesystem/terminal receipts
-          // into status text. They cannot establish complete action outcomes.
-          if (event.type === "status" && /^(fs|terminal)\//.test(event.text)) incompleteToolInventory = true;
-          if (event.type === "tool_call") {
-            if (!event.toolCallId) incompleteToolInventory = true;
-            else {
-              const previous = interruptionTools.get(event.toolCallId);
-              interruptionTools.set(event.toolCallId, {
-                kind: event.kind ?? previous?.kind,
-                status: event.status ?? previous?.status,
-              });
+        const drainEvents = (async (): Promise<void> => {
+          for await (const event of turn.events) {
+            // ACPX currently flattens client-side filesystem/terminal receipts
+            // into status text. They cannot establish complete action outcomes.
+            if (event.type === "status" && /^(fs|terminal)\//.test(event.text)) incompleteToolInventory = true;
+            if (event.type === "tool_call") {
+              if (!event.toolCallId) incompleteToolInventory = true;
+              else {
+                const previous = interruptionTools.get(event.toolCallId);
+                interruptionTools.set(event.toolCallId, {
+                  kind: event.kind ?? previous?.kind,
+                  status: event.status ?? previous?.status,
+                });
+              }
             }
+            if (event.type === "text_delta" && event.stream !== "thought") {
+              currentOutputChunk.push(event.text);
+            } else if (event.type === "tool_call" && event.tag !== "tool_call_update") {
+              // ACP makes tool-call status optional. The normalized event tag is
+              // the reliable boundary between an initial call and its updates,
+              // so a statusless initial call must still end the preceding output
+              // segment while updates must not create extra boundaries.
+              flushOutputSegment();
+            }
+            if (event.type === "status" && event.tag === "usage_update") {
+              eventBreakdown = event.breakdown ?? eventBreakdown;
+              eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+            }
+            await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
           }
-          if (event.type === "text_delta" && event.stream !== "thought") {
-            currentOutputChunk.push(event.text);
-          } else if (event.type === "tool_call" && event.tag !== "tool_call_update") {
-            // ACP makes tool-call status optional. The normalized event tag is
-            // the reliable boundary between an initial call and its updates,
-            // so a statusless initial call must still end the preceding output
-            // segment while updates must not create extra boundaries.
-            flushOutputSegment();
-          }
-          if (event.type === "status" && event.tag === "usage_update") {
-            eventBreakdown = event.breakdown ?? eventBreakdown;
-            eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
-          }
-          await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
+        })();
+        // A latched loss already asked the agent to cancel (above, in
+        // `cancelForLoss`); that request settles neither `turn.events` nor
+        // `turn.result` by itself. Race the event drain against the fail-fast
+        // deadline so a silent agent cannot hold this wait open.
+        const eventsEnded = await Promise.race([
+          drainEvents.then(() => true as const),
+          lossDeadline.then(() => false as const),
+        ]);
+        if (!eventsEnded) {
+          // The deadline won: stop waiting on the agent. `closeStream` ends
+          // the event drain locally, with no agent cooperation required. The
+          // abandoned `drainEvents` promise is left to settle on its own and
+          // is observed so it can never raise an unhandled rejection; nothing
+          // downstream reads its side effects after this point.
+          void turn.closeStream({ reason: "paperclip duplex loss cancel deadline" }).catch(() => {});
+          void drainEvents.catch(() => {});
+          flushOutputSegment();
+          return LOSS_DEADLINE_TERMINAL;
         }
         flushOutputSegment();
-        return await turn.result;
+        // `turn.result` settles only when the agent's provider process
+        // returns or rejects; a latched loss that armed the deadline after
+        // the event drain already ended must still bound this wait.
+        return await Promise.race([turn.result, lossDeadline.then(() => LOSS_DEADLINE_TERMINAL)]);
       };
       const stepTurnFinalize = async (
         input: TurnFinalizeInput<AcpRuntimeTurnResult>,
@@ -5211,6 +5278,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       clearTimeout(stopTimer);
       removeStopListener?.();
       removeLossListener?.();
+      clearTimeout(lossDeadlineTimer);
       // End the run root span exactly once, on every return and on a throw.
       runRootSpan.end(runFailed);
       // Release the per-session staging lease as the run's final act, AFTER the
