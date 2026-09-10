@@ -214,11 +214,11 @@ test("release verify workflow covers the same split test surface as stable PR ve
     assert.match(verifyWorkflow, new RegExp(`group: ${group}`));
   }
 
-  for (const shardIndex of [0, 1, 2]) {
+  for (const shardIndex of [0, 1, 2, 3, 4]) {
     assert.match(
       verifyWorkflow,
       new RegExp(
-        `group: general-server[\\s\\S]*?shard_index: ${shardIndex}[\\s\\S]*?shard_count: 3`,
+        `group: general-server[\\s\\S]*?shard_index: ${shardIndex}[\\s\\S]*?shard_count: 5`,
       ),
     );
   }

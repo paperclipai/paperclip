@@ -58,18 +58,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Five-way server split, matching pr-trusted.yml. Three shards sat
+          # at 17-19 minutes against this job's 20-minute cap after the
+          # server suite grew on 2026-09-10, and every canary that evening
+          # died on the timeout instead of reporting a verdict.
           - group: general-server
-            group_label: server (1/3)
+            group_label: server (1/5)
             shard_index: 0
-            shard_count: 3
+            shard_count: 5
           - group: general-server
-            group_label: server (2/3)
+            group_label: server (2/5)
             shard_index: 1
-            shard_count: 3
+            shard_count: 5
           - group: general-server
-            group_label: server (3/3)
+            group_label: server (3/5)
             shard_index: 2
-            shard_count: 3
+            shard_count: 5
+          - group: general-server
+            group_label: server (4/5)
+            shard_index: 3
+            shard_count: 5
+          - group: general-server
+            group_label: server (5/5)
+            shard_index: 4
+            shard_count: 5
           # Keep parity with pr.yml: workspaces-a is split with Vitest's
           # native --shard because the ui project dominates the lane.
           - group: general-workspaces-a
