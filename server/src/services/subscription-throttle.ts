@@ -145,12 +145,20 @@ export function subscriptionThrottleService(
       });
       const usagePercent = (usage / config.estimatedCeilingTokens) * 100;
 
+      // Apply the resume transition inline so the status always reflects current
+      // usage, not just the last time getBlock was called by a queued dispatch.
+      const wasActive = state?.throttleActive ?? false;
+      const isActive = wasActive && usagePercent >= config.resumePercent;
+      if (wasActive && !isActive) {
+        await writeState(companyId, config.provider, false, usagePercent);
+      }
+
       return {
         configured: true,
         enabled: true,
-        active: state?.throttleActive ?? false,
+        active: isActive,
         usagePercent,
-        since: state?.since ?? null,
+        since: isActive ? (state?.since ?? null) : null,
         provider: config.provider,
         estimatedCeilingTokens: config.estimatedCeilingTokens,
         pausePercent: config.pausePercent,

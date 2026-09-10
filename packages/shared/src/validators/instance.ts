@@ -34,7 +34,10 @@ export const subscriptionThrottleConfigSchema = z.object({
   pausePercent: z.number().min(1).max(99).default(80),
   resumePercent: z.number().min(1).max(99).default(50),
   cachedWeight: z.number().min(0).max(1).default(0),
-});
+}).refine(
+  (data) => data.resumePercent < data.pausePercent,
+  { message: "resumePercent must be strictly less than pausePercent to prevent hysteresis flapping", path: ["resumePercent"] },
+);
 
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
