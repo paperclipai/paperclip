@@ -453,19 +453,25 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueue
         .returning()
         .then((rows) => rows[0]);
 
-      // This insert does not set responsibleUserId. claimQueuedRun resolves the
-      // responsible user and writes it in the same update that moves the run
-      // from "queued" to "running", and initializeRunIdentity then overwrites
-      // it again from the run identity chain. The row therefore holds a null
-      // responsible user only while the run is queued. One reader can observe
-      // that null: runsForIssue projects the column with no status filter, so
-      // the issue run ledger can show a queued recovery run with no responsible
-      // user. That projection displays attribution and makes no authorization
-      // decision. Every authorization and audit read keys on a running or an
-      // authenticated run instead. Resolving the responsible user here, like
-      // the other recovery writers do, would add a throw inside this release
-      // transaction — on the one path whose job is to un-stick a stalled
-      // review.
+      // This insert does not set responsibleUserId. When claimQueuedRun claims
+      // this row, it resolves a responsible user. It writes that value in the
+      // same update that moves the run from "queued" to "running". But
+      // claimQueuedRun can also cancel a queued recovery run before it
+      // resolves that value, and a cancelled row then keeps a null
+      // responsible user permanently. A claimed row still needs
+      // initializeRunIdentity to overwrite the value again, from the run
+      // identity chain; if execution ends before that overwrite runs, the
+      // claimed value stays. One reader can observe a null value: runsForIssue
+      // projects the column with no status filter, so the issue run ledger
+      // can show a recovery run with no responsible user. That projection
+      // displays attribution and makes no authorization decision. Every
+      // authorization and audit read keys on a running or an authenticated
+      // run instead. The immediate-recovery writer takes an already-resolved
+      // responsibleUserId as an input parameter, because its caller must
+      // resolve one before it can call that writer. This writer's input
+      // carries no such parameter. It leaves resolution to claimQueuedRun,
+      // which resolves and writes a responsible user for every queued run,
+      // the moment it claims one.
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({
