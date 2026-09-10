@@ -126,6 +126,7 @@ import {
   writeHotRestartIntent,
 } from "../services/hot-restart.ts";
 import { secretService } from "../services/secrets.ts";
+import { WorkspaceRuntimeValidationFailure } from "../services/workspace-runtime.js";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
@@ -4195,6 +4196,41 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
     });
     expect(validationComment).toBeTruthy();
+  });
+
+  it.each([false, true])("blocks repository preparation without an automatic continuation (resolved interaction: %s)", async (resolvedInteraction) => {
+    const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
+    if (resolvedInteraction) {
+      const interactionId = randomUUID();
+      await db.insert(issueThreadInteractions).values({ id: interactionId, companyId, issueId,
+        kind: "request_confirmation", status: "accepted", continuationPolicy: "wake_assignee_on_accept",
+        createdByAgentId: agentId, resolvedByUserId: "responsible-user", resolvedAt: new Date(),
+        payload: { version: 1, prompt: "Approve the plan?", target: { type: "issue_document", issueId, key: "plan", revisionId: randomUUID() } },
+        result: { version: 1, outcome: "accepted" } });
+      const context = { issueId, taskId: issueId, wakeReason: "issue_commented", mutation: "interaction",
+        interactionId, interactionKind: "request_confirmation", interactionStatus: "accepted" };
+      await db.update(agentWakeupRequests).set({ source: "automation", reason: "issue_commented", payload: context }).where(eq(agentWakeupRequests.id, wakeupRequestId));
+      await db.update(heartbeatRuns).set({ invocationSource: "automation", contextSnapshot: context }).where(eq(heartbeatRuns.id, runId));
+    }
+    const payload = { workspaceValidation: { reason: "sandbox_repository_preparation_failed", operation: "clone",
+      issueId, repositoryName: "missing-required-repository", fingerprint: `sandbox_repository:${randomUUID()}:clone` } };
+    // Exercise terminal recovery with the structured failure emitted by the
+    // shared sandbox coordinator; the lifecycle test exercises the real clone.
+    mockAdapterExecute.mockRejectedValueOnce(new WorkspaceRuntimeValidationFailure("Required repository missing-required-repository could not be cloned", payload));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await heartbeat.waitForRunExecutionDrain(runId);
+    await heartbeat.reconcileStrandedAssignedIssues();
+    expect(await heartbeat.getRun(runId)).toMatchObject({ status: "failed", errorCode: "workspace_validation_failed", resultJson: payload });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs.map((run) => run.id)).toEqual([runId]);
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ status: "blocked", executionRunId: null, assigneeAgentId: agentId });
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(action).toMatchObject({ status: "active", ownerType: "board", recoveryIssueId: null });
+    if (!resolvedInteraction) expect(action?.nextAction).toContain("Completed checkouts and unsaved files remain");
   });
 
   it("blocks before dispatch when a declared secret ref has no binding instead of emitting an opaque setup failure", async () => {

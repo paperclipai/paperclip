@@ -19,6 +19,7 @@ import { workFolderRepositoryService } from "./work-folder-repositories.js";
 import { startWorkFolderCheckpointer } from "./work-folder-checkpointer.js";
 import { logActivity } from "./activity-log.js";
 import { assertWorkFolderAccess } from "./work-folder-access.js";
+import { WorkspaceRuntimeValidationFailure } from "./workspace-runtime.js";
 
 function signature(entry: WorkTreeEntry | undefined) {
   return entry ? JSON.stringify([entry.kind, entry.sha256, entry.executable]) : "missing";
@@ -293,8 +294,21 @@ export async function prepareSandboxWorkFolders(input: {
                 workspaceId: workspace.id, name, repoUrl: workspace.repoUrl, repoRef: workspace.repoRef ?? workspace.defaultRef }).returning()));
             }
             if (!binding) throw new Error("Repository binding could not be created");
-            if (binding.repoUrl !== workspace.repoUrl) throw new Error(`Repository ${binding.name} configuration changed; saved work was retained`);
-            if (binding.repoRef !== (workspace.repoRef ?? workspace.defaultRef)) throw new Error(`Repository ${binding.name} starting ref changed; saved work was retained`);
+            const repositoryBinding = binding;
+            const failPreparation = (operation: string, message: string): never => {
+              // No adapter has started and a continuation cannot repair these
+              // inputs. Preserve completed checkouts for an explicit retry.
+              throw new WorkspaceRuntimeValidationFailure(message, {
+                workspaceValidation: {
+                  reason: "sandbox_repository_preparation_failed", operation,
+                  issueId: taskId, projectId, projectWorkspaceId: workspace.id,
+                  repositoryBindingId: repositoryBinding.id, repositoryName: repositoryBinding.name,
+                  fingerprint: `sandbox_repository:${repositoryBinding.id}:${operation}`,
+                },
+              });
+            };
+            if (binding.repoUrl !== workspace.repoUrl) failPreparation("configuration", `Repository ${binding.name} configuration changed; saved work was retained`);
+            if (binding.repoRef !== (workspace.repoRef ?? workspace.defaultRef)) failPreparation("configuration", `Repository ${binding.name} starting ref changed; saved work was retained`);
             const root = path.posix.join(paths.repos!, binding.name);
             const probe = await measureSandboxOperation("work_folder.repository.probe", { repositoryIndex, requestCount: 1 }, async () => (target.runner!.execute({ command: "git", args: ["-C", root, "rev-parse", "--git-dir"], bypassSession: true, timeoutMs: 10_000 })));
             const freshCheckout = probe.exitCode !== 0;
@@ -312,22 +326,22 @@ export async function prepareSandboxWorkFolders(input: {
                 const result = await measureSandboxOperation("work_folder.repository.clone", { repositoryIndex, requestCount: 1 }, async () => (target.runner!.execute({ command: "git", args: [...(auth?.configArgs ?? []), "clone", "--no-hardlinks",
                   "--", workspace.repoUrl!, temporary],
                   env: { GIT_TERMINAL_PROMPT: "0", ...(auth?.env ?? {}) }, bypassSession: true, timeoutMs: 300_000 })));
-                if (result.exitCode !== 0 || result.timedOut) throw new Error(`Required repository ${binding.name} could not be cloned`);
+                if (result.exitCode !== 0 || result.timedOut) failPreparation("clone", `Required repository ${binding.name} could not be cloned`);
                 const repoRef = binding.repoRef;
                 if (repoRef) {
                   const checkout = await measureSandboxOperation("work_folder.repository.checkout", { repositoryIndex, requestCount: 1 }, async () => (target.runner!.execute({ command: "git", args: ["-C", temporary, "checkout", repoRef, "--"], bypassSession: true, timeoutMs: 60_000 })));
-                  if (checkout.exitCode !== 0 || checkout.timedOut) throw new Error(`Required repository ${binding.name} ref could not be checked out`);
+                  if (checkout.exitCode !== 0 || checkout.timedOut) failPreparation("checkout", `Required repository ${binding.name} ref could not be checked out`);
                 }
                 if (primary && input.primaryBranchName) {
                   const branch = input.primaryBranchName;
                   const valid = await measureSandboxOperation("work_folder.repository.validate_branch", { repositoryIndex, requestCount: 1 }, async () => (target.runner!.execute({ command: "git", args: ["check-ref-format", "--branch", branch], bypassSession: true, timeoutMs: 10_000 })));
-                  if (valid.exitCode !== 0 || valid.stdout.trim() !== branch) throw new Error(`Required repository ${binding.name} branch is invalid`);
+                  if (valid.exitCode !== 0 || valid.stdout.trim() !== branch) failPreparation("branch", `Required repository ${binding.name} branch is invalid`);
                   // Honor the task's existing branch policy on the initial clone.
                   // Restores and warm starts keep the saved HEAD and index untouched.
                   const checkout = await measureSandboxOperation("work_folder.repository.checkout", { repositoryIndex, requestCount: 1 }, async () => (target.runner!.execute({ command: "git", args: ["-C", temporary, "checkout", branch, "--"], bypassSession: true, timeoutMs: 60_000 })));
                   if (checkout.exitCode !== 0) {
                     const create = await measureSandboxOperation("work_folder.repository.create_branch", { repositoryIndex, requestCount: 1 }, async () => (target.runner!.execute({ command: "git", args: ["-C", temporary, "checkout", "-b", branch], bypassSession: true, timeoutMs: 60_000 })));
-                    if (create.exitCode !== 0 || create.timedOut) throw new Error(`Required repository ${binding.name} task branch could not be created`);
+                    if (create.exitCode !== 0 || create.timedOut) failPreparation("branch", `Required repository ${binding.name} task branch could not be created`);
                   }
                 }
               } else {
@@ -344,7 +358,7 @@ export async function prepareSandboxWorkFolders(input: {
             const setupCommand = workspace.setupCommand;
             if ((!binding.setupComplete || freshCheckout) && setupCommand) {
               const setup = await measureSandboxOperation("work_folder.repository.setup", { repositoryIndex, requestCount: 1 }, async () => (target.runner!.execute({ command: "sh", args: ["-c", setupCommand], cwd: root, bypassSession: true, timeoutMs: 300_000 })));
-              if (setup.exitCode !== 0 || setup.timedOut) throw new Error(`Repository ${binding.name} setup failed`);
+              if (setup.exitCode !== 0 || setup.timedOut) failPreparation("setup", `Repository ${binding.name} setup failed`);
             }
             await measureSandboxOperation("work_folder.db.query", { operation: "update_task_repository_bindings", requestCount: 1 }, async () => (db.update(taskRepositoryBindings).set({ setupComplete: true, retiredAt: null }).where(eq(taskRepositoryBindings.id, binding.id))));
             bindings.push({ binding, root });

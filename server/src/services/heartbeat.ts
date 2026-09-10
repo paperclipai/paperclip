@@ -965,6 +965,13 @@ function isRetryableInteractionContinuationInfrastructureFailure(
   >,
 ) {
   if (
+    run.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE &&
+    parseObject(parseObject(run.resultJson).workspaceValidation).reason ===
+      "sandbox_repository_preparation_failed"
+  ) {
+    return false;
+  }
+  if (
     run.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE ||
     run.errorCode === "process_lost"
   ) {

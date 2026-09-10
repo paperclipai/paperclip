@@ -162,6 +162,59 @@ describe("shared sandbox work-folder lifecycle", () => {
         runner: { supportsSingleStreamStdinProgress: options.bulkStdin, execute: (input) => localTestWorkFolderRunner.execute({ ...input, env: { ...input.env, HOME: home } }) } } });
     active.push(run); return run;
   }
+  it("blocks a required clone failure and reuses completed checkouts on explicit retry", async () => {
+    const task = randomUUID(), leaseId = randomUUID(), invalidWorkspaceId = randomUUID();
+    const home = path.join(root, `failed-clone-${task}`);
+    await db.insert(issues).values({ id: task, companyId, projectId, title: "Required clone failure", assigneeAgentId: agentId });
+    await db.insert(projectWorkspaces).values({ id: invalidWorkspaceId, companyId, projectId,
+      name: "Missing required repository", repoUrl: path.join(root, "missing-required-repository"),
+      sourceType: "git_repo", isPrimary: false });
+    try {
+      const error = await prepare(home, leaseId, leaseId, null, { taskId: task }).catch((failure: unknown) => failure);
+      expect(error).toMatchObject({
+        message: expect.stringContaining("could not be cloned"),
+        code: "workspace_validation_failed",
+        resultJson: { workspaceValidation: {
+          reason: "sandbox_repository_preparation_failed", operation: "clone",
+          issueId: task, projectId, projectWorkspaceId: invalidWorkspaceId,
+          fingerprint: expect.stringMatching(/^sandbox_repository:/),
+        } },
+      });
+      const primary = path.join(home, "repos", "repo-one");
+      expect(await fs.readFile(path.join(primary, ".setup-count"), "utf8")).toBe("initialized\n");
+      await fs.writeFile(path.join(primary, "retained-staged"), "staged");
+      await exec("git", ["-C", primary, "add", "retained-staged"]);
+      await fs.writeFile(path.join(primary, "retained-staged"), "dirty");
+      await fs.writeFile(path.join(primary, "retained-untracked"), "untracked");
+      await db.delete(projectWorkspaces).where(eq(projectWorkspaces.id, invalidWorkspaceId));
+      const retry = await prepare(home, leaseId, leaseId, null, { taskId: task });
+      expect(await fs.readFile(path.join(primary, ".setup-count"), "utf8")).toBe("initialized\n");
+      expect((await exec("git", ["-C", primary, "show", ":retained-staged"])).stdout).toBe("staged");
+      expect(await fs.readFile(path.join(primary, "retained-staged"), "utf8")).toBe("dirty");
+      expect(await fs.readFile(path.join(primary, "retained-untracked"), "utf8")).toBe("untracked");
+      await retry.stop(); active.splice(active.indexOf(retry), 1);
+    } finally {
+      await db.delete(projectWorkspaces).where(eq(projectWorkspaces.id, invalidWorkspaceId));
+    }
+  }, 120_000);
+  it.each([
+    { operation: "checkout", repoRef: "missing-required-ref", setupCommand: null, branchName: undefined },
+    { operation: "setup", repoRef: null, setupCommand: "exit 7", branchName: undefined },
+    { operation: "branch", repoRef: null, setupCommand: null, branchName: "invalid branch name" },
+  ])("classifies required repository $operation failures as workspace blockers", async ({ operation, repoRef, setupCommand, branchName }) => {
+    const task = randomUUID(), workspaceId = randomUUID();
+    await db.insert(issues).values({ id: task, companyId, projectId, title: "Required repository preparation", assigneeAgentId: agentId });
+    await db.insert(projectWorkspaces).values({ id: workspaceId, companyId, projectId,
+      name: "Additional required repository", repoUrl: path.join(root, "repo-one"), repoRef, setupCommand,
+      sourceType: "git_repo", isPrimary: false });
+    try {
+      await expect(prepare(path.join(root, `repository-${task}`), randomUUID(), undefined, null, { taskId: task, branchName }))
+        .rejects.toMatchObject({ code: "workspace_validation_failed",
+          resultJson: { workspaceValidation: { reason: "sandbox_repository_preparation_failed", operation, issueId: task } } });
+    } finally {
+      await db.delete(projectWorkspaces).where(eq(projectWorkspaces.id, workspaceId));
+    }
+  });
   it("records scoped startup and final checkpoint stages without private identities", async () => {
     const task = randomUUID();
     await db.insert(issues).values({ id: task, companyId, projectId, title: "Instrumented task", assigneeAgentId: agentId });
