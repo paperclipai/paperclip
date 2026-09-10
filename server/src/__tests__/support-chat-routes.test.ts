@@ -1,13 +1,19 @@
 import { createHmac } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { authUsers, companies } from "@paperclipai/db";
 import { errorHandler } from "../middleware/error-handler.js";
 import { supportChatRoutes } from "../routes/support-chat.js";
 import {
   computePlainEmailHash,
   resolveSupportChatConfig,
 } from "../services/support-chat.js";
+import {
+  PLAIN_GRAPHQL_ENDPOINT,
+  plainTenantExternalId,
+  resetPlainTenantSyncForTests,
+} from "../services/plain-tenant-sync.js";
 
 const CLOUD_ENV = {
   PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-token",
@@ -22,35 +28,49 @@ type UserRow = {
   emailVerified: boolean;
 };
 
-function createDb(row: UserRow | null) {
+type CompanyRow = { id: string; name: string };
+
+function createDb(opts: { user: UserRow | null; company?: CompanyRow | null }) {
   return {
     select: () => ({
-      from: () => ({
-        where: () => Promise.resolve(row ? [row] : []),
+      from: (table: unknown) => ({
+        where: () => {
+          if (table === authUsers) return Promise.resolve(opts.user ? [opts.user] : []);
+          if (table === companies) return Promise.resolve(opts.company ? [opts.company] : []);
+          return Promise.resolve([]);
+        },
       }),
     }),
   } as never;
 }
 
+const COMPANY: CompanyRow = {
+  id: "0c3a49a2-6f47-4a5f-8f8e-2f4f0e2f7d11",
+  name: "Plain Preview Co",
+};
+
 function createApp(opts: {
   row?: UserRow | null;
+  company?: CompanyRow | null;
   actor?: Record<string, unknown> | null;
   runtimeEnv: Record<string, string | undefined>;
   nodeEnv?: string | undefined;
+  tenantSyncFetch?: typeof fetch;
 }) {
   const app = express();
   app.use((req, _res, next) => {
     (req as unknown as { actor: unknown }).actor =
       opts.actor === undefined
-        ? { type: "board", userId: "user-1", source: "session" }
+        ? { type: "board", userId: "user-1", companyIds: [COMPANY.id], source: "session" }
         : opts.actor;
     next();
   });
   app.use(
     "/api/support-chat",
-    supportChatRoutes(createDb(opts.row ?? null), {
+    supportChatRoutes(createDb({ user: opts.row ?? null, company: opts.company ?? null }), {
       runtimeEnv: opts.runtimeEnv,
       nodeEnv: "nodeEnv" in opts ? opts.nodeEnv : "test",
+      tenantSyncFetch: opts.tenantSyncFetch,
     }),
   );
   app.use(errorHandler);
@@ -64,7 +84,26 @@ const VERIFIED_USER: UserRow = {
   emailVerified: true,
 };
 
+/** A fetch stub answering Plain's upsertTenant mutation. */
+function tenantUpsertFetch(result: "ok" | "mutation-error" | "http-500") {
+  return vi.fn(async () => {
+    if (result === "http-500") return new Response("nope", { status: 500 });
+    const body =
+      result === "ok"
+        ? { data: { upsertTenant: { tenant: { id: "ten_1" }, error: null } } }
+        : { data: { upsertTenant: { tenant: null, error: { message: "denied", code: "forbidden" } } } };
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }) as unknown as typeof fetch;
+}
+
 describe("GET /api/support-chat/session", () => {
+  beforeEach(() => {
+    resetPlainTenantSyncForTests();
+  });
+
   it("answers 404 with support_chat_disabled when no Chat App id is configured", async () => {
     const res = await request(
       createApp({ row: VERIFIED_USER, runtimeEnv: { PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "t" } }),
@@ -102,6 +141,7 @@ describe("GET /api/support-chat/session", () => {
         fullName: "Michael Nguyen",
         externalId: "user-1",
       },
+      company: null,
     });
   });
 
@@ -180,6 +220,100 @@ describe("GET /api/support-chat/session", () => {
     expect(res.body.customer).toBeNull();
   });
 
+  it("returns validated company context without tenant id when no Plain API key is configured", async () => {
+    const res = await request(
+      createApp({ row: VERIFIED_USER, company: COMPANY, runtimeEnv: CLOUD_ENV }),
+    ).get(`/api/support-chat/session?companyId=${COMPANY.id}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.company).toEqual({
+      id: COMPANY.id,
+      name: COMPANY.name,
+      tenantExternalId: null,
+    });
+  });
+
+  it("collapses a foreign, malformed, or unknown companyId to company: null", async () => {
+    const foreign = await request(
+      createApp({
+        row: VERIFIED_USER,
+        company: COMPANY,
+        runtimeEnv: CLOUD_ENV,
+        actor: { type: "board", userId: "user-1", companyIds: ["e39cf1f0-0000-4000-8000-000000000000"], source: "session" },
+      }),
+    ).get(`/api/support-chat/session?companyId=${COMPANY.id}`);
+    expect(foreign.status).toBe(200);
+    expect(foreign.body.company).toBeNull();
+
+    const malformed = await request(
+      createApp({ row: VERIFIED_USER, company: COMPANY, runtimeEnv: CLOUD_ENV }),
+    ).get("/api/support-chat/session?companyId=../../etc");
+    expect(malformed.status).toBe(200);
+    expect(malformed.body.company).toBeNull();
+
+    const unknown = await request(
+      createApp({ row: VERIFIED_USER, company: null, runtimeEnv: CLOUD_ENV }),
+    ).get(`/api/support-chat/session?companyId=${COMPANY.id}`);
+    expect(unknown.status).toBe(200);
+    expect(unknown.body.company).toBeNull();
+  });
+
+  it("hands out the tenant externalId only after Plain confirms the tenant upsert", async () => {
+    const fetchStub = tenantUpsertFetch("ok");
+    const res = await request(
+      createApp({
+        row: VERIFIED_USER,
+        company: COMPANY,
+        runtimeEnv: { ...CLOUD_ENV, PLAIN_API_KEY: "plainApiKey_TEST" },
+        tenantSyncFetch: fetchStub,
+      }),
+    ).get(`/api/support-chat/session?companyId=${COMPANY.id}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.company).toEqual({
+      id: COMPANY.id,
+      name: COMPANY.name,
+      tenantExternalId: plainTenantExternalId(COMPANY.id),
+    });
+
+    // The upsert went to Plain's documented endpoint with the documented
+    // input shape, authenticated server-side.
+    const stub = fetchStub as unknown as ReturnType<typeof vi.fn>;
+    expect(stub).toHaveBeenCalledTimes(1);
+    const [url, init] = stub.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(PLAIN_GRAPHQL_ENDPOINT);
+    expect((init.headers as Record<string, string>).Authorization).toBe("Bearer plainApiKey_TEST");
+    const body = JSON.parse(init.body as string);
+    expect(body.variables).toEqual({
+      input: {
+        identifier: { externalId: plainTenantExternalId(COMPANY.id) },
+        name: COMPANY.name,
+        externalId: plainTenantExternalId(COMPANY.id),
+      },
+    });
+  });
+
+  it("withholds the tenant externalId when Plain rejects or fails the upsert", async () => {
+    for (const mode of ["mutation-error", "http-500"] as const) {
+      resetPlainTenantSyncForTests();
+      const res = await request(
+        createApp({
+          row: VERIFIED_USER,
+          company: COMPANY,
+          runtimeEnv: { ...CLOUD_ENV, PLAIN_API_KEY: "plainApiKey_TEST" },
+          tenantSyncFetch: tenantUpsertFetch(mode),
+        }),
+      ).get(`/api/support-chat/session?companyId=${COMPANY.id}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.company).toEqual({
+        id: COMPANY.id,
+        name: COMPANY.name,
+        tenantExternalId: null,
+      });
+    }
+  });
+
   it("refuses the dev preview opt-in on a production build", async () => {
     const res = await request(
       createApp({
@@ -217,13 +351,13 @@ describe("resolveSupportChatConfig", () => {
         { PLAIN_CHAT_APP_ID: "app", PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "t" },
         "production",
       ),
-    ).toEqual({ appId: "app", emailHmacSecret: null, devPreview: false });
+    ).toEqual({ appId: "app", emailHmacSecret: null, tenantSyncApiKey: null, devPreview: false });
     expect(
       resolveSupportChatConfig(
         { PLAIN_CHAT_APP_ID: "app", PAPERCLIP_MANAGED_CONFIG: "{}" },
         "production",
       ),
-    ).toEqual({ appId: "app", emailHmacSecret: null, devPreview: false });
+    ).toEqual({ appId: "app", emailHmacSecret: null, tenantSyncApiKey: null, devPreview: false });
   });
 
   it("ignores the dev opt-in on a Cloud-managed instance", () => {
@@ -235,7 +369,7 @@ describe("resolveSupportChatConfig", () => {
       },
       "development",
     );
-    expect(config).toEqual({ appId: "app", emailHmacSecret: null, devPreview: false });
+    expect(config).toEqual({ appId: "app", emailHmacSecret: null, tenantSyncApiKey: null, devPreview: false });
   });
 
   it("requires an explicit truthy opt-in value", () => {

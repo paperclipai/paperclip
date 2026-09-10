@@ -67,9 +67,11 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
       <QueryClientProvider client={queryClient}>
         <SentryGate />
         <ThemeProvider>
-          <SupportChatGate />
           <BrowserRouter>
             <CompanyProvider>
+              {/* Inside CompanyProvider so support threads can carry the
+                  selected company; the gate itself renders nothing. */}
+              <SupportChatGate />
               <EditorAutocompleteProvider>
                 <ToastProvider>
                   <LiveUpdatesProvider>

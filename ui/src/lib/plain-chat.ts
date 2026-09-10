@@ -49,6 +49,15 @@ export interface SupportChatMountOptions {
   theme: SupportChatTheme;
   customer: SupportChatCustomerDetails | null;
   /**
+   * The Plain tenant externalId for the customer's currently selected
+   * company, or null for no company context. Server-provided only — non-null
+   * means the server has already ensured the tenant exists in Plain. Passed
+   * as `threadDetails.tenantIdentifier`, which scopes threads *created from
+   * now on* to that tenant; it is context, not identity, so
+   * `updateSupportChatCompany` may change it within one page lifetime.
+   */
+  tenantExternalId: string | null;
+  /**
    * Stable key for the identity this mount represents. Mount requests with a
    * key different from the mounted one are refused (no documented vendor
    * reset API) until the next full page load.
@@ -159,13 +168,21 @@ function loadPlainScript(): Promise<PlainGlobal | null> {
   return scriptPromise;
 }
 
+function buildThreadDetails(tenantExternalId: string): Record<string, unknown> {
+  // Applied by Plain to threads created from this point on; threads that
+  // already exist keep the tenant they were created under. Only the tenant
+  // reference — never product content.
+  return { tenantIdentifier: { externalId: tenantExternalId } };
+}
+
 function buildConfig(opts: SupportChatMountOptions): Record<string, unknown> {
   return {
     appId: opts.appId,
     theme: opts.theme,
     hideLauncher: false,
     // Never include product content, URLs, or logs here. The identity block
-    // is the server-attested customer identity and nothing else — see the
+    // is the server-attested customer identity, the thread block is the
+    // current-company tenant reference, and nothing else — see the
     // support-chat session route.
     ...(opts.customer
       ? {
@@ -177,12 +194,15 @@ function buildConfig(opts: SupportChatMountOptions): Record<string, unknown> {
           },
         }
       : {}),
+    ...(opts.tenantExternalId
+      ? { threadDetails: buildThreadDetails(opts.tenantExternalId) }
+      : {}),
   };
 }
 
-function applyUpdate(patch: Record<string, unknown>) {
-  if (!plain || !lastConfig) return;
-  const next = { ...lastConfig, ...patch };
+/** Push a complete replacement config to a mounted widget. */
+function applyConfig(next: Record<string, unknown>) {
+  if (!plain) return;
   try {
     plain.update(next);
     lastConfig = next;
@@ -190,6 +210,11 @@ function applyUpdate(patch: Record<string, unknown>) {
     // eslint-disable-next-line no-console
     console.error("[paperclip] Plain chat update failed", err);
   }
+}
+
+function applyUpdate(patch: Record<string, unknown>) {
+  if (!plain || !lastConfig) return;
+  applyConfig({ ...lastConfig, ...patch });
 }
 
 /**
@@ -258,6 +283,32 @@ export function updateSupportChatTheme(theme: SupportChatTheme): Promise<void> {
   return enqueue(async () => {
     if (!plain) return;
     applyUpdate({ theme });
+  });
+}
+
+/**
+ * Point new support threads at the customer's currently selected company
+ * (a Plain tenant), or clear the association when no company is selected.
+ * Company context is not identity: switching it neither closes an open panel
+ * nor re-keys the mounted identity — threads already created keep the tenant
+ * they started under. A no-op before the widget mounts (the mount itself
+ * carries the initial context).
+ */
+export function updateSupportChatCompany(tenantExternalId: string | null): Promise<void> {
+  return enqueue(async () => {
+    if (!plain || !lastConfig) return;
+    const next = { ...lastConfig };
+    if (tenantExternalId) {
+      next.threadDetails = buildThreadDetails(tenantExternalId);
+    } else {
+      // Under Plain.update's undocumented merge-vs-replace semantics, a merge
+      // may keep the previous tenant vendor-side after this key is dropped;
+      // recorded as an open vendor question in doc/support-chat.md. Clearing
+      // only happens when an account loses its last company mid-page — new
+      // threads then at worst carry the last authorized company.
+      delete next.threadDetails;
+    }
+    applyConfig(next);
   });
 }
 

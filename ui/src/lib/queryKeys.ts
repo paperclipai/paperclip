@@ -592,9 +592,12 @@ export const queryKeys = {
   },
   supportChat: {
     // Keyed by the signed-in user id so an account switch fetches a fresh
-    // identity instead of reusing the previous account's entry. The root is
-    // account-scoped on purpose: sign-out's cache sweep must drop it.
-    session: (userId: string) => ["support-chat", "session", userId] as const,
+    // identity instead of reusing the previous account's entry, and by the
+    // selected company so switching companies fetches that company's context.
+    // The root is account-scoped on purpose: sign-out's cache sweep must drop
+    // it.
+    session: (userId: string, companyId: string) =>
+      ["support-chat", "session", userId, companyId] as const,
   },
   inboxAgentPolicy: {
     mine: (companyId: string) =>

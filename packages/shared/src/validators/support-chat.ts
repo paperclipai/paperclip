@@ -23,6 +23,27 @@ export const supportChatCustomerSchema = z.object({
 export type SupportChatCustomer = z.infer<typeof supportChatCustomerSchema>;
 
 /**
+ * The customer's *current* Paperclip company, echoed back only after the
+ * server has validated the signed-in user's membership in it. It exists so
+ * support threads can carry which company the customer was working in — a
+ * Plain **tenant** in vendor terms (Plain "companies" are derived from the
+ * customer's email domain and are not set by us).
+ */
+export const supportChatCompanySchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(1),
+  // The Plain tenant externalId mirroring this company. Non-null only once
+  // the server has ensured the tenant exists in the Plain workspace (requires
+  // the tenant-sync API key); the widget passes it as
+  // `threadDetails.tenantIdentifier.externalId` and omits tenant context
+  // entirely while this is null, so chat never references a tenant Plain
+  // does not know about.
+  tenantExternalId: z.string().min(1).nullable(),
+});
+
+export type SupportChatCompany = z.infer<typeof supportChatCompanySchema>;
+
+/**
  * Response of `GET /api/support-chat/session`. The route answers 404 when
  * support chat is not enabled on this instance, so this schema only describes
  * the enabled shape.
@@ -39,6 +60,10 @@ export const supportChatSessionSchema = z.object({
   // can name the mode honestly; carries no extra capability.
   devPreview: z.boolean(),
   customer: supportChatCustomerSchema.nullable(),
+  // `null` when the request named no company, the user is not a member of the
+  // named company, or the company does not exist — all deliberately the same
+  // shape, so the response never confirms foreign company ids.
+  company: supportChatCompanySchema.nullable(),
 });
 
 export type SupportChatSession = z.infer<typeof supportChatSessionSchema>;

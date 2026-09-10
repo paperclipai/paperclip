@@ -14,6 +14,11 @@ import {
 //   for any email. Absent → the widget still mounts, but the session response
 //   carries no attested customer identity and Plain's own email verification
 //   flow covers identity instead.
+// `PLAIN_API_KEY` — a Plain **Core API** key (scoped to `tenant:read` +
+//   `tenant:create`), used server-side to upsert the Plain tenant mirroring a
+//   Paperclip company before the widget references it. Secret, server-side
+//   env only. Absent → sessions carry no tenant context (chat still works;
+//   support threads just lack the current-company association).
 // `PAPERCLIP_SUPPORT_CHAT_DEV_PREVIEW` — explicit development-only opt-in for
 //   testing the Cloud support surface on a local instance. Honored only when
 //   the process does not run a production build (`NODE_ENV=production`) and
@@ -22,6 +27,7 @@ import {
 export interface SupportChatRuntimeConfig {
   appId: string;
   emailHmacSecret: string | null;
+  tenantSyncApiKey: string | null;
   /** True when enablement came from the dev opt-in, not a Cloud-managed signal. */
   devPreview: boolean;
 }
@@ -65,6 +71,7 @@ export function resolveSupportChatConfig(
   return {
     appId,
     emailHmacSecret: normalize(env.PLAIN_CHAT_EMAIL_HMAC_SECRET),
+    tenantSyncApiKey: normalize(env.PLAIN_API_KEY),
     devPreview,
   };
 }

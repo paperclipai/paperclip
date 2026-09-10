@@ -7,6 +7,7 @@ import {
   hideSupportChat,
   mountSupportChat,
   resetSupportChatForTests,
+  updateSupportChatCompany,
   updateSupportChatTheme,
 } from "./plain-chat";
 
@@ -46,6 +47,7 @@ const MOUNT = {
     fullName: "User One",
     externalId: "user-1",
   },
+  tenantExternalId: null,
   identityKey: "user-1:verified",
 };
 
@@ -197,6 +199,51 @@ describe("plain-chat controller", () => {
   it("is a no-op to hide or retheme before the widget ever mounts", async () => {
     await hideSupportChat();
     await updateSupportChatTheme("dark");
+    await updateSupportChatCompany("paperclip-company-1");
     expect(getSupportChatWidgetStatus()).toBe("idle");
+  });
+
+  it("scopes new threads to the current company's tenant at init", async () => {
+    const scripts = captureScript();
+    const fake = createFakePlain();
+    const mounted = mountSupportChat({ ...MOUNT, tenantExternalId: "paperclip-company-1" });
+    await tick();
+    (window as unknown as { Plain: unknown }).Plain = fake;
+    scripts[0]!.onload!(new Event("load"));
+    await mounted;
+
+    expect(fake.init).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadDetails: { tenantIdentifier: { externalId: "paperclip-company-1" } },
+      }),
+    );
+  });
+
+  it("re-points thread context on a company switch without closing the panel", async () => {
+    const scripts = captureScript();
+    const fake = createFakePlain();
+    const mounted = mountSupportChat({ ...MOUNT, tenantExternalId: "paperclip-company-1" });
+    await tick();
+    (window as unknown as { Plain: unknown }).Plain = fake;
+    scripts[0]!.onload!(new Event("load"));
+    await mounted;
+
+    await updateSupportChatCompany("paperclip-company-2");
+    // Full config on every update (merge/replace semantics undocumented) and
+    // no `close`: an open chat panel survives the switch, and only threads
+    // created from now on carry the new tenant.
+    expect(fake.close).not.toHaveBeenCalled();
+    expect(fake.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        appId: "liveChatApp_TEST",
+        customerDetails: expect.objectContaining({ email: "user@example.com" }),
+        threadDetails: { tenantIdentifier: { externalId: "paperclip-company-2" } },
+      }),
+    );
+
+    await updateSupportChatCompany(null);
+    const lastConfig = fake.update.mock.lastCall![0] as Record<string, unknown>;
+    expect(lastConfig.threadDetails).toBeUndefined();
+    expect(lastConfig).toEqual(expect.objectContaining({ appId: "liveChatApp_TEST" }));
   });
 });
