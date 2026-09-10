@@ -53,23 +53,22 @@ export type LockedQueuedCommentState = {
 };
 
 /**
- * Every member is bound to the one transaction `withLockedQueue` owns.
- * Every read and every write names `companyId` in its own predicate; a
+ * Every member is bound to the one transaction `withLockedQueue` owns, and
+ * to the one company that transaction is open for. Every read and every
+ * write names that bound `companyId` in its own predicate; a
  * caller-supplied `issue`/`wake`/`queueRun` value is never trusted as an
  * authorization boundary by itself.
  */
 export interface QueuedCommentQueueTransaction {
   updateCommentBody(input: {
-    companyId: string;
     issueId: string;
     commentId: string;
     body: string;
     updatedAt: Date;
   }): Promise<boolean>;
-  touchIssueUpdatedAt(input: { companyId: string; issueId: string; updatedAt: Date }): Promise<void>;
+  touchIssueUpdatedAt(input: { issueId: string; updatedAt: Date }): Promise<void>;
   /** Compare-and-set on `id`; the wake's current status is not re-checked here because the row is already locked for the duration of this transaction. */
   updateWakeQueuedCommentIds(input: {
-    companyId: string;
     wakeId: string;
     payload: Record<string, unknown>;
     ids: string[];
@@ -77,7 +76,6 @@ export interface QueuedCommentQueueTransaction {
   }): Promise<QueuedCommentWakeRow>;
   /** Guarded on the run's current `queued` status. Returns `null` when a concurrent writer already moved the run off `queued`. */
   updateQueueRunCommentIds(input: {
-    companyId: string;
     queueRunId: string;
     /** The run's own context snapshot, as already read under lock; the rewrite is derived from this base. */
     contextSnapshot: Record<string, unknown>;
@@ -86,38 +84,33 @@ export interface QueuedCommentQueueTransaction {
   }): Promise<QueuedCommentRunRow | null>;
   /** Returns the full deleted comment row so the caller can echo it back as the delete route's response body. */
   deleteComment(input: {
-    companyId: string;
     issueId: string;
     commentId: string;
   }): Promise<IssueComment | null>;
-  cancelWake(input: { companyId: string; wakeId: string; reason: string; now: Date }): Promise<void>;
+  cancelWake(input: { wakeId: string; reason: string; now: Date }): Promise<void>;
   /**
    * Guarded on the run's current `queued` status. Returns `null` when a
    * concurrent writer already moved the run off `queued`; returns just the
    * cancelled run's id, which is all a post-commit telemetry emission needs.
    */
   cancelQueueRun(input: {
-    companyId: string;
     queueRunId: string;
     reason: string;
     now: Date;
   }): Promise<{ id: string } | null>;
   /**
-   * Combines clearing the issue's execution-lock columns (only when
-   * `clearExecutionLock` is set) with the `updatedAt` touch every discard
-   * performs, in the one update the original route issued. When
-   * `clearExecutionLock` is set, the write is guarded on the issue's current
-   * `executionRunId`; a lost guard silently skips the whole update, matching
-   * the pre-existing behavior of this best-effort touch.
+   * Clears the issue's execution-lock columns and performs the `updatedAt`
+   * touch, in the one update the original route issued for a discard that
+   * empties the queue with a live queue run. The write is guarded on the
+   * issue's current `executionRunId`; a lost guard silently skips the whole
+   * update, matching the pre-existing behavior of this best-effort touch.
    */
-  updateIssueAfterDiscard(input: {
-    companyId: string;
+  clearExecutionLockAndTouchIssue(input: {
     issueId: string;
-    clearExecutionLock: { executionRunId: string } | null;
+    executionRunId: string;
     updatedAt: Date;
   }): Promise<void>;
   buildQueueSnapshot(input: {
-    companyId: string;
     issue: QueuedCommentIssueContext;
     actor: QueuedCommentActor;
     wake: QueuedCommentWakeRow | null;
@@ -142,7 +135,7 @@ export interface QueuedCommentIssueLockWriter {
    */
   withLockedQueue<T>(
     input: {
-      companyId: string;
+      /** Also carries the company id; every locked read and write binds its `companyId` predicate to `issue.companyId`. */
       issue: QueuedCommentIssueContext;
       actor: QueuedCommentActor;
       queueId: string;

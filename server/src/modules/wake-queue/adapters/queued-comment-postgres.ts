@@ -43,9 +43,9 @@ export type QueuedCommentQueuePostgresAdapterDeps = {
   syncCommentExternalObjectsSafely(commentId: string, tx: Db): Promise<void>;
 };
 
-function buildTransaction(tx: Db, deps: QueuedCommentQueuePostgresAdapterDeps): QueuedCommentQueueTransaction {
+function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePostgresAdapterDeps): QueuedCommentQueueTransaction {
   return {
-    async updateCommentBody({ companyId, issueId, commentId, body, updatedAt }) {
+    async updateCommentBody({ issueId, commentId, body, updatedAt }) {
       const updated = await tx
         .update(issueComments)
         .set({ body, updatedAt })
@@ -55,11 +55,11 @@ function buildTransaction(tx: Db, deps: QueuedCommentQueuePostgresAdapterDeps): 
       return updated !== null;
     },
 
-    async touchIssueUpdatedAt({ companyId, issueId, updatedAt }) {
+    async touchIssueUpdatedAt({ issueId, updatedAt }) {
       await tx.update(issues).set({ updatedAt }).where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
     },
 
-    async updateWakeQueuedCommentIds({ companyId, wakeId, payload, ids, updatedAt }) {
+    async updateWakeQueuedCommentIds({ wakeId, payload, ids, updatedAt }) {
       const row = await tx
         .update(agentWakeupRequests)
         .set({ payload: withQueuedCommentIdsInWakePayload(payload, ids), updatedAt })
@@ -69,7 +69,7 @@ function buildTransaction(tx: Db, deps: QueuedCommentQueuePostgresAdapterDeps): 
       return toWakeRow(row);
     },
 
-    async updateQueueRunCommentIds({ companyId, queueRunId, contextSnapshot, ids, updatedAt }) {
+    async updateQueueRunCommentIds({ queueRunId, contextSnapshot, ids, updatedAt }) {
       const row = await tx
         .update(heartbeatRuns)
         .set({ contextSnapshot: withQueuedCommentIdsInRunContext(contextSnapshot, ids), updatedAt })
@@ -79,7 +79,7 @@ function buildTransaction(tx: Db, deps: QueuedCommentQueuePostgresAdapterDeps): 
       return row ? toRunRow(row) : null;
     },
 
-    async deleteComment({ companyId, issueId, commentId }) {
+    async deleteComment({ issueId, commentId }) {
       const row = await tx
         .delete(issueComments)
         .where(and(eq(issueComments.id, commentId), eq(issueComments.issueId, issueId), eq(issueComments.companyId, companyId)))
@@ -88,14 +88,14 @@ function buildTransaction(tx: Db, deps: QueuedCommentQueuePostgresAdapterDeps): 
       return row ? (row as IssueComment) : null;
     },
 
-    async cancelWake({ companyId, wakeId, reason, now }) {
+    async cancelWake({ wakeId, reason, now }) {
       await tx
         .update(agentWakeupRequests)
         .set({ status: "cancelled", finishedAt: now, error: reason, updatedAt: now })
         .where(and(eq(agentWakeupRequests.id, wakeId), eq(agentWakeupRequests.companyId, companyId)));
     },
 
-    async cancelQueueRun({ companyId, queueRunId, reason, now }) {
+    async cancelQueueRun({ queueRunId, reason, now }) {
       const row = await tx
         .update(heartbeatRuns)
         .set({ status: "cancelled", finishedAt: now, error: reason, errorCode: "queued_comment_discarded", updatedAt: now })
@@ -105,23 +105,14 @@ function buildTransaction(tx: Db, deps: QueuedCommentQueuePostgresAdapterDeps): 
       return row ? { id: row.id } : null;
     },
 
-    async updateIssueAfterDiscard({ companyId, issueId, clearExecutionLock, updatedAt }) {
+    async clearExecutionLockAndTouchIssue({ issueId, executionRunId, updatedAt }) {
       await tx
         .update(issues)
-        .set({
-          ...(clearExecutionLock ? { executionRunId: null, executionAgentNameKey: null, executionLockedAt: null } : {}),
-          updatedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, issueId),
-            eq(issues.companyId, companyId),
-            clearExecutionLock ? eq(issues.executionRunId, clearExecutionLock.executionRunId) : undefined,
-          ),
-        );
+        .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null, updatedAt })
+        .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId), eq(issues.executionRunId, executionRunId)));
     },
 
-    async buildQueueSnapshot({ companyId, issue, actor, wake, state, queueRun, activeRun }): Promise<IssueQueuedCommentQueue> {
+    async buildQueueSnapshot({ issue, actor, wake, state, queueRun, activeRun }): Promise<IssueQueuedCommentQueue> {
       const commentIds = queuedCommentIdsFromWakePayload(wake?.payload ?? null);
       const rows =
         commentIds.length > 0
@@ -195,11 +186,12 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
     async withLockedQueue(input, fn) {
       return db.transaction(async (rawTx) => {
         const tx = rawTx as unknown as Db;
+        const companyId = input.issue.companyId;
 
         await tx
           .select({ id: issues.id })
           .from(issues)
-          .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.companyId)))
+          .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, companyId)))
           .for("update");
 
         const wakeRow = await tx
@@ -208,7 +200,7 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
           .where(
             and(
               eq(agentWakeupRequests.id, input.queueId),
-              eq(agentWakeupRequests.companyId, input.companyId),
+              eq(agentWakeupRequests.companyId, companyId),
               input.issue.assigneeAgentId ? eq(agentWakeupRequests.agentId, input.issue.assigneeAgentId) : undefined,
             ),
           )
@@ -248,7 +240,7 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
             .where(
               and(
                 eq(heartbeatRuns.id, wakeRow.runId!),
-                eq(heartbeatRuns.companyId, input.companyId),
+                eq(heartbeatRuns.companyId, companyId),
                 eq(heartbeatRuns.agentId, wakeRow.agentId),
                 eq(heartbeatRuns.wakeupRequestId, wakeRow.id),
               ),
@@ -274,19 +266,18 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
           ? await tx
               .select()
               .from(heartbeatRuns)
-              .where(and(eq(heartbeatRuns.id, activeRunId), eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "running")))
+              .where(and(eq(heartbeatRuns.id, activeRunId), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")))
               .for("update")
               .limit(1)
               .then((rows) => rows[0] ?? null)
           : null;
 
-        const transaction = buildTransaction(tx, deps);
+        const transaction = buildTransaction(tx, companyId, deps);
         const wake = toWakeRow(wakeRow);
         const queueRun = queueRunRow ? toRunRow(queueRunRow) : null;
         const activeRun = activeRunRow ? toRunRow(activeRunRow) : null;
 
         const queue = await transaction.buildQueueSnapshot({
-          companyId: input.companyId,
           issue: input.issue,
           actor: input.actor,
           wake,

@@ -98,7 +98,7 @@ function createFakeTransaction(overrides: Partial<QueuedCommentQueueTransaction>
     deleteComment: vi.fn(async () => commentFixture()),
     cancelWake: vi.fn(async () => {}),
     cancelQueueRun: vi.fn(async () => ({ id: "run-1" })),
-    updateIssueAfterDiscard: vi.fn(async () => {}),
+    clearExecutionLockAndTouchIssue: vi.fn(async () => {}),
     buildQueueSnapshot: vi.fn(async () => queueSnapshot()),
     syncCommentReferences: vi.fn(async () => {}),
     deleteCommentReferenceSource: vi.fn(async () => {}),
@@ -121,7 +121,6 @@ describe("editQueuedComment", () => {
     const editQueuedComment = createEditQueuedComment({ issueLock });
 
     const result = await editQueuedComment({
-      companyId: "company-1",
       issue: ISSUE,
       actor: USER_ACTOR,
       commentId: "comment-1",
@@ -132,7 +131,7 @@ describe("editQueuedComment", () => {
     });
 
     expect(transaction.updateCommentBody).toHaveBeenCalledWith(
-      expect.objectContaining({ companyId: "company-1", issueId: "issue-1", commentId: "comment-1", body: "updated body" }),
+      expect.objectContaining({ issueId: "issue-1", commentId: "comment-1", body: "updated body" }),
     );
     expect(transaction.syncCommentReferences).toHaveBeenCalledWith("comment-1");
     expect(transaction.syncCommentExternalObjectsSafely).toHaveBeenCalledWith("comment-1");
@@ -145,7 +144,6 @@ describe("editQueuedComment", () => {
 
     await expect(
       editQueuedComment({
-        companyId: "company-1",
         issue: ISSUE,
         actor: USER_ACTOR,
         commentId: "comment-1",
@@ -163,7 +161,6 @@ describe("editQueuedComment", () => {
 
     await expect(
       editQueuedComment({
-        companyId: "company-1",
         issue: ISSUE,
         actor: USER_ACTOR,
         commentId: "comment-1",
@@ -181,7 +178,6 @@ describe("editQueuedComment", () => {
 
     await expect(
       editQueuedComment({
-        companyId: "company-1",
         issue: ISSUE,
         actor: USER_ACTOR,
         commentId: "comment-1",
@@ -200,7 +196,6 @@ describe("editQueuedComment", () => {
 
     await expect(
       editQueuedComment({
-        companyId: "company-1",
         issue: ISSUE,
         actor: USER_ACTOR,
         commentId: "comment-1",
@@ -225,7 +220,6 @@ describe("reorderQueuedComments", () => {
     const reorderQueuedComments = createReorderQueuedComments({ issueLock: createFakeIssueLock(locked, transaction) });
 
     await reorderQueuedComments({
-      companyId: "company-1",
       issue: ISSUE,
       actor: USER_ACTOR,
       queueId: "wake-1",
@@ -248,7 +242,6 @@ describe("reorderQueuedComments", () => {
 
     await expect(
       reorderQueuedComments({
-        companyId: "company-1",
         issue: ISSUE,
         actor: USER_ACTOR,
         queueId: "wake-1",
@@ -267,7 +260,6 @@ describe("discardQueuedComment", () => {
     const discardQueuedComment = createDiscardQueuedComment({ issueLock: createFakeIssueLock(locked, transaction) });
 
     const result = await discardQueuedComment({
-      companyId: "company-1",
       issue: ISSUE,
       actor: USER_ACTOR,
       commentId: "comment-1",
@@ -278,8 +270,8 @@ describe("discardQueuedComment", () => {
 
     expect(transaction.cancelWake).toHaveBeenCalledWith(expect.objectContaining({ wakeId: "wake-1" }));
     expect(transaction.cancelQueueRun).toHaveBeenCalledWith(expect.objectContaining({ queueRunId: "run-1" }));
-    expect(transaction.updateIssueAfterDiscard).toHaveBeenCalledWith(
-      expect.objectContaining({ clearExecutionLock: { executionRunId: "run-1" } }),
+    expect(transaction.clearExecutionLockAndTouchIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ executionRunId: "run-1" }),
     );
     expect(result.cancelledRun).toEqual({ id: "run-1" });
   });
@@ -295,7 +287,6 @@ describe("discardQueuedComment", () => {
     const discardQueuedComment = createDiscardQueuedComment({ issueLock: createFakeIssueLock(locked, transaction) });
 
     const result = await discardQueuedComment({
-      companyId: "company-1",
       issue: ISSUE,
       actor: USER_ACTOR,
       commentId: "comment-1",
@@ -306,7 +297,7 @@ describe("discardQueuedComment", () => {
 
     expect(transaction.updateWakeQueuedCommentIds).toHaveBeenCalledWith(expect.objectContaining({ ids: ["comment-2"] }));
     expect(transaction.cancelWake).not.toHaveBeenCalled();
-    expect(transaction.updateIssueAfterDiscard).toHaveBeenCalledWith(expect.objectContaining({ clearExecutionLock: null }));
+    expect(transaction.touchIssueUpdatedAt).toHaveBeenCalledWith(expect.objectContaining({ issueId: ISSUE.id }));
     expect(result.cancelledRun).toBeNull();
   });
 
@@ -317,7 +308,6 @@ describe("discardQueuedComment", () => {
 
     await expect(
       discardQueuedComment({
-        companyId: "company-1",
         issue: ISSUE,
         actor: USER_ACTOR,
         commentId: "comment-1",
@@ -335,7 +325,6 @@ describe("discardQueuedComment", () => {
 
     await expect(
       discardQueuedComment({
-        companyId: "company-1",
         issue: ISSUE,
         actor: USER_ACTOR,
         commentId: "comment-1",
@@ -357,7 +346,6 @@ describe("discardQueuedComment", () => {
 
     await expect(
       discardQueuedComment({
-        companyId: "company-1",
         issue: ISSUE,
         actor: AGENT_ACTOR,
         commentId: "comment-1",
@@ -374,7 +362,6 @@ describe("discardQueuedComment", () => {
 
     await expect(
       discardQueuedComment({
-        companyId: "company-1",
         issue: ISSUE,
         actor: USER_ACTOR,
         commentId: "comment-1",

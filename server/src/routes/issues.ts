@@ -164,6 +164,7 @@ import {
   createQueuedCommentQueue,
   QueuedCommentMutationError,
   QueuedCommentMutationForbiddenError,
+  type QueuedCommentIssueContext,
 } from "../modules/wake-queue/index.js";
 import { artifactReviewDocumentService } from "../services/artifact-review-documents.js";
 import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
@@ -12002,6 +12003,30 @@ export function issueRoutes(
     throw error;
   }
 
+  /** Builds the four-field issue context every queued-comment queue mutation call site passes, from the route's already-loaded issue. */
+  function buildQueuedCommentIssueContext(issue: {
+    id: string;
+    companyId: string;
+    assigneeAgentId: string | null;
+    executionRunId: string | null | undefined;
+  }): QueuedCommentIssueContext {
+    return {
+      id: issue.id,
+      companyId: issue.companyId,
+      assigneeAgentId: issue.assigneeAgentId,
+      executionRunId: issue.executionRunId ?? null,
+    };
+  }
+
+  /** Runs a queued-comment queue mutation and maps its error onto the route's HTTP error, so each call site is a `const`. */
+  async function runQueuedCommentMutation<T>(run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      throwForQueuedCommentMutationError(error);
+    }
+  }
+
   router.get("/issues/:id/queued-comments", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
@@ -12027,26 +12052,17 @@ export function issueRoutes(
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
       const actor = getActorInfo(req);
-      let queue: IssueQueuedCommentQueue;
-      try {
-        queue = await queuedCommentQueue.editQueuedComment({
-          companyId: issue.companyId,
-          issue: {
-            id: issue.id,
-            companyId: issue.companyId,
-            assigneeAgentId: issue.assigneeAgentId,
-            executionRunId: issue.executionRunId ?? null,
-          },
+      const queue = await runQueuedCommentMutation(() =>
+        queuedCommentQueue.editQueuedComment({
+          issue: buildQueuedCommentIssueContext(issue),
           actor,
           commentId,
           queueId: req.body.queueId,
           revision: req.body.revision,
           body: req.body.body,
           now: new Date(),
-        });
-      } catch (error) {
-        throwForQueuedCommentMutationError(error);
-      }
+        }),
+      );
       res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
     },
   );
@@ -12061,25 +12077,16 @@ export function issueRoutes(
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
       const actor = getActorInfo(req);
-      let queue: IssueQueuedCommentQueue;
-      try {
-        queue = await queuedCommentQueue.reorderQueuedComments({
-          companyId: issue.companyId,
-          issue: {
-            id: issue.id,
-            companyId: issue.companyId,
-            assigneeAgentId: issue.assigneeAgentId,
-            executionRunId: issue.executionRunId ?? null,
-          },
+      const queue = await runQueuedCommentMutation(() =>
+        queuedCommentQueue.reorderQueuedComments({
+          issue: buildQueuedCommentIssueContext(issue),
           actor,
           queueId: req.body.queueId,
           revision: req.body.revision,
           orderedCommentIds: req.body.orderedCommentIds as string[],
           now: new Date(),
-        });
-      } catch (error) {
-        throwForQueuedCommentMutationError(error);
-      }
+        }),
+      );
       res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
     },
   );
@@ -12311,32 +12318,22 @@ export function issueRoutes(
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
       const actor = getActorInfo(req);
-      let queue: IssueQueuedCommentQueue;
-      try {
-        const result = await queuedCommentQueue.discardQueuedComment({
-          companyId: issue.companyId,
-          issue: {
-            id: issue.id,
-            companyId: issue.companyId,
-            assigneeAgentId: issue.assigneeAgentId,
-            executionRunId: issue.executionRunId ?? null,
-          },
+      const result = await runQueuedCommentMutation(() =>
+        queuedCommentQueue.discardQueuedComment({
+          issue: buildQueuedCommentIssueContext(issue),
           actor,
           commentId,
           queueId: req.body.queueId,
           revision: req.body.revision,
           now: new Date(),
-        });
-        queue = result.queue;
-        // Telemetry is best-effort background work; it must not delay the
-        // response with a slow lookup, so fire it and do not await it.
-        if (result.cancelledRun) {
-          void emitAgentTaskRunById(db, { runId: result.cancelledRun.id, companyId: issue.companyId });
-        }
-      } catch (error) {
-        throwForQueuedCommentMutationError(error);
+        }),
+      );
+      // Telemetry is best-effort background work; it must not delay the
+      // response with a slow lookup, so fire it and do not await it.
+      if (result.cancelledRun) {
+        void emitAgentTaskRunById(db, { runId: result.cancelledRun.id, companyId: issue.companyId });
       }
-      res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
+      res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, result.queue));
     },
   );
 
@@ -13243,23 +13240,17 @@ export function issueRoutes(
         : pendingQueueWake;
       let removed: IssueComment | null;
       if (queueWakeForCancellation) {
-        try {
-          removed = (await queuedCommentQueue.discardQueuedComment({
-            companyId: issue.companyId,
-            issue: {
-              id: issue.id,
-              companyId: issue.companyId,
-              assigneeAgentId: issue.assigneeAgentId,
-              executionRunId: issue.executionRunId ?? null,
-            },
-            actor,
-            commentId,
-            queueId: queueWakeForCancellation.id,
-            now: new Date(),
-          })).deleted;
-        } catch (error) {
-          throwForQueuedCommentMutationError(error);
-        }
+        removed = (
+          await runQueuedCommentMutation(() =>
+            queuedCommentQueue.discardQueuedComment({
+              issue: buildQueuedCommentIssueContext(issue),
+              actor,
+              commentId,
+              queueId: queueWakeForCancellation.id,
+              now: new Date(),
+            }),
+          )
+        ).deleted;
       } else {
         removed = activeRun && isLegacyQueuedComment ? await svc.removeComment(commentId) : null;
       }

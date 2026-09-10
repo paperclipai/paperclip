@@ -12,13 +12,13 @@ import type { QueuedCommentQueuePostgresAdapterDeps } from "./queued-comment-pos
 import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
 
 // Proves the same two properties the release-half adapter test proves for
-// this module's other transaction: every mutation names `companyId` in its
-// own SQL `WHERE` clause, so a caller-supplied `issue`/`wake` is never an
-// authorization boundary by itself, and a guarded write that affects no row
-// rolls the transaction back instead of leaving a partial write. The
-// decision branching itself is proven against plain facts in
-// `domain/policy.test.ts`; the use-case orchestration is proven against a
-// mocked port in `application/queued-comment-use-cases.test.ts`.
+// this module's other transaction: the one company the caller names in
+// `issue.companyId` binds every read and write for the whole transaction, so
+// a caller-supplied `issue`/`wake` for the wrong company sees nothing, and a
+// guarded write that affects no row rolls the transaction back instead of
+// leaving a partial write. The decision branching itself is proven against
+// plain facts in `domain/policy.test.ts`; the use-case orchestration is
+// proven against a mocked port in `application/queued-comment-use-cases.test.ts`.
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -132,7 +132,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     return id;
   }
 
-  it("scopes the wake lookup to its own company: a foreign-company queueId resolves not_pending and deletes nothing", async () => {
+  it("scopes the wake lookup to its own company: a foreign-company issue context resolves not_pending and deletes nothing", async () => {
     const companyId = await seedCompany();
     const otherCompanyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
@@ -144,9 +144,9 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     await expect(
       issueLock.withLockedQueue(
         {
-          // The caller mistakenly names the *other* company; the adapter's own
-          // predicate, not this argument, must decide what is visible.
-          companyId: otherCompanyId,
+          // The caller mistakenly names the *other* company on the issue
+          // context; that single value binds every read and write for the
+          // whole transaction, so it alone must decide what is visible.
           issue: { id: issueId, companyId: otherCompanyId, assigneeAgentId: agentId, executionRunId: null },
           actor: { actorType: "user", actorId: "user-1", agentId: null },
           queueId: wakeId,
@@ -163,29 +163,27 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     expect(wakeRow?.status).toBe("deferred_issue_execution");
   });
 
-  it("rolls back a discard when the comment delete is scoped to a company that does not own the comment", async () => {
+  it("rolls back a discard when the comment id given belongs to a different issue than the one this transaction locked", async () => {
     const companyId = await seedCompany();
-    const otherCompanyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
     const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
-    const commentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    const otherIssueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const commentId = await seedComment({ companyId, issueId: otherIssueId, authorUserId: "user-1" });
     const wakeId = await seedDeferredWake({ companyId, agentId, issueId, commentIds: [commentId] });
 
     const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
     await expect(
       issueLock.withLockedQueue(
         {
-          companyId,
           issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
           actor: { actorType: "user", actorId: "user-1", agentId: null },
           queueId: wakeId,
         },
         async (_locked, transaction) => {
-          // Simulate an application-layer bug that passes the wrong company on
-          // the delete write itself, after the lock step correctly resolved
-          // the real company. The write must affect no row and the caller
-          // must be able to tell -- never fall back to an unscoped delete.
-          const deleted = await transaction.deleteComment({ companyId: otherCompanyId, issueId, commentId });
+          // The comment belongs to a different issue than the one this
+          // transaction locked. The write's own `issueId` predicate, not
+          // just the bound company, must decide what is visible.
+          const deleted = await transaction.deleteComment({ issueId, commentId });
           if (!deleted) {
             throw new QueuedCommentMutationError("queued_comment_not_pending", "The queued message is no longer pending");
           }
@@ -217,7 +215,6 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
 
     const queue = await issueLock.withLockedQueue(
       {
-        companyId,
         issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
         actor: { actorType: "user", actorId: "user-1", agentId: null },
         queueId: wakeId,
@@ -225,7 +222,6 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
       async (locked, transaction) => {
         expect(locked.state).toBe("deferred");
         const updated = await transaction.updateCommentBody({
-          companyId,
           issueId,
           commentId,
           body: "edited body",
@@ -234,7 +230,6 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
         expect(updated).toBe(true);
         await transaction.syncCommentReferences(commentId);
         return transaction.buildQueueSnapshot({
-          companyId,
           issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
           actor: { actorType: "user", actorId: "user-1", agentId: null },
           wake: locked.wake,
@@ -267,7 +262,6 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
     const queue = await issueLock.withLockedQueue(
       {
-        companyId,
         issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
         actor: { actorType: "user", actorId: "user-1", agentId: null },
         queueId: wakeId,
@@ -275,7 +269,6 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
       async (locked, transaction) => {
         expect(locked.state).toBe("deferred");
         return transaction.buildQueueSnapshot({
-          companyId,
           issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
           actor: { actorType: "user", actorId: "user-1", agentId: null },
           wake: locked.wake,

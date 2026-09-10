@@ -55,11 +55,10 @@ function requireMutationTarget(queue: QueuedCommentQueueSnapshot, queueId: strin
 
 async function updateQueueRunCommentIdsGuarded(
   tx: QueuedCommentQueueTransaction,
-  input: { companyId: string; queueRun: QueuedCommentRunRow | null; ids: string[]; updatedAt: Date },
+  input: { queueRun: QueuedCommentRunRow | null; ids: string[]; updatedAt: Date },
 ): Promise<QueuedCommentRunRow | null> {
   if (!input.queueRun) return null;
   const updated = await tx.updateQueueRunCommentIds({
-    companyId: input.companyId,
     queueRunId: input.queueRun.id,
     contextSnapshot: input.queueRun.contextSnapshot,
     ids: input.ids,
@@ -72,7 +71,6 @@ async function updateQueueRunCommentIdsGuarded(
 }
 
 export type EditQueuedCommentInput = {
-  companyId: string;
   issue: QueuedCommentIssueContext;
   actor: QueuedCommentActor;
   commentId: string;
@@ -85,7 +83,7 @@ export type EditQueuedCommentInput = {
 export function createEditQueuedComment(deps: { issueLock: QueuedCommentIssueLockWriter }) {
   return async function editQueuedComment(input: EditQueuedCommentInput): Promise<QueuedCommentQueueSnapshot> {
     return deps.issueLock.withLockedQueue(
-      { companyId: input.companyId, issue: input.issue, actor: input.actor, queueId: input.queueId },
+      { issue: input.issue, actor: input.actor, queueId: input.queueId },
       async (locked, tx) => {
         requireMutationTarget(locked.queue, input.queueId, input.revision);
         const entry = locked.queue.entries.find((candidate) => candidate.comment.id === input.commentId);
@@ -97,7 +95,6 @@ export function createEditQueuedComment(deps: { issueLock: QueuedCommentIssueLoc
         }
 
         const updated = await tx.updateCommentBody({
-          companyId: input.companyId,
           issueId: input.issue.id,
           commentId: input.commentId,
           body: input.body,
@@ -106,20 +103,18 @@ export function createEditQueuedComment(deps: { issueLock: QueuedCommentIssueLoc
         if (!updated) {
           throw new QueuedCommentMutationError("queued_comment_not_pending", "The queued message is no longer pending");
         }
-        await tx.touchIssueUpdatedAt({ companyId: input.companyId, issueId: input.issue.id, updatedAt: input.now });
+        await tx.touchIssueUpdatedAt({ issueId: input.issue.id, updatedAt: input.now });
         await tx.syncCommentReferences(input.commentId);
         await tx.syncCommentExternalObjectsSafely(input.commentId);
 
         const ids = locked.queue.entries.map((candidate) => candidate.comment.id);
         const updatedQueueRun = await updateQueueRunCommentIdsGuarded(tx, {
-          companyId: input.companyId,
           queueRun: locked.queueRun,
           ids,
           updatedAt: input.now,
         });
 
         return tx.buildQueueSnapshot({
-          companyId: input.companyId,
           issue: input.issue,
           actor: input.actor,
           wake: locked.wake,
@@ -133,7 +128,6 @@ export function createEditQueuedComment(deps: { issueLock: QueuedCommentIssueLoc
 }
 
 export type ReorderQueuedCommentsInput = {
-  companyId: string;
   issue: QueuedCommentIssueContext;
   actor: QueuedCommentActor;
   queueId: string;
@@ -145,7 +139,7 @@ export type ReorderQueuedCommentsInput = {
 export function createReorderQueuedComments(deps: { issueLock: QueuedCommentIssueLockWriter }) {
   return async function reorderQueuedComments(input: ReorderQueuedCommentsInput): Promise<QueuedCommentQueueSnapshot> {
     return deps.issueLock.withLockedQueue(
-      { companyId: input.companyId, issue: input.issue, actor: input.actor, queueId: input.queueId },
+      { issue: input.issue, actor: input.actor, queueId: input.queueId },
       async (locked, tx) => {
         requireMutationTarget(locked.queue, input.queueId, input.revision);
 
@@ -159,21 +153,18 @@ export function createReorderQueuedComments(deps: { issueLock: QueuedCommentIssu
         }
 
         const updatedWake = await tx.updateWakeQueuedCommentIds({
-          companyId: input.companyId,
           wakeId: locked.wake.id,
           payload: locked.wake.payload,
           ids: input.orderedCommentIds,
           updatedAt: input.now,
         });
         const updatedQueueRun = await updateQueueRunCommentIdsGuarded(tx, {
-          companyId: input.companyId,
           queueRun: locked.queueRun,
           ids: input.orderedCommentIds,
           updatedAt: input.now,
         });
 
         return tx.buildQueueSnapshot({
-          companyId: input.companyId,
           issue: input.issue,
           actor: input.actor,
           wake: updatedWake,
@@ -187,7 +178,6 @@ export function createReorderQueuedComments(deps: { issueLock: QueuedCommentIssu
 }
 
 export type DiscardQueuedCommentInput = {
-  companyId: string;
   issue: QueuedCommentIssueContext;
   actor: QueuedCommentActor;
   commentId: string;
@@ -208,7 +198,7 @@ export type DiscardQueuedCommentResult = {
 export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssueLockWriter }) {
   return async function discardQueuedComment(input: DiscardQueuedCommentInput): Promise<DiscardQueuedCommentResult> {
     return deps.issueLock.withLockedQueue(
-      { companyId: input.companyId, issue: input.issue, actor: input.actor, queueId: input.queueId },
+      { issue: input.issue, actor: input.actor, queueId: input.queueId },
       async (locked, tx) => {
         if (input.revision !== undefined) {
           requireMutationTarget(locked.queue, input.queueId, input.revision);
@@ -229,7 +219,7 @@ export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssue
           throw new QueuedCommentMutationForbiddenError("Only the queued message author can discard it");
         }
 
-        const deleted = await tx.deleteComment({ companyId: input.companyId, issueId: input.issue.id, commentId: input.commentId });
+        const deleted = await tx.deleteComment({ issueId: input.issue.id, commentId: input.commentId });
         if (!deleted) {
           throw new QueuedCommentMutationError("queued_comment_not_pending", "The queued message is no longer pending");
         }
@@ -245,14 +235,12 @@ export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssue
 
         if (outcome.kind === "empty") {
           await tx.cancelWake({
-            companyId: input.companyId,
             wakeId: locked.wake.id,
             reason: "Queued message discarded before dispatch",
             now: input.now,
           });
           if (locked.queueRun) {
             const cancelled = await tx.cancelQueueRun({
-              companyId: input.companyId,
               queueRunId: locked.queueRun.id,
               reason: "Queued message discarded before dispatch",
               now: input.now,
@@ -264,37 +252,30 @@ export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssue
               );
             }
             cancelledRun = cancelled;
+            await tx.clearExecutionLockAndTouchIssue({
+              issueId: input.issue.id,
+              executionRunId: locked.queueRun.id,
+              updatedAt: input.now,
+            });
+          } else {
+            await tx.touchIssueUpdatedAt({ issueId: input.issue.id, updatedAt: input.now });
           }
-          await tx.updateIssueAfterDiscard({
-            companyId: input.companyId,
-            issueId: input.issue.id,
-            clearExecutionLock: locked.queueRun ? { executionRunId: locked.queueRun.id } : null,
-            updatedAt: input.now,
-          });
         } else {
           nextWake = await tx.updateWakeQueuedCommentIds({
-            companyId: input.companyId,
             wakeId: locked.wake.id,
             payload: locked.wake.payload,
             ids: remainingIds,
             updatedAt: input.now,
           });
           nextQueueRun = await updateQueueRunCommentIdsGuarded(tx, {
-            companyId: input.companyId,
             queueRun: locked.queueRun,
             ids: remainingIds,
             updatedAt: input.now,
           });
-          await tx.updateIssueAfterDiscard({
-            companyId: input.companyId,
-            issueId: input.issue.id,
-            clearExecutionLock: null,
-            updatedAt: input.now,
-          });
+          await tx.touchIssueUpdatedAt({ issueId: input.issue.id, updatedAt: input.now });
         }
 
         const queue = await tx.buildQueueSnapshot({
-          companyId: input.companyId,
           issue: input.issue,
           actor: input.actor,
           wake: outcome.kind === "empty" ? null : nextWake,
