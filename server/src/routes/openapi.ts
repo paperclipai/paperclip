@@ -2544,6 +2544,7 @@ registry.registerPath({
     200: { description: "PNG portrait; Cache-Control: public, max-age=31536000, immutable; ETag: SHA-256 of PNG bytes", content: { "image/png": { schema: { type: "string", format: "binary" } } } },
     304: { description: "If-None-Match matches the cached content ETag" },
     400: r.badRequest,
+    429: { description: "Cold-render admission limit for this client; Cache-Control: no-store; Retry-After in seconds. Cached portraits remain available." },
     503: { description: "Retryable rendering/storage failure; Cache-Control: no-store; Retry-After: 5" },
   },
 });

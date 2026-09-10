@@ -8,7 +8,7 @@ import path from "node:path";
 import express from "express";
 import type { Server } from "node:http";
 import sharp from "sharp";
-import { appearanceForPalette } from "@paperclipai/shared";
+import { AGENT_PALETTE_IDS, appearanceForPalette } from "@paperclipai/shared";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createAgentAvatarService, avatarCacheKey, type AgentAvatarRequest } from "../services/agent-avatars.js";
 import { createAgentAvatarPool } from "../services/agent-avatar-pool.js";
@@ -42,6 +42,39 @@ describe("on-demand agent avatars", () => {
     await provider.deleteObject({ objectKey: avatarCacheKey(request) });
     (await service.get(request)).stream.destroy();
     expect(render).toHaveBeenCalledTimes(2);
+  });
+  it("limits cold keys per client while admitting warm hits, joiners and other clients", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const render = vi.fn(async () => { await blocked; return Buffer.from("png"); });
+    const provider = await storage();
+    const service = createAgentAvatarService(provider, render);
+    const keys = AGENT_PALETTE_IDS.flatMap(palette => ([16, 20, 24] as const).map(size => ({ ...request, appearance: appearanceForPalette(palette), size })));
+    const pending = keys.slice(0, 32).map(key => service.get(key, "one"));
+    try {
+      await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(32));
+      await expect(service.get(keys[32], "one")).rejects.toThrow("Too many cold avatar requests");
+      pending.push(service.get(keys[0], "one")); // Same cold key is free.
+      pending.push(service.get(keys[32], "two")); // Another client still has room.
+      await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(33));
+    } finally { release(); }
+    for (const result of await Promise.all(pending)) result.stream.destroy();
+    (await service.get(keys[0], "one")).stream.destroy();
+    expect(render).toHaveBeenCalledTimes(33);
+    (await service.get(keys[33], "one")).stream.destroy(); // Completed renders release slots.
+    expect(render).toHaveBeenCalledTimes(34);
+  });
+  it("returns retryable admission errors without caching them", async () => {
+    const service = createAgentAvatarService(await storage(), async () => Buffer.from("png"));
+    const { AvatarAdmissionError } = await import("../services/agent-avatars.js");
+    vi.spyOn(service, "get").mockRejectedValueOnce(new AvatarAdmissionError(12));
+    const url = await serve(service);
+    const denied = await fetch(url);
+    expect(denied.status).toBe(429);
+    expect(denied.headers.get("retry-after")).toBe("12");
+    expect(denied.headers.get("cache-control")).toBe("no-store");
+    await denied.text();
+    const retry = await fetch(url); expect(retry.status).toBe(200); await retry.arrayBuffer();
   });
   it("uses the configured S3 prefix and reuses bytes across service instances", async () => {
     const objects = new Map<string, Buffer>();

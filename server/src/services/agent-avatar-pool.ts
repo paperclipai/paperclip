@@ -11,7 +11,7 @@ export function createAgentAvatarPool(concurrency = 2, maxQueue = 64) {
   const workers = new Set<Worker>();
   let closed = false;
   function spawn() {
-    const source = import.meta.url.endsWith(".ts");
+    const source = new URL(import.meta.url).pathname.endsWith(".ts");
     const url = new URL(source ? "./agent-avatar-worker.ts" : "./agent-avatar-worker.js", import.meta.url);
     const worker = source
       ? new Worker(`import(${JSON.stringify(import.meta.resolve('tsx/esm/api'))}).then(({tsImport}) => tsImport(${JSON.stringify(url.href)}, ${JSON.stringify(import.meta.url)}));`, { eval: true })

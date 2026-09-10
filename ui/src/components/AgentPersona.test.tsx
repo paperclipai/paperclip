@@ -63,6 +63,17 @@ describe("agent persona presentation", () => {
     expect(createCharacter).not.toHaveBeenCalled();
     expect(host.querySelectorAll("img")).toHaveLength(2);
   });
+  it("selects the correct saved draft when the company changes without remounting", async () => {
+    let draft!: ReturnType<typeof useAgentAppearanceDraft>;
+    function Draft({ company }: { company: string }) { draft = useAgentAppearanceDraft(`${company}:new-agent`); return null; }
+    sessionStorage.setItem("paperclip.agent-appearance.two:new-agent", JSON.stringify(appearance));
+    await act(async () => root.render(<Draft company="one" />));
+    const first = draft.appearance;
+    await act(async () => root.render(<Draft company="two" />));
+    expect(draft.appearance).toEqual(appearance);
+    await act(async () => root.render(<Draft company="one" />));
+    expect(draft.appearance).toEqual(first);
+  });
   it("retains the draft assignment across remounts and clears it only after creation", async () => {
     let draft!: ReturnType<typeof useAgentAppearanceDraft>;
     function Draft() { draft = useAgentAppearanceDraft("company:new-agent"); return null; }
