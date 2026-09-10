@@ -260,7 +260,7 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
       companyId, repositoryId: repository.id, primaryIssueId: second.id,
       targetBranch: "main", sourceBranch: "delivery/b", headSha: OTHER_HEAD,
     }).returning().then((rows) => rows[0]!);
-    await queue.enqueue({ companyId, repositoryId: repository.id, targetBranch: "main", unitId: unitA.id, priority: "medium" });
+    await queue.enqueue({ companyId, repositoryId: repository.id, targetBranch: "main", unitId: unitA.id, priority: "high" });
     await queue.enqueue({ companyId, repositoryId: repository.id, targetBranch: "main", unitId: unitB.id, priority: "medium" });
 
     const leases = await Promise.all([

@@ -738,6 +738,7 @@ function recoveryActionProjection(item: AttentionItem, generation: AttentionReco
     cause: generation.cause,
     fingerprint: generation.fingerprint,
     ownerType: readString(metadata?.ownerType),
+    ownerUserId: readString(metadata?.ownerUserId),
     sourceIssueId: generation.sourceIssueId,
     recoveryIssueId: readString(metadata?.recoveryIssueId),
     sourceBlockedTransitionAt: generation.recordedBlockedTransitionAt,
@@ -1825,10 +1826,18 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           const blockedOwnerDedupKey = `blocked-owner:${issue.id}:${issue.blockedTransitionAt.toISOString()}`;
           blockedOwnerDedupKeyByIssueId.set(issue.id, blockedOwnerDedupKey);
           blockedOwnerGenerationByIssueId.set(issue.id, issue.blockedTransitionAt.toISOString());
+          const blockedSubject = issueSubject(prefix, issueSummary ?? issue);
           add(createItem({
             companyId,
             sourceKind: "blocker_attention",
-            subject: issueSubject(prefix, issueSummary ?? issue),
+            subject: {
+              ...blockedSubject,
+              metadata: {
+                ...blockedSubject.metadata,
+                ownerType: descriptor.owner === "board" ? "board" : "user",
+                ownerUserId: descriptor.owner !== "board" && "userId" in descriptor.owner ? descriptor.owner.userId : null,
+              },
+            },
             whyNow: descriptor.action,
             decisionVerbs: decisionVerbs(
               { id: "unblock", label: "Unblock", description: descriptor.action },
@@ -1967,9 +1976,16 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         add(createItem({
           companyId,
           sourceKind: "review",
-          subject: stalled
-            ? { ...reviewSubject, metadata: { ...reviewSubject.metadata, reviewAttentionState: "stalled" } }
-            : reviewSubject,
+          subject: {
+            ...reviewSubject,
+            metadata: {
+              ...reviewSubject.metadata,
+              ...(stalled ? { reviewAttentionState: "stalled" } : {}),
+              ...(hasHumanParticipant || review.assigneeUserId || pendingApprovalId
+                ? { ownerType: "user", ownerUserId: hasHumanParticipant ? currentParticipant.userId : review.assigneeUserId }
+                : {}),
+            },
+          },
           whyNow: stalled
             ? "Issue is in review without a maintained reviewer, interaction, approval, monitor, run, wake, or recovery path."
             : pendingApprovalId

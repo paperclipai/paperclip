@@ -43,9 +43,17 @@ const mockCompanyContext = vi.hoisted(() => ({
 }));
 const mockUsePluginSlots = vi.hoisted(() => vi.fn(() => ({ slots: [] as unknown[], isLoading: false })));
 const mockPluginSlotMount = vi.hoisted(() => vi.fn());
+const mockUseIssueOverviews = vi.hoisted(() => vi.fn(() => ({
+  byId: new Map(),
+  isPending: false,
+  error: null,
+  dataUpdatedAt: 0,
+  refetch: vi.fn(),
+})));
 
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
+vi.mock("../hooks/useIssueOverviews", () => ({ useIssueOverviews: mockUseIssueOverviews }));
 vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
 vi.mock("../api/heartbeats", () => ({ heartbeatsApi: mockHeartbeatsApi }));
 vi.mock("../api/budgets", () => ({ budgetsApi: mockBudgetsApi }));
@@ -346,6 +354,122 @@ describe("ProjectDetail", () => {
 
       expect(container.querySelector('[data-testid="navigate"]')?.textContent)
         .toBe("/projects/project-1/issues");
+    });
+  });
+  it("renders the live snapshot above the generated summary from task records", async () => {
+    mockLocation.pathname = "/projects/project-1/overview";
+    const inventory = [
+      {
+        id: "issue-now",
+        identifier: "PAP-1",
+        title: "Ship the thing",
+        status: "in_progress",
+        priority: "high",
+        parentId: null,
+        updatedAt: "2026-09-08T00:00:00Z",
+        completedAt: null,
+        labels: [{ name: "Now" }],
+      },
+      {
+        id: "issue-stuck",
+        identifier: "PAP-2",
+        title: "Stuck on API",
+        status: "blocked",
+        priority: "critical",
+        parentId: null,
+        updatedAt: "2026-09-09T00:00:00Z",
+        completedAt: null,
+        labels: [],
+        blockedBy: [{ id: "issue-now", identifier: "PAP-1", title: "Ship the thing", status: "in_progress" }],
+      },
+      {
+        id: "issue-done",
+        identifier: "PAP-3",
+        title: "Finished docs",
+        status: "done",
+        priority: "low",
+        parentId: null,
+        updatedAt: "2026-09-07T00:00:00Z",
+        completedAt: "2026-09-07T00:00:00Z",
+        labels: [],
+      },
+    ];
+    mockIssuesApi.list.mockImplementation((_companyId: string, filters?: Record<string, unknown>) =>
+      Promise.resolve(filters?.hasPlanDocument ? [inventory[0]] : inventory),
+    );
+    mockUseIssueOverviews.mockReturnValue({
+      byId: new Map([
+        [
+          "issue-stuck",
+          {
+            issueId: "issue-stuck",
+            phase: "in_progress",
+            phaseSource: "status",
+            blocked: true,
+            project: null,
+            parent: null,
+            children: [],
+            childCount: 0,
+            completedChildCount: 0,
+            blocker: {
+              message: "Waiting on endpoint",
+              ownerLabel: "Backend",
+              nextAction: "Ship endpoint",
+              issues: [{ id: "issue-now", identifier: "PAP-1", title: "Ship the thing", status: "in_progress" }],
+            },
+            pullRequests: [],
+            delivery: null,
+          },
+        ],
+      ]),
+      isPending: false,
+      error: null,
+      dataUpdatedAt: Date.parse("2026-09-09T12:00:00Z"),
+      refetch: vi.fn(),
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProjectDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const snapshot = container.querySelector('[data-testid="project-operator-overview"]');
+    const summaryCard = container.querySelector('[data-testid="summary-slot-card"]');
+    expect(snapshot).not.toBeNull();
+    expect(summaryCard).not.toBeNull();
+    // Snapshot sits above the generated prose summary, which keeps its own controls.
+    expect(
+      Boolean(snapshot!.compareDocumentPosition(summaryCard!) & Node.DOCUMENT_POSITION_FOLLOWING),
+    ).toBe(true);
+    expect(snapshot!.textContent).toContain("Current snapshot");
+    expect(snapshot!.textContent).toContain("Now");
+    expect(snapshot!.textContent).toContain("Ship the thing");
+    expect(snapshot!.textContent).toContain("1 of 3 tasks done");
+    expect(snapshot!.textContent).toContain("Owner: Backend");
+    expect(snapshot!.textContent).toContain("Marked done · delivery evidence not recorded");
+    expect(snapshot!.textContent).toContain("Plans recorded on 1 task");
+    expect(mockUseIssueOverviews).toHaveBeenCalledWith(
+      "company-1",
+      expect.arrayContaining(["issue-now", "issue-stuck", "issue-done"]),
+    );
+    expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
+      projectId: "project-1",
+      limit: 500,
+      includeBlockedBy: true,
+    });
+    expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
+      projectId: "project-1",
+      limit: 500,
+      hasPlanDocument: true,
     });
   });
 });

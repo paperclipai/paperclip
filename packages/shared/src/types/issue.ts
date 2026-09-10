@@ -796,6 +796,8 @@ export interface Issue {
   description: string | null;
   descriptionTruncated?: boolean;
   status: IssueStatus;
+  /** Explicit delivery classification; absent or null means not classified. */
+  deliveryKind?: "code" | "non_code" | null;
   workMode: IssueWorkMode;
   priority: IssuePriority;
   reviewPolicy: IssueReviewPolicy | null;

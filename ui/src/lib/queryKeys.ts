@@ -532,6 +532,15 @@ export const queryKeys = {
     projectSummary: (projectId: string) =>
       ["external-objects", "project-summary", projectId] as const,
   },
+  issueOverviews: {
+    all: (companyId: string) => ["issue-overviews", companyId] as const,
+    /**
+     * Callers pass the sorted, deduplicated id list so two consumers asking for
+     * the same set — in either order — share one entry.
+     */
+    list: (companyId: string, issueIds: readonly string[]) =>
+      ["issue-overviews", companyId, issueIds] as const,
+  },
   goals: {
     list: (companyId: string) => ["goals", companyId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,

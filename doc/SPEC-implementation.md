@@ -1038,6 +1038,7 @@ instances return `404`.
 ## 10.4 Tasks (Issues)
 
 - `GET /companies/:companyId/issues`
+- `GET /companies/:companyId/issue-overviews?issueIds=<comma-separated UUIDs>` (board-only, read-only batch projection)
 - `POST /companies/:companyId/issues`
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`
@@ -1057,6 +1058,10 @@ instances return `404`.
 - `GET /issues/:issueId/attachments`
 - `GET /attachments/:attachmentId/content`
 - `DELETE /attachments/:attachmentId`
+
+The issue-overviews endpoint accepts at most 100 issue IDs per request and returns `{ items, observedAt }`. Empty input returns an empty collection; company scoping prevents cross-company disclosures. Each item projects the recorded workflow phase, blocked condition and named cause, project/parent/child context, independent PR observations, and delivery evidence from existing records. It does not fetch a forge, reconcile delivery, or change task state. PR identity includes the provider host; URL and repository observations may join only when they establish the same identity.
+
+The UI batches sorted, deduplicated IDs, refreshes foreground observations, and invalidates cached overview context after task changes. Nonblocked task status remains the current phase while older overview context refreshes. A blocked task retains an evidenced stage; one without such evidence has an explicitly unknown stage.
 
 ### 10.4.1 Atomic Checkout Contract
 
@@ -1357,6 +1362,11 @@ Required UX behaviors:
 - quick actions: pause/resume agent, create task, approve/reject request
 - conflict toasts on atomic checkout failure
 - no silent background failures; every failed run visible in UI
+- contextual Kanban cards with project/parent/blocker/PR information, project swimlanes, outcome/subtask scope, and accessible quick inspection
+- pointer and keyboard stage moves through the existing task mutation; blocked and controller-owned cards cannot silently bypass their controls
+- result-first task details and project snapshots that keep historical evidence, current task state, verified merge, and business readiness separate
+- personal-decision previews with explicit coverage limits and history links that open the recorded decision
+- visible partial/unavailable context and retry paths rather than false empty blockers or complete PR totals
 
 ## 15. Operational Requirements
 

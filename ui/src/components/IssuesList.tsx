@@ -161,6 +161,7 @@ export type IssueSortField = "status" | "priority" | "title" | "created" | "upda
 export type BoardCardDensity = "auto" | "compact" | "comfortable";
 export type BoardColdLaneMode = "auto" | "collapsed" | "expanded";
 export type BoardColumnPageSize = KanbanColumnPageSize;
+export type BoardTaskScope = "all" | "outcomes";
 
 export type IssueViewState = IssueFilterState & {
   sortField: IssueSortField;
@@ -174,6 +175,8 @@ export type IssueViewState = IssueFilterState & {
   boardCardDensity: BoardCardDensity;
   boardColdLaneMode: BoardColdLaneMode;
   boardColumnPageSize: BoardColumnPageSize;
+  boardScope: BoardTaskScope;
+  boardSwimlanes: boolean;
 };
 
 const defaultViewState: IssueViewState = {
@@ -189,6 +192,8 @@ const defaultViewState: IssueViewState = {
   boardCardDensity: "auto",
   boardColdLaneMode: "expanded",
   boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
+  boardScope: "all",
+  boardSwimlanes: false,
 };
 
 function normalizeBoardCardDensity(value: unknown): BoardCardDensity {
@@ -230,6 +235,8 @@ function normalizeIssueViewState(value: unknown): IssueViewState {
     boardCardDensity: normalizeBoardCardDensity(parsed.boardCardDensity),
     boardColdLaneMode: normalizeBoardColdLaneMode(parsed.boardColdLaneMode),
     boardColumnPageSize: normalizeBoardColumnPageSize(parsed.boardColumnPageSize),
+    boardScope: parsed.boardScope === "outcomes" ? "outcomes" : "all",
+    boardSwimlanes: parsed.boardSwimlanes === true,
   };
 }
 
@@ -1842,6 +1849,40 @@ function StreamlinedIssuesList({
                   </div>
                 </PopoverContent>
               </Popover>
+              <div className="flex items-center border border-border rounded-md overflow-hidden shrink-0" role="group" aria-label="Board task scope">
+                <button
+                  type="button"
+                  className={`flex h-8 items-center px-2.5 text-xs font-medium transition-colors ${viewState.boardScope === "outcomes" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  onClick={() => updateView({ boardScope: "outcomes" })}
+                  title="Show outcome tasks only — subtasks stay reachable by expanding a card"
+                  aria-label="Outcomes only"
+                  aria-pressed={viewState.boardScope === "outcomes"}
+                >
+                  Outcomes
+                </button>
+                <button
+                  type="button"
+                  className={`flex h-8 items-center px-2.5 text-xs font-medium transition-colors ${viewState.boardScope === "all" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+                  onClick={() => updateView({ boardScope: "all" })}
+                  title="Show every task"
+                  aria-label="All tasks"
+                  aria-pressed={viewState.boardScope === "all"}
+                >
+                  All
+                </button>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className={cn("h-8 w-8 shrink-0", viewState.boardSwimlanes && "bg-accent")}
+                onClick={() => updateView({ boardSwimlanes: !viewState.boardSwimlanes })}
+                title={viewState.boardSwimlanes ? "Show one flat lane set" : "Group board lanes by project"}
+                aria-label={viewState.boardSwimlanes ? "Hide project swimlanes" : "Show project swimlanes"}
+                aria-pressed={viewState.boardSwimlanes}
+              >
+                <Layers className="h-3.5 w-3.5" />
+              </Button>
               <Button
                 type="button"
                 variant="outline"
@@ -2008,6 +2049,11 @@ function StreamlinedIssuesList({
           initialVisibleCount={viewState.boardColumnPageSize}
           revealIncrement={viewState.boardColumnPageSize}
           onUpdateIssue={onUpdateIssue}
+          companyId={selectedCompanyId}
+          projects={projects}
+          ownerUserLabels={companyUserLabelMap}
+          swimlanes={viewState.boardSwimlanes}
+          scope={viewState.boardScope}
         />
       ) : (
         <>

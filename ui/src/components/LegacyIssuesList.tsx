@@ -1941,6 +1941,9 @@ export function IssuesList({
           initialVisibleCount={viewState.boardColumnPageSize}
           revealIncrement={viewState.boardColumnPageSize}
           onUpdateIssue={onUpdateIssue}
+          companyId={selectedCompanyId}
+          projects={projects}
+          ownerUserLabels={companyUserLabelMap}
         />
       ) : (
         <>

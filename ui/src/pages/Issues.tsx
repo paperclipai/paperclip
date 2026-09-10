@@ -196,6 +196,7 @@ export function Issues() {
       issuesApi.update(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId!) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.issueOverviews.all(selectedCompanyId!) });
     },
     onError: (err) => {
       pushToast({

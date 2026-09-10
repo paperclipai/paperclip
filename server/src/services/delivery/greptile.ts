@@ -360,10 +360,9 @@ const MERGE_REQUEST_CONTAINER_KEYS: Record<string, true> = {
 /**
  * Provider review status from `get_merge_request`.
  *
- * A `COMPLETED` review entry proves the provider finished a review (and, when
- * the payload happens to carry a revision, names it). Entries that exist but
- * are not complete are an in-flight review. A payload with no review state at
- * all is unknown, which callers must treat as a blocker.
+ * Completion belongs to the latest review, not an older completed entry.
+ * Empty or unfinished reviews and new commits are pending; an unrecognized
+ * payload is unknown. GitHub supplies revision provenance separately.
  */
 function readProviderReviewStatus(payload: unknown): ProviderReviewStatus | null {
   const rows: Record<string, unknown>[] = [];
