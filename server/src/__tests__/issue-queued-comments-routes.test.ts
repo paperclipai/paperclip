@@ -251,6 +251,68 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(stale.body.details?.code).toBe("queued_comment_revision_conflict");
   });
 
+  it("writes one activity log row for each successful queue mutation, and none for a rejected one", async () => {
+    const seeded = await seedQueue();
+    const initial = await request(app(seeded.companyId))
+      .get(`/api/issues/${seeded.issueId}/queued-comments`);
+
+    const edited = await request(app(seeded.companyId))
+      .patch(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}`)
+      .send({ queueId: seeded.wakeId, revision: initial.body.revision, body: "edited body" });
+    expect(edited.status, JSON.stringify(edited.body)).toBe(200);
+
+    const staleEdit = await request(app(seeded.companyId))
+      .patch(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[0]}`)
+      .send({ queueId: seeded.wakeId, revision: initial.body.revision, body: "stale" });
+    expect(staleEdit.status).toBe(409);
+
+    const editRows = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.queued_comment_edited"));
+    expect(editRows).toHaveLength(1);
+    expect(editRows[0]?.details).toMatchObject({
+      commentId: seeded.commentIds[0],
+      queueId: seeded.wakeId,
+      revision: edited.body.revision,
+    });
+
+    const reordered = await request(app(seeded.companyId))
+      .put(`/api/issues/${seeded.issueId}/queued-comments/order`)
+      .send({
+        queueId: seeded.wakeId,
+        revision: edited.body.revision,
+        orderedCommentIds: [...seeded.commentIds].reverse(),
+      });
+    expect(reordered.status, JSON.stringify(reordered.body)).toBe(200);
+    const reorderRow = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.queued_comments_reordered"))
+      .then((rows) => rows[0]);
+    expect(reorderRow?.details).toMatchObject({
+      queueId: seeded.wakeId,
+      revision: reordered.body.revision,
+      orderedCommentIds: [...seeded.commentIds].reverse(),
+    });
+
+    const discarded = await request(app(seeded.companyId))
+      .delete(`/api/issues/${seeded.issueId}/queued-comments/${seeded.commentIds[1]}`)
+      .send({ queueId: seeded.wakeId, revision: reordered.body.revision });
+    expect(discarded.status, JSON.stringify(discarded.body)).toBe(200);
+    const discardRow = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.queued_comment_discarded"))
+      .then((rows) => rows[0]);
+    expect(discardRow?.details).toMatchObject({
+      commentId: seeded.commentIds[1],
+      queueId: seeded.wakeId,
+      revision: discarded.body.revision,
+      cancelledRunId: null,
+    });
+  });
+
   it("preserves reordered messages across promotion and cancels the queued run after final trash", async () => {
     const seeded = await seedQueue();
     const initial = await request(app(seeded.companyId))

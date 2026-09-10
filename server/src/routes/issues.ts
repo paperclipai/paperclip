@@ -15152,6 +15152,22 @@ export function issueRoutes(
           now: new Date(),
         }),
       );
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.queued_comment_edited",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          commentId,
+          queueId: req.body.queueId,
+          revision: queue.revision,
+        },
+      });
       res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
     },
   );
@@ -15181,6 +15197,22 @@ export function issueRoutes(
           now: new Date(),
         }),
       );
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.queued_comments_reordered",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          queueId: req.body.queueId,
+          revision: queue.revision,
+          orderedCommentIds: req.body.orderedCommentIds,
+        },
+      });
       res.json(await runRedactions.redactForIssue(issue.companyId, issue.id, queue));
     },
   );
@@ -15469,6 +15501,23 @@ export function issueRoutes(
           now: new Date(),
         }),
       );
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.queued_comment_discarded",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          commentId,
+          queueId: req.body.queueId,
+          revision: result.queue.revision,
+          cancelledRunId: result.cancelledRun?.id ?? null,
+        },
+      });
       // Telemetry is best-effort background work; it must not delay the
       // response with a slow lookup, so fire it and do not await it.
       if (result.cancelledRun) {
