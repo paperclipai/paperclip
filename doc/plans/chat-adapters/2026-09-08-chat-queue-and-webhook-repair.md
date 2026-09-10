@@ -8034,3 +8034,43 @@ total / 280.53 seconds tests, without skips or retries. The test hash still
 matches the reviewed freeze. The successor changes only this fixture and its
 verification notes; the full PR stays at 398 files. Require fresh exact-head CI
 and Greptile review before normal merge, without bypass or self-approval.
+
+## September 10, 13:08 UTC — cold route-module setup exceeds a body deadline
+
+The Discord fixture successor is published as
+`a8a32c60d2034e7b0efb4eb7d1dde585a75c509b`. Exact-head Greptile review completes
+**5/5** at 13:00:16 UTC without actionable findings. Fresh
+[CI 34479680858](https://github.com/paperclipai/paperclip/actions/runs/34479680858)
+fails serialized server shard 1 on the first agent-skills route case, which
+exceeds its explicit ten-second body timeout. The following **35 cases pass**.
+The first app-construction log arrives more than eleven seconds after the
+Vitest run starts, and the reported transform time is 7.71 seconds. The test
+file is byte-identical to current master; no production regression is
+established by this setup timeout. The original failed job log is retained.
+
+A temporary timing-only probe measures actual module import, app construction,
+and HTTP request separately. Its first attempt passes but emits no timing
+records, so it is not phase evidence. The second attempt passes both cases
+and records first import **4528.985 ms**, app **7.466 ms**, HTTP **8.600 ms**;
+the second import is **127.798 ms**, app **2.973 ms**, HTTP **3.017 ms**.
+Neither local probe reproduces the CI timeout, and neither changes a deadline
+or adds a sleep. Both diagnostic logs are retained and all instrumentation is
+removed from the final source.
+
+The test-only correction prepares actual route and middleware exports inside
+the existing asynchronous per-case setup, after every module reset and mock
+default. Each test still constructs its own Express app and route factory
+after applying its case-specific mock overrides. There is no suite-wide module
+cache across resets. The explicit first-case ten-second timeout, existing
+hook bound, all route/security assertions, and production code remain unchanged.
+Final qualification passes **141/141** in five separate cold Vitest forks:
+skills **36/36** (7.20 seconds), permissions **63/63** (3.23 seconds), cross-tenant
+authorization **13/13** (3.42 seconds), adapter authentication **14/14** (4.74
+seconds), and adapter routes **15/15** (2.60 seconds). There are no retries or
+skips. Plain server types pass. Independent review is clear at the frozen test
+hash `ca857aef342ccfa36d6c27a1da0d38bede609e9c82bc109ca63473a21c303c24`.
+The reviewed heartbeat, chat service, and corrected Discord integration hashes
+remain unchanged. This successor changes only one test and its two qualification
+notes; the full PR becomes 399 files. Require fresh exact-head CI and review
+before normal merge. No live server, provider credentials, or runner deployment
+changes occur.

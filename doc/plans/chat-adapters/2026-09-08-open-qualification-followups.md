@@ -24,7 +24,32 @@ stack ancestry. Neither the provisional count nor prior-head review is final
 verification. Root continues live qualification in the original worktree and
 does not push the remotely coordinated branch.
 
-## Current work — September 10, 12:44 UTC: exact Discord modal race fixture
+## Current work — September 10, 13:08 UTC: cold route-module setup
+
+The Discord fixture successor is published as
+`a8a32c60d2034e7b0efb4eb7d1dde585a75c509b`. Exact-head Greptile review finishes
+**5/5** at 13:00:16 UTC, with no actionable findings. Fresh CI exposes a
+different test-harness failure: the first agent-skills route test exceeds its
+existing ten-second body deadline while loading the cold module graph; all
+35 following cases pass. This test file is byte-identical to current master.
+The head must not merge while that required check fails.
+
+A bounded local phase probe measures the first module import at 4.529 seconds,
+app construction at 7.466 milliseconds, and its HTTP request at 8.600
+milliseconds. The second import takes 127.798 milliseconds. Local tests pass;
+this is phase evidence, not a claimed local timeout reproduction. The original
+CI failure remains the failed-run evidence. The correction moves actual module
+imports into the existing per-case setup, after each module reset and all mock
+defaults. Each case still applies its own overrides before constructing a fresh
+app and exercising the real routes. No production code, timeout, mock-isolation
+rule, or response assertion changes. All **141/141** cases pass in five separate
+cold Vitest forks: skills 36, permissions 63, cross-tenant authorization 13,
+adapter authentication 14, and adapter routes 15. No cases are skipped or
+retried. Plain server types pass, and independent frozen-source review is clear.
+The full PR is 399 files. Fresh exact-head CI and review remain required after
+publication. The original checkout and live server remain untouched.
+
+### Prior checkpoint — September 10, 12:44 UTC: exact Discord modal race fixture
 
 The conflict-free reconciliation is published as
 `102fa25b87b70d6346d569a5bef7553a4b980185`, 398 files. Exact-head Greptile review
