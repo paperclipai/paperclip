@@ -461,19 +461,23 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueue
       // responsible user permanently. A claimed row still needs
       // initializeRunIdentity to overwrite the value again, from the run
       // identity chain; if execution ends before that overwrite runs, the
-      // claimed value stays. One reader can observe a null value: runsForIssue
-      // projects the column with no status filter, so the issue run ledger
-      // can show a recovery run with no responsible user. That projection
-      // displays attribution and makes no authorization decision. No
-      // authorization read uses this column for a queued or a cancelled run.
-      // Each one keys on a running or an authenticated run. The audit feed is
-      // the other reader that can observe a cancelled run: claimQueuedRun
-      // cancels a queued run when an active subtree pause hold holds the
-      // issue, and it writes an activity log event for that cancelled run.
-      // agentActionAuditService prefers the responsible user that the activity
-      // log row carries. resolveResponsibleUserIdForActivity sets that value,
-      // and it finds no responsible user on the cancelled run. It falls back
-      // to the issue, then to the agent API key, then to the company default.
+      // claimed value stays. Readers can observe a null value here.
+      // runsForIssue projects the column with no status filter, so the issue
+      // run ledger can show a recovery run with no responsible user. That
+      // projection displays attribution and makes no authorization decision.
+      // The issue-thread interaction attribution check is an authorization
+      // read that can also observe a null value. It looks up a
+      // caller-supplied run id with no status filter, and it compares this
+      // column against the responsible user of the caller. It makes that
+      // comparison only when the caller carries a responsible user, and a
+      // null value never equals one, so the check denies. The audit feed can
+      // observe a cancelled run: claimQueuedRun cancels a queued run when an
+      // active subtree pause hold holds the issue, and it writes an activity
+      // log event for that cancelled run. agentActionAuditService prefers the
+      // responsible user that the activity log row carries.
+      // resolveResponsibleUserIdForActivity sets that value, and it finds no
+      // responsible user on the cancelled run. It falls back to the issue,
+      // then to the agent API key, then to the company default.
       // The immediate-recovery writer takes an already-resolved
       // responsibleUserId as an input parameter, because its caller must
       // resolve one before it can call that writer. This writer's input
