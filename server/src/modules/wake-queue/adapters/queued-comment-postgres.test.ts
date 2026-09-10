@@ -68,7 +68,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     return companyId;
   }
 
-  async function seedAgent(input: { companyId: string }): Promise<string> {
+  async function seedAgent(input: { companyId: string; adapterType?: string }): Promise<string> {
     const agentId = randomUUID();
     await db.insert(agents).values({
       id: agentId,
@@ -76,7 +76,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "active",
-      adapterType: "codex_local",
+      adapterType: input.adapterType ?? "codex_local",
       adapterConfig: {},
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: {},
@@ -250,5 +250,43 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
     expect((queue.entries[0]!.comment as { body: string }).body).toBe("edited body");
     const commentRow = (await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0];
     expect(commentRow?.body).toBe("edited body");
+  });
+
+  // Pins a fact the database itself cannot persist today: `runtime_mode` is
+  // a NOT NULL column, so a real active run's own field is never null. The
+  // port type allows it (`runtimeMode: string | null`), so this test builds
+  // the fact directly instead of through a database row, to keep this
+  // branch of the shared steering rule under a regression test.
+  it("answers the steering question for a deferred paperclip_runner queue whose active run has no persisted runtime mode yet", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId, adapterType: "paperclip_runner" });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const commentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, commentIds: [commentId] });
+
+    const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
+    const queue = await issueLock.withLockedQueue(
+      {
+        companyId,
+        issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+        actor: { actorType: "user", actorId: "user-1", agentId: null },
+        queueId: wakeId,
+      },
+      async (locked, transaction) => {
+        expect(locked.state).toBe("deferred");
+        return transaction.buildQueueSnapshot({
+          companyId,
+          issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+          actor: { actorType: "user", actorId: "user-1", agentId: null },
+          wake: locked.wake,
+          state: "deferred",
+          queueRun: null,
+          activeRun: { id: randomUUID(), status: "running", runtimeMode: null, contextSnapshot: {} },
+        });
+      },
+    );
+
+    expect(queue.protocol).toBe("paperclip_runner_v1");
+    expect(queue.steeringDisposition).toBe("temporarily_unavailable");
   });
 });

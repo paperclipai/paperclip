@@ -3,13 +3,13 @@ import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import type { IssueComment, IssueQueuedCommentQueue } from "@paperclipai/shared";
 import {
+  buildQueuedCommentQueueSnapshot,
+  decideQueuedCommentQueueSteering,
   queuedCommentIdsFromWakePayload,
-  queuedCommentQueueRevision,
   withQueuedCommentIdsInRunContext,
   withQueuedCommentIdsInWakePayload,
 } from "../../../services/issue-queued-comment-queue.js";
 import {
-  decideQueuedCommentEntryPermissions,
   decideQueuedCommentQueueRunState,
   decideQueuedCommentWakeLookup,
 } from "../domain/policy.js";
@@ -151,53 +151,31 @@ function buildTransaction(tx: Db, deps: QueuedCommentQueuePostgresAdapterDeps): 
             .then((agentRows) => agentRows[0] ?? null)
         : null;
 
-      const persistedRuntimeMode =
-        state === "queued" && queueRun ? queueRun.runtimeMode : state === "deferred" && activeRun ? activeRun.runtimeMode : null;
-      const protocol =
-        persistedRuntimeMode === "native" || (persistedRuntimeMode === null && assignedAgent?.adapterType === "paperclip_runner")
-          ? ("paperclip_runner_v1" as const)
-          : ("legacy" as const);
-      // A queue mutation never delivers same-turn steering itself, so the
-      // base value is a static fact about the active run's protocol, never
-      // a live probe of the native runner. Because of this, a discard
-      // response never reports "available"; only the read path can, because
-      // only the read path still probes the live provider.
-      let steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"] =
-        activeRun?.runtimeMode === "native" ? "temporarily_unavailable" : "unsupported";
-      // Match the read path's rule: a native-runner queue supports steering
-      // only while the queue targets a running deferred turn with at least
-      // one comment still queued. Apply the rule here too, so a promoted
-      // queue (state "queued", no deferred run) reports
-      // "temporarily_unavailable" instead of the wrong value "unsupported".
-      const steeringRun = state === "deferred" ? activeRun : null;
-      if (protocol === "paperclip_runner_v1" && (!steeringRun || comments.length === 0)) {
-        steeringDisposition = "temporarily_unavailable";
-      }
-
-      const entries = comments.map((comment, position) => {
-        const permissions = decideQueuedCommentEntryPermissions({
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          authorUserId: comment.authorUserId,
-        });
-        return {
-          comment: comment as IssueComment,
-          position,
-          canEdit: permissions.canEdit,
-          canDiscard: permissions.canDiscard,
-        };
+      // A queue mutation never delivers same-turn steering itself, so this
+      // adapter never probes the live runner: it answers
+      // "temporarily_unavailable" wherever the shared rule says a caller
+      // may probe. Only the read path probes the live provider.
+      const steering = decideQueuedCommentQueueSteering({
+        state,
+        queueRunRuntimeMode: queueRun?.runtimeMode ?? null,
+        activeRun,
+        assignedAgentAdapterType: assignedAgent?.adapterType ?? null,
+        queuedCommentCount: comments.length,
       });
+      const steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"] =
+        steering.kind === "probe" ? "temporarily_unavailable" : steering.kind;
 
-      return {
+      return buildQueuedCommentQueueSnapshot({
         issueId: issue.id,
         queueId: wake?.id ?? null,
         state,
-        targetRunId: state === "deferred" ? (activeRun?.id ?? null) : null,
-        revision: queuedCommentQueueRevision({ queueId: wake?.id ?? null, comments }),
-        protocol,
+        activeRunId: activeRun?.id ?? null,
+        protocol: steering.protocol,
         steeringDisposition,
-        entries,
-      };
+        comments,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+      });
     },
 
     async syncCommentReferences(commentId) {

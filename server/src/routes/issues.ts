@@ -294,8 +294,9 @@ import {
   steerNativeSession,
 } from "../services/native-runtime/native-session-executor.js";
 import {
+  buildQueuedCommentQueueSnapshot,
+  decideQueuedCommentQueueSteering,
   queuedCommentIdsFromWakePayload,
-  queuedCommentQueueRevision,
   withQueuedCommentIdsInWakePayload,
 } from "../services/issue-queued-comment-queue.js";
 
@@ -5680,40 +5681,31 @@ export function issueRoutes(
         .limit(1)
         .then((rows) => rows[0] ?? null)
       : null;
-    const persistedRuntimeMode = queueState?.state === "queued" && queueState.queueRun
-      ? queueState.queueRun.runtimeMode
-      : queueState?.state === "deferred" && input.activeRun
-        ? input.activeRun.runtimeMode
-        : null;
-    const protocol = persistedRuntimeMode === "native"
-      || (persistedRuntimeMode === null && assignedAgent?.adapterType === "paperclip_runner")
-      ? "paperclip_runner_v1" as const
-      : "legacy" as const;
-    const steeringRun = queueState?.state === "deferred" ? input.activeRun : null;
-    let steeringDisposition = input.steeringDisposition
-      ?? (protocol === "paperclip_runner_v1" && steeringRun
-        ? await getNativeSessionSteeringState(steeringRun.id)
-          .then((state) => state.disposition)
-          .catch(() => "temporarily_unavailable" as const)
-        : "unsupported" as const);
-    if (protocol === "paperclip_runner_v1" && (!steeringRun || comments.length === 0)) {
-      steeringDisposition = "temporarily_unavailable";
-    }
-    return {
+    const steering = decideQueuedCommentQueueSteering({
+      state: queueState?.state ?? null,
+      queueRunRuntimeMode: queueState?.state === "queued" ? queueState.queueRun?.runtimeMode ?? null : null,
+      activeRun: input.activeRun,
+      assignedAgentAdapterType: assignedAgent?.adapterType ?? null,
+      queuedCommentCount: comments.length,
+    });
+    const steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"] =
+      steering.kind !== "probe"
+        ? steering.kind
+        : input.steeringDisposition
+          ?? (await getNativeSessionSteeringState(steering.steeringRunId)
+            .then((state) => state.disposition)
+            .catch(() => "temporarily_unavailable" as const));
+    return buildQueuedCommentQueueSnapshot({
       issueId: input.issue.id,
       queueId: wake?.id ?? null,
       state: queueState?.state ?? null,
-      targetRunId: steeringRun?.id ?? null,
-      revision: queuedCommentQueueRevision({ queueId: wake?.id ?? null, comments }),
-      protocol,
+      activeRunId: input.activeRun?.id ?? null,
+      protocol: steering.protocol,
       steeringDisposition,
-      entries: comments.map((comment, position) => ({
-        comment: comment as IssueQueuedCommentQueue["entries"][number]["comment"],
-        position,
-        canEdit: input.actor.actorType === "user" && comment.authorUserId === input.actor.actorId,
-        canDiscard: input.actor.actorType === "user" && comment.authorUserId === input.actor.actorId,
-      })),
-    };
+      comments,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+    });
   }
 
   function assertQueueMutationTarget(input: {
