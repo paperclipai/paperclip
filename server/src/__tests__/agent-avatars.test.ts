@@ -17,6 +17,9 @@ import { agentAvatarRoutes } from "../routes/agent-avatars.js";
 const request: AgentAvatarRequest = { appearance: appearanceForPalette("arctic-blue"), size: 24, scale: 2, pose: "rest", muted: false };
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { await Promise.all(cleanups.splice(0).map(fn => fn())); });
+async function consume(stream: Readable) {
+  for await (const _ of stream) { /* Finish reads before deleting their cache files. */ }
+}
 async function storage() {
   const dir = await mkdtemp(path.join(os.tmpdir(), "agent-avatar-test-"));
   cleanups.push(() => rm(dir, { recursive: true, force: true }));
@@ -37,10 +40,10 @@ describe("on-demand agent avatars", () => {
     expect(render).toHaveBeenCalledTimes(1);
     expect(new Set(results.map(result => result.etag)).size).toBe(1);
     await Promise.all(results.map(async result => { for await (const _ of result.stream) { /* consume */ } }));
-    (await createAgentAvatarService(provider, render).get(request)).stream.destroy();
+    await consume((await createAgentAvatarService(provider, render).get(request)).stream);
     expect(render).toHaveBeenCalledTimes(1);
     await provider.deleteObject({ objectKey: avatarCacheKey(request) });
-    (await service.get(request)).stream.destroy();
+    await consume((await service.get(request)).stream);
     expect(render).toHaveBeenCalledTimes(2);
   });
   it("limits cold keys per client while admitting warm hits, joiners and other clients", async () => {
@@ -58,10 +61,10 @@ describe("on-demand agent avatars", () => {
       pending.push(service.get(keys[32], "two")); // Another client still has room.
       await vi.waitFor(() => expect(render).toHaveBeenCalledTimes(33));
     } finally { release(); }
-    for (const result of await Promise.all(pending)) result.stream.destroy();
-    (await service.get(keys[0], "one")).stream.destroy();
+    for (const result of await Promise.all(pending)) await consume(result.stream);
+    await consume((await service.get(keys[0], "one")).stream);
     expect(render).toHaveBeenCalledTimes(33);
-    (await service.get(keys[33], "one")).stream.destroy(); // Completed renders release slots.
+    await consume((await service.get(keys[33], "one")).stream); // Completed renders release slots.
     expect(render).toHaveBeenCalledTimes(34);
   });
   it("returns retryable admission errors without caching them", async () => {
@@ -102,7 +105,7 @@ describe("on-demand agent avatars", () => {
       expect(Buffer.concat(secondBytes)).toEqual(Buffer.concat(firstBytes));
       expect(render).toHaveBeenCalledTimes(1);
       await provider.deleteObject({ objectKey: avatarCacheKey(request) });
-      (await createAgentAvatarService(provider, render).get(request)).stream.destroy();
+      await consume((await createAgentAvatarService(provider, render).get(request)).stream);
       expect(render).toHaveBeenCalledTimes(2);
     } finally { send.mockRestore(); }
   });
@@ -125,6 +128,18 @@ describe("on-demand agent avatars", () => {
       const invalid = await fetch(url + suffix); expect(invalid.status).toBe(400); await invalid.text();
     }
     expect(render).toHaveBeenCalledTimes(1);
+  });
+  it("settles stream disposal on a 304 even if the cached file disappears during open", async () => {
+    const service = createAgentAvatarService(await storage(), async () => Buffer.from("png"));
+    const stream = new Readable({
+      read() {},
+      destroy(_error, callback) { setImmediate(() => callback(new Error("cached file removed during open"))); },
+    });
+    vi.spyOn(service, "get").mockResolvedValueOnce({ stream, byteSize: 3, etag: '"cached"' });
+    const url = await serve(service);
+    const response = await fetch(url, { headers: { "If-None-Match": '"cached"' } });
+    expect(response.status).toBe(304);
+    expect(stream.closed).toBe(true);
   });
   it("does not cache rendering failures and permits retry", async () => {
     const render = vi.fn().mockRejectedValueOnce(new Error("unavailable")).mockResolvedValue(Buffer.from("png"));
