@@ -133,6 +133,7 @@ const SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS: Record<string, true> = {
   "issue already has a queued or deferred wake": true,
   "pending interaction or approval owns the next action": true,
   "persisted issue monitor owns the next action": true,
+  "recovery incident maintenance wait owns the next action": true,
   "native delivery owns the next action": true,
   "explicit blocker path owns the next action": true,
   "blocked issue has a durable waiting path": true,
@@ -467,6 +468,13 @@ export function decideSuccessfulRunHandoff(input: {
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;
   hasActiveRoutineContinuation: boolean;
+  /**
+   * Native persisted a durable board-owned maintenance wait for a constrained
+   * recovery-engineer participant run (see
+   * recoveryEngineerService.recordTrustedMaintenanceWaitForRun). The wait owns
+   * the next action; the corrective disposition wake would be impossible work.
+   */
+  recoveryMaintenanceWaitRecorded: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
 }): SuccessfulRunHandoffDecision {
@@ -524,6 +532,9 @@ export function decideSuccessfulRunHandoff(input: {
   if (input.hasNativeDeliveryWait) return { kind: "skip", reason: "native delivery owns the next action" };
   if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
+  if (input.recoveryMaintenanceWaitRecorded) {
+    return { kind: "skip", reason: "recovery incident maintenance wait owns the next action" };
+  }
   if (input.hasPauseHold) return { kind: "skip", reason: "issue is under an active pause hold" };
   if (isCorrectiveHandoffRun(run)) {
     return { kind: "skip", reason: "source run is already a corrective handoff run" };

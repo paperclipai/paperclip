@@ -63,6 +63,7 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
     hasOpenRecoveryIssue: false,
     hasPauseHold: false,
     hasActiveRoutineContinuation: false,
+    recoveryMaintenanceWaitRecorded: false,
     budgetBlocked: false,
     idempotentWakeExists: false,
     ...overrides,
@@ -128,6 +129,32 @@ describe("successful run handoff decision", () => {
     })).toEqual({
       kind: "skip",
       reason: "native semantic finalization owns the issue disposition",
+    });
+  });
+
+  it("does not mint a corrective wake once native recorded the recovery maintenance wait", () => {
+    // COD-112: the constrained recovery-engineer runtime cannot persist its own
+    // disposition. Once native records the durable board-owned maintenance
+    // wait, the decision must route to the wait-owned skip instead of spending
+    // an impossible corrective run on the same agent.
+    const decision = decide({ recoveryMaintenanceWaitRecorded: true });
+
+    expect(decision).toEqual({
+      kind: "skip",
+      reason: "recovery incident maintenance wait owns the next action",
+    });
+    expect(isSuccessfulRunHandoffValidPathSkip(decision)).toBe(true);
+  });
+
+  it("still queues the corrective wake for a normal implementer without a disposition", () => {
+    const decision = decide();
+
+    expect(decision.kind).toBe("enqueue");
+    if (decision.kind !== "enqueue") return;
+    expect(decision.targetAgentId).toBe(run.agentId);
+    expect(decision.payload).toMatchObject({
+      handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      handoffRequired: true,
     });
   });
 
