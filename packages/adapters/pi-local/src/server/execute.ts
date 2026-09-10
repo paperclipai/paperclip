@@ -39,6 +39,7 @@ import {
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
   isPaperclipSkillSourceMissing,
+  materializeSelectedPaperclipSkillsIntoDir,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
@@ -123,18 +124,26 @@ async function ensurePiSkillsInjected(
   }
 }
 
-async function buildPiSkillsDir(config: Record<string, unknown>): Promise<string> {
+// Builds a fresh, admission-gated copy of each desired skill (never a
+// symlink), because this directory is staged into the sandbox on the remote
+// lane below with `followSymlinks: false`.
+async function buildPiSkillsDir(
+  config: Record<string, unknown>,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-skills-"));
   const target = path.join(tmp, "skills");
-  await fs.mkdir(target, { recursive: true });
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredNames = new Set(resolveLegacyPaperclipDesiredSkillNames(config, availableEntries));
-  for (const entry of availableEntries) {
-    if (!desiredNames.has(entry.key)) continue;
-    if (isPaperclipSkillSourceMissing(entry)) continue;
-    await fs.symlink(entry.source, path.join(target, entry.runtimeName));
-  }
-  return target;
+  const desiredEntries = availableEntries.filter(
+    (entry) => desiredNames.has(entry.key) && !isPaperclipSkillSourceMissing(entry),
+  );
+  return materializeSelectedPaperclipSkillsIntoDir({
+    targetDir: target,
+    entries: desiredEntries,
+    label: "Pi",
+    onLog,
+  });
 }
 
 function resolvePiBiller(env: Record<string, string>, provider: string | null): string {
@@ -411,7 +420,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     if (executionTargetIsRemote) {
       try {
-        localSkillsDir = await buildPiSkillsDir(config);
+        localSkillsDir = await buildPiSkillsDir(config, onLog);
         await onLog(
           "stdout",
           `[paperclip] Syncing workspace and Pi runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
@@ -428,9 +437,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           onRuntimeProgress: ctx.onRuntimeProgress,
           assets: [
             {
+              // `buildPiSkillsDir` materializes an owned, admission-gated
+              // copy (never a symlink), so the staged tarball must not
+              // carry `-h`.
               key: "skills",
               localDir: localSkillsDir,
-              followSymlinks: true,
+              followSymlinks: false,
             },
             ...(localAgentConfigDir
               ? [{

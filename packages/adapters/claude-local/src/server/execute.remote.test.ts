@@ -182,7 +182,9 @@ describe("claude remote execution", () => {
     expect(syncDirectoryToSsh).toHaveBeenCalledTimes(2);
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`,
-      followSymlinks: true,
+      // The prompt bundle materializes an owned, admission-gated copy
+      // (never a symlink), so the sync must not carry `-h`.
+      followSymlinks: false,
     }));
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/claude/mcp-config`,

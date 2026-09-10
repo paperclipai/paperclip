@@ -1290,7 +1290,7 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(result.billingType).toBe("unknown");
   });
 
-  it.skipIf(process.platform === "win32")("materializes ACPX Claude skills without symlinked descendants", async () => {
+  it.skipIf(process.platform === "win32")("excludes an ACPX Claude skill whose tree holds a symlink, and never logs the leaked path", async () => {
     const root = await makeTempRoot();
     const skillRoot = path.join(root, "skills");
     const outsideRoot = path.join(root, "outside");
@@ -1298,10 +1298,9 @@ describe("shared ACPX engine runtime behavior", () => {
     await fs.writeFile(path.join(outsideRoot, "secret.txt"), "do not expose", "utf8");
     const skill = await createSkill(skillRoot, "danger");
     await fs.symlink(path.join(outsideRoot, "secret.txt"), path.join(skill.source, "leak.txt"));
-    await fs.symlink(outsideRoot, path.join(skill.source, "leak-dir"));
 
     const stateDir = path.join(root, "state");
-    const { meta } = await runExecutor({
+    const { logs } = await runExecutor({
       agent: "claude",
       stateDir,
       paperclipRuntimeSkills: [skill],
@@ -1310,14 +1309,16 @@ describe("shared ACPX engine runtime behavior", () => {
 
     const mountedRoot = await onlyChildDir(path.join(stateDir, "runtime-skills", "claude"));
     const skillsHome = path.join(mountedRoot, ".claude", "skills");
-    const materializedSkill = path.join(skillsHome, skill.runtimeName);
-    expect(await fs.readFile(path.join(materializedSkill, "SKILL.md"), "utf8")).toContain("# danger");
-    expect(await pathExists(path.join(materializedSkill, "leak.txt"))).toBe(false);
-    expect(await pathExists(path.join(materializedSkill, "leak-dir"))).toBe(false);
-    expect(String(meta[0]?.prompt ?? "")).toContain(`Skill root: ${skillsHome}`);
+    // The admission gate fails the whole skill closed: a symlink anywhere in
+    // its tree excludes it, it never appears in the staged bundle at all.
+    expect(await pathExists(path.join(skillsHome, skill.runtimeName))).toBe(false);
+    const rejectionLog = logs.find((entry) => entry.text.includes(skill.runtimeName));
+    expect(rejectionLog?.text).toContain("symlink");
+    expect(rejectionLog?.text).not.toContain(outsideRoot);
+    expect(logs.some((entry) => entry.text.includes("secret.txt"))).toBe(false);
   });
 
-  it.skipIf(process.platform === "win32")("revokes removed ACPX Codex skills and skips symlinked descendants", async () => {
+  it.skipIf(process.platform === "win32")("revokes removed ACPX Codex skills and excludes a skill whose tree holds a symlink", async () => {
     const root = await makeTempRoot();
     const skillRoot = path.join(root, "skills");
     const outsideRoot = path.join(root, "outside");
@@ -1327,7 +1328,6 @@ describe("shared ACPX engine runtime behavior", () => {
     const keep = await createSkill(skillRoot, "keep");
     const remove = await createSkill(skillRoot, "remove");
     await fs.symlink(path.join(outsideRoot, "secret.txt"), path.join(keep.source, "leak.txt"));
-    await fs.symlink(outsideRoot, path.join(keep.source, "leak-dir"));
 
     const baseConfig = {
       agent: "codex",
@@ -1341,15 +1341,15 @@ describe("shared ACPX engine runtime behavior", () => {
       paperclipSkillSync: { desiredSkills: [keep.key, remove.key] },
     });
     expect(await pathExists(path.join(codexHome, "skills", remove.runtimeName, "SKILL.md"))).toBe(true);
+    // `keep` holds a symlink, so the admission gate excludes it entirely.
+    expect(await pathExists(path.join(codexHome, "skills", keep.runtimeName))).toBe(false);
 
     await runExecutor({
       ...baseConfig,
       paperclipSkillSync: { desiredSkills: [keep.key] },
     });
 
-    expect(await pathExists(path.join(codexHome, "skills", keep.runtimeName, "SKILL.md"))).toBe(true);
-    expect(await pathExists(path.join(codexHome, "skills", keep.runtimeName, "leak.txt"))).toBe(false);
-    expect(await pathExists(path.join(codexHome, "skills", keep.runtimeName, "leak-dir"))).toBe(false);
+    expect(await pathExists(path.join(codexHome, "skills", keep.runtimeName))).toBe(false);
     expect(await pathExists(path.join(codexHome, "skills", remove.runtimeName))).toBe(false);
   });
 

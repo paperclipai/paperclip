@@ -45,6 +45,7 @@ import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   runChildProcess,
   isPaperclipSkillSourceMissing,
+  materializeSelectedPaperclipSkillsIntoDir,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
@@ -205,18 +206,26 @@ async function ensureOpenCodeSkillsInjected(
   }
 }
 
-async function buildOpenCodeSkillsDir(config: Record<string, unknown>): Promise<string> {
+// Builds a fresh, admission-gated copy of each desired skill (never a
+// symlink), because this directory is staged into the sandbox on the remote
+// lane below with `followSymlinks: false`.
+async function buildOpenCodeSkillsDir(
+  config: Record<string, unknown>,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-skills-"));
   const target = path.join(tmp, "skills");
-  await fs.mkdir(target, { recursive: true });
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredNames = new Set(resolveLegacyPaperclipDesiredSkillNames(config, availableEntries));
-  for (const entry of availableEntries) {
-    if (!desiredNames.has(entry.key)) continue;
-    if (isPaperclipSkillSourceMissing(entry)) continue;
-    await fs.symlink(entry.source, path.join(target, entry.runtimeName));
-  }
-  return target;
+  const desiredEntries = availableEntries.filter(
+    (entry) => desiredNames.has(entry.key) && !isPaperclipSkillSourceMissing(entry),
+  );
+  return materializeSelectedPaperclipSkillsIntoDir({
+    targetDir: target,
+    entries: desiredEntries,
+    label: "OpenCode",
+    onLog,
+  });
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -379,7 +388,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let paperclipBridge: Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>> = null;
 
     if (executionTarget?.kind === "remote") {
-      localSkillsDir = await buildOpenCodeSkillsDir(config);
+      localSkillsDir = await buildOpenCodeSkillsDir(config, onLog);
       await onLog(
         "stdout",
         `[paperclip] Syncing workspace and OpenCode runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
@@ -396,9 +405,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onRuntimeProgress: ctx.onRuntimeProgress,
         assets: [
           {
+            // `buildOpenCodeSkillsDir` materializes an owned,
+            // admission-gated copy (never a symlink), so the staged
+            // tarball must not carry `-h`.
             key: "skills",
             localDir: localSkillsDir,
-            followSymlinks: true,
+            followSymlinks: false,
           },
           ...(localRuntimeConfigHome
             ? [{

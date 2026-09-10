@@ -18,6 +18,8 @@ import {
   isPaperclipExternalChatQuestionResponseTurn,
   isPaperclipExternalChatTurn,
   materializePaperclipSkillCopy,
+  materializeSelectedPaperclipSkillsIntoDir,
+  PaperclipSkillAdmissionRejectedError,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
   renderPaperclipWakePrompt,
@@ -343,6 +345,210 @@ describe("materializePaperclipSkillCopy", () => {
       await expect(
         fs.readFile(path.join(target, "SKILL.md"), "utf8"),
       ).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes the whole skill when the source tree holds an .env file", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+      await fs.writeFile(
+        path.join(source, ".env"),
+        "SECRET_TOKEN=leaked\n",
+        "utf8",
+      );
+
+      const rejection = await materializePaperclipSkillCopy(
+        source,
+        target,
+      ).catch((err: unknown) => err);
+      expect(rejection).toBeInstanceOf(PaperclipSkillAdmissionRejectedError);
+      expect(
+        (rejection as PaperclipSkillAdmissionRejectedError).rejectionClass,
+      ).toBe("env_file");
+      // Never a source path or file content in the message.
+      expect((rejection as Error).message).not.toContain(source);
+      expect((rejection as Error).message).not.toContain("SECRET_TOKEN");
+      await expect(fs.stat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes the whole skill when the source tree holds a private key file", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      await fs.mkdir(path.join(source, "assets"), { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+      await fs.writeFile(
+        path.join(source, "assets", "host.pem"),
+        "-----BEGIN PRIVATE KEY-----\n",
+        "utf8",
+      );
+
+      const rejection = await materializePaperclipSkillCopy(
+        source,
+        target,
+      ).catch((err: unknown) => err);
+      expect(rejection).toBeInstanceOf(PaperclipSkillAdmissionRejectedError);
+      expect(
+        (rejection as PaperclipSkillAdmissionRejectedError).rejectionClass,
+      ).toBe("private_key_file");
+      expect((rejection as Error).message).not.toContain(source);
+      await expect(fs.stat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a nested symlink instead of skipping it", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      const outside = path.join(root, "outside.txt");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+      await fs.writeFile(outside, "secret-content\n", "utf8");
+      await fs.symlink(outside, path.join(source, "linked.txt"));
+
+      const rejection = await materializePaperclipSkillCopy(
+        source,
+        target,
+      ).catch((err: unknown) => err);
+      expect(rejection).toBeInstanceOf(PaperclipSkillAdmissionRejectedError);
+      expect(
+        (rejection as PaperclipSkillAdmissionRejectedError).rejectionClass,
+      ).toBe("symlink");
+      await expect(fs.stat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a nested .git directory as version-control state", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      await fs.mkdir(path.join(source, ".git"), { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+      await fs.writeFile(
+        path.join(source, ".git", "config"),
+        "[core]\n",
+        "utf8",
+      );
+
+      const rejection = await materializePaperclipSkillCopy(
+        source,
+        target,
+      ).catch((err: unknown) => err);
+      expect(rejection).toBeInstanceOf(PaperclipSkillAdmissionRejectedError);
+      expect(
+        (rejection as PaperclipSkillAdmissionRejectedError).rejectionClass,
+      ).toBe("git_metadata");
+      await expect(fs.stat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a special file (a FIFO) as neither a regular file nor a directory", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+      const { execFileSync } = await import("node:child_process");
+      execFileSync("mkfifo", [path.join(source, "pipe")]);
+
+      const rejection = await materializePaperclipSkillCopy(
+        source,
+        target,
+      ).catch((err: unknown) => err);
+      expect(rejection).toBeInstanceOf(PaperclipSkillAdmissionRejectedError);
+      expect(
+        (rejection as PaperclipSkillAdmissionRejectedError).rejectionClass,
+      ).toBe("special_file");
+      await expect(fs.stat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("materializeSelectedPaperclipSkillsIntoDir", () => {
+  it("excludes only the rejected skill and logs the skill name and class, never a path", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skills-dir-"),
+    );
+    try {
+      const safeSource = path.join(root, "safe-skill");
+      const dangerousSource = path.join(root, "dangerous-skill");
+      const targetDir = path.join(root, "target");
+      await fs.mkdir(safeSource, { recursive: true });
+      await fs.writeFile(path.join(safeSource, "SKILL.md"), "# safe\n", "utf8");
+      await fs.mkdir(dangerousSource, { recursive: true });
+      await fs.writeFile(
+        path.join(dangerousSource, "SKILL.md"),
+        "# dangerous\n",
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(dangerousSource, ".env"),
+        "SECRET=leaked\n",
+        "utf8",
+      );
+
+      const logLines: string[] = [];
+      await materializeSelectedPaperclipSkillsIntoDir({
+        targetDir,
+        label: "Test",
+        entries: [
+          { key: "safe", runtimeName: "safe-skill", source: safeSource },
+          {
+            key: "dangerous",
+            runtimeName: "dangerous-skill",
+            source: dangerousSource,
+          },
+        ],
+        onLog: async (_stream, chunk) => {
+          logLines.push(chunk);
+        },
+      });
+
+      await expect(
+        fs.readFile(path.join(targetDir, "safe-skill", "SKILL.md"), "utf8"),
+      ).resolves.toBe("# safe\n");
+      await expect(
+        fs.stat(path.join(targetDir, "dangerous-skill")),
+      ).rejects.toThrow();
+
+      const rejectionLine = logLines.find((line) =>
+        line.includes("dangerous-skill"),
+      );
+      expect(rejectionLine).toBeDefined();
+      expect(rejectionLine).toContain("env_file");
+      expect(rejectionLine).not.toContain(dangerousSource);
+      expect(rejectionLine).not.toContain("SECRET");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

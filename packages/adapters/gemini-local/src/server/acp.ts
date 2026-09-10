@@ -171,9 +171,13 @@ async function prepareGeminiRemoteManagedHome(
       failurePrefix: "[paperclip] Gemini ACP teardown workspace restore failed",
     });
   const geminiSkillsHome = resolveGeminiSkillsHome(input.config);
+  // `false`: the shared engine's `prepareGeminiSkillRuntime` materializes this
+  // dir as an owned, admission-gated copy (never a symlink), so the staged
+  // tarball must not carry `-h` — there is nothing left to dereference, and a
+  // stray legacy symlink from before this change must stay unfollowed.
   const stagedRuntime = await input.stage(
     geminiSkillsHome
-      ? [{ key: "skills", localDir: geminiSkillsHome, followSymlinks: true }]
+      ? [{ key: "skills", localDir: geminiSkillsHome, followSymlinks: false }]
       : [],
   );
 

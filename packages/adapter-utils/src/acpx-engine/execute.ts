@@ -52,12 +52,12 @@ import {
   buildPaperclipEnv,
   ensureAbsoluteDirectory,
   ensurePathInEnv,
-  ensurePaperclipSkillSymlink,
   isForbiddenConfigEnvKey,
   isPaperclipExternalChatTurn,
   isPaperclipRuntimeEnvKey,
   joinPromptSections,
   materializePaperclipSkillCopy,
+  PaperclipSkillAdmissionRejectedError,
   parseObject,
   isPaperclipSkillSourceMissing,
   readPaperclipRuntimeSkillEntries,
@@ -1087,14 +1087,15 @@ async function prepareClaudeSkillRuntime(input: {
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
-      const result = await materializePaperclipSkillCopy(entry.source, target);
-      if (result.skippedSymlinks.length > 0) {
-        await input.onLog(
-          "stdout",
-          `[paperclip] Materialized ACPX Claude skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
-        );
-      }
+      await materializePaperclipSkillCopy(entry.source, target);
     } catch (err) {
+      if (err instanceof PaperclipSkillAdmissionRejectedError) {
+        await input.onLog(
+          "stderr",
+          `[paperclip] Excluded ACPX Claude skill "${entry.runtimeName}" (${err.rejectionClass}).\n`,
+        );
+        continue;
+      }
       await input.onLog(
         "stderr",
         `[paperclip] Failed to materialize ACPX Claude skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -1260,14 +1261,15 @@ async function prepareCodexSkillRuntime(input: {
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
-      const result = await materializePaperclipSkillCopy(entry.source, target);
-      if (result.skippedSymlinks.length > 0) {
-        await input.onLog(
-          "stdout",
-          `[paperclip] Materialized ACPX Codex skill "${entry.runtimeName}" into ${skillsHome} and skipped ${result.skippedSymlinks.length} symlink(s).\n`,
-        );
-      }
+      await materializePaperclipSkillCopy(entry.source, target);
     } catch (err) {
+      if (err instanceof PaperclipSkillAdmissionRejectedError) {
+        await input.onLog(
+          "stderr",
+          `[paperclip] Excluded ACPX Codex skill "${entry.runtimeName}" (${err.rejectionClass}).\n`,
+        );
+        continue;
+      }
       await input.onLog(
         "stderr",
         `[paperclip] Failed to inject ACPX Codex skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -1316,28 +1318,25 @@ async function prepareGeminiSkillRuntime(input: {
     await input.onLog("stdout", `[paperclip] Removed maintainer-only ACPX Gemini skill "${skillName}" from ${skillsHome}\n`);
   }
 
+  // Copied, never symlinked: this skills home can be staged into a sandbox
+  // by the ACP remote seam (`prepareGeminiRemoteManagedHome`), which crosses
+  // a host-to-sandbox trust boundary. A symlink here would leave that seam
+  // no owned snapshot to stage.
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
-      const result = await ensurePaperclipSkillSymlink(entry.source, target);
-      if (result === "created" || result === "repaired") {
-        await input.onLog(
-          "stdout",
-          `[paperclip] ${result === "repaired" ? "Repaired" : "Linked"} ACPX Gemini skill "${entry.runtimeName}" into ${skillsHome}\n`,
-        );
-      }
+      await materializePaperclipSkillCopy(entry.source, target);
     } catch (err) {
-      if (isErrnoException(err, "EPERM")) {
-        const result = await materializePaperclipSkillCopy(entry.source, target);
+      if (err instanceof PaperclipSkillAdmissionRejectedError) {
         await input.onLog(
-          "stdout",
-          `[paperclip] Copied ACPX Gemini skill "${entry.runtimeName}" into ${skillsHome} because symlinks are unavailable.${result.skippedSymlinks.length > 0 ? ` Skipped ${result.skippedSymlinks.length} nested symlink(s).` : ""}\n`,
+          "stderr",
+          `[paperclip] Excluded ACPX Gemini skill "${entry.runtimeName}" (${err.rejectionClass}).\n`,
         );
         continue;
       }
       await input.onLog(
         "stderr",
-        `[paperclip] Failed to link ACPX Gemini skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+        `[paperclip] Failed to materialize ACPX Gemini skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
   }

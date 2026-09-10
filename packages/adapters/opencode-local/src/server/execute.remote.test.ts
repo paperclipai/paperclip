@@ -203,7 +203,9 @@ describe("opencode remote execution", () => {
     }));
     expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
       remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/opencode/skills`,
-      followSymlinks: true,
+      // `buildOpenCodeSkillsDir` materializes an owned, admission-gated
+      // copy (never a symlink), so the sync must not carry `-h`.
+      followSymlinks: false,
     }));
     expect(runSshCommand).toHaveBeenCalledWith(
       expect.anything(),
