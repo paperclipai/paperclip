@@ -23,11 +23,17 @@ const string = (v: unknown) =>
  */
 const WAKE_CONTEXT_ITEM_CAP = 30;
 
-function capToNewest<T>(items: T[], cap: number): T[] {
-  return items.length <= cap ? items : items.slice(items.length - cap);
+function capToNewest<T>(items: T[], cap: number): { kept: T[]; omitted: number } {
+  if (items.length <= cap) return { kept: items, omitted: 0 };
+  return { kept: items.slice(items.length - cap), omitted: items.length - cap };
 }
 
-/** Keep every origin message, then fill the rest of the cap with the newest messages. */
+/**
+ * Keep every origin message when the cap has room for all of them, then fill
+ * the rest of the cap with the newest non-origin messages. When there are
+ * more origin messages than the cap allows, keep only the newest origin
+ * messages, so the total kept count never goes over the cap.
+ */
 function capMessagesKeepingOrigins<T extends { id: string }>(
   items: T[],
   cap: number,
@@ -35,16 +41,19 @@ function capMessagesKeepingOrigins<T extends { id: string }>(
 ): { kept: T[]; omitted: number } {
   if (items.length <= cap) return { kept: items, omitted: 0 };
   const originSet = new Set(originCommentIds);
+  const origin = items.filter((item) => originSet.has(item.id));
   const nonOrigin = items.filter((item) => !originSet.has(item.id));
-  const originCount = items.length - nonOrigin.length;
-  const remainingSlots = Math.max(cap - originCount, 0);
+  const keepOriginIds = new Set(
+    origin.slice(Math.max(origin.length - cap, 0)).map((item) => item.id),
+  );
+  const remainingSlots = Math.max(cap - keepOriginIds.size, 0);
   const keepNonOriginIds = new Set(
     nonOrigin
       .slice(Math.max(nonOrigin.length - remainingSlots, 0))
       .map((item) => item.id),
   );
   const kept = items.filter(
-    (item) => originSet.has(item.id) || keepNonOriginIds.has(item.id),
+    (item) => keepOriginIds.has(item.id) || keepNonOriginIds.has(item.id),
   );
   return { kept, omitted: items.length - kept.length };
 }
@@ -300,17 +309,42 @@ export async function buildExecutionContinuation(input: {
     WAKE_CONTEXT_ITEM_CAP,
     originCommentIds,
   );
+  const cappedRecoveryOutcomes = capToNewest(
+    reconciliations
+      .filter((row) => row.evidence.executionReconciliation)
+      .map((row) => ({
+        recoveryActionId: row.id,
+        decision: row.evidence.executionReconciliation,
+      })),
+    WAKE_CONTEXT_ITEM_CAP,
+  );
+  const cappedInteractionOutcomes = capToNewest(
+    interactions
+      .filter((row) => row.status !== "pending")
+      .map((row) => ({
+        id: row.id,
+        kind: row.kind,
+        status: row.status,
+        result: row.result,
+      })),
+    WAKE_CONTEXT_ITEM_CAP,
+  );
+  const cappedCompletedActions = capToNewest(
+    completedActions,
+    WAKE_CONTEXT_ITEM_CAP,
+  );
+  const cappedUnresolvedInteractionIds = capToNewest(
+    interactions
+      .filter((row) => row.status === "pending")
+      .map((row) => row.id),
+    WAKE_CONTEXT_ITEM_CAP,
+  );
   return {
     ...(resumeDelta ? { resumeDelta } : {}),
-    recoveryOutcomes: capToNewest(
-      reconciliations
-        .filter((row) => row.evidence.executionReconciliation)
-        .map((row) => ({
-          recoveryActionId: row.id,
-          decision: row.evidence.executionReconciliation,
-        })),
-      WAKE_CONTEXT_ITEM_CAP,
-    ),
+    recoveryOutcomes: cappedRecoveryOutcomes.kept,
+    ...(cappedRecoveryOutcomes.omitted > 0
+      ? { recoveryOutcomesOmittedCount: cappedRecoveryOutcomes.omitted }
+      : {}),
     version: 1,
     companyId,
     issueId,
@@ -322,25 +356,22 @@ export async function buildExecutionContinuation(input: {
     originCommentIds,
     objective: latestRequest?.body ?? issue.description ?? issue.title,
     messages: cappedMessages.kept,
-    interactionOutcomes: capToNewest(
-      interactions
-        .filter((row) => row.status !== "pending")
-        .map((row) => ({
-          id: row.id,
-          kind: row.kind,
-          status: row.status,
-          result: row.result,
-        })),
-      WAKE_CONTEXT_ITEM_CAP,
-    ),
+    interactionOutcomes: cappedInteractionOutcomes.kept,
+    ...(cappedInteractionOutcomes.omitted > 0
+      ? { interactionOutcomesOmittedCount: cappedInteractionOutcomes.omitted }
+      : {}),
     completedWork: input.summary,
-    completedActions: capToNewest(completedActions, WAKE_CONTEXT_ITEM_CAP),
-    unresolvedInteractionIds: capToNewest(
-      interactions
-        .filter((row) => row.status === "pending")
-        .map((row) => row.id),
-      WAKE_CONTEXT_ITEM_CAP,
-    ),
+    completedActions: cappedCompletedActions.kept,
+    ...(cappedCompletedActions.omitted > 0
+      ? { completedActionsOmittedCount: cappedCompletedActions.omitted }
+      : {}),
+    unresolvedInteractionIds: cappedUnresolvedInteractionIds.kept,
+    ...(cappedUnresolvedInteractionIds.omitted > 0
+      ? {
+          unresolvedInteractionIdsOmittedCount:
+            cappedUnresolvedInteractionIds.omitted,
+        }
+      : {}),
     coverage: {
       kind: "full_task_history",
       throughCommentId: messages.at(-1)?.id ?? null,

@@ -350,6 +350,15 @@ const support = await getEmbeddedPostgresTestSupport();
     const context = await build();
     expect(context.coverage.omittedMessageCount).toBe(10);
   });
+  it("bounds the origin messages by the cap when there are more than 30 of them", async () => {
+    // 35 origin ids, oldest first. The cap must keep only the newest 30 of
+    // them; it must not let the origin set grow the kept list past the cap.
+    const originIds = messageIds.slice(0, 35);
+    const context = await build({ commentIds: originIds });
+    expect(context.messages).toHaveLength(30);
+    expect(context.messages.map((row) => row.id)).toEqual(originIds.slice(5));
+    expect(context.coverage.omittedMessageCount).toBe(10);
+  });
 });
 
 (support.supported ? describe : describe.skip)(
@@ -507,6 +516,22 @@ const support = await getEmbeddedPostgresTestSupport();
         exposeLowTrustRaw: false,
       });
       expect(context.resumeDelta?.omittedMessageCount).toBe(10);
+    });
+    it("reports the number of dropped items on each of the other four lists", async () => {
+      const context = await buildExecutionContinuation({
+        db,
+        companyId,
+        issueId,
+        agentId,
+        previousContextRunId: baseRunId,
+        context: {},
+        summary: null,
+        exposeLowTrustRaw: false,
+      });
+      expect(context.interactionOutcomesOmittedCount).toBe(10);
+      expect(context.unresolvedInteractionIdsOmittedCount).toBe(10);
+      expect(context.completedActionsOmittedCount).toBe(10);
+      expect(context.recoveryOutcomesOmittedCount).toBe(10);
     });
     it("keeps the newest 30 recovery outcomes by createdAt", async () => {
       const context = await buildExecutionContinuation({

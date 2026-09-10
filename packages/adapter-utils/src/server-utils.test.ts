@@ -3342,6 +3342,72 @@ describe("renderPaperclipWakePrompt", () => {
       "plus the required originating requests. Earlier delivered history remains in this resumed session.",
     );
   });
+
+  it("names the omitted count for each capped durable-action list instead of implying it is complete", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: { id: "wakecov-lists-issue-id", identifier: "PAP-9500", title: "Capped list coverage" },
+      executionContinuation: {
+        version: 1,
+        companyId: "wakecov-company-id",
+        issueId: "wakecov-lists-issue-id",
+        trigger: { reason: "issue_commented", interactionId: null, sourceRunId: null },
+        originCommentIds: [],
+        objective: "wakecov-lists-objective",
+        messages: [],
+        interactionOutcomes: [],
+        interactionOutcomesOmittedCount: 10,
+        completedWork: null,
+        completedActions: [],
+        completedActionsOmittedCount: 5,
+        unresolvedInteractionIds: [],
+        unresolvedInteractionIdsOmittedCount: 3,
+        recoveryOutcomes: [],
+        recoveryOutcomesOmittedCount: 7,
+        coverage: { kind: "full_task_history", throughCommentId: null, summaryThroughCommentId: null },
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload, { resumedSession: false });
+    expect(prompt).toContain("- omitted completed actions: 5");
+    expect(prompt).toContain("- omitted interaction outcomes: 10");
+    expect(prompt).toContain("- omitted unresolved interactions: 3");
+    expect(prompt).toContain("- omitted recovery outcomes: 7");
+  });
+
+  it("does not name an omitted count for a list the cap did not truncate", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: { id: "wakecov-lists-complete-issue-id", identifier: "PAP-9600", title: "Complete list coverage" },
+      executionContinuation: {
+        version: 1,
+        companyId: "wakecov-company-id",
+        issueId: "wakecov-lists-complete-issue-id",
+        trigger: { reason: "issue_commented", interactionId: null, sourceRunId: null },
+        originCommentIds: [],
+        objective: "wakecov-lists-complete-objective",
+        messages: [],
+        interactionOutcomes: [],
+        completedWork: null,
+        completedActions: [],
+        unresolvedInteractionIds: [],
+        recoveryOutcomes: [],
+        coverage: { kind: "full_task_history", throughCommentId: null, summaryThroughCommentId: null },
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload, { resumedSession: false });
+    expect(prompt).not.toContain("- omitted completed actions:");
+    expect(prompt).not.toContain("- omitted interaction outcomes:");
+    expect(prompt).not.toContain("- omitted unresolved interactions:");
+    expect(prompt).not.toContain("- omitted recovery outcomes:");
+  });
 });
 
 describe("WATCHDOG_DEFAULT_MANDATE", () => {
