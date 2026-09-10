@@ -84,7 +84,7 @@ export function TaskChatSystemNotice({
 
   return (
     <div
-      className={cn("tc-enter-bubble flex flex-col items-center", streamlined ? "py-0.5" : "py-1")}
+      className={cn("tc-enter-bubble flex flex-col items-start", streamlined ? "py-0.5" : "py-1")}
       data-testid="task-chat-system-notice"
       data-tone={streamlined ? tone : undefined}
       role={streamlined ? "group" : undefined}

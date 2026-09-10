@@ -163,6 +163,9 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     });
 
     expect(toggleButton().getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector('[data-testid="task-chat-system-notice"]')?.className).toContain(
+      "items-start",
+    );
     expect(toggleButton().textContent).toContain(
       "Workspace ready · fix/workspace-ready-notice",
     );
