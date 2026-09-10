@@ -532,7 +532,9 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
     await db
       .update(executionWorkspaces)
-      .set({ sourceIssueId, ...(overrides.updatedAt ? { updatedAt: overrides.updatedAt } : {}) })
+      // Delivery and concurrency tests need an already-eligible candidate,
+      // independent of database timestamp precision at the sweep boundary.
+      .set({ sourceIssueId, updatedAt: overrides.updatedAt ?? new Date("2020-01-01T00:00:00Z") })
       .where(eq(executionWorkspaces.id, executionWorkspaceId));
     return { companyId, projectId, executionWorkspaceId, sourceIssueId, worktreePath };
   }
