@@ -245,6 +245,21 @@ describe("sandbox adapter execution targets", () => {
       expect(execute).toHaveBeenCalledTimes(1);
     });
 
+    it.each([
+      ...["ETIMEDOUT", "ECONNREFUSED", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"]
+        .flatMap((code) => [
+          Object.assign(new Error("provider transport failed"), { code }),
+          new Error("fetch failed", { cause: Object.assign(new Error("provider transport failed"), { code }) }),
+        ]),
+      Object.assign(new Error("provider deadline exceeded"), { name: "TimeoutError" }),
+    ])("retries established transient transport errors: %s", async (error) => {
+      const local = createLocalSandboxRunner();
+      const execute = vi.fn(local.execute).mockRejectedValueOnce(error);
+      const env = await prepareGitHubOperationLaunchers(await fixture(execute));
+      expect(execute).toHaveBeenCalledTimes(11);
+      expect((await stat(env.GH_CONFIG_DIR)).isDirectory()).toBe(true);
+    });
+
     it("does not exceed the deadline after a failed attempt", async () => {
       const error = transient();
       let now = 1_000;

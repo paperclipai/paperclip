@@ -1556,8 +1556,13 @@ async function prepareGitHubLauncherWithRetry<T>(runId: string, operation: (time
       const detail = error instanceof Error
         ? error as Error & { code?: unknown; status?: unknown; statusCode?: unknown; response?: { status?: unknown } }
         : null;
+      const transportCodes = ["ECONNRESET", "EPIPE", "EAI_AGAIN", "ECONNABORTED", "ETIMEDOUT", "ECONNREFUSED",
+        "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT"];
+      const cause = detail?.cause instanceof Error ? detail.cause as Error & { code?: unknown } : null;
       const transient = detail && (
-        ["ECONNRESET", "EPIPE", "EAI_AGAIN", "ECONNABORTED"].includes(String(detail.code ?? ""))
+        transportCodes.includes(String(detail.code ?? ""))
+        || transportCodes.includes(String(cause?.code ?? ""))
+        || detail.name === "TimeoutError"
         || detail.message === "socket hang up"
         || [detail.status, detail.statusCode, detail.response?.status].some((status) => [502, 503, 504].includes(status as number))
         || (detail.name === "JsonRpcCallError" && detail.code === -32002
