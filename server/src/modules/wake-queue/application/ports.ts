@@ -64,7 +64,7 @@ export type DeferredWakeCandidate = {
   reason: string | null;
   source: string | null;
   triggerDetail: string | null;
-  requestedByActorType: string | null;
+  requestedByActorType: "user" | "agent" | "system" | null;
   requestedByActorId: string | null;
   payload: Record<string, unknown>;
   /** The queued comment ids the wake's queued-comment context carries, already extracted from the payload. */

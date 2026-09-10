@@ -10,7 +10,6 @@ const baseDeferredWakeFacts: DeferredWakeFacts = {
   queuedComment: {
     hasQueuedCommentIds: false,
     liveNonSelfCommentIdsLength: 0,
-    queuedCommentIdsLength: 0,
     liveCommentIdsChanged: false,
     containedSelfAuthoredComment: false,
     preservesIndependentContinuation: false,
@@ -32,7 +31,6 @@ describe("decideDeferredWake", () => {
         queuedComment: {
           hasQueuedCommentIds: true,
           liveNonSelfCommentIdsLength: 0,
-          queuedCommentIdsLength: 2,
           liveCommentIdsChanged: true,
           containedSelfAuthoredComment: false,
           preservesIndependentContinuation: false,
@@ -47,7 +45,6 @@ describe("decideDeferredWake", () => {
         queuedComment: {
           hasQueuedCommentIds: true,
           liveNonSelfCommentIdsLength: 0,
-          queuedCommentIdsLength: 1,
           liveCommentIdsChanged: true,
           containedSelfAuthoredComment: true,
           preservesIndependentContinuation: false,
@@ -62,7 +59,6 @@ describe("decideDeferredWake", () => {
         queuedComment: {
           hasQueuedCommentIds: true,
           liveNonSelfCommentIdsLength: 0,
-          queuedCommentIdsLength: 1,
           liveCommentIdsChanged: true,
           containedSelfAuthoredComment: false,
           preservesIndependentContinuation: true,
@@ -77,7 +73,6 @@ describe("decideDeferredWake", () => {
         queuedComment: {
           hasQueuedCommentIds: true,
           liveNonSelfCommentIdsLength: 0,
-          queuedCommentIdsLength: 0,
           liveCommentIdsChanged: false,
           containedSelfAuthoredComment: false,
           preservesIndependentContinuation: true,
@@ -92,7 +87,6 @@ describe("decideDeferredWake", () => {
         queuedComment: {
           hasQueuedCommentIds: true,
           liveNonSelfCommentIdsLength: 1,
-          queuedCommentIdsLength: 2,
           liveCommentIdsChanged: true,
           containedSelfAuthoredComment: false,
           preservesIndependentContinuation: false,

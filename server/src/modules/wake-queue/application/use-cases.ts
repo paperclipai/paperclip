@@ -1,5 +1,11 @@
 import { enrichPromotedWakeContext } from "../domain/context.js";
 import { decideDeferredWake, decideReleaseRecovery } from "../domain/policy.js";
+import {
+  EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+  isConfigurationIncompleteFailedRun,
+  isWorkspaceValidationFailedRun,
+  readNonEmptyString,
+} from "../domain/values.js";
 import type {
   IssueLockWriter,
   IssueSnapshot,
@@ -14,7 +20,6 @@ import type { PostCommitEffect, ReleaseOutcome } from "./types.js";
 import { WakeQueueApplicationError } from "./types.js";
 
 const ISSUE_DISPOSITION_REPAIR_RETRY_REASON = "issue_disposition_repair";
-const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASONS = new Set([
   "execution_review_requested",
   "execution_approval_requested",
@@ -31,20 +36,6 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = new Set([
   "cancelled",
 ]);
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = "stranded_issue_recovery";
-const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
-const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
-
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
-
-function isWorkspaceValidationFailedRun(run: Pick<RunSnapshot, "errorCode">): boolean {
-  return run.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
-}
-
-function isConfigurationIncompleteFailedRun(run: Pick<RunSnapshot, "errorCode">): boolean {
-  return run.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE || run.errorCode === "model_not_found";
-}
 
 function isExecutionReviewParticipantRecoveryRun(run: Pick<RunSnapshot, "contextSnapshot">): boolean {
   return readNonEmptyString(run.contextSnapshot.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
@@ -129,7 +120,6 @@ async function runReleaseDrain(
       queuedComment: {
         hasQueuedCommentIds: candidate.queuedCommentIds.length > 0,
         liveNonSelfCommentIdsLength: liveness.liveNonSelfCommentIds.length,
-        queuedCommentIdsLength: candidate.queuedCommentIds.length,
         liveCommentIdsChanged,
         containedSelfAuthoredComment: liveness.containedSelfAuthoredComment,
         preservesIndependentContinuation: candidate.preservesIndependentContinuation,
@@ -167,7 +157,6 @@ async function runReleaseDrain(
         queuedComment: {
           hasQueuedCommentIds: workingCandidate.queuedCommentIds.length > 0,
           liveNonSelfCommentIdsLength: liveness.liveNonSelfCommentIds.length,
-          queuedCommentIdsLength: liveness.liveNonSelfCommentIds.length,
           liveCommentIdsChanged: false,
           containedSelfAuthoredComment: liveness.containedSelfAuthoredComment,
           preservesIndependentContinuation: workingCandidate.preservesIndependentContinuation,
@@ -282,7 +271,7 @@ async function runReleaseDrain(
       contextSnapshot: promotedContextSnapshot,
       issue: currentIssue,
       routineEnvContext: promotedRoutineEnvContext,
-      requestedByActorType: workingCandidate.requestedByActorType as "user" | "agent" | "system" | null,
+      requestedByActorType: workingCandidate.requestedByActorType,
       requestedByActorId: workingCandidate.requestedByActorId,
       source: promotedSource,
       triggerDetail: promotedTriggerDetail,

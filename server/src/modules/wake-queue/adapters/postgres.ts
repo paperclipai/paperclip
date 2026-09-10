@@ -11,7 +11,7 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { legacyExecutionNeedsReconciliation } from "../../../services/legacy-execution-recovery.js";
-import { evaluateAgentInvokability } from "../../../services/agent-invokability.js";
+import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
 import { issueTreeControlService, isVerifiedIssueTreeControlInteractionWake } from "../../../services/issue-tree-control.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "../../../services/recovery/pause-hold-guard.js";
 import { issueService } from "../../../services/issues.js";
@@ -31,6 +31,13 @@ import {
 } from "../../../services/issue-queued-comment-queue.js";
 import { extractWakeCommentIds } from "../../run-dispatch/index.js";
 import { hasInteractionContinuationWakeContext } from "../domain/context.js";
+import {
+  EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+  isConfigurationIncompleteFailedRun,
+  isWorkspaceValidationFailedRun,
+  parseObject,
+  readNonEmptyString,
+} from "../domain/values.js";
 import type {
   DeferredWakeCandidate,
   InvokableAgentSnapshot,
@@ -47,27 +54,14 @@ import { WakeQueueApplicationError } from "../application/types.js";
 
 const DEFERRED_WAKE_STATUS = "deferred_issue_execution";
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
-const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
-const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE = "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON = "execution_review_participant_recovery";
-const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
 type HeartbeatRunRow = typeof heartbeatRuns.$inferSelect;
 type IssueRow = typeof issues.$inferSelect;
-
-function parseObject(value: unknown): Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
-}
-
-function readNonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value : null;
-}
 
 function normalizeAgentNameKey(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
@@ -75,12 +69,10 @@ function normalizeAgentNameKey(value: string | null | undefined): string | null 
   return normalized.length > 0 ? normalized : null;
 }
 
-function isWorkspaceValidationFailedRun(run: Pick<HeartbeatRunRow, "errorCode">): boolean {
-  return run.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE;
-}
-
-function isConfigurationIncompleteFailedRun(run: Pick<HeartbeatRunRow, "errorCode">): boolean {
-  return run.errorCode === CONFIGURATION_INCOMPLETE_FAILURE_CODE || run.errorCode === "model_not_found";
+function toRequestedByActorType(value: string | null): "user" | "agent" | "system" | null {
+  // The database column is free text; map any value outside the union to
+  // null instead of widening the type back to string.
+  return value === "user" || value === "agent" || value === "system" ? value : null;
 }
 
 function toRunSnapshot(row: HeartbeatRunRow): RunSnapshot {
@@ -152,7 +144,7 @@ function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): 
     reason: row.reason,
     source: row.source,
     triggerDetail: row.triggerDetail,
-    requestedByActorType: row.requestedByActorType,
+    requestedByActorType: toRequestedByActorType(row.requestedByActorType),
     requestedByActorId: row.requestedByActorId,
     payload,
     queuedCommentIds,
@@ -178,11 +170,7 @@ function buildReader(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueReade
         .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
       if (!agent) return null;
-      const companyAgents = await tx
-        .select({ id: agents.id, companyId: agents.companyId, name: agents.name, reportsTo: agents.reportsTo, status: agents.status })
-        .from(agents)
-        .where(eq(agents.companyId, companyId));
-      const invokability = evaluateAgentInvokability(agent, companyAgents);
+      const invokability = await evaluateAgentInvokabilityFromDb(tx, agent);
       return { id: agent.id, companyId: agent.companyId, name: agent.name, invokable: invokability.invokable };
     },
     resolveResponsibleUserId: deps.resolveResponsibleUserId,

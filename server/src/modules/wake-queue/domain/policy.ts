@@ -13,8 +13,6 @@ export type DeferredWakeQueuedCommentFacts = {
   hasQueuedCommentIds: boolean;
   /** Count of queued comment ids that are still live and not self-authored by the finishing run. */
   liveNonSelfCommentIdsLength: number;
-  /** Count of queued comment ids the wake originally carried. */
-  queuedCommentIdsLength: number;
   /** True when the live, non-self comment id list differs from the queued list. */
   liveCommentIdsChanged: boolean;
   /** True when every discarded comment id was authored by the finishing run. */
