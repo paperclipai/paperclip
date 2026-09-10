@@ -368,6 +368,9 @@ export function lookupBoardKeyRoute(methodInput: string, rawPath: string): Board
   if ([
     "auth",
     "cli-auth",
+    "chat-endpoints",
+    "chat-identity-links",
+    "chat-webhooks",
     "health",
     "openapi.json",
     "invites",
