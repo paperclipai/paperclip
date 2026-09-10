@@ -1,0 +1,2 @@
+ALTER TABLE "principal_permission_grants" ADD COLUMN "grant_origin" text DEFAULT 'explicit' NOT NULL;--> statement-breakpoint
+ALTER TABLE "principal_permission_grants" ADD CONSTRAINT "principal_permission_grants_origin_check" CHECK ("principal_permission_grants"."grant_origin" in ('explicit', 'role_default'));

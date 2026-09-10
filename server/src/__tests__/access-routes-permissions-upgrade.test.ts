@@ -20,6 +20,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { ownerHasRequiredGrant } from "../security/board-key-owner-authority.js";
+import { accessService } from "../services/access.js";
 import { grantsForHumanRole } from "../services/company-member-roles.js";
 
 vi.hoisted(() => {
@@ -129,7 +130,7 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
     expect(unchanged.membershipRole).toBe("owner");
   }, 10_000);
 
-  it("retires former role defaults but keeps custom grants when the role-only route demotes a member", async () => {
+  it("retires former role defaults but keeps explicit grants when the role-only route demotes a member", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const member = await db
       .insert(companyMemberships)
@@ -142,27 +143,42 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       })
       .returning()
       .then((rows) => rows[0]!);
+    const access = accessService(db);
+    await access.ensureRoleDefaultGrants(
+      company.id,
+      member.principalId,
+      "admin",
+      owner.principalId,
+    );
     const customScope = { projectIds: ["project-1"] };
-    await db.insert(principalPermissionGrants).values([
-      ...grantsForHumanRole("admin")
-        .filter((grant) => grant.permissionKey !== "tools:use")
-        .map((grant) => ({
-          companyId: company.id,
-          principalType: "user" as const,
-          principalId: member.principalId,
-          permissionKey: grant.permissionKey,
-          scope: grant.scope,
-          grantedByUserId: owner.principalId,
-        })),
-      {
-        companyId: company.id,
-        principalType: "user" as const,
-        principalId: member.principalId,
-        permissionKey: "tools:use" as const,
-        scope: customScope,
+    await db
+      .update(principalPermissionGrants)
+      .set({ grantOrigin: "explicit", grantedByUserId: owner.principalId })
+      .where(and(
+        eq(principalPermissionGrants.companyId, company.id),
+        eq(principalPermissionGrants.principalId, member.principalId),
+        eq(principalPermissionGrants.permissionKey, "tools:use"),
+      ));
+    await db
+      .update(principalPermissionGrants)
+      .set({
+        grantOrigin: "explicit",
         grantedByUserId: owner.principalId,
-      },
-    ]);
+        scope: customScope,
+      })
+      .where(and(
+        eq(principalPermissionGrants.companyId, company.id),
+        eq(principalPermissionGrants.principalId, member.principalId),
+        eq(principalPermissionGrants.permissionKey, "tools:manage_runtime"),
+      ));
+    const grantsBeforeDemotion = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, member.principalId));
+    expect(grantsBeforeDemotion.filter((grant) => grant.grantOrigin === "role_default"))
+      .toHaveLength(grantsForHumanRole("admin").length - 2);
+    expect(grantsBeforeDemotion.find((grant) => grant.permissionKey === "tools:use"))
+      .toEqual(expect.objectContaining({ grantOrigin: "explicit", scope: null }));
 
     await expect(ownerHasRequiredGrant(
       db,
@@ -188,7 +204,7 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
           eq(principalPermissionGrants.principalId, member.principalId),
         ),
     );
-    expect(grants).toHaveLength(2);
+    expect(grants).toHaveLength(3);
     expect(grants).toEqual(expect.arrayContaining([
       expect.objectContaining({
         permissionKey: "tasks:assign",
@@ -196,7 +212,14 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       }),
       expect.objectContaining({
         permissionKey: "tools:use",
+        scope: null,
+        grantOrigin: "explicit",
+        grantedByUserId: owner.principalId,
+      }),
+      expect.objectContaining({
+        permissionKey: "tools:manage_runtime",
         scope: customScope,
+        grantOrigin: "explicit",
         grantedByUserId: owner.principalId,
       }),
     ]));
