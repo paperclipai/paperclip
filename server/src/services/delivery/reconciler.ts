@@ -280,6 +280,26 @@ export function deliveryReconciler(
       ));
     const attempt = (attemptsRow?.count ?? 0) + 1;
     if (attempt > DELIVERY_MAX_REPAIR_ATTEMPTS) {
+      await db.insert(deliveryRepairAttempts).values({
+        companyId: input.companyId,
+        unitId: input.unit.id,
+        reasonCode: input.reasonCode,
+        attempt,
+        status: "exhausted",
+        headSha: input.unit.headSha,
+        ownerAgentId: input.unit.ownerAgentId,
+        requestedByActorType: "system",
+        requestedByActorId: "delivery-controller",
+        detail: input.detail ?? input.message,
+      }).onConflictDoNothing();
+      const exhaustedBlocker = blocker(
+        "repair_attempts_exhausted",
+        `Repair attempts exhausted for ${input.reasonCode}`,
+        "Inspect the repair results and explicitly retry after resolving the failure.",
+      );
+      exhaustedBlocker.owner = input.unit.ownerAgentId;
+      await units.markBlocked({ companyId: input.companyId, unitId: input.unit.id, blocker: exhaustedBlocker });
+      await holdQueue(input.companyId, input.unit, exhaustedBlocker.reasonCode, exhaustedBlocker.message);
       await events.append({
         companyId: input.companyId,
         unitId: input.unit.id,
@@ -370,8 +390,12 @@ export function deliveryReconciler(
    * signal and does request a wake.
    */
   async function requestRepair(input: DeliveryRepairRequest): Promise<DeliveryRepairOutcome> {
+    if (!REPAIRABLE_REASON_CODES[input.reasonCode]) {
+      return { requested: false, attempt: 0, exhausted: false };
+    }
     const metadata = readUnitMetadata(input.unit.metadata);
-    if (metadata.lastRepairSignal?.[input.reasonCode] === input.signal) {
+    if (metadata.lastRepairSignal?.[input.reasonCode] === input.signal
+      && (input.unit.blocker as DeliveryBlocker | null)?.reasonCode !== "repair_attempts_exhausted") {
       return { requested: false, attempt: 0, exhausted: false };
     }
     const result = await wakeOwnerForRepair({
@@ -381,9 +405,9 @@ export function deliveryReconciler(
       message: input.message,
       detail: input.detail,
     });
-    // Record the signal even when the bounded loop has escalated: the escalation
-    // must not be re-requested on every sweep either.
-    await db
+    // Failed dispatches remain retryable within the bound. Only a real queued
+    // owner run handles the signal; exhaustion stays visible as a blocker.
+    if (result.attempted) await db
       .update(deliveryUnits)
       .set({
         metadata: {
@@ -411,15 +435,22 @@ export function deliveryReconciler(
     reviewHeadSha: string | null;
     blockingFindings: number;
     checks: DeliveryCheck[] | null;
+    findings?: Array<Pick<typeof deliveryFindings.$inferSelect,
+      "source" | "externalId" | "severity" | "state" | "title" | "body" | "filePath" | "line">>;
+    reviewChanges?: string[];
     explicitNonce?: number | null;
   }) {
     return `v1:${hashEvidence({
       reasonCode: input.reasonCode,
       headSha: input.headSha,
-      reviewStatus: input.reviewStatus,
-      reviewHeadSha: input.reviewHeadSha,
-      blockingFindings: input.blockingFindings,
-      checks: input.checks?.map((check) => `${check.name}:${check.status}`).sort() ?? null,
+      reviewStatus: input.reasonCode === "review_blocking_findings" ? input.reviewStatus : null,
+      reviewHeadSha: input.reasonCode === "review_blocking_findings" ? input.reviewHeadSha : null,
+      blockingFindings: input.reasonCode === "review_blocking_findings" ? input.blockingFindings : null,
+      findings: input.reasonCode === "review_blocking_findings" ? input.findings ?? [] : null,
+      reviewChanges: input.reasonCode === "review_blocking_findings" ? input.reviewChanges ?? [] : null,
+      checks: input.reasonCode === "checks_failing"
+        ? input.checks?.map((check) => `${check.name}:${check.status}`).sort() ?? null
+        : null,
       explicitNonce: input.explicitNonce ?? null,
     })}`;
   }
@@ -434,6 +465,10 @@ export function deliveryReconciler(
     review_blocking_findings: true,
     checks_failing: true,
     head_stale: true,
+    conflict: true,
+    merge_queue_blocked: true,
+    merge_rejected: true,
+    pr_closed_unmerged: true,
   };
 
   /** Withdraw readiness, and request a repair only for actionable evidence. */
@@ -990,7 +1025,16 @@ export function deliveryReconciler(
     }
 
     const openBlockingFindings = await db
-      .select({ count: sql<number>`count(*)::int` })
+      .select({
+        source: deliveryFindings.source,
+        externalId: deliveryFindings.externalId,
+        severity: deliveryFindings.severity,
+        state: deliveryFindings.state,
+        title: deliveryFindings.title,
+        body: deliveryFindings.body,
+        filePath: deliveryFindings.filePath,
+        line: deliveryFindings.line,
+      })
       .from(deliveryFindings)
       .where(and(
         eq(deliveryFindings.companyId, input.companyId),
@@ -998,10 +1042,10 @@ export function deliveryReconciler(
         inArray(deliveryFindings.state, ["open", "disputed"]),
         inArray(deliveryFindings.severity, [...GREPTILE_BLOCKING_SEVERITIES]),
       ))
-      .then((rows) => rows[0]?.count ?? 0);
+      .orderBy(asc(deliveryFindings.source), asc(deliveryFindings.externalId));
     const blockingFindings = Math.max(
       reviews.ok ? reviews.value.blockingFindings : 0,
-      openBlockingFindings,
+      openBlockingFindings.length,
       greptileBlocking,
     );
 
@@ -1121,7 +1165,13 @@ export function deliveryReconciler(
           reviewStatus: evidence.reviewStatus,
           reviewHeadSha: evidence.reviewHeadSha,
           blockingFindings: evidence.blockingFindings,
-          checks: evidence.checks,
+          findings: openBlockingFindings,
+          reviewChanges: reviews.ok ? reviews.value.reviews
+            .filter((review) => review.state === "CHANGES_REQUESTED")
+            .map((review) => JSON.stringify([review.login, review.commitSha, review.submittedAt]))
+            .sort() : [],
+          checks: evidence.checks?.filter((check) =>
+            policyRow.requiredChecks.includes(check.name) && !isCheckSuccessful(check.status)) ?? null,
           // An explicit operator/retry reconcile is a fresh request; a poll is
           // not.
           explicitNonce: input.trigger === "retry" || input.trigger === "operator" ? now.getTime() : null,

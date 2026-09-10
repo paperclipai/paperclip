@@ -309,12 +309,8 @@ export function deliveryMergeExecutor(
 
     if (policyRow.mergeQueueMode === "native_merge_queue") {
       if (!pullRequest.nodeId) {
-        await units.markBlocked({
-          companyId: input.companyId,
-          unitId: unit.id,
-          blocker: blocker("merge_queue_blocked", "Pull request node id is unavailable for the merge queue"),
-        });
-        return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: "merge_queue_blocked" };
+        return await blockMerge(input.companyId, unit, "provider_unknown",
+          "Pull request node id is unavailable for the merge queue");
       }
       const enqueued = await github.enqueuePullRequest({
         companyId: input.companyId,
@@ -322,6 +318,16 @@ export function deliveryMergeExecutor(
         host: repository.host,
         pullRequestNodeId: pullRequest.nodeId,
       });
+      await db
+        .update(deliveryUnits)
+        .set({
+          status: enqueued.ok ? "merging" : undefined,
+          mergeAttemptCount: unit.mergeAttemptCount + 1,
+          mergeRequestedAt: now,
+          lastEventAt: enqueued.ok ? now : undefined,
+          updatedAt: now,
+        })
+        .where(eq(deliveryUnits.id, unit.id));
       if (!enqueued.ok) {
         const mapped = mergeFailureReason(enqueued.status, enqueued.message);
         await units.markBlocked({
@@ -329,18 +335,19 @@ export function deliveryMergeExecutor(
           unitId: unit.id,
           blocker: blocker(mapped.reasonCode, mapped.message),
         });
+        await queue.setStatus({
+          companyId: input.companyId, unitId: unit.id, status: "blocked",
+          lastErrorCode: mapped.reasonCode, lastError: mapped.message,
+        });
+        await reconciler.requestRepair({
+          companyId: input.companyId,
+          unit,
+          reasonCode: mapped.reasonCode,
+          message: mapped.message,
+          signal: `native_queue:${unit.acceptedHeadSha}:${mapped.reasonCode}:${mapped.message}`,
+        });
         return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: mapped.reasonCode };
       }
-      await db
-        .update(deliveryUnits)
-        .set({
-          status: "merging",
-          mergeAttemptCount: unit.mergeAttemptCount + 1,
-          mergeRequestedAt: now,
-          lastEventAt: now,
-          updatedAt: now,
-        })
-        .where(eq(deliveryUnits.id, unit.id));
       await events.append({
         companyId: input.companyId,
         unitId: unit.id,

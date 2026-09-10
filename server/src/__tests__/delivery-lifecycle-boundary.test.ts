@@ -3,6 +3,9 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { and, eq, sql } from "drizzle-orm";
 import {
   activityLog,
+  agents,
+  heartbeatRuns,
+  agentWakeupRequests,
   companies,
   createDb,
   deliveryEvents,
@@ -31,9 +34,10 @@ import { createDeliveryDoneGate } from "../services/delivery/done-gate.js";
 import { deliveryPolicyService } from "../services/delivery/policy.js";
 import { deliveryQueueService } from "../services/delivery/queue.js";
 import { deliveryReconciliationService } from "../services/delivery/reconciliation.js";
-import { deliveryUnitService, type DeliveryActor } from "../services/delivery/units.js";
+import { deliveryUnitService, type DeliveryActor, type DeliveryWakeEnqueue } from "../services/delivery/units.js";
 import { deliveryService } from "../services/delivery/service.js";
 import { greptileReviewService } from "../services/delivery/greptile.js";
+import { getNativeDeliveryWait } from "../services/delivery/native-delivery-wait.js";
 import { recordObservedFindings } from "../services/delivery/findings.js";
 import { deliveryMergeExecutor } from "../services/delivery/merge-executor.js";
 import { deliveryReconciler } from "../services/delivery/reconciler.js";
@@ -157,6 +161,9 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     await db.delete(projectWorkspaces);
     await db.delete(issues);
     await db.delete(projects);
+    await db.delete(agentWakeupRequests);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -215,11 +222,11 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     return repository!;
   }
 
-  function services(github: GitHubDeliveryClient) {
+  function services(github: GitHubDeliveryClient, requestOwnerWake?: DeliveryWakeEnqueue) {
     const events = deliveryEventService(db as unknown as Db);
     const policy = deliveryPolicyService(db as unknown as Db, { github });
     const queue = deliveryQueueService(db as unknown as Db);
-    const units = deliveryUnitService(db as unknown as Db, { policy, queue, events, github });
+    const units = deliveryUnitService(db as unknown as Db, { policy, queue, events, github, requestOwnerWake });
     return { events, policy, queue, units };
   }
 
@@ -718,12 +725,15 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
    * registered candidate, and a Greptile MCP read whose payload the test owns.
    */
   async function governedPipeline(
-    input: { reviewState?: "COMPLETED" | "IN_PROGRESS"; revision?: string; failRead?: boolean } = {},
+    input: { reviewState?: "COMPLETED" | "IN_PROGRESS"; revision?: string; failRead?: boolean; canDispatch?: () => boolean } = {},
   ) {
     const companyId = await seedCompany();
     const projectId = await seedProject(companyId, "https://github.com/acme/widget");
     const repository = await seedRepository(companyId);
     const issue = await seedIssue(companyId, projectId);
+    const [owner] = await db.insert(agents).values({
+      companyId, name: "Implementation Agent", role: "engineer", status: "idle",
+    }).returning();
     const [application] = await db.insert(toolApplications).values({
       companyId, name: "Greptile", type: "mcp_http",
     }).returning();
@@ -749,15 +759,16 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     });
     const [unit] = await db.insert(deliveryUnits).values({
       companyId, projectId, repositoryId: repository.id, primaryIssueId: issue.id,
-      targetBranch: "main", sourceBranch: "delivery/x", headSha: HEAD, prNumber: 7, status: "submitted",
+      targetBranch: "main", sourceBranch: "delivery/x", headSha: HEAD, prNumber: 7, status: "submitted", ownerAgentId: owner!.id,
     }).returning();
     await db.insert(deliveryUnitIssues).values({ companyId, unitId: unit!.id, issueId: issue.id, role: "primary" });
 
-    const provider = { addressed: false };
+    const provider = { addressed: false, findingId: "scm-1", body: "P1: duplicate dispatch" };
     const merges: string[] = [];
     const statusWrites: string[] = [];
     const github = githubStub({
       getPullRequest: async () => openPr(HEAD),
+      findOpenPullRequest: async () => openPr(HEAD),
       getChecks: async () => ({ ok: true, value: [] }),
       getReviews: async () => ({
         ok: true,
@@ -767,7 +778,7 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
           blockingFindings: 0, reviews: [],
         },
       }),
-      getReviewComments: async () => reviewComments([{ id: "scm-1", commitSha: input.revision ?? HEAD }]),
+      getReviewComments: async () => reviewComments([{ id: provider.findingId, commitSha: input.revision ?? HEAD }]),
       mergePullRequest: async (_company, _connection, _host, _owner, _repo, _number, mergeInput) => {
         merges.push(mergeInput.sha);
         return { ok: true, value: { merged: true, sha: mergeInput.sha, message: "merged" } };
@@ -781,10 +792,10 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
         commentsFailure: input.failRead,
         comments: [{
           id: "internal-1",
-          commentId: "scm-1",
+          get commentId() { return provider.findingId; },
           // The real payload carries no severity field: the priority is only in
           // the comment body, and `addressed` is the vendor's own flag.
-          body: "P1: duplicate dispatch",
+          get body() { return provider.body; },
           filePath: "dispatch.ts",
           lineStart: 30,
           lineEnd: 36,
@@ -795,7 +806,14 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
         }],
       }),
     });
-    const { queue, ...dependencies } = services(github);
+    const { queue, ...dependencies } = services(github, async (agentId, options) => {
+      if (input.canDispatch && !input.canDispatch()) return null;
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId, agentId, invocationSource: "automation", triggerDetail: "system",
+        status: "queued", contextSnapshot: options.payload,
+      }).returning();
+      return run;
+    });
     const setIssueStatus = async ({ status }: { status: string }) => { statusWrites.push(status); };
     const deps = { ...dependencies, queue, github, greptile, setIssueStatus };
     const reconciler = deliveryReconciler(db, deps);
@@ -803,8 +821,100 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     await queue.enqueue({
       companyId, repositoryId: repository.id, targetBranch: "main", unitId: unit!.id, priority: "medium",
     });
-    return { companyId, projectId, repository, issue, unit: unit!, provider, merges, statusWrites, github, greptile, queue, reconciler, executor };
+    return { companyId, projectId, repository, issue, unit: unit!, provider, merges, statusWrites, github, greptile, queue, reconciler, executor, units: dependencies.units };
   }
+
+  it("delivers unchanged repair evidence after a suppressed dispatch recovers", async () => {
+    let available = false;
+    const pipeline = await governedPipeline({ canDispatch: () => available });
+    const { companyId, unit } = pipeline;
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toEqual([]);
+    available = true;
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
+      .toMatchObject([{ agentId: unit.ownerAgentId, contextSnapshot: { issueId: pipeline.issue.id, reasonCode: "review_blocking_findings" } }]);
+    expect(await repairAttempts(companyId, unit.id)).toMatchObject([{ status: "requested" }, { status: "dispatched" }]);
+  });
+
+  it("exposes exhausted repairs instead of claiming a nonexistent owner continuation", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, unit } = pipeline;
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      pipeline.provider.body = `P1: unresolved defect ${attempt}`;
+      await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    }
+    expect(await pipeline.units.getUnit(companyId, unit.id))
+      .toMatchObject({ status: "blocked", blocker: { reasonCode: "repair_attempts_exhausted" } });
+    expect(await getNativeDeliveryWait(db, companyId, pipeline.issue.id)).toBeNull();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    expect(await pipeline.units.getUnit(companyId, unit.id))
+      .toMatchObject({ blocker: { reasonCode: "repair_attempts_exhausted" } });
+    expect((await repairAttempts(companyId, unit.id)).filter((attempt) => attempt.status === "exhausted")).toHaveLength(1);
+    pipeline.provider.addressed = true;
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "ready_to_merge" });
+  });
+
+  it("wakes on changed blocking findings but ignores unrelated check churn", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, unit } = pipeline;
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    pipeline.github.getChecks = async () => ({ ok: true, value: [{ name: "optional", status: "failure", url: null }] });
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+    pipeline.provider.findingId = "scm-new";
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(2);
+    pipeline.provider.body = "P1: revised actionable explanation";
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+  });
+
+  it.each([{ enabled: false, paused: false }, { enabled: true, paused: true }])(
+    "preserves implementation status when policy cannot own review: %j", async (policyState) => {
+      const pipeline = await governedPipeline();
+      const { companyId, projectId, issue } = pipeline;
+      await db.update(deliveryPolicies).set(policyState).where(eq(deliveryPolicies.projectId, projectId));
+      const [implementation] = await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, issue.id)).returning();
+      await pipeline.units.registerCandidate({
+        companyId, issue: implementation!, actor: userActor,
+        headSha: HEAD, sourceBranch: "delivery/x", artifactReady: true,
+      });
+      const [preserved] = await db.select().from(issues).where(eq(issues.id, issue.id));
+      expect(preserved?.status).toBe("in_progress");
+    },
+  );
+
+  it("queues an owner repair when native merge-queue admission conflicts", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, projectId, unit } = pipeline;
+    pipeline.provider.addressed = true;
+    await db.update(deliveryPolicies).set({ mergeQueueMode: "native_merge_queue" }).where(eq(deliveryPolicies.projectId, projectId));
+    pipeline.github.enqueuePullRequest = async () => ({ ok: false, status: 409, errorCode: "conflict", message: "Conflict" });
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    const lease = await pipeline.queue.leaseNext({ companyId, repositoryId: pipeline.repository.id, targetBranch: "main", leaseOwner: "queue-test" });
+    expect(await pipeline.executor.attemptMerge({
+      companyId, unitId: unit.id, lease: { leaseOwner: "queue-test", leaseEpoch: lease!.leaseEpoch },
+    })).toMatchObject({ blocked: true, reasonCode: "conflict" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
+      .toMatchObject([{ contextSnapshot: { issueId: pipeline.issue.id, reasonCode: "conflict" } }]);
+    expect(pipeline.merges).toEqual([]);
+  });
+
+  it("honors an explicit delivery retry while ordinary reconciliation stays deduplicated", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, unit, issue } = pipeline;
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    await pipeline.reconciler.reconcileIssue({ companyId, issueId: issue.id });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+    const svc = deliveryService(db, { toolGateway: greptileToolGateway({}) });
+    vi.spyOn(svc.services.reconciler, "reconcileIssue").mockImplementation(pipeline.reconciler.reconcileIssue);
+    await svc.retry({ companyId, issueId: issue.id, actor: userActor });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(2);
+  });
 
   async function repairAttempts(companyId: string, unitId: string) {
     return await db

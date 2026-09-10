@@ -219,7 +219,7 @@ export function deliveryService(
         unitId: unit.id,
       });
     }
-    await reconciler.reconcileIssue({ companyId: input.companyId, issueId: input.issueId });
+    await reconciler.reconcileIssue({ companyId: input.companyId, issueId: input.issueId, trigger: "retry" });
     return await units.buildSummary(input.companyId, input.issueId);
   }
 

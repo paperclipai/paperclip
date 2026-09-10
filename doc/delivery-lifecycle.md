@@ -190,9 +190,13 @@ Dependency edges are operator-governed.
 - A new remote head or a blocking finding revokes readiness, holds the queue
   entry, and wakes the implementation owner with a bounded, deduplicated repair
   request (`delivery_repair_attempts`, max 3) through the real heartbeat
-  dispatcher. After the bound the unit escalates instead of looping. Owner
-  wakes that cannot dispatch escalate to the operator rather than sitting as
-  bare rows.
+  dispatcher. Signals include blocking finding identities/content and required
+  failing checks, not unrelated check churn. Only a successfully queued owner
+  run handles a signal; failed dispatches remain retryable within the bound.
+  Exhaustion records `repair_attempts_exhausted` and releases the native waiting
+  claim so recovery can act. An explicit retry requests unchanged evidence
+  again without resetting the bound. Native merge-queue failures use the same
+  repair path and count toward the merge-attempt bound.
 - Findings are persisted in `delivery_findings`. A disposition is recorded but
   never dismisses unilaterally: `disputed` findings keep blocking, and any
   finding still reported on the accepted head reopens.

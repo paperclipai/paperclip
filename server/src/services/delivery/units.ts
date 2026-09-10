@@ -817,7 +817,7 @@ export function deliveryUnitService(
     // issues it covers are now under review. The write is a conditional update,
     // so a concurrent terminal, blocked, or operator-owned status is never
     // reopened and the transition cannot race into a fabricated confirmation.
-    if (unit.pausedAt == null) {
+    if (unit.pausedAt == null && policyRow.enabled && !policyRow.paused) {
       const coveredIssueIds = await db
         .select({ issueId: deliveryUnitIssues.issueId })
         .from(deliveryUnitIssues)
