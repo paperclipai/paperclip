@@ -162,7 +162,7 @@ describe("SupportChatGate", () => {
     );
   });
 
-  it("re-points thread context on a company switch without remounting the widget", async () => {
+  it("hides stale context while switching companies and re-shows with the new tenant", async () => {
     getSessionMock.mockResolvedValue(SESSION);
     companyContextMock.mockImplementation(() => ({ selectedCompanyId: "c-1" }));
     fetchSupportChatSessionMock.mockResolvedValue({ ...CONFIG, company: companyBlock("c-1", "Co One") });
@@ -187,11 +187,30 @@ describe("SupportChatGate", () => {
     await flushReact();
 
     expect(fetchSupportChatSessionMock).toHaveBeenLastCalledWith("c-2");
-    expect(updateSupportChatCompanyMock).toHaveBeenLastCalledWith("paperclip-company-c-2");
-    // Identity did not change: same account, same attestation — the widget
-    // must not tear down (which would close an open chat panel).
-    expect(mountSupportChatMock).toHaveBeenCalledTimes(1);
-    expect(hideSupportChatMock).not.toHaveBeenCalled();
+    expect(mountSupportChatMock).toHaveBeenLastCalledWith(expect.objectContaining({ tenantId: "paperclip-company-c-2" }));
+    expect(hideSupportChatMock).toHaveBeenCalled();
+  });
+
+  it("keeps stale chat hidden when the new company session request fails", async () => {
+    getSessionMock.mockResolvedValue(SESSION);
+    companyContextMock.mockImplementation(() => ({ selectedCompanyId: "c-1" }));
+    fetchSupportChatSessionMock.mockResolvedValue({ ...CONFIG, company: companyBlock("c-1", "Co One") });
+    const root = await renderGate();
+    mountSupportChatMock.mockClear();
+    hideSupportChatMock.mockClear();
+    let rejectRequest!: (err: Error) => void;
+    fetchSupportChatSessionMock.mockImplementation(() => new Promise((_resolve, reject) => { rejectRequest = reject; }));
+    companyContextMock.mockImplementation(() => ({ selectedCompanyId: "c-2" }));
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><ThemeProvider><SupportChatGate /></ThemeProvider></QueryClientProvider>);
+    });
+    await flushReact();
+    expect(hideSupportChatMock).toHaveBeenCalled();
+    expect(mountSupportChatMock).not.toHaveBeenCalled();
+    rejectRequest(new Error("session unavailable"));
+    await flushReact();
+    await flushReact();
+    expect(mountSupportChatMock).not.toHaveBeenCalled();
   });
 
   it("passes no company to the server when rendered without a company provider", async () => {

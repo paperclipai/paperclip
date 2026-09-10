@@ -36,7 +36,8 @@ entry point is untouched.
   native bottom-right launcher and chat panel; product theme is passed through
   Plain's documented `theme` option. Identity mounts once per page lifetime;
   company and theme are context and update in place via `Plain.update` — a
-  company switch never closes an open chat panel, and threads already created
+  company switch temporarily hides chat while the server resolves the new
+  membership, and threads already created
   keep the tenant they started under.
 - The sidebar flag (`SidebarAccountMenu`) hides only while the Plain launcher
   is actually mounted and visible; a script or config failure keeps the flag

@@ -246,7 +246,7 @@ export function mountSupportChat(opts: SupportChatMountOptions): Promise<void> {
         );
         return;
       }
-      await applyUpdate({ hideLauncher: false, theme: opts.theme });
+      await applyConfig(buildConfig(opts));
       if (getSupportChatWidgetStatus() !== "error") setState({ launcherVisible: true });
       return;
     }
@@ -286,6 +286,8 @@ export function hideSupportChat(): Promise<void> {
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[paperclip] Plain chat close failed", err);
+      disableSupportChat();
+      return;
     }
     await applyUpdate({ hideLauncher: true });
     setState({ launcherVisible: false });
