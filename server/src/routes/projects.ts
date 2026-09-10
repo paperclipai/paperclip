@@ -116,7 +116,11 @@ export function projectRoutes(db: Db) {
     if (req.actor.type === "agent" && req.actor.companyId) {
       return req.actor.companyId;
     }
-    return null;
+    // A single-company actor (the common self-hosted case) has an unambiguous
+    // company context without a `?companyId=` query — shortnames only resolve
+    // inside one company anyway, so require exactly one.
+    const actorCompanyIds = req.actor.companyIds ?? [];
+    return actorCompanyIds.length === 1 ? actorCompanyIds[0] : null;
   }
 
   async function normalizeProjectReference(req: Request, rawId: string) {

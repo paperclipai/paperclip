@@ -158,7 +158,7 @@ describe("project env routes", () => {
       explanation: "Allowed by test mock.",
     });
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
-    mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: null });
+    mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: buildProject() });
     mockProjectService.createWorkspace.mockResolvedValue(null);
     mockProjectService.listWorkspaces.mockResolvedValue([]);
     mockEnvironmentService.getById.mockReset();
