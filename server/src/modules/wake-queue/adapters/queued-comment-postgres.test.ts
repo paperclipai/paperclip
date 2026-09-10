@@ -1,15 +1,26 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
+import { queuedCommentIdsFromWakePayload } from "../../../services/issue-queued-comment-queue.js";
 import { createQueuedCommentIssueLockWriter } from "./queued-comment-postgres.js";
 import type { QueuedCommentQueuePostgresAdapterDeps } from "./queued-comment-postgres.js";
 import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
+
+// The steering mutation delivers through the live native-runtime transport.
+// This mock stands in for that transport, so the test proves the module's
+// own read/write behavior without a live provider connection.
+const steerNativeSessionMock = vi.hoisted(() => vi.fn());
+vi.mock("../../../services/native-runtime/native-session-executor.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../services/native-runtime/native-session-executor.js")>();
+  steerNativeSessionMock.mockImplementation(actual.steerNativeSession);
+  return { ...actual, steerNativeSession: steerNativeSessionMock };
+});
 
 // Proves the same two properties the release-half adapter test proves for
 // this module's other transaction: the one company the caller names in
@@ -131,6 +142,25 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
         issueId: input.issueId,
         _paperclipWakeContext: { wakeCommentIds: input.commentIds },
       },
+    });
+    return id;
+  }
+
+  async function seedRunningNativeRun(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    resultJson?: Record<string, unknown>;
+  }): Promise<string> {
+    const id = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      status: "running",
+      runtimeMode: "native",
+      contextSnapshot: { issueId: input.issueId },
+      resultJson: input.resultJson ?? {},
     });
     return id;
   }
@@ -332,5 +362,80 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
 
     expect(queue.protocol).toBe("paperclip_runner_v1");
     expect(queue.steeringDisposition).toBe("temporarily_unavailable");
+  });
+
+  it("scopes the steering mutation to its own company: a foreign-company issue context resolves not_pending and writes nothing", async () => {
+    const companyId = await seedCompany();
+    const otherCompanyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const commentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, commentIds: [commentId] });
+    const targetRunId = await seedRunningNativeRun({ companyId, agentId, issueId, resultJson: { seeded: true } });
+
+    const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
+    await expect(
+      issueLock.steerQueuedWakeComment({
+        // The caller mistakenly names the *other* company on the issue
+        // context; that single value binds every read and write for the
+        // whole transaction, so it alone must decide what is visible.
+        issue: { id: issueId, companyId: otherCompanyId, assigneeAgentId: agentId, executionRunId: null },
+        actor: { actorType: "user", actorId: "user-1", agentId: null },
+        commentId,
+        queueId: wakeId,
+        targetRunId,
+        revision: "unused-the-company-scope-rejects-before-any-revision-check",
+      }),
+    ).rejects.toMatchObject({ code: "queued_comment_not_pending" });
+
+    const wakeRow = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0];
+    expect(wakeRow?.status).toBe("deferred_issue_execution");
+    expect(queuedCommentIdsFromWakePayload(wakeRow?.payload)).toEqual([commentId]);
+
+    const runRow = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, targetRunId)))[0];
+    expect(runRow?.resultJson).toEqual({ seeded: true });
+  });
+
+  it("answers a queue mutation's own steering question with temporarily_unavailable, matching the shared rule for a caller that never probes the live provider", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const firstCommentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    const secondCommentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    const wakeId = await seedDeferredWake({
+      companyId,
+      agentId,
+      issueId,
+      commentIds: [firstCommentId, secondCommentId],
+    });
+    const targetRunId = await seedRunningNativeRun({ companyId, agentId, issueId });
+
+    steerNativeSessionMock.mockResolvedValueOnce({ turnId: "turn-1" });
+
+    const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
+    const peeked = await issueLock.withLockedQueue(
+      {
+        issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+        actor: { actorType: "user", actorId: "user-1", agentId: null },
+        queueId: wakeId,
+      },
+      async (locked) => locked.queue,
+    );
+
+    const result = await issueLock.steerQueuedWakeComment({
+      issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+      actor: { actorType: "user", actorId: "user-1", agentId: null },
+      commentId: firstCommentId,
+      queueId: wakeId,
+      targetRunId,
+      revision: peeked.revision,
+    });
+
+    expect(result.queue.entries).toHaveLength(1);
+    expect(result.queue.entries[0]!.comment.id).toBe(secondCommentId);
+    // A queue mutation never probes the live provider for the steering
+    // answer. Only the read path probes the provider, and it corrects
+    // this value the next time a caller reads the queue.
+    expect(result.queue.steeringDisposition).toBe("temporarily_unavailable");
   });
 });
