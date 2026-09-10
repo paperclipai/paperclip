@@ -24,7 +24,35 @@ stack ancestry. Neither the provisional count nor prior-head review is final
 verification. Root continues live qualification in the original worktree and
 does not push the remotely coordinated branch.
 
-## Current work — September 10, 12:19 UTC: queue admission reconciliation
+## Current work — September 10, 12:44 UTC: exact Discord modal race fixture
+
+The conflict-free reconciliation is published as
+`102fa25b87b70d6346d569a5bef7553a4b980185`, 398 files. Exact-head Greptile review
+finishes **5/5** at 12:34:58 UTC, but fresh CI fails two of 995 chat integration
+cases before the intended Discord modal race mutation. This is a merge hold.
+
+The fixture starts its default one-second lock wait before a database-wide
+sequential reconciliation reaches the target. It also accepts any blocked
+backend; earlier Discord command authorization can take the same connection
+lock, so that observation does not establish the intended modal boundary.
+Production and test files are unchanged from the previous qualified head.
+No production regression is established by this pre-mutation assertion failure.
+
+Replace that timing assumption with an exact modal prepared-query/PID gate:
+let reconciliation reach that statement, take the real connection row lock,
+release the statement, prove that precise backend is blocked, then apply the
+test mutation. Production code, provider calls, deadlines, and final negative
+assertions remain unchanged. A stronger exact-boundary assertion fails all
+three old-fixture variants; the corrected focused cohort passes **8/8** and
+plain server types pass. Independent final review is clear. Full chat
+integration passes **995/995** on a fresh database in 287.16 seconds, with no
+skips or retries. The test hash remains frozen and production is unchanged.
+The earlier CI attempt passed 22 jobs; only the chat shard and required
+verification aggregate failed. Publish one test-only successor, then require
+fresh exact-head CI and review before normal merge. No blind rerun, timeout
+increase, or bypass.
+
+### Prior checkpoint — September 10, 12:19 UTC: queue admission reconciliation
 
 The user asks to fix the new merge conflicts and merge PR #13038. Published
 `e02a63d462ce5d47433b0aeb632bb6fd20aab1ba` passed all 24 CI jobs and exact-head

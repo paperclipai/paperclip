@@ -32052,13 +32052,33 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it.each(["retired runtime", "replaced runtime", "changed credentials"])(
+  it.for(["retired runtime", "replaced runtime", "changed credentials"])(
     "does not enable Discord modals after a connection-lock wait with %s",
-    async (mode) => {
+    async (mode, { signal }) => {
       const fixture = await seedCompany();
       const { endpoint, runtime, service } =
         await configuredDiscordEndpoint(fixture);
       let reconciliation: Promise<unknown> | undefined;
+      let transactionSpy: ReturnType<typeof vi.spyOn> | undefined;
+      let releaseModalQuery!: () => void;
+      const modalQueryGate = new Promise<void>((resolve) => {
+        releaseModalQuery = resolve;
+      });
+      let resolveModalQuery!: (value: { pid: number; query: string }) => void;
+      let rejectModalQuery!: (error: unknown) => void;
+      const modalQueryReady = new Promise<{ pid: number; query: string }>(
+        (resolve, reject) => {
+          resolveModalQuery = resolve;
+          rejectModalQuery = reject;
+        },
+      );
+      // Readiness shares the existing test deadline; a timeout must also
+      // release the intercepted statement so reconciliation can settle.
+      const abort = () => {
+        rejectModalQuery(signal.reason);
+        releaseModalQuery();
+      };
+      signal.addEventListener("abort", abort, { once: true });
       try {
         const [before] = await db
           .select()
@@ -32070,6 +32090,68 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .where(eq(chatEndpoints.id, endpoint.id));
         const original = runtime.get(endpoint.id);
         expect(original).not.toBeNull();
+        const originalTransaction = db.transaction.bind(db);
+        type ObservedSession = {
+          prepareQuery(...args: unknown[]): {
+            execute(...args: unknown[]): Promise<unknown>;
+          };
+        };
+        let capturedModalQuery = false;
+        transactionSpy = vi.spyOn(db, "transaction").mockImplementation((async (
+          ...args: Parameters<typeof originalTransaction>
+        ) => {
+          const [callback, config] = args;
+          return originalTransaction(async (tx) => {
+            const session = (tx as unknown as { session: ObservedSession })
+              .session;
+            const prepareQuery = session.prepareQuery;
+            session.prepareQuery = (...queryArgs) => {
+              const query = queryArgs[0] as {
+                sql: string;
+                params: unknown[];
+              };
+              const prepared = prepareQuery.apply(session, queryArgs);
+              const execute = prepared.execute.bind(prepared);
+              prepared.execute = async (...executeArgs) => {
+                if (
+                  !capturedModalQuery &&
+                  query.sql.startsWith(
+                    'select "enabled", "status", "credential_secret_refs" from "tool_connections"',
+                  ) &&
+                  query.sql.endsWith("for no key update") &&
+                  query.params.length === 2 &&
+                  query.params[0] === fixture.companyId &&
+                  query.params[1] === before!.connectionId
+                ) {
+                  capturedModalQuery = true;
+                  const [backend] = (await tx.execute(
+                    sql`select pg_backend_pid() as pid`,
+                  )) as unknown as Array<{ pid: number }>;
+                  resolveModalQuery({ pid: backend!.pid, query: query.sql });
+                  await modalQueryGate;
+                  signal.throwIfAborted();
+                }
+                return execute(...executeArgs);
+              };
+              return prepared;
+            };
+            try {
+              return await callback(tx);
+            } finally {
+              session.prepareQuery = prepareQuery;
+            }
+          }, config);
+        }) as typeof db.transaction);
+        // Do not hold the connection during the preceding database-wide
+        // runtime/command sweep: command authorization locks it too. Stop
+        // only at the exact modal-upgrade query after runtime qualification.
+        reconciliation = service.reconcileProviderRuntimes();
+        void reconciliation.then(
+          () =>
+            rejectModalQuery(new Error("Modal upgrade query was not reached")),
+          rejectModalQuery,
+        );
+        const modalQuery = await modalQueryReady;
         await db.transaction(async (tx) => {
           await tx
             .select()
@@ -32079,15 +32161,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           const [backend] = (await tx.execute(
             sql`select pg_backend_pid() as pid`,
           )) as unknown as Array<{ pid: number }>;
-          reconciliation = service.reconcileProviderRuntimes();
+          expect(modalQuery.pid).not.toBe(backend!.pid);
+          releaseModalQuery();
           await vi.waitFor(async () => {
             const [state] = (await db.execute(sql`select exists (
-              select 1 from pg_stat_activity where ${backend!.pid} = any(pg_blocking_pids(pid))
-            ) as waiting`)) as unknown as Array<{ waiting: boolean }>;
+                select 1 from pg_stat_activity where pid = ${modalQuery.pid}
+                  and datname = current_database()
+                  and ${backend!.pid} = any(pg_blocking_pids(pid))
+                  and query = ${modalQuery.query}
+              ) as waiting`)) as unknown as Array<{ waiting: boolean }>;
             expect(state!.waiting).toBe(true);
           });
           // The actual upgrade has already qualified this runtime and now
           // waits for this exact connection lock. No provider call is mocked.
+          expect(runtime.get(endpoint.id)).toBe(original);
           if (mode === "changed credentials") {
             await tx
               .update(toolConnections)
@@ -32115,7 +32202,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           capabilities: before!.capabilities,
         }).toEqual(before);
       } finally {
+        releaseModalQuery();
         await reconciliation?.catch(() => undefined);
+        transactionSpy?.mockRestore();
+        signal.removeEventListener("abort", abort);
         await retirePublicationFixture(service, endpoint.id);
       }
     },

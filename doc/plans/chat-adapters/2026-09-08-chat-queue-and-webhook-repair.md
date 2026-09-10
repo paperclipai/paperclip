@@ -7986,3 +7986,51 @@ All seven wake-queue diagnostics are outside-root errors. No standard CI,
 workspace typecheck, or build command invokes that project directly. No
 configuration, test, or standard gate was changed to conceal that failure;
 the normal server and UI typechecks passed as reported above.
+
+## September 10, 12:44 UTC — CI exposes an imprecise Discord race fixture
+
+The reconciliation is published as `102fa25b87b70d6346d569a5bef7553a4b980185`.
+GitHub reports it conflict-free, with 398 files. Exact-head Greptile review
+completes **5/5** at 12:34:58 UTC without actionable findings. Fresh
+[CI 34477184777](https://github.com/paperclipai/paperclip/actions/runs/34477184777)
+then fails the chat shard: **993 passed, two failed**, in 693.19 seconds total.
+The failures are the replaced-runtime and changed-credentials variants of the
+Discord modal connection-lock race, at the pre-mutation waiting assertion.
+The completed run has **22 successful jobs**; only this shard and its required
+verification aggregate fail. Build (including runner verification), typecheck,
+canary, all other test shards, and the browser aggregate pass. Browser shards
+pass 104 cases with four existing optional skips. No rerun, merge, or approval
+bypass occurred.
+
+Both relevant production and test files are byte-identical to the preceding
+head. Independent investigation identifies two fixture problems: the default
+one-second wait starts before the database-wide reconciliation scan reaches
+this endpoint, and the query recognizes any backend blocked by the held row.
+Earlier command authorization also reads that row under lock, so this does not
+uniquely prove the modal-upgrade boundary claimed by the test. The failure is
+not evidence that a revoked runtime actually gained the capability.
+
+A test-only correction gates the exact modal statement and transaction PID
+before executing it, acquires the actual connection row lock, releases that
+statement, and proves the precise blocking relationship before mutation.
+The original prepared statement still executes unchanged. Matching includes
+the modal projection and exact company/connection parameters; the PostgreSQL
+observation includes database, transaction PID, SQL text, and blocking owner.
+Real locks, the one-second lock observation, the overall 15-second test bound,
+and final state assertions remain unchanged. Gates are released, transactions
+joined, and spies/listeners restored even on failure.
+
+Strengthening the old fixture's assertion to require the actual modal query
+produces **three failures** in 10.69 seconds total / 3.33 seconds tests. This
+is a controlled stronger-boundary comparison, not an unchanged-old-source
+replay; the original CI already supplies the unchanged two-case failure.
+The corrected three races and five adjacent capability cases pass **8/8** in
+6.70 seconds total / 0.471 seconds tests, with 987 intentionally unselected.
+Plain server types pass, and independent final review is clear at test hash
+`90c49c38579163598626b07057fab4ac8867d3a036d1cc7adef77c21d69984d6`.
+Production hashes are unchanged. The failure logs remain retained. Full chat
+integration then passes **995/995** on a fresh database in **287.16 seconds**
+total / 280.53 seconds tests, without skips or retries. The test hash still
+matches the reviewed freeze. The successor changes only this fixture and its
+verification notes; the full PR stays at 398 files. Require fresh exact-head CI
+and Greptile review before normal merge, without bypass or self-approval.
