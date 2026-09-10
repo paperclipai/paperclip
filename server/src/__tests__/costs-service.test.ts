@@ -14,6 +14,8 @@ import {
   heartbeatRuns,
   issues,
   projects,
+  routines,
+  routineRuns,
 } from "@paperclipai/db";
 import { costService } from "../services/costs.ts";
 import { financeService } from "../services/finance.ts";
@@ -32,6 +34,7 @@ function makeDb(overrides: Record<string, unknown> = {}) {
     groupBy: vi.fn().mockReturnThis(),
     orderBy: vi.fn().mockReturnThis(),
     limit: vi.fn().mockReturnThis(),
+    offset: vi.fn().mockReturnThis(),
     then: vi.fn().mockResolvedValue([]),
   };
 
@@ -420,6 +423,8 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     await db.delete(financeEvents);
     await db.delete(costEvents);
     await db.delete(activityLog);
+    await db.delete(routineRuns);
+    await db.delete(routines);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(projects);
@@ -932,5 +937,940 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(summary.estimatedDebitCents).toBe(2_000_000_000);
     expect(byKindRow?.debitCents).toBe(4_000_000_000);
     expect(byKindRow?.netCents).toBe(4_000_000_000);
+  });
+
+  /**
+   * The scenario that made per-task numbers untrustworthy: one run touches many
+   * issues, and `GET /issues/{id}/runs` hands the full usage to each of them.
+   * Summing that way inflated the company total by 87%. These tests assert the
+   * property that failure violates — per-issue rows must sum to the company
+   * total, not to a multiple of it.
+   */
+  it("attributes a multi-issue run to one owner so per-issue tokens sum to the company total", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const ownerIssueId = randomUUID();
+    const touchedIssueId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: ownerIssueId,
+        companyId,
+        title: "Owner",
+        status: "in_progress",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "TST-1",
+      },
+      {
+        id: touchedIssueId,
+        companyId,
+        title: "Merely touched",
+        status: "done",
+        priority: "medium",
+        issueNumber: 2,
+        identifier: "TST-2",
+      },
+    ]);
+
+    // One run, owned by TST-1, that also wrote to TST-2. The activity_log rows
+    // are what make the run *appear* under both issues.
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      status: "succeeded",
+      startedAt: new Date("2026-04-10T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-10T00:10:00.000Z"),
+      contextSnapshot: { issueId: ownerIssueId },
+      usageJson: { costUsd: 3.5, billingType: "subscription_included" },
+    });
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "agent",
+        actorId: agentId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: ownerIssueId,
+        runId,
+      },
+      {
+        companyId,
+        actorType: "agent",
+        actorId: agentId,
+        action: "issue.commented",
+        entityType: "issue",
+        entityId: touchedIssueId,
+        runId,
+      },
+    ]);
+
+    // Subscription usage: real tokens, zero billed cents. Exactly the shape
+    // that made the cost panel read $0 while the account burned its quota.
+    await db.insert(costEvents).values({
+      companyId,
+      agentId,
+      issueId: ownerIssueId,
+      heartbeatRunId: runId,
+      provider: "anthropic",
+      biller: "claude",
+      billingType: "subscription_included",
+      costStatus: "unpriced",
+      model: "claude-opus-5",
+      inputTokens: 1_000,
+      cachedInputTokens: 10_000,
+      outputTokens: 100,
+      costCents: 0,
+      occurredAt: new Date("2026-04-10T00:10:00.000Z"),
+    });
+
+    const range = {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    };
+
+    const byIssue = await costService(db).byIssue(companyId, range);
+    const summary = await costService(db).summary(companyId, range);
+
+    // The run is charged once, to its owner — not to both issues it touched.
+    expect(byIssue).toHaveLength(1);
+    expect(byIssue[0]?.issueIdentifier).toBe("TST-1");
+    expect(byIssue[0]?.totalTokens).toBe(11_100);
+    expect(byIssue[0]?.runCount).toBe(1);
+
+    // The conservation property the acceptance criterion turns on.
+    const summedOverIssues = byIssue.reduce((acc, row) => acc + Number(row.totalTokens), 0);
+    expect(summedOverIssues).toBe(summary.totalTokens);
+
+    // Subscription dollars are visible even though billed cents are zero.
+    expect(summary.spendCents).toBe(0);
+    expect(summary.subscriptionCostUsd).toBeCloseTo(3.5, 5);
+    expect(byIssue[0]?.subscriptionCostUsd).toBeCloseTo(3.5, 5);
+  });
+
+  it("counts runs that recorded no usage instead of silently under-reporting", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // A run whose process was lost mid-flight: the model worked, the usage was
+    // never persisted. It burned real tokens and wrote no cost event, so it
+    // must be counted, not silently dropped.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      status: "failed",
+      errorCode: "process_lost",
+      startedAt: new Date("2026-04-10T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-10T00:05:00.000Z"),
+      usageJson: null,
+    });
+
+    const summary = await costService(db).summary(companyId, {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    });
+
+    expect(summary.unmeteredRunCount).toBe(1);
+    expect(summary.lostRunCount).toBe(1);
+    expect(summary.totalTokens).toBe(0);
+  });
+
+  it("does not report a run that died before the model ran as lost consumption", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // The ACP session never completed `session/new`, so no prompt reached the
+    // model. This run is a true zero — counting it as missing consumption is
+    // what made the gap look ~9x larger than it is.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      status: "failed",
+      errorCode: "acpx_session_init_failed",
+      startedAt: new Date("2026-04-10T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-10T00:05:00.000Z"),
+      usageJson: null,
+    });
+
+    const summary = await costService(db).summary(companyId, {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    });
+
+    expect(summary.unmeteredRunCount).toBe(1);
+    expect(summary.neverRanRunCount).toBe(1);
+    // The number that says "the totals are a floor" must stay clean.
+    expect(summary.lostRunCount).toBe(0);
+  });
+
+  // A `succeeded` status is not proof that the run accounted for itself. On the
+  // live company database (2026-09-08) 8 of 1.478 succeeded runs carry no
+  // `usage_json`: usage and `result_json` are written by one guarded update that
+  // is skipped when the run already left `running`, so both are missing on
+  // exactly the same rows. Classifying by status would file these as fine and
+  // hide real consumption, so the gap must key off `error_code` only.
+  it("counts a succeeded run that never persisted usage as lost consumption", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      status: "succeeded",
+      // The shape observed live: no error code to excuse it, and the whole
+      // finalization write (usage and result alike) never landed.
+      errorCode: null,
+      startedAt: new Date("2026-04-10T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-10T00:05:00.000Z"),
+      usageJson: null,
+      resultJson: null,
+    });
+
+    const summary = await costService(db).summary(companyId, {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    });
+
+    expect(summary.unmeteredRunCount).toBe(1);
+    expect(summary.lostRunCount).toBe(1);
+    // It must not be excused as "never reached the model" just for succeeding.
+    expect(summary.neverRanRunCount).toBe(0);
+  });
+
+  // `cancelled` is written by `cancelActiveForAgentInternal`, which terminates a
+  // child process that is already running, so the run can be cancelled mid-turn
+  // after the provider has billed the tokens. Live data (2026-09-08): of 28 such
+  // runs 15 recorded `process_started_at` and 26 emitted output (median
+  // `last_output_seq` 120, max 645, versus max 4 for the pre-dispatch
+  // `acpx_session_*` codes), and one `cancelled` run carries `usage_json` with
+  // 4.57M tokens. Excusing the code as "never reached the model" therefore
+  // deleted real consumption from the declared gap.
+  it("counts a cancelled run that was killed mid-turn as lost consumption", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      status: "cancelled",
+      errorCode: "cancelled",
+      // The live shape: the child process was up and streaming when the cancel
+      // landed, which is exactly why the tokens were already spent.
+      startedAt: new Date("2026-04-10T00:00:00.000Z"),
+      processStartedAt: new Date("2026-04-10T00:00:04.000Z"),
+      finishedAt: new Date("2026-04-10T00:05:34.000Z"),
+      lastOutputAt: new Date("2026-04-10T00:05:30.000Z"),
+      lastOutputSeq: 405,
+      usageJson: null,
+    });
+
+    const summary = await costService(db).summary(companyId, {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    });
+
+    expect(summary.unmeteredRunCount).toBe(1);
+    expect(summary.lostRunCount).toBe(1);
+    // Being cancelled is not evidence that no prompt reached the model.
+    expect(summary.neverRanRunCount).toBe(0);
+  });
+
+  it("reports usage measured on a run but never aggregated as stranded, not lost", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // The adapter failed but still reported usage. The tokens are recorded on the
+    // run and absent from cost_events, so every endpoint that aggregates cost
+    // events silently omits them. That is recoverable, not a blind spot.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      status: "failed",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-04-10T00:00:00.000Z"),
+      finishedAt: new Date("2026-04-10T00:05:00.000Z"),
+      usageJson: { inputTokens: 1000, cachedInputTokens: 200, outputTokens: 300 },
+    });
+
+    const summary = await costService(db).summary(companyId, {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    });
+
+    expect(summary.unmeteredRunCount).toBe(1);
+    expect(summary.strandedRunCount).toBe(1);
+    expect(summary.strandedTokens).toBe(1500);
+    // It was measured, so it is neither a true zero nor an unknown.
+    expect(summary.neverRanRunCount).toBe(0);
+    expect(summary.lostRunCount).toBe(0);
+  });
+
+  it("rolls every firing of a routine up to the routine, including child issues", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const routineId = randomUUID();
+    const firingOneIssueId = randomUUID();
+    const firingTwoIssueId = randomUUID();
+    const childOfFiringTwoId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Triage Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Triagem de Slack",
+      assigneeAgentId: agentId,
+      status: "active",
+    });
+    await db.insert(issues).values([
+      {
+        id: firingOneIssueId,
+        companyId,
+        title: "Triagem 2026-04-10",
+        status: "done",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "TST-1",
+      },
+      {
+        id: firingTwoIssueId,
+        companyId,
+        title: "Triagem 2026-04-11",
+        status: "done",
+        priority: "medium",
+        issueNumber: 2,
+        identifier: "TST-2",
+      },
+      {
+        id: childOfFiringTwoId,
+        companyId,
+        parentId: firingTwoIssueId,
+        title: "Follow-up spawned by the firing",
+        status: "done",
+        priority: "medium",
+        issueNumber: 3,
+        identifier: "TST-3",
+      },
+    ]);
+    await db.insert(routineRuns).values([
+      {
+        companyId,
+        routineId,
+        source: "schedule",
+        status: "completed",
+        linkedIssueId: firingOneIssueId,
+      },
+      {
+        companyId,
+        routineId,
+        source: "schedule",
+        status: "completed",
+        linkedIssueId: firingTwoIssueId,
+      },
+    ]);
+
+    const baseEvent = {
+      companyId,
+      agentId,
+      provider: "anthropic",
+      biller: "claude",
+      billingType: "subscription_included" as const,
+      model: "claude-haiku-4-5",
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      costCents: 0,
+    };
+    await db.insert(costEvents).values([
+      {
+        ...baseEvent,
+        issueId: firingOneIssueId,
+        heartbeatRunId: null,
+        inputTokens: 100,
+        occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+      },
+      {
+        ...baseEvent,
+        issueId: firingTwoIssueId,
+        heartbeatRunId: null,
+        inputTokens: 200,
+        occurredAt: new Date("2026-04-11T00:00:00.000Z"),
+      },
+      {
+        ...baseEvent,
+        issueId: childOfFiringTwoId,
+        heartbeatRunId: null,
+        inputTokens: 400,
+        occurredAt: new Date("2026-04-11T00:05:00.000Z"),
+      },
+    ]);
+
+    const rows = await costService(db).byRoutine(companyId, {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.routineTitle).toBe("Triagem de Slack");
+    // Both firings plus the child issue spawned by the second one.
+    expect(Number(rows[0]?.totalTokens)).toBe(700);
+    expect(Number(rows[0]?.issueCount)).toBe(3);
+  });
+
+  // A run is claimed (`startedAt`) long before it finalizes, and the cost event
+  // is written only at finalization. Counting by start time therefore reported
+  // every run currently in flight as consumption that was lost.
+  it("does not report a still-running run as lost consumption", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      status: "running",
+      startedAt: new Date("2026-04-10T00:00:00.000Z"),
+      finishedAt: null,
+      usageJson: null,
+    });
+
+    const summary = await costService(db).summary(companyId, {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    });
+
+    expect(summary.unmeteredRunCount).toBe(0);
+    expect(summary.lostRunCount).toBe(0);
+  });
+
+  // The gap count is windowed on finalization so it lines up with
+  // `cost_events.occurred_at`. A run that starts before the window and finishes
+  // inside it belongs to the window its ledger event would have landed in.
+  it("windows unmetered runs on finalization, not on start", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // Started 31 Mar, finished 1 Apr: the ledger would have dated it 1 Apr.
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      status: "failed",
+      errorCode: "process_lost",
+      startedAt: new Date("2026-03-31T23:50:00.000Z"),
+      finishedAt: new Date("2026-04-01T00:10:00.000Z"),
+      usageJson: null,
+    });
+
+    const inWindow = await costService(db).summary(companyId, {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    });
+    expect(inWindow.lostRunCount).toBe(1);
+
+    const previousWindow = await costService(db).summary(companyId, {
+      from: new Date("2026-03-01T00:00:00.000Z"),
+      to: new Date("2026-03-31T23:59:59.999Z"),
+    });
+    expect(previousWindow.lostRunCount).toBe(0);
+  });
+
+  // Nothing forbids parenting a routine firing to another routine's firing, and
+  // when that happened the nested subtree was summed into both routine rows, so
+  // the routine totals could exceed the company total.
+  it("does not count a nested routine firing against both routines", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const outerRoutineId = randomUUID();
+    const innerRoutineId = randomUUID();
+    const outerFiringIssueId = randomUUID();
+    const innerFiringIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Triage Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(routines).values([
+      {
+        id: outerRoutineId,
+        companyId,
+        title: "Rotina externa",
+        assigneeAgentId: agentId,
+        status: "active",
+      },
+      {
+        id: innerRoutineId,
+        companyId,
+        title: "Rotina aninhada",
+        assigneeAgentId: agentId,
+        status: "active",
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: outerFiringIssueId,
+        companyId,
+        title: "Disparo externo",
+        status: "done",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "TST-1",
+      },
+      {
+        id: innerFiringIssueId,
+        companyId,
+        // The nested firing hangs off the outer firing's issue.
+        parentId: outerFiringIssueId,
+        title: "Disparo aninhado",
+        status: "done",
+        priority: "medium",
+        issueNumber: 2,
+        identifier: "TST-2",
+      },
+    ]);
+    await db.insert(routineRuns).values([
+      {
+        companyId,
+        routineId: outerRoutineId,
+        source: "schedule",
+        status: "completed",
+        linkedIssueId: outerFiringIssueId,
+      },
+      {
+        companyId,
+        routineId: innerRoutineId,
+        source: "schedule",
+        status: "completed",
+        linkedIssueId: innerFiringIssueId,
+      },
+    ]);
+
+    const baseEvent = {
+      companyId,
+      agentId,
+      provider: "anthropic",
+      biller: "claude",
+      billingType: "subscription_included" as const,
+      model: "claude-haiku-4-5",
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      costCents: 0,
+      heartbeatRunId: null,
+    };
+    await db.insert(costEvents).values([
+      {
+        ...baseEvent,
+        issueId: outerFiringIssueId,
+        inputTokens: 100,
+        occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+      },
+      {
+        ...baseEvent,
+        issueId: innerFiringIssueId,
+        inputTokens: 400,
+        occurredAt: new Date("2026-04-10T00:05:00.000Z"),
+      },
+    ]);
+
+    const range = {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    };
+    const rows = await costService(db).byRoutine(companyId, range);
+    const summary = await costService(db).summary(companyId, range);
+
+    const outer = rows.find((row) => row.routineId === outerRoutineId);
+    const inner = rows.find((row) => row.routineId === innerRoutineId);
+
+    // The nested firing's tokens belong to the routine that opened it, once.
+    expect(Number(outer?.totalTokens)).toBe(100);
+    expect(Number(inner?.totalTokens)).toBe(400);
+
+    // The property the acceptance criterion turns on: routines cannot sum to
+    // more than the company consumed.
+    const summedOverRoutines = rows.reduce(
+      (acc, row) => acc + Number(row.totalTokens),
+      0,
+    );
+    expect(summedOverRoutines).toBe(summary.totalTokens);
+  });
+
+  // A firing root that was hidden, or that is harness work, is excluded from
+  // `byIssue`. Counting it in the routine rollup made the two views disagree.
+  it("excludes a hidden firing root from the routine rollup", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const routineId = randomUUID();
+    const visibleFiringId = randomUUID();
+    const hiddenFiringId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Triage Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(routines).values({
+      id: routineId,
+      companyId,
+      title: "Triagem de Slack",
+      assigneeAgentId: agentId,
+      status: "active",
+    });
+    await db.insert(issues).values([
+      {
+        id: visibleFiringId,
+        companyId,
+        title: "Disparo visivel",
+        status: "done",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "TST-1",
+      },
+      {
+        id: hiddenFiringId,
+        companyId,
+        title: "Disparo oculto",
+        status: "done",
+        priority: "medium",
+        issueNumber: 2,
+        identifier: "TST-2",
+        hiddenAt: new Date("2026-04-12T00:00:00.000Z"),
+      },
+    ]);
+    await db.insert(routineRuns).values([
+      {
+        companyId,
+        routineId,
+        source: "schedule",
+        status: "completed",
+        linkedIssueId: visibleFiringId,
+      },
+      {
+        companyId,
+        routineId,
+        source: "schedule",
+        status: "completed",
+        linkedIssueId: hiddenFiringId,
+      },
+    ]);
+
+    const baseEvent = {
+      companyId,
+      agentId,
+      provider: "anthropic",
+      biller: "claude",
+      billingType: "subscription_included" as const,
+      model: "claude-haiku-4-5",
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      costCents: 0,
+      heartbeatRunId: null,
+    };
+    await db.insert(costEvents).values([
+      {
+        ...baseEvent,
+        issueId: visibleFiringId,
+        inputTokens: 100,
+        occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+      },
+      {
+        ...baseEvent,
+        issueId: hiddenFiringId,
+        inputTokens: 900,
+        occurredAt: new Date("2026-04-10T00:05:00.000Z"),
+      },
+    ]);
+
+    const range = {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    };
+    const rows = await costService(db).byRoutine(companyId, range);
+
+    expect(rows).toHaveLength(1);
+    // The hidden firing's 900 tokens stay out, matching `byIssue`.
+    expect(Number(rows[0]?.totalTokens)).toBe(100);
+    expect(Number(rows[0]?.issueCount)).toBe(1);
+  });
+
+  // `limit` is capped at 500, so without an offset a company with more
+  // cost-bearing issues than the cap could never read the rows past it, and
+  // summing the endpoint could not reproduce the company total.
+  it("pages past the ranked cap so the rows still sum to the company total", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Cost Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const issueIds = [randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(issues).values(
+      issueIds.map((id, index) => ({
+        id,
+        companyId,
+        title: `Task ${index + 1}`,
+        status: "done",
+        priority: "medium" as const,
+        issueNumber: index + 1,
+        identifier: `TST-${index + 1}`,
+      })),
+    );
+
+    const baseEvent = {
+      companyId,
+      agentId,
+      provider: "anthropic",
+      biller: "claude",
+      billingType: "subscription_included" as const,
+      model: "claude-haiku-4-5",
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      costCents: 0,
+      heartbeatRunId: null,
+    };
+    await db.insert(costEvents).values(
+      issueIds.map((issueId, index) => ({
+        ...baseEvent,
+        issueId,
+        inputTokens: (index + 1) * 100,
+        occurredAt: new Date("2026-04-10T00:00:00.000Z"),
+      })),
+    );
+
+    const range = {
+      from: new Date("2026-04-01T00:00:00.000Z"),
+      to: new Date("2026-04-15T23:59:59.999Z"),
+    };
+    const service = costService(db);
+    const summary = await service.summary(companyId, range);
+
+    // Walk the whole aggregate one page at a time.
+    const firstPage = await service.byIssue(companyId, range, 2, 0);
+    const secondPage = await service.byIssue(companyId, range, 2, 2);
+
+    expect(firstPage).toHaveLength(2);
+    expect(secondPage).toHaveLength(1);
+
+    // No row is served twice and none is skipped.
+    const paged = [...firstPage, ...secondPage];
+    expect(new Set(paged.map((row) => row.issueId)).size).toBe(3);
+
+    const summedOverPages = paged.reduce(
+      (acc, row) => acc + Number(row.totalTokens),
+      0,
+    );
+    expect(summedOverPages).toBe(summary.totalTokens);
   });
 });

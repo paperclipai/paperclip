@@ -27,6 +27,28 @@ export interface CostSummary {
   spendCents: number;
   budgetCents: number;
   utilizationPercent: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  /** cents actually billed through a metered api — the only spend that hits a card */
+  meteredCostCents: number;
+  /**
+   * dollar value of subscription usage. `spendCents` stays 0 for it by design
+   * (the plan already paid), so this is the only figure that shows the account
+   * burning through its quota before a lockout.
+   */
+  subscriptionCostUsd: number;
+  eventCount: number;
+  runCount: number;
+  /** runs whose cost event carries no price — usage known, dollars unknown */
+  unpricedRunCount: number;
+  /** runs that produced no cost event at all */
+  unmeteredRunCount: number;
+  strandedRunCount: number;
+  strandedTokens: number;
+  neverRanRunCount: number;
+  lostRunCount: number;
 }
 
 export interface IssueCostSummary {
@@ -116,6 +138,60 @@ export interface CostWindowSpendRow {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
+}
+
+/**
+ * tokens and cost attributed to a single task, ranked by token volume.
+ *
+ * one row per run: a run belongs to exactly one issue, the one resolved into
+ * `cost_events.issue_id` at finalization. Summing each issue's `/runs` instead
+ * inflates the company total by ~87%, because that route hands the full run —
+ * usage included — to every issue the run merely touched.
+ *
+ * runs with no owning issue are omitted here and reported by `summary`, so the
+ * remainder stays visible instead of being folded into some task.
+ */
+export interface CostByIssue {
+  issueId: string | null;
+  issueIdentifier: string | null;
+  issueTitle: string | null;
+  issueStatus: string | null;
+  projectId: string | null;
+  projectName: string | null;
+  costCents: number;
+  meteredCostCents: number;
+  subscriptionCostUsd: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  runCount: number;
+  unpricedRunCount: number;
+}
+
+/**
+ * tokens and cost per routine, rolled up across every firing.
+ *
+ * each firing opens its own issue, so a daily routine's cost is otherwise
+ * scattered across dozens of unrelated-looking tasks. Costs are counted through
+ * the linked issue's whole subtree, because work a firing delegates to a child
+ * is still that routine's cost.
+ */
+export interface CostByRoutine {
+  routineId: string;
+  routineTitle: string | null;
+  routineStatus: string | null;
+  assigneeAgentId: string | null;
+  assigneeAgentName: string | null;
+  /** issues reachable from this routine's firings, subtree included */
+  issueCount: number;
+  runCount: number;
+  costCents: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  subscriptionCostUsd: number;
 }
 
 /** cost attributed to a project via heartbeat run → activity log → issue → project chain */

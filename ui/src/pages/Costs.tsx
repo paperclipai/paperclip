@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   BudgetPolicySummary,
@@ -34,7 +35,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const NO_COMPANY = "__none__";
-export type CostsMainTab = "overview" | "budgets" | "providers" | "billers" | "finance";
+export type CostsMainTab =
+  | "overview"
+  | "consumption"
+  | "budgets"
+  | "providers"
+  | "billers"
+  | "finance";
 
 export interface CostsProps {
   /** Render inside Audit without a second page-level title or breadcrumb. */
@@ -44,6 +51,22 @@ export interface CostsProps {
   lockTab?: boolean;
   /** Budgets is a peer Audit section, so omit it from the Costs sub-navigation. */
   hideBudgetsTab?: boolean;
+}
+
+/** rows fetched per consumption ranking — matches the API's own default. */
+const CONSUMPTION_LIMIT = 20;
+
+/**
+ * Subscription runs bill 0 cents, so `formatCents` reads as "free" for the bulk
+ * of what the company actually consumes. This formats the dollar value the plan
+ * absorbed, which is the only number that moves on those rows.
+ */
+function formatUsd(value: number): string {
+  return value.toLocaleString("en-US", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: value >= 100 ? 0 : 2,
+  });
 }
 
 function currentWeekRange(): { from: string; to: string } {
@@ -163,9 +186,18 @@ export function Costs({
   lockTab = false,
   hideBudgetsTab = false,
 }: CostsProps = {}) {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
+
+  // Routes are company-prefixed when the company defines an issue prefix, the
+  // same resolution DecisionResolver uses. Without it the link 404s on a board
+  // that has more than one company.
+  const routePrefix = selectedCompany?.issuePrefix ?? "";
+  const issuePath = (ref: string) =>
+    routePrefix ? `/${routePrefix}/issues/${ref}` : `/issues/${ref}`;
+  const routinePath = (routineId: string) =>
+    routePrefix ? `/${routePrefix}/routines/${routineId}` : `/routines/${routineId}`;
 
   const [mainTab, setMainTab] = useState<CostsMainTab>(initialTab);
   const [activeProvider, setActiveProvider] = useState("all");
@@ -309,6 +341,30 @@ export function Costs({
     }
     return map;
   }, [spendData?.byAgentModel]);
+
+  // Task and routine consumption (GRO-559). Kept off the overview query so the
+  // page that most operators open first does not pay for the recursive routine
+  // rollup; it loads when the tab is actually selected.
+  const {
+    data: consumptionData,
+    isLoading: consumptionLoading,
+    error: consumptionError,
+  } = useQuery({
+    queryKey: [
+      queryKeys.usageByIssue(companyId, from || undefined, to || undefined, CONSUMPTION_LIMIT),
+      queryKeys.usageByRoutine(companyId, from || undefined, to || undefined, CONSUMPTION_LIMIT),
+    ],
+    queryFn: async () => {
+      const [byIssue, byRoutine] = await Promise.all([
+        costsApi.byIssue(companyId, from || undefined, to || undefined, CONSUMPTION_LIMIT),
+        costsApi.byRoutine(companyId, from || undefined, to || undefined, CONSUMPTION_LIMIT),
+      ]);
+      return { byIssue, byRoutine };
+    },
+    enabled: !!selectedCompanyId && customReady && mainTab === "consumption",
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
 
   const { data: providerData } = useQuery({
     queryKey: queryKeys.usageByProvider(companyId, from || undefined, to || undefined),
@@ -648,6 +704,7 @@ export function Costs({
         {!lockTab ? (
           <TabsList variant="line" className="justify-start">
             <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="consumption">Tasks &amp; routines</TabsTrigger>
             {!hideBudgetsTab ? <TabsTrigger value="budgets">Budgets</TabsTrigger> : null}
             <TabsTrigger value="providers">Providers</TabsTrigger>
             <TabsTrigger value="billers">Billers</TabsTrigger>
@@ -855,6 +912,156 @@ export function Costs({
 
                   <FinanceTimelineCard rows={topFinanceEvents.slice(0, 6)} emptyMessage="No finance events yet. Add account-level charges once biller invoices or credits land." />
                 </div>
+              </div>
+            </>
+          )}
+        </TabsContent>
+
+        <TabsContent value="consumption" className="mt-4 space-y-4">
+          {showCustomPrompt ? (
+            <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
+          ) : consumptionLoading ? (
+            <PageSkeleton variant="costs" />
+          ) : consumptionError ? (
+            <p className="text-sm text-destructive">{(consumptionError as Error).message}</p>
+          ) : (
+            <>
+              <div className="grid gap-3 lg:grid-cols-4">
+                <MetricTile
+                  label="Tokens in range"
+                  value={formatTokens(spendData?.summary.totalTokens ?? 0)}
+                  subtitle={`${spendData?.summary.runCount ?? 0} runs on the ledger`}
+                  icon={Coins}
+                />
+                <MetricTile
+                  label="Subscription value"
+                  value={formatUsd(spendData?.summary.subscriptionCostUsd ?? 0)}
+                  subtitle="Absorbed by the plan — bills 0 cents by design"
+                  icon={DollarSign}
+                />
+                <MetricTile
+                  label="Metered spend"
+                  value={formatCents(spendData?.summary.meteredCostCents ?? 0)}
+                  subtitle="The only spend that hits a card"
+                  icon={ReceiptText}
+                />
+                <MetricTile
+                  label="Runs off the ledger"
+                  value={String(spendData?.summary.unmeteredRunCount ?? 0)}
+                  subtitle={
+                    /* Only `lost` makes the rankings a floor: stranded runs are
+                       measured but unaggregated, and never-ran ones consumed
+                       nothing at all. Spelling out the split keeps the gap from
+                       reading as missing data. */
+                    `${spendData?.summary.strandedRunCount ?? 0} stranded · ${
+                      spendData?.summary.neverRanRunCount ?? 0
+                    } never ran · ${spendData?.summary.lostRunCount ?? 0} lost`
+                  }
+                  icon={ArrowDownLeft}
+                />
+              </div>
+
+              <div className="grid gap-4 xl:grid-cols-2">
+                <Card>
+                  <CardHeader className="px-5 pt-5 pb-2">
+                    <CardTitle className="text-base">Top tasks by tokens</CardTitle>
+                    <CardDescription>
+                      Each run counted once, against the task that owns it. Tasks with no
+                      run cost, and runs that belong to no task, are left out rather than
+                      folded in — the difference from the total above stays visible.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-2 px-5 pb-5 pt-2">
+                    {(consumptionData?.byIssue.length ?? 0) === 0 ? (
+                      <p className="text-sm text-muted-foreground">No task-attributed run costs yet.</p>
+                    ) : (
+                      consumptionData?.byIssue.map((row, index) => (
+                        <div
+                          key={row.issueId ?? `issue-${index}`}
+                          className="flex items-start justify-between gap-3 border border-border px-3 py-2 text-sm"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex min-w-0 items-center gap-2">
+                              {row.issueIdentifier ? (
+                                <Link
+                                  to={issuePath(row.issueIdentifier)}
+                                  className="font-mono text-xs text-primary hover:underline"
+                                >
+                                  {row.issueIdentifier}
+                                </Link>
+                              ) : null}
+                              {row.issueStatus ? <StatusBadge status={row.issueStatus} /> : null}
+                            </div>
+                            <div className="mt-1 truncate">{row.issueTitle ?? row.issueId}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {row.projectName ?? "No project"}
+                            </div>
+                          </div>
+                          <div className="shrink-0 text-right tabular-nums">
+                            <div className="font-medium">{formatTokens(row.totalTokens)} tok</div>
+                            <div className="text-xs text-muted-foreground">
+                              {formatUsd(row.subscriptionCostUsd)} plan
+                              {row.meteredCostCents > 0 ? ` · ${formatCents(row.meteredCostCents)} billed` : ""}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {row.runCount} run{row.runCount === 1 ? "" : "s"}
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </CardContent>
+                </Card>
+
+                <Card>
+                  <CardHeader className="px-5 pt-5 pb-2">
+                    <CardTitle className="text-base">Top routines by tokens</CardTitle>
+                    <CardDescription>
+                      Every firing rolled back up to its routine, subtree included. Each
+                      firing opens its own task, so a daily routine is otherwise scattered
+                      across dozens of unrelated-looking tasks.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-2 px-5 pb-5 pt-2">
+                    {(consumptionData?.byRoutine.length ?? 0) === 0 ? (
+                      <p className="text-sm text-muted-foreground">No routine has consumed tokens yet.</p>
+                    ) : (
+                      consumptionData?.byRoutine.map((row) => (
+                        <div
+                          key={row.routineId}
+                          className="flex items-start justify-between gap-3 border border-border px-3 py-2 text-sm"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <Link
+                                to={routinePath(row.routineId)}
+                                className="truncate text-primary hover:underline"
+                              >
+                                {row.routineTitle ?? row.routineId}
+                              </Link>
+                              {row.routineStatus ? <StatusBadge status={row.routineStatus} /> : null}
+                            </div>
+                            {row.assigneeAgentName ? (
+                              <div className="mt-1">
+                                <Identity name={row.assigneeAgentName} size="xs" />
+                              </div>
+                            ) : null}
+                          </div>
+                          <div className="shrink-0 text-right tabular-nums">
+                            <div className="font-medium">{formatTokens(row.totalTokens)} tok</div>
+                            <div className="text-xs text-muted-foreground">
+                              {formatUsd(row.subscriptionCostUsd)} plan
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {row.runCount} run{row.runCount === 1 ? "" : "s"} · {row.issueCount} task
+                              {row.issueCount === 1 ? "" : "s"}
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </CardContent>
+                </Card>
               </div>
             </>
           )}

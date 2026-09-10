@@ -45,6 +45,23 @@ export function parseCostLimit(query: Record<string, unknown>) {
   return limit;
 }
 
+/**
+ * Page offset for the ranked cost reports.
+ *
+ * `limit` is capped, so without an offset a company with more cost-bearing
+ * issues than the cap has no way to read the rows past it, and summing the
+ * response could never match the company total.
+ */
+export function parseCostOffset(query: Record<string, unknown>) {
+  const raw = Array.isArray(query.offset) ? query.offset[0] : query.offset;
+  if (raw == null || raw === "") return 0;
+  const offset = typeof raw === "number" ? raw : Number.parseInt(String(raw), 10);
+  if (!Number.isFinite(offset) || offset < 0) {
+    throw badRequest("invalid 'offset' value");
+  }
+  return offset;
+}
+
 export function costRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -324,6 +341,28 @@ export function costRoutes(
     if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
     const range = parseCostDateRange(req.query);
     const rows = await costs.byProject(companyId, range);
+    res.json(rows);
+  });
+
+  router.get("/companies/:companyId/costs/by-issue", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const range = parseCostDateRange(req.query);
+    const limit = parseCostLimit(req.query);
+    const offset = parseCostOffset(req.query);
+    const rows = await costs.byIssue(companyId, range, limit, offset);
+    res.json(rows);
+  });
+
+  router.get("/companies/:companyId/costs/by-routine", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await assertCompanyCostReadAllowed(req, res, companyId))) return;
+    const range = parseCostDateRange(req.query);
+    const limit = parseCostLimit(req.query);
+    const offset = parseCostOffset(req.query);
+    const rows = await costs.byRoutine(companyId, range, limit, offset);
     res.json(rows);
   });
 
