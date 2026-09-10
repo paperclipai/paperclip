@@ -69,8 +69,7 @@ getOrCreatePaperclipReactRoot(window, rootElement).render(
         <ThemeProvider>
           <BrowserRouter>
             <CompanyProvider>
-              {/* Inside CompanyProvider so support threads can carry the
-                  selected company; the gate itself renders nothing. */}
+              {/* Mounts account-scoped support chat with name and verified email. */}
               <SupportChatGate />
               <EditorAutocompleteProvider>
                 <ToastProvider>
