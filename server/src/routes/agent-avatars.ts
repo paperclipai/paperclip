@@ -1,4 +1,4 @@
-import { pipeline } from "node:stream/promises";
+import { finished, pipeline } from "node:stream/promises";
 import { Router } from "express";
 import { z } from "zod";
 import { AGENT_PALETTE_IDS, AGENT_AVATAR_SIZES, CHARACTER_STATES, appearanceForPalette, type AgentAvatarSize } from "@paperclipai/shared";
@@ -35,7 +35,13 @@ export function agentAvatarRoutes(injected?: ReturnType<typeof createAgentAvatar
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.type("png");
       const validators = req.get("if-none-match")?.split(",").map(value => value.trim().replace(/^W\//, ""));
-      if (validators?.some(value => value === "*" || value === etag)) { stream.destroy(); res.status(304).end(); return; }
+      if (validators?.some(value => value === "*" || value === etag)) {
+        // ReadStream opens asynchronously. Await disposal so a concurrent cache
+        // deletion cannot emit an unhandled open error after the 304 is sent.
+        stream.destroy();
+        await finished(stream, { cleanup: true }).catch(() => {});
+        res.status(304).end(); return;
+      }
       res.setHeader("Content-Length", byteSize);
       await pipeline(stream, res);
     } catch (error) {
