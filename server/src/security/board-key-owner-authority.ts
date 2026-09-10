@@ -127,7 +127,7 @@ export async function ownerHasRequiredGrant(
     const rolesByCompany = new Map(rows.map((row) => [row.companyId, row.membershipRole]));
     return companyIds.every((companyId) => {
       const role = rolesByCompany.get(companyId);
-      return typeof role === "string" && requirement.roles.includes(role);
+      return typeof role === "string" && requirement.roles.some((allowedRole) => allowedRole === role);
     });
   }
   const { permissionKeys } = requirement;
