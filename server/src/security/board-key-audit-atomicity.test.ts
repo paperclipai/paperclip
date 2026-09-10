@@ -397,6 +397,18 @@ describeEmbeddedPostgres("board-key allow audit / mutation atomicity", () => {
       expect(await committedAudit(keyId)).toHaveLength(0);
     }, 60_000);
 
+    it("fails a successful no-mutation response when its allow audit cannot persist", async () => {
+      // `board_api_key_id` is a uuid column, so settlement fails before the
+      // successful response can be sent to the client.
+      const app = createApp("not-a-uuid", (_req, res) => {
+        res.status(204).end();
+      });
+
+      const response = await request(app).post("/api/companies").send({});
+      expect(response.status).toBe(500);
+      expect(response.body).toEqual({ error: "Internal server error" });
+    }, 60_000);
+
     it("refuses to commit a direct mutation when the coupled audit write fails", async () => {
       const marker = `pipeline-audit-failure-${randomUUID()}`;
       // `board_api_key_id` is a uuid column, so this key identity makes the

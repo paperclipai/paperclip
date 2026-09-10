@@ -883,14 +883,40 @@ export function boardKeyAuthorizationMiddleware(db: Db): RequestHandler {
     }
     const metadata = lookupBoardKeyRoute(req.method, req.originalUrl);
     const context = createBoardKeyAuditContext();
-    // A staged allow disposition that never reached a domain transaction is
-    // resolved once the response is complete: recorded when the request
-    // succeeded without a rollback, dropped otherwise.
-    const settle = (statusCode: number) => {
-      void settleBoardKeyAuditContext(db, context, statusCode);
-    };
-    res.on("finish", () => settle(res.statusCode));
-    res.on("close", () => settle(res.writableEnded ? res.statusCode : 0));
+    // Hold the final response until a staged allow disposition that never
+    // reached a domain transaction is durable. This makes an audit outage fail
+    // the request instead of returning an unaudited success. Read-only allows
+    // are already persisted by the gate, and mutations flush inside their own
+    // transaction, so this only gates successful no-mutation responses.
+    const originalEnd = res.end.bind(res);
+    let ending = false;
+    res.end = ((...args: unknown[]) => {
+      if (ending) return res;
+      ending = true;
+      void (async () => {
+        try {
+          await settleBoardKeyAuditContext(db, context, res.statusCode);
+          originalEnd(...args as Parameters<typeof originalEnd>);
+        } catch (err) {
+          logger.error(
+            { err, boardApiKeyId: req.actor.keyId, action: metadata.action },
+            "Board-key no-mutation authorization audit failed closed",
+          );
+          if (res.headersSent) {
+            res.destroy(err instanceof Error ? err : new Error(String(err)));
+            return;
+          }
+          res.statusCode = 500;
+          res.removeHeader("Content-Length");
+          res.setHeader("Content-Type", "application/json; charset=utf-8");
+          originalEnd(JSON.stringify({ error: "Internal server error" }));
+        }
+      })();
+      return res;
+    }) as typeof res.end;
+    res.on("close", () => {
+      if (!ending) void settleBoardKeyAuditContext(db, context, 0);
+    });
     // The context stays active across the downstream handler chain, so the
     // instrumented database handle can couple the disposition to its mutation.
     await runWithBoardKeyAuditContext(context, async () => {

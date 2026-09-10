@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { boardApiKeyAuthorizationEvents, type Db } from "@paperclipai/db";
-import { logger } from "../middleware/logger.js";
 
 /**
  * Board-key allow dispositions must be atomic with the mutation they authorize.
@@ -420,15 +419,8 @@ export async function settleBoardKeyAuditContext(
   if (!succeeded) return;
   if (context.mutationAttempted) return;
 
-  try {
-    await db.insert(boardApiKeyAuthorizationEvents).values({
-      ...pending,
-      details: { ...(pending.details ?? {}), coupling: BOARD_KEY_AUDIT_COUPLINGS.noMutation },
-    });
-  } catch (err) {
-    logger.error(
-      { err, boardApiKeyId: pending.boardApiKeyId, action: pending.action },
-      "Failed to persist settled board-key allow disposition",
-    );
-  }
+  await db.insert(boardApiKeyAuthorizationEvents).values({
+    ...pending,
+    details: { ...(pending.details ?? {}), coupling: BOARD_KEY_AUDIT_COUPLINGS.noMutation },
+  });
 }
