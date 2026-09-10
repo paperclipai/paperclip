@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 const QUEUE_CONTEXT_KEY = "_paperclipWakeContext";
 const QUEUE_IDS_KEY = "wakeCommentIds";
 
@@ -47,6 +49,27 @@ export function withQueuedCommentIdsInWakePayload(
   }
   payload[QUEUE_CONTEXT_KEY] = context;
   return payload;
+}
+
+/**
+ * Fingerprints one queued-comment queue: the wake id plus every comment's id
+ * and last-updated time. A mutation that changes the queue changes this
+ * value, so a caller can echo it back to detect a queue it no longer holds
+ * the latest view of. The read path (`GET /queued-comments`) and every queue
+ * mutation must call this same function, so a client's fingerprint always
+ * compares against the same computation.
+ */
+export function queuedCommentQueueRevision(input: {
+  queueId: string | null;
+  comments: Array<{ id: string; updatedAt: Date }>;
+}): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      queueId: input.queueId,
+      comments: input.comments.map((comment) => [comment.id, comment.updatedAt.toISOString()]),
+    }))
+    .digest("hex")
+    .slice(0, 32);
 }
 
 export function withQueuedCommentIdsInRunContext(

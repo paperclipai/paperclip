@@ -1,0 +1,254 @@
+import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import type { Db } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "../../../__tests__/helpers/embedded-postgres.js";
+import { createQueuedCommentIssueLockWriter } from "./queued-comment-postgres.js";
+import type { QueuedCommentQueuePostgresAdapterDeps } from "./queued-comment-postgres.js";
+import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
+
+// Proves the same two properties the release-half adapter test proves for
+// this module's other transaction: every mutation names `companyId` in its
+// own SQL `WHERE` clause, so a caller-supplied `issue`/`wake` is never an
+// authorization boundary by itself, and a guarded write that affects no row
+// rolls the transaction back instead of leaving a partial write. The
+// decision branching itself is proven against plain facts in
+// `domain/policy.test.ts`; the use-case orchestration is proven against a
+// mocked port in `application/queued-comment-use-cases.test.ts`.
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+if (!embeddedPostgresSupport.supported) {
+  console.warn(
+    `Skipping embedded Postgres queued-comment adapter tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
+  );
+}
+
+describeEmbeddedPostgres("queued-comment postgres adapter", () => {
+  let db!: ReturnType<typeof createDb>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  const noopDeps: QueuedCommentQueuePostgresAdapterDeps = {
+    syncCommentReferences: async () => {},
+    deleteCommentReferenceSource: async () => {},
+    syncCommentExternalObjectsSafely: async () => {},
+  };
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-queued-comment-postgres-adapter-");
+    db = createDb(tempDb.connectionString);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issueComments);
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedCompany(): Promise<string> {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    return companyId;
+  }
+
+  async function seedAgent(input: { companyId: string }): Promise<string> {
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId: input.companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    return agentId;
+  }
+
+  async function seedIssue(input: { companyId: string; assigneeAgentId: string | null }): Promise<string> {
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: input.companyId,
+      title: "Queued-comment adapter fixture issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: input.assigneeAgentId,
+    });
+    return issueId;
+  }
+
+  async function seedComment(input: { companyId: string; issueId: string; authorUserId: string }): Promise<string> {
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId,
+      companyId: input.companyId,
+      issueId: input.issueId,
+      authorUserId: input.authorUserId,
+      body: "queued message",
+    });
+    return commentId;
+  }
+
+  async function seedDeferredWake(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    commentIds: string[];
+  }): Promise<string> {
+    const id = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      source: "automation",
+      reason: "issue_commented",
+      status: "deferred_issue_execution",
+      requestedByActorType: "user",
+      payload: {
+        issueId: input.issueId,
+        _paperclipWakeContext: { wakeCommentIds: input.commentIds },
+      },
+    });
+    return id;
+  }
+
+  it("scopes the wake lookup to its own company: a foreign-company queueId resolves not_pending and deletes nothing", async () => {
+    const companyId = await seedCompany();
+    const otherCompanyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const commentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, commentIds: [commentId] });
+
+    const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
+    await expect(
+      issueLock.withLockedQueue(
+        {
+          // The caller mistakenly names the *other* company; the adapter's own
+          // predicate, not this argument, must decide what is visible.
+          companyId: otherCompanyId,
+          issue: { id: issueId, companyId: otherCompanyId, assigneeAgentId: agentId, executionRunId: null },
+          actor: { actorType: "user", actorId: "user-1", agentId: null },
+          queueId: wakeId,
+        },
+        async () => {
+          throw new Error("fn must not run when the wake is invisible to the caller's company");
+        },
+      ),
+    ).rejects.toMatchObject({ code: "queued_comment_not_pending" });
+
+    const commentRow = (await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0];
+    expect(commentRow?.deletedAt ?? null).toBeNull();
+    const wakeRow = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0];
+    expect(wakeRow?.status).toBe("deferred_issue_execution");
+  });
+
+  it("rolls back a discard when the comment delete is scoped to a company that does not own the comment", async () => {
+    const companyId = await seedCompany();
+    const otherCompanyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const commentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, commentIds: [commentId] });
+
+    const issueLock = createQueuedCommentIssueLockWriter(db, noopDeps);
+    await expect(
+      issueLock.withLockedQueue(
+        {
+          companyId,
+          issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+          actor: { actorType: "user", actorId: "user-1", agentId: null },
+          queueId: wakeId,
+        },
+        async (_locked, transaction) => {
+          // Simulate an application-layer bug that passes the wrong company on
+          // the delete write itself, after the lock step correctly resolved
+          // the real company. The write must affect no row and the caller
+          // must be able to tell -- never fall back to an unscoped delete.
+          const deleted = await transaction.deleteComment({ companyId: otherCompanyId, issueId, commentId });
+          if (!deleted) {
+            throw new QueuedCommentMutationError("queued_comment_not_pending", "The queued message is no longer pending");
+          }
+          return deleted;
+        },
+      ),
+    ).rejects.toMatchObject({ code: "queued_comment_not_pending" });
+
+    const commentRow = (await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0];
+    expect(commentRow).toBeDefined();
+    expect(commentRow?.deletedAt ?? null).toBeNull();
+  });
+
+  it("edits the comment body, syncs references, and rebuilds the queue snapshot inside one company-scoped transaction", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const commentId = await seedComment({ companyId, issueId, authorUserId: "user-1" });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, commentIds: [commentId] });
+
+    let syncedCommentId: string | null = null;
+    const deps: QueuedCommentQueuePostgresAdapterDeps = {
+      ...noopDeps,
+      syncCommentReferences: async (id) => {
+        syncedCommentId = id;
+      },
+    };
+    const issueLock = createQueuedCommentIssueLockWriter(db, deps);
+
+    const queue = await issueLock.withLockedQueue(
+      {
+        companyId,
+        issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+        actor: { actorType: "user", actorId: "user-1", agentId: null },
+        queueId: wakeId,
+      },
+      async (locked, transaction) => {
+        expect(locked.state).toBe("deferred");
+        const updated = await transaction.updateCommentBody({
+          companyId,
+          issueId,
+          commentId,
+          body: "edited body",
+          updatedAt: new Date(),
+        });
+        expect(updated).toBe(true);
+        await transaction.syncCommentReferences(commentId);
+        return transaction.buildQueueSnapshot({
+          companyId,
+          issue: { id: issueId, companyId, assigneeAgentId: agentId, executionRunId: null },
+          actor: { actorType: "user", actorId: "user-1", agentId: null },
+          wake: locked.wake,
+          state: locked.state,
+          queueRun: locked.queueRun,
+          activeRun: locked.activeRun,
+        });
+      },
+    );
+
+    expect(syncedCommentId).toBe(commentId);
+    expect(queue.entries).toHaveLength(1);
+    expect((queue.entries[0]!.comment as { body: string }).body).toBe("edited body");
+    const commentRow = (await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0];
+    expect(commentRow?.body).toBe("edited body");
+  });
+});

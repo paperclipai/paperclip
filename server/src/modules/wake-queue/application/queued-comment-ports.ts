@@ -1,0 +1,164 @@
+// Ports for the three queued-comment queue mutations (edit, reorder,
+// discard). Mirrors the release half's `IssueLockWriter` shape: the adapter
+// owns the one transaction each mutation runs in, locks the issue and the
+// wake row the caller named, classifies the locked state, and hands the
+// caller a `LockedQueuedCommentState` plus a `QueuedCommentQueueTransaction`
+// bound to that same transaction for every further read and write.
+
+export type QueuedCommentActor = {
+  actorType: "agent" | "user";
+  /** The user id for a user actor, the agent id for an agent actor -- the same value `getActorInfo` names `actorId`. */
+  actorId: string;
+  /** Null for a user actor. */
+  agentId: string | null;
+};
+
+export type QueuedCommentIssueContext = {
+  id: string;
+  companyId: string;
+  assigneeAgentId: string | null;
+  executionRunId: string | null;
+};
+
+export type QueuedCommentWakeRow = {
+  id: string;
+  agentId: string;
+  status: string;
+  runId: string | null;
+  payload: Record<string, unknown>;
+};
+
+export type QueuedCommentRunRow = {
+  id: string;
+  status: string;
+  runtimeMode: string | null;
+  contextSnapshot: Record<string, unknown>;
+};
+
+export type QueuedCommentEntrySnapshot = {
+  commentId: string;
+  /** The full comment row, carried opaquely so the route can cast it back to `IssueComment` for the response and redaction pipeline. */
+  comment: Record<string, unknown>;
+  position: number;
+  canEdit: boolean;
+  canDiscard: boolean;
+};
+
+export type QueuedCommentQueueSnapshot = {
+  issueId: string;
+  queueId: string | null;
+  state: "deferred" | "queued" | null;
+  targetRunId: string | null;
+  revision: string;
+  protocol: "paperclip_runner_v1" | "legacy";
+  steeringDisposition: "available" | "unsupported" | "temporarily_unavailable";
+  entries: QueuedCommentEntrySnapshot[];
+};
+
+/** The locked, transaction-scoped state a mutation reads before it decides what to write. */
+export type LockedQueuedCommentState = {
+  wake: QueuedCommentWakeRow;
+  state: "deferred" | "queued";
+  queueRun: QueuedCommentRunRow | null;
+  activeRun: QueuedCommentRunRow | null;
+  queue: QueuedCommentQueueSnapshot;
+};
+
+/**
+ * Every member is bound to the one transaction `withLockedQueue` owns.
+ * Every read and every write names `companyId` in its own predicate; a
+ * caller-supplied `issue`/`wake`/`queueRun` value is never trusted as an
+ * authorization boundary by itself.
+ */
+export interface QueuedCommentQueueTransaction {
+  updateCommentBody(input: {
+    companyId: string;
+    issueId: string;
+    commentId: string;
+    body: string;
+    updatedAt: Date;
+  }): Promise<boolean>;
+  touchIssueUpdatedAt(input: { companyId: string; issueId: string; updatedAt: Date }): Promise<void>;
+  /** Compare-and-set on `id`; the wake's current status is not re-checked here because the row is already locked for the duration of this transaction. */
+  updateWakeQueuedCommentIds(input: {
+    companyId: string;
+    wakeId: string;
+    payload: Record<string, unknown>;
+    ids: string[];
+    updatedAt: Date;
+  }): Promise<QueuedCommentWakeRow>;
+  /** Guarded on the run's current `queued` status. Returns `null` when a concurrent writer already moved the run off `queued`. */
+  updateQueueRunCommentIds(input: {
+    companyId: string;
+    queueRunId: string;
+    /** The run's own context snapshot, as already read under lock; the rewrite is derived from this base. */
+    contextSnapshot: Record<string, unknown>;
+    ids: string[];
+    updatedAt: Date;
+  }): Promise<QueuedCommentRunRow | null>;
+  /** Returns the full deleted comment row, opaquely, so the caller can echo it back as the delete route's response body. */
+  deleteComment(input: {
+    companyId: string;
+    issueId: string;
+    commentId: string;
+  }): Promise<Record<string, unknown> | null>;
+  cancelWake(input: { companyId: string; wakeId: string; reason: string; now: Date }): Promise<void>;
+  /**
+   * Guarded on the run's current `queued` status. Returns `null` when a
+   * concurrent writer already moved the run off `queued`; returns just the
+   * cancelled run's id, which is all a post-commit telemetry emission needs.
+   */
+  cancelQueueRun(input: {
+    companyId: string;
+    queueRunId: string;
+    reason: string;
+    now: Date;
+  }): Promise<{ id: string } | null>;
+  /**
+   * Combines clearing the issue's execution-lock columns (only when
+   * `clearExecutionLock` is set) with the `updatedAt` touch every discard
+   * performs, in the one update the original route issued. When
+   * `clearExecutionLock` is set, the write is guarded on the issue's current
+   * `executionRunId`; a lost guard silently skips the whole update, matching
+   * the pre-existing behavior of this best-effort touch.
+   */
+  updateIssueAfterDiscard(input: {
+    companyId: string;
+    issueId: string;
+    clearExecutionLock: { executionRunId: string } | null;
+    updatedAt: Date;
+  }): Promise<void>;
+  buildQueueSnapshot(input: {
+    companyId: string;
+    issue: QueuedCommentIssueContext;
+    actor: QueuedCommentActor;
+    wake: QueuedCommentWakeRow | null;
+    state: "deferred" | "queued" | null;
+    queueRun: QueuedCommentRunRow | null;
+    activeRun: QueuedCommentRunRow | null;
+  }): Promise<QueuedCommentQueueSnapshot>;
+  syncCommentReferences(commentId: string): Promise<void>;
+  deleteCommentReferenceSource(commentId: string): Promise<void>;
+  syncCommentExternalObjectsSafely(commentId: string): Promise<void>;
+}
+
+export interface QueuedCommentIssueLockWriter {
+  /**
+   * Opens the one transaction a mutation runs in: locks the issue row, locks
+   * the wake row named by `queueId`, classifies it (reading and locking the
+   * linked heartbeat run when the classification needs it), and builds the
+   * queue snapshot the caller's mutation target check compares against.
+   * Throws `QueuedCommentMutationError` with code `queued_comment_not_pending`
+   * or `queued_comment_already_dispatching` when the lock step itself cannot
+   * resolve a live queue; `fn` never runs in that case.
+   */
+  withLockedQueue<T>(
+    input: {
+      companyId: string;
+      issue: QueuedCommentIssueContext;
+      actor: QueuedCommentActor;
+      queueId: string;
+    },
+    fn: (locked: LockedQueuedCommentState, transaction: QueuedCommentQueueTransaction) => Promise<T>,
+  ): Promise<T>;
+}

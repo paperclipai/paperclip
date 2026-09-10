@@ -265,6 +265,162 @@ export function deriveImmediateRecoveryContextLabels(issueStatus: string): Immed
       };
 }
 
+// Pure decision rules for the three queued-comment queue mutations (edit,
+// reorder, discard): the queue-mutation target check every mutation runs
+// first, the wake and queue-run status classification the initial lock
+// step needs, the reorder set-equality check, the queue-entry permission
+// fields the response carries, the actor-ownership check discard enforces,
+// and the empty-versus-partial outcome a discard resolves to. As with every
+// other decision in this file, the caller reads the database and packs the
+// result into a facts object; this file only branches on that object.
+
+export type QueuedCommentMutationTargetFacts = {
+  /** True when the locked queue's own id matches the id the caller submitted. */
+  queueIdMatches: boolean;
+  /** True when the locked queue's own revision matches the revision the caller submitted. Only checked once `queueIdMatches` holds. */
+  revisionMatches: boolean;
+};
+
+export type QueuedCommentMutationTargetDecision =
+  | { kind: "ok" }
+  | { kind: "stale_queue" }
+  | { kind: "revision_conflict" };
+
+/** Decides whether a mutation still targets the queue it was built against. Every queue mutation runs this check before it writes anything. */
+export function decideQueuedCommentMutationTarget(
+  facts: QueuedCommentMutationTargetFacts,
+): QueuedCommentMutationTargetDecision {
+  if (!facts.queueIdMatches) return { kind: "stale_queue" };
+  if (!facts.revisionMatches) return { kind: "revision_conflict" };
+  return { kind: "ok" };
+}
+
+export type QueuedCommentWakeLookupFacts = {
+  /** True when a wake row was found for the submitted queue id. */
+  wakePresent: boolean;
+  /** True when the wake's own payload still names this issue. */
+  wakeIssueIdMatches: boolean;
+  /** True when the wake's payload still carries one or more queued comment ids. */
+  hasQueuedCommentIds: boolean;
+  /** The wake row's own status. Meaningless when `wakePresent` is false. */
+  wakeStatus: string | null;
+  /** True when the wake row carries a linked heartbeat run id. */
+  wakeHasRunId: boolean;
+};
+
+export type QueuedCommentWakeLookupDecision =
+  | { kind: "not_pending" }
+  | { kind: "deferred" }
+  /** The caller must read the linked heartbeat run and classify it with `decideQueuedCommentQueueRunState` next. */
+  | { kind: "check_queue_run" }
+  | { kind: "already_dispatching" };
+
+/**
+ * Classifies a locked wake row into the queue state a mutation needs: still
+ * waiting behind an active run (`deferred`), queued behind a not-yet-running
+ * turn (needs a second read to confirm, `check_queue_run`), already being
+ * dispatched, or no longer a pending queue at all.
+ */
+export function decideQueuedCommentWakeLookup(facts: QueuedCommentWakeLookupFacts): QueuedCommentWakeLookupDecision {
+  if (!facts.wakePresent || !facts.wakeIssueIdMatches || !facts.hasQueuedCommentIds) {
+    return { kind: "not_pending" };
+  }
+  if (facts.wakeStatus === "deferred_issue_execution") return { kind: "deferred" };
+  if (facts.wakeStatus === "queued" && facts.wakeHasRunId) return { kind: "check_queue_run" };
+  if (
+    facts.wakeStatus === "claimed" ||
+    facts.wakeStatus === "running" ||
+    (facts.wakeHasRunId && (facts.wakeStatus === "succeeded" || facts.wakeStatus === "failed"))
+  ) {
+    return { kind: "already_dispatching" };
+  }
+  return { kind: "not_pending" };
+}
+
+export type QueuedCommentQueueRunFacts = {
+  /** True when the linked heartbeat run row was found. */
+  queueRunPresent: boolean;
+  /** The linked heartbeat run's own status. Meaningless when `queueRunPresent` is false. */
+  queueRunStatus: string | null;
+};
+
+export type QueuedCommentQueueRunDecision = { kind: "queued" } | { kind: "already_dispatching" };
+
+/** Confirms the linked heartbeat run a `check_queue_run` lookup found is still queued, not already dispatching. */
+export function decideQueuedCommentQueueRunState(facts: QueuedCommentQueueRunFacts): QueuedCommentQueueRunDecision {
+  if (!facts.queueRunPresent || facts.queueRunStatus !== "queued") return { kind: "already_dispatching" };
+  return { kind: "queued" };
+}
+
+export type QueuedCommentReorderFacts = {
+  currentIds: string[];
+  orderedIds: string[];
+};
+
+export type QueuedCommentReorderDecision = { kind: "ok" } | { kind: "mismatch" };
+
+/** Decides whether a submitted order is a permutation of the queue's current comment ids: no duplicates, no drops, no additions. */
+export function decideQueuedCommentReorder(facts: QueuedCommentReorderFacts): QueuedCommentReorderDecision {
+  const orderedSet = new Set(facts.orderedIds);
+  if (
+    orderedSet.size !== facts.orderedIds.length ||
+    facts.orderedIds.length !== facts.currentIds.length ||
+    facts.currentIds.some((id) => !orderedSet.has(id))
+  ) {
+    return { kind: "mismatch" };
+  }
+  return { kind: "ok" };
+}
+
+export type QueuedCommentEntryPermissionFacts = {
+  actorType: "agent" | "user";
+  actorId: string;
+  authorUserId: string | null;
+};
+
+/** Decides the `canEdit`/`canDiscard` fields a queue entry carries in the response. Only the board user who authored a queued message may edit or discard it from the queue UI, regardless of actor type. */
+export function decideQueuedCommentEntryPermissions(
+  facts: QueuedCommentEntryPermissionFacts,
+): { canEdit: boolean; canDiscard: boolean } {
+  const owned = facts.actorType === "user" && facts.authorUserId === facts.actorId;
+  return { canEdit: owned, canDiscard: owned };
+}
+
+export type QueuedCommentActorOwnershipFacts = {
+  actorType: "agent" | "user";
+  actorId: string;
+  actorAgentId: string | null;
+  authorAgentId: string | null;
+  authorUserId: string | null;
+};
+
+/**
+ * Decides whether the actor discarding a queued message authored it. Unlike
+ * `decideQueuedCommentEntryPermissions`, this check also authorizes the
+ * message's own agent author, because an agent actor can discard its own
+ * queued message through the general comment-delete route.
+ */
+export function decideQueuedCommentActorOwnsEntry(facts: QueuedCommentActorOwnershipFacts): boolean {
+  if (facts.actorType === "agent") {
+    return facts.actorAgentId !== null && facts.authorAgentId === facts.actorAgentId;
+  }
+  return facts.authorUserId === facts.actorId;
+}
+
+export type QueuedCommentRemovalOutcomeFacts = {
+  /** The count of queue entries left after the discarded comment is removed. */
+  remainingCount: number;
+};
+
+export type QueuedCommentRemovalOutcomeDecision = { kind: "empty" } | { kind: "partial" };
+
+/** Decides whether a discard empties the queue (cancel the wake and its queued run) or leaves it partial (rewrite the remaining ids). */
+export function decideQueuedCommentRemovalOutcome(
+  facts: QueuedCommentRemovalOutcomeFacts,
+): QueuedCommentRemovalOutcomeDecision {
+  return facts.remainingCount === 0 ? { kind: "empty" } : { kind: "partial" };
+}
+
 /**
  * Decides the release-recovery outcome once the deferred-wake queue is
  * empty and no wake was promoted. The review-participant branch and the
