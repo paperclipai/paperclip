@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { createHash } from "node:crypto";
 import os from "node:os";
@@ -115,6 +115,64 @@ describe("sandbox work folder transport with real Node and Git", () => {
     execute.mockReset().mockResolvedValue({ exitCode: 1, stdout: "", stderr: "symlink_not_allowed", timedOut: false });
     await expect(retrying.scan("/home/daytona/task")).rejects.toThrow("symlink_not_allowed");
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+  it.each(["before", "after"])("recovers a root-directory transport failure %s creation without replacing files", async (when) => {
+    const dir = path.join(await root(), "task");
+    let failed = false;
+    const execute = vi.fn(async (input: Parameters<typeof localTestWorkFolderRunner.execute>[0]) => {
+      if (!failed) {
+        failed = true;
+        if (when === "after") {
+          expect((await localTestWorkFolderRunner.execute(input)).exitCode).toBe(0);
+          await writeFile(path.join(dir, "retained"), "unsaved work", { mode: 0o751 });
+        }
+        throw Object.assign(new Error("Request failed with status code 502: Sandbox command requested here"), {
+          name: "JsonRpcCallError", code: -32002,
+        });
+      }
+      return localTestWorkFolderRunner.execute(input);
+    });
+    await workFolderTransport({ execute }).mkdirRoot(dir);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute.mock.calls[1]![0].args).toEqual(execute.mock.calls[0]![0].args);
+    expect((await stat(dir)).isDirectory()).toBe(true);
+    if (when === "after") {
+      expect(await readFile(path.join(dir, "retained"), "utf8")).toBe("unsaved work");
+      expect((await stat(path.join(dir, "retained"))).mode & 0o777).toBe(0o751);
+    }
+  });
+  it("revalidates a root replaced by a symlink after a lost creation response", async () => {
+    const dir = path.join(await root(), "task"), outside = await root();
+    await writeFile(path.join(outside, "private"), "untouched");
+    let failed = false;
+    const execute = vi.fn(async (input: Parameters<typeof localTestWorkFolderRunner.execute>[0]) => {
+      const result = await localTestWorkFolderRunner.execute(input);
+      if (!failed) {
+        failed = true;
+        expect(result.exitCode).toBe(0);
+        await rm(dir, { recursive: true });
+        await symlink(outside, dir);
+        throw Object.assign(new Error("upstream unavailable"), { status: 502 });
+      }
+      return result;
+    });
+    await expect(workFolderTransport({ execute }).mkdirRoot(dir)).rejects.toThrow("symlink_not_allowed");
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(await readFile(path.join(outside, "private"), "utf8")).toBe("untouched");
+  });
+  it("bounds root-directory retries and keeps non-idempotent mutations single-attempt", async () => {
+    const execute = vi.fn().mockRejectedValue(Object.assign(new Error("upstream unavailable"), { status: 503 }));
+    const retrying = workFolderTransport({ execute });
+    await expect(retrying.mkdirRoot("/home/daytona/task")).rejects.toThrow("upstream unavailable");
+    expect(execute).toHaveBeenCalledTimes(3);
+    for (const mutate of [() => retrying.moveRoot("/old", "/new"), () => retrying.remove("/root", "file")]) {
+      execute.mockClear();
+      await expect(mutate()).rejects.toThrow("upstream unavailable");
+      expect(execute).toHaveBeenCalledOnce();
+    }
+    execute.mockReset().mockResolvedValue({ exitCode: 1, stdout: "", stderr: "symlink_not_allowed", timedOut: false });
+    await expect(retrying.mkdirRoot("/home/daytona/task")).rejects.toThrow("symlink_not_allowed");
+    expect(execute).toHaveBeenCalledOnce();
   });
   it("streams and atomically publishes files larger than a transfer chunk", async () => {
     const dir = await root();

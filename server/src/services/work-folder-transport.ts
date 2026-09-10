@@ -59,7 +59,7 @@ export function workFolderTransport(runner: CommandManagedRuntimeRunner) {
         span.set({ bytes: Buffer.byteLength(encoded), inputBytes: stdin === undefined ? 0 : Buffer.byteLength(stdin) });
         return ["--input-type=module", "-e", await source, encoded];
       });
-      const readOnly = ["home", "scan", "read", "read-batch", "batch-status"].includes(operation);
+      const retrySafe = ["home", "scan", "read", "read-batch", "batch-status", "mkdir-root"].includes(operation);
       for (let attempt = 0; ; attempt++) {
         if (Date.now() >= deadline) throw new Error("Work folder transfer deadline exceeded");
         let executionReturned = false;
@@ -89,9 +89,12 @@ export function workFolderTransport(runner: CommandManagedRuntimeRunner) {
             });
           });
         } catch (error) {
-          // Mutations may already have happened. Only reads repeat here.
+          // Reads and ensuring a root directory exists are safe after a lost
+          // response. mkdir-root rechecks confinement and leaves existing
+          // directories, permissions, and contents untouched. Other mutations
+          // may already have happened and must not repeat here.
           const waitMs = 250 * (attempt + 1);
-          if (executionReturned || !readOnly || attempt >= 2 || !transientTransportFailure(error) || Date.now() + waitMs >= deadline) throw error;
+          if (executionReturned || !retrySafe || attempt >= 2 || !transientTransportFailure(error) || Date.now() + waitMs >= deadline) throw error;
           await measureSandboxOperation("work_folder.transport.backoff", { operation, attempt: attempt + 1, waitMs }, () => delay(waitMs));
         }
       }
