@@ -48,5 +48,7 @@ export interface ExecutionContinuationEnvelope {
     baseRunId?: string;
     throughCommentId: string | null;
     summaryThroughCommentId: null;
+    /** The number of older messages the item cap dropped from `messages`. */
+    omittedMessageCount?: number;
   };
 }

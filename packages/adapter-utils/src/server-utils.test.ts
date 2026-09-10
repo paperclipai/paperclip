@@ -3195,6 +3195,47 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("wakecov-base-run-id");
     expect(prompt).not.toContain("wakecov-full-history-message");
   });
+
+  it("the prompt names the omitted message count instead of claiming a complete history", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: { id: "wakecov-omitted-issue-id", identifier: "PAP-9200", title: "Omitted count coverage" },
+      executionContinuation: {
+        version: 1,
+        companyId: "wakecov-company-id",
+        issueId: "wakecov-omitted-issue-id",
+        trigger: { reason: "issue_commented", interactionId: null, sourceRunId: null },
+        originCommentIds: [],
+        objective: "wakecov-omitted-objective",
+        messages: [
+          {
+            id: "wakecov-kept-message-id",
+            authorType: "user",
+            authorId: "wakecov-message-author",
+            body: "wakecov-kept-message-body",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            deleted: false,
+            sourceTrust: "trusted",
+          },
+        ],
+        interactionOutcomes: [],
+        completedWork: null,
+        unresolvedInteractionIds: [],
+        coverage: { kind: "full_task_history", throughCommentId: null, summaryThroughCommentId: null, omittedMessageCount: 10 },
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload, { resumedSession: false });
+    expect(prompt).not.toContain(
+      "This snapshot includes the complete authorized task history",
+    );
+    expect(prompt).toContain("- omitted messages: 10");
+    expect(prompt).toContain("fetch the comments API");
+  });
 });
 
 describe("WATCHDOG_DEFAULT_MANDATE", () => {

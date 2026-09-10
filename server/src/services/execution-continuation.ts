@@ -16,6 +16,38 @@ const object = (v: unknown): Record<string, unknown> =>
     : {};
 const string = (v: unknown) =>
   typeof v === "string" && v.length > 0 ? v : null;
+
+/**
+ * A guard against a pathological item count in one list of the wake payload.
+ * This is not a size bound: a kept item can still hold a large body.
+ */
+const WAKE_CONTEXT_ITEM_CAP = 30;
+
+function capToNewest<T>(items: T[], cap: number): T[] {
+  return items.length <= cap ? items : items.slice(items.length - cap);
+}
+
+/** Keep every origin message, then fill the rest of the cap with the newest messages. */
+function capMessagesKeepingOrigins<T extends { id: string }>(
+  items: T[],
+  cap: number,
+  originCommentIds: string[],
+): { kept: T[]; omitted: number } {
+  if (items.length <= cap) return { kept: items, omitted: 0 };
+  const originSet = new Set(originCommentIds);
+  const nonOrigin = items.filter((item) => !originSet.has(item.id));
+  const originCount = items.length - nonOrigin.length;
+  const remainingSlots = Math.max(cap - originCount, 0);
+  const keepNonOriginIds = new Set(
+    nonOrigin
+      .slice(Math.max(nonOrigin.length - remainingSlots, 0))
+      .map((item) => item.id),
+  );
+  const kept = items.filter(
+    (item) => originSet.has(item.id) || keepNonOriginIds.has(item.id),
+  );
+  return { kept, omitted: items.length - kept.length };
+}
 export function continuationOriginCommentIds(context: unknown): string[] {
   const c = object(context);
   const prior = object(c.executionContinuation);
@@ -186,21 +218,26 @@ export async function buildExecutionContinuation(input: {
     deliveredMessages && input.previousContextRunId
       ? {
           baseRunId: input.previousContextRunId,
-          messages: messages.filter(
-            (message) =>
-              originCommentIds.includes(message.id) ||
-              !deliveredMessages.some(
-                (prior) =>
-                  prior.id === message.id &&
-                  prior.updatedAt === message.updatedAt &&
-                  prior.body === message.body &&
-                  prior.deleted === message.deleted &&
-                  prior.authorId === message.authorId &&
-                  (prior.createdByRunId ?? null) === message.createdByRunId &&
-                  JSON.stringify(prior.sourceTrust) ===
-                    JSON.stringify(message.sourceTrust),
-              ),
-          ),
+          messages: capMessagesKeepingOrigins(
+            messages.filter(
+              (message) =>
+                originCommentIds.includes(message.id) ||
+                !deliveredMessages.some(
+                  (prior) =>
+                    prior.id === message.id &&
+                    prior.updatedAt === message.updatedAt &&
+                    prior.body === message.body &&
+                    prior.deleted === message.deleted &&
+                    prior.authorId === message.authorId &&
+                    (prior.createdByRunId ?? null) ===
+                      message.createdByRunId &&
+                    JSON.stringify(prior.sourceTrust) ===
+                      JSON.stringify(message.sourceTrust),
+                ),
+            ),
+            WAKE_CONTEXT_ITEM_CAP,
+            originCommentIds,
+          ).kept,
         }
       : undefined;
   const latestRequest = messages.findLast(
@@ -249,14 +286,22 @@ export async function buildExecutionContinuation(input: {
         eq(issueRecoveryActions.status, "resolved"),
       ),
     );
+  const cappedMessages = capMessagesKeepingOrigins(
+    messages,
+    WAKE_CONTEXT_ITEM_CAP,
+    originCommentIds,
+  );
   return {
     ...(resumeDelta ? { resumeDelta } : {}),
-    recoveryOutcomes: reconciliations
-      .filter((row) => row.evidence.executionReconciliation)
-      .map((row) => ({
-        recoveryActionId: row.id,
-        decision: row.evidence.executionReconciliation,
-      })),
+    recoveryOutcomes: capToNewest(
+      reconciliations
+        .filter((row) => row.evidence.executionReconciliation)
+        .map((row) => ({
+          recoveryActionId: row.id,
+          decision: row.evidence.executionReconciliation,
+        })),
+      WAKE_CONTEXT_ITEM_CAP,
+    ),
     version: 1,
     companyId,
     issueId,
@@ -267,24 +312,33 @@ export async function buildExecutionContinuation(input: {
     },
     originCommentIds,
     objective: latestRequest?.body ?? issue.description ?? issue.title,
-    messages,
-    interactionOutcomes: interactions
-      .filter((row) => row.status !== "pending")
-      .map((row) => ({
-        id: row.id,
-        kind: row.kind,
-        status: row.status,
-        result: row.result,
-      })),
+    messages: cappedMessages.kept,
+    interactionOutcomes: capToNewest(
+      interactions
+        .filter((row) => row.status !== "pending")
+        .map((row) => ({
+          id: row.id,
+          kind: row.kind,
+          status: row.status,
+          result: row.result,
+        })),
+      WAKE_CONTEXT_ITEM_CAP,
+    ),
     completedWork: input.summary,
-    completedActions,
-    unresolvedInteractionIds: interactions
-      .filter((row) => row.status === "pending")
-      .map((row) => row.id),
+    completedActions: capToNewest(completedActions, WAKE_CONTEXT_ITEM_CAP),
+    unresolvedInteractionIds: capToNewest(
+      interactions
+        .filter((row) => row.status === "pending")
+        .map((row) => row.id),
+      WAKE_CONTEXT_ITEM_CAP,
+    ),
     coverage: {
       kind: "full_task_history",
       throughCommentId: messages.at(-1)?.id ?? null,
       summaryThroughCommentId: null,
+      ...(cappedMessages.omitted > 0
+        ? { omittedMessageCount: cappedMessages.omitted }
+        : {}),
     },
   };
 }
