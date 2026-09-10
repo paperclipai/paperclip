@@ -1,5 +1,7 @@
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { createHash } from "node:crypto";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import {
+  deliveryPolicies,
   deliveryReceipts,
   deliveryReconciliations,
   deliveryRepositories,
@@ -20,6 +22,7 @@ import type {
 import type { DeliveryActor } from "./units.js";
 import { createGitHubDeliveryClient, type GitHubDeliveryClient } from "./github-client.js";
 import type { DeliveryRepositoryRow } from "./policy.js";
+import { forbidden } from "../../errors.js";
 
 export type DeliveryReconciliationWriteInput = {
   idempotencyKey: string;
@@ -238,6 +241,123 @@ export function deliveryReconciliationService(
       items,
     };
   }
+  async function importHistoricalMerge(input: {
+    companyId: string;
+    issueId: string;
+    claim: NonNullable<DeliveryReconciliationWriteInput["provenance"]>;
+  }): Promise<{ verified: boolean; reason: string; provenance: DeliveryProvenance | null; unitId?: string }> {
+    const reject = (reason: string) => ({ verified: false, reason, provenance: null });
+    const [issue] = await db.select().from(issues).where(and(
+      eq(issues.companyId, input.companyId), eq(issues.id, input.issueId),
+    )).limit(1);
+    if (!issue || issue.status !== "done" || !issue.projectId || issue.deliveryKind === "non_code") {
+      return reject("historical import requires a completed code issue with a project");
+    }
+    const [policy] = await db.select().from(deliveryPolicies).where(and(
+      eq(deliveryPolicies.companyId, input.companyId), eq(deliveryPolicies.projectId, issue.projectId),
+    )).limit(1);
+    if (!policy?.repositoryId || policy.targetBranch !== input.claim.targetBranch) {
+      return reject("historical target does not match an enrolled project policy");
+    }
+    const repository = await loadRepository(input.companyId, policy.repositoryId);
+    if (!repository || input.claim.repository !== `${repository.owner}/${repository.name}`) {
+      return reject("historical repository does not match the enrolled project");
+    }
+    const mergedSha = input.claim.mergedSha.trim().toLowerCase();
+    let headSha = input.claim.headSha?.trim().toLowerCase() ?? mergedSha;
+    let sourceBranch = policy.targetBranch;
+    let baseSha: string | null = null;
+    let prUrl: string | null = null;
+    let mergedAt: Date | null = null;
+    if (input.claim.prNumber) {
+      const result = await github.getPullRequest(
+        input.companyId, repository.connectionId, repository.host, repository.owner, repository.name, input.claim.prNumber,
+      );
+      if (!result.ok) return reject(`historical pull request read failed: ${result.message}`);
+      const pr = result.value;
+      if (!pr.merged || pr.baseRef !== policy.targetBranch || pr.mergeCommitSha?.toLowerCase() !== mergedSha
+        || (input.claim.headSha && pr.headSha.toLowerCase() !== headSha)) {
+        return reject("historical pull request does not verify the claimed head and merge");
+      }
+      headSha = pr.headSha.toLowerCase();
+      sourceBranch = pr.headRef;
+      baseSha = pr.baseSha;
+      prUrl = pr.url;
+      mergedAt = pr.mergedAt ? new Date(pr.mergedAt) : null;
+    } else if (headSha !== mergedSha) {
+      return reject("direct publication requires the published head itself, not an unverified mapping");
+    }
+    if (input.claim.mergeCommitSha && input.claim.mergeCommitSha.trim().toLowerCase() !== mergedSha) {
+      return reject("claimed merge commit differs from the remotely verified revision");
+    }
+    const included = await github.compareCommits(
+      input.companyId, repository.connectionId, repository.host, repository.owner, repository.name, mergedSha, policy.targetBranch,
+    );
+    if (!included.ok) return reject(`remote inclusion check failed: ${included.message}`);
+    if (!included.value.included) return reject("claimed revision is not included in the target branch");
+    const now = new Date();
+    const provenance: DeliveryProvenance = {
+      repository: `${repository.owner}/${repository.name}`, githubRepositoryId: repository.githubRepositoryId,
+      targetBranch: policy.targetBranch, sourceBranch, submittedHeadSha: headSha, acceptedHeadSha: headSha,
+      baseSha, mergedSha, mergeCommitSha: input.claim.prNumber ? mergedSha : null,
+      mergeMethod: input.claim.prNumber ? policy.mergeMethod : "merge",
+      squashOrRebase: Boolean(input.claim.prNumber && policy.mergeMethod !== "merge"),
+      checks: [], reviewStatus: "historical", blockingFindings: 0, verifiedAt: now.toISOString(),
+    };
+    return db.transaction(async (tx) => {
+      // Serialize historical receipt reuse without taking the publication queue's lease.
+      const key = `delivery-history:${input.companyId}:${repository.id}:${policy.targetBranch}`;
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+      const [currentIssue] = await tx.select().from(issues).where(and(
+        eq(issues.companyId, input.companyId), eq(issues.id, input.issueId),
+      )).limit(1).for("update");
+      const [currentPolicy] = await tx.select().from(deliveryPolicies).where(and(
+        eq(deliveryPolicies.companyId, input.companyId), eq(deliveryPolicies.id, policy.id),
+      )).limit(1).for("share");
+      if (currentIssue?.status !== "done" || currentIssue.projectId !== issue.projectId
+        || currentIssue.deliveryKind === "non_code" || currentPolicy?.version !== policy.version) {
+        return reject("issue or policy changed during historical verification");
+      }
+      const [attached] = await tx.select().from(deliveryUnitIssues).where(and(
+        eq(deliveryUnitIssues.companyId, input.companyId), eq(deliveryUnitIssues.issueId, input.issueId),
+      )).limit(1);
+      if (attached) return reject("issue acquired a delivery unit during historical verification; reconcile again");
+      const [existing] = await tx.select({ unit: deliveryUnits, receipt: deliveryReceipts })
+        .from(deliveryUnits).innerJoin(deliveryReceipts, eq(deliveryReceipts.unitId, deliveryUnits.id))
+        .where(and(
+          eq(deliveryUnits.companyId, input.companyId), eq(deliveryUnits.repositoryId, repository.id),
+          eq(deliveryUnits.targetBranch, policy.targetBranch), eq(deliveryUnits.status, "merged"),
+          eq(deliveryUnits.headSha, headSha), eq(deliveryUnits.mergedSha, mergedSha),
+        )).limit(1);
+      let unitId = existing?.unit.id;
+      if (!unitId) {
+        const [unit] = await tx.insert(deliveryUnits).values({
+          companyId: input.companyId, projectId: issue.projectId, repositoryId: repository.id,
+          primaryIssueId: issue.id, targetBranch: policy.targetBranch, sourceBranch, baseSha, headSha,
+          acceptedHeadSha: headSha, mergedSha, mergeCommitSha: provenance.mergeCommitSha,
+          status: "merged", artifactReady: true, prNumber: input.claim.prNumber ?? null, prUrl,
+          mergeMethod: provenance.mergeMethod, ownerAgentId: issue.assigneeAgentId,
+          mergedAt, lastReconciledAt: now, metadata: { historical: true, directPublication: !input.claim.prNumber },
+        }).returning();
+        if (!unit) throw new Error("Historical delivery unit was not persisted");
+        unitId = unit.id;
+        await tx.insert(deliveryReceipts).values({
+          companyId: input.companyId, unitId, repository: provenance.repository,
+          githubRepositoryId: provenance.githubRepositoryId, targetBranch: provenance.targetBranch,
+          sourceBranch, submittedHeadSha: headSha, acceptedHeadSha: headSha, baseSha, mergedSha,
+          mergeCommitSha: provenance.mergeCommitSha, mergeMethod: provenance.mergeMethod,
+          squashOrRebase: provenance.squashOrRebase, checks: [], reviewStatus: "historical",
+          blockingFindings: 0, provenance, evidenceHash: createHash("sha256").update(JSON.stringify(provenance)).digest("hex"),
+          verifiedAt: now,
+        });
+      }
+      await tx.insert(deliveryUnitIssues).values({
+        companyId: input.companyId, unitId, issueId: issue.id, role: existing ? "covered" : "primary",
+      });
+      return { verified: true, reason: "historical publication remotely verified", provenance: existing?.receipt.provenance ?? provenance, unitId };
+    });
+  }
+
   /**
    * Verify an operator's historical merge claim against GitHub: the claimed
    * revision must be an exact SHA, the claimed repository and branch must
@@ -250,14 +370,14 @@ export function deliveryReconciliationService(
     issueId: string;
     unitId: string | null;
     claim: DeliveryReconciliationWriteInput["provenance"];
-  }): Promise<{ verified: boolean; reason: string; provenance: DeliveryProvenance | null }> {
+  }): Promise<{ verified: boolean; reason: string; provenance: DeliveryProvenance | null; unitId?: string }> {
     if (!input.claim) return { verified: false, reason: "no provenance claim supplied", provenance: null };
-    if (!input.unitId) return { verified: false, reason: "issue has no delivery unit", provenance: null };
     for (const sha of [input.claim.mergedSha, input.claim.headSha, input.claim.mergeCommitSha]) {
       if (sha != null && !EXACT_SHA_PATTERN.test(sha.trim())) {
         return { verified: false, reason: "claimed revision is not an exact 40-hex SHA", provenance: null };
       }
     }
+    if (!input.unitId) return importHistoricalMerge({ ...input, claim: input.claim });
     const [unit] = await db
       .select()
       .from(deliveryUnits)
@@ -317,13 +437,14 @@ export function deliveryReconciliationService(
     actor: DeliveryActor;
     write: DeliveryReconciliationWriteInput;
   }): Promise<DeliveryReconciliationItem> {
+    if (input.actor.type !== "user") throw forbidden("Historical reconciliation requires an operator");
     const [issue] = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.write.issueId)))
       .limit(1);
     if (!issue) throw new Error("Issue not found");
-    const unit = await db
+    let unit = await db
       .select({ unitId: deliveryUnitIssues.unitId })
       .from(deliveryUnitIssues)
       .where(and(
@@ -355,6 +476,7 @@ export function deliveryReconciliationService(
         });
         if (remote.verified && remote.provenance) {
           provenance = remote.provenance;
+          if (remote.unitId) unit = { unitId: remote.unitId };
         } else {
           classification = "code_unverified";
           note = [
@@ -366,7 +488,7 @@ export function deliveryReconciliationService(
     }
     const outcome = classification !== input.write.classification
       ? outcomeFor(classification, false)
-      : input.write.outcome ?? outcomeFor(classification, false);
+      : input.write.outcome ?? outcomeFor(classification, provenance !== null);
     const now = new Date();
     await db
       .insert(deliveryReconciliations)

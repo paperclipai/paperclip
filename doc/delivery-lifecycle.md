@@ -249,9 +249,15 @@ issue as `code_verified | code_unverified | non_code | unknown` with an outcome.
 Only verified receipts surface as provenance. `POST` records an operator
 reconciliation, idempotent per `(companyId, idempotencyKey)`; it never reopens
 tasks or moves branches. An operator `code_verified` claim without a receipt is
-verified remotely first — exact-SHA claim, same repository and target branch as
-the issue's unit, revision proven included in that branch via `compareCommits`
-— and is stored as `code_unverified` when the check fails.
+verified remotely first — exact-SHA claim, the enrolled repository and target,
+and revision proven included in that branch via `compareCommits`. For completed
+work predating delivery units, reconciliation imports a merged unit and immutable
+historical receipt; related issues share the same verified unit. Direct publication
+requires the submitted head to equal the included revision. A historical PR must
+also prove its merged state, target, head, and merge revision through GitHub.
+Historical receipts label review evidence as `historical`, not fresh approval.
+Policy/issue changes during verification abort the import. Unverifiable claims
+remain `code_unverified`; reconciliation never republishes an old branch.
 
 ## 12. Required setup
 

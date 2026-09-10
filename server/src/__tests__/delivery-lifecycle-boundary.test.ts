@@ -24,6 +24,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { deliveryEventService } from "../services/delivery/events.js";
+import { createDeliveryDoneGate } from "../services/delivery/done-gate.js";
 import { deliveryPolicyService } from "../services/delivery/policy.js";
 import { deliveryQueueService, type DeliveryQueueEntryRow } from "../services/delivery/queue.js";
 import { deliveryReconciliationService } from "../services/delivery/reconciliation.js";
@@ -438,6 +439,63 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     });
     expect(item.classification).toBe("code_unverified");
     expect(item.provenance).toBeNull();
+  });
+
+  it("imports remotely included historical work without republishing and shares its receipt", async () => {
+    const companyId = await seedCompany();
+    const projectId = await seedProject(companyId, "https://github.com/acme/widget");
+    const repository = await seedRepository(companyId);
+    await db.insert(deliveryPolicies).values({
+      companyId, projectId, repositoryId: repository.id, targetBranch: "main",
+    });
+    const first = await seedIssue(companyId, projectId, "done");
+    const covered = await seedIssue(companyId, projectId, "done");
+    const github = githubStub({
+      compareCommits: async () => ({ ok: true, value: { status: "identical", aheadBy: 0, behindBy: 0, included: true } }),
+    });
+    const reconciliation = deliveryReconciliationService(db as unknown as Db, { github });
+    for (const issue of [first, covered]) {
+      const result = await reconciliation.record({
+        companyId, actor: userActor,
+        write: {
+          idempotencyKey: randomUUID(), issueId: issue.id, classification: "code_verified",
+          provenance: { repository: "acme/widget", targetBranch: "main", mergedSha: HEAD, headSha: HEAD },
+        },
+      });
+      expect(result.classification).toBe("code_verified");
+    }
+    const { units } = services(github);
+    const summary = await units.buildSummary(companyId, first.id);
+    expect(summary).toMatchObject({ phase: "done", mergedSha: HEAD });
+    expect((await units.buildSummary(companyId, covered.id)).unitId).toBe(summary.unitId);
+    const inventory = await reconciliation.inventory({ companyId, projectId });
+    expect(inventory.items.map((item) => item.classification)).toEqual(["code_verified", "code_verified"]);
+    expect(inventory.items.every((item) => item.provenance?.acceptedHeadSha === HEAD)).toBe(true);
+    const gate = createDeliveryDoneGate(db as unknown as Db);
+    expect(await gate.evaluateDone({ companyId, issue: first })).toMatchObject({ allowed: true });
+  });
+
+  it("does not certify an unrelated historical head using an included target revision", async () => {
+    const companyId = await seedCompany();
+    const projectId = await seedProject(companyId, "https://github.com/acme/widget");
+    const repository = await seedRepository(companyId);
+    const issue = await seedIssue(companyId, projectId, "done");
+    await db.insert(deliveryPolicies).values({
+      companyId, projectId, repositoryId: repository.id, targetBranch: "main",
+    });
+    const github = githubStub({
+      compareCommits: async () => ({ ok: true, value: { status: "identical", aheadBy: 0, behindBy: 0, included: true } }),
+    });
+    const reconciliation = deliveryReconciliationService(db as unknown as Db, { github });
+    const item = await reconciliation.record({
+      companyId, actor: userActor,
+      write: {
+        idempotencyKey: randomUUID(), issueId: issue.id, classification: "code_verified",
+        provenance: { repository: "acme/widget", targetBranch: "main", mergedSha: HEAD, headSha: OTHER_HEAD },
+      },
+    });
+    expect(item).toMatchObject({ classification: "code_unverified", provenance: null });
+    expect(await createDeliveryDoneGate(db as unknown as Db).evaluateDone({ companyId, issue })).toMatchObject({ allowed: false });
   });
 
   it("refuses pause on merged units and disposition from agents", async () => {
