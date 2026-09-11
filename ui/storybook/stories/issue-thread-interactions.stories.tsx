@@ -560,6 +560,8 @@ function InteractiveComposerQuestions() {
         takeover={open ? {
           id: `composer-questions-${reset}`,
           label: composerQuestions.title!,
+          pendingCount: 1,
+          inlineSkip: true,
           content: <QuestionForm
             key={reset}
             id="composer-questions"
@@ -567,6 +569,7 @@ function InteractiveComposerQuestions() {
             onSubmit={(next) => { setResponse(next); setOpen(false); }}
           />,
           onDismiss: () => setOpen(false),
+          onSkip: () => setOpen(false),
         } : null}
       />
       <Button variant="outline" onClick={() => { setResponse(null); setReset((value) => value + 1); setOpen(true); }}>
