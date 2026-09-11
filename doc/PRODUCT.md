@@ -160,3 +160,17 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
 
 9. **Thin core, rich edges**
    Put optional chat, knowledge, and special surfaces into plugins/extensions rather than bloating the control plane.
+
+### Experimental iMessage Photon channel
+
+A Photon Cloud dedicated number can represent one agent through the existing
+experimental channel subsystem. DMs and explicitly enabled groups create or
+continue task-bound conversations. Linked sender identity is the default;
+telephone numbers, email addresses, names, and group membership do not grant
+Paperclip authority. Photos/files and ordinary questions/confirmations use the
+existing attachment, interaction, continuation, and publication contracts.
+Pause and Disconnect govern runtime behavior independently of the UI gate.
+Shared-pool numbers, local Mac access, unsolicited conversations, and SMS/RCS
+fallback are excluded. Live qualification is required before release readiness.
+See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
+contract, setup, recovery, boundaries, and qualification status.
