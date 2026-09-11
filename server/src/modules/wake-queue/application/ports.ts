@@ -12,6 +12,8 @@ export type { InvokableAgentSnapshot, IssueSnapshot, ReleaseRecoveryBlockedNotic
 
 /** The primary issue a locked release resolves to, plus the finishing run the lock step already loaded. */
 export type LockedIssueExecution = {
+  /** Plan bounded recovery without draining messages while the finishing owner cleans up. */
+  recoveryOnly?: boolean;
   primaryIssue: IssueSnapshot;
   run: RunSnapshot;
 };

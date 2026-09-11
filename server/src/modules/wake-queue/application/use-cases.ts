@@ -139,6 +139,10 @@ async function runReleaseDrain(
   const issue = locked.primaryIssue;
   const postCommitEffects: PostCommitEffect[] = [];
 
+  if (locked.recoveryOnly) {
+    return runReleaseRecoveryTail(issue, run, ports.host, ports.transaction, input, postCommitEffects);
+  }
+
   // Each `continue` path below leaves the wake row off the
   // `deferred_issue_execution` status, so the next queue read cannot
   // return that same row again. That invariant is what ends this loop.

@@ -22,6 +22,7 @@ import {
   createWakeAdmissionWriter,
 } from "./postgres.js";
 import type { WakeQueuePostgresAdapterDeps } from "./postgres.js";
+import { createReleaseIssueExecution } from "../application/use-cases.js";
 import type { TransactionScope } from "../application/ports.js";
 
 // Proves the atomicity and company-scope properties the security review
@@ -161,6 +162,38 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       payload: { issueId: input.issueId, ...(input.payload ?? {}) },
     });
     return id;
+  }
+
+  for (const hasDeferredMessage of [false, true]) {
+    it(`plans conversation recovery during owner cleanup without draining messages (queued=${hasDeferredMessage})`, async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent({ companyId });
+      const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+      const runId = await seedRun({ companyId, agentId, status: "failed", contextSnapshot: { issueId } });
+      await db.update(heartbeatRuns).set({
+        processPid: process.pid,
+        resultJson: { conversationContinuation: "continue_conversation_v1" },
+      }).where(eq(heartbeatRuns.id, runId));
+      const wakeId = hasDeferredMessage ? await seedDeferredWake({ companyId, agentId, issueId }) : null;
+      const release = createReleaseIssueExecution({
+        issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+        recovery: {
+          escalateStrandedAssignedIssue: async () => { throw new Error("unexpected escalation"); },
+          escalateStrandedRecoveryIssueInPlace: async () => { throw new Error("unexpected escalation"); },
+        },
+      });
+      const result = await release({ companyId, runId, now: new Date() });
+      expect(result.outcome.kind).toBe("released");
+      expect(result.postCommitEffects.every((effect) => effect.kind === "conversation_retry_requested")).toBe(true);
+      if (!wakeId) expect(result.postCommitEffects).toEqual([
+        { kind: "conversation_retry_requested", companyId, runId, reviewParticipant: false },
+      ]);
+      if (wakeId) {
+        const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
+        expect(wake.status).toBe("deferred_issue_execution");
+      }
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+    });
   }
 
   it("leaves deferred work untouched until the effective execution hold clears", async () => {

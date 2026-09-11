@@ -1063,12 +1063,18 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
-        // A release must leave deferred messages intact while replay is held.
-        if (await getExecutionBlocker(tx, issueRow.companyId, issueRow.id)) {
+        // A release must leave deferred messages intact while execution is held.
+        // The finishing conversation may still own its lease until finally cleanup.
+        // Allow only bounded retry planning in that case; admission stays gated.
+        const executionBlocker = await getExecutionBlocker(tx, issueRow.companyId, issueRow.id);
+        const recoveryOnly = Boolean(executionBlocker &&
+          executionBlocker.cause === "execution_owner_active" && executionBlocker.runId === run.id &&
+          runSnapshot.conversationContinuation && ["failed", "timed_out", "interrupted"].includes(run.status));
+        if (executionBlocker && !recoveryOnly) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
-        const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot };
+        const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot, recoveryOnly };
         const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
         return { ...result, run: runSnapshot };
       });
