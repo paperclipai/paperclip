@@ -1150,6 +1150,7 @@ async function startServerWithDatabaseTeardown(
     ["reconciliation_delivery", () => heartbeat ? deliverReconciledExecutions(db, heartbeat.wakeup) : undefined],
     ["status_delivery", () => deliverExecutionStatuses(db)],
     ["automatic_disposition", () => settleUnrecoverableExecutions(db)],
+    ["sandbox_continuation", () => heartbeat?.resumeInterruptedSandboxRuns()],
   ] as const;
   const sweepExecutionControl = () => {
     if (heartbeatSchedulerStopped) return;

@@ -1266,6 +1266,12 @@ before provisioning. A live lease protects the run during overlapping service
 deployments. An expired controller loses dispatch authority; a recovery worker
 must establish that the previous execution stopped before starting a successor.
 
+Lost legacy sandbox conversations continue automatically after exact provider
+termination proof. Startup and periodic sweeps retain the original failure and
+unknown side effects, preserve accepted approvals and current task history, and
+use the existing bounded retry scheduler. Cleanup continues across restarts and
+provider outages without transferring recovery responsibility to the user.
+
 ## 11.7 Durable agent session goals
 
 Runner Protocol v2 negotiates a required `sessionGoals` capability and typed

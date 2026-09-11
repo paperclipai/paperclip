@@ -1,3 +1,4 @@
+import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { readProcessStartedAt } from "./hot-restart.js";
@@ -19,8 +20,20 @@ export function hasConversationContinuationPolicy(result: Record<string, unknown
   return result?.conversationContinuation === CONVERSATION_CONTINUATION_POLICY;
 }
 
+/** Read only server-authored dispatch evidence, never a wake payload. */
+export async function recordedRunAdapter(db: Db, run: typeof heartbeatRuns.$inferSelect) {
+  const dispatch = run.runnerProfileJson?.adapterDispatch as Record<string, unknown> | undefined;
+  if (typeof dispatch?.adapterType === "string") return dispatch.adapterType;
+  const [event] = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    eq(heartbeatRunEvents.eventType, "adapter.invoke"),
+  )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+  return typeof event?.payload?.adapterType === "string" ? event.payload.adapterType : null;
+}
+
 function conversationRunPredicate() {
   return or(
+    inArray(sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType'`, [...CONVERSATION_ADAPTER_TYPES]),
     sql`${heartbeatRuns.resultJson}->>'conversationContinuation' = ${CONVERSATION_CONTINUATION_POLICY}`,
     sql`exists (
       select 1 from ${heartbeatRunEvents}
@@ -35,12 +48,8 @@ function conversationRunPredicate() {
 /** Recovery must not infer the old adapter from the agent's mutable settings. */
 export async function runUsedConversationAdapter(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
   if (hasConversationContinuationPolicy(run.resultJson)) return true;
-  const [invocation] = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents)
-    .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
-      eq(heartbeatRunEvents.eventType, "adapter.invoke")))
-    .orderBy(desc(heartbeatRunEvents.seq)).limit(1);
-  const adapterType = invocation?.payload?.adapterType;
-  return typeof adapterType === "string" && isConversationAdapter(adapterType);
+  const adapterType = await recordedRunAdapter(db, run);
+  return adapterType !== null && isConversationAdapter(adapterType);
 }
 
 /** Only immutable run evidence can retire a historical conversation hold.
@@ -92,9 +101,19 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
       conversationRunPredicate(),
       sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
       inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
-      or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease),
+      or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease,
+        sql`exists (select 1 from ${environmentLeases} where ${environmentLeases.companyId} = "heartbeat_runs"."company_id"
+          and ${environmentLeases.heartbeatRunId} = "heartbeat_runs"."id" and ${environmentLeases.provider} != 'local')`),
     )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id));
   for (const { run, activeLease: leaseHeld } of candidates) {
+    const leases = await db.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, run.id),
+    ));
+    if (leases.some(lease => lease.provider && lease.provider !== "local")) {
+      if (leases.every(hasRemoteTerminationReceipt)) continue;
+      return { runId: run.id, agentId: run.agentId, cause: "execution_owner_active",
+        nextAction: "Waiting for the provider to confirm sandbox termination. Cleanup will retry automatically." };
+    }
     let pidAlive = run.processPid !== null && processMayBeAlive(run.processPid);
     if (pidAlive && run.processStartedAt) {
       // A recycled PID cannot keep an old task blocked. An unreadable identity
