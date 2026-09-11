@@ -746,13 +746,14 @@ export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0;
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
-const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
-  BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
-export {
-  INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
-  INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
-};
-const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 2;
+const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
+const NULL_ENVIRONMENT_PROCESS_LOSS_RETRY_REASON = "retry_transient_environment_failure";
+const NULL_ENVIRONMENT_PROCESS_LOSS_WAKE_REASON = "process_lost_environment_retry";
+const NULL_ENVIRONMENT_PROCESS_LOSS_RETRY_DELAYS_MS = [60_000, 180_000, 540_000] as const;
+export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
+export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
+const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 3;
+const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set(["accepted", "answered", "rejected"]);
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
@@ -1920,6 +1921,21 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
     dueAt: new Date(now.getTime() + delayMs),
     maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   };
+}
+
+// This signature deliberately excludes a process that was ever spawned. A
+// lost child process remains on the legacy process-loss path; this ladder is
+// only for dispatches that died before an execution environment existed.
+export function isNullEnvironmentProcessLoss(input: {
+  usageJson: unknown;
+  processPid: number | null;
+  processGroupId: number | null;
+  hasEnvironmentLease: boolean;
+}) {
+  return input.usageJson == null &&
+    input.processPid == null &&
+    input.processGroupId == null &&
+    !input.hasEnvironmentLease;
 }
 
 async function resolveRunScopedMentionedSkillKeys(input: {
@@ -18446,46 +18462,90 @@ export function heartbeatService(
         readNonEmptyString(runContext.wakeReason) === "issue_monitor_due" &&
         monitorNextCheckAt !== undefined &&
         (!monitorNextCheckAt || monitorNextCheckAt.getTime() <= now.getTime());
-      const shouldRetry =
-        (run.processLossRetryCount ?? 0) < 1 &&
-        ((tracksLegacyLocalChild &&
-          (!!run.processPid || !!run.processGroupId)) ||
-          monitorDispatchLostWithoutFutureWake);
-      if (!(await revokeExpiredLegacyController(db, run))) continue;
-      const baseMessage = buildProcessLossMessage(run);
-      const conversationContinuationEligible = await runUsedConversationAdapter(db, run);
-
-      const failureWrite = await setRunStatusFromLive(
-        run.id,
-        "failed",
-        ["running"],
-        {
-          error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
-          errorCode: "process_lost",
-          finishedAt: now,
-          resultJson: (() => {
-            const result = mergeRunStopMetadataForAgent(
-              { adapterType, adapterConfig },
-              "failed",
-              {
-                conversationContinuationEligible,
-                resultJson: parseObject(run.resultJson),
-                errorCode: "process_lost",
-                errorMessage: shouldRetry
-                  ? `${baseMessage}; retrying once`
-                  : baseMessage,
-              },
-            );
-            return result;
-          })(),
-        },
+      const environmentLease = await db
+        .select({ id: environmentLeases.id })
+        .from(environmentLeases)
+        .where(and(
+          eq(environmentLeases.companyId, run.companyId),
+          eq(environmentLeases.heartbeatRunId, run.id),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const nullEnvironmentProcessLoss = isNullEnvironmentProcessLoss({
+        usageJson: run.usageJson,
+        processPid: run.processPid,
+        processGroupId: run.processGroupId,
+        hasEnvironmentLease: environmentLease !== null,
+      });
+      const shouldRetryLegacyProcessLoss = (run.processLossRetryCount ?? 0) < 1 && (
+        (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
+        monitorDispatchLostWithoutFutureWake
       );
-      if (!failureWrite.updated || !failureWrite.run) continue;
-      let finalizedRun: typeof heartbeatRuns.$inferSelect | null =
-        failureWrite.run;
+      const shouldRetry = nullEnvironmentProcessLoss || shouldRetryLegacyProcessLoss;
+      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const allocationDiagnostic = nullEnvironmentProcessLoss
+        ? {
+            phase: "environment_selection",
+            outcome: "failed",
+            reasonCode: "no_environment_or_lease_recorded",
+            environmentId: null,
+            leaseId: null,
+            scratchDirHealth: "unknown",
+            capturedAt: now.toISOString(),
+          }
+        : null;
+      const allocationDiagnosticLine = allocationDiagnostic
+        ? `[environment-allocation] ${allocationDiagnostic.phase}:${allocationDiagnostic.reasonCode}`
+        : null;
+      const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
+        ? {
+          kind: "orphaned_process_group_cleanup",
+          stopped: true,
+          stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+          reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
+          processPid: run.processPid ?? null,
+          processGroupId: run.processGroupId ?? null,
+        }
+        : null;
+
+      let finalizedRun = await setRunStatus(run.id, "failed", {
+        error: shouldRetry
+          ? `${baseMessage}; ${nullEnvironmentProcessLoss ? "scheduling bounded environment retry" : "retrying once"}`
+          : baseMessage,
+        errorCode: "process_lost",
+        finishedAt: now,
+        resultJson: (() => {
+          const result = mergeRunStopMetadataForAgent(
+            { adapterType, adapterConfig },
+            "failed",
+            {
+              resultJson: parseObject(run.resultJson),
+              errorCode: "process_lost",
+              errorMessage: shouldRetry
+                ? `${baseMessage}; ${nullEnvironmentProcessLoss ? "scheduling bounded environment retry" : "retrying once"}`
+                : baseMessage,
+            },
+          );
+          const withAllocationDiagnostic = allocationDiagnostic
+            ? { ...result, environmentAllocationDiagnostic: allocationDiagnostic }
+            : result;
+          return unmanagedBackgroundTaskEvidence
+            ? {
+              ...withAllocationDiagnostic,
+              stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
+              unmanagedBackgroundTask: unmanagedBackgroundTaskEvidence,
+            }
+            : withAllocationDiagnostic;
+        })(),
+        ...(allocationDiagnosticLine
+          ? { stderrExcerpt: appendWithByteCap(run.stderrExcerpt ?? "", allocationDiagnosticLine, MAX_EXCERPT_BYTES) }
+          : {}),
+      });
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
-        error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
+        error: shouldRetry
+          ? `${baseMessage}; ${nullEnvironmentProcessLoss ? "scheduling bounded environment retry" : "retrying once"}`
+          : baseMessage,
       });
       if (!finalizedRun) finalizedRun = await getRun(run.id);
       if (!finalizedRun) continue;
@@ -18504,7 +18564,20 @@ export function heartbeatService(
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
       const retryAgent = await getAgent(run.agentId);
-      if (shouldRetry) {
+      if (nullEnvironmentProcessLoss) {
+        if (retryAgent) {
+          const attempt = (finalizedRun.scheduledRetryAttempt ?? 0) + 1;
+          const delayMs = NULL_ENVIRONMENT_PROCESS_LOSS_RETRY_DELAYS_MS[attempt - 1];
+          const scheduled = await scheduleBoundedRetryForRun(finalizedRun, retryAgent, {
+            now,
+            retryReason: NULL_ENVIRONMENT_PROCESS_LOSS_RETRY_REASON,
+            wakeReason: NULL_ENVIRONMENT_PROCESS_LOSS_WAKE_REASON,
+            maxAttempts: NULL_ENVIRONMENT_PROCESS_LOSS_RETRY_DELAYS_MS.length,
+            ...(delayMs != null ? { delayMs } : {}),
+          });
+          retriedRun = scheduled.outcome === "scheduled" ? scheduled.run : null;
+        }
+      } else if (shouldRetryLegacyProcessLoss) {
         if (retryAgent) {
           retriedRun = await enqueueProcessLossRetry(
             finalizedRun,
@@ -18535,6 +18608,8 @@ export function heartbeatService(
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
+          ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
+          ...(allocationDiagnostic ? { environmentAllocationDiagnostic: allocationDiagnostic } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
       });

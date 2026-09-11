@@ -2438,8 +2438,45 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });
 
-  it("requires reconciliation for a lost monitor whose provider outcomes are unknown", async () => {
-    const { agentId, runId, issueId } = await seedRunFixture({
+  it("schedules a null-environment process loss with diagnostics instead of stranding it", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [runId] });
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
+    const failed = runs.find((row) => row.id === runId);
+    const retry = runs.find((row) => row.retryOfRunId === runId);
+
+    expect(failed?.resultJson).toMatchObject({
+      environmentAllocationDiagnostic: {
+        phase: "environment_selection",
+        outcome: "failed",
+        reasonCode: "no_environment_or_lease_recorded",
+      },
+    });
+    expect(failed?.stderrExcerpt).toContain("[environment-allocation]");
+    expect(retry).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "retry_transient_environment_failure",
+    });
+    expect(retry?.scheduledRetryAt?.getTime()).toBe((failed?.finishedAt?.getTime() ?? 0) + 60_000);
+    expect(retry?.contextSnapshot).toMatchObject({
+      wakeReason: "process_lost_environment_retry",
+      retryReason: "retry_transient_environment_failure",
+    });
+  });
+
+  it("restores one lost monitor dispatch before escalating a second process loss", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",
       agentStatus: "idle",
       processPid: null,
