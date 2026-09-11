@@ -11356,6 +11356,36 @@ export function issueService(db: Db) {
         });
       }
 
+      if (checkoutRunId) {
+        const checkoutRun = await db
+          .select({
+            status: heartbeatRuns.status,
+            agentId: heartbeatRuns.agentId,
+          })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.id, checkoutRunId),
+              eq(heartbeatRuns.companyId, issueCompany.companyId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        if (
+          !checkoutRun ||
+          checkoutRun.agentId !== agentId ||
+          !ACTIVE_RUN_STATUSES.includes(checkoutRun.status)
+        ) {
+          throw conflict("Issue checkout requires a live owning run", {
+            code: "issue_checkout_run_not_live",
+            issueId: id,
+            actorAgentId: agentId,
+            checkoutRunId,
+            runStatus:
+              checkoutRun?.agentId === agentId ? checkoutRun.status : null,
+          });
+        }
+      }
+
       await clearExecutionRunIfTerminal(id);
       await clearCheckoutRunIfTerminal(id);
 

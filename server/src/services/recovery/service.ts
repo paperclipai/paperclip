@@ -5445,16 +5445,17 @@ export function recoveryService(
   // state is auditable. It never overwrites a status that another path already
   // made terminal.
   //
-  // Two independent authorities terminalize the run. Either one is enough:
+  // Two independent authorities can terminalize the run after its in-memory
+  // execution owner is gone:
   //
   // - Issue-terminal authority: the run's issue already reached a terminal
   //   status (done or cancelled), but the run row is still "running". A healthy
   //   run always terminalizes its own row before or just after the issue reaches
   //   a terminal status, so a lasting "running" row under a terminal issue is
-  //   orphaned. This authority does not depend on process death. It is the only
-  //   authority that catches the reuse-lease path: the release stops the sandbox
-  //   but keeps the server process alive, so the in-memory handle and the
-  //   recorded pid can both persist.
+  //   orphaned. This authority does not depend on recorded process death. It
+  //   catches the reuse-lease path after its in-memory execution owner is gone:
+  //   the release stops the sandbox but keeps the server process alive, so the
+  //   recorded pid can persist.
   // - Process-death authority: the run has no in-memory handle and its recorded
   //   process and process group are both gone. This catches a hard server crash
   //   that skipped the graceful teardown, even when the issue is not terminal.
@@ -5484,11 +5485,23 @@ export function recoveryService(
     if (isNativeRunnerOwnershipHeld(run))
       return { terminalized: false, status: run.status };
 
+    // A live in-memory execution is the strongest ownership signal. The agent
+    // can set its issue to a terminal status before the enclosing heartbeat
+    // finishes its output, telemetry, and run finalization. Terminalizing here
+    // would race that still-running executor, release its checkout lock, and
+    // reject its remaining run-scoped writes as ownership conflicts.
+    const hasLiveExecution =
+      deps.liveRunExecutions?.has(run.id) ?? runningProcesses.has(run.id);
+    if (hasLiveExecution) {
+      return { terminalized: false, status: run.status };
+    }
+
     const pid = run.processPid ?? null;
     const processGroupId = run.processGroupId ?? null;
 
-    // Issue-terminal authority. When the run's issue is terminal, the run row is
-    // orphaned regardless of process or handle state. Prefer the referencing
+    // Issue-terminal authority. When the run's issue is terminal and no live
+    // execution owns it, the run row is orphaned regardless of recorded process
+    // state. Prefer the referencing
     // issue status that the caller passed, because a lock column is the direct
     // link from the stuck "Live" issue to this run. Fall back to the issue id in
     // the run context snapshot when the caller passed nothing. Skip the fallback
@@ -5525,24 +5538,20 @@ export function recoveryService(
     // group. Require recorded process metadata, so this authority never fires
     // on a run that has not yet stored its pid.
     let processGone = false;
-    const hasLiveExecution =
-      deps.liveRunExecutions?.has(run.id) ?? runningProcesses.has(run.id);
-    if (!hasLiveExecution) {
-      if (typeof pid === "number" || typeof processGroupId === "number") {
-        const processAlive =
-          (typeof pid === "number" && isPidAlive(pid)) ||
-          (typeof processGroupId === "number" &&
-            isProcessGroupAlive(processGroupId));
-        processGone = !processAlive;
-      }
+    if (typeof pid === "number" || typeof processGroupId === "number") {
+      const processAlive =
+        (typeof pid === "number" && isPidAlive(pid)) ||
+        (typeof processGroupId === "number" &&
+          isProcessGroupAlive(processGroupId));
+      processGone = !processAlive;
     }
 
     // A result-less native run may intentionally have no live provider process
     // while the native finalization coordinator waits to resume the same
     // provider session. That coordinator, rather than this generic
-    // process-death backstop, owns retryable/resumed attempts. Preserve issue
-    // terminality as the stronger authority, but never interrupt coordinator-
-    // owned recovery merely because the provider process has exited.
+    // process-death backstop, owns retryable/resumed attempts. In the absence of
+    // a terminal issue, never interrupt coordinator-owned recovery merely
+    // because the provider process has exited.
     if (!issueTerminalStatus && processGone && run.runtimeMode === "native") {
       const coordinator = await db
         .select({

@@ -379,14 +379,14 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .resolves.toEqual([{ checkoutRunId: runningRunId, executionRunId: runningRunId }]);
   });
 
-  it("preserves a process-less run while its in-process execution is still finalizing", async () => {
+  it("preserves a terminal issue's run while its in-process execution is still finalizing", async () => {
     const { companyId, agentId, runningRunId } = await seed();
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
       companyId,
-      title: "Native finalization remains live",
-      status: "in_progress",
+      title: "Terminal issue while executor remains live",
+      status: "done",
       priority: "high",
       assigneeAgentId: agentId,
       checkoutRunId: runningRunId,
@@ -396,8 +396,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     await db
       .update(heartbeatRuns)
       .set({
-        runtimeMode: "native",
-        processPid: 2_000_000_000,
+        processPid: process.pid,
       })
       .where(eq(heartbeatRuns.id, runningRunId));
 

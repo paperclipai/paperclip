@@ -6076,6 +6076,76 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     });
   });
 
+  it("checkout refuses a terminal actor run before it can reclaim an issue", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const terminalRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: terminalRunId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      invocationSource: "manual",
+      startedAt: new Date("2026-06-10T10:00:00.000Z"),
+      finishedAt: new Date("2026-06-10T10:01:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue reopened before a terminal run tried to reclaim it",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    await expect(
+      svc.checkout(issueId, agentId, ["todo", "in_progress"], terminalRunId),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "issue_checkout_run_not_live",
+        checkoutRunId: terminalRunId,
+        runStatus: "succeeded",
+      },
+    });
+
+    const row = await db
+      .select({
+        status: issues.status,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        startedAt: issues.startedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({
+      status: "todo",
+      checkoutRunId: null,
+      executionRunId: null,
+      startedAt: null,
+    });
+  });
+
   it("checkout adoption of a stale checkoutRunId preserves the issue's assigneeUserId", async () => {
     // Regression for PR #2482 checkout-adoption review finding: any adoption
     // helper that re-locks an existing in_progress issue (e.g. when the prior
