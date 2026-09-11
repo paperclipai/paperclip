@@ -902,6 +902,7 @@ async function startServerWithDatabaseTeardown(
     authPublicBaseUrl: config.authPublicBaseUrl,
     chatWebhookPublicBaseUrl: config.chatWebhookPublicBaseUrl,
     authReady,
+    authDisableSignUp: config.authDisableSignUp,
     companyDeletionEnabled: config.companyDeletionEnabled,
     pluginMigrationDb: pluginMigrationDb as any,
     betterAuthHandler,
