@@ -8,6 +8,10 @@ const PERMANENT =
 // when their outer error is described as a provider transport failure.
 const NON_RETRYABLE_SESSION_CLOSE =
   /(?:native_session_close_unrecoverable|runner did not durably suspend before checkpoint)/i;
+// Recovery cannot repair a provider session-open rejection that explicitly
+// declares itself non-retryable. Keep generic transport/start failures transient.
+const NON_RETRYABLE_ACPX_SESSION_OPEN =
+  /native_session_recovery_failed[\s\S]*ACPX sidecar command session\.open was rejected\s*\([^)]*\bretryable\s*=\s*false\b/i;
 const CANDIDATE =
   /(?:matcher|expected.*observed|marker|issue status|run status|runtime mode|wrong output|missing output)/i;
 
@@ -24,7 +28,11 @@ export function classifyFailure(error: unknown): FailureClass {
       : "cleanup_failure";
   }
   if (PERMANENT.test(message)) return "permanent_infrastructure";
-  if (NON_RETRYABLE_SESSION_CLOSE.test(message)) return "candidate_failure";
+  if (
+    NON_RETRYABLE_SESSION_CLOSE.test(message) ||
+    NON_RETRYABLE_ACPX_SESSION_OPEN.test(message)
+  )
+    return "candidate_failure";
   if (TRANSIENT.test(message)) return "transient_infrastructure";
   if (CANDIDATE.test(message)) return "candidate_failure";
   return "candidate_failure";

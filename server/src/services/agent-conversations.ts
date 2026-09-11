@@ -184,7 +184,7 @@ export async function prepareConversationTurn(
   return result;
 }
 
-/** Finalizers only park a turn with a durable response (or a processed /new). */
+/** Finalizers only park a turn with a durable response, interaction, or processed /new. */
 export async function settleConversationTurn(
   db: Db,
   run: typeof heartbeatRuns.$inferSelect,
@@ -217,7 +217,21 @@ export async function settleConversationTurn(
         ),
       )
       .limit(1);
-    if (!response && context.conversationReset !== true) return false;
+    // Native question/plan waits use the durable interaction as the reply;
+    // their terminal prose is deliberately not materialized as a comment.
+    const [interaction] = !response && context.conversationReset !== true
+      ? await tx.select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions)
+          .where(and(
+            eq(issueThreadInteractions.companyId, run.companyId),
+            eq(issueThreadInteractions.issueId, issueId),
+            eq(issueThreadInteractions.sourceRunId, run.id),
+            eq(issueThreadInteractions.createdByAgentId, issue.conversationAgentId!),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .limit(1)
+      : [];
+    if (!response && !interaction && context.conversationReset !== true) return false;
     if (
       context.conversationSessionGeneration !==
       issue.conversationSessionGeneration

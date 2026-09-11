@@ -693,6 +693,25 @@ describe("runner E2E failure policy", () => {
     expect(shouldRetryFailure(failureClass)).toBe(false);
   });
 
+  it.each([
+    'native_session_recovery_failed: Error: PRP command run.attach failed: {"result":{"code":"command_execution_failed","message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=unclassified)"},"status":"failed"}',
+    "native_session_recovery_failed: provider transport failed\nACPX sidecar command session.open was rejected (retryable = false, classification=session_not_found)",
+  ])("does not retry explicit non-retryable ACPX recovery rejection: %s", (message) => {
+    const failureClass = classifyFailure(new Error(message));
+    expect(failureClass).toBe("candidate_failure");
+    expect(shouldRetryFailure(failureClass)).toBe(false);
+  });
+
+  it.each([
+    'native_session_recovery_failed: PRP run.attach failed: {"message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=true, classification=network)","status":"failed"}',
+    'native_session_recovery_failed: PRP run.attach failed: {"message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected","status":"failed"}',
+    "native_session_recovery_failed: failed to start ACPX provider: ECONNRESET",
+  ])("retains transient ACPX recovery retries: %s", (message) => {
+    const failureClass = classifyFailure(new Error(message));
+    expect(failureClass).toBe("transient_infrastructure");
+    expect(shouldRetryFailure(failureClass)).toBe(true);
+  });
+
   it("retries only transient infrastructure failures", () => {
     expect(
       classifyFailure(new Error("Daytona preview connection timed out")),

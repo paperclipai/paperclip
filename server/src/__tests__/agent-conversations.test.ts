@@ -627,6 +627,40 @@ const support = await getEmbeddedPostgresTestSupport();
         await rm(cwd, { recursive: true, force: true });
       }
     }, 30000);
+    it("parks successful native interaction-only turns without consuming unrelated or stale gates", async () => {
+      const chat = await create();
+      const message = await issueService(db).addComment(chat.id, "Plan the work", { userId: "local-board" });
+      const run = await runFor(chat.id, message.id);
+      const prepared = await prepareConversationTurn(db, run);
+      const succeeded = { ...run, contextSnapshot: prepared.context, status: "succeeded" };
+      const [interaction] = await db.insert(issueThreadInteractions).values({
+        companyId, issueId: chat.id, sourceRunId: run.id, createdByAgentId: agentId,
+        kind: "request_confirmation", status: "answered", payload: { version: 1 },
+      }).returning();
+      expect(await settleConversationTurn(db, succeeded)).toBe(false);
+      await db.update(issueThreadInteractions).set({ status: "pending", sourceRunId: null })
+        .where(eq(issueThreadInteractions.id, interaction.id));
+      expect(await settleConversationTurn(db, succeeded)).toBe(false);
+      await db.update(issueThreadInteractions).set({ sourceRunId: run.id })
+        .where(eq(issueThreadInteractions.id, interaction.id));
+      for (const status of ["failed", "cancelled", "timed_out"]) {
+        expect(await settleConversationTurn(db, { ...succeeded, status })).toBe(false);
+      }
+      await db.update(issueThreadInteractions).set({ createdByAgentId: null })
+        .where(eq(issueThreadInteractions.id, interaction.id));
+      expect(await settleConversationTurn(db, succeeded)).toBe(false);
+      await db.update(issueThreadInteractions).set({ createdByAgentId: agentId })
+        .where(eq(issueThreadInteractions.id, interaction.id));
+      expect(await settleConversationTurn(db, { ...succeeded,
+        contextSnapshot: { ...prepared.context, conversationSessionGeneration: -1 },
+      })).toBe(false);
+      expect(await settleConversationTurn(db, succeeded)).toBe(true);
+      const [idle] = await db.select().from(issues).where(eq(issues.id, chat.id));
+      expect(isWaitingConversation(idle)).toBe(true);
+      const [pending] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interaction.id));
+      expect(pending.status).toBe("pending");
+    });
     it("rejects late replies and session events from cancelled conversation turns", async () => {
       const chat = await create();
       const message = await issueService(db).addComment(chat.id, "Old topic", { userId: "local-board" });
