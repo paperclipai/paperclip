@@ -166,7 +166,7 @@ synthetic `/new` runs. Assertions must inspect all company runs because ordinary
 issue lists exclude the source conversation. `assertChatHandoff` rejects missing
 projects/plans, chat children, wrong assignees, and execution before plan commit.
 
-Retained `chat-api-state.json`, `chat-handoff.json`, and plan-revision evidence
+Retained `api-state.json`, `chat-handoff.json`, and plan-revision evidence
 include persisted comments, session generations, run context and logs, project
 workspaces, task documents, and ordering. They pass through the normal sanitizer.
 Screenshots are allowlisted to the exact disposable agent chat. Cleanup cancels
