@@ -3,7 +3,7 @@ import type { FailureClass } from "./types.js";
 const TRANSIENT =
   /(?:\b429\b|\b5\d\d\b|rate.?limit|ECONN(?:RESET|REFUSED)|socket hang up|network (?:error|interruption|timeout)|service unavailable|(?:provider|server|bootstrap|browser|webserver|health|daytona|sandbox|ingress|preview|connection|harness).*(?:temporar|timed? out|timeout|closed|failed|unavailable|interrupt|reset|refused|create|start|connect)|(?:timed? out|timeout).*(?:provider|server|bootstrap|browser|webserver|health|daytona|sandbox|ingress|preview|connection|harness))/i;
 const PERMANENT =
-  /(?:retryable=false|effective_model_mismatch|missing (?:credential|fixture secret)|invalid.*(?:credential|api key)|unauthorized|forbidden|qualification|model.*(?:unsupported|incompatible)|artifact.*incompatible|runner_remote_.*(?:incompatible|unavailable)|immutable image digest)/i;
+  /(?:missing (?:credential|fixture secret)|invalid.*(?:credential|api key)|unauthorized|forbidden|qualification|model.*(?:unsupported|incompatible)|artifact.*incompatible|runner_remote_.*(?:incompatible|unavailable)|immutable image digest)/i;
 const CANDIDATE =
   /(?:matcher|expected.*observed|marker|issue status|run status|runtime mode|wrong output|missing output)/i;
 
@@ -14,6 +14,8 @@ export function classifyFailure(error: unknown): FailureClass {
     return "transient_infrastructure";
   if (/secret.*(?:leak|plaintext|redaction)/i.test(message))
     return "secret_leak";
+  if (/retryable=false|effective_model_mismatch/i.test(message))
+    return "permanent_infrastructure";
   if (/cleanup|teardown|lease.*release/i.test(message)) {
     return TRANSIENT.test(message)
       ? "transient_infrastructure"
