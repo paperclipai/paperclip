@@ -1458,7 +1458,7 @@ process.exit(1);
     process.env.PAPERCLIP_HOME = path.join(root, "paperclip");
     process.env.PAPERCLIP_INSTANCE_ID = "connectors";
     process.env.CODEX_HOME = sourceHome;
-    const invoke = async (agentId: string, digest: string | null, source = skillSource) => {
+    const invoke = async (agentId: string, digest: string | null, source = skillSource, connectorSkillInstructions = "") => {
       const config = {
         engine: "cli", command, cwd: workspace,
         env: { CODEX_HOME: sourceHome, PAPERCLIP_TEST_CAPTURE_PATH: capture },
@@ -1469,7 +1469,7 @@ process.exit(1);
       const result = await execute({ runId: `run-${agentId}-${digest?.slice(0, 1) ?? "none"}`,
         agent: { id: agentId, companyId: "company-1", name: "Email agent", adapterType: "codex_local", adapterConfig: config },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
-        config, context: {}, authToken: "test-token", onLog: async () => {},
+        config, context: { paperclipWake: { connectorSkillInstructions } }, authToken: "test-token", onLog: async () => {},
       });
       expect(result.errorMessage).toBeNull();
       expect(result.exitCode).toBe(0);
@@ -1489,7 +1489,11 @@ process.exit(1);
       const next = await invoke("agent-1", "b".repeat(64), nextSource);
       expect(next.codexHome).not.toBe(first.codexHome);
       expect(await fs.readFile(path.join(next.codexHome!, "skills/agentmail/SKILL.md"), "utf8")).toContain("inbox two");
+      const inline = await invoke("agent-1", null, skillSource, "# AgentMail\nAssigned inbox inline@example.test");
+      expect(inline.prompt).toContain("Assigned inbox inline@example.test");
+      await expect(fs.stat(path.join(sourceHome, "skills/agentmail"))).rejects.toMatchObject({ code: "ENOENT" });
       const removed = await invoke("agent-1", null);
+      expect(removed.prompt).not.toContain("inline@example.test");
       expect(removed.codexHome).toBe(sourceHome);
       await expect(fs.stat(path.join(removed.codexHome!, "skills/agentmail"))).rejects.toMatchObject({ code: "ENOENT" });
     } finally {

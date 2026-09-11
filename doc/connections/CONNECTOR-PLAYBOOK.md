@@ -456,6 +456,10 @@ from the same connector into one skill. Include only authorized resource context
 never provider secrets; treat resource values as data. Supply the short skill
 description for discovery and keep detailed instructions in the skill. The same
 resolved set must reach local CLI adapters, sandbox adapters, and native runners.
+Adapters with isolated skill delivery receive the bundle. Adapters that install
+into shared user directories receive the same assigned skill in the run prompt,
+including resumed turns, without writing connector files into that directory.
+Manual skill-sync operations must also exclude automatic connector bundles.
 The agent Skills page should identify automatic contributions and explain that
 assignment controls them; they are not independently enabled/disabled there.
 

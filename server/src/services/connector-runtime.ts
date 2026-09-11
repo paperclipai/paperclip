@@ -199,6 +199,41 @@ export async function applyConnectorSkills(
   };
 }
 
+/** Shared-home adapters receive the assigned skill in the run prompt, never on disk. */
+export async function prepareConnectorSkillDelivery(
+  config: Record<string, unknown> & Awaited<ReturnType<typeof applyConnectorSkills>>,
+  adapterType: string,
+) {
+  const scopedFiles =
+    adapterType === "paperclip_runner" ||
+    (config.engine === "cli" &&
+      ["codex_local", "claude_local", "kimi_local"].includes(adapterType));
+  if (scopedFiles) return { config, instructions: "" };
+  const assigned = config.paperclipRuntimeSkills.filter((entry) =>
+    isConnectorSkill(entry.key),
+  );
+  const instructions = (
+    await Promise.all(
+      assigned.map(
+        async (entry) =>
+          `### ${entry.runtimeName}\n\n${await fs.readFile(path.join(entry.source, "SKILL.md"), "utf8")}`,
+      ),
+    )
+  ).join("\n\n");
+  const stripped = await applyConnectorSkills(
+    config,
+    config.paperclipRuntimeSkills,
+    [],
+  );
+  return {
+    config: {
+      ...stripped,
+      paperclipConnectorSkillDigest: config.paperclipConnectorSkillDigest,
+    },
+    instructions,
+  };
+}
+
 export function annotateConnectorSkills(
   snapshot: AgentSkillSnapshot,
   assignments: ConnectorAssignment[],
@@ -209,7 +244,9 @@ export function annotateConnectorSkills(
       entries.push({
         key: skillKey(connector),
         runtimeName: connector.skillName,
-        desired: false,
+        desired: assignments.some(
+          (entry) => entry.skillKey === skillKey(connector),
+        ),
         managed: true,
         state: "available",
         readOnly: true,
@@ -227,6 +264,8 @@ export function annotateConnectorSkills(
       return assignment
         ? {
             ...entry,
+            desired: true,
+            state: "configured",
             readOnly: true,
             originLabel: `${assignment.label} assignment`,
             detail: `Provided automatically by ${assignment.label}: ${assignment.resources.map((resource) => resource.label).join(", ")}. Manage this skill through the connector assignment.`,

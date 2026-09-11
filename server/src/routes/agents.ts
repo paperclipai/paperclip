@@ -3662,13 +3662,14 @@ export function agentRoutes(
       );
       const connectorAssignments = await resolveConnectorAssignments(db, { companyId: updated.companyId, agentId: updated.id });
       const runtimeSkillConfig = await applyConnectorSkills(runtimeConfig, runtimeSkillEntries, connectorAssignments);
-      const snapshot = adapter?.syncSkills
+      const manualSkillConfig = await applyConnectorSkills(runtimeConfig, runtimeSkillEntries, []);
+      let snapshot = adapter?.syncSkills
         ? await adapter.syncSkills({
             agentId: updated.id,
             companyId: updated.companyId,
             adapterType: updated.adapterType,
-            config: runtimeSkillConfig,
-          }, readPaperclipSkillSyncPreference(runtimeSkillConfig).desiredSkills)
+            config: manualSkillConfig,
+          }, readPaperclipSkillSyncPreference(manualSkillConfig).desiredSkills)
         : adapter?.listSkills
           ? await adapter.listSkills({
               agentId: updated.id,
@@ -3678,6 +3679,10 @@ export function agentRoutes(
             })
           : buildUnsupportedSkillSnapshot(updated.adapterType, desiredSkillEntries);
 
+      if (connectorAssignments.length && adapter?.listSkills) {
+        snapshot = await adapter.listSkills({ agentId: updated.id, companyId: updated.companyId,
+          adapterType: updated.adapterType, config: runtimeSkillConfig });
+      }
       await logActivity(db, {
         companyId: updated.companyId,
         actorType: actor.actorType,

@@ -1,6 +1,6 @@
-import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills } from "../services/connector-runtime.js";
+import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments, annotateConnectorSkills } from "../services/connector-runtime.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
-import { resolvePaperclipDesiredSkillNames, resolveLegacyPaperclipDesiredSkillNames } from "@paperclipai/adapter-utils/server-utils";
+import { renderPaperclipWakePrompt, resolvePaperclipDesiredSkillNames, resolveLegacyPaperclipDesiredSkillNames } from "@paperclipai/adapter-utils/server-utils";
 import express from "express";
 import type WebSocket from "ws";
 import request from "supertest";
@@ -124,6 +124,17 @@ describe("AgentMail durable email pipeline", () => {
     expect(markdown).toContain(f.endpointId);
     expect(markdown).toContain("agentmail_send");
     expect(markdown).not.toContain("test-key");
+    for (const adapterType of ["cursor_local", "gemini_local", "opencode_local", "pi_local", "codex_local"]) {
+      const delivery = await prepareConnectorSkillDelivery(configured, adapterType);
+      expect(delivery.config.paperclipRuntimeSkills).toEqual([]);
+      expect(delivery.config.paperclipConnectorSkillDigest).toBe(configured.paperclipConnectorSkillDigest);
+      for (const resumedSession of [false, true]) {
+        expect(renderPaperclipWakePrompt({ connectorSkillInstructions: delivery.instructions }, { resumedSession })).toContain(f.endpointId);
+      }
+    }
+    const nativeDelivery = await prepareConnectorSkillDelivery(configured, "paperclip_runner");
+    expect(nativeDelivery.instructions).toBe("");
+    expect(nativeDelivery.config.paperclipRuntimeSkills).toHaveLength(1);
     const authority = new PaperclipRunnerToolAuthority(db, { ...binding, issueId: randomUUID(), runId: randomUUID(), connectorAssignments: assignments });
     expect(authority.definitions().filter((tool) => String(tool.name).startsWith("agentmail_")).map((tool) => tool.name)).toEqual([
       "agentmail_inboxes", "agentmail_read_thread", "agentmail_send", "agentmail_delivery",
