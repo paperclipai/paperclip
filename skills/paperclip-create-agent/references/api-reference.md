@@ -86,6 +86,22 @@ If company setting disables required approval, `approval` is `null` and the agen
 `desiredSkills` accepts company skill ids, canonical keys, or a unique slug. The server resolves and stores canonical company skill keys.
 Leave timer heartbeats disabled by default. Only set `runtimeConfig.heartbeat.enabled=true` and include an `intervalSec` when the role truly needs scheduled recurring work or the user explicitly requested it.
 
+## Local-adapter governance bundle (Gates 5a/5b)
+
+**Opt-in** — applies when your Paperclip company maintains a hire-flow gates policy with a deny-baseline requirement.
+
+For `claude_local`, `opencode_local`, and `codex_local` adapter types, the hire payload's `instructionsBundle.files` should include the following entries when your company's governance policy requires them. See `<governance-dir>/hire-flow-gates.md` in your company's governance directory for the authoritative spec and pre-submit checklist.
+
+| Path | Required when | Blocks hire if missing |
+|------|---------------|------------------------|
+| `claude-config/settings.json` | company gates active (local adapter) | yes |
+| `claude-config/justification.md` | `adapterConfig.dangerouslySkipPermissions: true` (default) | yes |
+| `claude-config/baseline-override.md` | path (b) — board-approved baseline override | yes (if path (b) chosen) |
+
+`claude-config/settings.json` default content: the company's approved deny baseline JSON from `<governance-dir>/claude-permissions-baseline.md`.
+
+**To adopt this pattern** for your company: create `<governance-dir>/hire-flow-gates.md` and `<governance-dir>/claude-permissions-baseline.md` with your company's baseline deny configuration, then reference them from your agents' AGENTS.md files so the gates are enforced on every local-adapter hire.
+
 ## Approval Lifecycle
 
 Statuses:
