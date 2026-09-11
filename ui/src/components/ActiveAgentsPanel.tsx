@@ -203,7 +203,7 @@ export const AgentRunCard = memo(function AgentRunCard({
               <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
                 <StatusGlyph
                   status={issue?.status ?? "backlog"}
-                  size="lg"
+                  size="md"
                   className="self-center"
                   title={issue ? `Task ${issue.status.replace(/_/g, " ")}` : undefined}
                 />
@@ -214,7 +214,7 @@ export const AgentRunCard = memo(function AgentRunCard({
           </Link>
         ) : (
           <Link to={runUrl} className="flex items-center gap-1.5 rounded-lg border border-border/60 bg-background/60 px-2.5 py-2 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-            <Clock3 className="size-5 shrink-0" aria-hidden />
+            <Clock3 className="size-4 shrink-0" aria-hidden />
             <span className="truncate">{run.invocationSource === "timer" ? "Scheduled heartbeat" : "No linked task"}</span>
           </Link>
         )}
