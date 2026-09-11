@@ -204,6 +204,7 @@ export function InstanceExperimentalSettings() {
   );
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableNativeRunner = experimentalQuery.data?.enableNativeRunner === true;
+  const enableChatConnectors = experimentalQuery.data?.enableChatConnectors === true;
   const enableManagedSandboxOnly = experimentalQuery.data?.enableManagedSandboxOnly === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
@@ -232,6 +233,8 @@ export function InstanceExperimentalSettings() {
     experimentalQuery.data?.enablePaperclipDeveloperMode === true;
   const enableSimplifiedEnglishInteractions =
     experimentalQuery.data?.enableSimplifiedEnglishInteractions === true;
+  const enableFirstTaskPlanProposal =
+    experimentalQuery.data?.enableFirstTaskPlanProposal === true;
   const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   return (
@@ -301,6 +304,18 @@ export function InstanceExperimentalSettings() {
           settingKey="enableCases"
           managed={managedKeys.enableCases}
           ariaLabel={t("localizationExperimental.features.enableCases.ariaLabel")}
+        />
+
+        <ExperimentalToggleCard
+          title={t("localizationExperimental.features.enableChatConnectors.title")}
+          description={t("localizationExperimental.features.enableChatConnectors.description")}
+          footnote={t("localizationExperimental.features.enableChatConnectors.footnote")}
+          checked={enableChatConnectors}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableChatConnectors: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableChatConnectors"
+          managed={managedKeys.enableChatConnectors}
+          ariaLabel={t("localizationExperimental.features.enableChatConnectors.ariaLabel")}
         />
 
         {SHOW_CONFERENCE_ROOM_EXPERIMENTAL_SETTING ? (
@@ -395,6 +410,19 @@ export function InstanceExperimentalSettings() {
           settingKey="enableSimplifiedEnglishInteractions"
           managed={managedKeys.enableSimplifiedEnglishInteractions}
           ariaLabel={t("localizationExperimental.features.enableSimplifiedEnglishInteractions.ariaLabel")}
+        />
+
+        <ExperimentalToggleCard
+          title={t("localizationExperimental.features.enableFirstTaskPlanProposal.title")}
+          description={t("localizationExperimental.features.enableFirstTaskPlanProposal.description")}
+          checked={enableFirstTaskPlanProposal}
+          onCheckedChange={(checked) =>
+            toggleMutation.mutate({ enableFirstTaskPlanProposal: checked })
+          }
+          disabled={toggleMutation.isPending}
+          settingKey="enableFirstTaskPlanProposal"
+          managed={managedKeys.enableFirstTaskPlanProposal}
+          ariaLabel={t("localizationExperimental.features.enableFirstTaskPlanProposal.toggle")}
         />
 
         <ExperimentalToggleCard

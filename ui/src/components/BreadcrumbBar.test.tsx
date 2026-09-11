@@ -7,6 +7,8 @@ import { BreadcrumbProvider, useBreadcrumbs } from "../context/BreadcrumbContext
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { i18n } from "@/i18n";
 
+const viewport = vi.hoisted(() => ({ isMobile: false }));
+
 vi.mock("@/lib/router", () => ({
   Link: ({ children, className, to }: { children: ReactNode; className?: string; to: string }) => (
     <a className={className} href={to}>{children}</a>
@@ -16,7 +18,7 @@ vi.mock("@/lib/router", () => ({
 vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({
     collapsed: false,
-    isMobile: false,
+    isMobile: viewport.isMobile,
     toggleCollapsed: vi.fn(),
     toggleSidebar: vi.fn(),
   }),
@@ -45,11 +47,15 @@ function TaskBreadcrumbs({
   panelControl,
   taskDetailLayout = false,
   identifier = "PAP-16679",
+  sourceHref = "/issues",
+  sourceLabel = "Tasks",
 }: {
   onOpen?: () => void;
   panelControl?: { open: boolean; onToggle: () => void };
   taskDetailLayout?: boolean;
   identifier?: string;
+  sourceHref?: string;
+  sourceLabel?: string;
 }) {
   const {
     setBreadcrumbs,
@@ -59,7 +65,7 @@ function TaskBreadcrumbs({
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Tasks", href: "/issues" },
+      { label: sourceLabel, href: sourceHref },
       {
         label: "Hire your first engineer and create a hiring plan",
         identifier,
@@ -85,6 +91,8 @@ function TaskBreadcrumbs({
     setBreadcrumbPanelControl,
     setBreadcrumbToolbar,
     setBreadcrumbs,
+    sourceHref,
+    sourceLabel,
   ]);
 
   return <BreadcrumbBar taskDetailLayout={taskDetailLayout} />;
@@ -98,6 +106,7 @@ describe("BreadcrumbBar", () => {
   let root: Root;
 
   beforeEach(() => {
+    viewport.isMobile = false;
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -129,6 +138,23 @@ describe("BreadcrumbBar", () => {
     }
     await act(async () => button.click());
     expect(onToggle).toHaveBeenCalledOnce();
+  });
+
+  it.each(["Tasks", "Задачи"])("shows a company-scoped mobile task header independently of its section label (%s)", async (sourceLabel) => {
+    viewport.isMobile = true;
+    await act(async () => {
+      root.render(
+        <BreadcrumbProvider>
+          <TaskBreadcrumbs identifier="TES-3" sourceHref="/TES/issues" sourceLabel={sourceLabel} />
+        </BreadcrumbProvider>,
+      );
+    });
+    expect(container.querySelector('a[href="/TES/issues"]')).toBeNull();
+    const identifier = container.querySelector('[data-slot="task-title-identifier"]');
+    expect(identifier?.textContent).toBe("TES-3");
+    expect(identifier?.previousElementSibling?.textContent).toBe("Hire your first engineer and create a hiring plan");
+    expect(identifier?.previousElementSibling?.className).toContain("truncate");
+    expect(container.querySelector('button[aria-label="Open sidebar"]')).not.toBeNull();
   });
 
   it("renders a page toolbar in the same persistent row as the task breadcrumb", async () => {

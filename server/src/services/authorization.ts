@@ -54,6 +54,7 @@ export type AuthorizationActor =
       | "agent_key"
       | "agent_jwt"
       | "cloud_tenant"
+      | "cloud_control"
       | "none";
   };
 

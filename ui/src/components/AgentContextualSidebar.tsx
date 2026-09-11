@@ -7,6 +7,7 @@ import {
   History,
   KeyRound,
   Library,
+  MessageSquare,
   PlayCircle,
   ReceiptText,
   Settings2,
@@ -16,6 +17,7 @@ import {
 } from "lucide-react";
 import { agentsApi } from "@/api/agents";
 import { useCompany } from "@/context/CompanyContext";
+import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
 import { queryKeys } from "@/lib/queryKeys";
 import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
 import { SidebarNavItem } from "./SidebarNavItem";
@@ -34,6 +36,7 @@ const localIcons = {
   runtime: Settings2,
   secrets: ShieldCheck,
   tools: Wrench,
+  channels: MessageSquare,
   permissions: ShieldCheck,
   "api-keys": KeyRound,
   revisions: History,
@@ -50,13 +53,16 @@ export function AgentContextualSidebar({
   agentRef,
   agentId,
   agentName,
+  labels,
 }: {
   agentRef: string;
   agentId?: string;
   agentName?: string;
+  labels?: Partial<Record<AgentLocalDetailView, string>>;
 }) {
   const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
+  const { enabled: chatConnectorsEnabled } = useChatConnectorsEnabled();
   const shouldResolveAgent = !agentId || !agentName;
   const { data: resolvedAgent } = useQuery({
     queryKey: [...queryKeys.agents.detail(agentRef), selectedCompanyId ?? null, "contextual-sidebar"],
@@ -92,17 +98,19 @@ export function AgentContextualSidebar({
               {section.label}
             </p>
             <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
-              {section.items.map((item) => {
-                const href = agentDetailHref(agentRef, item.value);
-                return (
-                  <SidebarNavItem
-                    key={item.value}
-                    to={href}
-                    label={item.label}
-                    icon={localIcons[item.value]}
-                  />
-                );
-              })}
+              {section.items
+                .filter((item) => item.value !== "channels" || chatConnectorsEnabled)
+                .map((item) => {
+                  const href = agentDetailHref(agentRef, item.value);
+                  return (
+                    <SidebarNavItem
+                      key={item.value}
+                      to={href}
+                      label={labels?.[item.value] ?? (labels === undefined && item.value === "secrets" ? t("localizationAgentChrome.secretsAndVariables") : item.label)}
+                      icon={localIcons[item.value]}
+                    />
+                  );
+                })}
             </div>
           </div>
         ))}

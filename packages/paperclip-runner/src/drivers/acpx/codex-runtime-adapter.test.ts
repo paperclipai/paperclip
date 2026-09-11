@@ -101,7 +101,7 @@ describe("Codex ACPX runtime adapter", () => {
     });
   });
 
-  it.each([["claude" as const, "claude-sonnet-5", "sonnet"]])(
+  it.each([["claude" as const, "claude-sonnet-5", "claude-sonnet-5"]])(
     "opens the qualified %s session through the verified lease",
     async (agent, model, providerModel) => {
       const runtime = fakeRuntime();
@@ -114,7 +114,7 @@ describe("Codex ACPX runtime adapter", () => {
       await openCodexAcpxRuntime(options, {
         createRegistry: ({ overrides }) => {
           expect(overrides).toEqual({
-            [agent]: ["paperclip-verified-acpx-command"],
+            [agent]: [agent === "claude" ? "/paperclip-verified/claude-agent-acp" : "paperclip-verified-acpx-command"],
           });
           return registry();
         },

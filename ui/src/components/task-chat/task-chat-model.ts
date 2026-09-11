@@ -100,6 +100,8 @@ export interface TaskChatTokenUsage {
 
 /** A human/agent/system message bubble. */
 export interface TaskChatMessageItem {
+  /** Stable UI identity through optimistic acknowledgement; id remains canonical. */
+  renderKey?: string;
   id: string;
   kind: "message";
   author: TaskChatAuthorKind;
@@ -241,6 +243,8 @@ export interface TaskChatMarkerItem {
   detail?: string;
   /** Renders the marker as a quiet disclosure row with detail beneath it. */
   collapsible?: boolean;
+  /** Expected cancellation is neutral; unexpected failures remain destructive. */
+  tone?: "neutral" | "error";
   runId?: string;
   createdAtIso?: string;
   runHref?: string;
@@ -431,6 +435,8 @@ export interface TaskChatRunResultItem {
     scope: "current_track" | "task_wide";
   } | null;
   artifacts: Array<{ kind: string; ref: string; title?: string }>;
+  /** Proven by accepted native result and same-run successful terminal events. */
+  acceptedResponseWake?: { runId: string; sourceEventId: string };
 }
 
 export interface TaskChatRunTerminalItem {

@@ -351,8 +351,8 @@ export function OnboardingCardField({
   onSubmit,
   onPaste,
   disabled,
-  label = "Authorization code",
-  placeholder = "Paste authorization code here",
+  label,
+  placeholder,
   masked = false,
   autoFocus = false,
 }: {
@@ -363,7 +363,12 @@ export function OnboardingCardField({
   disabled?: boolean;
   label?: string;
   placeholder?: string;
-  /** A provider key is a credential; a one-time browser code is not. */
+  /**
+   * Dots instead of the value. The key card asks for it because a provider key
+   * is a credential that goes on living. The Claude card asks too: its code
+   * stays in the field after the paste so the customer can see something
+   * landed, and that is all they need to see of it.
+   */
   masked?: boolean;
   /**
    * Take focus when the card opens.
@@ -375,16 +380,16 @@ export function OnboardingCardField({
    */
   autoFocus?: boolean;
 }) {
-  useTranslation();
+  const { t } = useTranslation();
   return (
     <input
       // eslint-disable-next-line jsx-a11y/no-autofocus -- see the prop's note
       autoFocus={autoFocus}
-      aria-label={label}
+      aria-label={label ?? t("agentSetup.authorizationCode")}
       type={masked ? "password" : "text"}
       autoComplete="off"
       spellCheck={false}
-      placeholder={placeholder}
+      placeholder={placeholder ?? t("agentSetup.authorizationCodePlaceholder")}
       value={value}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value)}

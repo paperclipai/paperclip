@@ -1,10 +1,17 @@
 import { i18n, t, useTranslation } from "@/i18n";
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { testAgentSetup } from "@/lib/test-agent-setup";
+import { setupEffortLabel } from "@/lib/agent-setup-fields";
+import { RuntimeTestCard } from "./RuntimeTestCard";
+import { useState, useEffect, useRef, useMemo, useCallback, Children, isValidElement, type ReactNode } from "react";
+import type { AdapterConfigSection } from "../adapters/types";
+import { useConfigSchema } from "../adapters/schema-config-fields";
+import { schemaFieldSection } from "../adapters/config-sections";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
   AdapterAuthSessionPrompt,
   AdapterAuthSessionStatus,
+  CodexAccountBindingClaim,
   AdapterEnvironmentTestResult,
   CompanySecret,
   EnvBinding,
@@ -23,6 +30,7 @@ import {
   DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX,
   DEFAULT_CODEX_LOCAL_MODEL,
 } from "@paperclipai/adapter-codex-local";
+import { DEFAULT_CLAUDE_LOCAL_MODEL } from "@paperclipai/adapter-claude-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
@@ -93,6 +101,7 @@ import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
 export type { CreateConfigValues } from "@paperclipai/adapter-utils";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  paperclipRunnerTransitionConfig,
   type CreateConfigValues,
 } from "@paperclipai/adapter-utils";
 import { Badge } from "@/components/ui/badge";
@@ -119,6 +128,7 @@ type AgentConfigFormProps = {
   hideInlineSave?: boolean;
   showAdapterTypeField?: boolean;
   showAdapterTestEnvironmentButton?: boolean;
+  compactTestFeedback?: boolean;
   showCreateRunPolicySection?: boolean;
   hideInstructionsFile?: boolean;
   /** Allow instance administrators to configure short-lived raw provider capture. */
@@ -127,8 +137,13 @@ type AgentConfigFormProps = {
   hidePromptTemplate?: boolean;
   /** Render the main configuration sections or the dedicated edit-only Secrets surface. */
   content?: "configuration" | "secrets";
+  /** Keep variable bindings beside secret access in a unified edit surface. */
+  environmentVariablesPlacement?: "configuration" | "secrets";
   /** "cards" renders each section as heading + bordered card (for settings pages). Default: "inline" (border-b dividers). */
   sectionLayout?: "inline" | "cards";
+  /** Optional settings composition; sorting changes DOM order as well as visual order. */
+  sectionOrder?: readonly string[];
+  sectionTitles?: Record<string, string>;
 } & (
   | {
       mode: "create";
@@ -157,18 +172,14 @@ const emptyOverlay: AgentConfigOverlay = {
 const EMPTY_ENV: Record<string, EnvBinding> = {};
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
-  return adapterType === "claude_local" || adapterType === "codex_local";
+  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local";
 }
 
 export function resolvePaperclipRunnerTransitionModel(
   previousAdapterType: string,
   previousModel: unknown,
 ): string {
-  return previousAdapterType === "codex_local"
-    && typeof previousModel === "string"
-    && previousModel.trim().length > 0
-    ? previousModel.trim()
-    : DEFAULT_CODEX_LOCAL_MODEL;
+  return paperclipRunnerTransitionConfig(previousAdapterType, previousModel).model as string;
 }
 
 function isOverlayDirty(o: AgentConfigOverlay): boolean {
@@ -180,6 +191,64 @@ function isOverlayDirty(o: AgentConfigOverlay): boolean {
     Object.keys(o.debug).length > 0 ||
     Object.keys(o.runtime).length > 0
   );
+}
+
+/**
+ * Structural equality for overlay entry values. Overlay values are
+ * JSON-shaped (scalars, env maps, argument arrays), so a reference compare
+ * alone would keep an edit-then-restore of a structured value falsely dirty
+ * after a refresh subtracts the persisted snapshot.
+ */
+export function overlayValuesEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((item, index) => overlayValuesEqual(item, b[index]));
+  }
+  if (
+    typeof a === "object" && a !== null && !Array.isArray(a) &&
+    typeof b === "object" && b !== null && !Array.isArray(b)
+  ) {
+    const aEntries = Object.entries(a as Record<string, unknown>);
+    const bRecord = b as Record<string, unknown>;
+    return (
+      aEntries.length === Object.keys(bRecord).length &&
+      aEntries.every(([key, value]) => key in bRecord && overlayValuesEqual(value, bRecord[key]))
+    );
+  }
+  return false;
+}
+
+/**
+ * Remove from `current` every entry `persisted` carried with a structurally
+ * equal value, keeping entries the user added or changed after `persisted`
+ * was snapshotted. The refresh that follows a background save consumes this
+ * so edits made while that save was in flight survive as pending dirty state
+ * instead of being wiped with the rest of the overlay.
+ */
+export function subtractPersistedOverlay(
+  current: AgentConfigOverlay,
+  persisted: AgentConfigOverlay,
+): AgentConfigOverlay {
+  const subtractGroup = (
+    currentGroup: Record<string, unknown>,
+    persistedGroup: Record<string, unknown>,
+  ): Record<string, unknown> =>
+    Object.fromEntries(
+      Object.entries(currentGroup).filter(
+        ([field, value]) =>
+          !(field in persistedGroup) || !overlayValuesEqual(value, persistedGroup[field]),
+      ),
+    );
+  return {
+    identity: subtractGroup(current.identity, persisted.identity),
+    ...(current.adapterType !== undefined && current.adapterType !== persisted.adapterType
+      ? { adapterType: current.adapterType }
+      : {}),
+    adapterConfig: subtractGroup(current.adapterConfig, persisted.adapterConfig),
+    heartbeat: subtractGroup(current.heartbeat, persisted.heartbeat),
+    debug: subtractGroup(current.debug, persisted.debug),
+    runtime: subtractGroup(current.runtime, persisted.runtime),
+  };
 }
 
 /* ---- Shared input class ---- */
@@ -247,6 +316,23 @@ function clampDelayMsFromSeconds(value: number) {
   return clampInteger(value, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000;
 }
 
+function ConfigSections({ order, className, children }: {
+  order?: readonly string[];
+  className: string;
+  children: ReactNode;
+}) {
+  if (!order) return <div className={className}>{children}</div>;
+  const rank = (child: ReactNode) => {
+    const key = isValidElement<{ "data-config-section"?: string }>(child)
+      ? child.props["data-config-section"]
+      : undefined;
+    const index = key ? order.indexOf(key) : -1;
+    return index < 0 ? order.length : index;
+  };
+  const sections = Children.toArray(children).sort((a, b) => rank(a) - rank(b));
+  return <div className={className}>{sections}</div>;
+}
+
 /* ---- Form ---- */
 
 export function AgentConfigForm(props: AgentConfigFormProps) {
@@ -257,7 +343,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const showAdapterTypeField = props.showAdapterTypeField ?? true;
   const showAdapterTestEnvironmentButton = props.showAdapterTestEnvironmentButton ?? true;
   const showInlineAdapterTestEnvironmentButton =
-    showAdapterTestEnvironmentButton && !props.onTestActionChange;
+    showAdapterTestEnvironmentButton && !props.onTestActionChange && !props.compactTestFeedback;
   const showInlineAdapterTestEnvironmentFeedback = !props.onTestFeedbackChange;
   const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
   const hideInstructionsFile = props.hideInstructionsFile ?? false;
@@ -382,19 +468,43 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // ---- Edit mode: overlay for dirty tracking ----
   const [overlay, setOverlay] = useState<AgentConfigOverlay>(emptyOverlay);
+  const [environmentDraftDirty, setEnvironmentDraftDirty] = useState(false);
+  const [environmentEditorKey, setEnvironmentEditorKey] = useState(0);
   const agentRef = useRef<Agent | null>(null);
+  // The overlay snapshot a background account-binding save persisted. The form
+  // stays editable while that save is in flight, so the agent refresh that
+  // follows it must not wipe edits made during the save. The refresh subtracts
+  // only what the save persisted; a user-initiated Save leaves the snapshot
+  // null and keeps the full wipe. An UNRELATED refresh can land while the save
+  // is still in flight — that refresh does not carry the persisted binding
+  // yet, so it must neither consume the snapshot nor subtract it: subtracting
+  // would drop the binding entry from the overlay while `props.agent` also
+  // lacks it, and an ordinary Save racing the binding refresh would then
+  // replace the config without the binding and undo the just-persisted bind.
+  // The overlay stays untouched until the save settles; the refresh after
+  // settlement consumes the snapshot and subtracts it.
+  const backgroundSaveOverlayRef = useRef<AgentConfigOverlay | null>(null);
+  const backgroundSaveInFlightRef = useRef(false);
 
   // Clear overlay when agent data refreshes (after save)
   useEffect(() => {
     if (!isCreate) {
-      if (agentRef.current !== null && props.agent !== agentRef.current) {
-        setOverlay({ ...emptyOverlay });
+      if (
+        agentRef.current !== null &&
+        props.agent !== agentRef.current &&
+        !backgroundSaveInFlightRef.current
+      ) {
+        const persisted = backgroundSaveOverlayRef.current;
+        backgroundSaveOverlayRef.current = null;
+        setOverlay((prev) =>
+          persisted ? subtractPersistedOverlay(prev, persisted) : { ...emptyOverlay },
+        );
       }
       agentRef.current = props.agent;
     }
   }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isDirty = !isCreate && isOverlayDirty(overlay);
+  const isDirty = !isCreate && (isOverlayDirty(overlay) || environmentDraftDirty);
 
   type RecordOverlayGroup = "identity" | "adapterConfig" | "heartbeat" | "debug" | "runtime";
 
@@ -443,6 +553,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {
     setOverlay({ ...emptyOverlay });
+    setEnvironmentDraftDirty(false);
+    setEnvironmentEditorKey(key => key + 1);
   }, []);
 
   const handleSave = useCallback(async () => {
@@ -569,6 +681,51 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ...buildAgentUpdatePatch(props.agent, nextOverlay),
       applyStoredClaudeLogin: true,
     });
+    invalidateUserSecretDefinitions();
+  };
+
+  // Edit mode: a Codex login that signed in to a DIFFERENT account than the
+  // company default cannot take effect through the shared company home — the
+  // promotion never displaces another account's claim there. Bind this
+  // agent's CODEX_HOME to the login's account-home secret and persist at
+  // once, the same one-step shape as the Claude stored-login bind above.
+  // Same-account logins skip the bind on purpose: the company-home refresh
+  // already carried them, and an unbound agent keeps following the company
+  // default across later credential rotations. No claim flag is needed —
+  // the secret already exists company-scoped, so this is an ordinary
+  // secret-reference binding through the normal agent-update patch.
+  const handleCodexAccountBindingEdit = async (claim: CodexAccountBindingClaim) => {
+    if (isCreate || !claim.companyIdentityDiffers) return;
+    const flushedEnv = flushEnvironmentDraft();
+    const baseEnv =
+      flushedEnv ??
+      (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
+    const nextEnv: Record<string, EnvBinding> = {
+      ...baseEnv,
+      CODEX_HOME: { type: "secret_ref", secretId: claim.secretId, version: "latest" },
+    };
+    const nextOverlay: AgentConfigOverlay = {
+      ...overlay,
+      adapterConfig: { ...overlay.adapterConfig, env: nextEnv },
+    };
+    setOverlay(nextOverlay);
+    // This save runs in the background while the form stays editable. Record
+    // exactly what it persists so the agent refresh it triggers keeps edits
+    // made during the save (see the refresh effect) instead of wiping them
+    // with the persisted entries. The in-flight flag protects the snapshot
+    // from an unrelated refresh landing mid-save. A failed save never
+    // refreshes the agent with the binding, so clear the snapshot there — a
+    // later unrelated refresh then wipes normally.
+    backgroundSaveOverlayRef.current = nextOverlay;
+    backgroundSaveInFlightRef.current = true;
+    try {
+      await props.onSave(buildAgentUpdatePatch(props.agent, nextOverlay));
+    } catch (err) {
+      backgroundSaveOverlayRef.current = null;
+      throw err;
+    } finally {
+      backgroundSaveInFlightRef.current = false;
+    }
     invalidateUserSecretDefinitions();
   };
 
@@ -730,9 +887,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ? "Paperclip Computer"
       : t("localizationAgents.localEnvironment");
 
-  // Fetch adapter models for the effective adapter type
+  const runnerProvider = adapterType === "paperclip_runner"
+    ? String(isCreate ? props.values.adapterSchemaValues?.provider ?? "codex"
+      : eff("adapterConfig", "provider", config.provider === "acpx" && config.acpxAgent === "codex" ? "codex" : config.provider ?? "codex"))
+    : undefined;
+  // Fetch adapter models for the effective provider, including unsaved changes.
   const modelQueryKey = selectedCompanyId
-    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null)
+    ? queryKeys.agents.adapterModels(selectedCompanyId, adapterType, currentDefaultEnvironmentId || null, runnerProvider)
     : ["agents", "none", "adapter-models", adapterType];
   const {
     data: fetchedModels,
@@ -741,6 +902,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryKey: modelQueryKey,
     queryFn: () => agentsApi.adapterModels(selectedCompanyId!, adapterType, {
       environmentId: currentDefaultEnvironmentId || null,
+      provider: runnerProvider,
     }),
     enabled: Boolean(selectedCompanyId),
   });
@@ -761,7 +923,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       }
       return agentsApi.detectModel(selectedCompanyId, adapterType);
     },
-    enabled: Boolean(selectedCompanyId && isLocal && adapterType !== "opencode_local"),
+    enabled: Boolean(selectedCompanyId && isLocal && adapterType !== "opencode_local" && adapterType !== "paperclip_runner"),
   });
   const detectedModel = detectedModelData?.model ?? null;
   const detectedModelCandidates = detectedModelData?.candidates ?? [];
@@ -792,6 +954,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // Section toggle state — advanced always starts collapsed
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
+  const [configurationAdvancedOpen, setConfigurationAdvancedOpen] = useState(false);
+  const configSchema = useConfigSchema(adapterType);
+  const renderAdapterFields = (section: AdapterConfigSection) => (
+    <>
+      {adapterType === "claude_local" && <ClaudeLocalAdvancedFields {...adapterFieldProps} section={section} />}
+      <uiAdapter.ConfigFields {...adapterFieldProps} section={section} hideModel={isLocal} />
+    </>
+  );
   // Popover states
   const [modelOpen, setModelOpen] = useState(false);
   const [thinkingEffortOpen, setThinkingEffortOpen] = useState(false);
@@ -886,10 +1056,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // managed sandbox instead of sending the hidden local id to the server.
         visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
-      return agentsApi.testEnvironment(selectedCompanyId, adapterType, {
-        adapterConfig: buildAdapterConfigForTest(adapterConfigPatch),
-        environmentId,
-      });
+      const adapterConfig = buildAdapterConfigForTest(adapterConfigPatch);
+      if (props.compactTestFeedback) {
+        const providerAdapter = adapterType === "paperclip_runner"
+          ? adapterConfig.provider === "codex" ? "codex_local"
+            : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "claude" ? "claude_local"
+              : adapterType
+          : adapterType;
+        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, environmentId });
+      }
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, environmentId });
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
@@ -1069,7 +1245,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     setRefreshingModels(true);
     setRefreshModelsError(null);
     try {
-      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true });
+      const refreshed = await agentsApi.adapterModels(selectedCompanyId, adapterType, { refresh: true, environmentId: currentDefaultEnvironmentId || null, provider: runnerProvider });
       queryClient.setQueryData(modelQueryKey, refreshed);
     } catch (error) {
       setRefreshModelsError(error instanceof Error ? error.message : t("localizationAgents.config_Failed_to_refresh_adapter_models_"));
@@ -1085,12 +1261,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? "mode"
         : adapterType === "opencode_local"
           ? "variant"
-          : "effort";
+          : adapterType === "pi_local" ? "thinking" : "effort";
   const thinkingEffortOptions =
     adapterType === "codex_local"
       ? codexReasoningEffortOptions(currentModelId, t("localizationAgents.config_Auto")).map((option) => ({
           id: option.value,
-          label: option.label,
+          label: option.value ? setupEffortLabel(option.value) : option.label,
         }))
       : adapterType === "cursor"
         ? cursorModeOptions
@@ -1098,7 +1274,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           ? openCodeThinkingEffortOptions
           : adapterType === "kimi_local"
             ? kimiThinkingEffortOptions
-            : claudeThinkingEffortOptions;
+            : adapterType === "pi_local"
+              ? [{ id: "", get label() { return t("localizationAgents.ui104_Auto"); } }, ...["off", "minimal", "low", "medium", "high", "xhigh"].map(id => ({ id, label: setupEffortLabel(id) }))]
+              : claudeThinkingEffortOptions;
   const currentThinkingEffort = isCreate
     ? val!.thinkingEffort
     : adapterType === "codex_local"
@@ -1111,7 +1289,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         ? eff("adapterConfig", "mode", String(config.mode ?? ""))
         : adapterType === "opencode_local"
           ? eff("adapterConfig", "variant", String(config.variant ?? ""))
-          : eff("adapterConfig", "effort", String(config.effort ?? ""));
+          : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
   const showThinkingEffort = adapterType !== "gemini_local"
     && adapterType !== "cursor_cloud"
     && adapterType !== "paperclip_runner";
@@ -1159,6 +1337,32 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     });
   }
 
+  const environmentVariablesEditor = (
+    <EnvironmentVariablesEditor
+      ref={environmentVariablesEditorRef}
+      key={environmentEditorKey}
+      onDirtyChange={setEnvironmentDraftDirty}
+      hideDraftActions={!isCreate && props.hideInlineSave}
+      value={
+        isCreate
+          ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
+          : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
+      }
+      secrets={availableSecrets}
+      userSecretDefinitions={userSecretDefinitions}
+      onCreateSecret={async (name, value) => {
+        const created = await createSecret.mutateAsync({ name, value });
+        return created;
+      }}
+      onChange={(env) =>
+        isCreate
+          ? set!({ envBindings: env ?? {}, envVars: "" })
+          : mark("adapterConfig", "env", env)
+      }
+    />
+  );
+
+
   if (!isCreate && props.content === "secrets") {
     return (
       <div className={cn("relative", cards && "space-y-6")}>
@@ -1173,7 +1377,19 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         )}
 
-        <div className={cn(!cards && "border-b border-border")}>
+        {props.environmentVariablesPlacement === "secrets" && (
+          <div data-config-section="environment-variables" className={cn(!cards && "border-b border-border")}>
+            {cards
+              ? <h3 className="mb-3 text-sm font-medium">{t("localizationAgents.ui146_Environment_variables")}</h3>
+              : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{t("localizationAgents.ui146_Environment_variables")}</div>
+            }
+            <div className={cn(cards ? "rounded-lg border border-border p-4" : "px-4 pb-3")}>
+              {environmentVariablesEditor}
+            </div>
+          </div>
+        )}
+
+        <div data-config-section="secrets" className={cn(!cards && "border-b border-border")}>
           {cards
             ? <h3 className="mb-3 text-sm font-medium">{t("localizationAgents.ui116_Secret_access")}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{t("localizationAgents.ui116_Secret_access")}</div>
@@ -1197,7 +1413,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }
 
   return (
-    <div className={cn("relative", cards && "space-y-6")}>
+    <ConfigSections order={props.sectionOrder} className={cn("relative", cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
       {isDirty && !props.hideInlineSave && (
         <div className="sticky top-0 z-10 flex items-center justify-end px-4 py-2 bg-background/90 backdrop-blur-sm border-b border-primary/20">
@@ -1216,9 +1432,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ---- Identity (edit only) ---- */}
       {!isCreate && (
-        <div className={cn(!cards && "border-b border-border")}>
+        <div data-config-section="identity" className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">{t("localizationAgents.ui30_Identity")}</h3>
+            ? <h3 className="text-sm font-medium mb-3">{props.sectionTitles?.["identity"] ?? t("localizationAgents.ui30_Identity")}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{t("localizationAgents.ui30_Identity")}</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
@@ -1249,21 +1465,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 chooseLabel={t("localizationAgents.chooseManager")}
               />
             </Field>
-            <Field label={t("pages.inviteLanding.agentForm.capabilities")} hint={help.capabilities}>
-              <MarkdownEditor
-                value={eff("identity", "capabilities", props.agent.capabilities ?? "") ?? ""}
-                onChange={(v) => mark("identity", "capabilities", v || null)}
-                placeholder={t("localizationAgents.ui120_Describe_what_this_agent_can_do_")}
-                contentClassName="min-h-(--sz-44px) text-sm font-mono"
-                imageUploadHandler={async (file) => {
-                  const asset = await uploadMarkdownImage.mutateAsync({
-                    file,
-                    namespace: `agents/${props.agent.id}/capabilities`,
-                  });
-                  return asset.contentPath;
-                }}
-              />
-            </Field>
+
             {isLocal && !props.hidePromptTemplate && (
               <>
                 <Field label={t("localizationAgents.ui122_Prompt_Template")} hint={help.promptTemplate}>
@@ -1295,7 +1497,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         // Instance execution policy forces the managed Kubernetes sandbox
         // (executionMode=kubernetes): never offer local / non-Kubernetes targets.
         // Render the environment read-only instead of the selectable picker.
-        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+        <div data-config-section="environment" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
             ? <h3 className="text-sm font-medium mb-3">{t("localizationAgents.ui126_Environment")}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{t("localizationAgents.ui126_Environment")}</div>
@@ -1315,7 +1517,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           </div>
         </div>
       ) : showEnvironmentOverrideControl ? (
-        <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+        <div data-config-section="environment" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
             ? <h3 className="text-sm font-medium mb-3">{t("localizationAgents.ui126_Environment")}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{t("localizationAgents.ui126_Environment")}</div>
@@ -1349,10 +1551,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ) : null}
 
       {/* ---- Adapter ---- */}
-      <div className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
+      <div data-config-section="adapter" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
         <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
           {cards
-            ? <h3 className="text-sm font-medium">{t("localizationAgents.ui38_Adapter")}</h3>
+            ? <h3 className="text-sm font-medium">{props.sectionTitles?.["adapter"] ?? t("localizationAgents.ui38_Adapter")}</h3>
             : <span className="text-xs font-medium text-muted-foreground">{t("localizationAgents.ui38_Adapter")}</span>
           }
           {showInlineAdapterTestEnvironmentButton && (
@@ -1424,10 +1626,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                             }
                           : t === "paperclip_runner"
                             ? {
-                                provider: "codex",
-                                codexPermissionMode:
-                                  PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.defaultMode,
-                                lifecycleMode: "per_turn",
+                                ...paperclipRunnerTransitionConfig(adapterType, eff("adapterConfig", "model", config.model)),
                               }
                           : {}),
                       },
@@ -1438,7 +1637,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {showInlineAdapterTestEnvironmentFeedback && (testActionError || testEnvironment.error) && (
+          {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
               {testActionError
                 ?? (testEnvironment.error instanceof Error
@@ -1447,7 +1646,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </div>
           )}
 
-          {showInlineAdapterTestEnvironmentFeedback && testEnvironment.data && (
+          {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && testEnvironment.data && (
             <AdapterEnvironmentResult result={testEnvironment.data} />
           )}
 
@@ -1461,6 +1660,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               onApplyStored={
                 isCreate ? handleApplyStoredClaudeLogin : handleApplyStoredClaudeLoginEdit
               }
+              onAccountBinding={isCreate ? undefined : handleCodexAccountBindingEdit}
             />
           )}
 
@@ -1489,22 +1689,135 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {!isLocal && <uiAdapter.ConfigFields {...adapterFieldProps} />}
+          {renderAdapterFields("adapter")}
+          {isLocal && (<>
+              <ModelDropdown
+                models={models}
+                value={currentModelId}
+                onChange={(v) => {
+                  const supportedEfforts = codexReasoningEffortOptions(v, t("localizationAgents.config_Auto"));
+                  const clearUnsupportedEffort = adapterType === "codex_local"
+                    && Boolean(currentThinkingEffort)
+                    && !supportedEfforts.some((option) => option.value === currentThinkingEffort);
+                  if (isCreate) {
+                    set!({
+                      model: v,
+                      ...(clearUnsupportedEffort ? { thinkingEffort: "" } : {}),
+                    });
+                    return;
+                  }
+                  mark("adapterConfig", "model", v || undefined);
+                  if (clearUnsupportedEffort) {
+                    mark("adapterConfig", thinkingEffortKey, undefined);
+                    mark("adapterConfig", "reasoningEffort", undefined);
+                  }
+                }}
+                open={modelOpen}
+                onOpenChange={setModelOpen}
+                defaultLabel={adapterType === "claude_local" ? t("agentSetup.defaultNamedModel", { model: DEFAULT_CLAUDE_LOCAL_MODEL }) : undefined}
+                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner"}
+                required={adapterType === "opencode_local" || adapterType === "pi_local"}
+                groupByProvider={adapterType === "opencode_local" || adapterType === "pi_local"}
+                creatable
+                detectedModel={detectedModel}
+                detectedModelCandidates={[]}
+                onDetectModel={adapterType === "opencode_local" || adapterType === "paperclip_runner"
+                  ? undefined
+                  : async () => {
+                      const result = await refetchDetectedModel();
+                      return result.data?.model ?? null;
+                    }}
+                onRefreshModels={
+                  supportsAdapterModelRefresh(adapterType)
+                    ? handleRefreshModels
+                    : undefined
+                }
+                refreshingModels={refreshingModels}
+                detectModelLabel={t("agentSetup.detectModel")}
+                emptyDetectHint={t("localizationAgents.noModelDetected")}
+              />
+              {(refreshModelsError || fetchedModelsError) && (
+                <p className="text-xs text-destructive">
+                  {refreshModelsError
+                    ?? (fetchedModelsError instanceof Error
+                      ? fetchedModelsError.message
+                      : t("localizationAgents.ui137_Failed_to_load_adapter_models_"))}
+                </p>
+              )}
+              {adapterType === "opencode_local"
+                && currentDefaultEnvironment
+                && currentDefaultEnvironment.driver !== "local" && (
+                <p className="text-xs text-muted-foreground">
+                  {t("localizationAgents.openCodeRemoteDiscovery", { name: currentDefaultEnvironment.name })}
+                </p>
+              )}
 
-          {/* Local adapter-specific fields are rendered inside Permissions & Configuration */}
+              {showThinkingEffort && (
+                <>
+                  <ThinkingEffortDropdown
+                    value={currentThinkingEffort}
+                    options={thinkingEffortOptions}
+                    onChange={(v) =>
+                      isCreate
+                        ? set!({ thinkingEffort: v })
+                        : mark("adapterConfig", thinkingEffortKey, v || undefined)
+                    }
+                    open={thinkingEffortOpen}
+                    onOpenChange={setThinkingEffortOpen}
+                  />
+                  {adapterType === "codex_local" &&
+                    codexSearchEnabled &&
+                    currentThinkingEffort === "minimal" && (
+                      <p className="text-xs text-amber-400">{t("localizationAgents.ui139_Codex_may_reject_minimal_thinking_when_search_is_enabled_")}</p>
+                    )}
+                </>
+              )}
+          </>)}
         </div>
 
       </div>
 
-      {/* ---- Permissions & Configuration ---- */}
-      {isLocal && (
-        <div className={cn(!cards && "border-b border-border")}>
+      {/* ---- Configuration ---- */}
+      {(
+        <div data-config-section="configuration" className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">{t("localizationAgents.ui136_Permissions_Configuration")}</h3>
-            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{t("localizationAgents.ui136_Permissions_Configuration")}</div>
+            ? <h3 className="text-sm font-medium mb-3">{t("pages.agentDetail.breadcrumbConfiguration")}</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{t("pages.agentDetail.breadcrumbConfiguration")}</div>
           }
           <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
-              {/*
+              {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
+                <>
+                  <Field label={t("localizationAgents.ui140_Bootstrap_prompt_legacy_")} hint={help.bootstrapPrompt}>
+                    <MarkdownEditor
+                      value={eff(
+                        "adapterConfig",
+                        "bootstrapPromptTemplate",
+                        String(config.bootstrapPromptTemplate ?? ""),
+                      )}
+                      onChange={(v) =>
+                        mark("adapterConfig", "bootstrapPromptTemplate", v || undefined)
+                      }
+                      placeholder={t("localizationAgents.ui141_Optional_initial_setup_prompt_for_the_first_run")}
+                      contentClassName="min-h-(--sz-44px) text-sm font-mono"
+                      imageUploadHandler={async (file) => {
+                        const namespace = `agents/${props.agent.id}/bootstrap-prompt`;
+                        const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
+                        return asset.contentPath;
+                      }}
+                    />
+                  </Field>
+                  <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">{t("localizationAgents.ui143_Bootstrap_prompt_is_legacy_and_will_be_removed_in_a_future_r")}</div>
+                </>
+              )}
+              {renderAdapterFields("configuration")}
+              {(isLocal || adapterType === "process" || configSchema?.fields.some((field) => schemaFieldSection(field.key) === "advanced")) && (
+              <CollapsibleSection
+                title={t("pages.agentDetail.advanced")}
+                open={configurationAdvancedOpen}
+                onToggle={() => setConfigurationAdvancedOpen(!configurationAdvancedOpen)}
+              >
+                <div className="space-y-3">
+                  {isLocal && (<>              {/*
                 The command names a binary on the execution host, so the
                 managed-sandbox-only policy hides it: the platform-managed image
                 owns the binary. Hiding is presentation only. A stored
@@ -1551,115 +1864,6 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 </Field>
               )}
 
-              <ModelDropdown
-                models={models}
-                value={currentModelId}
-                onChange={(v) => {
-                  const supportedEfforts = codexReasoningEffortOptions(v, t("localizationAgents.config_Auto"));
-                  const clearUnsupportedEffort = adapterType === "codex_local"
-                    && Boolean(currentThinkingEffort)
-                    && !supportedEfforts.some((option) => option.value === currentThinkingEffort);
-                  if (isCreate) {
-                    set!({
-                      model: v,
-                      ...(clearUnsupportedEffort ? { thinkingEffort: "" } : {}),
-                    });
-                    return;
-                  }
-                  mark("adapterConfig", "model", v || undefined);
-                  if (clearUnsupportedEffort) {
-                    mark("adapterConfig", thinkingEffortKey, undefined);
-                    mark("adapterConfig", "reasoningEffort", undefined);
-                  }
-                }}
-                open={modelOpen}
-                onOpenChange={setModelOpen}
-                allowDefault={adapterType !== "opencode_local"}
-                required={adapterType === "opencode_local"}
-                groupByProvider={adapterType === "opencode_local"}
-                creatable
-                detectedModel={detectedModel}
-                detectedModelCandidates={[]}
-                onDetectModel={adapterType === "opencode_local"
-                  ? undefined
-                  : async () => {
-                      const result = await refetchDetectedModel();
-                      return result.data?.model ?? null;
-                    }}
-                onRefreshModels={
-                  supportsAdapterModelRefresh(adapterType)
-                    ? handleRefreshModels
-                    : undefined
-                }
-                refreshingModels={refreshingModels}
-                detectModelLabel="Detect model"
-                emptyDetectHint={t("localizationAgents.noModelDetected")}
-              />
-              {(refreshModelsError || fetchedModelsError) && (
-                <p className="text-xs text-destructive">
-                  {refreshModelsError
-                    ?? (fetchedModelsError instanceof Error
-                      ? fetchedModelsError.message
-                      : t("localizationAgents.ui137_Failed_to_load_adapter_models_"))}
-                </p>
-              )}
-              {adapterType === "opencode_local"
-                && currentDefaultEnvironment
-                && currentDefaultEnvironment.driver !== "local" && (
-                <p className="text-xs text-muted-foreground">
-                  {t("localizationAgents.openCodeRemoteDiscovery", { name: currentDefaultEnvironment.name })}
-                </p>
-              )}
-
-              {showThinkingEffort && (
-                <>
-                  <ThinkingEffortDropdown
-                    value={currentThinkingEffort}
-                    options={thinkingEffortOptions}
-                    onChange={(v) =>
-                      isCreate
-                        ? set!({ thinkingEffort: v })
-                        : mark("adapterConfig", thinkingEffortKey, v || undefined)
-                    }
-                    open={thinkingEffortOpen}
-                    onOpenChange={setThinkingEffortOpen}
-                  />
-                  {adapterType === "codex_local" &&
-                    codexSearchEnabled &&
-                    currentThinkingEffort === "minimal" && (
-                      <p className="text-xs text-amber-400">{t("localizationAgents.ui139_Codex_may_reject_minimal_thinking_when_search_is_enabled_")}</p>
-                    )}
-                </>
-              )}
-              {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
-                <>
-                  <Field label={t("localizationAgents.ui140_Bootstrap_prompt_legacy_")} hint={help.bootstrapPrompt}>
-                    <MarkdownEditor
-                      value={eff(
-                        "adapterConfig",
-                        "bootstrapPromptTemplate",
-                        String(config.bootstrapPromptTemplate ?? ""),
-                      )}
-                      onChange={(v) =>
-                        mark("adapterConfig", "bootstrapPromptTemplate", v || undefined)
-                      }
-                      placeholder={t("localizationAgents.ui141_Optional_initial_setup_prompt_for_the_first_run")}
-                      contentClassName="min-h-(--sz-44px) text-sm font-mono"
-                      imageUploadHandler={async (file) => {
-                        const namespace = `agents/${props.agent.id}/bootstrap-prompt`;
-                        const asset = await uploadMarkdownImage.mutateAsync({ file, namespace });
-                        return asset.contentPath;
-                      }}
-                    />
-                  </Field>
-                  <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">{t("localizationAgents.ui143_Bootstrap_prompt_is_legacy_and_will_be_removed_in_a_future_r")}</div>
-                </>
-              )}
-              {adapterType === "claude_local" && (
-                <ClaudeLocalAdvancedFields {...adapterFieldProps} />
-              )}
-              <uiAdapter.ConfigFields {...adapterFieldProps} />
-
               <Field label={t("localizationAgents.ui144_Extra_args_comma_separated_")} hint={help.extraArgs}>
                 <DraftInput
                   value={
@@ -1677,64 +1881,31 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 />
               </Field>
 
-              <Field label={t("localizationAgents.ui146_Environment_variables")} hint={help.envVars}>
-                <EnvironmentVariablesEditor
-                  ref={environmentVariablesEditorRef}
-                  value={
-                    isCreate
-                      ? ((val!.envBindings ?? EMPTY_ENV) as Record<string, EnvBinding>)
-                      : (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>))
-                  }
-                  secrets={availableSecrets}
-                  userSecretDefinitions={userSecretDefinitions}
-                  onCreateSecret={async (name, value) => {
-                    const created = await createSecret.mutateAsync({ name, value });
-                    return created;
-                  }}
-                  onChange={(env) =>
-                    isCreate
-                      ? set!({ envBindings: env ?? {}, envVars: "" })
-                      : mark("adapterConfig", "env", env)
-                  }
-                />
-              </Field>
-
-              {/* Edit-only: timeout + grace period */}
-              {!isCreate && (
-                <>
-                  <Field label={t("localizationAgents.ui147_Timeout_sec_")} hint={help.timeoutSec}>
-                    <DraftNumberInput
-                      value={eff(
-                        "adapterConfig",
-                        "timeoutSec",
-                        Number(config.timeoutSec ?? 0),
-                      )}
-                      onCommit={(v) => mark("adapterConfig", "timeoutSec", v)}
-                      immediate
-                      className={inputClass}
-                    />
-                  </Field>
-                  <Field label={t("localizationAgents.ui148_Interrupt_grace_period_sec_")} hint={help.graceSec}>
-                    <DraftNumberInput
-                      value={eff(
-                        "adapterConfig",
-                        "graceSec",
-                        Number(config.graceSec ?? 15),
-                      )}
-                      onCommit={(v) => mark("adapterConfig", "graceSec", v)}
-                      immediate
-                      className={inputClass}
-                    />
-                  </Field>
-                </>
+                  </>)}
+                  {renderAdapterFields("advanced")}
+                </div>
+              </CollapsibleSection>
               )}
+
+          </div>
+        </div>
+      )}
+
+      {props.environmentVariablesPlacement !== "secrets" && (isLocal || configSchema?.fields.some((field) => schemaFieldSection(field.key) === "environment")) && (
+        <div data-config-section="environment-variables" className={cn(!cards && "border-b border-border")}>
+          {cards
+            ? <h3 className="text-sm font-medium mb-3">{t("localizationAgents.ui146_Environment_variables")}</h3>
+            : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">{t("localizationAgents.ui146_Environment_variables")}</div>
+          }
+          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+            {isLocal ? environmentVariablesEditor : renderAdapterFields("environment")}
           </div>
         </div>
       )}
 
       {/* ---- Run Policy ---- */}
       {isCreate && showCreateRunPolicySection ? (
-        <div className={cn(!cards && "border-b border-border")}>
+        <div data-config-section="run-policy" className={cn(!cards && "border-b border-border")}>
           {cards
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" />{t("localizationAgents.ui149_Run_Policy")}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" />{t("localizationAgents.ui149_Run_Policy")}</div>
@@ -1752,10 +1923,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               numberHint={help.intervalSec}
               showNumber={val!.heartbeatEnabled}
             />
+            <CollapsibleSection title={t("localizationAgents.ui151_Advanced_Run_Policy")} open={runPolicyAdvancedOpen} onToggle={() => setRunPolicyAdvancedOpen(!runPolicyAdvancedOpen)}>
+              <div className="space-y-3">{renderAdapterFields("runPolicy")}</div>
+            </CollapsibleSection>
           </div>
         </div>
       ) : !isCreate ? (
-        <div className={cn(!cards && "border-b border-border")}>
+        <div data-config-section="run-policy" className={cn(!cards && "border-b border-border")}>
           {cards
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" />{t("localizationAgents.ui149_Run_Policy")}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" />{t("localizationAgents.ui149_Run_Policy")}</div>
@@ -1782,6 +1956,42 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               onToggle={() => setRunPolicyAdvancedOpen(!runPolicyAdvancedOpen)}
             >
             <div className="space-y-3">
+              {renderAdapterFields("runPolicy")}
+              {isLocal && (<>
+              {/* Edit-only: timeout + grace period */}
+              {!isCreate && (
+                <>
+                  {!configSchema?.fields.some((field) => field.key === "timeoutSec") && (
+                  <Field label={t("localizationAgents.ui147_Timeout_sec_")} hint={help.timeoutSec}>
+                    <DraftNumberInput
+                      value={eff(
+                        "adapterConfig",
+                        "timeoutSec",
+                        Number(config.timeoutSec ?? 0),
+                      )}
+                      onCommit={(v) => mark("adapterConfig", "timeoutSec", v)}
+                      immediate
+                      className={inputClass}
+                    />
+                  </Field>
+                  )}
+                  {!configSchema?.fields.some((field) => field.key === "graceSec") && (
+                  <Field label={t("localizationAgents.ui148_Interrupt_grace_period_sec_")} hint={help.graceSec}>
+                    <DraftNumberInput
+                      value={eff(
+                        "adapterConfig",
+                        "graceSec",
+                        Number(config.graceSec ?? 15),
+                      )}
+                      onCommit={(v) => mark("adapterConfig", "graceSec", v)}
+                      immediate
+                      className={inputClass}
+                    />
+                  </Field>
+                  )}
+                </>
+              )}
+              </>)}
               <ToggleField
                 label={t("localizationAgents.ui152_Wake_on_demand")}
                 hint={help.wakeOnDemand}
@@ -1892,7 +2102,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         </div>
       ) : null}
 
-    </div>
+      {props.compactTestFeedback && showInlineAdapterTestEnvironmentFeedback && showAdapterTestEnvironmentButton && (
+        <RuntimeTestCard
+          state={testActionPending ? "running" : testActionError || testEnvironment.error ? "fail" : testResult?.status ?? "idle"}
+          result={testResult ?? null}
+          error={testActionError ?? (testEnvironment.error instanceof Error ? testEnvironment.error.message : null)}
+          onTest={triggerTestEnvironment}
+          disabled={testEnvironmentDisabled}
+        />
+      )}
+    </ConfigSections>
   );
 }
 
@@ -2016,6 +2235,15 @@ export type AdapterLoginDescriptor = {
 export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   onStored?: (storedSessionId: string) => void;
   onApplyStored?: () => void;
+  // Applies the non-secret Codex account-binding claim from an authenticated
+  // owner read: the company secret that names the signed-in account's own
+  // home. The panel calls this only when the company default home stayed on a
+  // DIFFERENT account — the one case where the login cannot take effect
+  // through the shared company home — and it AWAITS the handler, rendering
+  // saving/bound/failed states with an explicit Retry on failure, so a
+  // rejected save is never silently swallowed. The claim never carries a
+  // token byte or an account identifier.
+  onAccountBinding?: (claim: CodexAccountBindingClaim) => void | Promise<void>;
   // Start the login on mount instead of waiting for a press. The connect step's
   // footer button is the press — by the time the panel is rendered there, the
   // customer has already asked for this.
@@ -2024,6 +2252,15 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   // why the `onboarding` chrome draws no success state of its own — the screen
   // it would appear on is already gone.
   onConnected?: () => void;
+  // The pasted code went to the server. Fires as the submit starts rather than
+  // when the login finishes, so a caller can show the work the moment the
+  // customer has done their part: the round trip to `onConnected` is a poll
+  // and a completion read, long enough to read as nothing having happened.
+  onCodeSubmitted?: () => void;
+  // A submitted code did not become a stored login — the submit was refused,
+  // the completion failed, or the session failed or ran out of time. The pair
+  // of `onCodeSubmitted`, so a caller that showed work can stop showing it.
+  onSubmitFailed?: () => void;
   chrome?: AdapterLoginChrome;
   /**
    * The address the customer has to open, once the server has produced one.
@@ -2031,9 +2268,9 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
    * The one fact about a running login that the step needs outside the card:
    * its own button is what sends the customer there, and a prompt arriving is
    * what moves the step from waiting to ready. Everything else it needs the
-   * panel already does — the paste submits itself, success is reported through
-   * `onConnected`, and the customer's own Cancel press is reported through
-   * `onCancel` — so this stays a single value rather than a whole session
+   * panel already does — the paste submits itself, and the submit and how it
+   * ended are reported through `onCodeSubmitted`, `onSubmitFailed` and
+   * `onConnected` — so this stays a single value rather than a whole session
    * handed upward.
    */
   onPromptReady?: (authorizationUrl: string | null) => void;
@@ -2078,6 +2315,7 @@ function DisplayedCodeLoginPanel({
   environmentId,
   autoStart,
   onConnected,
+  onAccountBinding,
   chrome = "panel",
   onPromptReady,
 }: AdapterLoginPanelProps) {
@@ -2088,6 +2326,12 @@ function DisplayedCodeLoginPanel({
   // it so a later poll that returns a null prompt does not hide the code and the
   // URL.
   const [latchedPrompt, setLatchedPrompt] = useState<AdapterAuthSessionPrompt | null>(null);
+  // The cross-account bind's own lifecycle (see the binding block below).
+  // Declared with the panel's state because `startDisabled` reads it: a
+  // saving bind blocks a new Sign in.
+  const [accountBindState, setAccountBindState] = useState<"idle" | "saving" | "bound" | "failed">(
+    "idle",
+  );
 
   // True for the session currently held in `sessionId` when it came from the
   // owner-scoped resume read rather than a fresh `startLogin`. It marks the
@@ -2103,6 +2347,9 @@ function DisplayedCodeLoginPanel({
       resumedRef.current = false;
       setStartError(null);
       setLatchedPrompt(null);
+      // A fresh login is a fresh bind decision: clear the previous session's
+      // bind narration so its outcome cannot masquerade as this session's.
+      setAccountBindState("idle");
       setSessionId(session.sessionId);
     },
     onError: (error) => {
@@ -2185,7 +2432,13 @@ function DisplayedCodeLoginPanel({
   const prompt = latchedPrompt;
   const isTerminal = status ? ADAPTER_LOGIN_TERMINAL_STATUSES.has(status) : false;
   const isActive = Boolean(sessionId) && !isTerminal;
-  const startDisabled = startLogin.isPending || isActive;
+  // A saving bind also blocks a new Sign in: the bind is an agent-update save,
+  // and a second login started while it is in flight could finish its own
+  // save first — the older save would then land last and silently revert the
+  // agent to the previous account while the panel reports the newer bind.
+  // Serializing at the only entry point is the whole fix; the panel has no
+  // other way to start a login mid-save.
+  const startDisabled = startLogin.isPending || isActive || accountBindState === "saving";
 
   // Adopt the caller's active session once, on mount. This is what makes a
   // page reload keep the session: with no local state at all, the panel would
@@ -2272,6 +2525,41 @@ function DisplayedCodeLoginPanel({
     connectedRef.current = true;
     onConnectedRef.current?.();
   }, [status]);
+
+  // Drive the account-binding hand-off as a visible state machine, not a
+  // fire-and-forget latch. The bind saves the agent, and the status poll
+  // stops at the terminal state — so a rejected save behind a silently
+  // latched claim would leave nothing to re-fire it and no way to retry.
+  // A cross-account claim moves saving → bound | failed, and failed renders
+  // an explicit Retry that re-runs the same handler with the same claim.
+  // Latched per SESSION, not per mount: the terminal state re-enables Sign in
+  // inside the same mounted panel, and a second cross-account login must run
+  // its own bind — a mount-scoped boolean would silently skip it and leave
+  // the agent on the previous account.
+  const accountBindSessionRef = useRef<string | null>(null);
+  const onAccountBindingRef = useRef(onAccountBinding);
+  onAccountBindingRef.current = onAccountBinding;
+  const accountBinding = statusQuery.data?.codexAccountBinding ?? null;
+  const runAccountBinding = useCallback(async (claim: CodexAccountBindingClaim) => {
+    const handler = onAccountBindingRef.current;
+    if (!handler) return;
+    setAccountBindState("saving");
+    try {
+      await handler(claim);
+      setAccountBindState("bound");
+    } catch {
+      setAccountBindState("failed");
+    }
+  }, []);
+  useEffect(() => {
+    if (status !== "authenticated" || !sessionId) return;
+    if (accountBindSessionRef.current === sessionId) return;
+    if (!accountBinding || !accountBinding.companyIdentityDiffers || !onAccountBindingRef.current) {
+      return;
+    }
+    accountBindSessionRef.current = sessionId;
+    void runAccountBinding(accountBinding);
+  }, [status, sessionId, accountBinding, runAccountBinding]);
 
   // Report the prompt's URL upward, the way the submitted-browser-code panel
   // does. The caller's loading beat ends when this arrives, so without it the
@@ -2425,6 +2713,41 @@ function DisplayedCodeLoginPanel({
         {isTerminal && status && (
           <AdapterLoginTerminalState status={status} message={session?.failure?.message ?? null} />
         )}
+
+        {/* The cross-account bind's own state, below the login's success line.
+            The bind is a second, separate save — showing it as part of the
+            login would report success for a write that can still fail. */}
+        {status === "authenticated" && accountBindState === "saving" && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-muted-foreground">
+            <Loader2 className="size-3 animate-spin shrink-0" />
+            <span>{t("agentSetup.bindingAccount")}</span>
+          </div>
+        )}
+        {status === "authenticated" && accountBindState === "bound" && (
+          <div className="flex items-center gap-2 text-(length:--text-micro) text-foreground">
+            <Check className="size-3 shrink-0" />
+            <span>{t("agentSetup.boundAccount")}</span>
+          </div>
+        )}
+        {status === "authenticated" && accountBindState === "failed" && (
+          <div className="flex items-center gap-2 text-(length:--text-micro)">
+            <TriangleAlert className="size-3 shrink-0 text-destructive" />
+            <span className="text-destructive">
+              {t("agentSetup.bindAccountFailed")}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={() => {
+                if (accountBinding) void runAccountBinding(accountBinding);
+              }}
+            >
+              {t("pages.inbox.retry")}
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2473,6 +2796,8 @@ function SubmittedBrowserCodeLoginPanel({
   onApplyStored,
   autoStart,
   onConnected,
+  onCodeSubmitted,
+  onSubmitFailed,
   chrome = "panel",
   onPromptReady,
 }: AdapterLoginPanelProps) {
@@ -2497,6 +2822,10 @@ function SubmittedBrowserCodeLoginPanel({
   // True after the client wall-clock cap passes for the active login. The panel
   // stops both polls and shows the timed-out state.
   const [timedOut, setTimedOut] = useState(false);
+  // A code has gone to the server and has not yet come back as a stored login
+  // or a failure. The field is locked for that stretch: the step's button is
+  // saying "Connecting" above it, and a second paste would submit again.
+  const [codeSubmitted, setCodeSubmitted] = useState(false);
   // True after the status poll returns 404. The server removes the row and the
   // in-memory session at once on any non-stored terminal state, so a status 404
   // means the login failed and the server cleaned up. The panel stops both
@@ -2525,6 +2854,7 @@ function SubmittedBrowserCodeLoginPanel({
     setCompletionFailed(false);
     setTimedOut(false);
     setStatusGone(false);
+    setCodeSubmitted(false);
     completionStartedRef.current = false;
   };
 
@@ -2841,11 +3171,26 @@ function SubmittedBrowserCodeLoginPanel({
     Boolean(authorizationUrl) &&
     !isCompleting &&
     isValidBrowserCode(trimmedCode) &&
-    !submitCode.isPending;
+    !submitCode.isPending &&
+    !codeSubmitted;
+
+  const onCodeSubmittedRef = useRef(onCodeSubmitted);
+  onCodeSubmittedRef.current = onCodeSubmitted;
+  const onSubmitFailedRef = useRef(onSubmitFailed);
+  onSubmitFailedRef.current = onSubmitFailed;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
+    // A new attempt supersedes the last attempt's error, and has to: the
+    // failure report below watches for an error after a submit, and one left
+    // over from before it would end this attempt the moment it began.
+    setStartError(null);
     submitCode.mutate(trimmedCode);
+    // Reported now, not when the login finishes. A stored login is a poll and a
+    // completion read away, long enough that a button still offering "Waiting
+    // for code" after the paste read as the paste not having registered.
+    setCodeSubmitted(true);
+    onCodeSubmittedRef.current?.();
     // Onboarding keeps the code on screen; the panel still clears it.
     //
     // Clearing emptied the input in the same frame the paste landed, so on the
@@ -2942,6 +3287,18 @@ function SubmittedBrowserCodeLoginPanel({
     onConnectedRef.current?.();
   }, [isStored]);
 
+  // The other end of `onCodeSubmitted`. Any of these after a submit means the
+  // code is not going to become a stored login, and a caller still showing
+  // "Connecting" would otherwise spin for good. Once per submit; the field
+  // unlocks with it. Not reset on success: the field stays locked through the
+  // hold that follows, rather than reopening under a button saying Connecting.
+  useEffect(() => {
+    if (!codeSubmitted) return;
+    if (!startError && !isFailure && !timedOut) return;
+    setCodeSubmitted(false);
+    onSubmitFailedRef.current?.();
+  }, [codeSubmitted, startError, isFailure, timedOut]);
+
   const onPromptReadyRef = useRef(onPromptReady);
   onPromptReadyRef.current = onPromptReady;
   useEffect(() => {
@@ -2991,7 +3348,11 @@ function SubmittedBrowserCodeLoginPanel({
             onPaste={() => {
               pastedRef.current = true;
             }}
-            disabled={submitCode.isPending || isCompleting}
+            // Dots, not the code. It stays in the field after the paste so the
+            // customer can see something landed, and that is all they need to
+            // see of it.
+            masked
+            disabled={submitCode.isPending || isCompleting || codeSubmitted}
           />
         )}
       </OnboardingLoginCard>

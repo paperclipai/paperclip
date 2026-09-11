@@ -366,14 +366,6 @@ describe("adapter routes", () => {
         meta: { visibleWhen: { key: "provider", value: "acpx" } },
       }),
       expect.objectContaining({
-        key: "acpxAgent",
-        options: [
-          expect.objectContaining({ value: "claude" }),
-          expect.objectContaining({ value: "codex" }),
-        ],
-        meta: { visibleWhen: { key: "provider", value: "acpx" } },
-      }),
-      expect.objectContaining({
         key: "model",
         meta: { visibleWhen: { key: "provider", value: "opencode" } },
       }),
@@ -383,7 +375,9 @@ describe("adapter routes", () => {
       }),
     ]));
     const acpxAgent = res.body.fields.find((field: { key?: string }) => field.key === "acpxAgent");
-    expect(acpxAgent.options).not.toContainEqual(expect.objectContaining({ value: "pi" }));
+    expect(acpxAgent).toBeUndefined();
+    expect(JSON.stringify(res.body)).toContain("ACPX Claude");
+    expect(JSON.stringify(res.body)).not.toContain("Codex via ACPX");
   });
 
   it("serves the built-in claude_local ACP engine config schema", async () => {

@@ -1,4 +1,5 @@
 import { t, useTranslation } from "@/i18n";
+import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -11,6 +12,7 @@ const inputClass =
 const instructionsFileHint = () => t("localizationAgents.instructionsHint_cursor");
 
 export function CursorLocalConfigFields({
+  section,
   isCreate,
   values,
   set,
@@ -21,7 +23,7 @@ export function CursorLocalConfigFields({
 }: AdapterConfigFieldsProps) {
   const { t } = useTranslation();
   if (hideInstructionsFile) return null;
-  return (
+  return configFieldsForSection(section, (
     <Field label={t("localizationAgents.ui270_Agent_instructions_file")} hint={instructionsFileHint()}>
       <div className="flex items-center gap-2">
         <DraftInput
@@ -46,5 +48,5 @@ export function CursorLocalConfigFields({
         <ChoosePathButton />
       </div>
     </Field>
-  );
+  ));
 }

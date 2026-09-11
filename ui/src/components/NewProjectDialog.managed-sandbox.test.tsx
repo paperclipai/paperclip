@@ -16,7 +16,10 @@ function act(callback: () => void) {
   });
 }
 
-vi.mock("../api/projects", () => ({ projectsApi: { create: vi.fn(), createWorkspace: vi.fn() } }));
+vi.mock("../api/projects", () => ({ projectsApi: {
+  create: vi.fn(),
+  repositoryOptions: vi.fn().mockResolvedValue({ repositories: [], connectionCount: 0, failedConnectionCount: 0 }),
+} }));
 vi.mock("../api/goals", () => ({ goalsApi: { list: vi.fn().mockResolvedValue([]) } }));
 vi.mock("../api/agents", () => ({ agentsApi: { list: vi.fn().mockResolvedValue([]) } }));
 vi.mock("../api/access", () => ({ accessApi: { listUserDirectory: vi.fn().mockResolvedValue({ users: [] }) } }));
@@ -80,38 +83,23 @@ function localPathInput() {
   return document.body.querySelector('input[placeholder="/absolute/path/to/workspace"]');
 }
 
-describe("NewProjectDialog — local folder under the managed-sandbox-only policy", () => {
-  it("offers the local folder field and its picker when the policy is off", () => {
-    render({});
+describe("NewProjectDialog — source repositories across host policies", () => {
+  it.each([
+    ["policy off", {}],
+    ["policy unresolved", null],
+    ["managed sandbox only", { enableManagedSandboxOnly: true }],
+  ] as const)("offers the simplified project form with %s", (_label, settings) => {
+    render(settings);
 
-    expect(documentText()).toContain("Local folder");
-    expect(localPathInput()).not.toBeNull();
-    const chooseButtons = Array.from(document.body.querySelectorAll("button")).filter(
-      (button) => button.textContent?.trim() === "Choose",
-    );
-    expect(chooseButtons.length).toBeGreaterThan(0);
-  });
-
-  it("keeps the local folder field hidden while the policy is still loading", () => {
-    // A cold cache resolves the policy to false on the first render. The guard
-    // fails closed so a managed instance never flashes the field.
-    render(null);
-
+    expect(documentText()).toContain("Source repos");
+    expect(documentText()).toContain("Add GitHub repo");
+    expect(documentText()).not.toContain("Repo URL");
     expect(documentText()).not.toContain("Local folder");
     expect(localPathInput()).toBeNull();
-    expect(documentText()).toContain("Repo URL");
-  });
-
-  it("hides the local folder field and its picker when the policy is on", () => {
-    render({ enableManagedSandboxOnly: true });
-
-    expect(documentText()).not.toContain("Local folder");
-    expect(localPathInput()).toBeNull();
+    expect(document.body.querySelector('input[placeholder="Project name"]')).not.toBeNull();
     const chooseButtons = Array.from(document.body.querySelectorAll("button")).filter(
       (button) => button.textContent?.trim() === "Choose",
     );
     expect(chooseButtons).toHaveLength(0);
-    // The repo field is unrelated to the host filesystem, so it stays.
-    expect(documentText()).toContain("Repo URL");
   });
 });

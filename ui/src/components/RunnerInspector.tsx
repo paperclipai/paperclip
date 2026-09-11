@@ -1138,12 +1138,12 @@ export function RunnerInspector({
               <div className="space-y-6 p-5">
                 {loading ? <p className="text-sm text-muted-foreground">{t("localizationInspector.ui_Loading_run_pipeline_")}</p> : null}
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-                  <StatCard label={t("localizationInspector.ui_Provider")} value={capturedProviders.join(", ") || inspection?.trace?.provider || "PRP only"} detail={inspection?.trace ? t("localizationInspector.capturedThrough", { provider: inspection.trace.provider }) : "capture was off"} />
-                  <StatCard label={t("localizationInspector.ui_Raw_frames")} value={frames.length} detail={inspection?.trace ? formatBytes(inspection.trace.byteCount) : "no exact bytes"} />
-                  <StatCard label={t("localizationInspector.ui_Operations")} value={operations.length} detail="correlated groups" />
+                  <StatCard label={t("localizationInspector.ui_Provider")} value={capturedProviders.join(", ") || inspection?.trace?.provider || t("localizationInspector.prpOnly")} detail={inspection?.trace ? t("localizationInspector.capturedThrough", { provider: inspection.trace.provider }) : t("localizationInspector.captureWasOff")} />
+                  <StatCard label={t("localizationInspector.ui_Raw_frames")} value={frames.length} detail={inspection?.trace ? formatBytes(inspection.trace.byteCount) : t("localizationInspector.noExactBytes")} />
+                  <StatCard label={t("localizationInspector.ui_Operations")} value={operations.length} detail={t("localizationInspector.correlatedGroups")} />
                   <StatCard label={t("localizationInspector.ui_PRP_events")} value={events.length} detail={t("localizationInspector.visibleCount", { count: visibleEventCount })} />
                   <StatCard label={t("localizationInspector.ui_Mappings")} value={interpretations.length} detail={t("localizationInspector.ignoredCount", { count: ignoredCount })} />
-                  <StatCard label={t("localizationInspector.ui_Run_status")} value={inspectorDisplayLabel(run?.status ?? "unknown")} detail={traceBadgeLabel(inspection?.trace?.status ?? "expired", inspection?.trace?.expiresAt ?? new Date(0))} />
+                  <StatCard label={t("localizationInspector.ui_Run_status")} value={inspectorDisplayLabel(run?.status ?? "unknown")} detail={inspection?.trace ? traceBadgeLabel(inspection.trace.status, inspection.trace.expiresAt) : t("localizationInspector.rawCaptureOff")} />
                 </div>
                 <div className="grid gap-4 lg:grid-cols-2">
                   <section className="rounded-lg border border-border bg-card p-4">

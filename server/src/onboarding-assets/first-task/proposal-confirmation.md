@@ -1,0 +1,1 @@
+   - They want one thing done now → post ONE request_confirmation that says, in a few lines, what you will do and what they will get (and by when, if you can say). No plan document.

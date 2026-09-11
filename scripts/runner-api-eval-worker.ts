@@ -13,6 +13,7 @@ import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "../
 import { createSkilllessCodexThreadConfig } from "../packages/paperclip-runner/src/drivers/codex/codex-app-server-driver.js";
 import { AttemptJournal } from "../packages/paperclip-runner/src/evals/attempt-journal.js";
 import { estimateModelCostNanodollars } from "../packages/paperclip-runner/src/evals/model-pricing.js";
+import { CONNECTION_INTENT_AGENT_GUIDANCE } from "../packages/shared/src/connection-intent-guidance.js";
 
 if (process.argv.includes("--catalog")) {
   process.stdout.write(JSON.stringify(runnerApiCatalog()) + "\n");
@@ -64,7 +65,8 @@ try {
     const isOpenRouter = OPENROUTER_MODELS.has(request.model);
     const provider = isOpenRouter ? "opencode" : request.model === "claude-sonnet-5" ? "acpx" : "codex";
     let providerVersion: string | null = null;
-    const fixture = await server.fixture({ mode: request.mode, apiToolsEnabled: request.arm !== "baseline", reset: true });
+    const fixture = await server.fixture({ mode: request.mode, apiToolsEnabled: request.arm !== "baseline", reset: true, connectionScenario: request.connectionScenario });
+    const initialState = await fixture.snapshot();
     const substitutions = Object.fromEntries(Object.entries(fixture).filter(([, value]) => typeof value === "string"));
     const expand = (value: any): any => typeof value === "string" ? value.replace(/\{\{(\w+)\}\}/g, (_, key) => String(substitutions[key] ?? (() => { throw new Error(`Unknown fixture variable ${key}`); })())) : Array.isArray(value) ? value.map(expand) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, expand(entry)])) : value;
     const calls: Record<string, any>[] = [], notifications: unknown[] = [];
@@ -91,6 +93,7 @@ try {
     try {
       if (request.calls) {
         for (const [i, call] of request.calls.entries()) await invoke(call.tool, expand(call.arguments), call.callId ?? `direct-${i}`);
+        usage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, estimatedCostNanodollars: 0, providerRequests: 0, accountingProvenance: "Provider-free direct authority contract; no provider or runnerd dispatched" };
       } else {
         if (request.model === "claude-sonnet-5" && (process.platform !== "linux" || process.arch !== "x64")) throw new Error("Qualified ACPX Claude requires Linux x64; no provider turn was dispatched");
         if (!request.reservationId || request.maxCostUsd !== 0.5 || !["gpt-5.6-luna", "claude-sonnet-5", ...OPENROUTER_MODELS].includes(request.model)) throw new Error("Paid attempt requires ledger reservation and qualified model");
@@ -126,7 +129,7 @@ try {
           completionContract: { revision: "runner-api-eval-v1", criterionIds: ["objective"] },
           config: { ...createSkilllessCodexThreadConfig(fixture.workspace), model_reasoning_effort: "low" },
           permissions: "paperclip-runner-workspace-only", runtimeWorkspaceRoots: [fixture.workspace], approvalPolicy: "never",
-          baseInstructions: "You are operating a disposable real Paperclip company. Use the provided tools to do the user's task. Do not use shell, network, skills, or credentials. Stop when the requested work is verified. " + (request.arm === "baseline" ? "" : "Prefer available dedicated tools. Only use search_api and call_api when no dedicated tool supports the required operation or parameters. Do not search before ordinary dedicated tool use."),
+          baseInstructions: "You are operating a disposable real Paperclip company. Use the provided tools to do the user's task. Do not use shell, network, skills, or credentials. Stop when the requested work is verified. " + (request.arm === "baseline" ? "" : "Prefer available dedicated tools. Only use search_api and call_api when no dedicated tool supports the required operation or parameters. Do not search before ordinary dedicated tool use.") + "\n" + CONNECTION_INTENT_AGENT_GUIDANCE,
           dynamicTools: definitions, experimentalRawEvents: true, persistExtendedHistory: true,
         });
         if (request.preflight) {
@@ -198,14 +201,15 @@ try {
     }
     const artifact = {
       schema: "paperclip-runner/eval-session-artifact/v1", attemptId: request.attemptId,
-      requestedModel: request.model ?? "provider-free", provider, driver: "real-server-api-tools",
+      requestedModel: request.calls ? "provider-free" : request.model ?? "provider-free", provider: request.calls ? "none" : provider, driver: request.calls ? "direct-authority-contract" : "real-server-api-tools",
+      evidenceMode: request.calls ? "provider-free-contract" : "live-provider",
       providerSessionId: record(thread.thread).id ?? null, effectiveModel: record(thread.thread).model ?? null,
-      providerVersion: request.model === "gpt-5.6-luna" ? execFileSync("codex", ["--version"], { encoding: "utf8" }).trim() : providerVersion ?? record(evidence).providerVersion ?? null,
+      providerVersion: request.calls ? null : request.model === "gpt-5.6-luna" ? execFileSync("codex", ["--version"], { encoding: "utf8" }).trim() : providerVersion ?? record(evidence).providerVersion ?? null,
       runtimeVersions: { node: process.versions.node, acpx: record(evidence).providerVersion, agentServer: record(evidence).agentServerVersion, agentRuntime: record(evidence).agentRuntimeVersion },
       runtimeBuild,
       timing: { startedAt, finishedAt: new Date().toISOString(), durationMs: performance.now() - started },
       usage, accountingComplete: Boolean(request.calls) || !providerTurnStarted || terminalSeen, providerTurnStarted, observedProviderToolCalls: observedToolCallIds.size, diagnosticTail, error, calls, notifications, evidence, thread, prompt, arm: request.arm ?? "treatment",
-      fixture: substitutions, state: await fixture.snapshot(),
+      fixture: substitutions, initialState, state: await fixture.snapshot(),
       toolSchemaBytes: Buffer.byteLength(JSON.stringify(definitions)), definitions,
     };
     // The controller supplies a unique retained attempt directory; never overwrite evidence.

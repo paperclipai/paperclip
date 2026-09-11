@@ -27,6 +27,31 @@ interface ActivityFormatOptions {
 // collide with a built-in code (for example issue.read_marked / issue_read.marked).
 // These labels supplement the existing detail-aware formatters below.
 const LOCALIZED_FALLBACK_ACTIVITY_ACTIONS = new Set<string>([
+  "issue.tree_resume_wake_failed",
+  "project.repositories_updated",
+  "chat.discord_command_recorded",
+  "chat.failed_run_retry_requested",
+  "chat.provider_effect_retry_anyway",
+  "chat.publication_requested",
+  "chat.slack_command_cancel",
+  "chat.slack_command_retry_anyway",
+  "chat.slack_session_stop_filtered",
+  "chat.slack_session_stopped",
+  "chat_endpoint.commands_registered",
+  "chat_endpoint.commands_unavailable",
+  "chat_endpoint.created",
+  "chat_endpoint.credentials_verified",
+  "chat_endpoint.paused",
+  "chat_endpoint.reconnected",
+  "chat_endpoint.resources_updated",
+  "chat_endpoint.resumed",
+  "chat_endpoint.setup_secret_generated",
+  "chat_endpoint.setup_secret_rotation_failed",
+  "chat_endpoint.setup_secret_rotation_started",
+  "chat_endpoint.updated",
+  "chat_endpoint.webhook_verified",
+  "issue.execution_recovery_settled",
+  "issue.thread_interaction_updated",
   "agent.approved",
   "agent.budget_updated",
   "agent.config_rolled_back",
@@ -561,6 +586,9 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "approval.created": "localizationActivity.activity_row_verbs_approval_created",
   "approval.approved": "localizationActivity.activity_row_verbs_approval_approved",
   "approval.rejected": "localizationActivity.activity_row_verbs_approval_rejected",
+  "issue.queued_comment_edited": "localizationActivity.activity_row_verbs_issue_queued_comment_edited",
+  "issue.queued_comments_reordered": "localizationActivity.activity_row_verbs_issue_queued_comments_reordered",
+  "issue.queued_comment_discarded": "localizationActivity.activity_row_verbs_issue_queued_comment_discarded",
   // Interaction outcomes (PAP-16506). An agent may now resolve one — including a
   // review of its own work — so these must read as outcomes in the feed instead
   // of falling through to the raw "issue thread interaction accepted" action id.
@@ -666,6 +694,9 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.thread_interaction_expired": "localizationActivity.issue_activity_labels_issue_thread_interaction_expired",
   "issue.thread_interaction_item_verdicts_submitted": "localizationActivity.issue_activity_labels_issue_thread_interaction_item_verdicts_submitted",
   "issue.stalled_review_decided": "localizationActivity.issue_activity_labels_issue_stalled_review_decided",
+  "issue.queued_comment_edited": "localizationActivity.issue_activity_labels_issue_queued_comment_edited",
+  "issue.queued_comments_reordered": "localizationActivity.issue_activity_labels_issue_queued_comments_reordered",
+  "issue.queued_comment_discarded": "localizationActivity.issue_activity_labels_issue_queued_comment_discarded",
 };
 
 /**

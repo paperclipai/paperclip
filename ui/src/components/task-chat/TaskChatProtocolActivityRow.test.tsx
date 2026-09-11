@@ -164,6 +164,24 @@ describe("TaskChatProtocolActivityRow", () => {
     expect(row?.querySelector('[data-testid="task-chat-protocol-activity-icon"]')?.querySelectorAll("path")).toHaveLength(3);
   });
 
+  it("shows a notice as a warning and full-width message without metadata or a disclosure", () => {
+    const summary = "Project-local configuration is disabled.\nTrust the repository to load its hooks.";
+    render({
+      id: "notice", kind: "protocol", surface: "provider_activity", family: "provider_notice",
+      eventType: "provider.notice.recorded", status: "informational", title: "Provider notice", summary,
+      details: [
+        { label: "Category", value: "configWarning" },
+        { label: "Recoverable", value: "Yes" },
+        { label: "Summary", value: summary },
+      ], steps: [], links: [], children: [],
+    });
+    expect(container.textContent).toBe(`Warning${summary}`);
+    expect(container.querySelector("p")?.textContent).toBe(summary);
+    expect(container.querySelector("dl")).toBeNull();
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-protocol-activity-icon"]')).not.toBeNull();
+  });
+
   it("does not make an informational row focusable when it has no details", () => {
     render({
       id: "notice",

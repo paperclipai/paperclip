@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json",
+  "title": "PRP v2 session goal capability and snapshot",
+  "$defs": {
+    "capability": {
+      "type": "object",
+      "required": [
+        "availability",
+        "actions",
+        "autonomousUpdates",
+        "persistentAcrossResume",
+        "maxObjectiveChars",
+        "tokenBudgetControl",
+        "usageReporting"
+      ],
+      "properties": {
+        "availability": { "enum": ["available", "unsupported", "policy_disabled"] },
+        "actions": {
+          "type": "array",
+          "items": { "enum": ["set", "pause", "resume", "clear"] },
+          "uniqueItems": true
+        },
+        "autonomousUpdates": { "type": "boolean" },
+        "persistentAcrossResume": { "type": "boolean" },
+        "maxObjectiveChars": { "type": "integer", "minimum": 1, "maximum": 4000 },
+        "tokenBudgetControl": { "type": "boolean" },
+        "usageReporting": { "type": "boolean" },
+        "reasonCode": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 1000 }
+      },
+      "additionalProperties": true
+    },
+    "snapshot": {
+      "type": "object",
+      "required": [
+        "objective",
+        "status",
+        "tokenBudget",
+        "tokensUsed",
+        "elapsedSeconds",
+        "iterations",
+        "lastReason",
+        "createdAt",
+        "updatedAt",
+        "completedAt",
+        "workingNow"
+      ],
+      "properties": {
+        "objective": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "status": { "enum": ["active", "paused", "blocked", "limited", "usage_limited", "budget_limited", "complete"] },
+        "tokenBudget": { "type": ["integer", "null"], "minimum": 1 },
+        "tokensUsed": { "type": ["integer", "null"], "minimum": 0 },
+        "elapsedSeconds": { "type": ["number", "null"], "minimum": 0 },
+        "iterations": { "type": ["integer", "null"], "minimum": 0 },
+        "lastReason": { "type": ["string", "null"], "maxLength": 4000 },
+        "createdAt": { "type": ["string", "null"], "format": "date-time" },
+        "updatedAt": { "type": ["string", "null"], "format": "date-time" },
+        "completedAt": { "type": ["string", "null"], "format": "date-time" },
+        "workingNow": { "type": "boolean" }
+      },
+      "additionalProperties": true
+    }
+  }
+}

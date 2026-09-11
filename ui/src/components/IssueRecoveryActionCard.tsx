@@ -1,6 +1,7 @@
 import { t, useTranslation, i18n } from "@/i18n";
 import { Trans } from "react-i18next";
 import { formatMonitorOffset } from "@/lib/issue-monitor";
+import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { useMemo, useState } from "react";
 import type {
   Agent,
@@ -1001,9 +1002,16 @@ export function IssueRecoveryActionCard({
     if (cardState === "resolved" && action.outcome) {
       return t("localizationTaskRuntime.recoveryResolvedSentence", { outcome: OUTCOME_LABEL[action.outcome] ?? action.outcome });
     }
+    if (
+      (cardState === "needed" || cardState === "escalated") &&
+      action.kind === "active_run_watchdog" &&
+      action.ownerType === "board"
+    ) {
+      return t("localizationTaskExecution.humanRecovery");
+    }
     if (lineage) return lineageHeadline(lineage);
     return KIND_HEADLINE[action.kind] ?? KIND_HEADLINE.missing_disposition;
-  }, [i18n.resolvedLanguage, action.kind, action.outcome, cardState, lineage]);
+  }, [i18n.resolvedLanguage, action.kind, action.outcome, action.ownerType, cardState, lineage]);
 
   // A lane with no path left must not keep advertising a retry that will never run — whether
   // the budget ran out or the scheduled attempt simply never fired.
@@ -1043,6 +1051,7 @@ export function IssueRecoveryActionCard({
 
   const showResolveActions = onResolve !== undefined && cardState !== "resolved";
   const visibleResolveOptions = RESOLVE_OPTIONS.filter((option) => {
+    if (option.outcome === "todo" && requiresExecutionReconciliation(action.cause)) return false;
     if (option.boardOnly && !canFalsePositive) return false;
     return true;
   });
@@ -1090,6 +1099,8 @@ export function IssueRecoveryActionCard({
     showReconcileForward ||
     showBreakGlass ||
     showRepairAction;
+
+  if (requiresExecutionReconciliation(action.cause)) return null;
 
   return (
     <section

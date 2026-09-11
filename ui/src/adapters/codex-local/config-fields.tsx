@@ -1,4 +1,6 @@
 import { t, useTranslation } from "@/i18n";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../../components/ui/select";
+import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -30,14 +32,12 @@ const inputClass =
   "w-full rounded-md border border-border px-2.5 py-1.5 bg-transparent outline-none text-sm font-mono placeholder:text-muted-foreground/40";
 const instructionsFileHint = () => t("localizationAgents.codexInstructionsHint");
 const defaultOpenCodeRunnerModel = "openrouter/deepseek/deepseek-v4-flash-0731";
-const acpxRunnerModels = {
-  claude: "claude-sonnet-5",
-  codex: "gpt-5.6-sol",
-} as const;
+const defaultAcpxClaudeModel = "claude-sonnet-5";
 const defaultClaudeManagedModel = "claude-sonnet-5";
 const defaultAwsAgentCoreModel = "global.anthropic.claude-sonnet-4-6";
 
 export function CodexLocalConfigFields({
+  section,
   mode,
   isCreate,
   adapterType,
@@ -60,7 +60,7 @@ export function CodexLocalConfigFields({
   const configuredRunnerProvider = runnerManaged
     ? isCreate
       ? values!.adapterSchemaValues?.provider
-      : eff("adapterConfig", "provider", config.provider ?? "codex")
+      : eff("adapterConfig", "provider", config.provider === "acpx" && config.acpxAgent === "codex" ? "codex" : config.provider ?? "codex")
     : "codex";
   const runnerProvider: PaperclipRunnerProvider = isPaperclipRunnerProvider(
     configuredRunnerProvider,
@@ -115,13 +115,6 @@ export function CodexLocalConfigFields({
       mark("adapterConfig", key, value);
     }
   };
-  const configuredAcpxAgent =
-    runnerManaged && runnerProvider === "acpx"
-      ? isCreate
-        ? values!.adapterSchemaValues?.acpxAgent
-        : eff("adapterConfig", "acpxAgent", config.acpxAgent ?? "claude")
-      : "claude";
-  const acpxAgent = configuredAcpxAgent === "codex" ? "codex" : "claude";
   const runnerLifecycleMode = runnerManaged
     ? isCreate
       ? (values!.paperclipRunnerLifecycleMode ?? "per_turn")
@@ -165,12 +158,12 @@ export function CodexLocalConfigFields({
       ? t("localizationAgents.fastModeCost")
       : t("localizationAgents.fastModeUnsupported", { models: supportedModelsLabel });
 
-  return (
+  return configFieldsForSection(section, (
     <>
       {!hideEngineChoice && (
         <Field
           label={t("localizationAgents.ui303_Execution_engine")}
-          hint={t("localizationAgents.ui304_Auto_uses_ACP_when_prerequisites_pass_and_falls_back_to_Code")}
+          hint={t("agentSetup.defaultAcpHint")}
         >
           <select
             className={inputClass}
@@ -191,14 +184,14 @@ export function CodexLocalConfigFields({
                   );
             }}
           >
-            <option value="auto">{t("localizationAgents.ui305_Auto_ACP_preferred_")}</option>
+            <option value="auto">{t("agentSetup.defaultAcp")}</option>
             <option value="cli">Codex CLI</option>
             <option value="acp">ACP</option>
           </select>
         </Field>
       )}
       {runnerManaged && (
-        <Field
+        <Field configSection="adapter"
           label={t("pages.secrets.fields.provider")}
           hint={t("localizationAgents.ui308_The_runner_persists_this_provider_with_each_run_so_recovery_")}
         >
@@ -217,7 +210,7 @@ export function CodexLocalConfigFields({
                     : provider === "aws_agentcore"
                       ? defaultAwsAgentCoreModel
                       : provider === "acpx"
-                        ? acpxRunnerModels.claude
+                        ? defaultAcpxClaudeModel
                         : DEFAULT_CODEX_LOCAL_MODEL;
               if (isCreate) {
                 set!({
@@ -241,18 +234,11 @@ export function CodexLocalConfigFields({
             <option value="opencode">OpenCode 1.18.29</option>
             <option value="claude_managed">Claude Managed</option>
             <option value="aws_agentcore">AWS AgentCore</option>
-            <option value="acpx">ACPX</option>
+            <option value="acpx">ACPX Claude</option>
           </select>
         </Field>
       )}
-      {runnerManaged && !runnerPermissionCapability.configurable && (
-        <Field
-          label={t("localizationAgents.ui314_Permission_mode")}
-          hint={runnerPermissionDescription}
-        >
-          <div className={`${inputClass} text-muted-foreground`}>{t("localizationAgents.ui316_Provider_managed")}</div>
-        </Field>
-      )}
+
       {runnerManaged && runnerProvider === "claude_managed" && (
         <>
           <Field
@@ -359,7 +345,7 @@ export function CodexLocalConfigFields({
               className={inputClass}
             />
           </Field>
-          <Field
+          <Field configSection="runPolicy"
             label={t("localizationAgents.ui333_Invocation_timeout_seconds_")}
             hint={t("localizationAgents.ui334_Qualified_range_is_1_300_seconds_")}
           >
@@ -387,52 +373,21 @@ export function CodexLocalConfigFields({
           />
         </>
       )}
-      {runnerManaged && runnerProvider === "acpx" && (
-        <Field
-          label={t("localizationAgents.ui337_ACP_agent")}
-          hint={t("localizationAgents.ui338_Only_the_pinned_Claude_and_Codex_profiles_are_qualified_Pi_i")}
-        >
-          <select
-            className={inputClass}
-            value={acpxAgent}
-            onChange={(event) => {
-              const agent = event.target.value === "codex" ? "codex" : "claude";
-              const model = acpxRunnerModels[agent];
-              if (isCreate) {
-                set!({
-                  model,
-                  adapterSchemaValues: {
-                    ...values!.adapterSchemaValues,
-                    acpxAgent: agent,
-                  },
-                });
-              } else {
-                mark("adapterConfig", "acpxAgent", agent);
-                mark("adapterConfig", "model", model);
-              }
-            }}
-          >
-            <option value="claude">{t("localizationAgents.ui339_Claude_via_ACPX")}</option>
-            <option value="codex">{t("localizationAgents.ui340_Codex_via_ACPX")}</option>
-          </select>
-        </Field>
-      )}
-      {runnerManaged && runnerPermissionCapability.configurable && (
+      {runnerManaged && runnerPermissionCapability.configurable && (runnerPermissionCapability.options.length > 1 || runnerPermissionModeUnsupported) && (
         <Field
           label={t("localizationAgents.ui314_Permission_mode")}
           hint={t("localizationAgents.runnerPermissionBoundary", { description: runnerPermissionDescription })}
         >
-          <select
-            className={inputClass}
+          <Select
             value={
               runnerPermissionModeUnsupported
                 ? "__unsupported__"
                 : runnerPermissionMode
             }
-            onChange={(event) => {
+            onValueChange={(selectedMode) => {
               const value = resolvePaperclipRunnerPermissionMode(
                 runnerProvider,
-                event.target.value,
+                selectedMode,
               ) as PaperclipRunnerPermissionMode;
               if (isCreate) {
                 set!({
@@ -450,22 +405,35 @@ export function CodexLocalConfigFields({
               }
             }}
           >
-            {runnerPermissionModeUnsupported && (
-              <option value="__unsupported__" disabled>{t("localizationAgents.ui342_Unsupported_saved_mode_select_a_qualified_mode")}</option>
-            )}
-            {runnerPermissionCapability.options.map((option) => (
-              <option key={option.value} value={option.value}>
-                {t(`localizationAgents.runnerPermission_${option.value}`, { defaultValue: option.label })}
-              </option>
-            ))}
-          </select>
+            <SelectTrigger aria-label={t("localizationAgents.ui314_Permission_mode")} className="w-full font-sans">
+              <SelectValue>
+                {runnerPermissionModeUnsupported
+                  ? t("localizationAgents.ui342_Unsupported_saved_mode_select_a_qualified_mode")
+                  : t(`localizationAgents.runnerPermission_${runnerPermissionMode}`, {
+                      defaultValue: runnerPermissionCapability.options.find((option) => option.value === runnerPermissionMode)?.label ?? runnerPermissionMode,
+                    })}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              {runnerPermissionModeUnsupported && (
+                <SelectItem value="__unsupported__" disabled>
+                  {t("localizationAgents.ui342_Unsupported_saved_mode_select_a_qualified_mode")}
+                </SelectItem>
+              )}
+              {runnerPermissionCapability.options.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {t(`localizationAgents.runnerPermission_${option.value}`, { defaultValue: option.label })}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           {runnerPermissionModeUnsupported && runnerProvider === "codex" && (
             <p className="mt-1 text-xs text-destructive" role="alert">{t("localizationAgents.ui343_This_saved_Codex_mode_cannot_start_or_recover_a_Paperclip_Ru")}</p>
           )}
         </Field>
       )}
       {runnerManaged && (
-        <Field
+        <Field configSection="runPolicy"
           label={t("localizationAgents.ui344_Runner_lifecycle")}
           hint={t("localizationAgents.ui345_Turn_by_turn_suspends_after_each_run_Warm_keeps_the_same_pro")}
         >
@@ -485,7 +453,7 @@ export function CodexLocalConfigFields({
         </Field>
       )}
       {runnerManaged && runnerLifecycleMode === "warm" && (
-        <Field
+        <Field configSection="runPolicy"
           label={t("localizationAgents.ui348_Warm_idle_timeout_ms_")}
           hint={t("localizationAgents.ui349_After_this_much_inactivity_runnerd_checkpoints_and_suspends_")}
         >
@@ -526,7 +494,7 @@ export function CodexLocalConfigFields({
       {acpSelected && (
         <>
           {!managedSandboxOnly && (
-            <Field
+            <Field configSection="advanced"
               label={t("localizationAgents.ui350_ACP_server_command")}
               hint={t("localizationAgents.ui351_Optional_override_for_the_Codex_ACP_server_command_Defaults_")}
             >
@@ -551,7 +519,7 @@ export function CodexLocalConfigFields({
               />
             </Field>
           )}
-          <Field
+          <Field configSection="runPolicy"
             label={t("localizationAgents.ui353_ACP_session_mode")}
             hint={t("localizationAgents.ui354_Persistent_keeps_ACP_session_state_between_runs_One_shot_sta")}
           >
@@ -633,7 +601,7 @@ export function CodexLocalConfigFields({
               </div>
             </Field>
           )}
-          <Field
+          <Field configSection="runPolicy"
             label={t("localizationAgents.ui364_ACP_warm_process_idle_ms")}
             hint={t("localizationAgents.ui365_Defaults_to_0_which_closes_the_ACP_process_after_each_run_wh")}
           >
@@ -760,5 +728,5 @@ export function CodexLocalConfigFields({
         models={models}
       />
     </>
-  );
+  ));
 }

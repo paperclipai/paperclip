@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { NavLink, useLocation } from "@/lib/router";
 import {
   House,
-  CircleDot,
+  CircleCheck,
   SquarePen,
   Users,
   Inbox,
@@ -46,8 +46,8 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   const items = useMemo<MobileNavItem[]>(
     () => [
       { type: "link", to: "/dashboard", label: t("common.home"), icon: House },
-      { type: "link", to: "/issues", label: t("nav.tasks"), icon: CircleDot },
-      { type: "action", label: t("common.create"), icon: SquarePen, onClick: () => openNewIssue() },
+      { type: "link", to: "/issues", label: t("nav.tasks"), icon: CircleCheck },
+      { type: "action", label: t("nav.newTask"), icon: SquarePen, onClick: () => openNewIssue() },
       { type: "link", to: "/agents/all", label: t("nav.agents"), icon: Users },
       {
         type: "link",
@@ -63,7 +63,7 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
   return (
     <nav
       className={cn(
-        "fixed bottom-0 left-0 right-0 z-30 border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 transition-transform duration-200 ease-out md:hidden pb-(--sz-safe-bottom)",
+        "fixed bottom-0 left-0 right-0 z-30 bg-border/50 transition-transform duration-200 ease-out dark:bg-muted md:hidden pb-(--sz-safe-bottom)",
         visible ? "translate-y-0" : "translate-y-full",
       )}
       aria-label={t("common.mobileNavigation")}

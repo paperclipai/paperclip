@@ -9,13 +9,13 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { Card } from "@/components/ui/card";
-import { useCompany } from "@/context/CompanyContext";
+import { companyDirectoryQueryOptions, useAccountIdentity } from "@/api/companies-query";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
 
 export function InstanceAccess() {
   const { t } = useTranslation();
-  const { companies } = useCompany();
+  const { userId: accountUserId, settled: accountSettled } = useAccountIdentity();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
@@ -35,6 +35,12 @@ export function InstanceAccess() {
     queryKey: queryKeys.access.adminUsers(search),
     queryFn: () => accessApi.searchAdminUsers(search),
   });
+
+  const companiesQuery = useQuery({
+    ...companyDirectoryQueryOptions(accountUserId),
+    enabled: accountSettled && usersQuery.isSuccess,
+  });
+  const companies = companiesQuery.data ?? [];
 
   const selectedUser = useMemo(
     () => usersQuery.data?.find((user) => user.id === selectedUserId) ?? null,
@@ -69,6 +75,7 @@ export function InstanceAccess() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.userCompanyAccess(selectedUserId!) });
       await queryClient.invalidateQueries({ queryKey: queryKeys.access.adminUsers(search) });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       pushToast({ title: t("localizationSettings.organizationAccessUpdated"), tone: "success" });
     },
   });
@@ -88,7 +95,7 @@ export function InstanceAccess() {
     },
   });
 
-  if (usersQuery.isLoading) {
+  if (usersQuery.isLoading || !accountSettled || (usersQuery.isSuccess && companiesQuery.isPending)) {
     return <div className="text-sm text-muted-foreground">{t("localizationSettings.instanceUsersLoading")}</div>;
   }
 
@@ -100,6 +107,15 @@ export function InstanceAccess() {
           ? usersQuery.error.message
           : t("localizationSettings.usersLoadFailed");
     return <div className="text-sm text-destructive">{message}</div>;
+  }
+
+  if (companiesQuery.error) {
+    return (
+      <div className="space-y-3">
+        <p className="text-sm text-destructive">{t("localizationSettings.organizationsLoadFailedBeforeAccess")}</p>
+        <Button onClick={() => void companiesQuery.refetch()}>{t("common.tryAgain")}</Button>
+      </div>
+    );
   }
 
   return (

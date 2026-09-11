@@ -41,6 +41,11 @@ export interface QuestionFormProps {
   imageUploadHandler?: (file: File) => Promise<string>;
   mentions?: MentionOption[];
   onSubmit: (response: PaperclipQuestionResponse) => void | Promise<void>;
+  /**
+   * Resolves the request itself (a timeline card cancelling the interaction).
+   * Inside the composer takeover the form falls back to dismissing the
+   * takeover, which returns the plain composer without touching the request.
+   */
   onCancel?: () => void | Promise<void>;
 }
 
@@ -261,7 +266,7 @@ export function QuestionForm({
   );
   const [working, setWorking] = useState<"submit" | "cancel" | null>(null);
   const [inputUploading, setInputUploading] = useState(false);
-  const [error, setError] = useState<{ cause: unknown; fallbackKey: string } | null>(null);
+  const [error, setError] = useState<{ cause: unknown; fallbackKey: string; values?: { number: number } } | null>(null);
   const [filters, setFilters] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -324,13 +329,11 @@ export function QuestionForm({
       selectedOptionIds: optionIds,
       ...(!multiple ? { customText: undefined } : {}),
     };
-    const nextAnswers = { ...answers, [question.id]: nextAnswer };
-    setAnswers(nextAnswers);
-    if (!multiple) {
+    // Picking only selects. Next / Submit answers moves on or sends, so a
+    // click can never start work by itself.
+    setAnswers({ ...answers, [question.id]: nextAnswer });
+    if (!multiple)
       setCustomActive((current) => ({ ...current, [question.id]: false }));
-      if (page < questionSet.questions.length - 1) setPage(page + 1);
-      else void submit(nextAnswers);
-    }
   }
 
   function toggleCustom() {
@@ -346,11 +349,19 @@ export function QuestionForm({
   }
 
   async function submit(responseAnswers: Record<string, Answer> = answers) {
-    const responseIsValid = questionSet.questions.every(
+    if (disabled || working || inputUploading) return;
+    const invalidIndex = questionSet.questions.findIndex(
       (candidate) =>
-        answerError(candidate, responseAnswers[candidate.id]) == null,
+        answerError(candidate, responseAnswers[candidate.id]) != null,
     );
-    if (!responseIsValid || disabled || working || inputUploading) return;
+    if (invalidIndex >= 0) {
+      // A required answer is missing: the pagination arrows browse without
+      // validating, and a restored draft can land past it. Go back to that
+      // question and say so rather than dropping the send.
+      setPage(invalidIndex);
+      setError({ cause: null, fallbackKey: "localizationTaskExecution.questionNeedsAnswer", values: { number: invalidIndex + 1 } });
+      return;
+    }
     setWorking("submit");
     setError(null);
     try {
@@ -383,16 +394,26 @@ export function QuestionForm({
   const errorMessage = error
     ? error.cause instanceof InteractionResolutionDisplayError
       ? error.cause.displayMessage
-      : error.cause instanceof Error ? error.cause.message : t(error.fallbackKey)
+      : error.cause instanceof Error ? error.cause.message : t(error.fallbackKey, error.values)
     : null;
   const currentError = validationErrors[question.id];
   const isLastPage = page === questionSet.questions.length - 1;
-  const showQuestionActionButton =
-    multiple ||
-    (isLastPage && (question.answerMode !== "single_select" || isCustomActive));
-  const showActionRow = Boolean(
-    takeoverActions?.skipButton || onCancel || showQuestionActionButton,
-  );
+  const busy = disabled || working != null || inputUploading;
+  // Cancel resolves the request when the host owns that; otherwise it just
+  // closes the composer takeover so the user can type freely.
+  const cancelAction = onCancel
+    ? () => void cancel()
+    : takeoverActions?.dismiss;
+
+  /** Leaves the current question unanswered and moves on (or sends). */
+  function skipQuestion() {
+    if (busy) return;
+    const { [question.id]: _skipped, ...rest } = answers;
+    setAnswers(rest);
+    setCustomActive((current) => ({ ...current, [question.id]: false }));
+    if (isLastPage) void submit(rest);
+    else setPage(page + 1);
+  }
   const pagination =
     questionSet.questions.length > 1 ? (
       <nav
@@ -417,6 +438,8 @@ export function QuestionForm({
           size="icon-xs"
           variant="ghost"
           aria-label={t("localizationTaskRuntime.ui_Next_question_ns6pt0")}
+          // The arrows browse; they do not validate. A send that finds an
+          // earlier answer missing returns to that question (see submit).
           disabled={disabled || working != null || isLastPage}
           onClick={() => setPage((current) => current + 1)}
         >
@@ -599,43 +622,40 @@ export function QuestionForm({
           </div>
         ) : null}
       </div>
-      {showActionRow ? (
-        <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
-          {takeoverActions?.skipButton}
-          {onCancel ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              disabled={disabled || working != null || inputUploading}
-              onClick={() => void cancel()}
-            >
-              {working === "cancel" ? (
-                <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
-              ) : null}{" "}
-              {t("localizationTaskRuntime.ui_Cancel_ew9em3")}
-            </Button>
+      <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+        {cancelAction ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            onClick={cancelAction}
+          >
+            {working === "cancel" ? (
+              <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
+            ) : null}{" "}{t("localizationFilters.cancel")}</Button>
+        ) : null}
+        {!question.required ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={skipQuestion}
+          >{t("localizationTaskRuntime.ui_Skip_1hpqu3m")}</Button>
+        ) : null}
+        <Button
+          type="button"
+          size="sm"
+          disabled={busy || (isLastPage ? !allValid : currentError != null)}
+          onClick={progressOrSubmit}
+        >
+          {working === "submit" ? (
+            <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
           ) : null}
-          {showQuestionActionButton ? (
-            <Button
-              type="button"
-              size="sm"
-              disabled={
-                disabled ||
-                working != null ||
-                inputUploading ||
-                (isLastPage ? !allValid : currentError != null)
-              }
-              onClick={progressOrSubmit}
-            >
-              {working === "submit" ? (
-                <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
-              ) : null}
-              {questionSet.submitLabel ?? t("localizationTaskRuntime.ui_Submit_answers_mtoyzy")}
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
+          {isLastPage ? (questionSet.submitLabel ?? t("localizationIssueDetail.ui_Submit_answers")) : t("localizationSkills.next127")}
+        </Button>
+      </div>
     </div>
   );
 }

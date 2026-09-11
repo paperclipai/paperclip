@@ -6,7 +6,7 @@ import { SearchIcon, XIcon } from "lucide-react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
-import { t } from "@/i18n"
+import { t, useTranslation } from "@/i18n"
 import {
   Dialog,
   DialogContent,
@@ -95,11 +95,14 @@ function CommandInput({
 
 function CommandList({
   className,
+  label,
   ...props
 }: React.ComponentProps<typeof CommandPrimitive.List>) {
+  useTranslation()
   return (
     <CommandPrimitive.List
       data-slot="command-list"
+      label={label ?? t("common.commandSuggestions")}
       className={cn(
         "max-h-(--sz-300px) scroll-py-1 overflow-x-hidden overflow-y-auto",
         className

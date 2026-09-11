@@ -160,7 +160,7 @@ export function BlockedInboxView({
           <div className="flex-1 space-y-1">
             <p className="text-sm font-medium">{t("localizationIssueLists.blockedLoadError", { defaultValue: "Couldn't load the Blocked tab." })}</p>
             <p className="text-xs opacity-80">
-              {t("localizationIssueLists.otherTabsWork", { defaultValue: "Other Inbox tabs still work." })} {message}
+              {t("localizationIssueLists.otherTabsWork", { defaultValue: t("localizationIssueLists.otherTabsWork") })} {message}
             </p>
           </div>
           <Button
@@ -171,7 +171,7 @@ export function BlockedInboxView({
             onClick={() => void refetch()}
             disabled={isFetching}
           >
-            {isFetching ? t("localizationIssueLists.trying", { defaultValue: "Trying…" }) : t("common.tryAgain", { defaultValue: "Try again" })}
+            {isFetching ? t("localizationIssueLists.trying", { defaultValue: t("localizationIssueLists.trying") }) : t("common.tryAgain", { defaultValue: t("localizationProjectRepositories.retry") })}
           </Button>
         </div>
       </div>
@@ -188,9 +188,9 @@ export function BlockedInboxView({
           <CheckCircle2 className="h-5 w-5" aria-hidden="true" />
         </span>
         <div className="space-y-1">
-          <p className="text-sm font-medium text-foreground">{t("localizationIssueLists.noStoppedWork", { defaultValue: "No work is stopped." })}</p>
+          <p className="text-sm font-medium text-foreground">{t("localizationIssueLists.noStoppedWork", { defaultValue: t("localizationIssueLists.noStoppedWork") })}</p>
           <p className="text-xs text-muted-foreground">
-            {t("localizationIssueLists.stoppedWorkHelp", { defaultValue: "Tasks that need a decision, recovery, or external action will appear here." })}
+            {t("localizationIssueLists.stoppedWorkHelp", { defaultValue: t("localizationIssueLists.stoppedWorkHelp") })}
           </p>
         </div>
       </Card>
@@ -204,7 +204,7 @@ export function BlockedInboxView({
           data-testid="blocked-inbox-no-search-results"
           className="block border-border/70 bg-card/40 px-4 py-6 text-center text-sm text-muted-foreground"
         >
-          {t("localizationIssueLists.noStoppedMatches", { defaultValue: "No stopped items match your search." })}
+          {t("localizationIssueLists.noStoppedMatches", { defaultValue: t("localizationIssueLists.noStoppedMatches") })}
         </Card>
       </div>
     );
@@ -352,10 +352,10 @@ function BlockedInboxRow({
 
   const mobileMeta = (
     <span className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
-      <span data-testid="blocked-row-age-mobile">{stoppedAge}</span>
+      {presentation === "legacy" && <span data-testid="blocked-row-age-mobile">{stoppedAge}</span>}
       {ownerName ? (
         <>
-          <span aria-hidden="true">·</span>
+          {presentation === "legacy" && <span aria-hidden="true">·</span>}
           <span
             className={cn(isAgent ? "font-medium text-foreground/90" : null)}
             data-testid="blocked-row-owner-mobile"
@@ -400,6 +400,7 @@ function BlockedInboxRow({
         />
       }
       mobileMeta={mobileMeta}
+      mobileTitleMeta={presentation === "task" ? <span data-testid="blocked-row-age-mobile">{stoppedAge}</span> : undefined}
       desktopTrailing={desktopTrailing}
       trailingMeta={presentation === "task" && showUpdatedColumn ? stoppedAge : null}
     />

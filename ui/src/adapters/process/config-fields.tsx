@@ -1,4 +1,5 @@
 import { useTranslation } from "@/i18n";
+import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -26,6 +27,7 @@ function parseCommaArgs(value: string): string[] {
 }
 
 export function ProcessConfigFields({
+  section,
   isCreate,
   values,
   set,
@@ -34,9 +36,9 @@ export function ProcessConfigFields({
   mark,
 }: AdapterConfigFieldsProps) {
   const { t } = useTranslation();
-  return (
+  return configFieldsForSection(section, (
     <>
-      <Field label={t("pages.cliAuth.command")} hint={help.command}>
+      <Field configSection="advanced" label={t("pages.cliAuth.command")} hint={help.command}>
         <DraftInput
           value={
             isCreate
@@ -53,7 +55,7 @@ export function ProcessConfigFields({
           placeholder={t("localizationAgents.ui267_e_g_node_python")}
         />
       </Field>
-      <Field label={t("localizationAgents.ui268_Args_comma_separated_")} hint={help.args}>
+      <Field configSection="advanced" label={t("localizationAgents.ui268_Args_comma_separated_")} hint={help.args}>
         <DraftInput
           value={
             isCreate
@@ -75,5 +77,5 @@ export function ProcessConfigFields({
         />
       </Field>
     </>
-  );
+  ));
 }

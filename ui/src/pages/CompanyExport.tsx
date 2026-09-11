@@ -39,6 +39,7 @@ import {
 import { useAgentOrder } from "../hooks/useAgentOrder";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { buildPortableSidebarOrder } from "../lib/company-portability-sidebar";
+import { companyExportFidelityWarningDisplay } from "../lib/company-export-fidelity-display";
 import { getPortableFileDataUrl, getPortableFileText, isPortableImageFile } from "../lib/portable-files";
 import {
   Download,
@@ -1138,7 +1139,7 @@ export function CompanyExport() {
                 warning.severity === "blocker" ? "font-medium text-destructive" : "text-amber-500",
               )}
             >
-              {warning.message}
+              {companyExportFidelityWarningDisplay(warning)}
             </div>
           ))}
         </div>

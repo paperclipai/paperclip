@@ -1,4 +1,5 @@
 import { t, useTranslation } from "@/i18n";
+import { configFieldsForSection } from "../config-sections";
 import type { AdapterConfigFieldsProps } from "../types";
 import {
   Field,
@@ -13,6 +14,7 @@ const inputClass =
 const instructionsFileHint = () => t("localizationAgents.instructionsHint_opencode-local");
 
 export function OpenCodeLocalConfigFields({
+  section,
   isCreate,
   values,
   set,
@@ -22,7 +24,7 @@ export function OpenCodeLocalConfigFields({
   hideInstructionsFile,
 }: AdapterConfigFieldsProps) {
   const { t } = useTranslation();
-  return (
+  return configFieldsForSection(section, (
     <>
       {!hideInstructionsFile && (
         <Field label={t("localizationAgents.ui270_Agent_instructions_file")} hint={instructionsFileHint()}>
@@ -69,5 +71,5 @@ export function OpenCodeLocalConfigFields({
         }
       />
     </>
-  );
+  ));
 }

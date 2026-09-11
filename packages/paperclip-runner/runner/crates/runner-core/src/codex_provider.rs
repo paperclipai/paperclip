@@ -15,7 +15,7 @@ use crate::durable::QualifiedLaunchArtifact;
 use crate::durable::{redact_text, OpenCodeLaunchProfile};
 use crate::local_runner::LocalRunnerError;
 use crate::process_supervisor::{
-    is_node_interpreter, BoundedLogBuffer, ProcessOutput, SupervisedProcess,
+    is_node_interpreter, BoundedLogBuffer, ProcessExitFact, ProcessOutput, SupervisedProcess,
     VerifiedProcessArgument, VerifiedProcessLaunch,
 };
 use crate::provider_bridge::{AuthorizedTool, DurableReplayFilter, ToolResult};
@@ -54,8 +54,41 @@ const MAX_PENDING_RUNTIME_REQUESTS: usize = 128;
 const MAX_PENDING_RUNTIME_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 const OPENCODE_RUNTIME_REQUEST_METHOD: &str = "paperclip/runtimeRequest";
 pub(crate) const MAX_SETTLED_PROVIDER_TURN_IDS: usize = 4_096;
+pub(crate) const MAX_DESCENDANT_THREAD_IDS: usize = 4_096;
+
+fn remember_descendant_thread(ids: &mut BTreeSet<String>, id: &str) -> Result<bool, &'static str> {
+    if ids.contains(id) {
+        return Ok(false);
+    }
+    if ids.len() >= MAX_DESCENDANT_THREAD_IDS {
+        return Err("provider_descendant_capacity_exhausted");
+    }
+    Ok(ids.insert(id.to_owned()))
+}
 type QuestionOptionLabels = BTreeMap<String, BTreeMap<String, String>>;
 type QuestionSetMapping = (String, Value, QuestionOptionLabels);
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProviderStartupStage {
+    Spawn,
+    SpawnReceipt,
+    Initialize,
+    ThreadOpen,
+    ThreadRead,
+    Admission,
+}
+
+pub(crate) enum ProviderStartupObservation {
+    Spawned {
+        process_id: u32,
+        process_group_id: u32,
+    },
+    Failed {
+        stage: ProviderStartupStage,
+        child_exit: Option<ProcessExitFact>,
+    },
+}
 
 #[derive(Clone, PartialEq)]
 struct ProviderCompletionContract {
@@ -383,6 +416,19 @@ pub enum CodexProviderEvent {
         method: String,
         params: Value,
     },
+    /// Provider-confirmed child progress has no root terminal or tool authority.
+    DescendantNotification {
+        method: String,
+        params: Value,
+    },
+    /// An invalid authoritative event must retain its failure meaning across PRP.
+    ProtocolFailure {
+        diagnostic: Value,
+    },
+    /// A bounded provider resource was exhausted; this is not identity corruption.
+    ResourceLimit {
+        diagnostic: Value,
+    },
     RuntimeRequest {
         request_id: String,
         question_set: Value,
@@ -534,8 +580,11 @@ pub struct CodexProvider {
     completed_turn_authority: Option<CompletedTurnAuthority>,
     active_turn_result_authoritative: bool,
     completion_reconciliation_pending: bool,
+    goal_allows_autonomous_turns: bool,
     ambiguous_turn_start_pending: bool,
     settled_provider_turn_ids: SettledProviderTurnIds,
+    descendant_thread_ids: BTreeSet<String>,
+    notification_identity_diagnostics: usize,
     rejected_accepted_turn: Option<RejectedAcceptedTurn>,
     quarantined: bool,
     trace: Option<ProviderTraceSink>,
@@ -543,6 +592,14 @@ pub struct CodexProvider {
     opencode_launch_profile: Option<OpenCodeLaunchProfile>,
     completion_contract: Option<ProviderCompletionContract>,
     permission_profile: &'static str,
+    exit_drain: Option<ProviderExitDrain>,
+}
+
+struct ProviderExitDrain {
+    process_generation: u64,
+    deadline: std::time::Instant,
+    timed_out: bool,
+    warning_emitted: bool,
 }
 
 // The controller accepts at most 32 process-scoped Git config entries and
@@ -551,6 +608,12 @@ pub struct CodexProvider {
 // entry from this static ceiling, but cannot introduce another environment
 // variable by changing GIT_CONFIG_COUNT.
 const GITHUB_CREDENTIAL_ENVIRONMENT_KEYS: &[&str] = &[
+    "PAPERCLIP_RUNNER_NETWORK_ACCESS",
+    "PAPERCLIP_RUNNER_NETWORK_ROOTS",
+    "PAPERCLIP_GITHUB_AUTH_MODE",
+    "PAPERCLIP_GITHUB_HOST_HOME",
+    "PAPERCLIP_GIT_METADATA_ROOTS",
+    "GIT_SSH",
     "ZDOTDIR",
     "BASH_ENV",
     "PAPERCLIP_GITHUB_BROKER_URL",
@@ -695,7 +758,35 @@ impl CodexProvider {
         opencode_launch_profile: Option<&OpenCodeLaunchProfile>,
         completion_contract: Option<(&str, &[String])>,
     ) -> Result<Self, LocalRunnerError> {
+        Self::start_with_tools_observed(
+            config,
+            authorized_tools,
+            resume_thread_id,
+            process_generation,
+            opencode_launch_profile,
+            completion_contract,
+            &mut |_| Ok(()),
+        )
+    }
+
+    pub(crate) fn start_with_tools_observed(
+        config: &CodexProviderConfig,
+        authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
+        resume_thread_id: Option<&str>,
+        process_generation: u64,
+        opencode_launch_profile: Option<&OpenCodeLaunchProfile>,
+        completion_contract: Option<(&str, &[String])>,
+        observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
+    ) -> Result<Self, LocalRunnerError> {
         config.validate()?;
+        if config.provider == "codex" {
+            if let Some(home) = std::env::var_os("CODEX_HOME") {
+                crate::codex_startup_trust::trust_startup_root(
+                    Path::new(&home),
+                    Path::new(&config.cwd),
+                )?;
+            }
+        }
         if process_generation == 0 {
             return Err(LocalRunnerError::invalid(
                 "Codex process generation must be positive",
@@ -735,36 +826,61 @@ impl CodexProvider {
             .chain(provider_environment_keys.iter().copied())
             .chain(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.iter().copied())
             .collect::<Vec<_>>();
-        let process = if config.provider == "opencode" {
-            let profile = opencode_launch_profile.ok_or_else(|| {
-                LocalRunnerError::invalid(
-                    "OpenCode runner startup omitted its qualified launch profile",
+        let runtime_request_scope = new_runtime_request_scope()?;
+        let spawn = (|| {
+            if config.provider == "opencode" {
+                let profile = opencode_launch_profile.ok_or_else(|| {
+                    LocalRunnerError::invalid(
+                        "OpenCode runner startup omitted its qualified launch profile",
+                    )
+                })?;
+                let proxy_script = profile.proxy_script.path.to_string_lossy();
+                if config.command != profile.command.path
+                    || config.args.as_slice() != [proxy_script.as_ref()]
+                {
+                    return Err(LocalRunnerError::invalid(
+                        "OpenCode launch does not match the runner-owned qualified profile",
+                    ));
+                }
+                let launch = verified_opencode_launch(profile)?;
+                SupervisedProcess::spawn_verified_with_environment_keys(
+                    &launch,
+                    Duration::from_secs(2),
+                    CODEX_APP_SERVER_MAX_FRAME_BYTES,
+                    &environment_keys,
                 )
-            })?;
-            let proxy_script = profile.proxy_script.path.to_string_lossy();
-            if config.command != profile.command.path
-                || config.args.as_slice() != [proxy_script.as_ref()]
-            {
-                return Err(LocalRunnerError::invalid(
-                    "OpenCode launch does not match the runner-owned qualified profile",
-                ));
+            } else {
+                SupervisedProcess::spawn_in_directory_with_environment_keys(
+                    &config.command,
+                    &config.args,
+                    Duration::from_secs(2),
+                    CODEX_APP_SERVER_MAX_FRAME_BYTES,
+                    &environment_keys,
+                    Path::new(&config.cwd),
+                )
             }
-            let launch = verified_opencode_launch(profile)?;
-            SupervisedProcess::spawn_verified_with_environment_keys(
-                &launch,
-                Duration::from_secs(2),
-                CODEX_APP_SERVER_MAX_FRAME_BYTES,
-                &environment_keys,
-            )?
-        } else {
-            SupervisedProcess::spawn_with_environment_keys(
-                &config.command,
-                &config.args,
-                Duration::from_secs(2),
-                CODEX_APP_SERVER_MAX_FRAME_BYTES,
-                &environment_keys,
-            )?
+        })();
+        let mut process = match spawn {
+            Ok(process) => process,
+            Err(error) => {
+                let _ = observe(ProviderStartupObservation::Failed {
+                    stage: ProviderStartupStage::Spawn,
+                    child_exit: None,
+                });
+                return Err(error);
+            }
         };
+        if let Err(error) = observe(ProviderStartupObservation::Spawned {
+            process_id: process.id(),
+            process_group_id: process.process_group_id(),
+        }) {
+            let child_exit = process.terminate_group().ok();
+            let _ = observe(ProviderStartupObservation::Failed {
+                stage: ProviderStartupStage::SpawnReceipt,
+                child_exit,
+            });
+            return Err(error);
+        }
         let mut provider = Self {
             process,
             stderr_tail: BoundedLogBuffer::new(
@@ -787,15 +903,18 @@ impl CodexProvider {
             pending_tool_request_bytes: 0,
             pending_runtime_requests: BTreeMap::new(),
             pending_runtime_request_bytes: 0,
-            runtime_request_scope: new_runtime_request_scope()?,
+            runtime_request_scope,
             next_runtime_request_sequence: 1,
             expected_shutdown: false,
             process_generation,
             completed_turn_authority: None,
             active_turn_result_authoritative: false,
             completion_reconciliation_pending: false,
+            goal_allows_autonomous_turns: false,
             ambiguous_turn_start_pending: false,
             settled_provider_turn_ids: SettledProviderTurnIds::default(),
+            descendant_thread_ids: BTreeSet::new(),
+            notification_identity_diagnostics: 0,
             rejected_accepted_turn: None,
             quarantined: false,
             trace: ProviderTraceSink::from_environment(),
@@ -808,87 +927,112 @@ impl CodexProvider {
                 }
             }),
             permission_profile,
+            exit_drain: None,
         };
-        let initialized = provider.request(
-            "initialize",
-            json!({
-                "clientInfo": {
-                    "name": "paperclip-runnerd",
-                    "title": "Paperclip Runner",
-                    "version": "1",
-                },
-                "capabilities": {
-                    "experimentalApi": true,
-                    "requestAttestation": false,
-                },
-            }),
-        )?;
-        provider.send_frame(&json!({"method": "initialized"}))?;
+        let mut stage = ProviderStartupStage::Initialize;
+        let initialized_result = (|| -> Result<(), LocalRunnerError> {
+            let initialized = provider.request(
+                "initialize",
+                json!({
+                    "clientInfo": {
+                        "name": "paperclip-runnerd",
+                        "title": "Paperclip Runner",
+                        "version": "1",
+                    },
+                    "capabilities": {
+                        "experimentalApi": true,
+                        "requestAttestation": false,
+                    },
+                }),
+            )?;
+            provider.send_frame(&json!({"method": "initialized"}))?;
 
-        let mut params = json!({
-            "cwd": config.cwd,
-            "model": config.model,
-            "approvalPolicy": config.approval_policy,
-            "runtimeWorkspaceRoots": [config.cwd],
-            "baseInstructions": config.instructions,
-            "dynamicTools": dynamic_tools,
-        });
-        let params_object = params
-            .as_object_mut()
-            .expect("Codex thread parameters are an object");
-        if provider.permission_profile == "paperclip-runner-external-sandbox" {
-            // The execution target (for example Daytona) is the OS sandbox.
-            // Codex must not try to create nested user/network namespaces,
-            // which correctly fail inside an unprivileged container.
-            params_object.insert("sandbox".to_owned(), json!("danger-full-access"));
-        } else {
-            params_object.insert("permissions".to_owned(), json!(provider.permission_profile));
-        }
-        if config.provider == "opencode" {
-            if let Some(contract) = provider.completion_contract.as_ref() {
-                params_object.insert(
-                    "completionContract".to_owned(),
-                    json!({
-                        "revision": contract.revision,
-                        "criterionIds": contract.criterion_ids,
-                    }),
-                );
+            let mut params = json!({
+                "cwd": config.cwd,
+                "model": config.model,
+                "approvalPolicy": config.approval_policy,
+                "runtimeWorkspaceRoots": [config.cwd],
+                "baseInstructions": config.instructions,
+                "dynamicTools": dynamic_tools,
+            });
+            let params_object = params
+                .as_object_mut()
+                .expect("Codex thread parameters are an object");
+            if provider.permission_profile == "paperclip-runner-external-sandbox" {
+                // The execution target (for example Daytona) is the OS sandbox.
+                // Codex must not try to create nested user/network namespaces,
+                // which correctly fail inside an unprivileged container.
+                params_object.insert("sandbox".to_owned(), json!("danger-full-access"));
+            } else {
+                params_object.insert("permissions".to_owned(), json!(provider.permission_profile));
             }
-        }
-        let method = if let Some(thread_id) = resume_thread_id {
-            params_object.insert("threadId".to_owned(), json!(thread_id));
-            "thread/resume"
-        } else {
-            params_object.insert("experimentalRawEvents".to_owned(), json!(false));
-            "thread/start"
-        };
-        let opened = provider.request(method, params)?;
-        provider.thread_id = opened
-            .pointer("/thread/id")
-            .or_else(|| opened.get("threadId"))
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| LocalRunnerError::invalid(format!("Codex {method} omitted thread.id")))?
-            .to_owned();
-        if resume_thread_id.is_some_and(|expected| expected != provider.thread_id) {
-            return Err(LocalRunnerError::invalid(
-                "Codex resumed a different provider thread",
-            ));
-        }
-        provider.provider_session_id = opened
-            .pointer("/thread/sessionId")
-            .or_else(|| initialized.pointer("/user/sessionId"))
-            .and_then(Value::as_str)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned);
+            if config.provider == "opencode" {
+                if let Some(contract) = provider.completion_contract.as_ref() {
+                    params_object.insert(
+                        "completionContract".to_owned(),
+                        json!({
+                            "revision": contract.revision,
+                            "criterionIds": contract.criterion_ids,
+                        }),
+                    );
+                }
+            }
+            let method = if let Some(thread_id) = resume_thread_id {
+                params_object.insert("threadId".to_owned(), json!(thread_id));
+                if config.provider == "codex" {
+                    params_object.insert("excludeTurns".to_owned(), json!(true));
+                }
+                "thread/resume"
+            } else {
+                params_object.insert("experimentalRawEvents".to_owned(), json!(false));
+                "thread/start"
+            };
+            stage = ProviderStartupStage::ThreadOpen;
+            let opened = provider.request(method, params)?;
+            provider.thread_id = opened
+                .pointer("/thread/id")
+                .or_else(|| opened.get("threadId"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    LocalRunnerError::invalid(format!("Codex {method} omitted thread.id"))
+                })?
+                .to_owned();
+            if resume_thread_id.is_some_and(|expected| expected != provider.thread_id) {
+                return Err(LocalRunnerError::invalid(
+                    "Codex resumed a different provider thread",
+                ));
+            }
+            provider.provider_session_id = opened
+                .pointer("/thread/sessionId")
+                .or_else(|| initialized.pointer("/user/sessionId"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
 
-        if resume_thread_id.is_some() {
-            let snapshot = provider.read_thread()?;
-            provider.active_provider_turn_id = latest_active_turn_id(&snapshot)
-                .map(|provider_turn_id| bounded_provider_turn_id(Some(&provider_turn_id)))
-                .transpose()?;
+            if resume_thread_id.is_some() {
+                stage = ProviderStartupStage::ThreadRead;
+                let snapshot = provider.read_thread()?;
+                provider.active_provider_turn_id = latest_active_turn_id(&snapshot)
+                    .map(|provider_turn_id| bounded_provider_turn_id(Some(&provider_turn_id)))
+                    .transpose()?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = initialized_result {
+            let child_exit = provider.retire_failed_startup();
+            let _ = observe(ProviderStartupObservation::Failed { stage, child_exit });
+            return Err(error);
         }
         Ok(provider)
+    }
+
+    pub(crate) fn retire_failed_startup(&mut self) -> Option<ProcessExitFact> {
+        // Initialization has not admitted any work. Do not issue another RPC
+        // on the failed channel; await only this owned direct child. A process
+        // group signal is not evidence that escaped descendants are retired.
+        self.expected_shutdown = true;
+        self.process.terminate_group().ok()
     }
 
     pub fn process_id(&self) -> u32 {
@@ -1058,6 +1202,20 @@ impl CodexProvider {
                         );
                     }
                 }
+                Some(CodexProviderEvent::ResourceLimit { .. }) => {
+                    return Err(LocalRunnerError::invalid("Codex descendant capacity requires reconciliation before fresh-session continuation"));
+                }
+                Some(CodexProviderEvent::ProtocolFailure { .. }) => {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex protocol integrity failed during warm attachment",
+                    ));
+                }
+                Some(CodexProviderEvent::DescendantNotification { .. }) => {
+                    // Child output cannot certify a quiescent root attachment.
+                    return Err(LocalRunnerError::invalid(
+                        "Codex descendant remains active during warm run attachment",
+                    ));
+                }
                 Some(CodexProviderEvent::ToolCall { .. })
                 | Some(CodexProviderEvent::RuntimeRequest { .. }) => {
                     return Err(LocalRunnerError::invalid(
@@ -1152,6 +1310,13 @@ impl CodexProvider {
         Ok(())
     }
 
+    pub(crate) fn restore_descendant_thread_identities(&mut self, identities: &BTreeSet<String>) {
+        // Exact provider-confirmed lineage lives as long as the root session.
+        // Evicting it would turn later child progress into a root integrity fault.
+        self.descendant_thread_ids
+            .extend(identities.iter().cloned());
+    }
+
     pub(crate) fn restore_settled_turn_identities(
         &mut self,
         provider_turn_ids: impl IntoIterator<Item = String>,
@@ -1185,6 +1350,18 @@ impl CodexProvider {
     }
 
     pub(crate) fn restart_idle_identity_epoch(&mut self) -> Result<(), LocalRunnerError> {
+        if self.durable_tool_call_replays {
+            return Err(LocalRunnerError::invalid(
+                "durable provider rollover requires its startup ownership observer",
+            ));
+        }
+        self.restart_idle_identity_epoch_observed(&mut |_| Ok(()))
+    }
+
+    pub(crate) fn restart_idle_identity_epoch_observed(
+        &mut self,
+        observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
+    ) -> Result<(), LocalRunnerError> {
         if self.active_provider_turn_id.is_some() || self.ambiguous_turn_start_pending {
             return Err(LocalRunnerError::invalid(
                 "Codex provider identity epoch cannot rotate while work is active",
@@ -1207,7 +1384,7 @@ impl CodexProvider {
         // fresh process generation, then preserve prior completion authority
         // until a replacement turn identity is actually accepted.
         self.shutdown()?;
-        let mut replacement = Self::start_with_tools_for_generation(
+        let mut replacement = Self::start_with_tools_observed(
             &config,
             authorized_tools,
             Some(&thread_id),
@@ -1219,6 +1396,7 @@ impl CodexProvider {
                     contract.criterion_ids.as_slice(),
                 )
             }),
+            observe,
         )?;
         replacement.durable_tool_call_replays = durable_tool_call_replays;
         if replacement.active_provider_turn_id.is_some() {
@@ -1236,8 +1414,11 @@ impl CodexProvider {
             replacement.pending_messages.clear();
             replacement.deferred_ambiguous_messages.clear();
             replacement.pending_message_bytes = 0;
-            let _ = replacement.cancel_pending_requests();
-            let _ = replacement.process.terminate_group();
+            let child_exit = replacement.retire_failed_startup();
+            let _ = observe(ProviderStartupObservation::Failed {
+                stage: ProviderStartupStage::Admission,
+                child_exit,
+            });
             replacement.expected_shutdown = false;
             *self = replacement;
             return Err(LocalRunnerError::invalid(
@@ -1245,11 +1426,18 @@ impl CodexProvider {
             ));
         }
         if let Some(authority) = completed_turn_authority.as_ref() {
-            replacement.restore_completed_turn_authority(
+            if let Err(error) = replacement.restore_completed_turn_authority(
                 true,
                 Some(authority.process_generation),
                 Some(&authority.provider_turn_id),
-            )?;
+            ) {
+                let child_exit = replacement.retire_failed_startup();
+                let _ = observe(ProviderStartupObservation::Failed {
+                    stage: ProviderStartupStage::Admission,
+                    child_exit,
+                });
+                return Err(error);
+            }
         }
         replacement.completion_reconciliation_pending = completion_reconciliation_pending;
         *self = replacement;
@@ -1261,6 +1449,104 @@ impl CodexProvider {
             return Ok(());
         }
         self.restart_idle_identity_epoch()
+    }
+
+    pub fn get_goal(&mut self) -> Result<Value, LocalRunnerError> {
+        let result = self.request("thread/goal/get", json!({"threadId": self.thread_id}))?;
+        self.goal_allows_autonomous_turns =
+            result.pointer("/goal/status").and_then(Value::as_str) == Some("active");
+        Ok(result)
+    }
+
+    pub fn set_goal(
+        &mut self,
+        objective: Option<&str>,
+        status: Option<&str>,
+        token_budget: Option<Option<u64>>,
+    ) -> Result<Value, LocalRunnerError> {
+        let starts_idle_turn = self.active_provider_turn_id.is_none()
+            && (status == Some("active") || (status.is_none() && objective.is_some()));
+        let prior_reconciliation_pending = self.completion_reconciliation_pending;
+        let prior_buffered_message_count = self.pending_messages.len();
+        if starts_idle_turn {
+            if self.quarantined {
+                return Err(LocalRunnerError::invalid(
+                    "Codex provider is quarantined after unsafe recovered work",
+                ));
+            }
+            if self.ambiguous_turn_start_pending {
+                return Err(LocalRunnerError::invalid(
+                    "Codex has an unresolved ambiguous provider turn start",
+                ));
+            }
+            self.rollover_settled_turn_epoch_if_needed()?;
+            // Activating an idle Codex goal starts a provider turn without a
+            // turn/start response. Arm the same identity reconciliation used
+            // by an ambiguous turn/start before sending the request because
+            // turn/started may be buffered ahead of the goal response.
+            self.completion_reconciliation_pending = false;
+            self.ambiguous_turn_start_pending = true;
+        }
+        let mut params = json!({"threadId": self.thread_id});
+        let params = params
+            .as_object_mut()
+            .expect("Codex goal parameters are an object");
+        if let Some(objective) = objective {
+            params.insert("objective".to_owned(), json!(objective));
+        }
+        if let Some(status) = status {
+            params.insert("status".to_owned(), json!(status));
+        }
+        if let Some(token_budget) = token_budget {
+            params.insert("tokenBudget".to_owned(), json!(token_budget));
+        }
+        match self.request_classified("thread/goal/set", Value::Object(params.clone())) {
+            Ok(result) => {
+                let effective_status = result
+                    .pointer("/goal/status")
+                    .or_else(|| result.get("status"))
+                    .and_then(Value::as_str);
+                self.goal_allows_autonomous_turns = effective_status == Some("active");
+                if starts_idle_turn && effective_status.is_some_and(|value| value != "active") {
+                    // Objective-only updates preserve the provider's current
+                    // goal status. If that status is paused or otherwise
+                    // inactive, no autonomous turn starts. Restore the prior
+                    // reconciliation state unless the response raced with
+                    // contradictory provider-work evidence.
+                    let no_turn_evidence = self
+                        .pending_messages
+                        .iter()
+                        .skip(prior_buffered_message_count)
+                        .all(|buffered| is_non_active_goal_set_diagnostic(&buffered.value));
+                    if no_turn_evidence {
+                        self.ambiguous_turn_start_pending = false;
+                        self.completion_reconciliation_pending = prior_reconciliation_pending;
+                    }
+                }
+                Ok(result)
+            }
+            Err(ProviderRequestError::Rejected(error)) => {
+                if starts_idle_turn {
+                    let definite_rejection = self
+                        .pending_messages
+                        .iter()
+                        .skip(prior_buffered_message_count)
+                        .all(|buffered| is_unbound_rejected_turn_diagnostic(&buffered.value));
+                    if definite_rejection {
+                        self.ambiguous_turn_start_pending = false;
+                        self.completion_reconciliation_pending = prior_reconciliation_pending;
+                    }
+                }
+                Err(error)
+            }
+            Err(ProviderRequestError::Ambiguous(error)) => Err(error),
+        }
+    }
+
+    pub fn clear_goal(&mut self) -> Result<Value, LocalRunnerError> {
+        let result = self.request("thread/goal/clear", json!({"threadId": self.thread_id}))?;
+        self.goal_allows_autonomous_turns = false;
+        Ok(result)
     }
 
     pub fn start_turn(&mut self, message: &str, cwd: &str) -> Result<Value, LocalRunnerError> {
@@ -1472,10 +1758,99 @@ impl CodexProvider {
         // It does prove the provider remained live after that terminal, so a
         // subsequent nonzero exit is a separate idle-session failure.
         self.completion_reconciliation_pending = false;
-        self.request(
+        if self.config.provider != "codex" {
+            return self.request(
+                "thread/read",
+                json!({"threadId": self.thread_id, "includeTurns": true}),
+            );
+        }
+        let mut snapshot = self.request(
             "thread/read",
-            json!({"threadId": self.thread_id, "includeTurns": true}),
-        )
+            json!({"threadId": self.thread_id, "includeTurns": false}),
+        )?;
+        if snapshot.pointer("/thread/id").and_then(Value::as_str) != Some(self.thread_id.as_str()) {
+            return Err(LocalRunnerError::invalid(
+                "Codex thread/read returned a different thread",
+            ));
+        }
+        // Only metadata is needed to establish live authority. Never hydrate
+        // message contents just to decide whether this thread has an active turn.
+        match snapshot
+            .pointer("/thread/status/type")
+            .and_then(Value::as_str)
+        {
+            Some("idle") => {
+                snapshot["thread"]["turns"] = json!([]);
+                return Ok(snapshot);
+            }
+            Some("active") => {}
+            _ => {
+                return Err(LocalRunnerError::invalid(
+                    "codex_history_incomplete: unavailable thread status",
+                ))
+            }
+        };
+        let mut cursor = Value::Null;
+        let mut cursors = BTreeSet::new();
+        let mut turns = BTreeMap::new();
+        for _ in 0..10_000 {
+            let page = self
+                .request(
+                    "thread/turns/list",
+                    json!({
+                        "threadId": self.thread_id, "cursor": cursor, "limit": 100,
+                        "sortDirection": "desc", "itemsView": "notLoaded",
+                    }),
+                )
+                .map_err(|error| {
+                    LocalRunnerError::invalid(format!(
+                "codex_history_read_failed: supported thread/turns/list is required: {error}"
+            ))
+                })?;
+            let data = page.get("data").and_then(Value::as_array).ok_or_else(|| {
+                LocalRunnerError::invalid("codex_history_incomplete: turn page omitted data")
+            })?;
+            for turn in data {
+                let id = bounded_provider_turn_id(turn.get("id").and_then(Value::as_str))?;
+                if !matches!(
+                    turn.get("status").and_then(Value::as_str),
+                    Some("inProgress" | "completed" | "failed" | "interrupted" | "cancelled")
+                ) {
+                    return Err(LocalRunnerError::invalid(
+                        "codex_history_incomplete: invalid turn status",
+                    ));
+                }
+                turns.insert(id, turn.clone());
+            }
+            let found_active = turns
+                .values()
+                .any(|turn| turn.get("status").and_then(Value::as_str) == Some("inProgress"));
+            let next = page.get("nextCursor").cloned().unwrap_or(Value::Null);
+            if next.is_null() || found_active {
+                if !found_active {
+                    return Err(LocalRunnerError::invalid(
+                        "codex_history_incomplete: active thread has no active turn",
+                    ));
+                }
+                snapshot["thread"]["turns"] = Value::Array(turns.into_values().collect());
+                return Ok(snapshot);
+            }
+            let next_text = next
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    LocalRunnerError::invalid("codex_history_incomplete: invalid turn cursor")
+                })?;
+            if !cursors.insert(next_text.to_owned()) {
+                return Err(LocalRunnerError::invalid(
+                    "codex_history_incomplete: repeated turn cursor",
+                ));
+            }
+            cursor = next;
+        }
+        Err(LocalRunnerError::invalid(
+            "codex_history_incomplete: turn page limit exceeded",
+        ))
     }
 
     pub fn resolve_runtime_request(
@@ -1541,7 +1916,83 @@ impl CodexProvider {
         }))
     }
 
+    fn exit_event(&self, exit: ProcessExitFact, drain_timed_out: bool) -> CodexProviderEvent {
+        // A recorded terminal remains authoritative even if its reusable
+        // process later fails. Only a completion from this exact generation
+        // can reconcile that exit; fresh or ambiguous work revokes the old
+        // reconciliation, and an incomplete stdout drain never certifies it.
+        let completed_turn_authoritative = !self.quarantined
+            && self.completed_turn_authority.is_some()
+            && self.active_provider_turn_id.is_none();
+        let completed_turn_observed_by_process = !self.quarantined
+            && self
+                .completed_turn_authority
+                .as_ref()
+                .is_some_and(|authority| authority.process_generation == self.process_generation);
+        CodexProviderEvent::Exited {
+            exit_code: exit.exit_code,
+            success: !self.quarantined
+                && !drain_timed_out
+                && exit.success
+                && !self.ambiguous_turn_start_pending
+                && (self.expected_shutdown || completed_turn_authoritative),
+            completed_turn_authoritative,
+            completed_turn_observed_by_process,
+            completion_reconciles_exit: !drain_timed_out
+                && completed_turn_authoritative
+                && completed_turn_observed_by_process
+                && self.completion_reconciliation_pending,
+            process_generation: self.process_generation,
+            completed_turn_process_generation: self
+                .completed_turn_authority
+                .as_ref()
+                .filter(|_| !self.quarantined)
+                .map(|authority| authority.process_generation),
+        }
+    }
+
     pub fn poll(&mut self) -> Result<Option<CodexProviderEvent>, LocalRunnerError> {
+        if self.process.stdout_failed() {
+            return Err(LocalRunnerError::invalid(
+                "Codex stdout closed without a valid reader EOF",
+            ));
+        }
+        // A leader may exit while its reader still owns queued frames, or while
+        // a descendant retains the pipe. Observe exit even during output floods
+        // and bound only this post-exit drain by the existing shutdown grace.
+        if let Some(exit) = self.process.try_wait()? {
+            if self
+                .exit_drain
+                .as_ref()
+                .is_none_or(|drain| drain.process_generation != self.process_generation)
+            {
+                self.exit_drain = Some(ProviderExitDrain {
+                    process_generation: self.process_generation,
+                    deadline: std::time::Instant::now() + self.process.shutdown_grace(),
+                    timed_out: false,
+                    warning_emitted: false,
+                });
+            }
+            let drain = self
+                .exit_drain
+                .as_mut()
+                .expect("observed exit has a drain bound");
+            drain.timed_out |=
+                !self.process.stdout_drained() && std::time::Instant::now() >= drain.deadline;
+            if drain.timed_out {
+                if !drain.warning_emitted {
+                    drain.warning_emitted = true;
+                    return Ok(Some(CodexProviderEvent::Notification {
+                        method: "configWarning".to_owned(),
+                        params: json!({
+                            "code": "provider_stdout_drain_timeout",
+                            "message": "Provider exited before stdout was fully drained within shutdown grace; the session cannot be safely reused.",
+                        }),
+                    }));
+                }
+                return Ok(Some(self.exit_event(exit, true)));
+            }
+        }
         if self.quarantined {
             // Never interpret provider-originated requests after fail-closed
             // quarantine. Drain output only so process termination cannot
@@ -1551,6 +2002,9 @@ impl CodexProvider {
                 .receive_stdout_line(Duration::from_millis(1))?
                 .is_some()
             {
+                return Ok(None);
+            }
+            if !self.process.stdout_drained() {
                 return Ok(None);
             }
             return Ok(self
@@ -1578,43 +2032,11 @@ impl CodexProvider {
         } else {
             let Some(line) = self.process.receive_stdout_line(Duration::from_millis(1))? else {
                 let exit = self.process.try_wait()?;
+                if !self.process.stdout_drained() {
+                    return Ok(None);
+                }
                 return if let Some(exit) = exit {
-                    let completed_turn_authoritative = self.completed_turn_authority.is_some()
-                        && self.active_provider_turn_id.is_none();
-                    let completed_turn_observed_by_process = self
-                        .completed_turn_authority
-                        .as_ref()
-                        .is_some_and(|authority| {
-                            authority.process_generation == self.process_generation
-                        });
-                    // A durable terminal remains the run outcome, but it only
-                    // reconciles the process generation that produced it. A
-                    // later recovered provider can fail independently while
-                    // leaving the already-recorded turn result intact.
-                    let completion_reconciles_exit = completed_turn_authoritative
-                        && completed_turn_observed_by_process
-                        && self.completion_reconciliation_pending;
-                    Ok(Some(CodexProviderEvent::Exited {
-                        exit_code: exit.exit_code,
-                        // A clean idle exit after a terminal is healthy. A
-                        // nonzero exit still makes the provider unavailable,
-                        // but the durable terminal reconciles it instead of
-                        // allowing the session to fail retroactively. Fresh
-                        // turn work explicitly revokes the prior authority.
-                        // An unresolved start may already have created fresh
-                        // work, so even a clean exit must fail that session.
-                        success: exit.success
-                            && !self.ambiguous_turn_start_pending
-                            && (self.expected_shutdown || completed_turn_authoritative),
-                        completed_turn_authoritative,
-                        completed_turn_observed_by_process,
-                        completion_reconciles_exit,
-                        process_generation: self.process_generation,
-                        completed_turn_process_generation: self
-                            .completed_turn_authority
-                            .as_ref()
-                            .map(|authority| authority.process_generation),
-                    }))
+                    Ok(Some(self.exit_event(exit, false)))
                 } else {
                     Ok(None)
                 };
@@ -1672,6 +2094,23 @@ impl CodexProvider {
             self.completion_reconciliation_pending = false;
         }
 
+        let method = message.get("method").and_then(Value::as_str);
+        if matches!(method, Some("thread/goal/updated" | "thread/goal/cleared")) {
+            let params = message.get("params").cloned().unwrap_or(Value::Null);
+            validate_notification_binding(&self.thread_id, None, &params)?;
+            self.goal_allows_autonomous_turns = method == Some("thread/goal/updated")
+                && params.pointer("/goal/status").and_then(Value::as_str) == Some("active");
+        }
+        if method == Some("turn/started")
+            && self.active_provider_turn_id.is_none()
+            && self.goal_allows_autonomous_turns
+            && !self.quarantined
+        {
+            // Goal continuation has no turn/start response. Reuse the exact
+            // ambiguous-start validator, including settled-ID rejection and
+            // fresh tool/request receipt ownership for the accepted turn.
+            self.ambiguous_turn_start_pending = true;
+        }
         match self.classify_ambiguous_turn_message(&message)? {
             AmbiguousTurnMessage::Ready => {}
             AmbiguousTurnMessage::Deferred => {
@@ -1739,9 +2178,11 @@ impl CodexProvider {
             if method == "item/tool/call" {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
                 if params.get("threadId").and_then(Value::as_str) != Some(self.thread_id.as_str()) {
-                    return Err(LocalRunnerError::invalid(
-                        "Codex tool call named another thread",
-                    ));
+                    return Ok(Some(self.identity_failure(
+                        method,
+                        &params,
+                        "thread_binding_mismatch",
+                    )));
                 }
                 if request_targets_non_active_turn(
                     self.active_provider_turn_id.as_deref(),
@@ -1754,9 +2195,11 @@ impl CodexProvider {
                     LocalRunnerError::invalid("Codex tool call arrived outside an active turn")
                 })?;
                 if params.get("turnId").and_then(Value::as_str) != Some(active_turn_id) {
-                    return Err(LocalRunnerError::invalid(
-                        "Codex tool call named another turn",
-                    ));
+                    return Ok(Some(self.identity_failure(
+                        method,
+                        &params,
+                        "turn_binding_mismatch",
+                    )));
                 }
                 let call_id = bounded_identifier(
                     params.get("callId").and_then(Value::as_str),
@@ -1859,9 +2302,11 @@ impl CodexProvider {
                     && params.get("threadId").and_then(Value::as_str)
                         != Some(self.thread_id.as_str())
                 {
-                    return Err(LocalRunnerError::invalid(
-                        "Codex runtime request named another thread",
-                    ));
+                    return Ok(Some(self.identity_failure(
+                        method,
+                        &params,
+                        "thread_binding_mismatch",
+                    )));
                 }
                 if request_targets_non_active_turn(
                     self.active_provider_turn_id.as_deref(),
@@ -1971,30 +2416,125 @@ impl CodexProvider {
 
         if let Some(method) = message.get("method").and_then(Value::as_str) {
             let params = message.get("params").cloned().unwrap_or(Value::Null);
+            let identity = match classify_notification_thread(
+                method,
+                &self.thread_id,
+                &self.descendant_thread_ids,
+                &params,
+            ) {
+                Ok(identity) => identity,
+                Err(_) => {
+                    return Ok(Some(self.identity_failure(
+                        method,
+                        &params,
+                        "thread_binding_mismatch",
+                    )))
+                }
+            };
+            if identity == NotificationThread::Descendant {
+                let id =
+                    notification_thread_id(&params).expect("classified descendant has an identity");
+                let newly_known = match remember_descendant_thread(
+                    &mut self.descendant_thread_ids,
+                    id,
+                ) {
+                    Ok(newly_known) => newly_known,
+                    Err(code) => {
+                        return Ok(Some(CodexProviderEvent::ResourceLimit {
+                            diagnostic: json!({
+                                "code": code, "recoverable": false, "classification": "resource_capacity",
+                                "message": "Codex reached the child-thread inventory limit. Reconcile child work before continuing in a fresh provider session.",
+                                "method": bounded_method(method), "limit": MAX_DESCENDANT_THREAD_IDS,
+                                "expectedThreadId": self.thread_id, "receivedThreadId": id,
+                            }),
+                        }))
+                    }
+                };
+                // Retain each discovered child's effect inventory independently of
+                // the informational diagnostic budget, then bound repeated progress.
+                if !newly_known && self.notification_identity_diagnostics >= 32 {
+                    return Ok(None);
+                }
+                self.notification_identity_diagnostics += 1;
+                // Descendant terminals are progress only. They never settle root authority.
+                return Ok(Some(CodexProviderEvent::DescendantNotification {
+                    method: method.to_owned(),
+                    params,
+                }));
+            }
+            if identity == NotificationThread::UnrelatedInformation {
+                self.notification_identity_diagnostics += 1;
+                if self.notification_identity_diagnostics > 32 {
+                    return Ok(None);
+                }
+                return Ok(Some(CodexProviderEvent::Notification {
+                    method: "warning".to_owned(),
+                    params: json!({
+                        "threadId": self.thread_id,
+                        "message": "ignored unrelated provider information",
+                        "providerMethod": bounded_method(method),
+                        "classification": "unrelated_information",
+                        "expectedThreadId": self.thread_id,
+                        "receivedThreadId": notification_thread_id(&params).map(|id| id.chars().take(256).collect::<String>()),
+                        "expectedTurnId": self.active_provider_turn_id,
+                        "receivedTurnId": notification_turn_id(&params).map(|id| id.chars().take(256).collect::<String>()),
+                    }),
+                }));
+            }
             let terminal_event_type = normalized_codex_terminal_event_type(method, &params);
             let notification_turn_id = params
                 .get("turnId")
                 .or_else(|| params.pointer("/turn/id"))
                 .and_then(Value::as_str);
-            if terminal_event_type.is_some()
-                && notification_turn_id.is_some()
+            if notification_turn_id.is_some()
                 && notification_turn_id != self.active_provider_turn_id.as_deref()
                 && notification_turn_id
                     .is_some_and(|turn_id| self.settled_provider_turn_ids.contains(turn_id))
             {
+                self.notification_identity_diagnostics += 1;
+                if self.notification_identity_diagnostics > 32 {
+                    return Ok(None);
+                }
+                // Resume replays the cumulative usage of the last settled turn.
+                // Keep its identity and baseline, but never bill its `last`
+                // measurement to the newly attached run.
+                if method == "thread/tokenUsage/updated"
+                    && notification_thread_id(&params) == Some(self.thread_id.as_str())
+                {
+                    return Ok(Some(CodexProviderEvent::Notification {
+                        method: "paperclip/resumeUsageSnapshot".to_owned(),
+                        params: json!({
+                            "threadId": self.thread_id,
+                            "turnId": notification_turn_id,
+                            "total": params.pointer("/tokenUsage/total"),
+                        }),
+                    }));
+                }
                 return Ok(Some(CodexProviderEvent::Notification {
                     method: "warning".to_owned(),
                     params: json!({
-                        "message": "ignored a terminal notification for a non-active Codex turn",
-                        "providerMethod": bounded_method(method),
+                        "message": "ignored a notification for a settled Codex turn",
+                        "providerMethod": bounded_method(method), "classification": "stale_settled_turn",
+                        "expectedThreadId": self.thread_id,
+                        "receivedThreadId": self.thread_id,
+                        "expectedTurnId": self.active_provider_turn_id,
+                        "receivedTurnId": notification_turn_id.map(|id| id.chars().take(256).collect::<String>()),
                     }),
                 }));
             }
-            validate_notification_binding(
+            if validate_notification_binding(
                 &self.thread_id,
                 self.active_provider_turn_id.as_deref(),
                 &params,
-            )?;
+            )
+            .is_err()
+            {
+                return Ok(Some(self.identity_failure(
+                    method,
+                    &params,
+                    "turn_binding_mismatch",
+                )));
+            }
             if let Some(terminal_event_type) = terminal_event_type {
                 if self.active_provider_turn_id.is_none() {
                     return Err(LocalRunnerError::invalid(
@@ -2083,10 +2623,25 @@ impl CodexProvider {
         Ok(())
     }
 
+    fn identity_failure(&self, method: &str, params: &Value, code: &str) -> CodexProviderEvent {
+        CodexProviderEvent::ProtocolFailure {
+            diagnostic: json!({
+                "code": code, "recoverable": false,
+                "message": "Codex rejected an event outside the active execution identity",
+                "classification": "invalid_authoritative", "method": bounded_method(method),
+                "expectedThreadId": self.thread_id.chars().take(256).collect::<String>(),
+                "receivedThreadId": notification_thread_id(params).map(|id| id.chars().take(256).collect::<String>()),
+                "expectedTurnId": self.active_provider_turn_id.as_ref().map(|id| id.chars().take(256).collect::<String>()),
+                "receivedTurnId": notification_turn_id(params).map(|id| id.chars().take(256).collect::<String>()),
+            }),
+        }
+    }
+
     pub fn shutdown(&mut self) -> Result<(), LocalRunnerError> {
         self.expected_shutdown = true;
-        self.cancel_pending_requests()?;
-        let result = self.process.terminate_group().map(|_| ());
+        // A failed courtesy response must never prevent process fencing.
+        let cancellation = self.cancel_pending_requests();
+        let result = self.process.terminate_group().map(|_| ()).and(cancellation);
         if let Some(trace) = self.trace.as_mut() {
             trace.finish();
         }
@@ -2536,6 +3091,34 @@ fn is_unbound_rejected_turn_diagnostic(message: &Value) -> bool {
             .is_none_or(|params| !contains_provider_work_binding(params))
 }
 
+fn is_non_active_goal_set_diagnostic(message: &Value) -> bool {
+    if message.get("id").is_some() {
+        return false;
+    }
+    match message.get("method").and_then(Value::as_str) {
+        Some("thread/goal/updated") => message
+            .get("params")
+            .is_none_or(|params| !contains_provider_turn_binding(params)),
+        Some("warning") => message
+            .get("params")
+            .is_none_or(|params| !contains_provider_work_binding(params)),
+        _ => false,
+    }
+}
+
+fn contains_provider_turn_binding(value: &Value) -> bool {
+    match value {
+        Value::Array(values) => values.iter().any(contains_provider_turn_binding),
+        Value::Object(fields) => fields.iter().any(|(key, child)| {
+            (matches!(key.as_str(), "turnId" | "itemId" | "requestId") && !child.is_null())
+                || (matches!(key.as_str(), "turn" | "item" | "request")
+                    && child.get("id").is_some_and(|id| !id.is_null()))
+                || contains_provider_turn_binding(child)
+        }),
+        _ => false,
+    }
+}
+
 fn contains_provider_work_binding(value: &Value) -> bool {
     match value {
         Value::Array(values) => values.iter().any(contains_provider_work_binding),
@@ -2548,6 +3131,119 @@ fn contains_provider_work_binding(value: &Value) -> bool {
         }),
         _ => false,
     }
+}
+
+#[derive(Debug, PartialEq)]
+enum NotificationThread {
+    Root,
+    Descendant,
+    UnrelatedInformation,
+}
+
+fn notification_thread_id(params: &Value) -> Option<&str> {
+    params
+        .get("threadId")
+        .or_else(|| params.pointer("/thread/id"))
+        .or_else(|| params.pointer("/turn/threadId"))
+        .and_then(Value::as_str)
+}
+
+fn classify_notification_thread(
+    method: &str,
+    root: &str,
+    descendants: &BTreeSet<String>,
+    params: &Value,
+) -> Result<NotificationThread, LocalRunnerError> {
+    let identities: Vec<&Value> = [
+        params.get("threadId"),
+        params.pointer("/thread/id"),
+        params.pointer("/turn/threadId"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter(|v| !v.is_null())
+    .collect();
+    if identities.iter().any(|id| {
+        id.as_str()
+            .is_none_or(|value| value.is_empty() || value.len() > 240)
+    }) || identities.windows(2).any(|ids| ids[0] != ids[1])
+    {
+        return Err(LocalRunnerError::invalid(
+            "Codex notification has malformed thread identity",
+        ));
+    }
+    let turn_ids: Vec<&Value> = [params.get("turnId"), params.pointer("/turn/id")]
+        .into_iter()
+        .flatten()
+        .filter(|value| !value.is_null())
+        .collect();
+    if turn_ids.iter().any(|id| {
+        id.as_str()
+            .is_none_or(|value| value.is_empty() || value.len() > 240)
+    }) || turn_ids.windows(2).any(|ids| ids[0] != ids[1])
+    {
+        return Err(LocalRunnerError::invalid(
+            "Codex notification has malformed turn identity",
+        ));
+    }
+    let thread = notification_thread_id(params);
+    if thread.is_none()
+        && turn_ids.is_empty()
+        && !matches!(
+            method,
+            "warning"
+                | "configWarning"
+                | "guardianWarning"
+                | "deprecationNotice"
+                | "remoteControl/status/changed"
+                | "mcpServer/startupStatus/updated"
+                | "account/rateLimits/updated"
+        )
+    {
+        return Err(LocalRunnerError::invalid(
+            "Codex authoritative notification omitted thread identity",
+        ));
+    }
+    // Unbound transport warnings belong to this provider connection. Preserve
+    // their diagnostic meaning; only a different named thread is unrelated.
+    if thread.is_none() || thread == Some(root) {
+        return Ok(NotificationThread::Root);
+    }
+    let parent = [
+        "/thread/source/subAgent/thread_spawn/parent_thread_id",
+        "/thread/source/subAgent/threadSpawn/parentThreadId",
+        "/thread/source/subagent/thread_spawn/parent_thread_id",
+    ]
+    .iter()
+    .find_map(|path| params.pointer(path).and_then(Value::as_str));
+    if thread.is_some()
+        && (thread.is_some_and(|id| descendants.contains(id))
+            || (method == "thread/started"
+                && parent.is_some_and(|id| id == root || descendants.contains(id))))
+    {
+        if method.starts_with("paperclip/") {
+            return Err(LocalRunnerError::invalid(
+                "Codex descendant cannot supply root execution authority",
+            ));
+        }
+        return Ok(NotificationThread::Descendant);
+    }
+    if matches!(
+        method,
+        "thread/started"
+            | "thread/status/changed"
+            | "thread/closed"
+            | "thread/tokenUsage/updated"
+            | "warning"
+            | "configWarning"
+            | "guardianWarning"
+            | "deprecationNotice"
+    ) {
+        return Ok(NotificationThread::UnrelatedInformation);
+    }
+    Err(LocalRunnerError::invalid(
+        "Codex authoritative notification named another thread",
+    ))
 }
 
 fn validate_notification_binding(
@@ -3059,6 +3755,452 @@ fn codex_question_response(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    fn completion_tail_provider() -> CodexProvider {
+        completion_tail_provider_with_stdout_flood(false)
+    }
+
+    #[cfg(unix)]
+    fn completion_tail_provider_with_stdout_flood(flood: bool) -> CodexProvider {
+        // A real JSON-RPC child writes the terminal before exiting. The
+        // per-instance receiver proxy below controls reader delivery only.
+        let script = r#"
+turn=0
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+    *'"method":"thread/start"'*) printf '%s\n' '{"id":2,"result":{"thread":{"id":"reader-tail-thread"}}}' ;;
+    *'"method":"turn/start"'*)
+      turn=$((turn + 1))
+      if [ "$turn" = 1 ]; then
+        printf '%s\n' '{"id":3,"result":{"turn":{"id":"reader-tail-1"}}}'
+        printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"reader-tail-1","status":"completed"}}}'
+      else
+        printf '%s\n' '{"id":4,"error":{}}'
+        printf '%s\n' '{"method":"turn/started","params":{"turn":{"id":"reader-tail-2"}}}'
+        printf '%s\n' '{"method":"turn/completed","params":{"turn":{"id":"reader-tail-2","status":"completed"}}}'
+        if __FLOOD_STDOUT__; then
+          (while :; do printf '%s\n' '{"method":"configWarning","params":{"message":"fixture output still flowing"}}'; done) &
+        fi
+        exit 1
+      fi ;;
+  esac
+done
+"#;
+        let config = CodexProviderConfig {
+            provider: "codex".to_owned(),
+            driver: "codex_app_server".to_owned(),
+            provider_version: "reader-tail-fixture".to_owned(),
+            command: PathBuf::from("/bin/sh"),
+            args: vec![
+                "-c".to_owned(),
+                script.replace("__FLOOD_STDOUT__", if flood { "true" } else { "false" }),
+            ],
+            cwd: std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            model: None,
+            provider_session_id: None,
+            instructions: "Test only.".to_owned(),
+            approval_policy: "never".to_owned(),
+            externally_sandboxed: false,
+        };
+        let mut provider = CodexProvider::start(&config, None).unwrap();
+        provider.start_turn("First turn", &config.cwd).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            assert!(std::time::Instant::now() < deadline);
+            if matches!(provider.poll().unwrap(), Some(CodexProviderEvent::Notification { method, .. }) if method == "turn/completed")
+            {
+                break;
+            }
+        }
+        provider
+    }
+
+    #[cfg(unix)]
+    struct HeldTerminalReader {
+        release: Option<mpsc::Sender<()>>,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        worker: Option<thread::JoinHandle<()>>,
+    }
+
+    #[cfg(unix)]
+    impl Drop for HeldTerminalReader {
+        fn drop(&mut self) {
+            self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+            if let Some(release) = self.release.take() {
+                let _ = release.send(());
+            }
+            if let Some(worker) = self.worker.take() {
+                worker.join().unwrap();
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn hold_reader(
+        provider: &mut CodexProvider,
+        boundary: &'static str,
+    ) -> (HeldTerminalReader, mpsc::Receiver<()>) {
+        // Test-only proxy output is unbounded so cleanup never joins a worker
+        // blocked on a full queue after the consuming assertion has failed.
+        let (sender, output) = mpsc::channel();
+        let source = provider.process.replace_output_receiver_for_test(output);
+        let (captured, ready) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let worker = thread::spawn(move || {
+            while !worker_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                let event = match source.recv_timeout(Duration::from_millis(10)) {
+                    Ok(event) => event,
+                    Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                };
+                let hold = match &event {
+                    ProcessOutput::Stdout(line) => boundary != "EOF" && line.contains(boundary),
+                    ProcessOutput::StdoutClosed => boundary == "EOF",
+                    _ => false,
+                };
+                if hold {
+                    if captured.send(()).is_err() {
+                        break;
+                    }
+                    let _ = gate.recv();
+                }
+                if sender.send(event).is_err() {
+                    break;
+                }
+            }
+        });
+        (
+            HeldTerminalReader {
+                release: Some(release),
+                stop,
+                worker: Some(worker),
+            },
+            ready,
+        )
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn exited_child_waits_for_held_actual_terminal_reader_before_certifying_exit() {
+        let mut provider = completion_tail_provider();
+        let (mut reader, ready) = hold_reader(&mut provider, "turn/completed");
+        let cwd = provider.config.cwd.clone();
+        provider
+            .start_turn("Replacement", &cwd)
+            .expect_err("malformed response remains ambiguous");
+        ready
+            .recv_timeout(Duration::from_secs(5))
+            .expect("actual replacement terminal reached reader proxy");
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while provider.process.try_wait().unwrap().is_none() {
+            assert!(std::time::Instant::now() < deadline);
+            thread::yield_now();
+        }
+        assert!(
+            matches!(provider.poll().unwrap(), Some(CodexProviderEvent::Notification { method, .. }) if method == "turn/started")
+        );
+        assert!(
+            provider.poll().unwrap().is_none(),
+            "exited leader does not prove its held stdout tail was drained"
+        );
+        reader.release.take().unwrap().send(()).unwrap();
+        let mut completed = false;
+        loop {
+            assert!(std::time::Instant::now() < deadline);
+            match provider.poll().unwrap() {
+                Some(CodexProviderEvent::Notification { method, params })
+                    if method == "turn/completed" =>
+                {
+                    assert_eq!(params["turn"]["id"], "reader-tail-2");
+                    completed = true;
+                }
+                Some(CodexProviderEvent::Exited {
+                    success,
+                    completed_turn_authoritative,
+                    completion_reconciles_exit,
+                    ..
+                }) => {
+                    assert!(completed);
+                    assert!(!success);
+                    assert!(completed_turn_authoritative);
+                    assert!(completion_reconciles_exit);
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn exited_child_reader_timeout_preserves_only_observed_turn_authority() {
+        for boundary in ["turn/started", "turn/completed", "EOF"] {
+            let mut provider = completion_tail_provider();
+            let (mut reader, ready) = hold_reader(&mut provider, boundary);
+            let cwd = provider.config.cwd.clone();
+            provider
+                .start_turn("Replacement", &cwd)
+                .expect_err("actual malformed response");
+            ready
+                .recv_timeout(Duration::from_secs(5))
+                .expect("actual reader boundary held");
+            let wait_deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while provider.process.try_wait().unwrap().is_none() {
+                assert!(std::time::Instant::now() < wait_deadline);
+                thread::yield_now();
+            }
+            let started_at = std::time::Instant::now();
+            let mut completed = 0;
+            let mut notices = 0;
+            loop {
+                assert!(
+                    started_at.elapsed() < Duration::from_secs(5),
+                    "drain remains bounded for {boundary}"
+                );
+                match provider.poll().unwrap() {
+                    Some(CodexProviderEvent::Notification { method, params })
+                        if method == "turn/completed" =>
+                    {
+                        assert_eq!(params["turn"]["id"], "reader-tail-2");
+                        completed += 1;
+                    }
+                    Some(CodexProviderEvent::Notification { method, params })
+                        if method == "configWarning" =>
+                    {
+                        assert_eq!(params["code"], "provider_stdout_drain_timeout");
+                        assert_eq!(
+                            crate::provider_events::normalize_codex_notification(&method, &params)
+                                [0]
+                            .event_type,
+                            "provider.notice.recorded"
+                        );
+                        notices += 1;
+                    }
+                    Some(CodexProviderEvent::Exited {
+                        success,
+                        completed_turn_authoritative,
+                        completed_turn_observed_by_process,
+                        completion_reconciles_exit,
+                        process_generation,
+                        completed_turn_process_generation,
+                        ..
+                    }) => {
+                        assert!(!success);
+                        assert!(!completion_reconciles_exit);
+                        assert_eq!(completed_turn_authoritative, boundary != "turn/completed");
+                        assert_eq!(
+                            completed_turn_observed_by_process,
+                            boundary != "turn/completed"
+                        );
+                        assert_eq!(process_generation, 1);
+                        assert_eq!(
+                            completed_turn_process_generation,
+                            (boundary != "turn/completed").then_some(1)
+                        );
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            assert!(started_at.elapsed() >= provider.process.shutdown_grace());
+            assert_eq!(notices, 1);
+            assert_eq!(completed, usize::from(boundary == "EOF"));
+            let expected_id = match boundary {
+                "turn/started" => Some("reader-tail-1"),
+                "EOF" => Some("reader-tail-2"),
+                _ => None,
+            };
+            assert_eq!(
+                provider
+                    .completed_turn_authority
+                    .as_ref()
+                    .map(|authority| authority.provider_turn_id.as_str()),
+                expected_id
+            );
+            reader.release.take().unwrap().send(()).unwrap();
+            assert!(
+                matches!(
+                    provider.poll().unwrap(),
+                    Some(CodexProviderEvent::Exited {
+                        success: false,
+                        completion_reconciles_exit: false,
+                        ..
+                    })
+                ),
+                "late tail must not revive a timed-out session"
+            );
+            assert_eq!(
+                provider
+                    .completed_turn_authority
+                    .as_ref()
+                    .map(|authority| authority.provider_turn_id.as_str()),
+                expected_id
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn exited_child_reader_deadline_precedes_buffered_output_and_is_generation_scoped() {
+        let mut provider = completion_tail_provider();
+        let (mut reader, ready) = hold_reader(&mut provider, "turn/completed");
+        let cwd = provider.config.cwd.clone();
+        provider.start_turn("Replacement", &cwd).unwrap_err();
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while provider.process.try_wait().unwrap().is_none() {
+            assert!(std::time::Instant::now() < deadline);
+            thread::yield_now();
+        }
+        // A buffered real started frame must not bypass an already-expired
+        // current-generation drain bound; no sleeps or global clock changes.
+        provider.exit_drain = Some(ProviderExitDrain {
+            process_generation: provider.process_generation,
+            deadline: std::time::Instant::now() - Duration::from_secs(1),
+            timed_out: false,
+            warning_emitted: false,
+        });
+        assert!(
+            matches!(provider.poll().unwrap(), Some(CodexProviderEvent::Notification { method, params }) if method == "configWarning" && params["code"] == "provider_stdout_drain_timeout")
+        );
+        // A stale generation's timeout is not inherited by a new owned epoch.
+        provider.exit_drain.as_mut().unwrap().process_generation = 0;
+        assert!(
+            matches!(provider.poll().unwrap(), Some(CodexProviderEvent::Notification { method, .. }) if method == "turn/started")
+        );
+        assert!(!provider.exit_drain.as_ref().unwrap().timed_out);
+        reader.release.take().unwrap().send(()).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn exited_child_reader_deadline_bounds_continuous_descendant_stdout() {
+        let mut provider = completion_tail_provider_with_stdout_flood(true);
+        let cwd = provider.config.cwd.clone();
+        provider.start_turn("Replacement", &cwd).unwrap_err();
+        let started_at = std::time::Instant::now();
+        let mut flowing = 0;
+        let mut timeout_notices = 0;
+        let mut completed = 0;
+        loop {
+            assert!(
+                started_at.elapsed() < Duration::from_secs(5),
+                "flowing stdout cannot extend the exit drain indefinitely"
+            );
+            match provider.poll().unwrap() {
+                Some(CodexProviderEvent::Notification { method, params })
+                    if method == "configWarning" =>
+                {
+                    if params["code"] == "provider_stdout_drain_timeout" {
+                        timeout_notices += 1;
+                    } else {
+                        assert_eq!(params["message"], "fixture output still flowing");
+                        flowing += 1;
+                    }
+                }
+                Some(CodexProviderEvent::Notification { method, params })
+                    if method == "turn/completed" =>
+                {
+                    assert_eq!(params["turn"]["id"], "reader-tail-2");
+                    completed += 1;
+                }
+                Some(CodexProviderEvent::Exited {
+                    success,
+                    completed_turn_authoritative,
+                    completion_reconciles_exit,
+                    ..
+                }) => {
+                    assert!(!success);
+                    assert!(completed_turn_authoritative);
+                    assert!(!completion_reconciles_exit);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        assert!(started_at.elapsed() >= provider.process.shutdown_grace());
+        assert!(flowing > 10);
+        assert_eq!(timeout_notices, 1);
+        assert_eq!(completed, 1);
+        assert_eq!(
+            provider
+                .completed_turn_authority
+                .as_ref()
+                .unwrap()
+                .provider_turn_id,
+            "reader-tail-2"
+        );
+        provider.shutdown().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !provider.process.stdout_drained() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "owned descendant writer must be retired"
+            );
+            let _ = provider.process.recv_timeout(Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn startup_observer_failure_reaps_the_exact_child_before_any_initialization_rpc() {
+        let config = CodexProviderConfig {
+            provider: "codex".to_owned(),
+            driver: "codex_app_server".to_owned(),
+            provider_version: "fixture".to_owned(),
+            command: PathBuf::from("/bin/cat"),
+            args: Vec::new(),
+            cwd: std::env::current_dir()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            model: None,
+            provider_session_id: None,
+            instructions: String::new(),
+            approval_policy: "never".to_owned(),
+            externally_sandboxed: false,
+        };
+        let mut spawned = None;
+        let mut failure = None;
+        let error = CodexProvider::start_with_tools_observed(
+            &config,
+            [],
+            None,
+            1,
+            None,
+            None,
+            &mut |observation| match observation {
+                ProviderStartupObservation::Spawned {
+                    process_id,
+                    process_group_id,
+                } => {
+                    assert_eq!(process_id, process_group_id);
+                    spawned = Some(process_id);
+                    Err(LocalRunnerError::invalid(
+                        "durable spawned receipt write failed",
+                    ))
+                }
+                ProviderStartupObservation::Failed { stage, child_exit } => {
+                    failure = Some((stage, child_exit));
+                    Ok(())
+                }
+            },
+        )
+        .err()
+        .expect("refuse initialization until exact spawned receipt is durable");
+        assert_eq!(error.to_string(), "durable spawned receipt write failed");
+        assert!(spawned.is_some_and(|pid| pid > 0));
+        let (stage, child_exit) = failure.expect("explicit cleanup fact after receipt failure");
+        assert_eq!(stage, ProviderStartupStage::SpawnReceipt);
+        assert!(child_exit.is_some());
+    }
+
     fn qualified_artifact(path: &Path) -> QualifiedLaunchArtifact {
         QualifiedLaunchArtifact {
             path: path.to_owned(),
@@ -3143,8 +4285,14 @@ mod tests {
 
     #[test]
     fn github_credentials_cross_only_the_bounded_provider_environment() {
-        assert_eq!(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.len(), 89);
+        assert_eq!(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.len(), 95);
         for key in [
+            "PAPERCLIP_RUNNER_NETWORK_ACCESS",
+            "PAPERCLIP_RUNNER_NETWORK_ROOTS",
+            "PAPERCLIP_GITHUB_AUTH_MODE",
+            "PAPERCLIP_GITHUB_HOST_HOME",
+            "PAPERCLIP_GIT_METADATA_ROOTS",
+            "GIT_SSH",
             "PAPERCLIP_GITHUB_BROKER_URL",
             "PAPERCLIP_GITHUB_BROKER_TOKEN",
             "PAPERCLIP_GITHUB_LAUNCHER_DIR",
@@ -3535,5 +4683,111 @@ mod tests {
             None
         );
         assert_eq!(retain_buffered_message_bytes(usize::MAX, 1), None);
+    }
+}
+
+#[cfg(test)]
+mod notification_identity_tests {
+    use super::*;
+    #[test]
+    fn bounds_lineage_without_eviction_or_misclassifying_capacity_as_integrity() {
+        let mut ids = BTreeSet::new();
+        for index in 0..MAX_DESCENDANT_THREAD_IDS {
+            assert_eq!(
+                remember_descendant_thread(&mut ids, &format!("child-{index}")),
+                Ok(true)
+            );
+        }
+        assert_eq!(remember_descendant_thread(&mut ids, "child-0"), Ok(false));
+        assert_eq!(
+            remember_descendant_thread(&mut ids, "overflow"),
+            Err("provider_descendant_capacity_exhausted")
+        );
+        assert_eq!(ids.len(), MAX_DESCENDANT_THREAD_IDS);
+        assert!(ids.contains("child-0"));
+        assert!(!ids.contains("overflow"));
+        assert_eq!(
+            classify_notification_thread(
+                "turn/completed",
+                "root",
+                &ids,
+                &json!({"threadId":"child-0", "turnId":"child-turn"})
+            )
+            .unwrap(),
+            NotificationThread::Descendant
+        );
+    }
+    #[test]
+    fn rejects_missing_authority_and_malformed_turn_identities() {
+        for method in [
+            "item/started",
+            "item/completed",
+            "item/agentMessage/delta",
+            "thread/goal/updated",
+            "unknown/authority",
+        ] {
+            assert!(
+                classify_notification_thread(method, "root", &BTreeSet::new(), &json!({})).is_err()
+            );
+        }
+        for params in [
+            json!({"status":"completed"}),
+            json!({"threadId":"root","turnId":7}),
+            json!({"threadId":"root","turnId":"a","turn":{"id":"b"}}),
+        ] {
+            assert!(classify_notification_thread(
+                "turn/completed",
+                "root",
+                &BTreeSet::new(),
+                &params
+            )
+            .is_err());
+        }
+        assert_eq!(
+            classify_notification_thread(
+                "configWarning",
+                "root",
+                &BTreeSet::new(),
+                &json!({"message":"warning"})
+            )
+            .unwrap(),
+            NotificationThread::Root
+        );
+    }
+    #[test]
+    fn classifies_provider_lineage_before_root_authority() {
+        let children = BTreeSet::from(["child".to_owned()]);
+        assert_eq!(
+            classify_notification_thread(
+                "thread/status/changed",
+                "root",
+                &children,
+                &json!({"threadId":"unrelated"})
+            )
+            .unwrap(),
+            NotificationThread::UnrelatedInformation
+        );
+        assert_eq!(
+            classify_notification_thread(
+                "turn/completed",
+                "root",
+                &children,
+                &json!({"threadId":"child", "turnId":"child-turn"})
+            )
+            .unwrap(),
+            NotificationThread::Descendant
+        );
+        assert_eq!(classify_notification_thread("thread/started", "root", &children, &json!({"thread":{"id":"grandchild","source":{"subAgent":{"thread_spawn":{"parent_thread_id":"child"}}}}})).unwrap(), NotificationThread::Descendant);
+        for (method, params) in [
+            ("paperclip/runResult", json!({"threadId":"child"})),
+            ("turn/completed", json!({"threadId":"unrelated"})),
+            ("item/started", json!({"threadId":42})),
+            (
+                "item/started",
+                json!({"threadId":"root", "thread":{"id":"other"}}),
+            ),
+        ] {
+            assert!(classify_notification_thread(method, "root", &children, &params).is_err());
+        }
     }
 }

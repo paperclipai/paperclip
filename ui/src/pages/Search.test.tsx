@@ -22,6 +22,7 @@ const dialogState = vi.hoisted(() => ({
 }));
 
 const navigateMock = vi.hoisted(() => vi.fn());
+const sidebarState = vi.hoisted(() => ({ isMobile: false, setSidebarOpen: vi.fn() }));
 
 const searchApiMock = vi.hoisted(() => ({
   search: vi.fn(),
@@ -56,7 +57,7 @@ vi.mock("../context/DialogContext", () => ({
 }));
 
 vi.mock("../context/SidebarContext", () => ({
-  useSidebar: () => ({ isMobile: false, setSidebarOpen: vi.fn() }),
+  useSidebar: () => sidebarState,
 }));
 
 vi.mock("../api/search", () => ({
@@ -167,6 +168,7 @@ describe("Search page", () => {
     breadcrumbState.setBreadcrumbs.mockReset();
     dialogState.openNewIssue.mockReset();
     navigateMock.mockReset();
+    sidebarState.isMobile = false;
     searchApiMock.search.mockReset();
     agentsApiMock.list.mockReset();
     projectsApiMock.list.mockReset();
@@ -224,6 +226,71 @@ describe("Search page", () => {
     });
 
     flushSync(() => root.unmount());
+  });
+
+  it.each(["/search", "/search?q=Codex"])("localizes mobile scopes before results at %s and on live language changes", async (path) => {
+    sidebarState.isMobile = true;
+    searchApiMock.search.mockReturnValue(new Promise(() => {}));
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    const { root } = renderSearch(path, container);
+    try {
+      const select = container.querySelector<HTMLSelectElement>('select[aria-label="Раздел страницы"]');
+      expect(select).not.toBeNull();
+      const labels = () => Array.from(select!.options, (option) => option.textContent);
+      const values = () => Array.from(select!.options, (option) => option.value);
+      expect(labels()).toEqual(["Все", "Задачи", "Комментарии", "Документы", "Артефакты", "Агенты", "Проекты"]);
+      expect(values()).toEqual(["all", "issues", "comments", "documents", "artifacts", "agents", "projects"]);
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(labels()).toEqual(["All", "Tasks", "Comments", "Documents", "Artifacts", "Agents", "Projects"]);
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      expect(labels()[2]).toBe("Комментарии");
+      expect(select!.value).toBe("all");
+    } finally {
+      flushSync(() => root.unmount());
+    }
+  });
+
+  it.each([false, true])("preserves mobile counts, scope values and search parameters (filtered=%s)", async (filtered) => {
+    sidebarState.isMobile = true;
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    searchApiMock.search.mockResolvedValue({
+      query: "Codex", normalizedQuery: "Codex", scope: "all", limit: 20, offset: 0, sort: "relevance",
+      countsByType: { issue: 1, comment: 2, document: 3, artifact: 4, agent: 5, project: 6 },
+      filterOptionCounts: { status: {}, priority: {}, assigneeAgentId: {}, assigneeUserId: {}, projectId: {}, labelId: {}, updatedWithin: {} },
+      zeroResults: null, hasMore: false, results: [],
+    });
+    const initialPath = `/search?q=Codex${filtered ? "&status=todo" : ""}`;
+    const previousUrl = window.location.href;
+    window.history.replaceState(null, "", initialPath);
+    const { root } = renderSearch(initialPath, container);
+    try {
+      const select = container.querySelector<HTMLSelectElement>('select[aria-label="Раздел страницы"]')!;
+      await waitForAssertion(() => {
+        expect(Array.from(select.options, (option) => option.textContent)).toEqual([
+          "Все 21", "Задачи 1", "Комментарии 2", "Документы 3", "Артефакты 4",
+          filtered ? "Агенты —" : "Агенты 5", filtered ? "Проекты —" : "Проекты 6",
+        ]);
+      });
+      await act(async () => {
+        select.value = "comments";
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+      expect(select.value).toBe("comments");
+      expect(new URL(window.location.href).searchParams.get("scope")).toBe("comments");
+      expect(new URL(window.location.href).searchParams.get("q")).toBe("Codex");
+      expect(new URL(window.location.href).searchParams.get("status")).toBe(filtered ? "todo" : null);
+      await waitForAssertion(() => {
+        expect(searchApiMock.search).toHaveBeenLastCalledWith("company-1", expect.objectContaining({
+          q: "Codex", scope: "comments", ...(filtered ? { status: ["todo"] } : {}),
+        }));
+      });
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(select.selectedOptions[0].textContent).toBe("Comments 2");
+      expect(select.value).toBe("comments");
+    } finally {
+      flushSync(() => root.unmount());
+      window.history.replaceState(null, "", previousUrl);
+    }
   });
 
   it("issues a search request when ?q is in the URL and renders the result", async () => {

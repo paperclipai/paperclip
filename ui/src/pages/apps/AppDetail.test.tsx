@@ -1177,6 +1177,17 @@ describe("AppDetail", () => {
     expect(container.textContent).toContain("Which agents can use this connection?");
   });
 
+  it("offers retry for a transient GitHub error without asking for another login", async () => {
+    mockParams.tab = "permissions";
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "oauth", healthStatus: "error", requiresReauthorization: false,
+      healthMessage: "GitHub access changed during refresh. Try again.",
+    }));
+    await renderAppDetail();
+    expect(container.textContent).toContain("Retry access");
+    expect(container.textContent).not.toContain("Reconnect required");
+  });
+
   it("shows terminal OAuth failures as reconnect-required sign-in", async () => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(connection({
@@ -1513,19 +1524,19 @@ describe("AppDetail", () => {
     await act(async () => { findButton("Load GitHub configuration")!.click(); });
     await flushReact();
     expect(checkConnectionHealthMock).toHaveBeenCalledWith("conn-1");
-    expect(container.querySelector('a[href="https://github.com/apps/paperclip-staging/installations/new"]')?.textContent).toBe("Configure on GitHub");
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-staging/installations/new"]')?.textContent).toBe("Add More Repos on GitHub");
     expect(findButton("Load GitHub configuration")).toBeUndefined();
   });
 
-  it("filters the combined GitHub repository list by owner and search without changing access", async () => {
+  it.each([false, true])("shows repositories across accounts without filter controls (empty: %s)", async (empty) => {
     mockParams.tab = "permissions";
     getConnectionMock.mockResolvedValue(perUserConnection());
     listConnectionGrantsMock.mockResolvedValue({
       connection: { id: "conn-1", uid: "conn-1" },
       grants: [dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
-        repositoryCount: 3,
+        repositoryCount: empty ? 0 : 3,
         installationOwnerLogins: ["paperclipai", "dottabot", "empty-org"],
-        repositories: [
+        repositories: empty ? [] : [
           { id: "1", fullName: "paperclipai/first", installationId: "456" },
           { id: "2", fullName: "paperclipai/second", installationId: "456" },
           { id: "3", fullName: "dottabot/first", installationId: "789" },
@@ -1535,31 +1546,14 @@ describe("AppDetail", () => {
     });
     await renderAppDetail();
     const repositoryNames = () => [...container.querySelectorAll('ul[aria-label="Accessible GitHub repositories"] a')].map((link) => link.textContent);
-    const selectOwner = async (label: string) => {
-      await act(async () => {
-        container.querySelector('[role="combobox"][aria-label="Filter repositories by account or organization"]')!
-          .dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-      });
-      const option = [...document.querySelectorAll('[role="option"]')].find((item) => item.textContent === label);
-      expect(option).toBeTruthy();
-      await act(async () => {
-        option!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-      });
-    };
-    expect(repositoryNames()).toEqual(["paperclipai/first", "paperclipai/second", "dottabot/first"]);
-    await selectOwner("paperclipai");
-    expect(repositoryNames()).toEqual(["paperclipai/first", "paperclipai/second"]);
-    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search GitHub repositories"]')!;
-    await act(async () => { setInputValue(search, "FIRST"); });
-    expect(repositoryNames()).toEqual(["paperclipai/first"]);
-    await selectOwner("All accounts");
-    expect(repositoryNames()).toEqual(["paperclipai/first", "dottabot/first"]);
-    await act(async () => { setInputValue(search, "missing"); });
-    expect(container.textContent).toContain("No repositories match your search.");
-    await act(async () => { setInputValue(search, ""); });
-    await selectOwner("empty-org");
-    expect(container.textContent).toContain("No accessible repositories for this account or organization.");
-    expect(container.querySelector('a[href="https://github.com/apps/paperclip-test/installations/new"]')?.textContent).toBe("Configure on GitHub");
+    expect(repositoryNames()).toEqual(empty ? [] : ["paperclipai/first", "paperclipai/second", "dottabot/first"]);
+    if (empty) {
+      expect(container.querySelector('p[role="status"]')?.textContent?.trim()).toBe("No accessible repositories.");
+      expect(container.textContent).not.toContain("Refresh access to load the current repository list.");
+    }
+    expect(container.querySelector('[aria-label="Filter repositories by account or organization"]')).toBeNull();
+    expect(container.querySelector('input[aria-label="Search GitHub repositories"]')).toBeNull();
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-test/installations/new"]')?.textContent).toBe("Add More Repos on GitHub");
     expect(updateConnectionMock).not.toHaveBeenCalled();
   });
 
@@ -1591,8 +1585,6 @@ describe("AppDetail", () => {
     await renderAppDetail();
 
     const list = container.querySelector('ul[aria-label="Accessible GitHub repositories"]')!;
-    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search GitHub repositories"]')!;
-    const owner = container.querySelector('[role="combobox"][aria-label="Filter repositories by account or organization"]')!;
     const account = container.querySelector('a[href="https://github.com/Board"]')!;
     const refresh = container.querySelector('button[aria-label="Refresh access"]')!;
     const repositoryLinks = [...list.querySelectorAll("a")];
@@ -1618,20 +1610,13 @@ describe("AppDetail", () => {
       expect(container.contains(account)).toBe(true);
       expect(account.textContent).toBe("@Board");
       expect(account.getAttribute("href")).toBe("https://github.com/Board");
-      expect(container.contains(search)).toBe(true);
-      expect(search.getAttribute("aria-label")).toBe(ru ? "Поиск репозиториев GitHub" : "Search GitHub repositories");
-      expect(search.placeholder).toBe(ru ? "Поиск репозиториев" : "Search repositories");
-      expect(search.value).toBe("");
-      expect(container.contains(owner)).toBe(true);
-      expect(owner.getAttribute("aria-label")).toBe(ru ? "Фильтр репозиториев по аккаунту или организации" : "Filter repositories by account or organization");
-      expect(owner.textContent).toBe(ru ? "Все аккаунты" : "All accounts");
       expect(container.contains(refresh)).toBe(true);
       expect(refresh.getAttribute("aria-label")).toBe(ru ? "Обновить доступ" : "Refresh access");
       expect(refresh.getAttribute("title")).toBe(ru ? "Обновить доступ" : "Refresh access");
       const configurationLinks = [...container.querySelectorAll('a[href="https://github.com/apps/paperclip-test/installations/new"]')];
       expect(configurationLinks.map((link) => link.textContent)).toEqual(ru
-        ? ["Настроить на GitHub", "Настройте доступ на GitHub"]
-        : ["Configure on GitHub", "Configure access on GitHub"]);
+        ? ["Разрешить доступ к другим репозиториям в GitHub", "Настройте доступ на GitHub"]
+        : ["Add More Repos on GitHub", "Configure access on GitHub"]);
       expect(configurationLinks[1].parentElement?.textContent).toBe(ru
         ? "Не видите нужную организацию или репозиторий? Настройте доступ на GitHub и обновите список."
         : "Missing an organization or repository? Configure access on GitHub, then refresh this list.");
@@ -1644,17 +1629,12 @@ describe("AppDetail", () => {
     }
   });
 
-  it("preserves GitHub owner and search filters while localizing both empty states", async () => {
+  it("localizes the current unfiltered GitHub repository empty state without refetching", async () => {
     await i18n.changeLanguage("en");
     getConnectionMock.mockResolvedValue(perUserConnection());
     const grant = dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
-      repositoryCount: 3,
-      installationOwnerLogins: ["Board", "You", "Me"],
-      repositories: [
-        { id: "raw-1", fullName: "Board/first", installationId: "456", private: true },
-        { id: "raw-2", fullName: "Board/second", installationId: "456", private: false },
-        { id: "raw-3", fullName: "You/first", installationId: "789", private: false },
-      ],
+      repositoryCount: 0,
+      repositories: [],
     });
     const canonicalGrant = JSON.stringify(grant);
     listConnectionGrantsMock.mockResolvedValue({
@@ -1662,62 +1642,17 @@ describe("AppDetail", () => {
       grants: [grant], capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
     });
     await renderAppDetail();
-    const owner = container.querySelector('[role="combobox"][aria-label="Filter repositories by account or organization"]')!;
-    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search GitHub repositories"]')!;
+    const empty = container.querySelector('[role="status"]')!;
     const readCount = listConnectionGrantsMock.mock.calls.length;
-    const selectOwner = async (label: string, allAccounts: string) => {
-      await act(async () => {
-        owner.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-      });
-      const options = [...document.querySelectorAll('[role="option"]')];
-      expect(options.map((option) => option.textContent)).toEqual([allAccounts, "Board", "Me", "You"]);
-      const option = options.find((item) => item.textContent === label)!;
-      await act(async () => {
-        option.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-      });
-    };
-    const repositoryNames = () => [...container.querySelectorAll('ul[tabindex="0"] a')].map((link) => link.textContent);
-    await selectOwner("Board", "All accounts");
-    await act(async () => { setInputValue(search, "FIRST"); });
     for (const language of ["en", "ru", "en"] as const) {
       await act(async () => { await i18n.changeLanguage(language); });
       await flushReact();
-      expect(container.contains(owner)).toBe(true);
-      expect(owner.textContent).toBe("Board");
-      expect(container.contains(search)).toBe(true);
-      expect(search.value).toBe("FIRST");
-      expect(repositoryNames()).toEqual(["Board/first"]);
-      expect(container.querySelector('a[href="https://github.com/Board/first"]')).toBeTruthy();
+      expect(container.querySelector('[role="status"]')).toBe(empty);
+      expect(empty.textContent?.trim()).toBe(language === "ru" ? "Нет доступных репозиториев." : "No accessible repositories.");
+      expect(container.querySelector('input[aria-label="Search GitHub repositories"]')).toBeNull();
+      expect(listConnectionGrantsMock).toHaveBeenCalledTimes(readCount);
+      expect(JSON.stringify(grant)).toBe(canonicalGrant);
     }
-    await act(async () => { await i18n.changeLanguage("ru"); });
-    await flushReact();
-    await selectOwner("Все аккаунты", "Все аккаунты");
-    expect(repositoryNames()).toEqual(["Board/first", "You/first"]);
-    await act(async () => { setInputValue(search, "Missing-RAW"); });
-    const noMatches = container.querySelector('[role="status"]')!;
-    for (const language of ["en", "ru", "en"] as const) {
-      await act(async () => { await i18n.changeLanguage(language); });
-      await flushReact();
-      expect(container.querySelector('[role="status"]')).toBe(noMatches);
-      expect(noMatches.textContent).toBe(language === "ru" ? "По запросу не найдено репозиториев." : "No repositories match your search.");
-      expect(search.value).toBe("Missing-RAW");
-      expect(repositoryNames()).toEqual([]);
-    }
-    await act(async () => { setInputValue(search, ""); });
-    await selectOwner("Me", "All accounts");
-    const emptyOwner = container.querySelector('[role="status"]')!;
-    for (const language of ["en", "ru", "en"] as const) {
-      await act(async () => { await i18n.changeLanguage(language); });
-      await flushReact();
-      expect(container.querySelector('[role="status"]')).toBe(emptyOwner);
-      expect(emptyOwner.textContent).toBe(language === "ru"
-        ? "У этого аккаунта или организации нет доступных репозиториев."
-        : "No accessible repositories for this account or organization.");
-      expect(owner.textContent).toBe("Me");
-      expect(search.value).toBe("");
-    }
-    expect(listConnectionGrantsMock).toHaveBeenCalledTimes(readCount);
-    expect(JSON.stringify(grant)).toBe(canonicalGrant);
     expect(updateConnectionMock).not.toHaveBeenCalled();
     expect(checkConnectionHealthMock).not.toHaveBeenCalled();
     expect(replaceConnectionGrantMembersMock).not.toHaveBeenCalled();
@@ -1763,7 +1698,7 @@ describe("AppDetail", () => {
     await act(async () => { load.click(); });
     await flushReact();
     expect(checkConnectionHealthMock).toHaveBeenCalledExactlyOnceWith("conn-1");
-    expect(container.querySelector('a[href="https://github.com/apps/paperclip-staging/installations/new"]')?.textContent).toBe("Настроить на GitHub");
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-staging/installations/new"]')?.textContent).toBe("Разрешить доступ к другим репозиториям в GitHub");
     expect(container.contains(load)).toBe(false);
     expect(JSON.stringify(grant)).toBe(canonicalGrant);
     expect(updateConnectionMock).not.toHaveBeenCalled();
@@ -1863,7 +1798,7 @@ describe("AppDetail", () => {
     expect(container.querySelector('a[href="https://github.com/paperclipai/test-repo"]')?.textContent).toBe("paperclipai/test-repo");
     expect(container.querySelector(
       'a[href="https://github.com/apps/paperclip-test/installations/new"]',
-    )?.textContent).toBe("Configure on GitHub");
+    )?.textContent).toBe("Add More Repos on GitHub");
     expect(container.querySelector('button[aria-label="Refresh access"]')).toBeTruthy();
     expect(container.textContent).not.toContain("Installation");
     expect(container.textContent).not.toContain("Token continuity");

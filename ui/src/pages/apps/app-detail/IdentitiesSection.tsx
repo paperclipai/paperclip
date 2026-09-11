@@ -1,7 +1,7 @@
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { Trans } from "react-i18next";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Building2, Loader2, Lock, RefreshCw, Search, TriangleAlert, UserRound } from "lucide-react";
+import { Building2, Loader2, Lock, RefreshCw, TriangleAlert, UserRound } from "lucide-react";
 import type {
   ConnectionAudienceMember,
   ConnectionGrant,
@@ -11,8 +11,6 @@ import type {
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/Identity";
 import { GithubIcon } from "@/components/icons/github-icon";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { InlineBanner } from "@/components/InlineBanner";
 import { MemberMultiSelect } from "@/components/MemberMultiSelect";
@@ -290,24 +288,8 @@ function GitHubConnectionSummary({
   refreshPending: boolean;
 }) {
   const { t } = useTranslation();
-  const [repositoryOwner, setRepositoryOwner] = useState("*");
-  const [repositorySearch, setRepositorySearch] = useState("");
-  useEffect(() => {
-    setRepositoryOwner("*");
-    setRepositorySearch("");
-  }, [grant.id]);
   const github = grant.providerTenant?.github;
   if (!github) return null;
-  const owners = [...new Set([
-    ...(github.installationOwnerLogins ?? []),
-    ...(github.repositories ?? []).map((repository) => repository.fullName.split("/")[0]),
-  ])].sort((a, b) => a.localeCompare(b));
-  const selectedOwner = owners.includes(repositoryOwner) ? repositoryOwner : "*";
-  const search = repositorySearch.trim().toLowerCase();
-  const visibleRepositories = github.repositories?.filter((repository) => (
-    (selectedOwner === "*" || repository.fullName.split("/")[0] === selectedOwner)
-    && repository.fullName.toLowerCase().includes(search)
-  ));
   const configurationUrl = github.appSlug
     ? `https://github.com/apps/${encodeURIComponent(github.appSlug)}/installations/new`
     : /^https:\/\/github\.com\/apps\/[a-z0-9-]+\/installations\/new$/.test(github.installationUrl ?? "")
@@ -356,7 +338,7 @@ function GitHubConnectionSummary({
             ) : null}
             {configurationUrl ? (
               <Button asChild size="sm" variant="outline">
-                <a href={configurationUrl} target="_blank" rel="noreferrer">{t("localizationApps.configureOnGitHub")}</a>
+                <a href={configurationUrl} target="_blank" rel="noreferrer">{t("chatUi.identitiesSection.addMoreReposOnGitHub")}</a>
               </Button>
             ) : onRefreshAccess ? (
               <Button size="sm" variant="outline" disabled={refreshPending} onClick={onRefreshAccess}>
@@ -366,27 +348,9 @@ function GitHubConnectionSummary({
             ) : null}
           </div>
         </div>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <Select value={selectedOwner} onValueChange={setRepositoryOwner}>
-            <SelectTrigger aria-label={t("localizationApps.filterRepositoriesByOwner")} className="w-full">
-              <span className="flex min-w-0 items-center gap-2">
-                <GithubIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                <SelectValue />
-              </span>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="*">{t("localizationApps.allRepositoryAccounts")}</SelectItem>
-              {owners.map((owner) => <SelectItem key={owner} value={owner}>{owner}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-            <Input aria-label={t("localizationApps.searchGitHubRepositories")} placeholder={t("localizationApps.searchRepositories")} className="pl-9" value={repositorySearch} onChange={(event) => setRepositorySearch(event.target.value)} />
-          </div>
-        </div>
         {github.repositories ? (
-          visibleRepositories?.length ? <ul aria-label={t("localizationApps.accessibleGitHubRepositories")} tabIndex={0} className="max-h-(--sz-github-repository-list) space-y-2 overflow-y-auto text-sm">
-            {visibleRepositories.map((repository) => (
+          github.repositories.length ? <ul aria-label={t("localizationApps.accessibleGitHubRepositories")} tabIndex={0} className="max-h-(--sz-github-repository-list) space-y-2 overflow-y-auto text-sm">
+            {github.repositories.map((repository) => (
               <li key={repository.id}>
                 <a className="flex items-center gap-2 text-muted-foreground hover:underline" href={`https://github.com/${repository.fullName.split("/").map(encodeURIComponent).join("/")}`} target="_blank" rel="noreferrer">
                   <GithubIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -395,9 +359,7 @@ function GitHubConnectionSummary({
                 </a>
               </li>
             ))}
-          </ul> : <p role="status" className="text-sm text-muted-foreground">
-            {search ? t("localizationApps.noMatchingRepositories") : t("localizationApps.noAccessibleRepositoriesForOwner")}
-          </p>
+          </ul> : <p role="status" className="text-sm text-muted-foreground">{t("chatUi.identitiesSection.noAccessibleRepositories")}</p>
         ) : (
           <p className="text-sm text-muted-foreground">{t("localizationApps.refreshRepositoryList")}</p>
         )}

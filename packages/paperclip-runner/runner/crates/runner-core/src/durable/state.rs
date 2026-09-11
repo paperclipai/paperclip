@@ -11,14 +11,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::provider_bridge::{semantic_value_digest, MAX_COMPLETION_SUMMARY_CHARS};
+
 use super::{DurableRunnerConfig, DurableRunnerError, PROTOCOL, PROTOCOL_VERSION};
 
 const STATE_SCHEMA: &str = "paperclip.runner.durable.state.v1";
+pub(crate) const TRANSITION_STATE_SCHEMA: &str =
+    "paperclip.runner.durable.state.warm-transition.v1";
 const STATE_FILE: &str = "runner-state.json";
 const MAX_RECENT_COMMANDS: usize = 128;
 const MAX_DIAGNOSTICS: usize = 32;
 const MAX_COMMAND_RESULT_BYTES: usize = 64 * 1024;
 const MAX_EXECUTOR_EVENT_RECEIPTS: usize = 256;
+const MAX_V2_REPLAY_EVENTS: usize = 2;
 const STATE_OVERHEAD_BYTES: usize = 16 * 1024 * 1024;
 const TEMP_FILE_ATTEMPTS: usize = 32;
 
@@ -37,6 +42,16 @@ impl EventPriority {
             Self::P1 => 1,
             Self::P2 => 2,
         }
+    }
+}
+
+fn v2_replay_key(event_type: &str) -> Option<&'static str> {
+    match event_type {
+        "session.capabilities.updated" => Some("session.capabilities"),
+        "session.goal.snapshot" | "session.goal.updated" | "session.goal.cleared" => {
+            Some("session.goal")
+        }
+        _ => None,
     }
 }
 
@@ -59,9 +74,18 @@ pub struct Command {
 
 impl Command {
     pub fn validate(&self) -> Result<(), DurableRunnerError> {
-        if self.schema != "paperclip.prp.command.v1" {
+        let schema_version = match self.schema.as_str() {
+            "paperclip.prp.command.v1" => 1,
+            "paperclip.prp.command.v2" => 2,
+            _ => {
+                return Err(DurableRunnerError::invalid(
+                    "command requires a supported paperclip.prp.command schema",
+                ));
+            }
+        };
+        if schema_version == 1 && self.command_type.starts_with("session.goal.") {
             return Err(DurableRunnerError::invalid(
-                "command requires the paperclip.prp.command.v1 schema",
+                "session goal commands require the paperclip.prp.command.v2 schema",
             ));
         }
         if self.command_id.is_empty()
@@ -122,10 +146,13 @@ impl Command {
                 | "runner.drain"
                 | "runner.suspend"
                 | "runner.shutdown"
+                | "session.goal.get"
+                | "session.goal.set"
+                | "session.goal.clear"
         ) {
-            return Err(DurableRunnerError::invalid(
-                "command type is not supported by PRP v1",
-            ));
+            return Err(DurableRunnerError::invalid(format!(
+                "command type is not supported by PRP v{schema_version}"
+            )));
         }
         Ok(())
     }
@@ -139,6 +166,15 @@ pub struct StoredOutboxEvent {
     pub event_type: String,
     pub envelope: Value,
     pub byte_size: usize,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredV2ReplayEvent {
+    pub source_seq: u64,
+    pub priority: u8,
+    pub event_type: String,
+    pub payload: Value,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -158,6 +194,104 @@ pub(crate) struct PendingTerminalDelivery {
     pub(crate) controller_seq: u64,
     pub(crate) command_type: String,
     pub(crate) lifecycle: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct WarmRunIdentity {
+    pub runner_instance_id: String,
+    pub environment_lease_id: String,
+    pub run_id: String,
+    pub normalized_session_id: String,
+    pub turn_id: String,
+    pub item_id: String,
+}
+
+impl WarmRunIdentity {
+    pub(crate) fn from_config(config: &DurableRunnerConfig) -> Self {
+        Self {
+            runner_instance_id: config.runner_instance_id.clone(),
+            environment_lease_id: config.environment_lease_id.clone(),
+            run_id: config.run_id.clone(),
+            normalized_session_id: config.normalized_session_id.clone(),
+            turn_id: config.turn_id.clone(),
+            item_id: config.item_id.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct WarmRunTransition {
+    pub schema: String,
+    pub transition_id: String,
+    pub old_identity: WarmRunIdentity,
+    pub new_identity: WarmRunIdentity,
+    pub command_id: String,
+    pub controller_seq: u64,
+    pub command_fingerprint: String,
+    pub result_digest: String,
+    pub old_acked_source_seq: u64,
+    pub connection: Value,
+    pub runner_version: String,
+    pub runner_digest: String,
+    pub lease_id: String,
+    pub lease_expires_at_unix_ms: u64,
+    pub lease_revocation_epoch: u64,
+}
+
+impl WarmRunTransition {
+    pub(crate) fn new(
+        config: &DurableRunnerConfig,
+        next: &DurableRunnerConfig,
+        command: &Command,
+        result: &StoredCommandResult,
+        ack: u64,
+        lease_id: String,
+        lease_expires_at_unix_ms: u64,
+        lease_revocation_epoch: u64,
+    ) -> Result<Self, DurableRunnerError> {
+        let mut receipt = Self {
+            schema: "paperclip.runner.warm-transition.v1".to_owned(),
+            transition_id: String::new(),
+            old_identity: WarmRunIdentity::from_config(config),
+            new_identity: WarmRunIdentity::from_config(next),
+            command_id: command.command_id.clone(),
+            controller_seq: command.controller_seq,
+            command_fingerprint: command_fingerprint(command)?,
+            result_digest: canonical_digest(
+                &serde_json::to_value(result)
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?,
+            ),
+            old_acked_source_seq: ack,
+            connection: command
+                .payload
+                .pointer("/paperclipNextAuthority/connection")
+                .cloned()
+                .ok_or_else(|| DurableRunnerError::invalid("warm transition connection missing"))?,
+            runner_version: config.runner_version.clone(),
+            runner_digest: config.runner_digest.clone(),
+            lease_id,
+            lease_expires_at_unix_ms,
+            lease_revocation_epoch,
+        };
+        let mut body = serde_json::to_value(&receipt)
+            .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+        body.as_object_mut()
+            .expect("receipt object")
+            .remove("transitionId");
+        receipt.transition_id = canonical_digest(&body);
+        Ok(receipt)
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PendingWarmRunTransition {
+    pub receipt: WarmRunTransition,
+    pub phase: String,
+    pub command: Command,
+    pub result: StoredCommandResult,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -199,8 +333,16 @@ pub struct DurableState {
     pub processed_command_fingerprints: BTreeMap<String, String>,
     #[serde(default)]
     pub(crate) pending_terminal_delivery: Option<PendingTerminalDelivery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pending_provider_cleanup: Option<PendingTerminalDelivery>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) warm_transition: Option<PendingWarmRunTransition>,
     #[serde(default)]
     executor_event_receipts: BTreeMap<String, ExecutorEventReceipt>,
+    #[serde(default)]
+    v2_replay_events: BTreeMap<String, StoredV2ReplayEvent>,
+    #[serde(default)]
+    pub last_connection_protocol_version: Option<u64>,
     pub diagnostics: Vec<String>,
     pub backpressure: bool,
     pub recoverable_failure: Option<String>,
@@ -229,7 +371,11 @@ impl DurableState {
             processed_commands: BTreeMap::new(),
             processed_command_fingerprints: BTreeMap::new(),
             pending_terminal_delivery: None,
+            pending_provider_cleanup: None,
+            warm_transition: None,
             executor_event_receipts: BTreeMap::new(),
+            v2_replay_events: BTreeMap::new(),
+            last_connection_protocol_version: None,
             diagnostics: Vec::new(),
             backpressure: false,
             recoverable_failure: None,
@@ -302,6 +448,7 @@ impl DurableState {
         payload: &Value,
     ) -> Result<bool, DurableRunnerError> {
         self.source_event_id_for_executor(executor_event_id)?;
+        validate_semantic_tool_input_digest(event_type, payload)?;
         let Some(existing) = self.executor_event_receipts.get(executor_event_id) else {
             return Ok(false);
         };
@@ -377,6 +524,7 @@ impl DurableState {
                 "durable event payload must be an object",
             ));
         }
+        validate_semantic_tool_input_digest(event_type.as_str(), &payload)?;
 
         let sanitized_payload = sanitize_value(&payload);
         if durable_semantics_changed_by_sanitization(&payload, &sanitized_payload) {
@@ -384,9 +532,22 @@ impl DurableState {
                 "durable identity or validation semantics contain credential-shaped material",
             ));
         }
+        let sanitized_payload =
+            finalize_semantic_tool_input_payload(event_type.as_str(), &payload, sanitized_payload)?;
 
         let source_seq = self.next_source_seq;
         let emitted_at = current_timestamp()?;
+        let schema_version = if matches!(
+            event_type.as_str(),
+            "session.capabilities.updated"
+                | "session.goal.snapshot"
+                | "session.goal.updated"
+                | "session.goal.cleared"
+        ) {
+            2
+        } else {
+            1
+        };
         let envelope = json!({
             "protocol": PROTOCOL,
             "version": PROTOCOL_VERSION,
@@ -398,7 +559,7 @@ impl DurableState {
             "turnId": self.turn_id,
             "itemId": self.item_id,
             "payload": {
-                "schema": "paperclip.prp.event.v1",
+                "schema": format!("paperclip.prp.event.v{schema_version}"),
                 "sourceEventId": source_event_id,
                 "sourceSeq": source_seq,
                 "sourceInstanceId": self.runner_instance_id,
@@ -408,7 +569,7 @@ impl DurableState {
                 "turnId": self.turn_id,
                 "itemId": self.item_id,
                 "eventType": event_type,
-                "schemaVersion": 1,
+                "schemaVersion": schema_version,
                 "priority": priority.number(),
                 "emittedAt": emitted_at,
                 "payload": sanitized_payload,
@@ -450,15 +611,30 @@ impl DurableState {
         self.outbox.push(StoredOutboxEvent {
             source_seq,
             priority: priority.number(),
-            event_type,
+            event_type: event_type.clone(),
             envelope,
             byte_size,
         });
+        if let Some(replay_key) = v2_replay_key(&event_type) {
+            self.v2_replay_events.insert(
+                replay_key.to_owned(),
+                StoredV2ReplayEvent {
+                    source_seq,
+                    priority: priority.number(),
+                    event_type,
+                    payload: sanitize_value(&payload),
+                },
+            );
+        }
         self.peak_outbox_bytes = self.peak_outbox_bytes.max(projected);
         Ok(source_seq)
     }
 
-    pub fn apply_ack(&mut self, acked_source_seq: u64) -> Result<(), DurableRunnerError> {
+    pub fn apply_ack(
+        &mut self,
+        acked_source_seq: u64,
+        protocol_version: u64,
+    ) -> Result<(), DurableRunnerError> {
         if acked_source_seq < self.acked_source_seq {
             return Err(DurableRunnerError::invalid(
                 "cumulative ACK cannot move behind the durable cursor",
@@ -472,6 +648,10 @@ impl DurableState {
         self.acked_source_seq = acked_source_seq;
         self.outbox
             .retain(|event| event.source_seq > acked_source_seq);
+        if protocol_version >= 2 {
+            self.v2_replay_events
+                .retain(|_, event| event.source_seq > acked_source_seq);
+        }
         if self.backpressure
             && self.outbox_bytes() < self.max_outbox_bytes.saturating_sub(self.p0_reserve_bytes)
         {
@@ -479,6 +659,36 @@ impl DurableState {
             if self.lifecycle == "backpressure" {
                 self.lifecycle = "ready".to_owned();
             }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_unobserved_v2_session_state(&self) -> bool {
+        !self.v2_replay_events.is_empty()
+    }
+
+    pub(crate) fn restore_v2_replay_events(
+        &mut self,
+        config: &DurableRunnerConfig,
+    ) -> Result<(), DurableRunnerError> {
+        let replay = self
+            .v2_replay_events
+            .values()
+            .filter(|event| event.source_seq <= self.acked_source_seq)
+            .cloned()
+            .collect::<Vec<_>>();
+        for event in replay {
+            let priority = match event.priority {
+                0 => EventPriority::P0,
+                1 => EventPriority::P1,
+                2 => EventPriority::P2,
+                _ => {
+                    return Err(DurableRunnerError::invalid(
+                        "v2 replay event priority is invalid",
+                    ));
+                }
+            };
+            self.enqueue_event(config, event.event_type, priority, event.payload)?;
         }
         Ok(())
     }
@@ -524,6 +734,25 @@ impl DurableState {
                 "controller sequence must be contiguous: expected {expected}, received {}",
                 command.controller_seq
             )));
+        }
+
+        if self.processed_commands.len() >= MAX_RECENT_COMMANDS
+            && self
+                .pending_provider_cleanup
+                .as_ref()
+                .is_some_and(|pending| {
+                    self.processed_commands
+                        .values()
+                        .min_by_key(|result| result.controller_seq)
+                        .is_some_and(|oldest| oldest.command_id == pending.command_id)
+                })
+        {
+            // The marker's exact failed terminal receipt is still authority.
+            // Refuse before journaling/effects instead of evicting that receipt
+            // or allowing an unbounded sequence of unsuccessful cleanup stops.
+            return Err(DurableRunnerError::invalid(
+                "provider cleanup exhausted its bounded command journal; operator recovery is required",
+            ));
         }
 
         self.last_controller_command_seq = command.controller_seq;
@@ -686,7 +915,7 @@ fn command_result(command: &Command, status: &str, result: Value) -> StoredComma
     }
 }
 
-fn command_fingerprint(command: &Command) -> Result<String, DurableRunnerError> {
+pub(crate) fn command_fingerprint(command: &Command) -> Result<String, DurableRunnerError> {
     let value = serde_json::to_value(command).map_err(|error| {
         DurableRunnerError::invalid(format!("failed to fingerprint durable command: {error}"))
     })?;
@@ -698,6 +927,10 @@ fn command_fingerprint(command: &Command) -> Result<String, DurableRunnerError> 
         fingerprint.push(HEX[usize::from(byte & 0x0f)] as char);
     }
     Ok(fingerprint)
+}
+
+pub(crate) fn canonical_digest(value: &Value) -> String {
+    format!("{:x}", Sha256::digest(canonical_json(value).as_bytes()))
 }
 
 fn executor_event_fingerprint(
@@ -887,7 +1120,7 @@ fn validate_binding(
     config: &DurableRunnerConfig,
     allow_legacy_command_journal: bool,
 ) -> Result<(), DurableRunnerError> {
-    if state.schema != STATE_SCHEMA
+    if (state.schema != STATE_SCHEMA && state.schema != TRANSITION_STATE_SCHEMA)
         || state.runner_instance_id != config.runner_instance_id
         || state.environment_lease_id != config.environment_lease_id
         || state.run_id != config.run_id
@@ -900,6 +1133,67 @@ fn validate_binding(
         return Err(DurableRunnerError::invalid(
             "durable state binding does not match this runner invocation",
         ));
+    }
+    match &state.warm_transition {
+        None if state.schema == STATE_SCHEMA => {}
+        Some(transition) if state.schema == TRANSITION_STATE_SCHEMA => {
+            if !matches!(transition.phase.as_str(), "prepared" | "activating")
+                || state.pending_terminal_delivery.is_some()
+                || state.pending_provider_cleanup.is_some()
+                || !state.outbox.is_empty()
+                || transition.result.status != "completed"
+                || transition.result.command_id != transition.command.command_id
+                || transition.result.controller_seq != transition.command.controller_seq
+                || transition.result.command_type != "run.attach"
+            {
+                return Err(DurableRunnerError::invalid(
+                    "warm transition state is inconsistent",
+                ));
+            }
+            transition.command.validate()?;
+            let mut old = config.clone();
+            let identity = &transition.receipt.old_identity;
+            old.runner_instance_id = identity.runner_instance_id.clone();
+            old.environment_lease_id = identity.environment_lease_id.clone();
+            old.run_id = identity.run_id.clone();
+            old.normalized_session_id = identity.normalized_session_id.clone();
+            old.turn_id = identity.turn_id.clone();
+            old.item_id = identity.item_id.clone();
+            old.validate()?;
+            let next = super::runner::next_authority_config(&transition.command, &old)?
+                .ok_or_else(|| DurableRunnerError::invalid("warm transition has no target"))?;
+            let expected = WarmRunTransition::new(
+                &old,
+                &next,
+                &transition.command,
+                &transition.result,
+                transition.receipt.old_acked_source_seq,
+                transition.receipt.lease_id.clone(),
+                transition.receipt.lease_expires_at_unix_ms,
+                transition.receipt.lease_revocation_epoch,
+            )?;
+            if expected != transition.receipt
+                || WarmRunIdentity::from_config(config)
+                    != if transition.phase == "prepared" {
+                        expected.old_identity
+                    } else {
+                        expected.new_identity
+                    }
+                || (transition.phase == "prepared"
+                    && (state.acked_source_seq != expected.old_acked_source_seq
+                        || state.processed_commands.get(&transition.command.command_id)
+                            != Some(&transition.result)))
+            {
+                return Err(DurableRunnerError::invalid(
+                    "warm transition receipt binding is invalid",
+                ));
+            }
+        }
+        _ => {
+            return Err(DurableRunnerError::invalid(
+                "warm transition schema fence is invalid",
+            ))
+        }
     }
     let outbox_bytes = state.outbox.iter().try_fold(0_usize, |total, event| {
         let serialized = serde_json::to_vec(&event.envelope)
@@ -977,6 +1271,21 @@ fn validate_binding(
                     && receipt.source_seq <= state.highest_source_seq()
                     && executor_receipt_sequences.insert(receipt.source_seq)
             });
+    let v2_replay_events_are_valid = state.v2_replay_events.len() <= MAX_V2_REPLAY_EVENTS
+        && state.v2_replay_events.iter().all(|(key, replay)| {
+            v2_replay_key(&replay.event_type) == Some(key.as_str())
+                && replay.source_seq > 0
+                && replay.source_seq <= state.highest_source_seq()
+                && replay.priority <= 2
+                && replay.payload.is_object()
+                && (replay.source_seq <= state.acked_source_seq
+                    || state.outbox.iter().any(|event| {
+                        event.source_seq == replay.source_seq
+                            && event.priority == replay.priority
+                            && event.event_type == replay.event_type
+                            && event.envelope.pointer("/payload/payload") == Some(&replay.payload)
+                    }))
+        });
     let pending_terminal_delivery_is_valid =
         state
             .pending_terminal_delivery
@@ -990,6 +1299,28 @@ fn validate_binding(
                 pending.lifecycle == expected_lifecycle
                     && state.lifecycle == expected_lifecycle
                     && pending.controller_seq == state.last_controller_command_seq
+                    && state
+                        .processed_commands
+                        .get(&pending.command_id)
+                        .is_some_and(|result| {
+                            result.command_id == pending.command_id
+                                && result.controller_seq == pending.controller_seq
+                                && result.command_type == pending.command_type
+                                && result.status != "pending"
+                        })
+            });
+    let pending_provider_cleanup_is_valid =
+        state
+            .pending_provider_cleanup
+            .as_ref()
+            .is_none_or(|pending| {
+                let lifecycle = match pending.command_type.as_str() {
+                    "runner.suspend" => "suspended",
+                    "runner.shutdown" => "stopped",
+                    _ => return false,
+                };
+                pending.lifecycle == lifecycle
+                    && pending.controller_seq <= state.last_controller_command_seq
                     && state
                         .processed_commands
                         .get(&pending.command_id)
@@ -1026,7 +1357,12 @@ fn validate_binding(
         || !command_cursors_are_valid
         || !command_fingerprints_are_valid
         || !executor_event_receipts_are_valid
+        || !v2_replay_events_are_valid
+        || state
+            .last_connection_protocol_version
+            .is_some_and(|version| !(1..=PROTOCOL_VERSION).contains(&version))
         || !pending_terminal_delivery_is_valid
+        || !pending_provider_cleanup_is_valid
     {
         return Err(DurableRunnerError::invalid(
             "durable state cursors, bounds, or journals are inconsistent",
@@ -1129,6 +1465,12 @@ pub(crate) fn create_private_temporary_file(
 
 fn sensitive_key(key: &str, value: &Value) -> bool {
     let normalized = key.to_ascii_lowercase().replace(['-', '_'], "");
+    if normalized == "tokenbudgetcontrol" {
+        return !value.is_boolean();
+    }
+    if normalized == "tokenbudget" {
+        return !value.is_number() && !value.is_null();
+    }
     if matches!(
         normalized.as_str(),
         "inputtokens"
@@ -1143,6 +1485,7 @@ fn sensitive_key(key: &str, value: &Value) -> bool {
             | "totaltokens"
             | "pretokens"
             | "posttokens"
+            | "tokensused"
     ) {
         return !value.is_number();
     }
@@ -1249,6 +1592,114 @@ pub(crate) fn sanitize_value(value: &Value) -> Value {
     }
 }
 
+pub(crate) fn sanitize_semantic_tool_input(
+    operation_id: &str,
+    input: &Value,
+) -> Result<Value, DurableRunnerError> {
+    let mut sanitized = sanitize_value(input);
+    if !matches!(operation_id, "paperclip_finish" | "paperclip_block") {
+        return Ok(sanitized);
+    }
+    let Some(summary) = input.get("summary").and_then(Value::as_str) else {
+        return Ok(sanitized);
+    };
+    if summary.chars().count() > MAX_COMPLETION_SUMMARY_CHARS {
+        return Err(DurableRunnerError::invalid(
+            "semantic completion summary exceeds the 12,000 character limit",
+        ));
+    }
+    let Some(sanitized_input) = sanitized.as_object_mut() else {
+        return Ok(sanitized);
+    };
+    // Completion summary is the schema-bounded user-facing answer, not an
+    // untrusted diagnostic snippet. Preserve it in full while applying the
+    // same credential scrubber used by every durable string. All other fields
+    // retain the generic 4 KiB diagnostic bound.
+    sanitized_input.insert(
+        "summary".to_owned(),
+        Value::String(redact_sensitive_text_values(summary)),
+    );
+    Ok(sanitized)
+}
+
+fn finalize_semantic_tool_input_payload(
+    event_type: &str,
+    original: &Value,
+    mut sanitized: Value,
+) -> Result<Value, DurableRunnerError> {
+    if event_type != "semantic_tool.input" {
+        return Ok(sanitized);
+    }
+    let Some(original_tool) = original.get("semantic_tool") else {
+        return Ok(sanitized);
+    };
+    if original_tool.get("schema").and_then(Value::as_str) != Some("paperclip.prp.semantic_tool.v1")
+        || original_tool.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || original_tool.get("phase").and_then(Value::as_str) != Some("input")
+    {
+        return Ok(sanitized);
+    }
+    let Some(operation_id) = original_tool.get("operationId").and_then(Value::as_str) else {
+        return Ok(sanitized);
+    };
+    let Some(original_input) = original_tool.get("input") else {
+        return Ok(sanitized);
+    };
+    let finalized_input = sanitize_semantic_tool_input(operation_id, original_input)?;
+    let Some(sanitized_tool) = sanitized
+        .get_mut("semantic_tool")
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(sanitized);
+    };
+    let Some(content) = sanitized_tool
+        .get_mut("content")
+        .and_then(Value::as_object_mut)
+    else {
+        return Ok(sanitized);
+    };
+    content.insert(
+        "digest".to_owned(),
+        Value::String(semantic_value_digest(&finalized_input)),
+    );
+    sanitized_tool.insert("input".to_owned(), finalized_input);
+    Ok(sanitized)
+}
+
+fn validate_semantic_tool_input_digest(
+    event_type: &str,
+    payload: &Value,
+) -> Result<(), DurableRunnerError> {
+    if event_type != "semantic_tool.input" {
+        return Ok(());
+    }
+    let Some(semantic_tool) = payload.get("semantic_tool") else {
+        return Ok(());
+    };
+    if semantic_tool.get("schema").and_then(Value::as_str) != Some("paperclip.prp.semantic_tool.v1")
+        || semantic_tool.get("schemaVersion").and_then(Value::as_u64) != Some(1)
+        || semantic_tool.get("phase").and_then(Value::as_str) != Some("input")
+    {
+        return Ok(());
+    }
+    let input = semantic_tool.get("input").ok_or_else(|| {
+        DurableRunnerError::invalid("semantic tool input event omitted its input")
+    })?;
+    let digest = semantic_tool
+        .get("content")
+        .and_then(|content| content.get("digest"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            DurableRunnerError::invalid("semantic tool input event omitted its content digest")
+        })?;
+    if digest != semantic_value_digest(input) {
+        return Err(DurableRunnerError::invalid(
+            "semantic tool input content digest does not match its transmitted input",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn redact_text(input: &str) -> String {
     let (bounded, truncated) = if input.len() > 4096 {
         let boundary = input
@@ -1277,12 +1728,29 @@ fn redact_sensitive_text_values(input: &str) -> String {
     let is_value_end = |value: u8| {
         value.is_ascii_whitespace() || matches!(value, b',' | b';' | b'&' | b')' | b']' | b'}')
     };
+    // Preserve one sentence-final period, never an embedded/repeated dot or
+    // quoted value content. Even a credential ending here remains fully masked
+    // apart from this punctuation character. JWT validation uses this same
+    // boundary so a sentence period cannot hide an otherwise valid JWT.
+    let without_sentence_period = |start: usize, end: usize| {
+        if end > start + 1
+            && bytes[end - 1] == b'.'
+            && bytes[end - 2] != b'.'
+            && bytes
+                .get(end)
+                .is_none_or(|value| value.is_ascii_whitespace())
+        {
+            end - 1
+        } else {
+            end
+        }
+    };
     let value_end = |start: usize| {
         let mut end = start;
         while end < bytes.len() && !is_value_end(bytes[end]) {
             end += 1;
         }
-        end
+        without_sentence_period(start, end)
     };
     let quoted_value_start = |start: usize| {
         let mut quote_index = start;
@@ -1450,8 +1918,9 @@ fn redact_sensitive_text_values(input: &str) -> String {
         while jwt_end < bytes.len() && is_jwt_byte(bytes[jwt_end]) {
             jwt_end += 1;
         }
-        if jwt_end > jwt_start {
-            let candidate = &normalized[jwt_start..jwt_end];
+        let candidate_end = without_sentence_period(jwt_start, jwt_end);
+        if candidate_end > jwt_start {
+            let candidate = &normalized[jwt_start..candidate_end];
             let segments = candidate.split('.').collect::<Vec<_>>();
             if matches!(segments.len(), 3 | 4)
                 && segments.iter().all(|segment| {
@@ -1461,7 +1930,7 @@ fn redact_sensitive_text_values(input: &str) -> String {
                         })
                 })
             {
-                ranges.push((jwt_start, jwt_end));
+                ranges.push((jwt_start, candidate_end));
             }
         }
         jwt_start = jwt_end.saturating_add(1);
@@ -1586,8 +2055,102 @@ fn redact_sensitive_text_values(input: &str) -> String {
                 && authorization_scheme_start + scheme.len() < bytes.len()
                 && bytes[authorization_scheme_start + scheme.len()].is_ascii_whitespace()
         });
+        // A small closed set of grammatical noun/count phrases is prose, not
+        // the diagnostic field/value pair "token opaque-value". Keep this
+        // exception exact: assignments, quoted/compound/CLI keys or values,
+        // and arbitrary words after token still use the ordinary scanners.
+        let token_phrase_has_lead = |lead: &str| {
+            normalized[..start]
+                .strip_suffix(lead)
+                .is_some_and(|before| {
+                    before.is_empty()
+                        || before
+                            .as_bytes()
+                            .last()
+                            .is_some_and(|value| value.is_ascii_whitespace())
+                })
+        };
+        let token_phrase_has_tail = |tail: &str| {
+            normalized[separator..].starts_with(tail)
+                && bytes.get(separator + tail.len()).is_none_or(|value| {
+                    value.is_ascii_whitespace()
+                        || (matches!(value, b'.' | b',' | b';' | b')')
+                            && bytes
+                                .get(separator + tail.len() + 1)
+                                .is_none_or(|next| next.is_ascii_whitespace()))
+                })
+        };
+        let token_phrase_follows_list_delimiter = || {
+            let before = &normalized[..start];
+            start == 0
+                || [", ", "; ", ": ", "\n", "- "]
+                    .iter()
+                    .any(|delimiter| before.ends_with(delimiter))
+        };
+        let has_hyphenated_count_lead = token_phrase_has_lead("one-");
+        let is_benign_token_noun_phrase = key == "token"
+            && (!key_is_compound || has_hyphenated_count_lead)
+            && whitespace_start == start + key.len()
+            && !has_assignment_separator
+            && bytes[whitespace_start..separator]
+                .iter()
+                .all(|value| matches!(value, b' ' | b'\t'))
+            && ((token_phrase_has_tail("system")
+                && [
+                    "a ",
+                    "the ",
+                    "a simple ",
+                    "the simple ",
+                    "a balanced ",
+                    "the balanced ",
+                    "a transparent ",
+                    "the transparent ",
+                ]
+                .iter()
+                .any(|lead| token_phrase_has_lead(lead)))
+                || (token_phrase_has_tail("economy")
+                    && ["a balanced ", "the balanced ", "the "]
+                        .iter()
+                        .any(|lead| token_phrase_has_lead(lead)))
+                || (["station", "rules"]
+                    .iter()
+                    .any(|tail| token_phrase_has_tail(tail))
+                    && token_phrase_has_lead("the "))
+                || (["design", "values"]
+                    .iter()
+                    .any(|tail| token_phrase_has_tail(tail))
+                    && ["a jade ", "the "]
+                        .iter()
+                        .any(|lead| token_phrase_has_lead(lead)))
+                || (token_phrase_has_tail("exchanges") && token_phrase_has_lead("standard "))
+                || (["count", "limits"]
+                    .iter()
+                    .any(|tail| token_phrase_has_tail(tail))
+                    && token_phrase_has_lead("and "))
+                || (["limit", "rule"]
+                    .iter()
+                    .any(|tail| token_phrase_has_tail(tail))
+                    && has_hyphenated_count_lead)
+                || (token_phrase_has_tail("reconciliation, and cleanup")
+                    && token_phrase_follows_list_delimiter())
+                || (["for", "per"]
+                    .iter()
+                    .any(|tail| token_phrase_has_tail(tail))
+                    && [
+                        "one ",
+                        "two ",
+                        "first ",
+                        "second ",
+                        "each ",
+                        "another ",
+                        "additional ",
+                    ]
+                    .iter()
+                    .any(|lead| token_phrase_has_lead(lead)))
+                || (token_phrase_has_tail("can equal") && token_phrase_has_lead("one ")));
         let has_whitespace_separator = separator > whitespace_start
-            && (key != "authorization" || key_is_compound || has_authorization_scheme);
+            && (key != "authorization" || key_is_compound || has_authorization_scheme)
+            && !is_benign_token_noun_phrase;
         if !has_assignment_separator && !has_whitespace_separator {
             continue;
         }
@@ -1635,7 +2198,7 @@ fn redact_sensitive_text_values(input: &str) -> String {
             while end < bytes.len() && !matches!(bytes[end], b'\n' | b'\r' | b',' | b';' | b'&') {
                 end += 1;
             }
-            end
+            without_sentence_period(value_start, end)
         } else {
             value_end(value_start)
         };
@@ -1747,11 +2310,119 @@ mod tests {
         }
     }
 
+    #[test]
+    fn session_goal_commands_require_and_accept_the_v2_schema() {
+        let mut goal = command("goal-command", 1);
+        goal.command_type = "session.goal.set".to_owned();
+        assert!(goal.validate().is_err());
+        goal.schema = "paperclip.prp.command.v2".to_owned();
+        assert!(goal.validate().is_ok());
+    }
+
     fn temporary_directory(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "paperclip-runner-durable-{label}-{}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn warm_transition_snapshot_is_exact_and_never_a_legacy_state() {
+        let directory = temporary_directory("warm-transition-binding");
+        let _ = fs::remove_dir_all(&directory);
+        let mut old = config(directory.clone());
+        old.runner_digest = format!("sha256:{}", "a".repeat(64));
+        let mut next = old.clone();
+        next.run_id = "run_2".to_owned();
+        next.turn_id = "turn_2".to_owned();
+        next.item_id = "item_2".to_owned();
+        let mut attach = command("attach_exact", 1);
+        attach.command_type = "run.attach".to_owned();
+        attach.payload = json!({"paperclipNextAuthority": {
+            "identity": WarmRunIdentity::from_config(&next),
+            "connection": {"mode": "connect", "connectUrl": next.connect_url},
+        }});
+        let mut state = DurableState::new(&old);
+        state.begin_command(&attach).unwrap();
+        let result = state
+            .complete_command(&attach, json!({"status": "attached"}))
+            .unwrap();
+        let receipt = WarmRunTransition::new(
+            &old,
+            &next,
+            &attach,
+            &result,
+            0,
+            "lease_exact".to_owned(),
+            1_800_000_000_000,
+            0,
+        )
+        .unwrap();
+        state.schema = TRANSITION_STATE_SCHEMA.to_owned();
+        state.warm_transition = Some(PendingWarmRunTransition {
+            receipt,
+            phase: "prepared".to_owned(),
+            command: attach,
+            result,
+        });
+        let store = DurableStateStore::new(&directory).unwrap();
+        store.save(&state).unwrap();
+        let (loaded, recovered) = store.load_or_create(&old).unwrap();
+        assert!(recovered);
+        assert_eq!(loaded.warm_transition, state.warm_transition);
+        assert!(
+            store.load_or_create(&next).is_err(),
+            "prepared state is old authority only"
+        );
+        let original = serde_json::to_value(&state).unwrap();
+        for (pointer, replacement) in [
+            ("/schema", json!(STATE_SCHEMA)),
+            ("/warmTransition/phase", json!("confirmed")),
+            (
+                "/warmTransition/receipt/transitionId",
+                json!("f".repeat(64)),
+            ),
+            (
+                "/warmTransition/receipt/newIdentity/runId",
+                json!("foreign_run"),
+            ),
+            ("/warmTransition/receipt/leaseExpiresAtUnixMs", json!(1)),
+            (
+                "/warmTransition/receipt/runnerDigest",
+                json!(format!("sha256:{}", "b".repeat(64))),
+            ),
+            (
+                "/warmTransition/receipt/connection/connectUrl",
+                json!("ws://127.0.0.1:9999/foreign"),
+            ),
+            ("/warmTransition/result/status", json!("failed")),
+            (
+                "/warmTransition/command/payload/paperclipNextAuthority/identity/itemId",
+                json!("foreign_item"),
+            ),
+            ("/ackedSourceSeq", json!(1)),
+        ] {
+            let mut changed = original.clone();
+            *changed.pointer_mut(pointer).unwrap() = replacement;
+            let changed: DurableState = serde_json::from_value(changed).unwrap();
+            store.save(&changed).unwrap();
+            assert!(
+                store.load_or_create(&old).is_err(),
+                "mutated {pointer} must be rejected"
+            );
+        }
+        let mut activating = DurableState::new(&next);
+        activating.schema = TRANSITION_STATE_SCHEMA.to_owned();
+        let mut pending = state.warm_transition.clone().unwrap();
+        pending.phase = "activating".to_owned();
+        activating.warm_transition = Some(pending);
+        store.save(&activating).unwrap();
+        store.load_or_create(&next).unwrap();
+        assert!(
+            store.load_or_create(&old).is_err(),
+            "activating state is new authority only"
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -1764,10 +2435,70 @@ mod tests {
         state
             .enqueue_event(&config, "runner.reconnected", EventPriority::P1, json!({}))
             .unwrap();
-        state.apply_ack(1).unwrap();
+        state.apply_ack(1, 2).unwrap();
         assert_eq!(state.outbox.len(), 1);
-        assert!(state.apply_ack(0).is_err());
-        assert!(state.apply_ack(3).is_err());
+        assert!(state.apply_ack(0, 2).is_err());
+        assert!(state.apply_ack(3, 2).is_err());
+    }
+
+    #[test]
+    fn session_goal_events_use_the_prp_v2_event_schema() {
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        state
+            .enqueue_event(
+                &config,
+                "session.goal.snapshot",
+                EventPriority::P0,
+                json!({"goal": null}),
+            )
+            .unwrap();
+        assert_eq!(
+            state.outbox[0].envelope.pointer("/payload/schema"),
+            Some(&json!("paperclip.prp.event.v2")),
+        );
+        assert_eq!(
+            state.outbox[0].envelope.pointer("/payload/schemaVersion"),
+            Some(&json!(2)),
+        );
+    }
+
+    #[test]
+    fn v1_acknowledgement_replays_latest_goal_state_for_v2() {
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        state
+            .enqueue_event(
+                &config,
+                "session.goal.updated",
+                EventPriority::P0,
+                json!({"goal": {"objective": "durable objective", "status": "active"}}),
+            )
+            .unwrap();
+
+        state.apply_ack(1, 1).unwrap();
+        assert!(state.outbox.is_empty());
+        assert_eq!(state.v2_replay_events["session.goal"].source_seq, 1);
+        validate_binding(&state, &config, false).unwrap();
+
+        state.restore_v2_replay_events(&config).unwrap();
+        assert_eq!(state.outbox.len(), 1);
+        assert_eq!(state.outbox[0].source_seq, 2);
+        assert_eq!(
+            state.outbox[0].envelope.pointer("/payload/eventType"),
+            Some(&json!("session.goal.updated")),
+        );
+        assert_eq!(
+            state.outbox[0]
+                .envelope
+                .pointer("/payload/payload/goal/objective"),
+            Some(&json!("durable objective")),
+        );
+
+        state.apply_ack(2, 2).unwrap();
+        assert!(state.outbox.is_empty());
+        assert!(state.v2_replay_events.is_empty());
+        validate_binding(&state, &config, false).unwrap();
     }
 
     #[test]
@@ -1786,6 +2517,65 @@ mod tests {
             state.begin_command(&command).unwrap(),
             CommandDisposition::Replay(result) if result.result == json!({"ok": true})
         ));
+    }
+
+    #[test]
+    fn cleanup_marker_prevents_compacting_its_original_terminal_receipt() {
+        let directory = temporary_directory("cleanup-command-capacity");
+        let _ = fs::remove_dir_all(&directory);
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let mut terminal = command("original-terminal", 1);
+        terminal.command_type = "runner.suspend".to_owned();
+        state.begin_command(&terminal).unwrap();
+        let failed = state
+            .fail_command(&terminal, json!({"code": "original_failure"}))
+            .unwrap();
+        state.lifecycle = "suspended".to_owned();
+        state.pending_provider_cleanup = Some(PendingTerminalDelivery {
+            command_id: terminal.command_id.clone(),
+            controller_seq: terminal.controller_seq,
+            command_type: terminal.command_type.clone(),
+            lifecycle: "suspended".to_owned(),
+        });
+        for sequence in 2..=MAX_RECENT_COMMANDS as u64 {
+            let mut stop = command(&format!("failed-stop-{sequence}"), sequence);
+            stop.command_type = "turn.stop".to_owned();
+            assert_eq!(
+                state.begin_command(&stop).unwrap(),
+                CommandDisposition::Execute
+            );
+            state
+                .fail_command(&stop, json!({"code": "stop_failed"}))
+                .unwrap();
+        }
+        let unchanged = serde_json::to_value(&state).unwrap();
+        let mut overflow = command("one-stop-too-many", MAX_RECENT_COMMANDS as u64 + 1);
+        overflow.command_type = "turn.stop".to_owned();
+        state
+            .begin_command(&overflow)
+            .expect_err("a new command cannot compact the active cleanup authority");
+        assert_eq!(serde_json::to_value(&state).unwrap(), unchanged);
+        assert_eq!(state.processed_commands.len(), MAX_RECENT_COMMANDS);
+        assert_eq!(
+            state.processed_commands.get(&terminal.command_id),
+            Some(&failed)
+        );
+        assert!(
+            matches!(state.begin_command(&terminal).unwrap(), CommandDisposition::Replay(result) if result == failed)
+        );
+        store.save(&state).unwrap();
+        let (restored, _) = store.load_or_create(&config).unwrap();
+        assert_eq!(
+            restored.pending_provider_cleanup,
+            state.pending_provider_cleanup
+        );
+        assert_eq!(
+            restored.processed_commands.get(&terminal.command_id),
+            Some(&failed)
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -2018,6 +2808,212 @@ mod tests {
     }
 
     #[test]
+    fn semantic_finish_digest_covers_the_exact_finally_persisted_long_summary() {
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        let summary = format!(
+            "token=do-not-persist {} Authorization: Bearer late-provider-secret COMPLETE-DURABLE-SUMMARY",
+            "A complete paragraph for the user. ".repeat(180)
+        );
+        let input = json!({"summary": summary});
+        let once_sanitized_input =
+            sanitize_semantic_tool_input("paperclip_finish", &input).unwrap();
+        let payload = json!({
+            "semantic_tool": {
+                "schema": "paperclip.prp.semantic_tool.v1",
+                "schemaVersion": 1,
+                "phase": "input",
+                "operationId": "paperclip_finish",
+                "callId": "call-1",
+                "correlation": {
+                    "runId": "run_1",
+                    "normalizedSessionId": "session_1",
+                    "turnId": "turn_1",
+                    "itemId": "item_1",
+                },
+                "idempotencyKey": null,
+                "content": {
+                    "digest": crate::provider_bridge::semantic_value_digest(&once_sanitized_input),
+                    "redactionDisposition": "digest_only",
+                    "references": [],
+                },
+                "input": once_sanitized_input,
+            },
+        });
+
+        state
+            .enqueue_executor_event(
+                &config,
+                "provider-event-1".to_owned(),
+                "semantic_tool.input".to_owned(),
+                EventPriority::P0,
+                payload.clone(),
+            )
+            .unwrap();
+
+        let transmitted = state.outbox[0]
+            .envelope
+            .pointer("/payload/payload/semantic_tool/input")
+            .unwrap();
+        let transmitted_summary = transmitted["summary"].as_str().unwrap();
+        assert!(transmitted_summary.starts_with("token=[REDACTED] "));
+        assert!(transmitted_summary.ends_with(" COMPLETE-DURABLE-SUMMARY"));
+        assert!(!transmitted_summary.contains("do-not-persist"));
+        assert!(!transmitted_summary.contains("late-provider-secret"));
+        assert!(transmitted_summary.contains("Authorization: Bearer [REDACTED]"));
+        assert!(!transmitted_summary.contains("…[truncated]"));
+        assert_eq!(
+            state.outbox[0]
+                .envelope
+                .pointer("/payload/payload/semantic_tool/content/digest"),
+            Some(&Value::String(
+                crate::provider_bridge::semantic_value_digest(transmitted)
+            ))
+        );
+        assert!(state
+            .has_executor_event_receipt(
+                "provider-event-1",
+                "semantic_tool.input",
+                EventPriority::P0,
+                &payload,
+            )
+            .unwrap());
+
+        let mut changed_tail = payload.clone();
+        changed_tail["semantic_tool"]["input"]["summary"] = Value::String(format!(
+            "token=[REDACTED] {} CHANGED-DURABLE-SUMMARY",
+            "A complete paragraph for the user. ".repeat(180)
+        ));
+        assert!(state
+            .has_executor_event_receipt(
+                "provider-event-1",
+                "semantic_tool.input",
+                EventPriority::P0,
+                &changed_tail,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("content digest does not match"));
+
+        let generic = sanitize_value(&json!({"summary": "B".repeat(5_000)}));
+        assert!(generic["summary"]
+            .as_str()
+            .unwrap()
+            .ends_with("…[truncated]"));
+    }
+
+    #[test]
+    fn semantic_summary_capacity_and_digest_resealing_fail_closed_outside_exact_finish_input() {
+        let mut small_frame = config(PathBuf::from("unused"));
+        small_frame.max_frame_bytes = 8_000;
+        let mut state = DurableState::new(&small_frame);
+        let long_input = json!({"summary": "C".repeat(12_000)});
+        let safe_input = sanitize_semantic_tool_input("paperclip_finish", &long_input).unwrap();
+        let exact_payload = json!({
+            "semantic_tool": {
+                "schema": "paperclip.prp.semantic_tool.v1",
+                "schemaVersion": 1,
+                "phase": "input",
+                "operationId": "paperclip_finish",
+                "content": {
+                    "digest": semantic_value_digest(&safe_input),
+                },
+                "input": safe_input,
+            },
+        });
+        assert!(state
+            .enqueue_event(
+                &small_frame,
+                "semantic_tool.input",
+                EventPriority::P0,
+                exact_payload,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("transport frame limit"));
+        assert!(sanitize_semantic_tool_input(
+            "paperclip_finish",
+            &json!({"summary": "C".repeat(MAX_COMPLETION_SUMMARY_CHARS + 1)}),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("12,000 character limit"));
+
+        let config = config(PathBuf::from("unused"));
+        let mut tampered_state = DurableState::new(&config);
+        let once_sanitized = sanitize_value(&json!({"summary": "D".repeat(5_000)}));
+        let original_digest = semantic_value_digest(&once_sanitized);
+        let tampered_schema_payload = json!({
+            "semantic_tool": {
+                "schema": "paperclip.prp.semantic_tool.tampered",
+                "phase": "input",
+                "operationId": "paperclip_finish",
+                "content": {"digest": original_digest.clone()},
+                "input": once_sanitized,
+            },
+        });
+        tampered_state
+            .enqueue_event(
+                &config,
+                "semantic_tool.input",
+                EventPriority::P0,
+                tampered_schema_payload,
+            )
+            .unwrap();
+        let transmitted = tampered_state.outbox[0]
+            .envelope
+            .pointer("/payload/payload/semantic_tool/input")
+            .unwrap();
+        assert!(transmitted["summary"]
+            .as_str()
+            .unwrap()
+            .ends_with("…[truncated]"));
+        assert_eq!(
+            tampered_state.outbox[0]
+                .envelope
+                .pointer("/payload/payload/semantic_tool/content/digest"),
+            Some(&Value::String(original_digest))
+        );
+
+        let mut generic_state = DurableState::new(&config);
+        let generic_once_sanitized = sanitize_value(&json!({
+            "query": "E".repeat(5_000),
+        }));
+        let generic_payload = json!({
+            "semantic_tool": {
+                "schema": "paperclip.prp.semantic_tool.v1",
+                "schemaVersion": 1,
+                "phase": "input",
+                "operationId": "search_context",
+                "content": {"digest": semantic_value_digest(&generic_once_sanitized)},
+                "input": generic_once_sanitized,
+            },
+        });
+        generic_state
+            .enqueue_event(
+                &config,
+                "semantic_tool.input",
+                EventPriority::P0,
+                generic_payload,
+            )
+            .unwrap();
+        let transmitted = generic_state.outbox[0]
+            .envelope
+            .pointer("/payload/payload/semantic_tool/input")
+            .unwrap();
+        assert!(transmitted["query"]
+            .as_str()
+            .unwrap()
+            .ends_with("…[truncated]"));
+        assert_eq!(
+            generic_state.outbox[0]
+                .envelope
+                .pointer("/payload/payload/semantic_tool/content/digest"),
+            Some(&Value::String(semantic_value_digest(transmitted)))
+        );
+    }
+
+    #[test]
     fn durable_question_sets_preserve_safe_identity_and_redact_display_text() {
         let config = config(PathBuf::from("unused"));
         let mut state = DurableState::new(&config);
@@ -2147,6 +3143,301 @@ mod tests {
             sanitized["nested"]["authorizationBoundary"],
             json!("[REDACTED]")
         );
+    }
+
+    #[test]
+    fn goal_usage_fields_are_not_mistaken_for_credentials() {
+        let sanitized = sanitize_value(&json!({
+            "tokenBudgetControl": true,
+            "tokenBudget": 4096,
+            "tokensUsed": 128,
+            "accessToken": "secret-value",
+        }));
+        assert_eq!(sanitized["tokenBudgetControl"], json!(true));
+        assert_eq!(sanitized["tokenBudget"], json!(4096));
+        assert_eq!(sanitized["tokensUsed"], json!(128));
+        assert_eq!(sanitized["accessToken"], json!("[REDACTED]"));
+    }
+
+    #[test]
+    fn semantic_redaction_preserves_benign_token_system_prose() {
+        let prose = "Offer a simple token system so guests can exchange items even when their contributions differ in quantity.";
+        let game_prose = "Use a balanced token economy. Award one token for each accepted game, with an optional second token for especially large or complex games.";
+        let observed_prose = "The token economy. Name the token station the Cobalt Counter. Close with a last selection round, token reconciliation, and cleanup. Collect suggestions about accessibility, and token limits without changing the token rules. A jade token design can include a large printed symbol. Ask whether the token values felt fair. Plan standard token exchanges. Record each participant’s name and token count. Set a one-token limit per household and ask whether the one-token rule felt fair.";
+        for text in [
+            prose,
+            game_prose,
+            observed_prose,
+            "Use a token system.",
+            "Describe the token system clearly.",
+            "The simple token system is fair.",
+            "Use a simple TOKEN SYSTEM",
+            "Use a balanced token system.",
+            "Use a transparent token system to keep exchanges fair.",
+            "Describe the transparent token system clearly.",
+            "One token can equal one standard game.",
+            "Award one token per accepted game.",
+            "The token economy",
+            "Name the token station the Cobalt Counter and provide tokens in unusual titles.",
+            "Close with a last selection round, token reconciliation, and cleanup.",
+            "Collect suggestions about accessibility, and token limits.",
+            "Avoid changing the token rules.",
+            "A jade token design can include a large printed symbol and a serial number.",
+            "Ask whether the token values felt fair.",
+            "Plan standard token exchanges.",
+            "The token design should be difficult to copy.",
+            "Record each participant’s name and token count on a simple public tally sheet.",
+            "Set a one-token limit per household.",
+            "Ask whether the one-token rule felt fair.",
+        ] {
+            assert_eq!(redact_text(text), text);
+            assert_eq!(
+                sanitize_value(&json!({"summary": text})),
+                json!({"summary": text})
+            );
+        }
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        let command = command("command_token_prose", 1);
+        state.begin_command(&command).unwrap();
+        let result = json!({
+            "result": {"schema": "paperclip.prp.run_result.v1", "summary": observed_prose},
+            "nested": {"token": "system", "diagnostic": "token=system"},
+        });
+        state.complete_command(&command, result).unwrap();
+        let completed = state.processed_commands.get(&command.command_id).unwrap();
+        assert_eq!(completed.result["result"]["summary"], json!(observed_prose));
+        assert_eq!(completed.result["nested"]["token"], json!("[REDACTED]"));
+        assert_eq!(
+            completed.result["nested"]["diagnostic"],
+            json!("token=[REDACTED]")
+        );
+    }
+
+    #[test]
+    fn token_system_prose_exception_preserves_credential_redaction() {
+        for (input, expected) in [
+            ("token system", "token [REDACTED]"),
+            (
+                "request failed token system",
+                "request failed token [REDACTED]",
+            ),
+            ("a token=system", "a token=[REDACTED]"),
+            ("a token:system", "a token:[REDACTED]"),
+            ("a token \"system\"", "a token \"[REDACTED]\""),
+            ("a token 'system'", "a token '[REDACTED]'"),
+            ("a \"token\" system", "a \"token\" [REDACTED]"),
+            ("a access_token system", "a access_token [REDACTED]"),
+            ("a --token system", "a --token [REDACTED]"),
+            ("a token system-secret", "a token [REDACTED]"),
+            ("a token system.signed-value", "a token [REDACTED]"),
+            ("a token system,secret", "a token [REDACTED],secret"),
+            ("a token system;secret", "a token [REDACTED];secret"),
+            ("a token system)secret", "a token [REDACTED])secret"),
+            ("a token system=secret", "a token [REDACTED]"),
+            ("a token system:secret", "a token [REDACTED]"),
+            ("a token secret-value", "a token [REDACTED]"),
+            (
+                "a balanced token economy-secret",
+                "a balanced token [REDACTED]",
+            ),
+            ("the token economy-secret", "the token [REDACTED]"),
+            ("the token station-secret", "the token [REDACTED]"),
+            ("the token rules-secret", "the token [REDACTED]"),
+            ("and token limits-secret", "and token [REDACTED]"),
+            ("a jade token design-secret", "a jade token [REDACTED]"),
+            ("the token values-secret", "the token [REDACTED]"),
+            (
+                "standard token exchanges-secret",
+                "standard token [REDACTED]",
+            ),
+            ("and token count-secret", "and token [REDACTED]"),
+            ("one-token limit-secret", "one-token [REDACTED]"),
+            ("one-token rule-secret", "one-token [REDACTED]"),
+            ("one-token secret-value", "one-token [REDACTED]"),
+            ("the token design=secret", "the token [REDACTED]"),
+            ("token design", "token [REDACTED]"),
+            (
+                "token reconciliation-secret, and cleanup",
+                "token [REDACTED], and cleanup",
+            ),
+            (
+                "after token reconciliation, and cleanup-secret",
+                "after token [REDACTED], and cleanup-secret",
+            ),
+            ("token rules", "token [REDACTED]"),
+            ("token limits", "token [REDACTED]"),
+            ("the token=rules", "the token=[REDACTED]"),
+            ("the token \"rules\"", "the token \"[REDACTED]\""),
+            ("the --token rules", "the --token [REDACTED]"),
+            ("the access_token rules", "the access_token [REDACTED]"),
+            (
+                "a balanced token system-secret",
+                "a balanced token [REDACTED]",
+            ),
+            (
+                "a balanced token ghp_abcdefghijklmnopqrstuvwxyz",
+                "a balanced token [REDACTED]",
+            ),
+            ("one token bearer-secret", "one token [REDACTED]"),
+            (
+                "second token sk-abcdefghijklmnop",
+                "second token [REDACTED]",
+            ),
+            ("one token for-secret", "one token [REDACTED]"),
+            ("second token per.secret", "second token [REDACTED]"),
+            ("one token can rotate", "one token [REDACTED] rotate"),
+            ("one token can-equal-secret", "one token [REDACTED]"),
+            (
+                "one token can equal-secret",
+                "one token [REDACTED] equal-secret",
+            ),
+            ("one token can=secret-value", "one token [REDACTED]"),
+            ("stone token for", "stone token [REDACTED]"),
+            ("one-time token for", "one-time token [REDACTED]"),
+            ("one access_token for", "one access_token [REDACTED]"),
+            ("one --token can equal", "one --token [REDACTED] equal"),
+            ("one \"token\" can equal", "one \"token\" [REDACTED] equal"),
+            ("one token \"for\"", "one token \"[REDACTED]\""),
+            ("one token for=secret", "one token [REDACTED]"),
+            ("a token\nsystem", "a token\n[REDACTED]"),
+            ("meta token system", "meta token [REDACTED]"),
+            (
+                "a token system; token=secret-value",
+                "a token system; token=[REDACTED]",
+            ),
+            (
+                "a token system; Bearer secret-value",
+                "a token system; Bearer [REDACTED]",
+            ),
+            (
+                "a token system; sk-abcdefghijklmnop",
+                "a token system; [REDACTED]",
+            ),
+            (
+                "a token system; ghp_abcdefghijklmnopqrstuvwxyz",
+                "a token system; [REDACTED]",
+            ),
+            (
+                "a token system; eyJabcdefghi.abcdefghijk.lmnopqrstuv",
+                "a token system; [REDACTED]",
+            ),
+        ] {
+            let redacted = redact_text(input);
+            assert_eq!(redacted, expected, "{input}");
+            assert_eq!(redact_text(&redacted), redacted);
+        }
+    }
+
+    #[test]
+    fn transparent_token_system_requires_exact_prose_boundaries() {
+        for lead in ["a transparent ", "the transparent "] {
+            for (tail, redacted_tail) in [
+                ("token=system", "token=[REDACTED]"),
+                ("token:system", "token:[REDACTED]"),
+                ("token \"system\"", "token \"[REDACTED]\""),
+                ("token 'system'", "token '[REDACTED]'"),
+                ("\"token\" system", "\"token\" [REDACTED]"),
+                ("access_token system", "access_token [REDACTED]"),
+                ("--token system", "--token [REDACTED]"),
+                ("token\nsystem", "token\n[REDACTED]"),
+                ("token system-secret", "token [REDACTED]"),
+                ("token system.signed-value", "token [REDACTED]"),
+                ("token system=secret", "token [REDACTED]"),
+                ("token system:secret", "token [REDACTED]"),
+                ("token system,secret", "token [REDACTED],secret"),
+                ("token system;secret", "token [REDACTED];secret"),
+                ("token system)secret", "token [REDACTED])secret"),
+                ("token arbitrary", "token [REDACTED]"),
+                ("token ghp_abcdefghijklmnopqrstuvwxyz", "token [REDACTED]"),
+                ("token sk-abcdefghijklmnop", "token [REDACTED]"),
+            ] {
+                let input = format!("{lead}{tail}");
+                assert_eq!(redact_text(&input), format!("{lead}{redacted_tail}"));
+            }
+        }
+        for input in [
+            "meta-transparent token system",
+            "a very transparent token system",
+            "a transparent token economy",
+            "one token clerk, one demonstration host",
+        ] {
+            assert!(redact_text(input).contains("[REDACTED]"), "{input}");
+        }
+        assert_eq!(
+            sanitize_value(&json!({
+                "summary": "Use a transparent token system; Bearer fixture-secret.",
+                "token": "system.",
+            })),
+            json!({
+                "summary": "Use a transparent token system; Bearer [REDACTED].",
+                "token": "[REDACTED]",
+            })
+        );
+    }
+
+    #[test]
+    fn sentence_period_redaction_keeps_credentials_and_embedded_dots_private() {
+        for (input, expected) in [
+            ("token=fixture-secret. Next.", "token=[REDACTED]. Next."),
+            ("token fixture-secret.", "token [REDACTED]."),
+            (
+                "token fixture.secret.suffix. Next.",
+                "token [REDACTED]. Next.",
+            ),
+            ("token fixture.secret.suffix", "token [REDACTED]"),
+            ("token fixture-secret..", "token [REDACTED]"),
+            ("token .", "token [REDACTED]"),
+            ("token=fixture-secret.\nRetry.", "token=[REDACTED].\nRetry."),
+            ("token=fixture-secret., Next.", "token=[REDACTED], Next."),
+            (
+                "token \"fixture-secret.\" Next.",
+                "token \"[REDACTED]\" Next.",
+            ),
+            ("token 'fixture-secret.' Next.", "token '[REDACTED]' Next."),
+            ("Bearer fixture-secret. Next.", "Bearer [REDACTED]. Next."),
+            (
+                "Authorization: Bearer fixture-secret. Next.",
+                "Authorization: Bearer [REDACTED]. Next.",
+            ),
+            (
+                "eyJabcdefghi.abcdefghijk.lmnopqrstuv. Next.",
+                "[REDACTED]. Next.",
+            ),
+            (
+                "eyJabcdefghi.abcdefghijk.lmnopqrstuv.wxyzabcdefg.",
+                "[REDACTED].",
+            ),
+            (
+                "token=eyJabcdefghi.abcdefghijk.lmnopqrstuv.",
+                "token=[REDACTED].",
+            ),
+            (
+                "Review token rules. Send a thank-you.",
+                "Review token [REDACTED]. Send a thank-you.",
+            ),
+        ] {
+            let redacted = redact_text(input);
+            assert_eq!(redacted, expected, "{input}");
+            assert_eq!(redact_text(&redacted), expected, "{input}");
+        }
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        let command = command("command_token_sentence_prose", 1);
+        state.begin_command(&command).unwrap();
+        state.complete_command(&command, json!({
+            "result": {
+                "schema": "paperclip.prp.run_result.v1",
+                "summary": "Use a transparent token system. Remove token=fixture-secret. Next.",
+            },
+            "nested": {"token": "fixture-secret."},
+        })).unwrap();
+        let completed = state.processed_commands.get(&command.command_id).unwrap();
+        assert_eq!(
+            completed.result["result"]["summary"],
+            json!("Use a transparent token system. Remove token=[REDACTED]. Next.")
+        );
+        assert_eq!(completed.result["nested"]["token"], json!("[REDACTED]"));
     }
 
     #[test]

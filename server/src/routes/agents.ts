@@ -1,10 +1,14 @@
+import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@paperclipai/adapter-utils";
+import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
+import type { ChatChannelService } from "../services/chat-channels.js";
+import { activityLog, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
+import { sha256Digest } from "../services/feedback-redaction.js";
 import {
   agentSkillSyncSchema,
   agentMineInboxQuerySchema,
@@ -86,7 +90,7 @@ import type {
   AdapterEnvironmentTestResult,
 } from "@paperclipai/adapter-utils";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
-import type { AdapterAuthSignal, AdapterAuthSignalResponse } from "@paperclipai/shared";
+import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingClaim } from "@paperclipai/shared";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
@@ -182,6 +186,8 @@ import {
 import {
   checkStagedCredentialReadiness,
   promoteDeviceLoginCredential,
+  readSubscriptionAccountId,
+  resolveManagedCodexHomeDir,
   withAccountHomeSecretMutationLock,
   withCodexAccountHomePromotionLock,
 } from "@paperclipai/adapter-codex-local/server";
@@ -209,6 +215,7 @@ import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
+import { buildOnboardingFirstAgentInstructionsBundle } from "../services/onboarding-first-task-assets.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
@@ -396,9 +403,35 @@ async function anySecretNamesAccountHome(
   return true;
 }
 
+// Serializes hire requests that share a company and run, so a retried POST
+// cannot race its original past the idempotency lookup: the lookup, the create
+// and the activity record all happen inside the held section. In-process is
+// the right scope because a Paperclip instance serves its API from one
+// process, and the lock is keyed narrowly enough that unrelated hires never
+// wait on each other.
+const hireRunLocks = new Map<string, Promise<void>>();
+
+async function withHireRunLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = hireRunLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chained = previous.then(() => current);
+  hireRunLocks.set(key, chained);
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (hireRunLocks.get(key) === chained) hireRunLocks.delete(key);
+  }
+}
+
 export function agentRoutes(
   db: Db,
   options: {
+    chatRunRetries?: Pick<ChatChannelService, "prepareFailedChatRunRetry" | "processFailedChatRunRetry">;
     pluginWorkerManager?: PluginWorkerManager;
     /** The active deployment mode. The confidential transport guard reads it. */
     deploymentMode?: DeploymentMode;
@@ -699,8 +732,9 @@ export function agentRoutes(
   // nothing outlives one login attempt.
   const pendingAccountHomeSecretCommits = new Map<
     string,
-    { secretId: string; secretName: string; accountHomeDir: string }
+    { secretId: string; secretName: string; accountHomeDir: string; companyIdentityDiffers: boolean }
   >();
+
 
   const adapterLoginService = createDeviceLoginService({
     store: adapterLoginStore,
@@ -806,6 +840,26 @@ export function agentRoutes(
             }
             const secretName = `CODEX_HOME_${handle}`;
             const accountHomeDir = result.accountHomeDir;
+            // Whether the company default home ended on a DIFFERENT account
+            // than this login. The promotion's own company-home write already
+            // ran (a seed or same-identity refresh landed this login there; a
+            // different account's claim was kept), so this read observes the
+            // post-promotion state. The flag rides to the owner status read,
+            // where the client offers binding the agent to this account — the
+            // only way the login can take effect while another account holds
+            // the company slot. Any read failure degrades to `false`: the
+            // client then simply offers nothing, never a wrong bind.
+            const companyIdentityDiffers = await (async () => {
+              try {
+                const companyAuthBytes = await readFile(
+                  path.join(resolveManagedCodexHomeDir(process.env, context.companyId), "auth.json"),
+                );
+                const companyIdentity = readSubscriptionAccountId(companyAuthBytes);
+                return companyIdentity !== null && companyIdentity !== result.accountId;
+              } catch {
+                return false;
+              }
+            })();
             const existingSecret = await secretsSvc.getByName(context.companyId, secretName);
             if (existingSecret) {
               // A same-name secret already exists. Confirm it still names this
@@ -827,6 +881,7 @@ export function agentRoutes(
                 secretId: existingSecret.id,
                 secretName,
                 accountHomeDir,
+                companyIdentityDiffers,
               });
               return;
             }
@@ -850,6 +905,7 @@ export function agentRoutes(
                 secretId: createdSecret.id,
                 secretName,
                 accountHomeDir,
+                companyIdentityDiffers,
               });
             } catch (err) {
               if (err instanceof HttpError && err.status === 409) {
@@ -874,6 +930,7 @@ export function agentRoutes(
                   secretId: winningSecret.id,
                   secretName,
                   accountHomeDir,
+                  companyIdentityDiffers,
                 });
                 return;
               }
@@ -951,7 +1008,13 @@ export function agentRoutes(
               pending.secretName,
               pending.accountHomeDir,
             );
-            return commit();
+            // The claim rides the terminal write itself, so it is durable, it
+            // survives a restart, and it can never exist for a session that
+            // did not authenticate.
+            return commit({
+              secretId: pending.secretId,
+              companyIdentityDiffers: pending.companyIdentityDiffers,
+            });
           });
         },
       },
@@ -1816,7 +1879,38 @@ export function agentRoutes(
     if (!row || row.adapterType !== adapterType || row.startedByUserId !== requestingUserId) {
       return null;
     }
-    return adapterLoginService.readOwnerSession(publicSessionId, companyId, requestingUserId);
+    const session = await adapterLoginService.readOwnerSession(publicSessionId, companyId, requestingUserId);
+    if (!session) return session;
+    // Merge the non-secret account-binding claim onto an authenticated Codex
+    // owner read. The claim was written atomically with the terminal status
+    // (see runTerminalCommit), so it survives restarts and can never appear
+    // on a session that did not authenticate.
+    //
+    // Read the claim from a row fetched AFTER the status was observed, never
+    // from the earlier authorization read: the terminal write can land
+    // between the two, and a poll that sees `authenticated` paired with the
+    // older claim-less row would drop the claim forever (polling stops at
+    // the terminal status). The claim-and-status write is one atomic update,
+    // so any row read after `authenticated` was observed carries the claim.
+    // Shape-validate the durable value rather than trusting a cast: a
+    // malformed claim degrades to "offer nothing", never to a wrong bind.
+    if (row.adapterType === "codex_local" && session.status === "authenticated") {
+      const settled = await adapterLoginStore.getByPublicId(publicSessionId, companyId);
+      const raw = settled?.resultClaim;
+      if (
+        raw &&
+        typeof raw.secretId === "string" &&
+        raw.secretId.length > 0 &&
+        typeof raw.companyIdentityDiffers === "boolean"
+      ) {
+        const claim: CodexAccountBindingClaim = {
+          secretId: raw.secretId,
+          companyIdentityDiffers: raw.companyIdentityDiffers,
+        };
+        return { ...session, codexAccountBinding: claim };
+      }
+    }
+    return session;
   }
 
   async function assertCanReadConfigurations(req: Request, companyId: string) {
@@ -2070,19 +2164,14 @@ export function agentRoutes(
     ) {
       return input.nextAdapterConfig;
     }
-    if (input.previousAdapterType !== "codex_local") {
-      throw unprocessable(
-        `Cannot convert ${input.previousAdapterType} to Paperclip Runner while only the Codex provider is available.`,
-        { code: "paperclip_runner_adapter_conversion_unsupported" },
-      );
+    const defaults = paperclipRunnerTransitionConfig(input.previousAdapterType, input.previousAdapterConfig.model, input.nextAdapterConfig.provider);
+    if (!["claude_local", "codex_local", "opencode_local"].includes(input.previousAdapterType)
+      && !isPaperclipRunnerProvider(input.nextAdapterConfig.provider)) {
+      throw unprocessable("Select a Paperclip Runner provider before converting this agent.");
     }
-    return {
-      ...input.nextAdapterConfig,
-      model:
-        asNonEmptyString(input.nextAdapterConfig.model)
-        ?? asNonEmptyString(input.previousAdapterConfig.model)
-        ?? DEFAULT_CODEX_LOCAL_MODEL,
-    };
+    const next = { ...defaults, ...input.nextAdapterConfig };
+    if (!asNonEmptyString(next.model)) next.model = defaults.model;
+    return normalizeLegacyRunnerProvider(next);
   }
 
   function assertProviderTraceSettingTransition(
@@ -2477,6 +2566,27 @@ export function agentRoutes(
       allowPendingApprovalConfigUpdate: true,
     });
     return (updated as T | null) ?? { ...agent, adapterConfig: nextAdapterConfig };
+  }
+
+  // Resolve the server-owned instruction bundle for the onboarding first agent.
+  // The marker seeds the chief-of-staff persona (server/src/onboarding-assets/
+  // first-task/chief-of-staff/AGENTS.md, placeholders filled) over the agent's
+  // entry file instead of the generic default. Honored only for board-authored
+  // requests — the onboarding wizard runs as the board — so a client marker
+  // alone cannot swap another actor's instructions. The generic execution
+  // contract (default/AGENTS.md) is still appended on every run, unchanged.
+  async function resolveOnboardingFirstAgentBundle(params: {
+    onboardingFirstAgent: unknown;
+    actorType: string;
+    agentName: string;
+    organizationName: string | null;
+  }): Promise<{ files: Record<string, string>; entryFile: string } | undefined> {
+    if (params.onboardingFirstAgent !== true) return undefined;
+    if (params.actorType !== "board") return undefined;
+    return buildOnboardingFirstAgentInstructionsBundle({
+      agentName: params.agentName,
+      organizationName: params.organizationName,
+    });
   }
 
   function assertNoNewAgentLegacyPromptTemplate(adapterType: string, adapterConfig: Record<string, unknown>) {
@@ -2947,14 +3057,22 @@ export function agentRoutes(
       res.status(404).json({ error: "Environment not found" });
       return;
     }
-    if (type === "opencode_local" && environment && environment.driver !== "local") {
-      const adapter = requireServerAdapter(type);
-      res.json(adapter.models ?? []);
+    const provider = asNonEmptyString(req.query.provider);
+    if (type === "paperclip_runner" && provider && !isPaperclipRunnerProvider(provider)) {
+      throw unprocessable("Unknown Paperclip Runner provider");
+    }
+    const modelAdapterType = type === "paperclip_runner"
+      ? provider === "acpx" || provider === "claude_managed" ? "claude_local"
+        : provider === "opencode" ? "opencode_local"
+          : provider === "aws_agentcore" ? type : "codex_local"
+      : type;
+    if (modelAdapterType === "opencode_local" && environment && environment.driver !== "local") {
+      res.json(requireServerAdapter(modelAdapterType).models ?? []);
       return;
     }
     const models = refresh
-      ? await refreshAdapterModels(type)
-      : await listAdapterModels(type);
+      ? await refreshAdapterModels(modelAdapterType)
+      : await listAdapterModels(modelAdapterType);
     res.json(models);
   });
 
@@ -3128,6 +3246,19 @@ export function agentRoutes(
           return;
         }
 
+        // Probe-only credentials bypass storage, not authorization. The schema
+        // allows only provider key names; they never enter persisted config.
+        if (req.body.testCredentials) {
+          effectiveAdapterConfig = {
+            ...effectiveAdapterConfig,
+            env: { ...parseObject(effectiveAdapterConfig.env), ...req.body.testCredentials },
+          };
+          // Hermes authenticates the gateway itself through a top-level field.
+          // Keep its draft key out of persistence normalization, like env keys.
+          if (type === "hermes_gateway" && req.body.testCredentials.API_SERVER_KEY) {
+            effectiveAdapterConfig.apiKey = req.body.testCredentials.API_SERVER_KEY;
+          }
+        }
         const result = await adapter.testEnvironment({
           companyId,
           adapterType: type,
@@ -3989,6 +4120,14 @@ export function agentRoutes(
     res.json(state);
   });
 
+  // Fingerprint the whole validated hire request so a retried POST inside the
+  // same run (e.g. an agent that misread the 201 body and re-sent the payload)
+  // resolves to the hire it already created instead of spawning a "Name 2"
+  // duplicate, while a corrected payload (a different adapter config, budget,
+  // manager, skills, instructions, ...) counts as a new hire. Hashed, so no
+  // adapter-config secret lands in the activity log.
+  const hireFingerprint = (body: unknown): string => sha256Digest(body);
+
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId);
@@ -4005,6 +4144,9 @@ export function agentRoutes(
       // The apply-existing flag is not an agent column. The server binds the
       // fixed reference to the owner stored value with no login round trip.
       applyStoredClaudeLogin: hireApplyStoredClaudeLogin,
+      // The onboarding marker is not an agent column. The server consumes it to
+      // seed the chief-of-staff persona; it never reaches the insert values.
+      onboardingFirstAgent: hireOnboardingFirstAgent,
       ...hireInput
     } = req.body;
     hireInput.adapterType = await assertSelectableAdapterType(hireInput.adapterType);
@@ -4068,122 +4210,135 @@ export function agentRoutes(
       return;
     }
 
-    const requiresApproval = company.requireBoardApprovalForNewAgents;
-    const status = requiresApproval ? "pending_approval" : "idle";
-    const createdAgent = await svc.create(
-      companyId,
-      {
-        id: hiredAgentId,
-        ...normalizedHireInput,
-        status,
-        spentMonthlyCents: 0,
-        lastHeartbeatAt: null,
-      },
-      {
-        claudeLogin: {
-          storedSessionId: hireStoredSessionId ?? null,
-          ownerUserId: req.actor.type === "agent" ? null : (req.actor.userId ?? null),
-          // The apply-existing path runs only for a user actor. The owner comes
-          // from the actor, so an agent actor never reaches the no-claim bind.
-          applyExistingWithoutClaim:
-            req.actor.type !== "agent" && hireApplyStoredClaudeLogin === true,
+    // Idempotency within a run: if this run already created a hire from this
+    // exact request, return that hire instead of creating a duplicate. The
+    // creating agent cannot pause or delete its own hire (board-only), so a
+    // doubled hire would otherwise strand a phantom teammate the board never
+    // approved. The lookup, the create and the activity record run under one
+    // lock per company + run, so two overlapping retries cannot both miss.
+    const requestFingerprint = hireFingerprint(req.body);
+    const runId = req.actor.runId && isUuidLike(req.actor.runId) ? req.actor.runId : null;
+    const performHire = async (): Promise<{ status: 200 | 201; body: Record<string, unknown> }> => {
+      if (runId) {
+        const priorHires = await db
+          .select({ entityId: activityLog.entityId, details: activityLog.details })
+          .from(activityLog)
+          .where(
+            and(
+              eq(activityLog.companyId, companyId),
+              eq(activityLog.runId, runId),
+              eq(activityLog.action, "agent.hire_created"),
+            ),
+          )
+          .orderBy(desc(activityLog.createdAt));
+        const match = priorHires.find(
+          (row) => (row.details as Record<string, unknown> | null)?.hireFingerprint === requestFingerprint,
+        );
+        if (match) {
+          const existingAgent = await svc.getById(match.entityId);
+          if (existingAgent && existingAgent.status !== "terminated") {
+            const priorApprovalId = (match.details as Record<string, unknown> | null)?.approvalId;
+            const existingApproval =
+              typeof priorApprovalId === "string" ? await approvalsSvc.getById(priorApprovalId) : null;
+            return { status: 200, body: { agent: existingAgent, approval: existingApproval, idempotent: true } };
+          }
+        }
+      }
+
+      const requiresApproval = company.requireBoardApprovalForNewAgents;
+      const status = requiresApproval ? "pending_approval" : "idle";
+      const createdAgent = await svc.create(
+        companyId,
+        {
+          id: hiredAgentId,
+          ...normalizedHireInput,
+          status,
+          spentMonthlyCents: 0,
+          lastHeartbeatAt: null,
         },
-      },
-    );
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+        {
+          claudeLogin: {
+            storedSessionId: hireStoredSessionId ?? null,
+            ownerUserId: req.actor.type === "agent" ? null : (req.actor.userId ?? null),
+            // The apply-existing path runs only for a user actor. The owner comes
+            // from the actor, so an agent actor never reaches the no-claim bind.
+            applyExistingWithoutClaim:
+              req.actor.type !== "agent" && hireApplyStoredClaudeLogin === true,
+          },
+        },
+      );
+      const onboardingFirstAgentBundle = await resolveOnboardingFirstAgentBundle({
+        onboardingFirstAgent: hireOnboardingFirstAgent,
+        actorType: req.actor.type,
+        agentName: createdAgent.name,
+        organizationName: company.name ?? null,
+      });
+      const agent = await materializeDefaultInstructionsBundleForNewAgent(
+        createdAgent,
+        onboardingFirstAgentBundle ?? instructionsBundle,
+      );
 
-    let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
-    const actor = getActorInfo(req);
+      let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
+      const actor = getActorInfo(req);
 
-    if (requiresApproval) {
-      const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
-      const requestedAdapterConfig =
-        redactEventPayload(
-          (agent.adapterConfig ?? normalizedHireInput.adapterConfig) as Record<string, unknown>,
-        ) ?? {};
-      const requestedRuntimeConfig =
-        redactEventPayload(
-          (normalizedHireInput.runtimeConfig ?? agent.runtimeConfig) as Record<string, unknown>,
-        ) ?? {};
-      const requestedMetadata =
-        redactEventPayload(
-          ((normalizedHireInput.metadata ?? agent.metadata ?? {}) as Record<string, unknown>),
-        ) ?? {};
-      approval = await approvalsSvc.create(companyId, {
-        type: "hire_agent",
-        requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
-        requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
-        status: "pending",
-        payload: {
-          name: normalizedHireInput.name,
-          role: normalizedHireInput.role,
-          title: normalizedHireInput.title ?? null,
-          icon: normalizedHireInput.icon ?? null,
-          reportsTo: normalizedHireInput.reportsTo ?? null,
-          capabilities: normalizedHireInput.capabilities ?? null,
-          adapterType: requestedAdapterType,
-          adapterConfig: requestedAdapterConfig,
-          runtimeConfig: requestedRuntimeConfig,
-          budgetMonthlyCents:
-            typeof normalizedHireInput.budgetMonthlyCents === "number"
-              ? normalizedHireInput.budgetMonthlyCents
-              : agent.budgetMonthlyCents,
-          desiredSkills: desiredSkillAssignment.desiredSkills,
-          metadata: requestedMetadata,
-          agentId: agent.id,
+      if (requiresApproval) {
+        const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
+        const requestedAdapterConfig =
+          redactEventPayload(
+            (agent.adapterConfig ?? normalizedHireInput.adapterConfig) as Record<string, unknown>,
+          ) ?? {};
+        const requestedRuntimeConfig =
+          redactEventPayload(
+            (normalizedHireInput.runtimeConfig ?? agent.runtimeConfig) as Record<string, unknown>,
+          ) ?? {};
+        const requestedMetadata =
+          redactEventPayload(
+            ((normalizedHireInput.metadata ?? agent.metadata ?? {}) as Record<string, unknown>),
+          ) ?? {};
+        approval = await approvalsSvc.create(companyId, {
+          type: "hire_agent",
           requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
-          requestedConfigurationSnapshot: {
+          requestedByUserId: actor.actorType === "user" ? actor.actorId : null,
+          status: "pending",
+          payload: {
+            name: normalizedHireInput.name,
+            role: normalizedHireInput.role,
+            title: normalizedHireInput.title ?? null,
+            icon: normalizedHireInput.icon ?? null,
+            reportsTo: normalizedHireInput.reportsTo ?? null,
+            capabilities: normalizedHireInput.capabilities ?? null,
             adapterType: requestedAdapterType,
             adapterConfig: requestedAdapterConfig,
             runtimeConfig: requestedRuntimeConfig,
+            budgetMonthlyCents:
+              typeof normalizedHireInput.budgetMonthlyCents === "number"
+                ? normalizedHireInput.budgetMonthlyCents
+                : agent.budgetMonthlyCents,
             desiredSkills: desiredSkillAssignment.desiredSkills,
+            metadata: requestedMetadata,
+            agentId: agent.id,
+            requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,
+            requestedConfigurationSnapshot: {
+              adapterType: requestedAdapterType,
+              adapterConfig: requestedAdapterConfig,
+              runtimeConfig: requestedRuntimeConfig,
+              desiredSkills: desiredSkillAssignment.desiredSkills,
+            },
           },
-        },
-        decisionNote: null,
-        decidedByUserId: null,
-        decidedAt: null,
-        updatedAt: new Date(),
-      });
-
-      if (sourceIssueIds.length > 0) {
-        await issueApprovalsSvc.linkManyForApproval(approval.id, sourceIssueIds, {
-          agentId: actor.actorType === "agent" ? actor.actorId : null,
-          userId: actor.actorType === "user" ? actor.actorId : null,
+          decisionNote: null,
+          decidedByUserId: null,
+          decidedAt: null,
+          updatedAt: new Date(),
         });
+
+        if (sourceIssueIds.length > 0) {
+          await issueApprovalsSvc.linkManyForApproval(approval.id, sourceIssueIds, {
+            agentId: actor.actorType === "agent" ? actor.actorId : null,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+          });
+        }
       }
-    }
 
-    await logActivity(db, {
-      companyId,
-      actorType: actor.actorType,
-      actorId: actor.actorId,
-      agentId: actor.agentId,
-      runId: actor.runId,
-      agentApiKeyId: actor.agentApiKeyId,
-      action: "agent.hire_created",
-      entityType: "agent",
-      entityId: agent.id,
-      details: {
-        name: agent.name,
-        role: agent.role,
-        requiresApproval,
-        approvalId: approval?.id ?? null,
-        issueIds: sourceIssueIds,
-        desiredSkills: desiredSkillAssignment.desiredSkills,
-      },
-    });
-    const telemetryClient = getTelemetryClient();
-    if (telemetryClient) {
-      trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
-    }
-
-    await applyDefaultAgentTaskAssignGrant(
-      companyId,
-      agent.id,
-      actor.actorType === "user" ? actor.actorId : null,
-    );
-
-    if (approval) {
       await logActivity(db, {
         companyId,
         actorType: actor.actorType,
@@ -4191,14 +4346,52 @@ export function agentRoutes(
         agentId: actor.agentId,
         runId: actor.runId,
         agentApiKeyId: actor.agentApiKeyId,
-        action: "approval.created",
-        entityType: "approval",
-        entityId: approval.id,
-        details: { type: approval.type, linkedAgentId: agent.id },
+        action: "agent.hire_created",
+        entityType: "agent",
+        entityId: agent.id,
+        details: {
+          name: agent.name,
+          role: agent.role,
+          requiresApproval,
+          approvalId: approval?.id ?? null,
+          issueIds: sourceIssueIds,
+          desiredSkills: desiredSkillAssignment.desiredSkills,
+          hireFingerprint: requestFingerprint,
+        },
       });
-    }
+      const telemetryClient = getTelemetryClient();
+      if (telemetryClient) {
+        trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
+      }
 
-    res.status(201).json({ agent, approval });
+      await applyDefaultAgentTaskAssignGrant(
+        companyId,
+        agent.id,
+        actor.actorType === "user" ? actor.actorId : null,
+      );
+
+      if (approval) {
+        await logActivity(db, {
+          companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "approval.created",
+          entityType: "approval",
+          entityId: approval.id,
+          details: { type: approval.type, linkedAgentId: agent.id },
+        });
+      }
+
+      return { status: 201, body: { agent, approval } };
+    };
+
+    const outcome = runId
+      ? await withHireRunLock(`${companyId}:${runId}`, performHire)
+      : await performHire();
+    res.status(outcome.status).json(outcome.body);
   });
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
@@ -4230,6 +4423,9 @@ export function agentRoutes(
       // The apply-existing flag is not an agent column. The server binds the
       // fixed reference to the owner stored value with no login round trip.
       applyStoredClaudeLogin: createApplyStoredClaudeLogin,
+      // The onboarding marker is not an agent column. The server consumes it to
+      // seed the chief-of-staff persona; it never reaches the insert values.
+      onboardingFirstAgent: createOnboardingFirstAgent,
       ...createInput
     } = req.body;
     createInput.adapterType = await assertSelectableAdapterType(createInput.adapterType);
@@ -4305,7 +4501,16 @@ export function agentRoutes(
         },
       },
     );
-    const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+    const onboardingFirstAgentBundle = await resolveOnboardingFirstAgentBundle({
+      onboardingFirstAgent: createOnboardingFirstAgent,
+      actorType: req.actor.type,
+      agentName: createdAgent.name,
+      organizationName: company.name ?? null,
+    });
+    const agent = await materializeDefaultInstructionsBundleForNewAgent(
+      createdAgent,
+      onboardingFirstAgentBundle ?? instructionsBundle,
+    );
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -4725,7 +4930,7 @@ export function agentRoutes(
       }
       let rawEffectiveAdapterConfig = requestedAdapterConfig
         ? restoreRedactedAgentEnv(requestedAdapterConfig, existingAdapterConfig)
-        : existingAdapterConfig;
+        : changingAdapterType ? {} : existingAdapterConfig;
       if (requestedAdapterConfig && !changingAdapterType && !replaceAdapterConfig) {
         rawEffectiveAdapterConfig = { ...existingAdapterConfig, ...rawEffectiveAdapterConfig };
       }
@@ -4749,6 +4954,9 @@ export function agentRoutes(
           previousAdapterConfig: existingAdapterConfig,
           nextAdapterConfig: rawEffectiveAdapterConfig,
         });
+      }
+      if (requestedAdapterType === "paperclip_runner") {
+        rawEffectiveAdapterConfig = normalizePaperclipRunnerAdapterConfig(requestedAdapterType, rawEffectiveAdapterConfig);
       }
       const existingRunnerProvider =
         existing.adapterType === "paperclip_runner"
@@ -5201,13 +5409,107 @@ export function agentRoutes(
       return;
     }
 
+    let wakePayload = req.body.payload ?? null;
+    if (req.body.failedRunId) {
+      assertBoard(req);
+      if (
+        req.body.reason !== "retry_failed_run" ||
+        (opts.source ?? "on_demand") !== "on_demand" ||
+        (req.body.triggerDetail ?? "manual") !== "manual" ||
+        req.body.forceFreshSession === true ||
+        req.body.debug
+      ) {
+        throw badRequest(
+          "An exact failed-run retry cannot override its execution context.",
+        );
+      }
+      const failedRun = await heartbeat.getRun(req.body.failedRunId);
+      if (
+        !failedRun ||
+        failedRun.companyId !== agent.companyId ||
+        failedRun.agentId !== agent.id
+      ) {
+        throw notFound("Failed run not found");
+      }
+      if (!["failed", "timed_out"].includes(failedRun.status)) {
+        throw conflict("Only a failed run can be retried.");
+      }
+      const failedContext = asRecord(failedRun.contextSnapshot) ?? {};
+      const issueId =
+        typeof failedContext.issueId === "string"
+          ? failedContext.issueId
+          : null;
+      const chatBinding = issueId
+        ? await db
+            .select({ id: chatConversations.id })
+            .from(chatConversations)
+            .where(
+              and(
+                eq(chatConversations.companyId, agent.companyId),
+                eq(chatConversations.issueId, issueId),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0])
+        : null;
+      if (chatBinding) {
+        if (!options.chatRunRetries || !req.actor.userId) {
+          throw conflict("Chat retry authorization is unavailable.", {
+            code: "chat_failed_run_retry_requires_authorized_context",
+          });
+        }
+        const retry = await db.transaction((tx) =>
+          options.chatRunRetries!.prepareFailedChatRunRetry(tx, {
+            companyId: agent.companyId,
+            issueId: issueId!,
+            agentId: agent.id,
+            failedRunId: failedRun.id,
+            initiatedByUserId: req.actor.userId!,
+          }),
+        );
+        let receipt;
+        try {
+          receipt = await options.chatRunRetries.processFailedChatRunRetry(
+            retry.actionId,
+          );
+        } catch {
+          // Admission is already committed. Infrastructure/read failure must
+          // not report refusal or cause the caller to mint a second request.
+          logger.warn(
+            { retryActionId: retry.actionId },
+            "chat retry dispatch deferred to durable worker",
+          );
+          receipt = { ...retry, runId: null, status: "queued" as const };
+        }
+        res.status(202).json(receipt);
+        return;
+      }
+      if (
+        typeof failedContext.source === "string" &&
+        failedContext.source.startsWith("chat:")
+      ) {
+        throw conflict(
+          "The failed chat request no longer has an authorized conversation.",
+          { code: "chat_failed_run_retry_requires_authorized_context" },
+        );
+      }
+      // Non-chat runs retain the existing retry path, but the selected server
+      // record—not caller-supplied task/comment markers—selects its task.
+      wakePayload = Object.fromEntries(
+        ["issueId", "taskId", "taskKey"].flatMap((key) =>
+          typeof failedContext[key] === "string"
+            ? [[key, failedContext[key]]]
+            : [],
+        ),
+      );
+    }
     const run = await heartbeat.wakeup(id, {
       source: opts.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
       reason: req.body.reason ?? null,
-      payload: req.actor.type === "agent" && req.body.payload
-        ? { ...req.body.payload, commentId: undefined, wakeCommentId: undefined, wakeCommentIds: undefined }
-        : req.body.payload ?? null,
+      payload: req.actor.type === "agent" && wakePayload
+        ? { ...wakePayload, commentId: undefined, wakeCommentId: undefined, wakeCommentIds: undefined }
+        : wakePayload,
       idempotencyKey: req.body.idempotencyKey ?? null,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
@@ -5283,6 +5585,9 @@ export function agentRoutes(
     // / missing bodies. Only forwards fields the caller actually supplied so
     // an empty body produces the original fixed-arg `heartbeat.invoke()`
     // shape exactly.
+    if (req.body?.failedRunId !== undefined) {
+      throw badRequest("Use the wakeup endpoint to retry an exact failed run.");
+    }
     const id = req.params.id as string;
     const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!agent) return;
@@ -6020,15 +6325,19 @@ export function agentRoutes(
         .limit(targetRunCount - liveRuns.length);
 
       const rows = [...liveRuns, ...recentRuns];
+      const projections = await executionProjectionsForRuns(db, companyId, rows.map(run => run.id));
       res.json(await Promise.all(rows.map(async (run) => runRedactions.redactForRun(companyId, run.id, {
         ...heartbeat.decorateActiveRunStatus(run),
+        execution: projections.get(run.id) ?? null,
         outputSilence: await heartbeat.buildRunOutputSilence(run),
       }))));
       return;
     }
 
+    const projections = await executionProjectionsForRuns(db, companyId, liveRuns.map(run => run.id));
     res.json(await Promise.all(liveRuns.map(async (run) => runRedactions.redactForRun(companyId, run.id, {
       ...heartbeat.decorateActiveRunStatus(run),
+        execution: projections.get(run.id) ?? null,
       outputSilence: await heartbeat.buildRunOutputSilence(run),
     }))));
   });
@@ -6044,7 +6353,7 @@ export function agentRoutes(
       run.companyId,
       run.id,
       redactCurrentUserValue(
-        { ...decoratedRun, identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+        { ...decoratedRun, execution: await executionProjectionForRun(db, run.companyId, run.id), identityHistory: await listRunIdentityContexts(db, run.companyId, run.id), retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
         await getCurrentUserRedactionOptions(),
       ),
     ));
@@ -6622,10 +6931,22 @@ export function agentRoutes(
       )
       .orderBy(desc(heartbeatRuns.createdAt));
 
+    const projections = await executionProjectionsForRuns(db, issue.companyId, liveRuns.map(run => run.id));
     res.json(await Promise.all(liveRuns.map(async (run) => ({
       ...heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id }),
+      execution: projections.get(run.id) ?? null,
       outputSilence: await heartbeat.buildRunOutputSilence({ ...run, companyId: issue.companyId }),
     }))));
+  });
+
+  router.get("/issues/:issueId/execution", async (req, res) => {
+    const issue = await getAccessibleResource(req, res, issueService(db).getById(req.params.issueId as string), "Issue not found");
+    if (!issue) return;
+    const [run] = await db.select({ id: heartbeatRuns.id, agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, issue.companyId),
+      sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+    )).orderBy(sql`case when ${heartbeatRuns.id} = ${issue.executionRunId} then 0 when ${heartbeatRuns.status} = 'running' then 1 else 2 end`, desc(heartbeatRuns.createdAt)).limit(1);
+    res.json(run ? { runId: run.id, agentId: run.agentId, recoveryAction: await issueRecoveryActionService(db).getActiveForIssue(issue.companyId, issue.id), execution: await executionProjectionForRun(db, issue.companyId, run.id) } : null);
   });
 
   router.get("/issues/:issueId/active-run", async (req, res) => {
@@ -6672,6 +6993,7 @@ export function agentRoutes(
     const decoratedRun = heartbeat.decorateActiveRunStatus(run, { companyId: issue.companyId, issueId: issue.id });
     res.json({
       ...decoratedRun,
+      execution: await executionProjectionForRun(db, issue.companyId, run.id),
       agentId: agent.id,
       agentName: agent.name,
       adapterType: agent.adapterType,

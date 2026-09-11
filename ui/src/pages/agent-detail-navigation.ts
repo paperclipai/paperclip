@@ -8,6 +8,7 @@ export type AgentDetailView =
   | "runtime"
   | "secrets"
   | "tools"
+  | "channels"
   | "permissions"
   | "api-keys"
   | "revisions"
@@ -31,8 +32,9 @@ export const AGENT_DETAIL_NAVIGATION: ReadonlyArray<{
     get label() { return t("localizationAgents.navigation_Runtime"); },
     items: [
       { value: "runtime", get label() { return t("localizationAgents.navigation_Harness_Runtime"); } },
-      { value: "secrets", get label() { return t("localizationAgents.navigation_Secrets"); } },
-      { value: "tools", get label() { return t("localizationAgents.navigation_Tools"); } },
+      { value: "secrets", get label() { return t("pages.agentDetail.breadcrumbSecrets"); } },
+      { value: "tools", get label() { return t("pages.agentDetail.breadcrumbTools"); } },
+      { value: "channels", get label() { return t("agentSetup.channels"); } },
     ],
   },
   {
@@ -51,6 +53,7 @@ export function parseAgentDetailView(value: string | null): AgentLocalDetailView
   if (value === "runtime" || value === "configure" || value === "configuration") return "runtime";
   if (value === "secrets") return "secrets";
   if (value === "tools") return "tools";
+  if (value === "channels") return "channels";
   if (value === "permissions" || value === "trust") return "permissions";
   if (value === "api-keys" || value === "keys") return "api-keys";
   if (value === "revisions" || value === "history") return "revisions";

@@ -52,23 +52,32 @@ export const HTTP2_BRIDGE_ENABLE_PUSH = false;
  * Open streams. The host keeps one forward, its request body, and its
  * response body alive for the life of a stream, and — before this file binds
  * each forward to its own stream's abort signal — a forward can outlive its
- * stream's own HTTP/2 slot until the forward's own timeout runs out. Counting
- * every retained `Buffer` and string copy of one stream's request and
- * response body against the {@link DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES}
- * body limit (`sandbox-callback-bridge.ts`) gives an accounting peak of eight
- * times that limit for one live forward. This bound is the per-route
- * in-flight-body budget: `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 8 *
- * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES` bytes = 4 * 8 * 262,144
- * bytes = 8,388,608 bytes for one route.
+ * stream's own HTTP/2 slot until the forward's own timeout runs out. The
+ * forward path carries a request body and a response body as raw `Buffer`
+ * values with no string copy. Counting every retained `Buffer` copy of one
+ * stream's request and response body against the
+ * {@link DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES} body limit
+ * (`sandbox-callback-bridge.ts`) gives an accounting peak of four times that
+ * limit for one live forward. This bound is the per-route in-flight-body
+ * budget: `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 4 *
+ * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES` bytes = 4 * 4 * 10,551,296
+ * bytes = 168,820,736 bytes (161 MiB) for one route. {@link
+ * HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES} enforces this figure as a real, live
+ * cap on every reservation, so one busy route cannot pass it, no matter how
+ * much of the process-wide ceiling below still sits free.
  *
- * Known aggregate behavior: this budget applies to one route only. The host
- * process admits up to `DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` (128, in
- * `plugin-worker-manager.ts`) routes at the same time, and each route holds
- * its own 8,388,608-byte peak. The process can therefore retain up to
- * 1,073,741,824 bytes (1 GiB) of live body data across every route at once.
- * This document accepts that ceiling: the host tracks no process-wide byte
- * total, so no single route can starve another route's own budget, but the
- * host also enforces no smaller sum across every route.
+ * Aggregate behavior: the host process admits up to
+ * `DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` (128, in `plugin-worker-manager.ts`)
+ * routes at the same time. The aggregate across every route is bounded too:
+ * every stream's {@link BridgeBodyReservation} owner also reserves against
+ * the shared {@link HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES} total
+ * (1,073,741,824 bytes, 1 GiB), so the process retains no more than that
+ * many live body bytes no matter how many routes or streams run at once. One
+ * full-size stream's four retained copies cost `4 * 10,551,296` =
+ * 42,205,184 bytes of that total, so the process admits at least 25
+ * concurrent full-size streams, spread across at least six routes each at
+ * their own per-route ceiling, before it starts denying the rest with a 503
+ * response.
  */
 export const HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS = 4;
 /** One decompressed header list. The Node default is 65535. */
@@ -111,6 +120,176 @@ export const HTTP2_BRIDGE_SERVER_OPTIONS: http2.ServerOptions = {
   streamResetRate: HTTP2_BRIDGE_STREAM_RESET_RATE,
   streamResetBurst: HTTP2_BRIDGE_STREAM_RESET_BURST,
 };
+
+// ---------------------------------------------------------------------------
+// Process-wide body byte reservation
+// ---------------------------------------------------------------------------
+
+/**
+ * The most process memory, in bytes, this file lets every route hold in live
+ * request and response body buffers at the same time. Every
+ * {@link BridgeBodyReservation} owner reserves against this one shared
+ * total, so no combination of concurrent streams, across every route, can
+ * retain more than this many bytes at once. This value keeps the accepted
+ * process ceiling at 1,073,741,824 bytes (1 GiB) — the same ceiling
+ * `doc/observability.md` already accepted before the per-body limit rose to
+ * 10 MiB — now enforced by this reservation instead of left as an unenforced
+ * document note. See the per-route budget comment above for the full
+ * accounting.
+ */
+export const HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES = 1024 * 1024 * 1024;
+
+/**
+ * The most memory, in bytes, one route (one {@link createHttp2BridgeServer}
+ * call, one sandbox run's bridge session) may hold in live request and
+ * response body buffers at the same time, on top of the shared process-wide
+ * ceiling above. This is the same per-route figure the budget comment above
+ * already derives from stream concurrency: naming it here and checking it on
+ * every reservation stops one busy route from spending the whole
+ * process-wide ceiling and denying every sibling route admission. See that
+ * comment for the full accounting.
+ */
+export const HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES =
+  HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS * 4 * DEFAULT_SANDBOX_CALLBACK_BRIDGE_MAX_BODY_BYTES;
+
+// The process-wide running total, in bytes, every `BridgeBodyReservation`
+// owner reserves against. Module-scope state is correct here: one host
+// process runs one bridge, and every route and every stream in that process
+// must share the same ceiling.
+let reservedProcessBodyBytes = 0;
+
+/**
+ * One route's own running total, in bytes, against
+ * {@link HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES}. `createHttp2BridgeServer`
+ * creates exactly one ledger per route and every stream that route ever
+ * handles reserves against it, so one route's own activity can never pass
+ * its own ceiling, regardless of how much of the process-wide total remains
+ * free for other routes.
+ */
+export interface BridgeRouteBodyLedger {
+  /**
+   * Reserve `byteCount` more bytes against this route's own ceiling. Returns
+   * `false`, and reserves nothing, when the new route total would pass
+   * {@link HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES}.
+   */
+  reserve(byteCount: number): boolean;
+  /** Release `byteCount` bytes this route previously reserved. */
+  release(byteCount: number): void;
+  /** The bytes this route currently holds. */
+  readonly reservedBytes: number;
+}
+
+/** Create one fresh {@link BridgeRouteBodyLedger}, holding zero bytes. One
+ * `createHttp2BridgeServer` call creates exactly one, before its first
+ * stream, and every stream that route ever handles shares it. */
+export function createBridgeRouteBodyLedger(): BridgeRouteBodyLedger {
+  let reservedBytes = 0;
+  return {
+    reserve(byteCount: number): boolean {
+      if (reservedBytes + byteCount > HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES) {
+        return false;
+      }
+      reservedBytes += byteCount;
+      return true;
+    },
+    release(byteCount: number): void {
+      reservedBytes -= byteCount;
+    },
+    get reservedBytes(): number {
+      return reservedBytes;
+    },
+  };
+}
+
+/**
+ * One HTTP/2 stream's reservation owner. `handleStream` creates exactly one
+ * owner per stream and releases it in its existing `finally` block, so every
+ * live request or response body buffer that stream produces reserves
+ * against the same owner, and the process reclaims those bytes exactly one
+ * time when the stream ends.
+ */
+export interface BridgeBodyReservation {
+  /**
+   * Reserve `byteCount` more bytes against the process-wide total, and
+   * against this owner's route ledger when it has one. Returns `false` and
+   * reserves nothing against either total when either check fails. A failed
+   * reservation allocates nothing: the caller must not copy the bytes it
+   * asked to reserve.
+   */
+  reserve(byteCount: number): boolean;
+  /**
+   * Release every byte this owner currently holds. Safe to call more than
+   * one time: a second call releases nothing.
+   */
+  release(): void;
+  /** The bytes this owner currently holds. */
+  readonly heldBytes: number;
+}
+
+/**
+ * Create one fresh {@link BridgeBodyReservation} owner, holding zero bytes.
+ * A caller that passes `routeLedger` also checks and reserves against that
+ * route's own ceiling on every call, isolating this owner's route from every
+ * other route sharing the process-wide total. A caller with no route to
+ * isolate (a test filling only the process-wide total, for example) omits
+ * it, and this owner checks the process-wide ceiling alone.
+ */
+export function createBridgeBodyReservation(routeLedger?: BridgeRouteBodyLedger): BridgeBodyReservation {
+  let heldBytes = 0;
+  let released = false;
+  return {
+    reserve(byteCount: number): boolean {
+      if (released) return false;
+      if (reservedProcessBodyBytes + byteCount > HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES) {
+        return false;
+      }
+      if (routeLedger && !routeLedger.reserve(byteCount)) {
+        return false;
+      }
+      reservedProcessBodyBytes += byteCount;
+      heldBytes += byteCount;
+      return true;
+    },
+    release(): void {
+      if (released) return;
+      released = true;
+      reservedProcessBodyBytes -= heldBytes;
+      routeLedger?.release(heldBytes);
+      heldBytes = 0;
+    },
+    get heldBytes(): number {
+      return heldBytes;
+    },
+  };
+}
+
+/**
+ * A reservation owner denied a request or response body copy because the
+ * process-wide ceiling would otherwise be passed. The stream handler answers
+ * 503 for this error, not 413: a 413 tells a caller its own body is too
+ * large; a 503 tells a caller the host is busy and to retry later.
+ */
+export class BridgeProcessCapacityError extends Error {
+  constructor() {
+    super("The bridge host reached its reserved process body byte ceiling. Retry later.");
+    this.name = "BridgeProcessCapacityError";
+  }
+}
+
+/**
+ * Test-only. Reset the process-wide reservation total to zero. A test file
+ * that exercises {@link createBridgeBodyReservation} must call this between
+ * tests, so a reservation one test left unreleased cannot lower the ceiling
+ * for a later test.
+ */
+export function resetBridgeBodyReservationsForTest(): void {
+  reservedProcessBodyBytes = 0;
+}
+
+/** Test-only. Read the current process-wide reservation total. */
+export function getBridgeBodyReservedBytesForTest(): number {
+  return reservedProcessBodyBytes;
+}
 
 // ---------------------------------------------------------------------------
 // Duplex channel adapter
@@ -463,6 +642,24 @@ export const DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_LIFETIME_CEILING_MS = 480_000;
  * session that carries a stalled stream would otherwise hold `close()` open
  * forever, because `session.close()` waits for every open stream to end. */
 export const DEFAULT_HTTP2_BRIDGE_CLOSE_GRACE_MS = 5_000;
+/** The default bound the capacity-denial (503) response path waits for its
+ * queued write to settle before it force-destroys the stream. A normal,
+ * draining peer settles well inside this bound, so it still receives the
+ * full 503 body. A stalled peer that never grants the flow-control credit
+ * the write needs would otherwise hold this stream's reservation and
+ * {@link HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS} slot open forever. */
+export const DEFAULT_HTTP2_BRIDGE_CAPACITY_DENIAL_SETTLE_DEADLINE_MS = 5_000;
+/** The default bound the completed-response (normal, non-denial) write path
+ * waits for its queued write to settle before it force-destroys the stream.
+ * A normal, draining peer settles well inside this bound. A stalled peer
+ * that grants no flow-control credit would otherwise hold this stream's
+ * reservation and {@link HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS} slot open
+ * forever — the same failure mode the capacity-denial path already guards
+ * against. Set above {@link DEFAULT_HTTP2_BRIDGE_CAPACITY_DENIAL_SETTLE_DEADLINE_MS}
+ * because a completed response can carry a full-size body (up to the
+ * configured body-byte ceiling), not just a small JSON error payload, so a
+ * slow-but-genuine peer needs more room to drain it. */
+export const DEFAULT_HTTP2_BRIDGE_RESPONSE_WRITE_SETTLE_DEADLINE_MS = 30_000;
 
 function startHttp2BridgePingWatchdog(
   session: http2.ServerHttp2Session,
@@ -517,7 +714,7 @@ function startHttp2BridgePingWatchdog(
 export interface Http2BridgeForwardResult {
   status: number;
   headers?: Record<string, string>;
-  body?: Buffer | string;
+  body?: Buffer;
 }
 
 /**
@@ -538,6 +735,16 @@ export interface Http2BridgeForwardRequest {
    * never fires for any other stream or for the session.
    */
   signal: AbortSignal;
+  /**
+   * This stream's one {@link BridgeBodyReservation} owner. A forward handler
+   * that itself retains a full response body buffer — `execution-target.ts`
+   * does, through `forwardBridgeRequest`'s optional `reservation` option —
+   * reserves against this same owner, so the request body and the response
+   * body of one stream share one ceiling. `handleStream` releases this owner
+   * exactly one time, after the forward call settles; the forward handler
+   * must never release it.
+   */
+  reservation: BridgeBodyReservation;
 }
 
 export type Http2BridgeForwardHandler = (
@@ -587,6 +794,14 @@ export interface CreateHttp2BridgeServerOptions {
    * session to close on its own before it force-destroys the session. The
    * default is {@link DEFAULT_HTTP2_BRIDGE_CLOSE_GRACE_MS}. */
   closeGraceMs?: number;
+  /** The bound the capacity-denial (503) response path waits for its queued
+   * write to settle before it force-destroys the stream. The default is
+   * {@link DEFAULT_HTTP2_BRIDGE_CAPACITY_DENIAL_SETTLE_DEADLINE_MS}. */
+  capacityDenialSettleDeadlineMs?: number;
+  /** The bound the completed-response (normal) write path waits for its
+   * queued write to settle before it force-destroys the stalled stream. The
+   * default is {@link DEFAULT_HTTP2_BRIDGE_RESPONSE_WRITE_SETTLE_DEADLINE_MS}. */
+  responseWriteSettleDeadlineMs?: number;
   /** The cap, in bytes, on data this server holds once a bound `Duplex`
    * reports its readable side is full (`push()` returns `false`). Past this
    * cap the server treats the channel as stuck, not merely slow: see
@@ -667,13 +882,21 @@ export interface Http2BridgeBodyBounds {
  * stream ends for any reason at all — a normal end, an error, a timeout- or
  * shutdown-triggered `destroy()`, or a peer reset — so the promise always
  * settles and the caller never awaits a stream that already went away.
+ *
+ * `onChunk` and `onEnd` decide what the read retains, if anything:
+ * {@link readHttp2StreamBody} accumulates chunks and reserves against a
+ * {@link BridgeBodyReservation}; {@link drainHttp2StreamBody} discards every
+ * chunk and reserves nothing. Either callback may throw to reject the read
+ * (a denied reservation, for example) — the throw destroys the stream the
+ * same way a size, idle, or lifetime fault does.
  */
-function readHttp2StreamBody(
+function readOrDrainHttp2StreamBody<T>(
   stream: http2.ServerHttp2Stream,
   bounds: Http2BridgeBodyBounds,
-): Promise<Buffer> {
+  onChunk: (chunk: Buffer, totalBytes: number) => void,
+  onEnd: () => T,
+): Promise<T> {
   return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
     let totalBytes = 0;
     let settled = false;
     let idleTimer: ReturnType<typeof setTimeout>;
@@ -709,15 +932,150 @@ function readHttp2StreamBody(
         stream.destroy();
         return;
       }
-      chunks.push(chunk);
+      try {
+        onChunk(chunk, totalBytes);
+      } catch (error) {
+        settle(() => reject(error instanceof Error ? error : new Error(String(error))));
+        // A denied reservation answers 503 through the caller's own
+        // `respondJson` call, after this promise rejects — destroying the
+        // stream here, before that call runs, would make it a no-op (a
+        // destroyed stream refuses `.respond()`). The caller destroys the
+        // stream itself, once its response is actually on the wire. Every
+        // other body-read fault has no such response to protect, so it
+        // destroys the stream immediately, exactly as before.
+        if (!(error instanceof BridgeProcessCapacityError)) {
+          stream.destroy();
+        }
+        return;
+      }
       // The chunk is real progress, so the peer is not stalled: reset the
       // idle bound. The lifetime ceiling timer above does not reset here.
       armIdleTimer();
     });
-    stream.once("end", () => settle(() => resolve(Buffer.concat(chunks))));
+    stream.once("end", () => {
+      let result: T;
+      try {
+        result = onEnd();
+      } catch (error) {
+        settle(() => reject(error instanceof Error ? error : new Error(String(error))));
+        return;
+      }
+      settle(() => resolve(result));
+    });
     stream.once("error", (error) => settle(() => reject(error instanceof Error ? error : new Error(String(error)))));
     stream.once("aborted", () => settle(() => reject(new Error("Bridge request stream aborted."))));
     stream.once("close", () => settle(() => reject(new Error("Bridge request stream closed before it completed."))));
+  });
+}
+
+/**
+ * Read one request body into a `Buffer`. When the caller passes a
+ * `reservation`, this reserves each chunk's bytes against it before the
+ * chunk joins the retained array, and reserves the concatenated buffer's own
+ * byte count before `Buffer.concat` allocates it — the chunk array and the
+ * concatenated buffer are two separate live copies, so both reserve. A
+ * denied reservation rejects with {@link BridgeProcessCapacityError} and
+ * destroys the stream, retaining no further chunk.
+ */
+function readHttp2StreamBody(
+  stream: http2.ServerHttp2Stream,
+  bounds: Http2BridgeBodyBounds,
+  reservation?: BridgeBodyReservation,
+): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let retainedBytes = 0;
+  return readOrDrainHttp2StreamBody(
+    stream,
+    bounds,
+    (chunk, totalBytes) => {
+      if (reservation && !reservation.reserve(chunk.byteLength)) {
+        throw new BridgeProcessCapacityError();
+      }
+      chunks.push(chunk);
+      retainedBytes = totalBytes;
+    },
+    () => {
+      if (reservation && !reservation.reserve(retainedBytes)) {
+        throw new BridgeProcessCapacityError();
+      }
+      return Buffer.concat(chunks);
+    },
+  );
+}
+
+/**
+ * Drain and discard one denied stream's request body, under the same size,
+ * idle, and lifetime bounds an authenticated request gets, but retaining no
+ * chunk and reserving no bytes. `denyRequest` calls this instead of
+ * {@link readHttp2StreamBody}, so a stream that never carries a valid bridge
+ * token cannot retain a full body buffer merely by sending one.
+ */
+function drainHttp2StreamBody(stream: http2.ServerHttp2Stream, bounds: Http2BridgeBodyBounds): Promise<void> {
+  return readOrDrainHttp2StreamBody(
+    stream,
+    bounds,
+    () => {
+      // No `chunks.push`: a denied stream's body content never reaches the
+      // forward handler, so this reader retains no chunk and reserves
+      // nothing against the process ceiling.
+    },
+    () => undefined,
+  );
+}
+
+/**
+ * Wait until a stream's queued write actually leaves process memory, or
+ * until the stream closes for any other reason. `stream.end(body)` only
+ * queues `body` for asynchronous transmission: Node keeps the bytes in
+ * memory until HTTP/2 flow control lets them flow, which a slow or
+ * backpressured peer can delay well past the moment `end()` returns. A
+ * caller that reserves the response body's bytes must hold that reservation
+ * across this whole wait, not merely across the call to `end()`, or a
+ * backpressured response keeps bytes in memory the ledger already believes
+ * it reclaimed.
+ *
+ * `finish` is the normal settle: every queued byte reached the session. A
+ * `close` or an `error` settle the wait the same way, so a peer reset or a
+ * destroyed stream cannot leave a caller waiting forever for a `finish`
+ * that will never come.
+ *
+ * `deadlineMs`, when given, bounds the wait itself: past that many
+ * milliseconds with none of the three events above, this resolves anyway.
+ * A peer that neither drains the write nor resets nor errors the stream —
+ * one that simply stalls, granting no flow-control credit — would otherwise
+ * hold the wait open forever with none of the three settle events ever
+ * firing. The caller stays responsible for destroying the stream once this
+ * resolves; a bounded resolve here does not by itself free the stream's
+ * slot or its reservation.
+ *
+ * The returned `settled` flag tells the caller which way this resolved:
+ * `true` for a genuine `finish`/`close`/`error` event, `false` for the
+ * deadline. A caller that must free the stream's slot only when the peer
+ * truly stalled reads this flag instead of destroying an already-finished
+ * stream unconditionally.
+ */
+function waitForHttp2StreamWriteToSettle(
+  stream: http2.ServerHttp2Stream,
+  deadlineMs?: number,
+): Promise<{ settled: boolean }> {
+  if (stream.writableFinished || stream.destroyed || stream.closed) return Promise.resolve({ settled: true });
+  return new Promise((resolve) => {
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const onSettle = (settled: boolean): void => {
+      stream.removeListener("finish", onFinish);
+      stream.removeListener("close", onFinish);
+      stream.removeListener("error", onFinish);
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      resolve({ settled });
+    };
+    const onFinish = (): void => onSettle(true);
+    stream.once("finish", onFinish);
+    stream.once("close", onFinish);
+    stream.once("error", onFinish);
+    if (deadlineMs !== undefined) {
+      deadlineTimer = setTimeout(() => onSettle(false), deadlineMs);
+      deadlineTimer.unref?.();
+    }
   });
 }
 
@@ -741,7 +1099,10 @@ function respondJson(stream: http2.ServerHttp2Stream, status: number, body: unkn
  * peer that leaves the body unfinished keeps the stream open, holding one
  * of the {@link HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS} slots for as long as
  * it chooses. Nothing awaits the discard; the caller has already answered
- * the request and moves on to the next stream.
+ * the request and moves on to the next stream. The discard retains no
+ * chunk and reserves no process byte budget: a stream that fails the bridge
+ * token check gets no reservation, so it cannot retain a full body buffer
+ * merely by sending one.
  */
 function denyRequest(
   stream: http2.ServerHttp2Stream,
@@ -751,7 +1112,7 @@ function denyRequest(
 ): void {
   respondJson(stream, status, body);
   if (stream.destroyed || stream.closed) return;
-  readHttp2StreamBody(stream, bounds).catch(() => {
+  drainHttp2StreamBody(stream, bounds).catch(() => {
     // The idle or lifetime bound above already destroyed the stream, or the
     // peer reset it first. Either way the slot is free; the discarded body
     // content is irrelevant to a denial.
@@ -773,6 +1134,10 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
   const requestBodyLifetimeCeilingMs =
     options.requestBodyLifetimeCeilingMs ?? DEFAULT_HTTP2_BRIDGE_REQUEST_BODY_LIFETIME_CEILING_MS;
   const closeGraceMs = options.closeGraceMs ?? DEFAULT_HTTP2_BRIDGE_CLOSE_GRACE_MS;
+  const capacityDenialSettleDeadlineMs =
+    options.capacityDenialSettleDeadlineMs ?? DEFAULT_HTTP2_BRIDGE_CAPACITY_DENIAL_SETTLE_DEADLINE_MS;
+  const responseWriteSettleDeadlineMs =
+    options.responseWriteSettleDeadlineMs ?? DEFAULT_HTTP2_BRIDGE_RESPONSE_WRITE_SETTLE_DEADLINE_MS;
   const maxBufferedReadBytes = options.maxBufferedReadBytes ?? DEFAULT_HTTP2_BRIDGE_MAX_BUFFERED_READ_BYTES;
   const readBackpressureStallMs =
     options.readBackpressureStallMs ?? DEFAULT_HTTP2_BRIDGE_READ_BACKPRESSURE_STALL_MS;
@@ -787,6 +1152,11 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
 
   const server = http2.createServer(HTTP2_BRIDGE_SERVER_OPTIONS);
   const activeSessions = new Set<http2.ServerHttp2Session>();
+  // One route ledger for this one `createHttp2BridgeServer` call. Every
+  // stream this route ever handles reserves against it, so this route's own
+  // activity can never pass its own share of the process-wide ceiling and
+  // deny a sibling route admission.
+  const routeLedger = createBridgeRouteBodyLedger();
 
   async function handleStream(
     stream: http2.ServerHttp2Stream,
@@ -804,6 +1174,17 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
     stream.once("close", abortForThisStream);
     stream.once("aborted", abortForThisStream);
     stream.once("error", abortForThisStream);
+    // One reservation owner for this one stream's entire life. Every live
+    // request or response body buffer this stream produces reserves against
+    // this same owner; the `finally` block below releases it exactly one
+    // time, on every exit path (a deny, a body-read fault, a forward fault,
+    // or a completed response), including a peer reset or a timeout, both of
+    // which route through the abort listeners above into the forward call's
+    // combined signal, so the owner keeps its bytes reserved until that
+    // forward call actually settles. It reserves against this route's own
+    // ledger too, so it can never spend more than this route's own share of
+    // the process-wide ceiling.
+    const reservation = createBridgeBodyReservation(routeLedger);
     try {
       // Accepted security fix 4: the constant-time bridge-token compare runs
       // before route processing and before header processing. This host check
@@ -838,8 +1219,24 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
 
       let body: Buffer;
       try {
-        body = await readHttp2StreamBody(stream, bodyBounds);
+        body = await readHttp2StreamBody(stream, bodyBounds, reservation);
       } catch (error) {
+        if (error instanceof BridgeProcessCapacityError) {
+          // The reader above left this stream open (undestroyed) exactly so
+          // this response could reach the wire. `respondJson` only queues
+          // the 503 write; destroying the stream right after queues a
+          // RST_STREAM before a backpressured peer drains it, so the client
+          // can see a reset instead of the 503. Wait for the write to
+          // settle first, then destroy to free this stream's
+          // concurrent-stream slot. The wait carries its own deadline: a
+          // stalled peer that grants no flow-control credit would otherwise
+          // never settle the write, holding this stream's reservation and
+          // slot open forever.
+          respondJson(stream, 503, { error: error.message });
+          await waitForHttp2StreamWriteToSettle(stream, capacityDenialSettleDeadlineMs);
+          if (!stream.destroyed) stream.destroy();
+          return;
+        }
         respondJson(stream, 413, { error: error instanceof Error ? error.message : String(error) });
         return;
       }
@@ -853,8 +1250,23 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
           headers: sanitizedHeaders,
           body,
           signal: controller.signal,
+          reservation,
         });
       } catch (error) {
+        if (error instanceof BridgeProcessCapacityError) {
+          // The forward handler's own response reader denies its reservation
+          // and cancels there, but leaves this stream open exactly so this
+          // 503 can reach the wire — the same contract the request-body
+          // capacity denial above keeps. `respondJson` only queues the
+          // write, so wait for it to settle first (bounded, so a stalled
+          // peer that grants no flow-control credit cannot hold this
+          // stream's reservation and slot open forever), then destroy to
+          // free the slot.
+          respondJson(stream, 503, { error: error.message });
+          await waitForHttp2StreamWriteToSettle(stream, capacityDenialSettleDeadlineMs);
+          if (!stream.destroyed) stream.destroy();
+          return;
+        }
         respondJson(stream, 502, { error: error instanceof Error ? error.message : String(error) });
         return;
       }
@@ -868,6 +1280,21 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
       try {
         stream.respond(responseHeaders);
         stream.end(result.body);
+        // `end()` only queues `result.body`; a slow or backpressured peer
+        // can hold those bytes in process memory well after this call
+        // returns. Wait for the write to actually settle before the
+        // `finally` block below releases the reservation those bytes hold.
+        // The wait carries its own deadline: a peer that grants no
+        // flow-control credit and never resets or errors the stream would
+        // otherwise hold this stream's reservation and
+        // HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS slot open forever, the same
+        // failure mode the capacity-denial path above already guards
+        // against. A genuinely stalled stream gets force-destroyed once the
+        // deadline passes; a stream that settled on its own (`finish`,
+        // `close`, or `error`) is left alone, since it is already ending or
+        // ended.
+        const { settled } = await waitForHttp2StreamWriteToSettle(stream, responseWriteSettleDeadlineMs);
+        if (!settled && !stream.destroyed) stream.destroy();
       } catch {
         // The peer reset the stream (RST_STREAM) between dispatch and response.
         // One stream's write fault stays local to that stream.
@@ -876,7 +1303,12 @@ export function createHttp2BridgeServer(options: CreateHttp2BridgeServerOptions)
       // Every path above reaches this exactly once: a deny, a body-read
       // fault, a forward fault, or a completed response. A completed stream
       // must leak no listener; the session, not this one stream, outlives
-      // the handler.
+      // the handler. The reservation release is idempotent, but this is
+      // still the one place this stream's owner ever releases: releasing
+      // here, after the response write above has actually settled, keeps
+      // the owner's bytes reserved for the whole time Node still holds a
+      // live copy of them, not merely until the write call returns.
+      reservation.release();
       stream.removeListener("close", abortForThisStream);
       stream.removeListener("aborted", abortForThisStream);
       stream.removeListener("error", abortForThisStream);

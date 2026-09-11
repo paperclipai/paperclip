@@ -1,4 +1,5 @@
 import { useTranslation } from "@/i18n";
+import { configFieldsForSection } from "../config-sections";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import type { AdapterConfigFieldsProps, CreateConfigValues } from "../types";
@@ -99,6 +100,7 @@ function SecretField({
 }
 
 export function HermesGatewayConfigFields({
+  section,
   isCreate,
   values,
   set,
@@ -141,7 +143,7 @@ export function HermesGatewayConfigFields({
     ? String(readCreateValue(values, "headers", "") ?? "")
     : headersDraft;
 
-  return (
+  return configFieldsForSection(section, (
     <>
       <Field
         label={t("localizationAgents.ui383_API_base_URL")}
@@ -177,7 +179,7 @@ export function HermesGatewayConfigFields({
         />
       </Field>
 
-      <Field
+      <Field configSection="runPolicy"
         label={t("localizationAgents.ui391_Session_key_strategy")}
         hint={t("localizationAgents.ui392_Controls_X_Hermes_Session_Key_Issue_scoped_prevents_cross_ta")}
       >
@@ -193,7 +195,7 @@ export function HermesGatewayConfigFields({
         </select>
       </Field>
 
-      <Field label={t("localizationAgents.ui397_Timeout_seconds")}>
+      <Field configSection="runPolicy" label={t("localizationAgents.ui397_Timeout_seconds")}>
         <DraftNumberInput
           value={Number.isFinite(timeoutSec) ? timeoutSec : DEFAULT_TIMEOUT_SEC}
           onCommit={(v) => writeValue("timeoutSec", v)}
@@ -251,5 +253,5 @@ export function HermesGatewayConfigFields({
         />
       </Field>
     </>
-  );
+  ));
 }

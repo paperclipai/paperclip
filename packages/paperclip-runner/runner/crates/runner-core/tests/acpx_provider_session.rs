@@ -5,6 +5,7 @@ use paperclip_runner_core::acpx_provider_session::{
     AcpxPermissionMode, AcpxProviderSession, AcpxProviderSessionConfig, AcpxProviderSessionIdentity,
 };
 use paperclip_runner_core::acpx_sidecar_transport::AcpxSidecarTransportConfig;
+use paperclip_runner_core::generated_acpx_sidecar_contract::GeneratedAcpxSidecarCommand as GoalCommand;
 use paperclip_runner_core::provider_bridge::{
     authorized_tool_catalog_digest, AuthorizedTool, AuthorizedToolSet,
 };
@@ -77,6 +78,43 @@ fn start_error(config: &AcpxProviderSessionConfig) -> String {
 }
 
 #[test]
+fn controls_goals_and_observes_updates_without_an_active_prompt() {
+    let mut session = AcpxProviderSession::start(&config("goals")).unwrap();
+    let initial = session
+        .goal_control(GoalCommand::SessionGoalGet, json!({}))
+        .unwrap();
+    assert_eq!(
+        initial["sessionGoals"]["actions"],
+        json!(["set", "pause", "resume", "clear"])
+    );
+    assert!(initial["goal"].is_null());
+    for status in ["active", "paused", "active"] {
+        let result = session
+            .goal_control(
+                GoalCommand::SessionGoalSet,
+                json!({"objective":"Verify the durable goal", "status":status}),
+            )
+            .unwrap();
+        assert_eq!(result["goal"]["status"], status);
+        assert!(session.state().active_turn_id().is_none());
+        let events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        assert!(
+            !events.is_empty(),
+            "out-of-prompt goal update must not disappear"
+        );
+    }
+    let cleared = session
+        .goal_control(GoalCommand::SessionGoalClear, json!({}))
+        .unwrap();
+    assert!(cleared["goal"].is_null());
+    assert!(session
+        .poll_event(Duration::from_secs(1))
+        .unwrap()
+        .is_some());
+    session.shutdown("goal test complete").unwrap();
+}
+
+#[test]
 fn bootstraps_a_codex_session_and_confirms_run_identity() {
     let mut session = AcpxProviderSession::start(&config("bootstrap")).unwrap();
     assert!(session.process_id() > 0);
@@ -110,8 +148,13 @@ fn validates_qualified_policy_and_tool_catalog_before_spawning() {
 }
 
 #[test]
-fn admits_each_exact_qualified_agent_model_pair() {
-    for (agent, model) in [("codex", "gpt-5.6-sol"), ("claude", "claude-sonnet-5")] {
+fn admits_custom_claude_models_and_legacy_codex_profile() {
+    for (agent, model) in [
+        ("codex", "gpt-5.6-sol"),
+        ("claude", "claude-sonnet-5"),
+        ("claude", "claude-opus-5"),
+        ("claude", "custom-provider-model"),
+    ] {
         let mut qualified = config("bootstrap");
         qualified.agent = agent.to_owned();
         qualified.model = model.to_owned();
@@ -119,7 +162,7 @@ fn admits_each_exact_qualified_agent_model_pair() {
     }
 
     let mut drifted = config("bootstrap");
-    drifted.agent = "claude".to_owned();
+    drifted.model = "custom-codex-model".to_owned();
     assert!(drifted
         .validate()
         .unwrap_err()

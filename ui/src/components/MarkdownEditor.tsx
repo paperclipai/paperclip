@@ -45,7 +45,7 @@ import {
   buildRoutineMentionHref,
   buildUserMentionHref,
 } from "@paperclipai/shared";
-import { Boxes, CalendarClock, Hash, User, X } from "lucide-react";
+import { Boxes, CalendarClock, Flag, Hash, User, X } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
@@ -94,6 +94,8 @@ interface MarkdownEditorProps {
   bordered?: boolean;
   /** List of mentionable entities. Enables @-mention autocomplete. */
   mentions?: MentionOption[];
+  /** Capability-aware action commands supplied by the owning composer. */
+  actionCommands?: SlashCommandOption[];
   /** Called on Cmd/Ctrl+Enter */
   onSubmit?: () => void;
   /** Render the rich editor without allowing edits. */
@@ -103,6 +105,7 @@ interface MarkdownEditorProps {
 export interface MarkdownEditorRef {
   focus: () => void;
   insertMarkdown: (markdown: string) => void;
+  clear: () => void;
 }
 
 class MarkdownEditorRichErrorBoundary extends Component<
@@ -549,10 +552,16 @@ function mentionMarkdown(option: MentionOption): string {
 }
 
 function slashCommandLabel(option: SlashCommandOption): string {
-  return option.kind === "routine" ? `/routine:${option.name}` : `/${option.slug}`;
+  if (option.kind === "routine") return `/routine:${option.name}`;
+  if (option.kind === "action") return `/${option.command}`;
+  return `/${option.slug}`;
 }
 
 function slashCommandMarkdown(option: SlashCommandOption): string {
+  // MDXEditor trims an ordinary trailing space when setMarkdown re-imports the
+  // command. Keep a non-breaking separator in the document so subsequent text
+  // is inserted as the command argument instead of being glued to the token.
+  if (option.kind === "action") return `/${option.command}\u00a0`;
   if (option.kind === "routine") {
     return `[${slashCommandLabel(option)}](${buildRoutineMentionHref(option.routineId)}) `;
   }
@@ -560,7 +569,7 @@ function slashCommandMarkdown(option: SlashCommandOption): string {
 }
 
 function autocompleteMarkdown(option: AutocompleteOption): string {
-  return option.kind === "skill" || option.kind === "routine"
+  return option.kind === "skill" || option.kind === "routine" || option.kind === "action"
     ? slashCommandMarkdown(option)
     : mentionMarkdown(option);
 }
@@ -589,6 +598,7 @@ export function isSameAutocompleteSession(
 }
 
 function autocompleteOptionMatchesLink(option: AutocompleteOption, href: string): boolean {
+  if (option.kind === "action") return false;
   const parsed = parseMentionChipHref(href);
   if (!parsed) return false;
 
@@ -670,6 +680,17 @@ export function placeCaretAfterMentionAnchor(target: HTMLAnchorElement): boolean
   return true;
 }
 
+export function placeCaretAtEditableEnd(target: HTMLElement): boolean {
+  const selection = window.getSelection();
+  if (!selection) return false;
+  const range = document.createRange();
+  range.selectNodeContents(target);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return true;
+}
+
 /** Replace the active autocomplete token in the markdown string with the selected token. */
 function applyMention(markdown: string, state: MentionState, option: AutocompleteOption): string {
   const search = `${state.marker}${state.query}`;
@@ -693,12 +714,17 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   fileDropTarget = "editor",
   bordered = true,
   mentions,
+  actionCommands = [],
   onSubmit,
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   useTranslation();
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [i18n.resolvedLanguage, value]);
-  const { slashCommands } = useEditorAutocomplete();
+  const { slashCommands: sharedSlashCommands } = useEditorAutocomplete();
+  const slashCommands = useMemo(
+    () => [...actionCommands, ...sharedSlashCommands],
+    [actionCommands, sharedSlashCommands],
+  );
   const containerRef = useRef<HTMLDivElement>(null);
   const ref = useRef<MDXEditorMethods>(null);
   const fallbackTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -817,6 +843,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
     },
     insertMarkdown,
+    clear: () => {
+      latestValueRef.current = "";
+      echoIgnoreMarkdownRef.current = "";
+      ref.current?.setMarkdown("");
+      if (fallbackTextareaRef.current) fallbackTextareaRef.current.value = "";
+    },
   }), [insertMarkdown, richEditorError]);
 
   const autoSizeFallbackTextarea = useCallback((element: HTMLTextAreaElement | null) => {
@@ -1138,6 +1170,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       // update state between the last render and this callback firing).
       const state = mentionStateRef.current;
       if (!state) return false;
+      if (option.kind === "action" && option.disabled) return false;
       const current = latestValueRef.current;
       const next = applyMention(current, state, option);
       if (next !== current) {
@@ -1155,6 +1188,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
         decorateProjectMentions();
         editable.focus();
+
+        if (option.kind === "action") {
+          placeCaretAtEditableEnd(editable);
+          return;
+        }
 
         const target = findClosestAutocompleteAnchor(editable, option, state);
         if (!target) {
@@ -1517,12 +1555,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 key={option.id}
                 type="button"
                 tabIndex={-1}
+                disabled={option.kind === "action" && option.disabled === true}
+                aria-disabled={option.kind === "action" && option.disabled === true}
+                title={option.kind === "action" && option.disabled ? option.disabledReason ?? undefined : undefined}
                 ref={(node) => {
                   autocompleteOptionRefs.current[i] = node;
                 }}
                 className={cn(
                   "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
                   i === mentionIndex && "bg-accent",
+                  option.kind === "action" && option.disabled && "cursor-not-allowed opacity-60 hover:bg-transparent",
                 )}
                 onPointerDown={(e) => {
                   // Touch is handled via onTouchStart/onTouchEnd so vertical scrolling
@@ -1543,6 +1585,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               >
                 {option.kind === "routine" ? (
                   <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                ) : option.kind === "action" ? (
+                  <Flag className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "skill" ? (
                   <Boxes className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "issue" ? (
@@ -1569,7 +1613,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   </span>
                 ) : (
                   <span className="truncate">
-                    {option.kind === "skill" || option.kind === "routine"
+                    {option.kind === "skill" || option.kind === "routine" || option.kind === "action"
                       ? slashCommandLabel(option)
                       : option.name}
                   </span>
@@ -1597,6 +1641,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 {option.kind === "routine" && (
                   <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     {t("pages.secrets.targets.routine")}
+                  </span>
+                )}
+                {option.kind === "action" && (
+                  <span className="ml-auto max-w-28 truncate text-(length:--text-nano) text-muted-foreground">
+                    {option.disabled ? option.disabledReason : option.description}
                   </span>
                 )}
               </button>

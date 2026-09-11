@@ -135,13 +135,9 @@ function renderItem(
       return (
         <TaskChatBubble
           item={item}
-          // Human messages are inserted optimistically and later replaced by
-          // their canonical server IDs. Animating either mount makes the same
-          // text visibly fade twice during that handoff; user sends should
-          // paint immediately and remain visually stable.
-          animateEntry={
-            item.author !== "human" && !item.attachedTurn?.standaloneHeader
-          }
+          // Hydration and live-to-durable reconciliation may move a logical
+          // message between parents. Mounting must never replay a fade.
+          animateEntry={false}
           actions={
             item.attachedTurn?.standaloneHeader
               ? actions
@@ -278,7 +274,10 @@ function renderItem(
 }
 
 function isSystemLikeItem(item: TaskChatItem): boolean {
-  return item.kind === "marker" || (item.kind === "message" && item.author === "system");
+  return (
+    item.kind === "marker" ||
+    (item.kind === "message" && item.author === "system")
+  );
 }
 
 export function taskChatItemSpacingClass(
@@ -291,7 +290,8 @@ export function taskChatItemSpacingClass(
   if (currentIsSystemLike && previousIsSystemLike) return "mt-2";
   if (currentIsSystemLike || previousIsSystemLike) return "mt-3";
   if (item.kind === "turn" || previousItem.kind === "turn") return "mt-3";
-  if (item.kind === "interaction" || previousItem.kind === "interaction") return "mt-4";
+  if (item.kind === "interaction" || previousItem.kind === "interaction")
+    return "mt-4";
   return "mt-6";
 }
 
@@ -322,15 +322,17 @@ export function TaskChatThreadView({
 }: TaskChatThreadViewProps) {
   useTranslation();
   const streamlined = useStreamlinedTaskChatPresentation();
-  const retryableMarkerId = onRetryFailedRun || onTryAgainNoLiveExecutionPath
-    ? [...items]
-        .reverse()
-        .find(
-          (item) =>
-            item.kind === "marker" &&
-            item.variant === "interrupted" &&
-            item.label === "Run failed",
-        )?.id
+  const retryableMarkerId =
+    onRetryFailedRun || onTryAgainNoLiveExecutionPath
+      ? [...items]
+          .reverse()
+          .find(
+            (item) =>
+              item.kind === "marker" &&
+              item.variant === "interrupted" &&
+              (item.label === "Run failed" ||
+                item.label === "Usage limit reached"),
+          )?.id
       : undefined;
   const renderedItems = streamlined
     ? items
@@ -358,7 +360,7 @@ export function TaskChatThreadView({
   const body = (
     <div
       className={cn(
-        "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col px-4 py-4",
+        "paperclip-mobile-thread mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col px-2 py-4 md:px-4",
         streamlined ? "md:px-0" : "gap-5",
         className,
       )}
@@ -367,23 +369,40 @@ export function TaskChatThreadView({
         <div
           className={cn("flex flex-col gap-6", streamlined ? "pb-4" : "pb-2")}
           data-testid="task-chat-thread-header"
-          >
-            {header}
+        >
+          {header}
         </div>
       ) : null}
       {streamlined
         ? renderedItems.map(({ item, content }, index) => (
             <div
-              key={item.id}
-              className={taskChatItemSpacingClass(item, renderedItems[index - 1]?.item ?? null)}
-              data-thread-item-kind={item.kind === "message" ? item.author : item.kind}
+              key={
+                item.kind === "message" ? (item.renderKey ?? item.id) : item.id
+              }
+              data-thread-anchor={
+                item.kind === "message" ? (item.renderKey ?? item.id) : item.id
+              }
+              id={item.kind === "message" ? `comment-${item.id}` : undefined}
+              className={taskChatItemSpacingClass(
+                item,
+                renderedItems[index - 1]?.item ?? null,
+              )}
+              data-thread-item-kind={
+                item.kind === "message" ? item.author : item.kind
+              }
             >
               {content}
             </div>
           ))
         : items.map((item, index) => (
             <div
-              key={item.id}
+              key={
+                item.kind === "message" ? (item.renderKey ?? item.id) : item.id
+              }
+              data-thread-anchor={
+                item.kind === "message" ? (item.renderKey ?? item.id) : item.id
+              }
+              id={item.kind === "message" ? `comment-${item.id}` : undefined}
               className={cn(
                 index > 0 &&
                   item.kind === "interaction" &&
@@ -409,7 +428,7 @@ export function TaskChatThreadView({
               )}
             </div>
           ))}
-      {tail ? (streamlined ? <div className="mt-4">{tail}</div> : tail) : null}
+      {tail ? streamlined ? <div className="mt-4">{tail}</div> : tail : null}
     </div>
   );
 

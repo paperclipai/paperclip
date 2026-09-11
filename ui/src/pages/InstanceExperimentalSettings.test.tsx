@@ -10,6 +10,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InstanceExperimentalSettings } from "./InstanceExperimentalSettings";
 import { queryKeys } from "../lib/queryKeys";
+import { i18n, t } from "../i18n";
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
@@ -76,6 +77,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableStreamlinedLeftNavigation: true,
     enableStreamlinedUi: true,
     enableApps: true,
+    enableChatConnectors: false,
     enablePipelines: false,
     enableCases: false,
     enableConferenceRoomChat: false,
@@ -92,6 +94,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableServerInfoDebugView: false,
     enablePaperclipDeveloperMode: false,
     enableSimplifiedEnglishInteractions: false,
+    enableFirstTaskPlanProposal: false,
     enableSmokeLab: false,
     autoRestartDevServerWhenIdle: false,
     enableWorkspaceBranchReconcileForward: true,
@@ -197,6 +200,42 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
 
     expect(container.querySelector('button[aria-label="Toggle apps experimental setting"]')).toBeNull();
     expect(container.textContent).not.toContain("Show the Apps navigation");
+  });
+
+  it("defaults chat connectors off and persists an explicit toggle in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle chat connectors experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain("Existing chat connections keep running");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableChatConnectors: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+      expect(currentExperimentalSettings.enableApps).toBe(true);
+    }
+  });
+
+  it("switches chat connector labels without replaying settings changes", async () => {
+    await renderPage();
+    const initialFetches = mockInstanceSettingsApi.getExperimental.mock.calls.length;
+    try {
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      const name = t("localizationExperimental.features.enableChatConnectors.ariaLabel");
+      const toggle = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.getAttribute("aria-label") === name)!;
+      expect(toggle).toBeDefined();
+      expect(container.textContent).toContain(t("localizationExperimental.features.enableChatConnectors.footnote"));
+      expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalledTimes(initialFetches);
+      expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+      await act(() => toggle.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enableChatConnectors: true });
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('button[aria-label="Toggle chat connectors experimental setting"]')?.getAttribute("aria-checked")).toBe("true");
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
   });
 
   it("does not render the Conference Room Chat experimental setting for now", async () => {
@@ -701,6 +740,19 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableSummaries: true,
     });
+  });
+
+  it("keeps a managed chat connectors setting locked", async () => {
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      managedKeys: { enableChatConnectors: { managed: true, managedBy: "paperclip-cloud" } },
+    });
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Toggle chat connectors experimental setting"]');
+    expect(toggle?.disabled).toBe(true);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain(MANAGED_BADGE_TEXT);
+    await act(() => toggle?.click());
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
   });
 
   it("locks Status Cards when managed Summaries is disabled", async () => {

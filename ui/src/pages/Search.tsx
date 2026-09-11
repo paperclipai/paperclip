@@ -515,11 +515,13 @@ export function Search() {
       // Issue-only filters don't constrain agents/projects, so show a dash there
       // rather than an unfiltered count that would misrepresent the result set.
       const dashOut = filtersActive && (value === "agents" || value === "projects");
+      const label = t(SCOPE_LABEL_KEYS[value as CompanySearchScope]);
       return {
         value,
+        mobileLabel: dashOut ? `${label} —` : data && count !== null ? `${label} ${count}` : label,
         label: (
           <span className="flex items-center">
-            {t(SCOPE_LABEL_KEYS[value as CompanySearchScope])}
+            {label}
             {dashOut ? (
               <span className="ml-1.5 text-(length:--text-nano) text-muted-foreground">—</span>
             ) : count !== null ? (

@@ -1,4 +1,5 @@
 import { useTranslation } from "@/i18n";
+import { configFieldsForSection } from "../config-sections";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import type { AdapterConfigFieldsProps } from "../types";
@@ -104,6 +105,7 @@ function parseScopes(value: unknown): string {
 }
 
 export function OpenClawGatewayConfigFields({
+  section,
   isCreate,
   values,
   set,
@@ -144,7 +146,7 @@ export function OpenClawGatewayConfigFields({
     String(config.sessionKeyStrategy ?? "fixed"),
   );
 
-  return (
+  return configFieldsForSection(section, (
     <>
       <Field label={t("onboarding.wizard.model.gatewayUrl")} hint={help.webhookUrl}>
         <DraftInput
@@ -329,7 +331,7 @@ export function OpenClawGatewayConfigFields({
         />
       </Field>
 
-      <Field label={t("localizationAgents.ui291_Timeout_seconds_")}>
+      <Field configSection="runPolicy" label={t("localizationAgents.ui291_Timeout_seconds_")}>
         <DraftInput
           value={
             isCreate
@@ -388,7 +390,7 @@ export function OpenClawGatewayConfigFields({
         </Field>
       )}
 
-      <Field label={t("localizationAgents.ui295_Wait_timeout_ms_")}>
+      <Field configSection="runPolicy" label={t("localizationAgents.ui295_Wait_timeout_ms_")}>
         <DraftInput
           value={
             isCreate
@@ -450,5 +452,5 @@ export function OpenClawGatewayConfigFields({
         <div className="text-xs text-muted-foreground leading-relaxed">{t("localizationAgents.ui301_When_enabled_Paperclip_persists_a_device_key_during_onboardi")}</div>
       </Field>
     </>
-  );
+  ));
 }

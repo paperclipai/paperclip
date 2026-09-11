@@ -1,6 +1,7 @@
 import { useTranslation } from "@/i18n";
-import { useState, type ReactNode } from "react";
+import { useContext, useState, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
+import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { cn } from "@/lib/utils";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -28,6 +29,7 @@ import {
   hydrateAttachmentRefs,
   isImageAttachment,
   stripStandaloneImageEmbeds,
+  type AttachmentRef,
 } from "./task-chat-attachments";
 import { TaskChatSystemNotice } from "./TaskChatSystemNotice";
 import type { TaskChatMessageItem } from "./task-chat-model";
@@ -130,6 +132,16 @@ function galleryItemForImage(
   };
 }
 
+function uniqueAttachmentRefs(refs: AttachmentRef[]): AttachmentRef[] {
+  return refs.filter(
+    (ref, index) =>
+      refs.findIndex(
+        (candidate) =>
+          (ref.id && candidate.id === ref.id) || candidate.url === ref.url,
+      ) === index,
+  );
+}
+
 export function TaskChatBubble({
   item,
   animateEntry = true,
@@ -144,9 +156,12 @@ export function TaskChatBubble({
 }: TaskChatBubbleProps) {
   const { t } = useTranslation();
   const streamlined = useStreamlinedTaskChatPresentation();
-  // Clicking an embedded image opens the full-screen lightbox (with download);
-  // arrow keys walk across the other images in the same bubble.
+  // Task attachments share the page gallery; standalone images retain the bubble viewer.
+  const openIssueGallery = useContext(IssueGalleryContext);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const openImage = (src: string) => {
+    if (!openIssueGallery?.(src)) setLightboxSrc(src);
+  };
   if (item.interstitial) {
     // Interstitial updates are ephemeral (PAP-361): while streaming the text
     // lives on the live parent row's line (TaskChatStatusItem.selfTalk), and
@@ -178,15 +193,26 @@ export function TaskChatBubble({
     embeddedImageRefs,
     attachments,
   );
-  const imageRefs = [
+  const boundAttachmentRefs: AttachmentRef[] = attachments
+    .filter((attachment) => attachment.issueCommentId === item.id)
+    .map((attachment) => ({
+      id: attachment.id,
+      name: attachment.originalFilename?.trim() || "attachment",
+      url: attachment.contentPath,
+      contentType: attachment.contentType,
+      byteSize: attachment.byteSize,
+      openPath: attachment.openPath,
+      downloadPath: attachment.downloadPath,
+    }));
+  const imageRefs = uniqueAttachmentRefs([
     ...hydratedEmbeddedRefs,
     ...hydratedLinkedRefs.filter(isImageAttachment),
-  ].filter((ref, index, refs) =>
-    refs.findIndex((candidate) => candidate.url === ref.url) === index,
-  );
-  const attachmentRefs = hydratedLinkedRefs.filter(
-    (ref) => !isImageAttachment(ref),
-  );
+    ...boundAttachmentRefs.filter(isImageAttachment),
+  ]);
+  const attachmentRefs = uniqueAttachmentRefs([
+    ...hydratedLinkedRefs.filter((ref) => !isImageAttachment(ref)),
+    ...boundAttachmentRefs.filter((ref) => !isImageAttachment(ref)),
+  ]);
   const galleryItems: GalleryMediaItem[] =
     lightboxSrc !== null && !imageRefs.some((ref) => ref.url === lightboxSrc)
       ? // A clicked image the extractor missed (e.g. inline HTML) still gets a
@@ -238,7 +264,7 @@ export function TaskChatBubble({
             className={isHuman ? "paperclip-markdown-on-accent" : undefined}
             softBreaks
             linkIssueReferences
-            onImageClick={setLightboxSrc}
+            onImageClick={openImage}
           >
             {bodyText}
           </MarkdownBody>
@@ -250,7 +276,7 @@ export function TaskChatBubble({
           data-testid="task-chat-bubble-media"
         >
           <span className="text-xs text-muted-foreground">
-            {t("localizationTaskRuntime.screenshotCount", { count: imageRefs.length })}
+            {t("localizationTaskExecution.imagesCount", { count: imageRefs.length })}
           </span>
           <div className="grid grid-cols-4 gap-2">
             {imageRefs
@@ -261,7 +287,7 @@ export function TaskChatBubble({
                   type="button"
                   className="group aspect-video min-w-0 overflow-hidden rounded-md bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   aria-label={t("localizationTaskRuntime.openImage", { name: ref.name || t("localizationTaskRuntime.imageNumber", { number: index + 1 }) })}
-                  onClick={() => setLightboxSrc(ref.url)}
+                  onClick={() => openImage(ref.url)}
                 >
                   <img
                     src={ref.openPath ?? ref.url}
@@ -276,7 +302,7 @@ export function TaskChatBubble({
                 type="button"
                 className="aspect-video min-w-0 rounded-md bg-muted text-sm font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label={t("localizationTaskRuntime.openMoreScreenshots", { count: imageRefs.length - 3 })}
-                onClick={() => setLightboxSrc(imageRefs[3].url)}
+                onClick={() => openImage(imageRefs[3].url)}
               >
                 +{imageRefs.length - 3}
               </button>

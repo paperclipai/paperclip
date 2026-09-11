@@ -1,6 +1,6 @@
-import { useTranslation } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { Trans } from "react-i18next";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
@@ -91,9 +91,18 @@ export function ConnectionIntentInteractionBody({
   const setupQuery = useQuery({
     queryKey: ["connection-intent", interaction.id, "setup-options"],
     queryFn: () => connectionIntentsApi.setupOptions(interaction.id),
-    enabled: open && isAddressee && isPending,
-    refetchInterval: open && isPending ? 2_000 : false,
+    enabled: isAddressee && isPending,
+    refetchInterval: isPending && (open || interaction.payload.phase === "authorizing") ? 2_000 : false,
   });
+
+  useEffect(() => {
+    const current = setupQuery.data?.interaction;
+    if (current && current.status !== "pending" && isPending) {
+      void invalidateTask(current);
+      setOpen(false);
+      returnFocusToCard();
+    }
+  }, [setupQuery.data?.interaction, isPending]);
 
   const completeMutation = useMutation({
     mutationFn: (connectionId: string) =>
@@ -126,7 +135,10 @@ export function ConnectionIntentInteractionBody({
 
   const finishNewConnection = async (completion: ConnectionSetupCompletion) => {
     if (completion.resolvedByCallback) {
-      await invalidateTask();
+      // A browser message cannot establish authorization. Read the durable result.
+      const verified = await setupQuery.refetch();
+      if (verified.data?.interaction.status !== "accepted") return;
+      await invalidateTask(verified.data.interaction);
       setOpen(false);
       returnFocusToCard();
       return;
@@ -157,7 +169,7 @@ export function ConnectionIntentInteractionBody({
                   : t("localizationConnections.connectionRequestExpired215"),
               body:
                 resultOutcome === "superseded"
-                  ? t("localizationConnections.aNewerRunRequestedThisConnectionUseTheLatestC216")
+                  ? t("chatUi.connectionIntentInteractionBody.thisRequestWasReplacedUseTheLatestConnectionCardInstead")
                   : t("localizationConnections.thisRequestIsNoLongerActive217"),
             }
           : null;
@@ -240,20 +252,26 @@ export function ConnectionIntentInteractionBody({
             <RotateCcw className="h-4 w-4" />{t("localizationConnections.authorizationDidnTFinishYourPreviousChoicesAr222")}</p>
         ) : null}
 
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={declineMutation.isPending || authorizing}
+            onClick={() => declineMutation.mutate()}
+          >{t("localizationIssueDetail.ui_Not_now")}</Button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button type="button" disabled={authorizing}>
+              <Button type="button">
                 {authorizing ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   <Plug className="h-4 w-4" />
                 )}
                 {authorizing
-                  ? t("localizationConnections.authorizing223")
+                  ? t("chatUi.connectionIntentInteractionBody.continueSetup")
                   : needsRetry
-                    ? t("localizationConnections.tryAgain32")
-                    : t("localizationConnections.connectUseExisting224")}
+                    ? t("localizationIssuePanels.ui_Try_again_982hh6")
+                    : setupQuery.data?.existingConnections.length ? t("localizationConnections.connectUseExisting224") : t("localizationConnections.connect138")}
               </Button>
             </DialogTrigger>
             <DialogContent
@@ -288,7 +306,8 @@ export function ConnectionIntentInteractionBody({
               ) : setupQuery.data ? (
                 <ConnectionSetupFlow
                   host="dialog"
-                  serviceSlug={interaction.payload.serviceSlug}
+                  serviceSlug={interaction.payload.serviceSlug.startsWith("connection:") ? undefined : interaction.payload.serviceSlug}
+                  configuredConnection={interaction.payload.serviceSlug.startsWith("connection:") ? setupQuery.data.existingConnections[0] : undefined}
                   requestedAgentId={setupQuery.data.requestedAgentId}
                   interactionId={interaction.id}
                   existingConnections={setupQuery.data.existingConnections}
@@ -305,12 +324,6 @@ export function ConnectionIntentInteractionBody({
               ) : null}
             </DialogContent>
           </Dialog>
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={declineMutation.isPending || authorizing}
-            onClick={() => declineMutation.mutate()}
-          >{t("localizationIssueDetail.ui_Not_now")}</Button>
         </div>
 
         {completeMutation.isError ||

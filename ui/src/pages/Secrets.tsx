@@ -319,8 +319,22 @@ function statusTextTone(status: SecretStatus) {
   }
 }
 
+function providerDisplayLabel(provider: Pick<SecretProviderDescriptor, "id" | "label">) {
+  // Only translate known bundled labels, never provider overrides or vault names.
+  if (provider.id === "local_encrypted") {
+    if (provider.label === "Local encrypted (default)") {
+      return t("pages.secrets.provider.localEncryptedDefault");
+    }
+    if (provider.label === "Local encrypted") {
+      return t("pages.secrets.provider.localEncrypted");
+    }
+  }
+  return provider.label;
+}
+
 function providerLabel(providers: SecretProviderDescriptor[] | undefined, id: SecretProvider) {
-  return providers?.find((p) => p.id === id)?.label ?? id.replaceAll("_", " ");
+  const provider = providers?.find((p) => p.id === id);
+  return provider ? providerDisplayLabel(provider) : id.replaceAll("_", " ");
 }
 
 function normalizeSecretKeyForPreview(input: string) {
@@ -490,10 +504,10 @@ export function getCreateProviderBlockReason(
 ) {
   if (!provider) return t("pages.secrets.provider.selectProvider");
   if (mode === "managed" && provider.supportsManagedValues === false) {
-    return t("pages.secrets.provider.noManagedSupport", { provider: provider.label });
+    return t("pages.secrets.provider.noManagedSupport", { provider: providerDisplayLabel(provider) });
   }
   if (mode === "external" && provider.supportsExternalReferences === false) {
-    return t("pages.secrets.provider.noExternalSupport", { provider: provider.label });
+    return t("pages.secrets.provider.noExternalSupport", { provider: providerDisplayLabel(provider) });
   }
   const selectedProviderConfigBlockReason = providerConfig?.provider === provider.id
     ? getProviderConfigBlockReason(providerConfig)
@@ -505,7 +519,7 @@ export function getCreateProviderBlockReason(
     if (selectedProviderConfigBlockReason) return selectedProviderConfigBlockReason;
     const healthEntry = healthEntryForProvider(health, provider.id);
     const deploymentMessage = t("pages.secrets.provider.defaultNotConfigured", {
-      provider: provider.label,
+      provider: providerDisplayLabel(provider),
     });
     const nextStep = t("pages.secrets.provider.selectReadyVault");
     return healthEntry?.message
@@ -515,7 +529,7 @@ export function getCreateProviderBlockReason(
   const healthEntry = healthEntryForProvider(health, provider.id);
   if (healthEntry?.status === "error") {
     return t("pages.secrets.provider.healthFailed", {
-      provider: provider.label,
+      provider: providerDisplayLabel(provider),
       message: healthEntry.message,
     });
   }
@@ -533,7 +547,7 @@ function providerHealthText(
     providerConfig?.provider === provider.id &&
     !getProviderConfigBlockReason(providerConfig)
   ) {
-    return t("pages.secrets.provider.usingSelectedVault", { provider: provider.label });
+    return t("pages.secrets.provider.usingSelectedVault", { provider: providerDisplayLabel(provider) });
   }
   const entry = healthEntryForProvider(health, provider.id);
   if (!entry) return null;
@@ -1920,6 +1934,9 @@ export function Secrets() {
               : [
                   {
                     value: "proposals",
+                    mobileLabel: pendingProposalCount > 0
+                      ? `${t("pages.secrets.tabs.proposals")} ${pendingProposalCount}`
+                      : t("pages.secrets.tabs.proposals"),
                     label: (
                       <span className="inline-flex items-center gap-1.5">
                         {t("pages.secrets.tabs.proposals")}
@@ -3032,7 +3049,7 @@ export function Secrets() {
                           ),
                         )}
                       >
-                        {provider.label}
+                        {providerDisplayLabel(provider)}
                         {provider.configured === false &&
                         !getSelectableProviderConfig(providerConfigs, provider.id)
                           ? t("pages.secrets.provider.defaultMissingSuffix")
@@ -3645,7 +3662,7 @@ function SecretsFiltersPopover({
                       checked={providerFilter === provider.id}
                       onCheckedChange={() => onProviderChange(provider.id)}
                     />
-                    <span className="text-sm">{provider.label}</span>
+                    <span className="text-sm">{providerDisplayLabel(provider)}</span>
                   </label>
                 ))}
               </div>
@@ -3915,7 +3932,7 @@ export function ProviderVaultsTab({
               className="flex items-center gap-2 rounded-md px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent/50 hover:text-foreground"
             >
               <Icon className="h-4 w-4" />
-              <span className="truncate">{provider?.label ?? id.replaceAll("_", " ")}</span>
+              <span className="truncate">{provider ? providerDisplayLabel(provider) : id.replaceAll("_", " ")}</span>
             </a>
           ))}
         </nav>
@@ -3926,7 +3943,7 @@ export function ProviderVaultsTab({
           <section key={id} id={`provider-vaults-${id}`} className={cn("scroll-mt-6 space-y-2", isComingSoonFamily && "opacity-50")}>
             <div className="flex flex-wrap items-center gap-2">
               <Icon className="h-4 w-4 text-muted-foreground" />
-              <h2 className="text-sm font-semibold">{provider?.label ?? id.replaceAll("_", " ")}</h2>
+              <h2 className="text-sm font-semibold">{provider ? providerDisplayLabel(provider) : id.replaceAll("_", " ")}</h2>
               {isComingSoonFamily ? (
                 <span className="ml-auto text-xs text-muted-foreground">
                   {t("pages.secrets.status.comingSoon")}

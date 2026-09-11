@@ -1,6 +1,6 @@
 import { t, useTranslation } from "@/i18n";
 import { taskChatDisplayLabel } from "./task-chat-display";
-import { useState } from "react";
+import { useTaskChatExpansion } from "./expansion-state";
 import { cn } from "@/lib/utils";
 import {
   Check,
@@ -35,11 +35,11 @@ export function TaskChatToolCard({ item }: { item: TaskChatToolItem }) {
   useTranslation();
   const { Icon, spin, tone } = STATUS_ICON[item.status];
   const RowIcon = toolTaxonomy(item.rawName ?? item.name).icon;
-  const [showDetail, setShowDetail] = useState(false);
+  const [showDetail, setShowDetail] = useTaskChatExpansion(item.id, false);
   const expandable = Boolean(item.target || item.detail || item.diff);
 
   return (
-    <div className="tc-enter-tool flex min-w-0 max-w-full flex-col text-xs">
+    <div data-testid="task-chat-tool-card" className="flex min-w-0 max-w-full flex-col text-xs">
       <button
         type="button"
         onClick={expandable ? () => setShowDetail((v) => !v) : undefined}

@@ -538,7 +538,7 @@ function IssueSearchInput({
   }, [draftValue, onDebouncedChange]);
 
   return (
-    <div className="relative w-48 sm:w-64 md:w-80">
+    <div className="relative w-full sm:w-64 md:w-80">
       <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
       <Input
         value={draftValue}
@@ -1723,9 +1723,10 @@ function StreamlinedIssuesList({
 
       {/* Toolbar */}
       <IssuesToolbar
+        className="paperclip-task-list-toolbar"
         ariaLabel={toolbarPresentation === "collection" ? t("localizationIssueLists.taskControls", { defaultValue: "Task controls" }) : undefined}
         context={(
-          <Button size="sm" variant="outline" onClick={() => openCreateIssueDialog()}>
+          <Button size="sm" variant="outline" aria-label={createButtonLabel} onClick={() => openCreateIssueDialog()}>
             <Plus className="h-4 w-4 sm:mr-1" />
             <span className="hidden sm:inline">{createButtonLabel}</span>
           </Button>
@@ -2003,7 +2004,7 @@ function StreamlinedIssuesList({
           onUpdateIssue={onUpdateIssue}
         />
       ) : (
-        <>
+        <div className="-mx-2 sm:mx-0">
           {groupedContent.map((group) => {
           if (remainingRowsToRender <= 0) return null;
           return (
@@ -2151,10 +2152,8 @@ function StreamlinedIssuesList({
                     <div
                       key={issue.id}
                       data-issue-row-id={issue.id}
-                      // Desktop indentation comes from IssueRow's treeGuides
-                      // (vertical connector slots); mobile keeps a plain
-                      // padding indent (guides are sm-only).
-                      className={depth > 0 ? MOBILE_TREE_INDENT[Math.min(depth, MOBILE_TREE_INDENT.length - 1)] : undefined}
+                      // Canonical rows use the same tree-guide slots at every width.
+                      className={rowPresentation === "legacy" && depth > 0 ? MOBILE_TREE_INDENT[Math.min(depth, MOBILE_TREE_INDENT.length - 1)] : undefined}
                       style={useDeferredRowRendering
                         ? {
                           contentVisibility: "auto",
@@ -2228,8 +2227,11 @@ function StreamlinedIssuesList({
                           )
                         ) : undefined}
                         statusSlot={rowPresentation === "task" ? (
-                          <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
+                          <span className="relative inline-flex items-start self-stretch sm:items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
                             <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                            {hasChildren && isExpanded ? (
+                              <span aria-hidden="true" className="pointer-events-none absolute top-5 -bottom-2.5 left-1/2 w-px bg-border sm:hidden" />
+                            ) : null}
                           </span>
                         ) : undefined}
                         metadata={rowPresentation === "task" ? (
@@ -2283,7 +2285,8 @@ function StreamlinedIssuesList({
                             />
                           </>
                         ) : undefined}
-                        mobileMeta={issueActivityText(issue).toLowerCase()}
+                        mobileTitleMeta={rowPresentation === "task" ? issueActivityTimestamp(issue) : undefined}
+                        mobileMeta={rowPresentation === "legacy" ? issueActivityText(issue).toLowerCase() : undefined}
                         trailingMeta={rowPresentation === "task"
                           && visibleIssueColumnSet.has("updated")
                           && availableIssueColumnSet.has("updated")
@@ -2486,7 +2489,7 @@ function StreamlinedIssuesList({
               </p>
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   );

@@ -122,6 +122,7 @@ export function TaskChatTurn({
                 key={child.id}
                 data-testid="task-chat-turn-timeline-row"
                 data-timeline-row-id={child.id}
+                data-thread-anchor={child.id}
               >
                 {renderChild(child)}
               </div>

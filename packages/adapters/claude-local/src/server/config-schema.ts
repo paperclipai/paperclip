@@ -16,11 +16,11 @@ export function getConfigSchema(): AdapterConfigSchema {
         type: "select",
         default: "auto",
         options: [
-          { value: "auto", label: "Auto (ACP preferred)" },
+          { value: "auto", label: "Default (ACP)" },
           { value: "cli", label: "Claude CLI" },
           { value: "acp", label: "ACP" },
         ],
-        hint: "Auto uses ACP when prerequisites pass and falls back to Claude CLI with diagnostics.",
+        hint: "Default uses ACP. If ACP is unavailable, the run fails with a setup error. Choose CLI explicitly to use it.",
       },
       {
         key: "agentCommand",

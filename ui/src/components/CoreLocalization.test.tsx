@@ -6,7 +6,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Goal } from "@paperclipai/shared";
 import { setLocale } from "../i18n";
 import { goalLevelLabel } from "../lib/goal-display";
-import { FrontDoor } from "./FrontDoor";
 import { GoalTree } from "./GoalTree";
 import { ApprovalPayloadRenderer, approvalLabel } from "./ApprovalPayload";
 import { Stepper } from "./onboarding/Stepper";
@@ -30,18 +29,6 @@ describe("core localized UI", () => {
     await act(async () => root.unmount());
     container.remove();
     setLocale("en");
-  });
-
-  it("translates first-run choices but returns the original path identifiers", async () => {
-    const onChoose = vi.fn();
-    await act(async () => root.render(<FrontDoor onChoose={onChoose} />));
-    await act(async () => setLocale("ru"));
-    expect(container.textContent).toContain("Создать организацию");
-    expect(container.textContent).toContain("Добавить агентов в организацию");
-    await act(async () => container.querySelectorAll("button")[1].click());
-    expect(onChoose).toHaveBeenCalledWith("grow");
-    await act(async () => setLocale("en"));
-    expect(container.textContent).toContain("Add agents to your org");
   });
 
   it("updates step accessibility and credential labels without changing destinations", async () => {

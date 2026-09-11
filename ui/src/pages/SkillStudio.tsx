@@ -3494,10 +3494,10 @@ function VersionHistorySheet({
                     className={cn(
                       "whitespace-pre-wrap",
                       row.kind === "added" && "bg-green-500/10 text-green-700 dark:text-green-300",
-                      row.kind === t("localizationSkills.removed591") && "bg-red-500/10 text-red-700 dark:text-red-300",
+                      row.kind === "removed" && "bg-red-500/10 text-red-700 dark:text-red-300",
                     )}
                   >
-                    {row.kind === "added" ? "+" : row.kind === t("localizationSkills.removed591") ? "-" : " "}
+                    {row.kind === "added" ? "+" : row.kind === "removed" ? "-" : " "}
                     {row.text}
                   </div>
                 ))}
