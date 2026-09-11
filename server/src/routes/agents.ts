@@ -1,6 +1,6 @@
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
-import { toolConnections, toolConnectionInstalls as aiConnectionInstalls } from "@paperclipai/db";
+import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
 import { isAiConnectionCompatible } from "@paperclipai/shared";
@@ -4332,6 +4332,7 @@ export function agentRoutes(
           lastHeartbeatAt: null,
         },
         {
+          aiConnectionInstall: managedHireConnectionId ? { connectionId: managedHireConnectionId, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
           claudeLogin: {
             storedSessionId: hireStoredSessionId ?? null,
             ownerUserId: req.actor.type === "agent" ? null : (req.actor.userId ?? null),
@@ -4342,7 +4343,6 @@ export function agentRoutes(
           },
         },
       );
-      if (managedHireConnectionId) await db.insert(aiConnectionInstalls).values({ companyId, connectionId: managedHireConnectionId, targetType: "agent", targetId: hiredAgentId, createdByUserId: responsibleUserForAiRequest(req) }).onConflictDoNothing();
       const onboardingFirstAgentBundle = await resolveOnboardingFirstAgentBundle({
         onboardingFirstAgent: hireOnboardingFirstAgent,
         actorType: req.actor.type,
@@ -4569,6 +4569,7 @@ export function agentRoutes(
         lastHeartbeatAt: null,
       },
       {
+        aiConnectionInstall: managedConnectionId ? { connectionId: managedConnectionId, createdByUserId: responsibleUserForAiRequest(req) } : undefined,
         claudeLogin: {
           storedSessionId: createStoredSessionId ?? null,
           ownerUserId: req.actor.type === "agent" ? null : (req.actor.userId ?? null),
@@ -4579,7 +4580,6 @@ export function agentRoutes(
         },
       },
     );
-    if (managedConnectionId) await db.insert(aiConnectionInstalls).values({ companyId, connectionId: managedConnectionId, targetType: "agent", targetId: agentId, createdByUserId: responsibleUserForAiRequest(req) }).onConflictDoNothing();
     const onboardingFirstAgentBundle = await resolveOnboardingFirstAgentBundle({
       onboardingFirstAgent: createOnboardingFirstAgent,
       actorType: req.actor.type,

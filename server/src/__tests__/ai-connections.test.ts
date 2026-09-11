@@ -370,6 +370,20 @@ describe("managed AI connections", () => {
       expect(installs).toHaveLength(1);
       expect((await service.select({ ...input, agentId: agent.id, userId: "alice", binding: selected })).grant.id).toBe(account.grantId);
     }
+    // A database failure between the two inserts must roll back the agent too.
+    await db.execute(sql`CREATE FUNCTION reject_test_ai_install() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'fixture install failure'; END $$`);
+    await db.execute(sql`CREATE TRIGGER reject_test_ai_install BEFORE INSERT ON tool_connection_installs FOR EACH ROW EXECUTE FUNCTION reject_test_ai_install()`);
+    try {
+      for (const endpoint of ["agents", "agent-hires"]) {
+        const name = `Rollback ${endpoint}`;
+        const response = await request(app).post(`/api/companies/${companyId}/${endpoint}`).send({ name, role: "general", adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-6" }, runtimeConfig: { aiConnection: selected } });
+        expect(response.status).toBe(500);
+        expect(await db.select().from(agents).where(and(eq(agents.companyId, companyId), eq(agents.name, name)))).toEqual([]);
+      }
+    } finally {
+      await db.execute(sql`DROP TRIGGER reject_test_ai_install ON tool_connection_installs`);
+      await db.execute(sql`DROP FUNCTION reject_test_ai_install()`);
+    }
   }, 30000);
 
 });
