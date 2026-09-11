@@ -1,0 +1,10 @@
+# opencode CLI runtime state, cache, share, config directories.
+# Paperclip's runner invokes `rg` with CWD=$HOME where these dirs live.
+# Lock files under .local/state/opencode/locks/ appear and disappear in
+# milliseconds, causing rg to ENOENT during directory traversal
+# (shown as "Permission denied (os error 2)"). Scanning these dirs
+# serves no purpose — they are internal CLI state, not user code.
+.local/state/opencode/
+.local/share/opencode/
+.cache/opencode/
+.config/opencode/
