@@ -76,7 +76,8 @@ vi.mock("./runtime-config.js", async () => {
   };
 });
 
-import { execute, firstMeaningfulStderrLine } from "./execute.js";
+import { firstMeaningfulStderrLine } from "@paperclipai/adapter-utils";
+import { execute } from "./execute.js";
 
 function mockFailedProcess(stderr: string) {
   runAdapterExecutionTargetProcess.mockImplementation(async () => ({
