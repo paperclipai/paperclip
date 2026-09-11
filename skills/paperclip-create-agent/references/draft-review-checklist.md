@@ -1,3 +1,6 @@
+---
+context: fork
+---
 # Draft-Review Checklist
 
 Walk this checklist before submitting any `agent-hires` request. Fix each item that does not pass — do not submit a draft with open failures.
