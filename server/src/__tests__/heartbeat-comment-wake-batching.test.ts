@@ -3425,19 +3425,19 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           ),
         );
       expect(missingCommentRetries).toHaveLength(1);
-        expect(missingCommentRetries[0]?.payload).toMatchObject({
-          retryReason: "missing_issue_comment",
-        });
-        for (const key of [
-          "modelProfile",
-          "paperclipModelProfile",
-          "recoveryIntent",
-          "allowDeliverableWork",
-          "allowDocumentUpdates",
-          "resumeRequiresNormalModel",
-        ]) {
-          expect(missingCommentRetries[0]?.payload).not.toHaveProperty(key);
-        }
+      expect(missingCommentRetries[0]?.payload).toMatchObject({
+        retryReason: "missing_issue_comment",
+      });
+      for (const key of [
+        "modelProfile",
+        "paperclipModelProfile",
+        "recoveryIntent",
+        "allowDeliverableWork",
+        "allowDocumentUpdates",
+        "resumeRequiresNormalModel",
+      ]) {
+        expect(missingCommentRetries[0]?.payload).not.toHaveProperty(key);
+      }
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
