@@ -107,6 +107,53 @@ In the Paperclip UI or via API, create an agent with adapter type `hermes_local`
 This mode shells out to the local `hermes` CLI. Paperclip injects runtime
 environment variables and captures stdout/stderr from the child process.
 
+#### OpenAI Codex through Hermes subscription OAuth
+
+Use `hermes_local` for OpenAI Codex when the usable subscription/OAuth session
+lives in Hermes Agent rather than in the standalone Codex CLI. This is common
+when `hermes chat --provider openai-codex` works but `~/.codex/auth.json` does
+not exist or Codex CLI auth is intentionally unmanaged by Paperclip.
+
+First verify Hermes itself can use the OAuth session without running Codex auth
+commands:
+
+```bash
+hermes chat -q 'Reply with exactly HERMES_CODEX_SMOKE_OK.' \
+  --provider openai-codex \
+  --model gpt-5.5 \
+  -t terminal,file \
+  -Q
+```
+
+Then configure the Paperclip agent explicitly:
+
+```json
+{
+  "name": "Hermes Codex Engineer",
+  "adapterType": "hermes_local",
+  "adapterConfig": {
+    "provider": "openai-codex",
+    "model": "gpt-5.5",
+    "quiet": true,
+    "toolsets": "terminal,file",
+    "timeoutSec": 360,
+    "maxTurnsPerRun": 10
+  }
+}
+```
+
+Notes:
+
+- Do not run `codex login`, `codex logout`, or device-code auth as part of this
+  route. Paperclip is invoking Hermes, not the standalone Codex CLI.
+- Do not copy Hermes OAuth tokens into Codex CLI auth files.
+- If Paperclip runs in a container, the container must be able to execute the
+  configured `hermesCommand` and access the Hermes runtime state required for
+  that OAuth session. Prefer explicit mounts or a gateway deployment over
+  credential copying.
+- Keep `toolsets` explicit for reproducible runs and to avoid warnings from
+  unavailable Hermes toolsets.
+
 ### 3. Create a Hermes gateway agent in Paperclip
 
 Start Hermes with its API server enabled first:
