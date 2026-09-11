@@ -5053,10 +5053,12 @@ describe("native session same-turn steering", () => {
 
 describe("native warm session supervision", () => {
   it.each([true, false])(
-    "preserves chat reply grace for per-turn providers: chat=%s",
+    "uses provider turn completion without a semantic-result cutoff: chat=%s",
     async (conversationMode) => {
       state.execute.mockReset().mockImplementationOnce(async (options) => {
-        expect(options.semanticResultTerminalGraceMs).toBe(conversationMode ? 30_000 : undefined);
+        // The provider must finish streaming its reply after task tools return.
+        // A semantic-result grace timer would truncate that output.
+        expect(options).not.toHaveProperty("semanticResultTerminalGraceMs");
         return {
           result: { summary: "Reply completed" },
           terminal: { runTerminalState: "succeeded" },

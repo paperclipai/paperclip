@@ -503,11 +503,10 @@ const recoveryFakeCodex = resolve(
       bundle = createCapabilityRunnerdCodexTransport({
         stateDirectory: root,
         sourceCodexHome: home,
-        codexCommand: resolve(
-          import.meta.dirname,
-          "../../../../packages/paperclip-runner/runner/target/debug/fake-codex-app-server",
-        ),
-        codexArgs: ["--state-file", join(scratch, "fake.json"), "--hold-turn"],
+        // The packaged runnerd does not imply local Rust test binaries exist.
+        // Reuse the credential-free provider fixture available in every checkout.
+        codexCommand: process.execPath,
+        codexArgs: [recoveryFakeCodex, join(scratch, "fake.json"), "16"],
         prpIdentity: {
           runId,
           runnerInstanceId,

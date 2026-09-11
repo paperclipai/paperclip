@@ -89,6 +89,21 @@ Create ordinary assigned tasks, never subtasks of this conversation. Give each t
 
 Keep discussion here and leave the conversation available for the next message. Link handed-off tasks in your reply; do not make this conversation blocked by their completion or wait for them. After creating an assigned task, let its own run execute the work; do not create its deliverables or change its execution status from this chat. Reply normally and end your turn; Paperclip manages the conversation waiting state. Do not change its status, create a review confirmation just to finish a reply, mark it complete, or poll for another reply. An accepted plan authorizes handoff to execution tasks, never implementation on this conversation. Honor normal approvals. Ask mode is non-mutating. Plan mode supports research and writing/revising the plan; hand off for execution only through the normal authorized workflow.`;
 
+/** A reset keeps history visible, but parked input from a stopped session cannot become a new turn. */
+export function currentConversationCommentCondition() {
+  return sql`not exists (
+    select 1 from ${issues} conversation_issue
+    join ${issueComments} conversation_boundary
+      on conversation_boundary.id = conversation_issue.conversation_boundary_comment_id
+      and conversation_boundary.company_id = conversation_issue.company_id
+      and conversation_boundary.issue_id = conversation_issue.id
+    where conversation_issue.id = ${issueComments.issueId}
+      and conversation_issue.company_id = ${issueComments.companyId}
+      and conversation_issue.conversation_agent_id is not null
+      and (${issueComments.createdAt}, ${issueComments.id}) < (conversation_boundary.created_at, conversation_boundary.id)
+  )`;
+}
+
 /** Runs under the normal issue execution lock, before any provider session is read. */
 export async function prepareConversationTurn(
   db: Db,
