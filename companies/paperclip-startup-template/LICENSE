@@ -1,0 +1,43 @@
+# License
+
+MIT License
+
+Copyright (c) 2026 The Paperclip Startup Template Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Template"), to deal
+in the Template without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Template, and to permit persons to whom the Template is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Template.
+
+THE TEMPLATE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE TEMPLATE OR THE USE OR OTHER DEALINGS IN
+THE TEMPLATE.
+
+---
+
+## Scope of this license
+
+This MIT license applies to the contents of the Paperclip Startup Template package:
+
+- All Markdown documents (`AGENTS.md`, `HEARTBEAT.md`, `SOUL.md`, `TOOLS.md`, `COMPANY.md`, `README.md`, the `docs/` directory, this `LICENSE`).
+- The `.paperclip.yaml` manifest.
+- Any scaffolding, examples, or reference material shipped in the package root.
+
+Companies instantiated from this template are independent works owned by their respective operators. The MIT terms above govern the template package itself, not the products built on top of it.
+
+## Third-party content
+
+The package may reference external specifications (notably `agentcompanies/v1`) and runtimes by name. Those references are descriptive, not redistributive — third-party specs and runtimes carry their own licenses and are governed by their own terms.
+
+## Attribution
+
+When forking this template for your own organization or distribution, please retain this LICENSE file and the attribution note in `README.md`. Modifications and downstream forks are encouraged; preserving attribution is how the template's lineage stays traceable.
