@@ -5,7 +5,7 @@ import {
   environmentLeases, heartbeatRuns, issueComments, issueRecoveryActions,
   issues, nativeRunFinalizations, type Db,
 } from "@paperclipai/db";
-import { executionBlockerPredicate } from "./execution-blocker.js";
+import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity } from "./activity-log.js";
@@ -26,6 +26,7 @@ export async function admitExplicitNativeContinuation(input: {
   db: Db; companyId: string; issueId: string; agentId: string;
   actorType: string | null | undefined; actorId: string | null | undefined;
   reason: string | null; commentId: string | null; successorRunId: string;
+  dryRun?: boolean;
 }): Promise<{ previousRunId: string; commentId: string } | null> {
   const { db, companyId, issueId, agentId, actorId, commentId } = input;
   if (input.actorType !== "user" || !actorId || !commentId ||
@@ -47,6 +48,8 @@ export async function admitExplicitNativeContinuation(input: {
     executionBlockerPredicate(),
   )).for("update");
   if (!actions.length) return null;
+  const blocker = await getExecutionBlocker(db, companyId, issueId);
+  if (blocker && blocker.recoveryActionId === null) return null;
   const [pendingInteraction] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
     eq(issueThreadInteractions.status, "pending"),
@@ -107,6 +110,7 @@ export async function admitExplicitNativeContinuation(input: {
   await buildExecutionContinuation({ db, companyId, issueId, agentId,
     context: { previousRunId: previous.id, wakeCommentId: commentId },
     summary: null, exposeLowTrustRaw: false });
+  if (input.dryRun) return { previousRunId: previous.id, commentId };
   const authorization = { actorId, commentId, runId: input.successorRunId,
     previousRunId: previous.id, recordedAt: new Date().toISOString() };
   await db.update(nativeRunFinalizations).set({

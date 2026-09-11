@@ -25539,14 +25539,9 @@ export function heartbeatService(
             reconciledSourceRunId = sourceRunId;
           }
 
-          // All wake producers share this admission gate. A resolved recovery
-          // action can still prohibit replay; its durable evidence owns the wait.
-          // Reconciliation wakes have already proved their authority above and
-          // must still respect any other effective hold on the same issue.
-          const executionBlocker = await getExecutionBlocker(
-            tx as unknown as Db, issue.companyId, issue.id,
-          );
-          if (executionBlocker) {
+          const deferBlockedExecution = async (
+            executionBlocker: NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>,
+          ) => {
             const condition = { recoveryActionId: executionBlocker.recoveryActionId };
             if (durableRequest || wakeCommentId || hasInteractionContinuationWakeContext(enrichedContextSnapshot)) {
               await tx.insert(agentWakeupRequests).values({
@@ -25582,7 +25577,19 @@ export function heartbeatService(
               });
             }
             return { kind: "deferred" as const };
-          }
+          };
+          const explicitContinuationRunId = randomUUID();
+          const executionBlocker = await getExecutionBlocker(
+            tx as unknown as Db, issue.companyId, issue.id,
+          );
+          // Prove eligibility without retiring the hold. Later gates can still
+          // decline this wake; hold retirement and successor creation stay atomic.
+          if (executionBlocker && !(await admitExplicitNativeContinuation({
+            db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
+            agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
+            reason, commentId: wakeCommentId ?? null, successorRunId: explicitContinuationRunId,
+            dryRun: true,
+          }))) return deferBlockedExecution(executionBlocker);
 
           const issueStateGuard = opts.issueStateGuard;
           if (
@@ -26333,12 +26340,12 @@ export function heartbeatService(
             return { kind: "skipped" as const };
           }
 
-          const explicitContinuationRunId = randomUUID();
           const explicitContinuation = await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
             reason, commentId: wakeCommentId ?? null, successorRunId: explicitContinuationRunId,
           });
+          if (!explicitContinuation && executionBlocker) return deferBlockedExecution(executionBlocker);
           if (explicitContinuation) {
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
