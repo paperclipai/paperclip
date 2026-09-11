@@ -1,5 +1,5 @@
 group "default" {
-  targets = ["base", "claude", "codex", "gemini", "opencode", "pi", "hermes"]
+  targets = ["base", "claude", "codex", "gemini", "grok", "opencode", "pi", "hermes"]
 }
 
 variable "VERSION" { default = "dev" }
@@ -82,6 +82,19 @@ target "hermes" {
   dockerfile = "docker/agent-runtime/Dockerfile.hermes"
   platforms = ["linux/amd64"]
   tags = ["${REGISTRY}/agent-runtime-hermes:${VERSION}"]
+  args = {
+    BASE_TAG = "${VERSION}"
+  }
+  contexts = {
+    "paperclipai/agent-runtime-base:${VERSION}" = "target:base"
+  }
+}
+
+target "grok" {
+  context = "."
+  dockerfile = "docker/agent-runtime/Dockerfile.grok"
+  platforms = ["linux/amd64"]
+  tags = ["${REGISTRY}/agent-runtime-grok:${VERSION}"]
   args = {
     BASE_TAG = "${VERSION}"
   }
