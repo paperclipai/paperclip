@@ -3132,6 +3132,8 @@ function createSandboxEnvironmentDriver(
       input.lease.id,
       cleanupStatus === "success" ? "expired" : "pending_cleanup",
       {
+        ...(input.lease.status === "pending_cleanup" && typeof metadata.pendingCleanupAttemptId === "string"
+          ? { expectedPendingCleanupAttemptId: metadata.pendingCleanupAttemptId } : {}),
         failureReason: input.failureReason,
         cleanupStatus,
         ...(cleanupStatus === "success" && termination ? { remoteExecutionTermination: termination } : {}),
