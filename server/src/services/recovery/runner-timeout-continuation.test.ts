@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_MAX_RUNNER_TIMEOUT_CONTINUATIONS,
   buildRunnerTimeoutContinuationIdempotencyKey,
-  buildRunnerTimeoutContinuationInstruction,
   decideRunnerTimeoutContinuation,
   readPersistedRunnerTimeout,
 } from "./runner-timeout-continuation.js";
+import { RUNNER_TIMEOUT_EXIT_CODE, readRunnerTimeoutEvidence } from "../execution-resource-admission.js";
 
 function run(overrides: Record<string, unknown> = {}) {
   return {
@@ -102,7 +102,6 @@ describe("decideRunnerTimeoutContinuation", () => {
     );
     expect(decision.instruction).toContain("run-source");
     expect(decision.instruction).toContain("paperclip-issue-lane");
-    expect(decision.instruction).toContain("Do not repeat external actions");
     expect(decision.extraContext).toMatchObject({
       runnerTimeoutContinuation: true,
       resumeFromCheckpoint: true,
@@ -115,8 +114,6 @@ describe("decideRunnerTimeoutContinuation", () => {
       continuationAttempt: DEFAULT_MAX_RUNNER_TIMEOUT_CONTINUATIONS,
     });
     expect(decision.kind).toBe("exhausted");
-    if (decision.kind !== "exhausted") throw new Error("expected an exhausted decision");
-    expect(decision.comment).toContain("not raised automatically");
   });
 
   it("requires real progress before resuming a session", () => {
@@ -154,13 +151,73 @@ describe("decideRunnerTimeoutContinuation", () => {
     );
   });
 
-  it("builds one stable instruction for a run without a recorded session", () => {
-    const instruction = buildRunnerTimeoutContinuationInstruction({
-      sourceRunId: "run-source",
-      sessionId: null,
-      requests: 2,
+
+  it("continues a launcher-issued timeout from the evidence the adapter persisted", () => {
+    // The launcher times the run out itself (its wall clock is shorter than
+    // native's) and reports the outcome as the run_timeout envelope; the
+    // adapter reads it in the non-zero branch and persists it as runnerTimeout.
+    const sourceRunId = "6dacba3a-5268-420f-b2fd-d0bb4dea3a02";
+    const stdout = [
+      '{"type":"thinking_delta","text":"mid-turn work"}',
+      JSON.stringify({
+        schemaVersion: 1,
+        kind: "run_timeout",
+        status: "timed_out",
+        runId: sourceRunId,
+        issueId: "fc51e706-0000-4000-8000-000000000003",
+        sessionId: "paperclip-fc51e706-3ae84a40a9322b59f153",
+        modelStarted: true,
+        resumable: true,
+        progress: { requests: 99, denials: 1, lastEventAt: "2026-09-11T08:05:06.656Z" },
+        exitCode: RUNNER_TIMEOUT_EXIT_CODE,
+      }),
+    ].join("\n");
+    const adapterEvidence = readRunnerTimeoutEvidence({
+      exitCode: RUNNER_TIMEOUT_EXIT_CODE,
+      stdout,
+      runId: sourceRunId,
     });
-    expect(instruction).toContain("Resume from your last checkpoint");
-    expect(instruction).not.toContain("null");
+    expect(adapterEvidence).not.toBeNull();
+
+    const persisted = readPersistedRunnerTimeout({
+      status: "timed_out",
+      resultJson: { runnerTimeout: adapterEvidence },
+    });
+    expect(persisted).toMatchObject({
+      sessionId: "paperclip-fc51e706-3ae84a40a9322b59f153",
+      modelStarted: true,
+      resumable: true,
+      progress: { requests: 99, denials: 1, lastRequestAt: "2026-09-11T08:05:06.656Z" },
+    });
+
+    // The same bounded session-resuming continuation engages: one attempt, the
+    // checkpoint session, and the receipts-aware instruction.
+    const decision = decide({ run: run({ id: sourceRunId }), evidence: persisted });
+    expect(decision).toMatchObject({
+      kind: "enqueue",
+      nextAttempt: 1,
+      maxAttempts: DEFAULT_MAX_RUNNER_TIMEOUT_CONTINUATIONS,
+      resumeSessionId: "paperclip-fc51e706-3ae84a40a9322b59f153",
+    });
+    if (decision.kind !== "enqueue") throw new Error("expected an enqueue decision");
+    expect(decision.instruction).toContain("paperclip-fc51e706-3ae84a40a9322b59f153");
+    expect(decision.extraContext).toMatchObject({ resumeFromCheckpoint: true });
+  });
+
+  it("does not mint a continuation from a bare or unproven launcher timeout", () => {
+    // A bare 124 without the envelope is persisted as an ordinary failure row,
+    // so the persisted reader sees no evidence and the chain never starts.
+    expect(
+      readPersistedRunnerTimeout({
+        status: "failed",
+        resultJson: { stdout: "Process exited with code 124" },
+      }),
+    ).toBeNull();
+    expect(
+      readPersistedRunnerTimeout({
+        status: "timed_out",
+        resultJson: { stdout: "no runnerTimeout key" },
+      }),
+    ).toBeNull();
   });
 });

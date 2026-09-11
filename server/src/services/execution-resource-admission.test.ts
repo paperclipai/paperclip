@@ -133,12 +133,57 @@ describe("readRunnerAdmissionRejection", () => {
     ...overrides,
   });
 
+  // The launcher's exit-1 refusal shape (rejectRunAdmission): no exitCode and
+  // no phase on the envelope, the reason code names the refusal.
+  const genericRefusal = (overrides: Record<string, unknown> = {}) => envelopeLine({
+    schemaVersion: 1,
+    kind: "run_admission",
+    status: "rejected",
+    runId: RUN_ID,
+    reasonCode: "recovery_incident_unadmitted",
+    owner: "operator",
+    nextAction: "Admit a recovery incident for this issue, then re-request the recovery run.",
+    modelStarted: false,
+    ...overrides,
+  });
+
   it("retains a run-bound prerequisite failure without turning it into contention", () => {
     const input = { exitCode: 96, stdout: refusal(), runId: RUN_ID };
     expect(readRunnerAdmissionRejection(input)).toMatchObject({
       reasonCode: "image_prerequisite_missing", modelStarted: false, phase: "image",
     });
     expect(readRunnerResourceWait(input)).toBeNull();
+  });
+
+  it("classifies a structured pre-model refusal reported with the generic failure exit", () => {
+    const input = { exitCode: 1, stdout: genericRefusal(), runId: RUN_ID };
+    expect(readRunnerAdmissionRejection(input)).toEqual({
+      reasonCode: "recovery_incident_unadmitted",
+      modelStarted: false,
+      phase: null,
+      nextAction: "Admit a recovery incident for this issue, then re-request the recovery run.",
+      owner: "operator",
+    });
+    // A refusal is failure evidence, never a resource wait.
+    expect(readRunnerResourceWait(input)).toBeNull();
+  });
+
+  it("leaves unproven, foreign, or inconsistent exit-1 refusals as ordinary failures", () => {
+    for (const stdout of [
+      "generic process failure",
+      genericRefusal({ runId: "11111111-1111-4111-8111-111111111111" }),
+      genericRefusal({ modelStarted: true }),
+      genericRefusal({ status: "deferred" }),
+      // An unknown reason code is not a named producer refusal.
+      genericRefusal({ reasonCode: "model_orchestrated_pause" }),
+      // The envelope must not claim a reserved exit code the run did not exit with.
+      genericRefusal({ exitCode: 96 }),
+      genericRefusal({ schemaVersion: 2 }),
+    ]) {
+      expect(readRunnerAdmissionRejection({ exitCode: 1, stdout, runId: RUN_ID })).toBeNull();
+    }
+    // A reserved refusal envelope is not an exit-1 refusal either.
+    expect(readRunnerAdmissionRejection({ exitCode: 1, stdout: refusal(), runId: RUN_ID })).toBeNull();
   });
 
   it("leaves unproven, foreign, or inconsistent refusals as ordinary failures", () => {
@@ -203,6 +248,53 @@ describe("readRunnerTimeoutEvidence", () => {
         stdout: timeoutEnvelope(),
         runId: "11111111-1111-4111-8111-111111111111",
       }),
+    ).toBeNull();
+  });
+
+  it("rejects an outcome that contradicts the launcher timeout exit", () => {
+    for (const overrides of [{ status: "succeeded" }, { exitCode: 1 }]) {
+      expect(readRunnerTimeoutEvidence({
+        exitCode: RUNNER_TIMEOUT_EXIT_CODE,
+        stdout: timeoutEnvelope(overrides),
+        runId: RUN_ID,
+      })).toBeNull();
+    }
+  });
+
+  it("reads the launcher's own timeout envelope shape unchanged", () => {
+    // Exact producer shape (paperclip.mjs run-outcome record): issueId, role,
+    // status, and a progress timestamp named lastEventAt.
+    const producerEnvelope = envelopeLine({
+      schemaVersion: 1,
+      kind: "run_timeout",
+      status: "timed_out",
+      runId: RUN_ID,
+      issueId: "3a4c9d1e-0000-4000-8000-000000000002",
+      sessionId: "paperclip-issue-lane",
+      modelStarted: true,
+      resumable: true,
+      progress: { requests: 99, denials: 1, lastEventAt: "2026-09-11T08:05:06.656Z" },
+      exitCode: RUNNER_TIMEOUT_EXIT_CODE,
+    });
+    expect(
+      readRunnerTimeoutEvidence({
+        exitCode: RUNNER_TIMEOUT_EXIT_CODE,
+        stdout: `worker chatter\n${producerEnvelope}\n`,
+        runId: RUN_ID,
+      }),
+    ).toEqual({
+      sessionId: "paperclip-issue-lane",
+      modelStarted: true,
+      resumable: true,
+      progress: { requests: 99, denials: 1, lastRequestAt: "2026-09-11T08:05:06.656Z" },
+    });
+    // The reserved code alone is never evidence.
+    expect(
+      readRunnerTimeoutEvidence({ exitCode: RUNNER_TIMEOUT_EXIT_CODE, stdout: "no envelope", runId: RUN_ID }),
+    ).toBeNull();
+    // The envelope on a different exit code is not timeout evidence.
+    expect(
+      readRunnerTimeoutEvidence({ exitCode: 1, stdout: producerEnvelope, runId: RUN_ID }),
     ).toBeNull();
   });
 });

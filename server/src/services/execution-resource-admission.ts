@@ -210,31 +210,87 @@ const RUNNER_ADMISSION_REJECTIONS: Readonly<Record<number, string>> = {
   99: "containment_unavailable",
 };
 
-/** Failure evidence only: these refusals never authorize a resource-wait retry. */
+/** The launcher's generic failure exit. A structured pre-model refusal also
+ * uses it because these refusals have no reserved exit code of their own. */
+const RUNNER_ADMISSION_REJECTION_EXIT_CODE = 1;
+
+/** Reason codes the trusted launcher can name for a pre-model refusal that
+ * exits with the generic failure code. The closed set is the producer
+ * contract: a run that prints the same envelope shape with an unknown code is
+ * an ordinary failure, not a named refusal. */
+const RUNNER_ADMISSION_REJECTION_REASON_CODES = new Set([
+  "review_interaction_not_addressed",
+  "run_owner_not_assigned",
+  "review_payload_invalid",
+  "review_model_mismatch",
+  "review_candidate_conflict",
+  "recovery_incident_unadmitted",
+  "requirements_invalid",
+  "requirements_project_unadmitted",
+  "requirements_workspace_unknown",
+  "requirements_document_missing",
+  "requirements_document_mismatch",
+  "requirements_capability_unavailable",
+  "candidate_root_unreadable",
+  "requirements_revision_unavailable",
+  "requirements_lineage_unverified",
+  "planning_tools_unavailable",
+  "project_environment_unavailable",
+]);
+
+export type RunnerAdmissionRejection = {
+  reasonCode: string;
+  modelStarted: false;
+  phase: string | null;
+  nextAction: string | null;
+  owner: string | null;
+};
+
+/** Failure evidence only: these refusals never authorize a resource-wait retry.
+ *
+ * Two producer shapes exist. A reserved exit code (96-99) names the refusal
+ * class on the exit code itself, and the envelope must echo that code and the
+ * exact reason. The generic failure exit carries the launcher's structured
+ * pre-model refusals, which have no reserved code; there the closed
+ * reason-code set is the producer contract, and an envelope with an unknown
+ * reason, a started model, another run's identity, or a reserved exit code it
+ * did not exit with stays an ordinary failure. */
 export function readRunnerAdmissionRejection(input: {
   exitCode: number | null | undefined;
   stdout: string | null | undefined;
   runId: string;
-}) {
-  const reasonCode = RUNNER_ADMISSION_REJECTIONS[input.exitCode ?? -1];
-  if (!reasonCode) return null;
+}): RunnerAdmissionRejection | null {
+  const reservedReason = RUNNER_ADMISSION_REJECTIONS[input.exitCode ?? -1];
+  if (!reservedReason && input.exitCode !== RUNNER_ADMISSION_REJECTION_EXIT_CODE) return null;
   const envelope = readRunnerEnvelope({
     stdout: input.stdout,
     kind: RUNNER_RESOURCE_WAIT_ADMISSION_KIND,
     runId: input.runId,
   });
-  if (
-    !envelope
-    || envelope.status !== "rejected"
-    || envelope.modelStarted !== false
-    || envelope.exitCode !== input.exitCode
-    || envelope.reasonCode !== reasonCode
-  ) return null;
+  if (!envelope || envelope.status !== "rejected" || envelope.modelStarted !== false) return null;
+  if (reservedReason) {
+    if (envelope.exitCode !== input.exitCode || envelope.reasonCode !== reservedReason) return null;
+    return {
+      reasonCode: reservedReason,
+      modelStarted: false,
+      phase: readTrimmedString(envelope.phase),
+      nextAction: readTrimmedString(envelope.nextAction),
+      owner: readTrimmedString(envelope.owner),
+    };
+  }
+  // The exit-1 refusal envelope carries no exit code; it must never claim a
+  // reserved one it did not exit with.
+  if (envelope.exitCode !== undefined && envelope.exitCode !== RUNNER_ADMISSION_REJECTION_EXIT_CODE) {
+    return null;
+  }
+  const reasonCode = readTrimmedString(envelope.reasonCode);
+  if (!reasonCode || !RUNNER_ADMISSION_REJECTION_REASON_CODES.has(reasonCode)) return null;
   return {
     reasonCode,
     modelStarted: false,
     phase: readTrimmedString(envelope.phase),
     nextAction: readTrimmedString(envelope.nextAction),
+    owner: readTrimmedString(envelope.owner),
   };
 }
 
@@ -255,8 +311,10 @@ export function readRunnerTimeoutEvidence(input: {
     kind: RUNNER_TIMEOUT_ENVELOPE_KIND,
     runId: input.runId,
   });
-  if (!envelope) return null;
-  if (envelope.modelStarted !== true) return null;
+  if (!envelope
+    || envelope.status !== "timed_out"
+    || envelope.exitCode !== RUNNER_TIMEOUT_EXIT_CODE
+    || envelope.modelStarted !== true) return null;
   const progressRecord = record(envelope.progress) ? envelope.progress : null;
   return {
     sessionId: readTrimmedString(envelope.sessionId),
@@ -266,7 +324,10 @@ export function readRunnerTimeoutEvidence(input: {
       ? {
           requests: readCount(progressRecord.requests),
           denials: readCount(progressRecord.denials),
-          lastRequestAt: readTrimmedString(progressRecord.lastRequestAt),
+          // The launcher reports the last broker event time as `lastEventAt`;
+          // keep the persisted evidence field name while accepting it.
+          lastRequestAt: readTrimmedString(progressRecord.lastRequestAt)
+            ?? readTrimmedString(progressRecord.lastEventAt),
         }
       : null,
   };

@@ -36,6 +36,24 @@ directory. Consult the run's writer-resource admission receipt and current
 holder, and never clean a shared directory merely because an older workspace
 record is no longer linked from the issue.
 
+### Contained process outcomes
+
+A launcher-owned timeout can occur before the process adapter's own deadline.
+Exit 124 is classified as `timed_out` only with a version-1 `run_timeout`
+envelope bound to this run, reporting `status: "timed_out"`, `exitCode: 124`
+and `modelStarted: true`. The adapter persists its checkpoint evidence under
+`resultJson.runnerTimeout`; the existing progress, ownership, budget and
+continuation-attempt gates still decide whether the same session may resume.
+Neither a bare exit code nor contradictory or foreign-run evidence grants a
+continuation. The configured execution deadline is unchanged.
+
+An exit-1 `run_admission` rejection is likewise classified only from a
+run-bound, version-1 envelope with `status: "rejected"`, `modelStarted: false`
+and a known launcher reason code. This records the actual pre-model refusal,
+such as `recovery_incident_unadmitted`, rather than a generic adapter failure.
+It does not authorize admission, bypass the refusal or grant a resource-wait
+retry. Reserved refusal codes 96–99 retain their existing contract.
+
 ## Native PRP Run-Log Events
 
 The hidden native coordinator writes each validated PRP event to the bound

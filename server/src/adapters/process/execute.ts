@@ -1,6 +1,7 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import {
   RUNNER_RESOURCE_WAIT_ERROR_CODE,
+  RUNNER_TIMEOUT_EXIT_CODE,
   readRunnerAdmissionRejection,
   readRunnerResourceWait,
   readRunnerTimeoutEvidence,
@@ -132,6 +133,33 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   if ((proc.exitCode ?? 0) !== 0) {
+    // The launcher's wall clock can expire before native's, so the child exits
+    // with the reserved timeout code on its own. A timeout is still a timeout,
+    // but the envelope — not the bare code — is the evidence: it binds the run
+    // identity and states explicitly whether the model started and the session
+    // is resumable, so the bounded continuation can resume the same session. A
+    // bare, malformed, or mismatched 124 from an unrelated failure never
+    // fabricates resumability and stays an ordinary failure.
+    if ((proc.exitCode ?? 0) === RUNNER_TIMEOUT_EXIT_CODE) {
+      const launcherRunnerTimeout = readRunnerTimeoutEvidence({
+        exitCode: proc.exitCode,
+        stdout: proc.stdout,
+        runId,
+      });
+      if (launcherRunnerTimeout) {
+        return {
+          exitCode: proc.exitCode,
+          signal: proc.signal,
+          timedOut: true,
+          errorMessage: `Run exceeded its wall-clock limit (exit code ${RUNNER_TIMEOUT_EXIT_CODE})`,
+          resultJson: {
+            stdout: proc.stdout,
+            stderr: proc.stderr,
+            runnerTimeout: launcherRunnerTimeout,
+          },
+        };
+      }
+    }
     const runnerAdmissionRejection = readRunnerAdmissionRejection({
       exitCode: proc.exitCode,
       stdout: proc.stdout,
