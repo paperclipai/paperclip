@@ -3023,6 +3023,18 @@ export function recoveryService(
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      // A native chat can finish between the earlier settlement read and this
+      // fresh run read, before its response is materialized. Its trusted
+      // finalizer owns that settlement; generic productive-work recovery must
+      // not invent another conversation turn during the publication window.
+      if (
+        issue.conversationAgentId &&
+        latestRun?.status === "succeeded" &&
+        parseObject(latestRun.resultJson).finalizationReasonCode === "conversation_turn_finished"
+      ) {
+        result.skipped += 1;
+        continue;
+      }
 
       const agent = await getAgent(agentId);
       const agentInvokable = agent && agent.companyId === issue.companyId

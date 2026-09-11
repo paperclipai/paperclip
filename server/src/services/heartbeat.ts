@@ -23177,6 +23177,27 @@ export function heartbeatService(
           }
         }
 
+        // A queued agent comment can outlive the assignment it addressed. The
+        // human reopen path above may revive it; otherwise do not dispatch an
+        // assignee continuation against work that has already ended. Mentions
+        // to other agents remain notifications and can inspect the closed task.
+        if (
+          (issue.status === "done" || issue.status === "cancelled") &&
+          deferred.agentId === issue.assigneeAgentId
+        ) {
+          const now = new Date();
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: "Deferred execution wake no longer applies to a terminal task",
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, deferred.id));
+          continue;
+        }
+
         const promotedReason =
           readNonEmptyString(deferred.reason) ?? "issue_execution_promoted";
         const promotedSource =

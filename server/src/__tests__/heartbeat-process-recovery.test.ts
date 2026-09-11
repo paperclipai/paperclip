@@ -1,3 +1,4 @@
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs/promises";
@@ -8568,6 +8569,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       if (row.id !== runId) {
         await waitForRunToSettle(heartbeat, row.id);
       }
+    }
+  });
+
+  it("does not recover a finished native chat while its response publication is pending", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+      resultJson: { finalizationReasonCode: "conversation_turn_finished" },
+    });
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+    try {
+      await db.update(issues).set({
+        conversationAgentId: agentId,
+        conversationUserId: "responsible-user",
+        conversationState: "active",
+      }).where(eq(issues.id, issueId));
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result.continuationRequeued).toBe(0);
+      expect(result.escalated).toBe(0);
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs.map((run) => run.id)).toEqual([runId]);
+      const wakes = await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, agentId));
+      expect(wakes).toHaveLength(1);
+      expect(wakes[0].reason).toBe("issue_assigned");
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      // No fabricated idle state: durable response publication still settles it.
+      expect(issue.status).toBe("in_progress");
+      expect(issue.conversationState).toBe("active");
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });
     }
   });
 
