@@ -129,9 +129,14 @@ When reverting this workflow, restore the master push trigger in
 waiting, readiness signals, and exact-master migrator preparation to the
 `paperclip-post-merge` runner group. The separate Fleet label is
 `runs-on/fleet=paperclip-post-merge-x64/env=public-ci`. Its 36 reserved slots use
-the same four-vCPU, 16-GiB machines as approved PR jobs. PR capacity is reduced
-to 64; image capacity stays at eight. The total ceiling remains 108 runners.
-This keeps PR bursts from consuming every post-merge verification slot.
+the same four-vCPU, 16-GiB machines as approved PR jobs. Image capacity stays
+at eight. The initial split allocated 64 PR slots and 108 total slots. The PR
+ceiling can increase independently, subject to the applied regional EC2
+Standard On-Demand vCPU quota and the reviewed infrastructure configuration.
+For example, 100 PR, 36 post-merge, and eight image workers require 576 vCPUs.
+A pending quota increase does not supply that capacity. These are limits for
+ephemeral workers, with no idle worker pool or Reserved Instance commitment.
+The separate post-merge allocation keeps PR bursts from consuming its slots.
 
 Every selector checks the canonical repository name and ID, master ref, and a
 push or manual event. Reusable verification also requires `inputs.ref` to equal
