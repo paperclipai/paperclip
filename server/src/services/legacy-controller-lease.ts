@@ -70,7 +70,7 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
   }
   let stopped = false;
   let pending = false;
-  const lost = () => controller.abort(new Error("Legacy controller lease lost"));
+  const lost = () => { if (!stopped) controller.abort(new Error("Legacy controller lease lost")); };
   let deadline = setTimeout(lost, Math.max(0,
     (run.controllerLeaseExpiresAt?.getTime() ?? 0) - Date.now()));
   deadline.unref();
@@ -78,7 +78,17 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
     if (stopped) return;
     controller.signal.throwIfAborted();
     const startedAt = Date.now();
-    const renewed = await renewLegacyControllerLease(db, run, stage);
+    let onAbort!: () => void;
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(controller.signal.reason);
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    let renewed: boolean;
+    try {
+      renewed = await Promise.race([renewLegacyControllerLease(db, run, stage), aborted]);
+    } finally {
+      controller.signal.removeEventListener("abort", onAbort);
+    }
     if (stopped) return;
     if (!renewed) {
       lost();

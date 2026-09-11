@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRuns } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -91,6 +91,20 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await renewLegacyControllerLease(db, run)).toBe(false);
     expect(await revokeExpiredLegacyController(db, run)).toBe(false);
   });
+  it("rejects dispatch at the lease deadline even if the database query never settles", async () => {
+    const run = await seed();
+    const hungDb = { update: () => ({ set: () => ({ where: () => ({ returning: () => new Promise(() => {}) }) }) }) } as unknown as typeof db;
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const watch = watchLegacyControllerLease(hungDb, { ...run, controllerLeaseExpiresAt: new Date(Date.now() + 100) }, controller);
+    try {
+      const checked = expect(watch.assertOwned("dispatching")).rejects.toThrow("lease lost");
+      await vi.advanceTimersByTimeAsync(101);
+      await checked;
+      expect(controller.signal.aborted).toBe(true);
+    } finally { watch.stop(); vi.useRealTimers(); }
+  });
+
   it("leaves native controller ownership to the native coordinator", () => {
     expect(legacyControllerClaim("native")).toEqual({});
   });
