@@ -1,7 +1,9 @@
 {
   "$comment": "Per-suite wall-clock durations (ms) for the general-server vitest lane, used by scripts/general-server-shard.mjs to balance suites across the PR shard matrix. Sampled from a real PR run of .github/workflows/pr.yml (actions run 32708351172, 2026-08-24) by diffing consecutive per-suite completion timestamps in the 'Run grouped general test suites' logs \u2014 that captures each suite's true serial cost (import + collect + tests), not just the vitest-reported test time. Suites missing here get the median weight, so the manifest only needs occasional refreshes.",
   "$chatSample": "chat-channels.integration.test.ts: actions run 34405038082, job 102646337040, 2026-09-09. The first suite completed at 21:19:52.9026416Z after Vitest RUN at 21:09:07.5491992Z: 645354ms rounded up, including startup/import/collection; the 985 tests themselves took 629654ms. All 2972 tests in the shard passed, but the job exceeded its unchanged 20-minute bound during cleanup. Recording this missing heavy-suite weight lets the existing LPT partition reserve one of the existing five shards without changing test coverage, isolation, or deadlines.",
+  "$nativeRunnerSample": "native-codex-runner.integration.test.ts: actions run 34555686996, job 103127786254, 2026-09-11. Consecutive suite completions at 02:50:34.2830368Z and 02:55:07.9837588Z give 273701ms including import/collection (test body 270773ms). This previously unweighted suite made one four-way server shard take 14m38s; recording its cost lets the existing LPT partition balance it in both PR and release runs.",
   "durations": {
+    "server/src/services/native-runtime/native-codex-runner.integration.test.ts": 273701,
     "server/src/__tests__/access-service.test.ts": 4757,
     "server/src/__tests__/access-validators.test.ts": 645,
     "server/src/__tests__/activity-log-responsible-user.test.ts": 4407,
