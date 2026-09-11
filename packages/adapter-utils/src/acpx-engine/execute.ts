@@ -1971,7 +1971,11 @@ async function buildRuntime(input: {
   // api-key authentication method during session creation. Without this
   // request, the server advertises authentication and rejects session/new even
   // though the credential is present in the launched process environment.
-  if (acpxAgent === "codex" && env.OPENAI_API_KEY && !env.DEFAULT_AUTH_REQUEST) {
+  if (
+    acpxAgent === "codex" &&
+    (env.OPENAI_API_KEY || env.CODEX_API_KEY) &&
+    !env.DEFAULT_AUTH_REQUEST
+  ) {
     env.DEFAULT_AUTH_REQUEST = JSON.stringify({ methodId: "api-key" });
   }
   if (authToken) env.PAPERCLIP_API_KEY = authToken;

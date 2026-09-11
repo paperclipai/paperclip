@@ -1548,6 +1548,30 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(env.PAPERCLIP_CLOUD_PROVIDER_TOKEN).toBe("cloud-token");
   });
 
+  it.each(["OPENAI_API_KEY", "CODEX_API_KEY"] as const)(
+    "selects Codex ACP API-key authentication when %s is configured",
+    async (apiKeyName) => {
+      const root = await makeTempRoot();
+      const codexHome = path.join(root, "codex-home");
+      await fs.mkdir(codexHome, { recursive: true });
+
+      const { sessionInputs } = await runExecutor({
+        agent: "codex",
+        stateDir: path.join(root, "state"),
+        env: {
+          CODEX_HOME: codexHome,
+          [apiKeyName]: "sk-acp-test-key",
+        },
+        paperclipRuntimeSkills: [],
+        paperclipSkillSync: { desiredSkills: [] },
+      });
+
+      const env = (sessionInputs[0]!.sessionOptions as { env: Record<string, string> }).env;
+      expect(env[apiKeyName]).toBe("sk-acp-test-key");
+      expect(env.DEFAULT_AUTH_REQUEST).toBe(JSON.stringify({ methodId: "api-key" }));
+    },
+  );
+
   it("busts the session fingerprint when resolved adapter env changes but not across wakes", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
