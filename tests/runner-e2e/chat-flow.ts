@@ -46,6 +46,38 @@ type Comment = {
   conversationSessionGeneration?: number;
 };
 type Plan = { body: string; latestRevisionId: string; updatedAt: string };
+type ChatOutputDocument = Plan & { id: string; issueId: string; key: string };
+
+/** A requested output document may have a descriptive key; a copied plan is not output. */
+export async function readChatOutputDocument(
+  api: Pick<RunnerApi, "get">,
+  issueId: string,
+  marker: string,
+): Promise<ChatOutputDocument> {
+  const summaries = await api.get<Array<{ key: string }>>(
+    `/api/issues/${issueId}/documents`,
+  );
+  const documents = await Promise.all(
+    summaries
+      .filter((document) => document.key !== "plan")
+      .map((document) =>
+        api.get<ChatOutputDocument>(
+          `/api/issues/${issueId}/documents/${encodeURIComponent(document.key)}`,
+        ),
+      ),
+  );
+  const output = documents.find(
+    (document) => document.issueId === issueId && document.body.includes(marker),
+  );
+  if (!output)
+    throw new Error(
+      `Execution task ${issueId} has no non-plan output document containing ${marker}; document keys: ${summaries.map((document) => document.key).join(", ") || "none"}`,
+    );
+  expect(output.id).toBeTruthy();
+  expect(output.latestRevisionId).toBeTruthy();
+  return output;
+}
+
 export const isResetRun = (run: ChatRun) =>
   run.contextSnapshot?.conversationReset === true ||
   run.resultJson?.conversationReset === true;
@@ -610,10 +642,22 @@ export async function runChatFlow(input: {
           acceptedPlan!.latestRevisionId,
         );
       } else assertChatTaskHandoff(child, taskRuns, issue!);
-      const output = await api.get<Plan>(
-        `/api/issues/${child.id}/documents/output`,
-      );
+      const output =
+        caseId === "multi-repository"
+          ? await readChatOutputDocument(api, child.id, marker)
+          : await api.get<Plan>(`/api/issues/${child.id}/documents/output`);
       expect(output.body).toContain(marker);
+      if (caseId === "multi-repository") {
+        const outputKey = (output as ChatOutputDocument).key;
+        await input.evidence("chat-execution-output.json", {
+          taskId: child.id,
+          document: output,
+          revisions: await api.get(
+            `/api/issues/${child.id}/documents/${encodeURIComponent(outputKey)}/revisions`,
+          ),
+          executionRunIds: taskRuns.map((run) => run.id),
+        });
+      }
       expect(
         (await comments())
           .filter((c) => c.authorAgentId)

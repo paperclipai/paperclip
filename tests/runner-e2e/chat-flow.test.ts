@@ -8,6 +8,7 @@ import {
   chatTaskCompletionFailure,
   collectChatRunEvidence,
   readRunningChatLog,
+  readChatOutputDocument,
   isResetRun,
   type ChatIssue,
   type ChatRun,
@@ -104,6 +105,34 @@ describe("chat acceptance contracts", () => {
     expect(() =>
       assertChatTaskHandoff({ ...task, projectId: null }, [run], source),
     ).toThrow();
+  });
+  it("finds a committed descriptive output document without accepting a copied plan or a claim", async () => {
+    const output = {
+      ...plan,
+      id: "description-doc",
+      issueId: "work",
+      key: "project-description",
+      body: "A completed description with CHAT123.",
+      createdByAgentId: "agent",
+    };
+    const get = vi.fn(async (path: string) => {
+      if (path === "/api/issues/work/documents")
+        return [{ key: "plan" }, { key: "project-description" }];
+      if (path === "/api/issues/work/documents/project-description")
+        return output;
+      throw new Error(`Unexpected document read: ${path}`);
+    });
+    const api = { get } as Pick<RunnerApi, "get">;
+    await expect(readChatOutputDocument(api, "work", "CHAT123")).resolves.toBe(
+      output,
+    );
+    await expect(readChatOutputDocument(api, "work", "WRONG123")).rejects.toThrow(
+      "no non-plan output document",
+    );
+    get.mockImplementation(async () => [{ key: "plan" }]);
+    await expect(readChatOutputDocument(api, "work", "CHAT123")).rejects.toThrow(
+      "document keys: plan",
+    );
   });
   it("uses durable free-text labels, multi-selection, and the supplied submit label", () => {
     const payload: AskUserQuestionsPayload = {
