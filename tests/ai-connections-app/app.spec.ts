@@ -86,6 +86,17 @@ test("ordinary Anthropic setup keeps the existing tool method available", async 
   await expect(page).toHaveURL(new RegExp(`/${prefix}/apps$`));
 });
 
+test("explicit OpenAI API method survives continuing and reloading", async ({ page }) => {
+  await page.goto(`/${prefix}/apps/connect?source=openai&method=ai-api_key`);
+  await page.getByRole("button", { name: /^(Save and continue|Continue)$/ }).click();
+  await expect(page).toHaveURL(/method=ai-api_key/);
+  await page.reload();
+  await page.getByRole("radio", { name: /OpenAI/ }).click();
+  await expect(page.getByLabel("API key", { exact: true })).toBeVisible();
+  await expect(page.getByText(/CODEX_HOME=/)).toHaveCount(0);
+  await page.getByRole("button", { name: "Cancel", exact: true }).first().click();
+});
+
 for (const [provider, label] of [["anthropic", "Claude"], ["openai", "OpenAI"]]) {
   test(`Connections reuses the agent provider step for ${label}`, async ({ page }, testInfo) => {
     await page.goto(`/${prefix}/apps/connect?source=${provider}&method=ai-subscription`);

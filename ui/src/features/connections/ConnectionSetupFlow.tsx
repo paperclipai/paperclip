@@ -278,6 +278,7 @@ function appConnectHref(
     resumeConnectionId?: string | null;
     reconnectConnectionId?: string | null;
     interactionId?: string | null;
+    connectionMethodKey?: string | null;
   },
 ): string {
   const stage = ROUTE_STAGE_BY_STEP[step] ?? "setup";
@@ -285,6 +286,7 @@ function appConnectHref(
   if (existing?.resumeConnectionId) params.set("resume", existing.resumeConnectionId);
   if (existing?.reconnectConnectionId) params.set("reconnect", existing.reconnectConnectionId);
   if (existing?.interactionId) params.set("intent", existing.interactionId);
+  if (existing?.connectionMethodKey) params.set("method", existing.connectionMethodKey);
   const path = credentialSource === "vercel_connect" ? "/apps/vercel-connect" : "/apps/connect";
   return `${path}?${params.toString()}`;
 }
@@ -1148,6 +1150,7 @@ export function ConnectionSetupFlow({
     setStep(nextStep);
     if (entry) {
       navigate(appConnectHref(entry.slug, nextStep, credentialSource, {
+        connectionMethodKey: entry.methods.find(method => method.key === connectionMethodKey)?.ai ? connectionMethodKey : undefined,
         resumeConnectionId,
         reconnectConnectionId,
         interactionId: connectionIntentId,
