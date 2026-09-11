@@ -51,7 +51,7 @@ COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
 RUN pnpm install --frozen-lockfile
 
-FROM base AS build
+FROM base AS rust-toolchain
 WORKDIR /app
 # Debian's packaged rust lags the ecosystem (trixie ships 1.85) and the
 # runner's dependency tree now requires a newer rustc. Install rustup from a
@@ -83,8 +83,31 @@ RUN set -eux; \
     chmod +x /tmp/rustup-init; \
     /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain none; \
     rm /tmp/rustup-init
+# Install the package-owned compiler before any application source enters the
+# stage. rustup-init above installs rustup itself, not the selected compiler.
+COPY packages/paperclip-runner/rust-toolchain.toml /tmp/runner-toolchain/rust-toolchain.toml
+RUN cd /tmp/runner-toolchain && rustup show
+
+FROM rust-toolchain AS runner-build
+WORKDIR /app/packages/paperclip-runner
+# Rust embeds protocol schemas and fixtures with include_str!. Keep those
+# alongside the complete Cargo workspace so every compile-time input keys
+# this layer. Ordinary server/UI edits can then reuse the native build.
+COPY packages/paperclip-runner/rust-toolchain.toml ./
+COPY packages/paperclip-runner/runner ./runner
+COPY packages/paperclip-runner/protocol ./protocol
+# Cargo fingerprints source mtimes. Normalize them here and after the full
+# source copy below so a fresh checkout cannot invalidate unchanged inputs.
+RUN find runner protocol -type f -exec touch -d @0 {} + \
+  && touch -d @0 rust-toolchain.toml \
+  && cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd
+
+FROM runner-build AS build
+WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
+RUN find packages/paperclip-runner/runner packages/paperclip-runner/protocol -type f -exec touch -d @0 {} + \
+  && touch -d @0 packages/paperclip-runner/rust-toolchain.toml
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 # The server build runs scripts/write-build-stamp.mjs, which stamps the built

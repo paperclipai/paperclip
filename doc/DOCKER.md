@@ -45,6 +45,22 @@ tests passed or that a compatible database migrator is available. Deployment
 tooling must still check those prerequisites and pin the resolved image digest;
 a rebuild of the same source can update the tag's digest.
 
+## Native Runner build cache
+
+The image compiles the native Runner in `runner-build`, before copying the
+application source. That stage includes the pinned Rust compiler, the complete
+Cargo workspace and lockfile, and the protocol schemas and fixtures embedded
+by Rust. Changes to those inputs rebuild the native binary. Ordinary server or
+UI changes can reuse it through the existing registry cache (`mode=max`). Each
+platform gets its own native build; no cross-architecture binary is reused.
+
+The application build inherits that stage and still runs the normal server
+build, including Cargo, binary staging, and generated-contract checks. Rust
+input file times are normalized in both stages so fresh checkouts do not force
+Cargo to rebuild unchanged source. Changes made by build scripts still reach
+Cargo's normal validation. The final application copy excludes Cargo's target
+directory as before. Cache misses only cost compilation time.
+
 ## One-liner (build + run)
 
 ```sh
