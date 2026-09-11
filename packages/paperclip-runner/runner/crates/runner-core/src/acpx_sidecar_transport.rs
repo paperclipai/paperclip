@@ -431,7 +431,11 @@ impl AcpxSidecarTransport {
         } else {
             format!(
                 " stderrCategories={}",
-                self.stderr_categories.iter().copied().collect::<Vec<_>>().join(",")
+                self.stderr_categories
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .join(",")
             )
         };
         if diagnostics.is_empty() {
@@ -444,7 +448,8 @@ impl AcpxSidecarTransport {
     fn record_stderr(&mut self, line: &str) {
         // Only fixed categories cross this boundary. Raw errors, stack paths,
         // identifiers, and credential-bearing strings remain fully redacted.
-        self.stderr_categories.extend(stderr_diagnostic_categories(line));
+        self.stderr_categories
+            .extend(stderr_diagnostic_categories(line));
         self.stderr_tail.push(redact_diagnostic(line));
     }
 
@@ -639,15 +644,18 @@ fn stderr_diagnostic_categories(value: &str) -> BTreeSet<&'static str> {
         ("ENOENT", "file_not_found"),
         ("EACCES", "permission_denied"),
         ("EPERM", "permission_denied"),
-        ("ACPX_PERSISTED_SESSION_IDENTITY_MISMATCH", "persisted_session_identity_mismatch"),
+        (
+            "ACPX_PERSISTED_SESSION_IDENTITY_MISMATCH",
+            "persisted_session_identity_mismatch",
+        ),
         ("SESSION_RESUME_REQUIRED", "session_resume_required"),
     ];
     let mut categories: BTreeSet<&'static str> = value
         .split(|character: char| !character.is_ascii_alphanumeric() && character != '_')
         .filter_map(|token| {
-            CATEGORIES.iter().find_map(|(known, category)| {
-                (token == *known).then_some(*category)
-            })
+            CATEGORIES
+                .iter()
+                .find_map(|(known, category)| (token == *known).then_some(*category))
         })
         .collect();
     if value.contains("triggerUncaughtException") && value.contains("fromPromise") {

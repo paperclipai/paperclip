@@ -642,22 +642,16 @@ export async function runChatFlow(input: {
           acceptedPlan!.latestRevisionId,
         );
       } else assertChatTaskHandoff(child, taskRuns, issue!);
-      const output =
-        caseId === "multi-repository"
-          ? await readChatOutputDocument(api, child.id, marker)
-          : await api.get<Plan>(`/api/issues/${child.id}/documents/output`);
+      const output = await readChatOutputDocument(api, child.id, marker);
       expect(output.body).toContain(marker);
-      if (caseId === "multi-repository") {
-        const outputKey = (output as ChatOutputDocument).key;
-        await input.evidence("chat-execution-output.json", {
-          taskId: child.id,
-          document: output,
-          revisions: await api.get(
-            `/api/issues/${child.id}/documents/${encodeURIComponent(outputKey)}/revisions`,
-          ),
-          executionRunIds: taskRuns.map((run) => run.id),
-        });
-      }
+      await input.evidence("chat-execution-output.json", {
+        taskId: child.id,
+        document: output,
+        revisions: await api.get(
+          `/api/issues/${child.id}/documents/${encodeURIComponent(output.key)}/revisions`,
+        ),
+        executionRunIds: taskRuns.map((run) => run.id),
+      });
       expect(
         (await comments())
           .filter((c) => c.authorAgentId)

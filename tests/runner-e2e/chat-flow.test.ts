@@ -106,19 +106,19 @@ describe("chat acceptance contracts", () => {
       assertChatTaskHandoff({ ...task, projectId: null }, [run], source),
     ).toThrow();
   });
-  it("finds a committed descriptive output document without accepting a copied plan or a claim", async () => {
+  it.each(["project-description", "welcome-note", "output"])("finds committed %s output without accepting a copied plan or a claim", async (key) => {
     const output = {
       ...plan,
       id: "description-doc",
       issueId: "work",
-      key: "project-description",
+      key,
       body: "A completed description with CHAT123.",
       createdByAgentId: "agent",
     };
     const get = vi.fn(async (path: string) => {
       if (path === "/api/issues/work/documents")
-        return [{ key: "plan" }, { key: "project-description" }];
-      if (path === "/api/issues/work/documents/project-description")
+        return [{ key: "plan" }, { key }];
+      if (path === `/api/issues/work/documents/${key}`)
         return output;
       throw new Error(`Unexpected document read: ${path}`);
     });
