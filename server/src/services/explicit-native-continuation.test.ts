@@ -3,7 +3,7 @@ import { recordNativeLocalProcessStop, hasNativeLocalProcessStop, PROCESS_START_
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { beforeAll, afterAll, describe, it, expect } from "vitest";
+import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
 import {
   approvals, issueApprovals, issueThreadInteractions,
   agentWakeupRequests, agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions,
@@ -11,6 +11,7 @@ import {
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "../__tests__/helpers/embedded-postgres.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
+import * as continuationAdmission from "./explicit-native-continuation.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { heartbeatService, persistHeartbeatRunProcessMetadata, type HeartbeatEnvironmentRuntime } from "./heartbeat.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
@@ -113,6 +114,16 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(held.status).toBe("deferred_issue_execution");
     expect(held.payload?.executionWait).toMatchObject({ reason: "issue_tree_hold_active" });
     await db.update(issueTreeHolds).set({ status: "released" }).where(eq(issueTreeHolds.id, holdId));
+    if (state === "available") {
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1, maxDailyRuns: 0 } } }).where(eq(agents.id, f.agentId));
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await makeDue();
+        await heartbeatService(db).resumeExecutionWaitComments();
+      }
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(1);
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, f.agentId));
+    }
     await makeDue();
     await Promise.all([heartbeatService(db).resumeExecutionWaitComments(), heartbeatService(db).resumeExecutionWaitComments()]);
     const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
@@ -120,6 +131,43 @@ const support = await getEmbeddedPostgresTestSupport();
     const [after] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, waiting.id));
     expect(after.status).toBe(state === "available" ? "coalesced" : "deferred_issue_execution");
     if (state === "available") expect(after.runId).toBe(runs[0].id);
+  });
+
+  it("retains one saved receipt when a blocker reappears during transactional admission", async () => {
+    const f = await seed();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await heartbeatService(db).wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, commentId: f.commentId },
+      contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
+    const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    await db.update(issueRecoveryActions).set({ status: "resolved", evidence: { runId: f.sourceRunId } })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    const original = continuationAdmission.admitExplicitNativeContinuation;
+    let injected = false;
+    const admission = vi.spyOn(continuationAdmission, "admitExplicitNativeContinuation").mockImplementation(async input => {
+      if (input.issueId === f.issueId && !input.dryRun && !injected) {
+        injected = true;
+        await db.update(issueRecoveryActions).set({ status: "active" }).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+      }
+      return original(input);
+    });
+    try {
+      await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, waiting.id));
+      await heartbeatService(db).resumeExecutionWaitComments();
+      expect(injected).toBe(true);
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
+      const [after] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, waiting.id));
+      expect(after.status).toBe("deferred_issue_execution");
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(1);
+    } finally { admission.mockRestore(); }
+    await db.update(issueRecoveryActions).set({ status: "resolved" }).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, waiting.id));
+    await Promise.all([heartbeatService(db).resumeExecutionWaitComments(), heartbeatService(db).resumeExecutionWaitComments()]);
+    const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    expect(runs).toHaveLength(1);
+    const [after] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, waiting.id));
+    expect(after).toMatchObject({ status: "coalesced", runId: runs[0].id });
   });
 
   it.each(["live", "remote", "provider_event"])("does not accept invalid local stop proof: %s", async kind => {
