@@ -120,6 +120,7 @@ export { nativeRunResults } from "./native_run_results.js";
 export { nativeRunFinalizations } from "./native_run_finalizations.js";
 export { workAssessments } from "./work_assessments.js";
 export { statusDecisions } from "./status_decisions.js";
+export { executionProfiles, routeRules, routeDecisions, routePoolClaims } from "./routing.js";
 export { statusDecisionEffects } from "./status_decision_effects.js";
 export { heartbeatRunWatchdogDecisions } from "./heartbeat_run_watchdog_decisions.js";
 export { smokeRuns, smokeRunSteps } from "./smoke_lab.js";

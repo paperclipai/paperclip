@@ -182,6 +182,14 @@ export const issues = pgTable(
           and ${table.hiddenAt} is null
           and ${table.status} not in ('done', 'cancelled')`,
       ),
+    activeRouteReviewIdx: uniqueIndex("issues_active_route_review_uq")
+      .on(table.companyId, table.originKind, table.originId)
+      .where(
+        sql`${table.originKind} = 'route_review'
+          and ${table.originId} is not null
+          and ${table.hiddenAt} is null
+          and ${table.status} not in ('done', 'cancelled')`,
+      ),
     // The onboarding first-task origin grants privileged behavior (agent-attributed
     // greeting, description suppression), so at most one issue per company may ever
     // carry it — concurrent creates race on the pre-insert count check and this
