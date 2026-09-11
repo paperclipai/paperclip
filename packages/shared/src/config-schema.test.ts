@@ -6,6 +6,25 @@ import {
 } from "./config-schema.js";
 
 describe("paperclip config schema", () => {
+  it("accepts declarative NixOS module configuration", () => {
+    const parsed = paperclipConfigSchema.parse({
+      $meta: {
+        version: 1,
+        updatedAt: "1970-01-01T00:00:00.000Z",
+        source: "nixos-module",
+      },
+      database: {
+        mode: "embedded-postgres",
+      },
+      logging: {
+        mode: "file",
+      },
+      server: {},
+    });
+
+    expect(parsed.$meta.source).toBe("nixos-module");
+  });
+
   it("defaults omitted runtime paths to legacy instance-root locations", () => {
     const parsed = paperclipConfigSchema.parse({
       $meta: {
