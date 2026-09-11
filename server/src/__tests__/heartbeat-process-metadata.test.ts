@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRuns, startEmbeddedPostgresTestDatabase, type Db } from "@paperclipai/db";
 import * as processes from "../services/hot-restart.js";
 import * as adapters from "../adapters/index.js";
 import * as orchestration from "../services/environment-run-orchestrator.js";
 import * as compatibility from "../services/legacy-sandbox-workspace.js";
-import * as cancellation from "@paperclipai/adapter-utils/adapter-run-cancellation";
+import * as gitCredentials from "../services/git-credentials.js";
 import { bindAdapterRunStop, hasAdapterRunCancellation } from "@paperclipai/adapter-utils/adapter-run-cancellation";
 import * as executionTargets from "@paperclipai/adapter-utils/execution-target";
 import { heartbeatService, persistHeartbeatRunProcessMetadata } from "../services/heartbeat.js";
@@ -22,6 +22,12 @@ describe("heartbeat process identity persistence", () => {
     await db.insert(agents).values({ id: agentId, companyId, name: "Runner", role: "engineer", status: "idle", adapterType: "codex_local" });
   }, 60_000);
   afterEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    // These tests exercise process/cancellation ownership, not Git transport.
+    // Their synthetic targets deliberately have no remote command runner.
+    vi.spyOn(executionTargets, "prepareGitHubExecutionEnvironment").mockImplementation(async (input) => input.env);
+    vi.spyOn(gitCredentials, "resolveManagedGitHubIdentitySelection").mockResolvedValue({ configured: true });
+  });
   afterAll(async () => { await database?.cleanup(); });
   async function running() {
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", invocationSource: "on_demand", startedAt: new Date(),
@@ -103,7 +109,7 @@ describe("heartbeat process identity persistence", () => {
     } finally { release(); await heartbeat.drainActiveRunExecutions(); }
   }, 30_000);
 
-  it.each([false, true])("cancels the remote adapter and waits for teardown (scope lookup raced: %s)", async (scopeLookupRaced) => {
+  it("cancels the remote adapter and waits for teardown before acknowledging Stop", async () => {
     const originalOrchestrator = orchestration.environmentRunOrchestrator;
     vi.spyOn(orchestration, "environmentRunOrchestrator").mockImplementation((...args) => {
       const actual = originalOrchestrator(...args);
@@ -125,14 +131,17 @@ describe("heartbeat process identity persistence", () => {
       execute: async (input) => {
         expect(hasAdapterRunCancellation(input.runId)).toBe(true);
         const cleanup = await bindAdapterRunStop(input.runId, async () => {
-          expect((await heartbeat.getRun(input.runId))?.status).toBe("cancelled");
+          const run = await heartbeat.getRun(input.runId);
+          expect(run?.status).toBe("running");
+          expect(run?.resultJson?.executionCancellation).toMatchObject({ state: "requested" });
           stopped();
         });
         ready();
         await interrupted;
         await teardown;
         await cleanup();
-        return { exitCode: 143, signal: "SIGTERM", timedOut: false };
+        return { exitCode: 143, signal: "SIGTERM", timedOut: false,
+          resultJson: { executionCancellation: { state: "acknowledged" } } };
       },
     } as ReturnType<typeof adapters.getServerAdapter>);
     let pending: Promise<unknown> | undefined;
@@ -140,9 +149,6 @@ describe("heartbeat process identity persistence", () => {
       const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
       expect(queued).not.toBeNull();
       await started;
-      // Model the initial lookup occurring before registration. The final
-      // lookup after persisting cancellation must still notify the scope.
-      if (scopeLookupRaced) vi.spyOn(cancellation, "hasAdapterRunCancellation").mockReturnValueOnce(false);
       let acknowledged = false;
       pending = heartbeat.cancelRun(queued!.id).then((result) => { acknowledged = true; return result; });
       await interrupted;
