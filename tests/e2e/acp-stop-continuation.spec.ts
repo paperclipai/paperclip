@@ -77,7 +77,7 @@ for (const { unfinishedWrite, pause } of [{ unfinishedWrite: false, pause: false
         for (const message of ["go again", "still waiting"]) {
           await editor.fill(message);
           const response = page.waitForResponse((candidate) =>
-            candidate.request().method() === "POST" && candidate.url().endsWith(`/api/issues/${issue.id}/comments`));
+            candidate.request().method() === "POST" && candidate.url().endsWith(`/api/issues/${issue.identifier}/comments`));
           await page.getByRole("button", { name: "Send", exact: true }).click();
           expect((await response).ok()).toBe(true);
           await expect(editor).toHaveText("");
