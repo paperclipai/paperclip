@@ -453,4 +453,41 @@ describe.sequential("adapter management route authorization", () => {
       expect(res.status, JSON.stringify(res.body)).toBe(200);
     });
   });
+
+  it("lists adapters for a signed-in board user who has no company yet", async () => {
+    // Onboarding reads the inventory BEFORE the first company exists (the
+    // wizard's harness picker), so gating the read on company membership hid
+    // the disabled set from exactly the users who need it and offered
+    // harnesses the server had disabled.
+    mocks.getDisabledAdapterTypes.mockReturnValue(["claude_local"]);
+    const app = createApp({
+      type: "board",
+      userId: "fresh-signup",
+      userName: null,
+      userEmail: null,
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [],
+      memberships: [],
+    } as Express.Request["actor"]);
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/adapters"));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(Array.isArray(res.body)).toBe(true);
+    expect(res.body.find((a: { type: string }) => a.type === "claude_local")?.disabled).toBe(true);
+  });
+
+  it("still refuses the adapter inventory to a non-board actor", async () => {
+    const app = createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+    } as unknown as Express.Request["actor"]);
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/adapters"));
+
+    expect(res.status).toBe(403);
+  });
 });
