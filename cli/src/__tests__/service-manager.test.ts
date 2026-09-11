@@ -7,8 +7,10 @@ import {
   detectServiceManager,
   LaunchdServiceManager,
   renderLaunchdPlist,
+  renderWindowsTaskXml,
   renderSystemdUnit,
   SystemdServiceManager,
+  WindowsTaskServiceManager,
   type CommandRunner,
   type ServiceManager,
 } from "../services/service-manager.js";
@@ -112,6 +114,24 @@ describe("service adapter dispatch", () => {
     const detection = await detectServiceManager({ platform: "linux", instanceId: "default", runner });
     expect(detection.supported).toBe(true);
     if (detection.supported) expect(detection.manager).toBeInstanceOf(SystemdServiceManager);
+  });
+
+  it("selects Task Scheduler on Windows", async () => {
+    const detection = await detectServiceManager({ platform: "win32", instanceId: "default" });
+    expect(detection.supported).toBe(true);
+    if (detection.supported) expect(detection.manager).toBeInstanceOf(WindowsTaskServiceManager);
+  });
+
+  it("renders a singleton Windows task with restart-on-failure", () => {
+    const xml = renderWindowsTaskXml({
+      instanceId: "default",
+      shimPath: "C:\\Program Files\\Paperclip\\paperclipai.cmd",
+      homeDir: "C:\\Users\\Jane\\.paperclip",
+      stdoutPath: "C:\\Users\\Jane\\.paperclip\\service.log",
+    });
+    expect(xml).toContain("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>");
+    expect(xml).toContain("<RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>");
+    expect(xml).toContain("PAPERCLIP_SERVICE_MANAGED");
   });
 
   it("returns a foreground-run skip on unsupported hosts", async () => {

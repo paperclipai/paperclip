@@ -5,10 +5,11 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { resolvePaperclipHomeDir, resolvePaperclipInstanceId } from "../config/home.js";
+import { readRuntimeInfo } from "../runtime-info.js";
 
 const execFileAsync = promisify(execFile);
 
-export type ServicePlatform = "systemd" | "launchd";
+export type ServicePlatform = "systemd" | "launchd" | "windows-task";
 export type ServiceStatus = {
   platform: ServicePlatform;
   serviceName: string;
@@ -69,6 +70,11 @@ function escapeXml(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
 }
 
+function escapePowerShellLiteral(value: string): string {
+  if (/\r|\n/.test(value)) throw new Error("Windows service values must not contain line breaks");
+  return value.replaceAll("'", "''");
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -124,6 +130,10 @@ export function launchdServiceName(instanceId: string): string {
   return instanceId === "default" ? "ing.paperclip.paperclipai" : `ing.paperclip.paperclipai.${instanceId}`;
 }
 
+export function windowsTaskServiceName(instanceId: string): string {
+  return instanceId === "default" ? "PaperclipAI" : `PaperclipAI-${instanceId}`;
+}
+
 export function renderSystemdUnit(input: { instanceId: string; shimPath: string; homeDir: string }): string {
   return `[Unit]
 Description=Paperclip AI (${escapeSystemd(input.instanceId)})
@@ -173,6 +183,26 @@ export function renderLaunchdPlist(input: { instanceId: string; shimPath: string
   <key>StandardErrorPath</key><string>${escapeXml(input.stderrPath)}</string>
 </dict>
 </plist>
+`;
+}
+
+/** Task Scheduler is the native per-user supervisor on Windows. */
+export function renderWindowsTaskXml(input: { instanceId: string; shimPath: string; homeDir: string; stdoutPath: string }): string {
+  const script = [
+    `$env:PAPERCLIP_SERVICE_MANAGED = '1'`,
+    `$env:PAPERCLIP_INSTANCE_ID = '${escapePowerShellLiteral(input.instanceId)}'`,
+    `$env:PAPERCLIP_HOME = '${escapePowerShellLiteral(input.homeDir)}'`,
+    `& '${escapePowerShellLiteral(input.shimPath)}' 'run' '--instance' '${escapePowerShellLiteral(input.instanceId)}' *>> '${escapePowerShellLiteral(input.stdoutPath)}'`,
+    "exit $LASTEXITCODE",
+  ].join("; ");
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>Paperclip AI (${escapeXml(input.instanceId)})</Description></RegistrationInfo>
+  <Triggers><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers>
+  <Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><ExecutionTimeLimit>PT0S</ExecutionTimeLimit><RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure></Settings>
+  <Actions Context="Author"><Exec><Command>powershell.exe</Command><Arguments>-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;&amp; { ${escapeXml(script)} }&quot;</Arguments><WorkingDirectory>${escapeXml(input.homeDir)}</WorkingDirectory></Exec></Actions>
+</Task>
 `;
 }
 
@@ -343,6 +373,83 @@ export class LaunchdServiceManager implements ServiceManager {
   async logs(follow: boolean, lines: number): Promise<void> { await this.runner("tail", ["-n", String(lines), ...(follow ? ["-F"] : []), this.stdoutPath, this.stderrPath], { inherit: true }); }
 }
 
+export class WindowsTaskServiceManager implements ServiceManager {
+  readonly platform = "windows-task" as const;
+  readonly serviceName: string;
+  readonly definitionPath: string;
+  private readonly stdoutPath: string;
+
+  constructor(
+    readonly instanceId: string,
+    private readonly runner: CommandRunner = defaultCommandRunner,
+    private readonly homeDir = resolvePaperclipHomeDir(),
+    private readonly shimPath = resolveServiceShimPath(),
+  ) {
+    this.serviceName = windowsTaskServiceName(instanceId);
+    this.definitionPath = path.join(homeDir, "instances", instanceId, "paperclip-service.xml");
+    this.stdoutPath = path.join(homeDir, "instances", instanceId, "logs", "service.log");
+  }
+
+  renderDefinition(): string {
+    return renderWindowsTaskXml({ instanceId: this.instanceId, shimPath: this.shimPath, homeDir: this.homeDir, stdoutPath: this.stdoutPath });
+  }
+
+  async installedExecutablePath(): Promise<string | null> {
+    try {
+      const content = (await fs.readFile(this.definitionPath, "utf8")).replaceAll("&amp;", "&");
+      const match = content.match(/& '([^']*(?:''[^']*)*)' 'run'/);
+      return match ? match[1].replaceAll("''", "'") : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async ensureCurrent(): Promise<boolean> {
+    await fs.mkdir(path.dirname(this.stdoutPath), { recursive: true });
+    const changed = await writeIfChanged(this.definitionPath, this.renderDefinition());
+    await this.runner("schtasks.exe", ["/create", "/tn", this.serviceName, "/xml", this.definitionPath, "/f"]);
+    return changed;
+  }
+
+  async install(options: ServiceInstallOptions): Promise<{ changed: boolean }> {
+    const changed = await this.ensureCurrent();
+    if (!options.startOnLogin) await this.runner("schtasks.exe", ["/change", "/tn", this.serviceName, "/disable"]);
+    if (options.startNow) await this.start();
+    return { changed };
+  }
+
+  async uninstall(): Promise<void> {
+    await this.runner("schtasks.exe", ["/end", "/tn", this.serviceName]).catch(() => undefined);
+    await this.runner("schtasks.exe", ["/delete", "/tn", this.serviceName, "/f"]).catch(() => undefined);
+    await fs.rm(this.definitionPath, { force: true });
+  }
+
+  async start(): Promise<void> { await this.ensureCurrent(); await this.runner("schtasks.exe", ["/run", "/tn", this.serviceName]); }
+  async stop(): Promise<void> { await this.runner("schtasks.exe", ["/end", "/tn", this.serviceName]); }
+  async restart(): Promise<void> { await this.stop().catch(() => undefined); await this.start(); }
+
+  async status(): Promise<ServiceStatus> {
+    const script = [
+      `$task = Get-ScheduledTask -TaskName '${escapePowerShellLiteral(this.serviceName)}' -ErrorAction SilentlyContinue`,
+      "if ($null -eq $task) { @{ installed = $false } | ConvertTo-Json -Compress; exit 0 }",
+      "@{ installed = $true; enabled = [bool]$task.Settings.Enabled; state = [string]$task.State } | ConvertTo-Json -Compress",
+    ].join("; ");
+    try {
+      const { stdout } = await this.runner("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
+      const task = JSON.parse(stdout) as { installed?: boolean; enabled?: boolean; state?: string };
+      const runtime = readRuntimeInfo(this.instanceId);
+      const active = task.state === "Running";
+      return { platform: this.platform, serviceName: this.serviceName, installed: task.installed === true, active, enabled: task.enabled === true, pid: active && runtime ? runtime.pid : null, detail: task.state };
+    } catch {
+      return { platform: this.platform, serviceName: this.serviceName, installed: false, active: false, enabled: false, pid: null };
+    }
+  }
+
+  async logs(follow: boolean, lines: number): Promise<void> {
+    await this.runner("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `Get-Content -LiteralPath '${escapePowerShellLiteral(this.stdoutPath)}' -Tail ${lines}${follow ? " -Wait" : ""}`], { inherit: true });
+  }
+}
+
 export type ServiceManagerDetection = { supported: true; manager: ServiceManager } | { supported: false; reason: string };
 
 export async function detectServiceManager(input: { instanceId?: string; platform?: NodeJS.Platform; runner?: CommandRunner } = {}): Promise<ServiceManagerDetection> {
@@ -350,6 +457,7 @@ export async function detectServiceManager(input: { instanceId?: string; platfor
   const platform = input.platform ?? process.platform;
   const runner = input.runner ?? defaultCommandRunner;
   if (platform === "darwin") return { supported: true, manager: new LaunchdServiceManager(instanceId, runner) };
+  if (platform === "win32") return { supported: true, manager: new WindowsTaskServiceManager(instanceId, runner) };
   if (platform !== "linux") return { supported: false, reason: `Service management is not supported on ${platform}. Use paperclipai run instead.` };
   try {
     await runner("systemctl", ["--user", "show-environment"]);
