@@ -247,6 +247,9 @@ See `doc/project-repositories.md` for the API and UI contract.
 - `created_by_user_id` uuid fk `users.id` null
 - identifier fields: `issue_number`, `identifier`
 - origin fields: `origin_kind`, `origin_id`, `origin_run_id`, `origin_fingerprint`
+- Creation stores the actor run in `origin_run_id` unless an explicit origin run is supplied. `GET /api/companies/:companyId/issues?createdFromIssueId=<uuid>` selects tasks created by runs bound to that source task, using native run issue identity or persisted legacy task context. Historical rows without an origin run may use their recorded creation activity; comments and shared creators do not establish provenance. Source, run, activity and result are company-scoped.
+- Relation lists can use `sortField=id&sortDir=asc&afterId=<uuid>` for stable pagination. The cursor excludes earlier IDs and cannot be combined with an offset or activity-based order.
+- The streamlined task page's Tasks tab keeps two independent memberships: the existing subtask tree, and created tasks grouped by their current project (or No project). A created subtask appears in both. Only Subtasks has completion progress; groups collapse independently and unfinished tasks sort above finished tasks.
 - `request_depth` int not null default 0
 - `work_mode` text not null default `standard`; supported values:
   - `standard`: normal autonomous execution. Agents may investigate, edit files, create artifacts, and complete the task.

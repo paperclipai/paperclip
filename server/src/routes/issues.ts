@@ -7847,10 +7847,10 @@ export function issueRoutes(
       res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }
-    if (sortField !== undefined && sortField !== "updated") {
+    if (sortField !== undefined && sortField !== "updated" && sortField !== "id") {
       res
         .status(400)
-        .json({ error: "sortField must be 'updated' when provided" });
+        .json({ error: "sortField must be 'updated' or 'id' when provided" });
       return;
     }
     if (sortDir !== undefined && sortDir !== "asc" && sortDir !== "desc") {
@@ -7920,6 +7920,7 @@ export function issueRoutes(
       parentId: (req.query.parentId ?? req.query.parentIssueId) as
         string | undefined,
       descendantOf: req.query.descendantOf as string | undefined,
+      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
@@ -7944,7 +7945,8 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
       limit,
       offset,
-      sortField: sortField === "updated" ? "updated" : undefined,
+      sortField: sortField === "updated" || sortField === "id" ? sortField : undefined,
+      afterId: req.query.afterId as string | undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
     };
@@ -8143,6 +8145,7 @@ export function issueRoutes(
       parentId: (req.query.parentId ?? req.query.parentIssueId) as
         string | undefined,
       descendantOf: req.query.descendantOf as string | undefined,
+      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
