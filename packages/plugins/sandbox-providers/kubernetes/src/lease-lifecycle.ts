@@ -18,6 +18,7 @@
 
 import type { KubeClients } from "./kube-client.js";
 import { deleteJob, findPodForJob, getJobStatus } from "./job-orchestrator.js";
+import type { SandboxApiVersion } from "./sandbox-api-version.js";
 import {
   deleteSandboxCr,
   findPodForSandbox,
@@ -43,15 +44,29 @@ export type ResumeCheckResult =
   | { resumable: true; podName: string | null; phase: "Pending" | "Running" }
   | { resumable: false; reason: string };
 
-export interface ResumeCheckInput {
+interface LeaseWorkloadRef {
   namespace: string;
   /** Workload resource name (Sandbox CR name or Job name) == providerLeaseId. */
   name: string;
-  backend: "sandbox-cr" | "job";
-  /** Bounded wait for an existing Sandbox pod to report Ready. */
-  readyTimeoutMs?: number;
-  pollMs?: number;
 }
+
+/**
+ * Which API version to address a Sandbox CR with. Modelled as part of the
+ * backend discriminant rather than an optional field: the version is only
+ * meaningful for `sandbox-cr` (a Job is `batch/v1` and always has been), and
+ * requiring it there makes it impossible to reach a CR without a version the
+ * caller resolved from cluster discovery.
+ */
+type LeaseBackendRef =
+  | { backend: "sandbox-cr"; sandboxApiVersion: SandboxApiVersion }
+  | { backend: "job" };
+
+export type ResumeCheckInput = LeaseWorkloadRef &
+  LeaseBackendRef & {
+    /** Bounded wait for an existing Sandbox pod to report Ready. */
+    readyTimeoutMs?: number;
+    pollMs?: number;
+  };
 
 /**
  * Check whether the workload behind a lease is still alive and exec-able.
@@ -69,10 +84,16 @@ export async function checkLeaseResumable(
     // fast on Failed/Terminating; a timeout means the pod never came up. None
     // of those states are resumable — k8s pods cannot be restarted in place.
     try {
-      await waitForSandboxReady(clients, input.namespace, input.name, {
-        timeoutMs: input.readyTimeoutMs ?? 30_000,
-        pollMs: input.pollMs ?? 1_000,
-      });
+      await waitForSandboxReady(
+        clients,
+        input.namespace,
+        input.name,
+        {
+          timeoutMs: input.readyTimeoutMs ?? 30_000,
+          pollMs: input.pollMs ?? 1_000,
+        },
+        input.sandboxApiVersion,
+      );
     } catch (err) {
       if (isKubeNotFoundError(err)) {
         return { resumable: false, reason: "Sandbox CR no longer exists" };
@@ -85,7 +106,12 @@ export async function checkLeaseResumable(
 
     let podName: string | null;
     try {
-      podName = await findPodForSandbox(clients, input.namespace, input.name);
+      podName = await findPodForSandbox(
+        clients,
+        input.namespace,
+        input.name,
+        input.sandboxApiVersion,
+      );
     } catch (err) {
       // CR deleted between the readiness check and the pod lookup.
       if (isKubeNotFoundError(err)) {
@@ -149,14 +175,11 @@ export async function checkLeaseResumable(
   };
 }
 
-export interface DestroyLeaseInput {
-  namespace: string;
-  /** Workload resource name (Sandbox CR name or Job name) == providerLeaseId. */
-  name: string;
-  backend: "sandbox-cr" | "job";
-  podName: string | null;
-  secretName: string | null;
-}
+export type DestroyLeaseInput = LeaseWorkloadRef &
+  LeaseBackendRef & {
+    podName: string | null;
+    secretName: string | null;
+  };
 
 /**
  * Forcibly delete every resource acquireLease created for this lease.
@@ -170,7 +193,9 @@ export async function destroyLeaseResources(
   input: DestroyLeaseInput,
 ): Promise<void> {
   if (input.backend === "sandbox-cr") {
-    await ignoreNotFound(deleteSandboxCr(clients, input.namespace, input.name));
+    await ignoreNotFound(
+      deleteSandboxCr(clients, input.namespace, input.name, input.sandboxApiVersion),
+    );
   } else {
     await ignoreNotFound(deleteJob(clients, input.namespace, input.name));
   }

@@ -6,7 +6,9 @@ import {
 } from "../../src/lease-lifecycle.js";
 
 const SANDBOX_GROUP = "agents.x-k8s.io";
-const SANDBOX_VERSION = "v1alpha1";
+// The caller resolves the served version from cluster discovery and passes it
+// in; these tests pin the modern one and assert it reaches the API.
+const SANDBOX_VERSION = "v1beta1";
 const SANDBOX_PLURAL = "sandboxes";
 
 function notFound(): Error {
@@ -52,6 +54,7 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
       namespace: "paperclip-acme",
       name: "pc-abc",
       backend: "sandbox-cr",
+      sandboxApiVersion: SANDBOX_VERSION,
       readyTimeoutMs: 1_000,
       pollMs: 10,
     });
@@ -60,6 +63,11 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
       namespace: "paperclip-acme",
       name: "pc-abc-pod",
     });
+    // The CR is addressed with the version the caller resolved, not a
+    // hard-coded one — a resume must reach the same object acquisition created.
+    for (const call of clients.custom.getNamespacedCustomObject.mock.calls) {
+      expect(call[0]).toMatchObject({ group: SANDBOX_GROUP, version: SANDBOX_VERSION });
+    }
   });
 
   it("is not resumable when the Sandbox CR is gone (404)", async () => {
@@ -71,6 +79,7 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
       namespace: "ns",
       name: "pc-abc",
       backend: "sandbox-cr",
+      sandboxApiVersion: SANDBOX_VERSION,
       readyTimeoutMs: 1_000,
       pollMs: 10,
     });
@@ -97,6 +106,7 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
       namespace: "ns",
       name: "pc-abc",
       backend: "sandbox-cr",
+      sandboxApiVersion: SANDBOX_VERSION,
       readyTimeoutMs: 1_000,
       pollMs: 10,
     });
@@ -118,6 +128,7 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
       namespace: "ns",
       name: "pc-abc",
       backend: "sandbox-cr",
+      sandboxApiVersion: SANDBOX_VERSION,
       readyTimeoutMs: 30,
       pollMs: 5,
     });
@@ -136,6 +147,7 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
       namespace: "ns",
       name: "pc-abc",
       backend: "sandbox-cr",
+      sandboxApiVersion: SANDBOX_VERSION,
       readyTimeoutMs: 1_000,
       pollMs: 10,
     });
@@ -159,6 +171,7 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
       namespace: "ns",
       name: "pc-abc",
       backend: "sandbox-cr",
+      sandboxApiVersion: SANDBOX_VERSION,
       readyTimeoutMs: 1_000,
       pollMs: 10,
     });
@@ -182,6 +195,7 @@ describe("checkLeaseResumable (sandbox-cr backend)", () => {
         namespace: "ns",
         name: "pc-abc",
         backend: "sandbox-cr",
+        sandboxApiVersion: SANDBOX_VERSION,
         readyTimeoutMs: 1_000,
         pollMs: 10,
       }),
@@ -260,6 +274,7 @@ describe("destroyLeaseResources", () => {
       namespace: "paperclip-acme",
       name: "pc-abc",
       backend: "sandbox-cr",
+      sandboxApiVersion: SANDBOX_VERSION,
       podName: "pc-abc-pod",
       secretName: "pc-abc-env",
     });
@@ -318,6 +333,7 @@ describe("destroyLeaseResources", () => {
         namespace: "ns",
         name: "pc-abc",
         backend: "sandbox-cr",
+        sandboxApiVersion: SANDBOX_VERSION,
         podName: "pc-abc-pod",
         secretName: "pc-abc-env",
       }),
@@ -340,6 +356,7 @@ describe("destroyLeaseResources", () => {
         namespace: "ns",
         name: "pc-abc",
         backend: "sandbox-cr",
+        sandboxApiVersion: SANDBOX_VERSION,
         podName: null,
         secretName: null,
       }),

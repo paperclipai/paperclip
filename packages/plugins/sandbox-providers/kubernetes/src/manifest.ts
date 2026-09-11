@@ -1,15 +1,18 @@
 import type { PaperclipPluginManifestV1 } from "@paperclipai/plugin-sdk";
 
 const PLUGIN_ID = "paperclip.kubernetes-sandbox-provider";
-const PLUGIN_VERSION = "0.1.0-alpha.1";
+// Keep in step with the package.json "version" field: paperclip-server registers
+// the plugin under THIS value, so the two disagreeing makes the installed
+// package and the registered plugin report different versions.
+const PLUGIN_VERSION = "0.2.0";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
   apiVersion: 1,
   version: PLUGIN_VERSION,
-  displayName: "Kubernetes Sandbox (alpha)",
+  displayName: "Kubernetes Sandbox",
   description:
-    "Built on kubernetes-sigs/agent-sandbox (v1alpha1). ALPHA — expect breaking changes as the upstream CRD evolves. Falls back to stable batch/v1 Job mode for clusters without agent-sandbox installed. First-party Paperclip sandbox-provider plugin for Kubernetes.",
+    "Self-hostable Kubernetes sandbox provider. The default backend (sandbox-cr) runs agent pods through the kubernetes-sigs/agent-sandbox controller, addressing whichever API version the cluster serves (v1beta1 preferred, v1alpha1 for older controllers). The job backend uses batch/v1 Job for dispatch-only clusters without that controller. First-party Paperclip sandbox-provider plugin for Kubernetes.",
   author: "Paperclip",
   categories: ["automation"],
   capabilities: ["environment.drivers.register"],
@@ -22,7 +25,7 @@ const manifest: PaperclipPluginManifestV1 = {
       kind: "sandbox_provider",
       displayName: "Kubernetes",
       description:
-        "Dispatches agent runs in per-tenant Kubernetes namespaces. Default backend (sandbox-cr, alpha) uses kubernetes-sigs/agent-sandbox for multi-command exec; fallback backend (job) uses stable batch/v1 Job for clusters without agent-sandbox installed.",
+        "Dispatches agent runs in per-tenant Kubernetes namespaces, each with its own ServiceAccount, RBAC, quotas and deny-all network baseline. The default backend (sandbox-cr) uses kubernetes-sigs/agent-sandbox for multi-command exec; the job backend uses batch/v1 Job for clusters without that controller.",
       configSchema: {
         type: "object",
         properties: {
@@ -106,7 +109,7 @@ const manifest: PaperclipPluginManifestV1 = {
             type: "string",
             enum: ["sandbox-cr", "job"],
             description:
-              "sandbox-cr (default, alpha — requires kubernetes-sigs/agent-sandbox installed) | job (stable fallback — batch/v1 Job, one-shot entrypoint, no multi-command exec)",
+              "sandbox-cr (default — requires the kubernetes-sigs/agent-sandbox controller; the plugin addresses whichever version the cluster serves, v1beta1 preferred with v1alpha1 fallback) | job (batch/v1 Job, dispatch-only: the entrypoint runs once and exits, so no multi-command exec and no native file sync)",
           },
         },
         anyOf: [
