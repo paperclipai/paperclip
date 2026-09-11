@@ -2300,7 +2300,7 @@ const plugin = definePlugin({
             console.warn(
               `Failed to stop Daytona sandbox during lease release: ${formatErrorMessage(error)}. Attempting delete instead.`,
             );
-            await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
+            await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
             return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
           }
         }
@@ -2322,7 +2322,7 @@ const plugin = definePlugin({
         }
       }
 
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
+      await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
       return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
@@ -2356,7 +2356,7 @@ const plugin = definePlugin({
       // Close every duplex channel on this lease before the delete, so no channel
       // outlives the sandbox and no stored channel id survives.
       await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
+      await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
       return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
