@@ -9,6 +9,7 @@ import {
   MailPlus,
   MonitorCog,
   Puzzle,
+  Route,
   Shield,
   SlidersHorizontal,
   Upload,
@@ -140,6 +141,14 @@ export function CompanySettingsSidebar() {
               to={`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`}
               label="Environments"
               icon={MonitorCog}
+              end
+            />
+          )}
+          {showPage("instance.routing") && (
+            <SidebarNavItem
+              to={`${INSTANCE_SETTINGS_PATH_PREFIX}/routing`}
+              label="Routing"
+              icon={Route}
               end
             />
           )}

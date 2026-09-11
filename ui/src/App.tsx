@@ -58,6 +58,7 @@ import { DecisionQueuePage } from "./pages/DecisionQueuePage";
 import { BoardChat } from "./pages/BoardChat";
 import { CompanySettings } from "./pages/CompanySettings";
 import { CompanyEnvironments } from "./pages/CompanyEnvironments";
+import { CompanyRouting } from "./pages/CompanyRouting";
 import { BootstrapSetupUxLab } from "./pages/BootstrapSetupUxLab";
 import { ResponsibleUserDenialUxLab } from "./pages/ResponsibleUserDenialUxLab";
 import { CrossIssueCollaborationUxLab } from "./pages/CrossIssueCollaborationUxLab";
@@ -229,6 +230,9 @@ function boardRoutes(streamlinedUiEnabled: boolean) {
         <Route path="company/settings/instance/environments" element={<CompanyEnvironments />} />
         <Route path="company/settings/instance/environments/new" element={<CompanyEnvironments mode="create" />} />
         <Route path="company/settings/instance/environments/:environmentId/edit" element={<CompanyEnvironments mode="edit" />} />
+      </Route>
+      <Route element={<HiddenSettingsPageGate pageKey="instance.routing" />}>
+        <Route path="company/settings/instance/routing" element={<CompanyRouting />} />
       </Route>
       <Route element={<HiddenSettingsPageGate pageKey="instance.access" />}>
         <Route path="company/settings/instance/access" element={<InstanceAccess />} />

@@ -488,6 +488,12 @@ export const queryKeys = {
     workspaceOperations: (id: string) =>
       ["execution-workspaces", "workspace-operations", id] as const,
   },
+  routing: {
+    profiles: (companyId: string) =>
+      ["routing", companyId, "execution-profiles"] as const,
+    rules: (companyId: string) => ["routing", companyId, "route-rules"] as const,
+    issue: (issueId: string) => ["routing", "issue", issueId] as const,
+  },
   environments: {
     list: (companyId: string) => ["environments", companyId] as const,
     capabilities: (companyId: string) =>

@@ -9,6 +9,7 @@ export { issuesApi } from "./issues";
 export { externalObjectsApi } from "./externalObjects";
 export { issueOverviewsApi } from "./issue-overviews";
 export { routinesApi } from "./routines";
+export { routingApi } from "./routing";
 export { goalsApi } from "./goals";
 export { approvalsApi } from "./approvals";
 export { decisionsApi } from "./decisions";

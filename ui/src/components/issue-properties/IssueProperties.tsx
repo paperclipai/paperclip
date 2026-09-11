@@ -75,6 +75,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { IssuePropertiesPlansTab } from "./IssuePropertiesPlansTab";
+import { RoutingSection } from "./RoutingSection";
 import { IssuePropertiesArtifactsTab } from "./IssuePropertiesArtifactsTab";
 import { User, ArrowUpRight, Plus, X, GitBranch, FolderOpen, HardDrive, Check, Clock, RotateCcw, Loader2, CheckCircle2, ArchiveRestore, ChevronLeft } from "lucide-react";
 import { AgentIcon } from "../AgentIconPicker";
@@ -2698,6 +2699,12 @@ export function IssueProperties({
           {watchdogContent}
         </PropertyPicker>
       </PropertySection>
+
+      <RoutingSection
+        issueId={issue.id}
+        companyId={companyId ?? null}
+        streamlined={streamlinedPropertiesEnabled}
+      />
 
       {workspacePickerEligible || hasWorkspaceRuntimeControls || issue.currentExecutionWorkspace?.branchName || issue.currentExecutionWorkspace?.cwd || issue.executionWorkspaceId ? (
         <PropertySection title="Workspace" streamlined={streamlinedPropertiesEnabled}>
