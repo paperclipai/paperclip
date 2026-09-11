@@ -1760,7 +1760,7 @@
       "standard",
       "skill_test"
     ],
-    "description": "Create one child task under the active task.",
+    "description": "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -1797,6 +1797,14 @@
           "minLength": 1,
           "type": "string"
         },
+        "initialPlan": {
+          "description": "Relevant markdown plan to persist on the new task before it starts.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "priority": {
           "enum": [
             "critical",
@@ -1805,8 +1813,16 @@
             "low"
           ]
         },
+        "projectId": {
+          "description": "Project identifier for the new task.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "title": {
-          "description": "Child task title.",
+          "description": "Task title.",
           "maxLength": 500,
           "minLength": 1,
           "type": "string"
@@ -1873,7 +1889,7 @@
       "delegation:tasks:create"
     ],
     "schema": "paperclip.semantic-action.v1",
-    "title": "Create child task",
+    "title": "Create task",
     "version": 1
   },
   {

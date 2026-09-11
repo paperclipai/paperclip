@@ -1,3 +1,4 @@
+import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -96,6 +97,9 @@ function toRunSnapshot(row: HeartbeatRunRow): RunSnapshot {
 
 function toIssueSnapshot(row: IssueRow): IssueSnapshot {
   return {
+    conversationAgentId: row.conversationAgentId,
+    conversationUserId: row.conversationUserId,
+    conversationState: row.conversationState,
     id: row.id,
     companyId: row.companyId,
     identifier: row.identifier ?? "",
@@ -258,7 +262,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       const rows = await tx
         .select({ id: issueComments.id, deletedAt: issueComments.deletedAt, createdByRunId: issueComments.createdByRunId })
         .from(issueComments)
-        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, queuedCommentIds)));
+        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, queuedCommentIds), currentConversationCommentCondition()));
       const targetsFinishingRunAgent = wakeAgentId === finishingRunAgentId;
       const liveNonSelfCommentIds = queuedCommentIds.filter((commentId) => {
         const row = rows.find((candidate) => candidate.id === commentId);

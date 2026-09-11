@@ -1,3 +1,4 @@
+import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
@@ -173,6 +174,7 @@ import {
   withQueuedCommentIdsInRunContext,
 } from "./issue-queued-comment-queue.js";
 import { documentService } from "./documents.js";
+import { getTaskPlanContext } from "./task-plan-context.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 import {
@@ -7468,7 +7470,8 @@ export async function buildPaperclipWakePayload(input: {
     input.contextSnapshot.annotationCommentId,
   );
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
-  const continuationSummary = input.continuationSummary ?? null;
+  const conversationMode = input.contextSnapshot.conversationMode === true;
+  const continuationSummary = conversationMode ? null : input.continuationSummary ?? null;
   const agentMessage = parseObject(
     input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY],
   );
@@ -7533,7 +7536,7 @@ export async function buildPaperclipWakePayload(input: {
   const commentsById = new Map(
     commentRows.map((comment) => [comment.id, comment]),
   );
-  const issueDescription = issueSummary?.description ?? null;
+  const issueDescription = conversationMode ? null : issueSummary?.description ?? null;
   const issueDescriptionTruncated =
     issueDescription !== null &&
     issueDescription.length > MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS;
@@ -7762,18 +7765,22 @@ export async function buildPaperclipWakePayload(input: {
   const checkboxSelection = parseObject(
     input.contextSnapshot.checkboxSelection,
   );
-  const planReviewContext = issueId
+  // A resolved plan review is new user input, including in chat. Ordinary chat
+  // wakes must still exclude historical plan context across /new boundaries.
+  const resolvedPlanInteraction = interactionId && interactionKind === "request_confirmation" &&
+    (interactionStatus === "accepted" || interactionStatus === "rejected");
+  const planReviewContext = issueId && (!conversationMode || resolvedPlanInteraction)
     ? await buildPlanReviewContext({
         db: input.db,
         companyId: input.companyId,
         issueId,
-        issueWorkMode: issueSummary?.workMode ?? null,
-        includeForIssueComment: commentIds.length > 0,
-        includeForAnnotationDelta: annotationDeltas.length > 0,
+        issueWorkMode: conversationMode ? null : issueSummary?.workMode ?? null,
+        includeForIssueComment: !conversationMode && commentIds.length > 0,
+        includeForAnnotationDelta: !conversationMode && annotationDeltas.length > 0,
         interactionId,
       })
     : null;
-  const documentReviewContext = issueId
+  const documentReviewContext = issueId && !conversationMode
     ? await buildDocumentReviewContext({
         db: input.db,
         companyId: input.companyId,
@@ -8314,6 +8321,7 @@ export function buildPaperclipTaskMarkdown(input: {
     identifier: string | null;
     title: string;
     workMode?: string | null;
+    conversationAgentId?: string | null;
     description?: string | null;
   } | null;
   ancestors?: Array<{
@@ -8346,12 +8354,22 @@ export function buildPaperclipTaskMarkdown(input: {
     kind?: string | null;
     status?: string | null;
   } | null;
+  planReview?: {
+    status?: string | null;
+    reason?: string | null;
+  } | null;
   acceptedPlan?: {
     documentId?: string | null;
     revisionId?: string | null;
     revisionNumber?: number | null;
   } | null;
   acceptedPlanContinuation?: boolean;
+  taskPlan?: {
+    documentId: string;
+    revisionId: string;
+    revisionNumber: number;
+    body: string;
+  } | null;
   externalChatProvider?: string | null;
   nativeRunner?: boolean;
   // false builds the compact variant used for resume deltas, where the session
@@ -8382,12 +8400,21 @@ export function buildPaperclipTaskMarkdown(input: {
       : null);
   const effectiveWakeComments =
     wakeComments.length > 0 ? wakeComments : wakeComment ? [wakeComment] : [];
+  const rejectedPlan = input.planReview?.status === "rejected";
   const acceptedPlanContinuation =
-    !wakeComment &&
+    !rejectedPlan && !issue?.conversationAgentId && !wakeComment &&
     (input.acceptedPlanContinuation ||
       (input.interaction?.kind === "request_confirmation" &&
         input.interaction.status === "accepted" &&
         issue?.workMode === "planning"));
+  const acceptedChatPlan = Boolean(
+    !rejectedPlan && issue?.conversationAgentId &&
+    issue.workMode !== "ask" &&
+    !wakeComment &&
+    input.interaction?.kind === "request_confirmation" &&
+    input.interaction.status === "accepted" &&
+    (input.acceptedPlan?.revisionId || input.acceptedPlanContinuation),
+  );
   if (!issue && effectiveWakeComments.length === 0) return null;
 
   const lines = [
@@ -8451,7 +8478,16 @@ export function buildPaperclipTaskMarkdown(input: {
       `- Issue: ${quoteTaskScalar(issue.identifier || issue.id)}`,
       `- Title: ${quoteTaskScalar(issue.title)}`,
     );
-    if (issue.workMode === "ask") {
+    if (issue.conversationAgentId) {
+      lines.push("", "Chat mode directive:", AGENT_CHAT_DIRECTIVE, `Current composer mode: ${issue.workMode ?? "standard"}.`);
+      if (acceptedChatPlan) {
+        lines.push(
+          "",
+          "Accepted chat plan directive:",
+          "The user has approved the plan for handoff. Perform that handoff now: select or create a suitable project, then create the ordinary assigned execution tasks with the relevant approved plan in initialPlan before execution starts. Do not stop at acknowledging approval or ask for another confirmation. Keep the original plan here, link the created tasks, and leave this conversation available for discussion. Do not implement here or create subtasks of this conversation.",
+        );
+      }
+    } else if (issue.workMode === "ask") {
       lines.push(
         `- Work mode: ${quoteTaskScalar("ask")}`,
         "",
@@ -8489,7 +8525,18 @@ export function buildPaperclipTaskMarkdown(input: {
         "Implement the accepted plan on this issue when the work is small and cohesive. Use the paperclip-converting-plans-to-tasks skill to decide whether decomposition is justified. Create the minimum child issue graph only for qualifying ownership, parallelism, dependency, review, or lifecycle boundaries. Do not create a child merely because a plan was accepted.",
       );
     }
-    if (acceptedPlanContinuation && input.acceptedPlan?.revisionId) {
+    if (rejectedPlan) {
+      lines.push(
+        "",
+        "Rejected plan review directive:",
+        "The user rejected the plan and requested changes. Revise the plan to address their feedback through the existing plan document and review workflow. In Ask mode, discuss the requested changes without mutating documents or tasks. This is not approval to implement or hand off execution tasks. Do not treat the issue's in_progress status as plan approval.",
+        "When revising the plan, first GET /api/issues/{issueId}/documents/plan and read its body and latestRevisionId. PUT the revised document to the same endpoint with baseRevisionId set to that latestRevisionId. An existing document requires this concurrency guard; do not omit it or blindly retry a stale revision. Bind the new approval request to the revision returned by the successful update.",
+      );
+      if (input.planReview?.reason?.trim()) {
+        lines.push("User's requested changes:", fenceTaskText(input.planReview.reason.trim()));
+      }
+    }
+    if ((acceptedPlanContinuation || acceptedChatPlan) && input.acceptedPlan?.revisionId) {
       const revisionNumber = input.acceptedPlan.revisionNumber
         ? ` revision ${input.acceptedPlan.revisionNumber}`
         : " revision";
@@ -8501,9 +8548,17 @@ export function buildPaperclipTaskMarkdown(input: {
       );
     }
     const description =
-      input.includeDescription === false ? "" : issue.description?.trim();
+      input.includeDescription === false || issue.conversationAgentId ? "" : issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
+    }
+    if (!issue.conversationAgentId && input.taskPlan?.body.trim()) {
+      lines.push(
+        "",
+        `Task plan document ${input.taskPlan.documentId}, revision ${input.taskPlan.revisionNumber} (${input.taskPlan.revisionId}):`,
+        "Use this plan as assignment context, including its outcome and acceptance criteria. Follow the current work mode and any required approvals.",
+        fenceTaskText(input.taskPlan.body.trim()),
+      );
     }
   }
   if (ancestors.length > 0) {
@@ -10128,6 +10183,11 @@ export function heartbeatService(
   async function getIssueExecutionContext(companyId: string, issueId: string) {
     return db
       .select({
+        conversationAgentId: issues.conversationAgentId,
+        conversationUserId: issues.conversationUserId,
+        conversationState: issues.conversationState,
+        conversationSessionGeneration: issues.conversationSessionGeneration,
+        conversationBoundaryCommentId: issues.conversationBoundaryCommentId,
         id: issues.id,
         identifier: issues.identifier,
         title: issues.title,
@@ -12062,14 +12122,15 @@ export function heartbeatService(
     lastRunId: string | null;
     lastError: string | null;
   }) {
-    const existing = await getTaskSession(
-      input.companyId,
-      input.agentId,
-      input.adapterType,
-      input.taskKey,
-    );
+    return db.transaction(async (tx) => {
+      const [issue] = await tx.select().from(issues).where(and(sql`${issues.id}::text = ${input.taskKey}`, eq(issues.companyId, input.companyId))).for("update");
+      if (isConversation(issue)) {
+        const [run] = input.lastRunId ? await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.lastRunId)) : [];
+        if (run?.status === "cancelled" || run?.contextSnapshot?.conversationSessionGeneration !== issue.conversationSessionGeneration) return null;
+      }
+    const existing = await tx.select().from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, input.companyId), eq(agentTaskSessions.agentId, input.agentId), eq(agentTaskSessions.adapterType, input.adapterType), eq(agentTaskSessions.taskKey, input.taskKey))).then((rows) => rows[0] ?? null);
     if (existing) {
-      return db
+      return tx
         .update(agentTaskSessions)
         .set({
           sessionParamsJson: input.sessionParamsJson,
@@ -12083,7 +12144,7 @@ export function heartbeatService(
         .then((rows) => rows[0] ?? null);
     }
 
-    return db
+    return tx
       .insert(agentTaskSessions)
       .values({
         companyId: input.companyId,
@@ -12097,6 +12158,7 @@ export function heartbeatService(
       })
       .returning()
       .then((rows) => rows[0] ?? null);
+    });
   }
 
   async function clearTaskSessions(
@@ -12105,6 +12167,7 @@ export function heartbeatService(
     opts?: {
       taskKey?: string | null;
       adapterType?: string | null;
+      expectedRunId?: string;
       includeIssueAliases?: boolean;
     },
   ) {
@@ -12142,11 +12205,16 @@ export function heartbeatService(
       conditions.push(eq(agentTaskSessions.adapterType, opts.adapterType));
     }
 
-    return db
-      .delete(agentTaskSessions)
-      .where(and(...conditions))
-      .returning()
-      .then((rows) => rows.length);
+    return db.transaction(async (tx) => {
+      if (opts?.taskKey && opts.expectedRunId) {
+        const [issue] = await tx.select().from(issues).where(sql`${issues.id}::text = ${opts.taskKey}`).for("update");
+        if (isConversation(issue)) {
+          const [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, opts.expectedRunId));
+          if (run?.status === "cancelled" || run?.contextSnapshot?.conversationSessionGeneration !== issue.conversationSessionGeneration) return 0;
+        }
+      }
+      return tx.delete(agentTaskSessions).where(and(...conditions)).returning().then((rows) => rows.length);
+    });
   }
 
   async function ensureRuntimeState(agent: typeof agents.$inferSelect) {
@@ -12560,6 +12628,7 @@ export function heartbeatService(
 
     const issueId = readNonEmptyString(context.issueId);
     if (!issueId) return;
+    if (isWaitingConversation(await getIssueExecutionContext(run.companyId, issueId))) return;
 
     const [issue, agent] = await Promise.all([
       db
@@ -12760,6 +12829,7 @@ export function heartbeatService(
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     if (!issueId) return;
+    if (isWaitingConversation(await getIssueExecutionContext(run.companyId, issueId))) return;
     if (
       readNonEmptyString(context.goalControlRequestId) ||
       context.resumeSessionGoalHeartbeat === true
@@ -13077,6 +13147,7 @@ export function heartbeatService(
       readNonEmptyString(contextSnapshot.issueId) ??
       readNonEmptyString(contextSnapshot.taskId);
     if (!issueId) return;
+    if (isWaitingConversation(await getIssueExecutionContext(run.companyId, issueId))) return;
 
     const issue = await db
       .select({
@@ -16143,6 +16214,7 @@ export function heartbeatService(
           isNull(issues.assigneeUserId),
           isNull(issues.hiddenAt),
           inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
+          isNull(issues.conversationAgentId),
         ),
       )
       .limit(1)
@@ -19188,6 +19260,30 @@ export function heartbeatService(
         return;
       }
 
+      const dispatchIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      const resumingAdmittedConversationTurn = !!runOptions.nativeLeaseOwner
+        && typeof run.contextSnapshot?.conversationSessionGeneration === "number";
+      if (dispatchIssueId && isConversation(await getIssueExecutionContext(run.companyId, dispatchIssueId))
+        && !resumingAdmittedConversationTurn && !(await instanceSettings.getExperimental()).enableAgentChat) {
+        await setRunStatus(run.id, "cancelled", { finishedAt: new Date(), error: "Agent Chat is disabled", errorCode: "agent_chat_disabled" });
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: new Date() });
+        await releaseIssueExecutionAndPromote((await getRun(run.id))!, { suppressImmediateRecovery: true });
+        await finalizeAgentStatus(agent.id, "cancelled");
+        return;
+      }
+      const preparedConversation = await prepareConversationTurn(db, run);
+      run = { ...run, contextSnapshot: preparedConversation.context };
+      if (preparedConversation.reset) {
+        const contextSnapshot = { ...preparedConversation.context, conversationReset: true };
+        await setRunStatus(run.id, "succeeded", { finishedAt: new Date(), contextSnapshot, resultJson: { conversationReset: true }, issueCommentStatus: "not_applicable" });
+        await setWakeupStatus(run.wakeupRequestId, "completed", { finishedAt: new Date() });
+        const resetRun = (await getRun(run.id))!;
+        await settleConversationTurn(db, resetRun);
+        await appendRunEvent(resetRun, { eventType: "lifecycle", stream: "system", level: "info", message: "New conversation session" });
+        await releaseIssueExecutionAndPromote(resetRun, { suppressImmediateRecovery: true });
+        await finalizeAgentStatus(agent.id, "succeeded");
+        return;
+      }
       const runtime = await ensureRuntimeState(agent);
       const context = parseObject(run.contextSnapshot);
       const authorizeFailedChatRetryExecution = () =>
@@ -19434,7 +19530,7 @@ export function heartbeatService(
             )
             .then((rows) => rows[0] ?? null)
         : null;
-      const acceptedPlanContinuationWake = issueContext
+      const acceptedPlanContinuationWake = issueContext && !isConversation(issueContext)
         ? readNonEmptyString(context.workspaceRefreshReason) ===
             "accepted_plan_confirmation" ||
           (issueContext.workMode === "planning" &&
@@ -19588,6 +19684,12 @@ export function heartbeatService(
             taskKey,
           )
         : null;
+      if (isConversation(issueContext)) {
+        delete context.resumeSessionParams;
+        delete context.resumeSessionDisplayId;
+        delete context.executionContinuation;
+        delete context.paperclipContinuationSummary;
+      }
       const taskSessionDecodedParams = normalizeSessionParams(
         sessionCodec.deserialize(taskSession?.sessionParamsJson ?? null),
       );
@@ -19621,6 +19723,7 @@ export function heartbeatService(
             status: issueContext.status,
             priority: issueContext.priority,
             workMode: issueContext.workMode,
+            conversationAgentId: issueContext.conversationAgentId,
             reviewPolicy: issueContext.reviewPolicy,
             description: issueContext.description,
             projectId: issueContext.projectId,
@@ -19630,7 +19733,7 @@ export function heartbeatService(
               issueContext.executionWorkspacePreference,
           }
         : null;
-      const continuationSummary = issueRef
+      const continuationSummary = issueRef && !isConversation(issueContext)
         ? await getIssueContinuationSummaryDocument(db, issueRef.id)
         : null;
       const exposeLowTrustRaw = trustPreset.kind === "low_trust_review";
@@ -19669,19 +19772,10 @@ export function heartbeatService(
       } else {
         delete context.paperclipSkillTest;
       }
-      const executionContinuation =
-        issueRef && issueContext?.assigneeAgentId === agent.id
-          ? await buildExecutionContinuation({
-              db,
-              companyId: agent.companyId,
-              issueId: issueRef.id,
-              agentId: agent.id,
-              context,
-              previousContextRunId: taskSession?.lastRunId,
-              summary: safeContinuationSummary?.body ?? null,
-              exposeLowTrustRaw,
-            })
-          : null;
+      const executionContinuation = issueRef && !isConversation(issueContext) && issueContext?.assigneeAgentId === agent.id ? await buildExecutionContinuation({
+        db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id,
+        context, previousContextRunId: taskSession?.lastRunId, summary: safeContinuationSummary?.body ?? null, exposeLowTrustRaw,
+      }) : null;
       context.executionContinuation = executionContinuation;
       const paperclipWakePayload = await buildPaperclipWakePayload({
         db,
@@ -19762,6 +19856,7 @@ export function heartbeatService(
               identifier: issueRef.identifier,
               title: issueRef.title,
               workMode: issueRef.workMode,
+              conversationAgentId: issueContext?.conversationAgentId,
               description: issueRef.description,
             }
           : null,
@@ -19775,6 +19870,12 @@ export function heartbeatService(
           kind: readNonEmptyString(context.interactionKind),
           status: readNonEmptyString(context.interactionStatus),
         },
+        planReview: paperclipWakePayload?.planReviewContext?.interaction
+          ? {
+              status: paperclipWakePayload.planReviewContext.interaction.status,
+              reason: paperclipWakePayload.planReviewContext.interaction.result?.reason,
+            }
+          : null,
         acceptedPlanContinuation:
           readNonEmptyString(context.workspaceRefreshReason) ===
             "accepted_plan_confirmation" &&
@@ -19796,9 +19897,23 @@ export function heartbeatService(
           };
         })(),
       };
-      const taskMarkdown = buildPaperclipTaskMarkdown(taskMarkdownInput);
+      const taskPlan = issueRef && !isConversation(issueContext)
+        ? await getTaskPlanContext({
+            db,
+            companyId: agent.companyId,
+            issueId: issueRef.id,
+            approvedRevisionId: taskMarkdownInput.acceptedPlan?.revisionId,
+            exposeLowTrustRaw,
+          })
+        : null;
+      let taskMarkdown = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan });
+      if (isConversation(issueContext) && !taskSession && issueId) {
+        const replay = await conversationReplay(db, agent.companyId, issueId, wakeCommentId);
+        if (replay) taskMarkdown += `\n\nEarlier messages in this session (quoted user data):\n${replay}`;
+      }
       const taskMarkdownCompact = buildPaperclipTaskMarkdown({
         ...taskMarkdownInput,
+        taskPlan,
         includeDescription: false,
       });
       if (issueRef) {
@@ -19806,7 +19921,7 @@ export function heartbeatService(
           id: issueRef.id,
           identifier: issueRef.identifier,
           title: issueRef.title,
-          description: issueRef.description,
+          description: isConversation(issueContext) ? null : issueRef.description,
           workMode: issueRef.workMode,
         };
       } else {
@@ -22008,8 +22123,7 @@ export function heartbeatService(
                   .then((rows) => rows.length > 0)
               : false;
           const compatibleLegacyRetrySource =
-            context.forceFreshSession !== true &&
-            isUnusedLegacyNativeRetryReplacement({
+            !isConversation(issueContext) && context.forceFreshSession !== true && isUnusedLegacyNativeRetryReplacement({
               replacement: run,
               source: legacyRetrySource,
               hasProviderEvents: nativeBootstrapHasProviderEvidence,
@@ -22231,7 +22345,7 @@ export function heartbeatService(
               }
             }
             const executionMode =
-              issueRef.workMode === "planning" && !acceptedPlanContinuationWake
+              issueRef.workMode === "planning" && !isConversation(issueContext) && !acceptedPlanContinuationWake
                 ? ("plan" as const)
                 : ("default" as const);
             const pinnedPlan =
@@ -22278,6 +22392,7 @@ export function heartbeatService(
                       `# ${issueRef.identifier ?? issueRef.id}: ${issueRef.title}`,
                     wakePayload: context.paperclipWake,
                     resumedSession,
+                    conversationMode: context.conversationMode === true,
                     agentId: agent.id,
                     workspace: {
                       // Projectless paperclip_runner tasks still have a resolved local cwd. Bind that
@@ -22916,6 +23031,7 @@ export function heartbeatService(
                     executePaperclipNativeSession({
                       db,
                       execution: nativeExecution,
+                      conversationMode: isConversation(issueContext),
                       runnerInstanceId: nativeRunnerInstanceId,
                       leaseOwner: runOptions.nativeLeaseOwner,
                       restartRecovery: runOptions.nativeRestartRecovery,
@@ -23085,6 +23201,10 @@ export function heartbeatService(
                 token: runtimeTools.bearerToken,
                 connectionId: "paperclip-runtime-tools",
               });
+            }
+            if (authToken && configuredPaperclipApiBaseUrl() && issueRef) {
+              runtimeMcpServers.unshift({ name: "Paperclip projects", url: `${paperclipApiBaseUrl()}/api/mcp/project-tools`,
+                token: authToken, connectionId: "paperclip-project-tools" });
             }
             const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
             if (runtimeTools && runtimeToolDelivery === "invocation_context") {
@@ -23781,6 +23901,8 @@ export function heartbeatService(
                 : null;
             const resolved = resolveHeartbeatRunResponse({
               resultJson: persistedResultJson,
+              conversationTurnFinished: isConversation(issueContext) &&
+                persistedResultJson?.finalizationReasonCode === "conversation_turn_finished",
               existingComment: existingRunComment,
               finalAgentMessage,
               preferFinalResponseOverExistingComment:
@@ -23927,14 +24049,16 @@ export function heartbeatService(
             agent,
             resolvedPresentationDecision,
           );
+          const conversationSettled = await settleConversationTurn(db, livenessRun);
           await releaseIssueExecutionAndPromote(livenessRun, {
-            suppressImmediateRecovery:
+            suppressImmediateRecovery: conversationSettled ||
               readNonEmptyString(
                 parseObject(livenessRun.contextSnapshot).goalControlRequestId,
               ) !== null ||
               parseObject(livenessRun.contextSnapshot)
                 .resumeSessionGoalHeartbeat === true,
           });
+          if (!conversationSettled) {
           await handleRunLivenessContinuation(livenessRun);
           await handleIssueReviewPathDisposition(livenessRun);
           await handleSuccessfulRunHandoff(
@@ -23947,6 +24071,7 @@ export function heartbeatService(
               : livenessRun,
             agent,
           );
+          }
           if (
             outcome === "succeeded" &&
             issueId &&
@@ -24027,6 +24152,7 @@ export function heartbeatService(
               await clearTaskSessions(agent.companyId, agent.id, {
                 taskKey,
                 adapterType: agent.adapterType,
+                expectedRunId: finalizedRun.id,
               });
             } else {
               await upsertTaskSession({
@@ -24846,6 +24972,15 @@ export function heartbeatService(
 
     let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+    if (issueId) {
+      const conversation = await getIssueExecutionContext(agent.companyId, issueId);
+      if (isConversation(conversation)) {
+        if (isConversationExecutionWake(conversation, reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason))) return null;
+        if (agent.id !== conversation!.conversationAgentId) return null;
+        if (!(await instanceSettings.getExperimental()).enableAgentChat) return null;
+        if (!wakeCommentId && isWaitingConversation(conversation) && !hasInteractionContinuationWakeContext(enrichedContextSnapshot)) return null;
+      }
+    }
     if (agent.adapterType === "paperclip_runner") {
       const oldConfig = parseObject(agent.adapterConfig);
       const nextConfig = normalizeLegacyRunnerProvider(oldConfig);
@@ -25463,6 +25598,9 @@ export function heartbeatService(
               id: issues.id,
               companyId: issues.companyId,
               identifier: issues.identifier,
+              conversationAgentId: issues.conversationAgentId,
+              conversationUserId: issues.conversationUserId,
+              conversationState: issues.conversationState,
               status: issues.status,
               projectId: issues.projectId,
               projectWorkspaceId: issues.projectWorkspaceId,
@@ -25650,6 +25788,7 @@ export function heartbeatService(
           const explicitContinuationRunId = randomUUID();
           const executionBlocker = await getExecutionBlocker(
             tx as unknown as Db, issue.companyId, issue.id,
+            { conversationResetCommentId: opts.requestedByActorType === "user" ? wakeCommentId : null },
           );
           // Prove eligibility without retiring the hold. Later gates can still
           // decline this wake; hold retirement and successor creation stay atomic.
@@ -26201,7 +26340,7 @@ export function heartbeatService(
                   contextSnapshot: activeExecutionRun.contextSnapshot,
                   wakeupRequestId: activeExecutionRun.wakeupRequestId,
                 },
-                allowRunCoalescing: opts.allowRunCoalescing,
+                allowRunCoalescing: isConversation(issue) ? false : opts.allowRunCoalescing,
                 durableReceipt: durableRequest
                   ? {
                       id: durableRequest.id,
@@ -26440,7 +26579,7 @@ export function heartbeatService(
             .then((rows) => rows[0]);
 
           const pendingComments =
-            opts.allowRunCoalescing !== false &&
+            !isConversation(issue) && opts.allowRunCoalescing !== false &&
             !(await getExecutionBlocker(tx as unknown as Db, issue.companyId, issue.id))
               ? await tx
                   .select()

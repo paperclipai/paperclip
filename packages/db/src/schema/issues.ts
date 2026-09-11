@@ -11,6 +11,7 @@ import {
   uniqueIndex,
   unique,
   bigint,
+  check,
 } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { projects } from "./projects.js";
@@ -26,6 +27,12 @@ export const issues = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
+    // Conversation identity and session boundaries are owned by the server.
+    conversationAgentId: uuid("conversation_agent_id").references(() => agents.id),
+    conversationUserId: text("conversation_user_id"),
+    conversationState: text("conversation_state").$type<"active" | "waiting">(),
+    conversationSessionGeneration: integer("conversation_session_generation").notNull().default(0),
+    conversationBoundaryCommentId: uuid("conversation_boundary_comment_id"),
     projectId: uuid("project_id").references(() => projects.id),
     projectWorkspaceId: uuid("project_workspace_id").references(() => projectWorkspaces.id, { onDelete: "set null" }),
     goalId: uuid("goal_id").references(() => goals.id),
@@ -83,6 +90,16 @@ export const issues = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    conversationIdentityIdx: uniqueIndex("issues_conversation_identity_idx").on(table.companyId, table.conversationAgentId, table.conversationUserId),
+    conversationIdentityCheck: check("issues_conversation_identity_check", sql`(
+      ${table.conversationAgentId} is null and ${table.conversationUserId} is null and ${table.conversationState} is null
+    ) or (
+      ${table.conversationAgentId} is not null and ${table.conversationUserId} is not null
+      and ${table.assigneeAgentId} = ${table.conversationAgentId} and ${table.assigneeAgentId} is not null
+      and ${table.assigneeUserId} is null and ${table.conversationState} is not null
+      and ${table.conversationState} in ('active', 'waiting')
+      and ${table.status} not in ('done', 'cancelled')
+    )`),
     companyIdUq: unique("issues_company_id_uq").on(table.companyId, table.id),
     companyStatusIdx: index("issues_company_status_idx").on(table.companyId, table.status),
     companyHarnessKindIdx: index("issues_company_harness_kind_idx").on(table.companyId, table.harnessKind),

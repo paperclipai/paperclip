@@ -465,8 +465,8 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
   }),
   descriptor({
     operationId: "create_task",
-    title: "Create child task",
-    description: "Create one child task under the active task.",
+    title: "Create task",
+    description: "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution.",
     placement: "optional",
     effect: "write",
     requiredClaims: ["delegation:tasks:create"],
@@ -474,7 +474,9 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     inputSchema: object(
       {
         ...idempotency,
-        title: text("Child task title.", 500),
+        title: text("Task title.", 500),
+        projectId: nullableText("Project identifier for the new task."),
+        initialPlan: nullableText("Relevant markdown plan to persist on the new task before it starts."),
         description: nullableText("Child task description."),
         assigneeActorId: nullableText("Optional actor assignee.", 200),
         priority: { enum: ["critical", "high", "medium", "low"] },

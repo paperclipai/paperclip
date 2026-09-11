@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { createDb } from "../src/client.js";
@@ -31,13 +31,28 @@ async function main() {
     database?: {
       mode?: string;
       embeddedPostgresPort?: number;
+      embeddedPostgresDataDir?: string;
       connectionString?: string;
     };
   };
+  // The server can select another port when the configured one is occupied.
+  // Bind bootstrap to this data directory's running process, never another instance.
+  let embeddedPort: number | undefined;
+  if (config.database?.mode !== "postgres") {
+    const dataDir = config.database?.embeddedPostgresDataDir;
+    if (!dataDir) throw new Error("Embedded bootstrap requires its configured data directory");
+    const pidLines = readFileSync(path.join(dataDir, "postmaster.pid"), "utf8").split(/\r?\n/);
+    if (realpathSync(pidLines[1] ?? "") !== realpathSync(dataDir)) throw new Error("Embedded bootstrap data directory does not match the running postmaster");
+    const postmasterPid = Number(pidLines[0]);
+    if (!Number.isInteger(postmasterPid) || postmasterPid <= 1) throw new Error("Invalid embedded postmaster PID");
+    process.kill(postmasterPid, 0);
+    embeddedPort = Number(pidLines[3]);
+    if (!Number.isInteger(embeddedPort) || embeddedPort < 1 || embeddedPort > 65535) throw new Error("Invalid running embedded database port");
+  }
   const dbUrl =
     config.database?.mode === "postgres"
       ? config.database.connectionString
-      : `postgres://paperclip:paperclip@127.0.0.1:${config.database?.embeddedPostgresPort ?? 54329}/paperclip`;
+      : `postgres://paperclip:paperclip@127.0.0.1:${embeddedPort}/paperclip`;
   if (!dbUrl) {
     throw new Error(`Could not resolve database connection from ${configPath}`);
   }
