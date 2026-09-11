@@ -5174,7 +5174,10 @@ export function recoveryService(
       const filters = [
         eq(issues.status, "blocked"),
         visibleIssueCondition(),
-        sql`${issues.assigneeAgentId} is not null`,
+        // Include tasks with no assignee when createdByAgentId is available as a
+        // fallback wake target. When both are null the task is fully orphaned and
+        // the backstop cannot route a wake — skip it.
+        sql`(${issues.assigneeAgentId} is not null or ${issues.createdByAgentId} is not null)`,
       ];
       if (opts?.companyId) filters.push(eq(issues.companyId, opts.companyId));
       if (afterIssueId) filters.push(gt(issues.id, afterIssueId));
@@ -5192,6 +5195,7 @@ export function recoveryService(
             companyId: issues.companyId,
             identifier: issues.identifier,
             assigneeAgentId: issues.assigneeAgentId,
+            createdByAgentId: issues.createdByAgentId,
             blockedTransitionAt: issues.blockedTransitionAt,
             totalCount: sql<number>`count(*) over()::int`,
           })
@@ -5208,6 +5212,7 @@ export function recoveryService(
           companyId: issues.companyId,
           identifier: issues.identifier,
           assigneeAgentId: issues.assigneeAgentId,
+          createdByAgentId: issues.createdByAgentId,
           blockedTransitionAt: issues.blockedTransitionAt,
           totalCount: sql<number>`count(*) over()::int`,
         })
@@ -5278,7 +5283,10 @@ export function recoveryService(
       );
 
       for (const candidate of companyCandidates) {
-        const agentId = candidate.assigneeAgentId;
+        // Use assigneeAgentId when set; fall back to createdByAgentId when the
+        // task was parked in `blocked` with no assignee (null-assignee checkout
+        // allows any agent to claim the task, so waking the creator is safe).
+        const agentId = candidate.assigneeAgentId ?? candidate.createdByAgentId;
         if (!agentId) continue;
 
         const readiness = readinessMap.get(candidate.id);
