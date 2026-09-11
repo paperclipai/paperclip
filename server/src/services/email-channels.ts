@@ -865,11 +865,16 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
             "Webhook receiving requires a public HTTPS URL; use WebSocket for local setup",
           );
         const webhook = await createWebhook({ ...endpoint, botExternalId: inbox.inbox_id }, api);
-        await vault(endpoint, "webhookSecret", webhook.secret);
-        await db
-          .update(emailEndpoints)
-          .set({ webhookId: webhook.webhook_id })
-          .where(eq(emailEndpoints.endpointId, endpoint.id));
+        try {
+          await vault(endpoint, "webhookSecret", webhook.secret);
+          await db
+            .update(emailEndpoints)
+            .set({ webhookId: webhook.webhook_id })
+            .where(eq(emailEndpoints.endpointId, endpoint.id));
+        } catch (error) {
+          await api.deleteWebhook(inbox.inbox_id, webhook.webhook_id).catch(() => {});
+          throw error;
+        }
       }
       const now = new Date();
       await db.transaction(async (tx) => {
@@ -1175,6 +1180,8 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     if (event.inbox_id !== endpoint.botExternalId)
       throw forbidden("Email delivery inbox mismatch");
     const api = agentmailApi(await credential(endpoint), fetchImpl);
+    // issueId and wakePending commit with the email below. Retried deliveries
+    // resume that durable wake phase without reclassifying the retained message.
     if (!event.issueId) {
       const message =
         prefetched ??

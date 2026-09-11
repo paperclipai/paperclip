@@ -156,6 +156,24 @@ describe("AgentMail protocol boundary", () => {
       reply_all: false,
     });
   });
+  it("honors Reply-To for reply and reply-all without adding the forwarding sender or Bcc", () => {
+    const envelope = {
+      from: "Forwarder <forwarder@example.test>",
+      replyTo: ["Reply desk <reply@example.test>", "agent@agentmail.to"],
+      to: ["agent@agentmail.to", "visible@example.test"],
+      cc: ["reply@example.test", "cc@example.test"],
+      bcc: ["private@example.test"],
+      subject: "Forwarded request",
+    };
+    expect(emailReplyRecipients(envelope, "agent@agentmail.to", false)).toEqual({
+      to: ["reply@example.test"], cc: [], bcc: [], reply_all: false,
+    });
+    expect(emailReplyRecipients(envelope, "agent@agentmail.to", true)).toEqual({
+      to: ["reply@example.test", "visible@example.test"], cc: ["cc@example.test"], bcc: [], reply_all: false,
+    });
+    expect(emailReplyRecipients({ ...envelope, replyTo: [] }, "agent@agentmail.to", false).to)
+      .toEqual(["forwarder@example.test"]);
+  });
   it("validates explicit new-message and reply envelopes, rejecting header injection and Bcc reuse", () => {
     const base = {
       endpointId: randomUUID(),

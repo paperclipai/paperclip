@@ -695,6 +695,53 @@ describe("AgentMail durable email pipeline", () => {
     expect(thread?.publications[0].outcome).toBe("sent");
     expect(f.wakeup).toHaveBeenCalledTimes(1);
   });
+  it("retries the durable inbound wake after a failure and worker restart without duplicating mail", async () => {
+    const f = await fixture();
+    f.wakeup.mockRejectedValueOnce(new Error("Wake service temporarily unavailable"));
+    await f.receive(f.message());
+    const [pending] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpointId));
+    expect(pending.state).toBe("retry");
+    expect(pending.normalizedEvent).toMatchObject({ issueId: expect.any(String), wakePending: true });
+    await f.service.shutdown();
+    const restarted = emailChannelService(db, { heartbeat: { wakeup: f.wakeup }, fetch: f.fetcher });
+    services.push(restarted);
+    await db.update(chatDeliveries).set({ nextAttemptAt: null }).where(eq(chatDeliveries.id, pending.id));
+    await restarted.tick();
+    expect(f.wakeup).toHaveBeenCalledTimes(2);
+    expect(f.wakeup.mock.calls[1][1]).toEqual(f.wakeup.mock.calls[0][1]);
+    const [finished] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, pending.id));
+    expect(finished.state).toBe("processed");
+    expect(finished.normalizedEvent).toMatchObject({ wakePending: false });
+    expect(await db.select().from(emailMessages).where(eq(emailMessages.endpointId, f.endpointId))).toHaveLength(1);
+    expect(await db.select().from(issueComments).where(eq(issueComments.companyId, f.companyId))).toHaveLength(1);
+  });
+
+  it("removes a newly registered webhook when setup cannot persist its identity", async () => {
+    const f = await fixture("websocket");
+    await db.update(chatEndpoints).set({ status: "draft" }).where(eq(chatEndpoints.id, f.endpointId));
+    await db.execute(sql.raw(`
+      CREATE FUNCTION fail_email_webhook_write() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'simulated webhook persistence failure'; END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER fail_email_webhook_write BEFORE UPDATE ON email_endpoints
+      FOR EACH ROW WHEN (NEW.webhook_id IS NOT NULL) EXECUTE FUNCTION fail_email_webhook_write();
+    `));
+    try {
+      await expect(f.service.setup(f.companyId, {
+        assignedAgentId: f.agentId, apiKey: "test-key", inboxId: f.address,
+        receiveMode: "webhook", idempotencyKey: f.endpointId,
+      }, { userId: "email-board" })).rejects.toThrow();
+      expect(vi.mocked(f.fetcher).mock.calls.some(([url, init]) =>
+        String(url).endsWith("/webhooks/owned-webhook") && init?.method === "DELETE",
+      )).toBe(true);
+      const [config] = await db.select().from(emailEndpoints).where(eq(emailEndpoints.endpointId, f.endpointId));
+      expect(config.webhookId).toBeNull();
+      expect((await f.service.getEndpoint(f.endpointId)).status).toBe("draft");
+    } finally {
+      await db.execute(sql.raw("DROP TRIGGER fail_email_webhook_write ON email_endpoints; DROP FUNCTION fail_email_webhook_write();"));
+    }
+  });
+
   it("leases WebSocket ownership across workers, subscribes, and deduplicates WebSocket/webhook-shaped events", async () => {
     const f = await fixture("websocket");
     const secondSocket = vi.fn((): WebSocket => {

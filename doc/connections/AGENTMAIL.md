@@ -80,7 +80,8 @@ The task displays the email envelope, extracted reply text, full text context,
 attachments, and delivery outcomes. Use the normal task conversation to ask the
 agent to send an email or reply. There is no separate email composer or mode
 switch. The agent uses an explicit email action; task messages themselves are
-not sent as email. Reply defaults to the sender; reply-all must be requested.
+not sent as email. Reply uses Reply-To when present, otherwise the sender;
+reply-all must be requested.
 Bcc is retained in the originating envelope but is not copied to reply inputs.
 Remote email images are not rendered. Attachments use Paperclip's content-type,
 size, company, and task bounds.

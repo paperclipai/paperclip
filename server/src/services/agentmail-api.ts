@@ -87,7 +87,8 @@ export function emailReplyRecipients(
       seen.add(key);
       return true;
     });
-  const to = unique([message.from, ...(replyAll ? message.to : [])]);
+  const replyTargets = message.replyTo?.length ? message.replyTo : [message.from];
+  const to = unique([...replyTargets, ...(replyAll ? message.to : [])]);
   const cc = unique(replyAll ? (message.cc ?? []) : []);
   return { to, cc, bcc: [], reply_all: false };
 }
