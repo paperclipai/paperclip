@@ -2510,7 +2510,7 @@ describe("TaskChatComposer", () => {
 
       flushSync(() => staging?.click());
       expect(staging?.getAttribute("data-selected")).toBe("true");
-      expect(staging?.className.split(" ")).toContain("bg-muted/80");
+      expect(staging?.className.split(" ")).toContain("bg-foreground/5");
     });
 
     it("hides Skip when the takeover already provides a request-changes path", () => {

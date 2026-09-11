@@ -585,7 +585,7 @@ export const ComposerQuestionsAutoAdvance: Story = {
     <StoryFrame>
       <ScenarioCard
         title="Composer questions"
-        description="Choose a single option to see a quick selection confirmation, then advance. Other stays open for typing. Multi-select waits for Next, and the last question waits for Submit answers."
+        description="Selected rows are lightly highlighted. Choose a single option to see a quick selection confirmation, then advance. Other stays open for typing. Multi-select waits for Next, and the last question waits for Submit answers."
       >
         <InteractiveComposerQuestions />
       </ScenarioCard>

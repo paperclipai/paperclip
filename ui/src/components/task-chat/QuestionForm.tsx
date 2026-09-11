@@ -133,7 +133,7 @@ function SelectOption({
       className={cn(
         "tc-question-option flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60",
         selected
-          ? "bg-muted/80"
+          ? "bg-foreground/5"
           : recommended
             ? "bg-muted/50"
             : "hover:bg-muted/40",
