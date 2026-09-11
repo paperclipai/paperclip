@@ -3910,6 +3910,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let forcedStop = false;
     let runtimeStopConfirmed = false;
     let safeInterruptedSession = false;
+    let preserveInterruptedSession = false;
     const interruptionTools = new Map<string, { kind?: string; status?: string }>();
     let incompleteToolInventory = false;
     try {
@@ -4144,9 +4145,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
 
         const previousParams = parseObject(ctx.runtime.sessionParams);
         const canResume = isCompatibleSession(previousParams, prepared);
-        if (previousParams.interruptedCheckpoint === true && !canResume) {
-          throw new Error("The interrupted session is no longer compatible. Its action history must be checked before starting a new session.");
-        }
         const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
         // Borrow the warm entry without removing it, so an overlapping run of the
         // same session still sees it. The borrow clears the entry's idle timer, so
@@ -4347,7 +4345,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                 }),
               });
             } catch (err) {
-              if (!resumeSessionId || !isResumeFailure(err) || previousParams.interruptedCheckpoint === true) throw err;
+              if (!resumeSessionId || !isResumeFailure(err)) throw err;
               clearSession = true;
               resumedSession = false;
               await ctx.onLog(
@@ -4394,10 +4392,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               parentContext: prepared.stepMetrics.parentContext,
             });
           }
-          // A compatible warm handle reuses the already-running ACP agent and does
-          if (previousParams.interruptedCheckpoint === true && handle?.backendSessionId !== resumeSessionId) {
-            throw new Error("The provider did not restore the interrupted session; refusing a fresh-session fallback.");
+          if (resumeSessionId && handle?.backendSessionId !== resumeSessionId) {
+            resumedSession = false;
+            clearSession = true;
           }
+          // A compatible warm handle reuses the already-running ACP agent and does
           // not emit another spawn event. Persist its known identity on this run
           // before the next prompt starts so every running heartbeat is adoptable.
           if (handle && cached && processIdentitySink.latest && ctx.onSpawn) {
@@ -4883,13 +4882,18 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           eventCostUsd,
         });
         const failedTurn = terminal.status === "failed" || terminal.status === "cancelled" || timedOut;
-        // A provider-native command/write has no reliable external outcome
-        // receipt. Only settled reads (or a turn with no tools) can establish
-        // automatic interrupted-session continuity here.
-        safeInterruptedSession = ctx.signal?.aborted === true && !forcedStop && !timedOut && !channelLost
+        // ACPX can defer session/load until runTurn. Forget an unavailable
+        // session so the next bounded turn receives the full task conversation.
+        const sessionUnavailable = terminal.status === "failed" &&
+          terminal.error.detailCode === "SESSION_RESUME_REQUIRED";
+        if (sessionUnavailable) clearSession = true;
+        // Saving a conversation is independent from certifying tool outcomes.
+        // Its next turn receives history, not a replay of pending tool calls.
+        preserveInterruptedSession = ctx.signal?.aborted === true && !forcedStop && !timedOut && !channelLost
           && (terminal.status === "cancelled" || terminal.status === "completed")
           && prepared.mode === "persistent" && !prepared.processSessionBridge
-          && Boolean(sessionHandle.backendSessionId)
+          && Boolean(sessionHandle.backendSessionId);
+        safeInterruptedSession = preserveInterruptedSession
           && !incompleteToolInventory
           && [...interruptionTools.values()].every((tool) => tool.kind === "read" && tool.status === "completed");
         // Record how the settlement `endSession` step closes the runtime for this
@@ -4911,7 +4915,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               : failedTurn
                 ? `paperclip turn ${terminal.status}`
                 : "paperclip completed turn cleanup",
-          discardPersistentState: (terminal.status === "cancelled" && !safeInterruptedSession) || timedOut || channelLost,
+          discardPersistentState: sessionUnavailable || (terminal.status === "cancelled" && !preserveInterruptedSession) || timedOut || channelLost,
           dropWarmEntry: false,
           recordCloseError: false,
           cancelTurnReason: null,

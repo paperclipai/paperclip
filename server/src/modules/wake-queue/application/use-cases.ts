@@ -554,6 +554,19 @@ async function runReleaseRecoveryTail(
       "wake-queue: queued a recovery run with no invokable recovery agent",
     );
 
+  if (run.conversationContinuation && ["failed", "timed_out", "interrupted"].includes(run.status)) {
+    // Do not create an uncounted immediate successor inside the issue lock.
+    // The host's idempotent scheduler claims it after commit with the same
+    // retry counter used by restart and process-loss recovery.
+    postCommitEffects.push({
+      kind: "conversation_retry_requested",
+      companyId: run.companyId,
+      runId: run.id,
+      reviewParticipant: decision.kind === "queue_review_participant_recovery",
+    });
+    return { outcome: { kind: "released" }, postCommitEffects };
+  }
+
   const sessionBefore = await host.resolveSessionBeforeForWakeup({
     companyId: issue.companyId,
     agentId: recoveryAgent.id,

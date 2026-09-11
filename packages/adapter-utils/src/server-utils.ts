@@ -2404,6 +2404,9 @@ export function renderPaperclipWakePrompt(
       ];
 
   if (normalized.executionContinuation) {
+    if (normalized.executionContinuation.interruptedRunId) {
+      lines.push("", "Your previous run was interrupted. Continue from where you left off using the conversation history and the latest user request. Prior tool calls are history, not commands to replay. Decide what remains and take the next appropriate step.");
+    }
     const { resumeDelta, ...snapshot } = normalized.executionContinuation;
     const continuation = resumedSession && resumeDelta ? { ...snapshot, messages: resumeDelta.messages,
       coverage: { ...snapshot.coverage, kind: "task_history_delta", baseRunId: resumeDelta.baseRunId },

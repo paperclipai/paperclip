@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { conversationRecoveryActionPredicate } from "./conversation-continuation.js";
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
@@ -305,8 +306,47 @@ export async function settleUnrecoverableExecutions(
   now = new Date(),
   options: { failpoint?: (phase: "persisted") => void } = {},
 ) {
+  // Fold obsolete conversation holds without waking historical work on upgrade.
+  // Keep their evidence and record the policy change in the task's activity log.
+  const obsoleteConversationHold = and(
+    conversationRecoveryActionPredicate(),
+    or(
+      inArray(issueRecoveryActions.status, ["active", "escalated"]),
+      sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+    ),
+  );
+  await db.transaction(async tx => {
+    const folded = await tx.update(issueRecoveryActions).set({
+      status: "resolved",
+      outcome: "cancelled",
+      resolvedAt: now,
+      updatedAt: now,
+      nextAction: "Automatic attempts stopped. Send a new message to continue the conversation.",
+      resolutionNote: "Conversation continuation does not replay prior tool calls.",
+      wakePolicy: null,
+      monitorPolicy: null,
+      evidence: sql`case when ${issueRecoveryActions.evidence} ? 'automaticRecovery'
+        then jsonb_set(${issueRecoveryActions.evidence}, '{automaticRecovery,replay}', '"conversation_continuation"'::jsonb)
+        else ${issueRecoveryActions.evidence} end`,
+    }).where(and(
+      obsoleteConversationHold,
+      inArray(issueRecoveryActions.id, tx.select({ id: issueRecoveryActions.id })
+        .from(issueRecoveryActions).where(obsoleteConversationHold).limit(25).for("update", { skipLocked: true })),
+    )).returning();
+    for (const action of folded) {
+      await persistActivity(tx as unknown as Db, {
+        companyId: action.companyId,
+        actorType: "system",
+        actorId: "execution-recovery",
+        action: "issue.execution_recovery_settled",
+        entityType: "issue",
+        entityId: action.sourceIssueId,
+        details: { recoveryActionId: action.id, outcome: "cancelled", continuation: "conversation" },
+      });
+    }
+  });
   // Filter eligibility before applying the batch limit. A queue of sessions
-  // still awaiting safe replacement must not starve settled incidents behind it.
+  // awaiting replacement must not starve settled incidents behind it.
   const candidates = await db
     .select({ action: issueRecoveryActions })
     .from(issueRecoveryActions)

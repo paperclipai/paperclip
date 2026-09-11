@@ -1,4 +1,5 @@
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
+import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
@@ -18,6 +19,9 @@ export function legacyExecutionNeedsReconciliation(
     !["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
   )
     return false;
+  // A fresh conversation turn lets the agent decide what remains. The retry
+  // scheduler, not an action-outcome hold, owns the automatic attempt limit.
+  if (hasConversationContinuationPolicy(run.resultJson)) return false;
   // Productive turn-budget continuation is not a failed provider session.
   if (normalizeMaxTurnStopReason(run.resultJson?.stopReason) ?? normalizeMaxTurnStopReason(run.errorCode)) return false;
   const evidence = run.resultJson?.executionRecovery as

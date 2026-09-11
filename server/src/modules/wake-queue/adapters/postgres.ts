@@ -11,6 +11,7 @@ import {
   issues,
   nativeRunFinalizations,
 } from "@paperclipai/db";
+import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { legacyExecutionNeedsReconciliation } from "../../../services/legacy-execution-recovery.js";
 import {
   authorizeFailedChatRunRetryWake,
@@ -84,6 +85,7 @@ function toRunSnapshot(row: HeartbeatRunRow): RunSnapshot {
     agentId: row.agentId,
     status: row.status,
     runtimeMode: row.runtimeMode,
+    conversationContinuation: row.runtimeMode === "legacy" && hasConversationContinuationPolicy(row.resultJson),
     errorCode: row.errorCode,
     responsibleUserId: row.responsibleUserId,
     contextSnapshot: parseObject(row.contextSnapshot),

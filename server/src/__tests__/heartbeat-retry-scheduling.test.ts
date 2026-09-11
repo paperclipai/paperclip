@@ -445,6 +445,52 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     return { companyId, agentId, issueId, runId, now };
   }
 
+  it("bounds interrupted conversations across restarts and concurrent scheduling", async () => {
+    const { companyId, issueId, runId, now } = await seedMaxTurnFixture();
+    const resultJson = { conversationContinuation: "continue_conversation_v1" };
+    await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", resultJson })
+      .where(eq(heartbeatRuns.id, runId));
+    let predecessor = runId;
+    for (const attempt of [1, 2]) {
+      const restarted = heartbeatService(db);
+      const outcomes = await Promise.all([
+        restarted.scheduleBoundedRetry(predecessor, { now, random: () => 0 }),
+        restarted.scheduleBoundedRetry(predecessor, { now, random: () => 0 }),
+      ]);
+      expect(outcomes.every(outcome => outcome.outcome === "scheduled")).toBe(true);
+      const children = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, predecessor));
+      expect(children).toHaveLength(1);
+      expect(children[0]).toMatchObject({ scheduledRetryAttempt: attempt });
+      predecessor = children[0]!.id;
+      await db.update(heartbeatRuns).set({ status: "interrupted", finishedAt: now, resultJson })
+        .where(eq(heartbeatRuns.id, predecessor));
+    }
+    expect(await heartbeatService(db).scheduleBoundedRetry(predecessor, { now }))
+      .toMatchObject({ outcome: "retry_exhausted" });
+    await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+    // Exhaustion leaves the task available to a new explicit request.
+    const { getExecutionBlocker } = await import("../services/execution-blocker.js");
+    expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+  });
+
+  it.each(["dependency", "disabled", "reassigned"])("respects the %s gate for interrupted conversations", async gate => {
+    const { companyId, agentId, issueId, runId, now } = await seedMaxTurnFixture();
+    await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "process_lost",
+      resultJson: { conversationContinuation: "continue_conversation_v1" } }).where(eq(heartbeatRuns.id, runId));
+    if (gate === "dependency") {
+      const blockerId = randomUUID();
+      await db.insert(issues).values({ id: blockerId, companyId, title: "Required work", status: "todo" });
+      await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
+    } else if (gate === "disabled") {
+      await db.update(agents).set({ runtimeConfig: { heartbeat: { wakeOnDemand: false } } }).where(eq(agents.id, agentId));
+    } else {
+      await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, issueId));
+    }
+    expect(await heartbeat.scheduleBoundedRetry(runId, { now })).toMatchObject({ outcome: "not_scheduled" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
+
   it("schedules a retry with durable metadata and only promotes it when due", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

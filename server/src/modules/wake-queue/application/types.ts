@@ -21,6 +21,8 @@ export type RunSnapshot = {
   contextSnapshot: Record<string, unknown>;
   /** `resultJson.configurationIncomplete`, already parsed; non-null only on a configuration-incomplete failed run. */
   configurationIncompletePayload: Record<string, unknown> | null;
+  /** The host schedules failed conversation turns with its durable retry budget. */
+  conversationContinuation?: boolean;
 };
 
 export type IssueSnapshot = {
@@ -67,7 +69,12 @@ export type IssueReopenedEffect = {
 };
 
 /** Explicit post-commit work a caller applies only after the release transaction commits. */
-export type PostCommitEffect = RunQueuedEffect | IssueReopenedEffect;
+export type PostCommitEffect = RunQueuedEffect | IssueReopenedEffect | {
+  kind: "conversation_retry_requested";
+  companyId: string;
+  runId: string;
+  reviewParticipant: boolean;
+};
 
 export type ReleaseOutcome =
   | { kind: "released" }
