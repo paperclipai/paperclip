@@ -14,6 +14,11 @@ describe("issue references", () => {
     expect(normalizeIssueIdentifier("not-an-issue")).toBeNull();
   });
 
+  it("accepts identifiers with digit-starting company prefixes", () => {
+    expect(normalizeIssueIdentifier("2co-4")).toBe("2CO-4");
+    expect(normalizeIssueIdentifier("3M-1")).toBe("3M-1");
+  });
+
   it("parses relative and absolute issue hrefs", () => {
     expect(parseIssueReferenceHref("/issues/PAP-123")).toEqual({ identifier: "PAP-123" });
     expect(parseIssueReferenceHref("/PAP/issues/pap-456")).toEqual({ identifier: "PAP-456" });
@@ -37,6 +42,13 @@ describe("issue references", () => {
         identifier: "PC1A2-3",
         matchedText: "https://x.test/PAP/issues/pc1a2-3",
       },
+    ]);
+  });
+
+  it("finds identifiers with digit-starting prefixes in text", () => {
+    expect(findIssueReferenceMatches("See 2CO-4 and /issues/3M-1 for details.")).toEqual([
+      { index: 4, length: 5, identifier: "2CO-4", matchedText: "2CO-4" },
+      { index: 14, length: 13, identifier: "3M-1", matchedText: "/issues/3M-1" },
     ]);
   });
 
