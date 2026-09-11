@@ -54,6 +54,7 @@ function baseStalenessFacts(): QueuedRunFacts {
     issueExecutionRunId: "run-1",
     isResolvedInteractionContinuation: false,
     isInteractionWake: false,
+    isVerifiedAddresseeInteractionWake: false,
     isAuthorizedSourceScopedRecovery: false,
     isNonAssigneeWorkspaceBusyRetry: false,
     resumeIntent: false,
@@ -442,6 +443,48 @@ describe("decideQueuedRunStaleness", () => {
       isAuthorizedSourceScopedRecovery: true,
     };
     expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+
+  it("allows a verified named-addressee interaction wake to bypass the ownership check", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      issueAssigneeAgentId: "agent-2",
+      wakeReason: "interaction_pending",
+      isVerifiedAddresseeInteractionWake: true,
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+
+  it("allows a verified named-addressee interaction wake past the review-participant gate", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      issueAssigneeAgentId: "agent-2",
+      issueStatus: "in_review",
+      wakeReason: "interaction_pending",
+      isVerifiedAddresseeInteractionWake: true,
+      reviewParticipant: {
+        isInReview: true,
+        hasParticipant: true,
+        participantIsAgent: true,
+        participantAgentId: "agent-2",
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: "agent-2" },
+      },
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toEqual({ stale: false });
+  });
+
+  it("still cancels an unverified interaction_pending wake for a non-assignee", () => {
+    const facts: QueuedRunFacts = {
+      ...baseStalenessFacts(),
+      issueAssigneeAgentId: "agent-2",
+      wakeReason: "interaction_pending",
+      isVerifiedAddresseeInteractionWake: false,
+    };
+    expect(decideQueuedRunStaleness(facts, NOW)).toMatchObject({
+      stale: true,
+      errorCode: "issue_assignee_changed",
+    });
   });
 });
 

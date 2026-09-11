@@ -12,6 +12,7 @@ import {
   issueDocuments,
   issueRelations,
   issueRecoveryActions,
+  issueThreadInteractions,
   issueTreeHolds,
   issues,
 } from "@paperclipai/db";
@@ -54,6 +55,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     await db.delete(documents);
     await db.delete(issueTreeHolds);
     await db.delete(issueRelations);
+    await db.delete(issueThreadInteractions);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -525,6 +527,121 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       expect(persisted?.status).toBe("cancelled");
       expect(persisted?.contextSnapshot).toMatchObject({
         paperclipWake: { privateTestMarker: "not-for-the-status-effect" },
+      });
+    });
+
+    async function seedAddressedInteraction(input: {
+      companyId: string;
+      issueId: string;
+      createdByAgentId: string;
+      addresseeAgentId: string;
+      status?: string;
+    }) {
+      const interactionId = randomUUID();
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId: input.companyId,
+        issueId: input.issueId,
+        kind: "request_confirmation",
+        status: input.status ?? "pending",
+        continuationPolicy: "wake_assignee",
+        requestedResolverPolicy: "not_creator",
+        effectiveResolverPolicy: "not_creator",
+        title: "Approve the plan",
+        createdByAgentId: input.createdByAgentId,
+        addresseeAgentId: input.addresseeAgentId,
+        payload: { version: 1, prompt: "Approve the plan?" },
+      });
+      return interactionId;
+    }
+
+    it("keeps a verified interaction_pending wake for the named addressee when the issue is assigned to another agent", async () => {
+      const { companyId, agentId: assigneeAgentId } = await seedCompanyAndAgent();
+      const addresseeAgentId = randomUUID();
+      await seedAgent({ id: addresseeAgentId, companyId, name: "Reviewer" });
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId });
+      const interactionId = await seedAddressedInteraction({
+        companyId,
+        issueId,
+        createdByAgentId: assigneeAgentId,
+        addresseeAgentId,
+      });
+
+      const runId = await seedRun({
+        companyId,
+        agentId: addresseeAgentId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          interactionId,
+          interactionKind: "request_confirmation",
+          wakeReason: "interaction_pending",
+          source: "issue.interaction.created",
+        },
+      });
+      const result = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId,
+        companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+
+      expect(result).toMatchObject({ outcome: "not_stale" });
+      const persisted = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0]);
+      expect(persisted?.status).toBe("queued");
+    });
+
+    it.each([
+      { label: "the interaction is already resolved", status: "accepted", addressee: "named" },
+      { label: "the interaction names a different addressee", status: "pending", addressee: "other" },
+      { label: "the interaction belongs to another issue", status: "pending", addressee: "named", otherIssue: true },
+    ])("still cancels an interaction_pending wake when $label", async ({ status, addressee, otherIssue }) => {
+      const { companyId, agentId: assigneeAgentId } = await seedCompanyAndAgent();
+      const addresseeAgentId = randomUUID();
+      await seedAgent({ id: addresseeAgentId, companyId, name: "Reviewer" });
+      const otherAgentId = randomUUID();
+      await seedAgent({ id: otherAgentId, companyId, name: "Bystander" });
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "in_progress", assigneeAgentId });
+      const interactionIssueId = otherIssue ? randomUUID() : issueId;
+      if (otherIssue) {
+        await seedIssue({ companyId, issueId: interactionIssueId, status: "in_progress", assigneeAgentId });
+      }
+      const interactionId = await seedAddressedInteraction({
+        companyId,
+        issueId: interactionIssueId,
+        createdByAgentId: assigneeAgentId,
+        addresseeAgentId: addressee === "named" ? addresseeAgentId : otherAgentId,
+        status,
+      });
+
+      const runId = await seedRun({
+        companyId,
+        agentId: addresseeAgentId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          interactionId,
+          interactionKind: "request_confirmation",
+          wakeReason: "interaction_pending",
+          source: "issue.interaction.created",
+        },
+      });
+      const result = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId,
+        companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+
+      expect(result).toMatchObject({
+        outcome: "cancelled",
+        errorCode: "issue_assignee_changed",
       });
     });
 

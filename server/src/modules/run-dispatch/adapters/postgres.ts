@@ -6,6 +6,7 @@ import {
   agents,
   heartbeatRuns,
   issueRecoveryActions,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON } from "@paperclipai/shared";
@@ -504,6 +505,30 @@ export function createPostgresRunDispatchAdapter(
       continuationParksExecutor = continuationSummaryParksExecutor(continuationSummaryBody);
     }
 
+    // A server-issued `interaction_pending` wake names the interaction it was
+    // created for. Authorize the named addressee from stored state only:
+    // the interaction must still be pending, belong to this issue and
+    // company, and name the run agent as `addresseeAgentId`. The wake
+    // reason alone is not trusted.
+    const wakeInteractionId = readNonEmptyString(context.interactionId);
+    const isVerifiedAddresseeInteractionWake =
+      issue && wakeReason === "interaction_pending" && wakeInteractionId
+        ? await dbOrTx
+            .select({ id: issueThreadInteractions.id })
+            .from(issueThreadInteractions)
+            .where(
+              and(
+                eq(issueThreadInteractions.id, wakeInteractionId),
+                eq(issueThreadInteractions.companyId, input.companyId),
+                eq(issueThreadInteractions.issueId, issue.id),
+                eq(issueThreadInteractions.addresseeAgentId, input.agentId),
+                eq(issueThreadInteractions.status, "pending"),
+              ),
+            )
+            .limit(1)
+            .then((rows) => Boolean(rows[0]))
+        : false;
+
     const recoveryActionId = readNonEmptyString(context.recoveryActionId);
     const isAuthorizedSourceScopedRecovery =
       issue && wakeReason === "source_scoped_recovery_action" && recoveryActionId
@@ -537,6 +562,7 @@ export function createPostgresRunDispatchAdapter(
       isConnectionContinuation: (isResolvedInteractionContinuation && context.interactionKind === "connection_intent")
         || context.source === "connection_tools.refreshed",
       isInteractionWake,
+      isVerifiedAddresseeInteractionWake,
       isAuthorizedSourceScopedRecovery,
       isNonAssigneeWorkspaceBusyRetry: isNonAssigneeWorkspaceBusyRetry(retryReason, context),
       resumeIntent,
