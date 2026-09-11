@@ -592,6 +592,10 @@ export interface PaperclipQuestion {
   helpText?: string;
   required: boolean;
   answerMode: "single_select" | "multi_select" | "text";
+  /** `"decision"` marks a consequential human choice; defaults to "information". */
+  intent?: "decision" | "information";
+  /** Why the recommended option is recommended. Required for decision intent. */
+  recommendationRationale?: string;
   options?: PaperclipQuestionOption[];
   customAnswer?: { enabled: true; label?: string; placeholder?: string };
   textValidation?: {

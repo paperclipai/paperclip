@@ -1,9 +1,11 @@
 import { execFile } from "node:child_process";
 import { and, asc, eq, ne, or, sql } from "drizzle-orm";
 import { agents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { redactSensitiveText } from "../redaction.js";
 
 /** Repository transaction pattern: the handle a `db.transaction` callback gets. */
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type DbLike = Pick<Db, "select">;
 
 interface ResourceDemand {
   pool: string;
@@ -409,6 +411,107 @@ export function parseExecutionWriterResourceReceipt(stdout: string): ExecutionWr
 }
 
 /**
+ * Live holders of one canonical writer root, oldest first.
+ *
+ * Read/write compatibility is the whole point: `exclusive` conflicts with ANY
+ * live holder of the root, while `read_only` coexists with other readers and is
+ * refused by a live writer. A holder whose persisted receipt carries no
+ * canonical root — a reservation written before the receipt named the physical
+ * lane — is conservatively treated as touching this root, and a holder of THIS
+ * root whose access cannot be read is treated as a writer. Overlap is never
+ * assumed safe because a holder is unidentified.
+ *
+ * A holder is released by the authoritative run lifecycle, never by its age:
+ * the reservation stops counting when the run leaves `running`. A quiet-but-live
+ * run is NOT an available root — a silent writer is still a writer, so waiting
+ * is the only safe answer.
+ */
+async function selectCanonicalWriterRootHolders(
+  dbOrTx: DbLike,
+  input: { writerRootKey: string; excludeRunId?: string | null },
+) {
+  return await dbOrTx
+    .select({
+      runId: heartbeatRuns.id,
+      agentId: heartbeatRuns.agentId,
+      issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+      holderAccess: sql<string | null>`${heartbeatRuns.contextSnapshot} -> 'executionWriterResource' ->> 'access'`,
+      sameRoot: sql<boolean>`${heartbeatRuns.contextSnapshot} -> 'executionWriterResource' ->> 'writerRootKey' = ${input.writerRootKey}`,
+    })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.status, "running"),
+        input.excludeRunId ? ne(heartbeatRuns.id, input.excludeRunId) : sql`true`,
+        or(
+          sql`${heartbeatRuns.contextSnapshot} -> 'executionWriterResource' ->> 'writerRootKey' = ${input.writerRootKey}`,
+          // Unidentified live holder of an admitted lane: conservatively
+          // blocking, because it may be touching this same root.
+          and(
+            sql`${heartbeatRuns.contextSnapshot} -> 'executionWriterResource' ->> 'access' in ('read_only', 'exclusive')`,
+            sql`coalesce(${heartbeatRuns.contextSnapshot} -> 'executionWriterResource' ->> 'writerRootKey', '') = ''`,
+          ),
+        ),
+      ),
+    )
+    .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id));
+}
+
+/** True when a string is a canonical writer-root key. Callers that persist or
+ * parse a wait key use this instead of re-deriving the receipt key format. */
+export function isWriterRootWaitKey(value: unknown): value is string {
+  return typeof value === "string" && EXECUTION_WRITER_ROOT_KEY_RE.test(value);
+}
+
+/**
+ * Whether a live holder conflicts with a new reservation for `requestedAccess`.
+ * The single predicate both admission and the queued-wait probe use:
+ *
+ * - a holder whose persisted receipt names no canonical root is conservatively
+ *   treated as touching this root,
+ * - `exclusive` (and an unreadable request) conflicts with ANY live holder,
+ * - `read_only` conflicts only with a holder that is not a verified reader, so
+ *   readers wait behind writers but never behind each other.
+ */
+function holderConflictsWithRequest(
+  holder: { sameRoot: boolean | null; holderAccess: string | null },
+  requestedAccess: ExecutionWriterResourceReceipt["access"],
+) {
+  if (holder.sameRoot !== true) return true;
+  if (requestedAccess !== EXECUTION_WRITER_RESOURCE_ACCESS.readOnly) return true;
+  return holder.holderAccess !== EXECUTION_WRITER_RESOURCE_ACCESS.readOnly;
+}
+
+/** The live holder a queued wait must keep waiting for, if any. Callers use this
+ * outside the admission transaction to decide between claiming and re-arming the
+ * same waiting run; the in-transaction admission below stays authoritative and
+ * applies the same conflict predicate, so a read-only waiter is not parked behind
+ * readers the admission would have admitted alongside.
+ * The lookup is intentionally not company-scoped: a canonical writer root is one
+ * physical host resource, so another company's live holder still owns it. */
+export async function findCanonicalWriterRootHolder(
+  db: DbLike,
+  input: {
+    writerRootKey: string;
+    requestedAccess: ExecutionWriterResourceReceipt["access"];
+    excludeRunId?: string | null;
+  },
+): Promise<ExecutionWriterRootHolder | null> {
+  const holders = await selectCanonicalWriterRootHolders(db, input);
+  const holder = holders.find((candidate) =>
+    holderConflictsWithRequest(candidate, input.requestedAccess),
+  ) ?? null;
+  return holder
+    ? {
+        runId: holder.runId,
+        agentId: holder.agentId,
+        issueId: holder.issueId,
+        issueIdentifier: null,
+      }
+    : null;
+}
+
+/**
  * Atomically reserve one canonical writer root for this run.
  *
  * Read/write compatibility is the whole point: `exclusive` conflicts with ANY
@@ -446,38 +549,20 @@ export async function admitCanonicalWriterRoot(
   }
   const exclusive = input.receipt.access === EXECUTION_WRITER_RESOURCE_ACCESS.exclusive;
   await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`canonical-writer-root:${writerRootKey}`}, 0))`);
-  const holders = await tx
-    .select({
-      runId: heartbeatRuns.id,
-      agentId: heartbeatRuns.agentId,
-      issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
-      holderAccess: sql<string | null>`${heartbeatRuns.contextSnapshot} -> 'executionWriterResource' ->> 'access'`,
-      sameRoot: sql<boolean>`${heartbeatRuns.contextSnapshot} -> 'executionWriterResource' ->> 'writerRootKey' = ${writerRootKey}`,
-    })
-    .from(heartbeatRuns)
-    .where(
-      and(
-        eq(heartbeatRuns.status, "running"),
-        ne(heartbeatRuns.id, input.runId),
-        or(
-          sql`${heartbeatRuns.contextSnapshot} -> 'executionWriterResource' ->> 'writerRootKey' = ${writerRootKey}`,
-          // Unidentified live holder of an admitted lane: conservatively
-          // blocking, because it may be touching this same root.
-          and(
-            sql`${heartbeatRuns.contextSnapshot} -> 'executionWriterResource' ->> 'access' in ('read_only', 'exclusive')`,
-            sql`coalesce(${heartbeatRuns.contextSnapshot} -> 'executionWriterResource' ->> 'writerRootKey', '') = ''`,
-          ),
-        ),
-      ),
-    )
-    .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id));
+  const holders = await selectCanonicalWriterRootHolders(tx as unknown as DbLike, {
+    writerRootKey,
+    excludeRunId: input.runId,
+  });
   // A holder of the same root conflicts unless it is a VERIFIED reader and we are
-  // a reader too. Unknown or unreadable access on this root counts as a writer,
-  // so it conflicts in both directions.
+  // a reader too; the shared predicate owns that rule for both this admission and
+  // the queued-wait probe, so the two can never disagree.
   const conflict = holders.find((holder) =>
-    holder.sameRoot !== true
-      ? true
-      : exclusive || holder.holderAccess !== EXECUTION_WRITER_RESOURCE_ACCESS.readOnly,
+    holderConflictsWithRequest(
+      holder,
+      exclusive
+        ? EXECUTION_WRITER_RESOURCE_ACCESS.exclusive
+        : EXECUTION_WRITER_RESOURCE_ACCESS.readOnly,
+    ),
   );
   if (conflict) {
     return {
@@ -510,6 +595,56 @@ export async function admitCanonicalWriterRoot(
   return { admitted: true };
 }
 
+/** Stable prefix for a resolver subprocess failure. The message class is
+ * technical: the run must not dispatch, but it is not a missing setting. */
+export const EXECUTION_RESOURCE_RESOLVER_FAILED_PREFIX = "execution resource resolver failed";
+
+export type ExecutionResourceResolverFailureReason =
+  | "nonzero_exit"
+  | "timeout"
+  | "spawn_failed"
+  | "invalid_receipt";
+
+/** The stable failure contract for a resolver that could not prove a lane.
+ * Consumers classify on `reason` and on the error's own type, never on text. */
+export type ExecutionResourceResolverFailureInfo = {
+  reason: ExecutionResourceResolverFailureReason;
+  exitCode: number | null;
+  signal: string | null;
+  stderrExcerpt: string | null;
+};
+
+/** Thrown when the operator-configured resolver cannot produce a valid receipt.
+ * It is deliberately a typed failure with a stable reason: the run stays
+ * fail-closed, and recovery consumes the class instead of guessing from text. */
+export class ExecutionResourceResolverError extends Error {
+  readonly info: ExecutionResourceResolverFailureInfo;
+
+  constructor(message: string, info: ExecutionResourceResolverFailureInfo) {
+    super(message);
+    this.name = "ExecutionResourceResolverError";
+    this.info = info;
+  }
+}
+
+/** Bounded, redacted stderr excerpt for diagnosis.
+ *
+ * The historical cause of the resolver exit-1 incidents is unreachable because
+ * the stderr was discarded; this keeps the tail without dumping arbitrary text
+ * or secrets: non-empty lines only, last five, single line, redacted, capped. */
+export function readExecutionResourceResolverStderrExcerpt(
+  stderr: string | null | undefined,
+): string | null {
+  const lines = (stderr ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) return null;
+  const redacted = redactSensitiveText(lines.slice(-5).join(" | ")).trim();
+  if (!redacted) return null;
+  return redacted.length > 400 ? `${redacted.slice(0, 399)}…` : redacted;
+}
+
 /**
  * Invoke the operator-configured resolver for one run scope.
  *
@@ -519,6 +654,11 @@ export async function admitCanonicalWriterRoot(
  * timeout, missing receipt or malformed report throws: once an operator opts an
  * adapter into writer-root admission, a run that cannot prove its writer
  * identity must not start.
+ *
+ * The throw is a technical execution failure, not a configuration verdict: the
+ * caller keeps the run fail-closed and lets the existing setup-failure recovery
+ * own it. Only the operator's own missing scope (no project identity) is a
+ * configuration gate for a human owner.
  */
 export async function resolveExecutionWriterResourceReceipt(input: {
   resolver: ExecutionResourceResolverConfig;
@@ -539,13 +679,26 @@ export async function resolveExecutionWriterResourceReceipt(input: {
         JSON.stringify(scope),
       ],
       { timeout: input.resolver.timeoutMs, maxBuffer: 1_048_576 },
-      (error, out) => {
+      (error, out, err) => {
         if (error) {
+          const failure = error;
+          const timedOut = failure.killed === true || failure.signal === "SIGTERM";
+          const reason: ExecutionResourceResolverFailureReason = timedOut
+            ? "timeout"
+            : typeof failure.code === "number"
+              ? "nonzero_exit"
+              : "spawn_failed";
+          const stderrExcerpt = readExecutionResourceResolverStderrExcerpt(err);
           rejectPromise(
-            new Error(
-              `execution resource resolver failed: ${
-                (error as NodeJS.ErrnoException).code ?? error.message
-              }`,
+            new ExecutionResourceResolverError(
+              `${EXECUTION_RESOURCE_RESOLVER_FAILED_PREFIX}: ${failure.code ?? failure.message}` +
+                (stderrExcerpt ? ` - stderr: ${stderrExcerpt}` : ""),
+              {
+                reason,
+                exitCode: typeof failure.code === "number" ? failure.code : null,
+                signal: typeof failure.signal === "string" ? failure.signal : null,
+                stderrExcerpt,
+              },
             ),
           );
           return;
@@ -556,7 +709,12 @@ export async function resolveExecutionWriterResourceReceipt(input: {
   });
   const receipt = parseExecutionWriterResourceReceipt(stdout);
   if (!receipt) {
-    throw new Error("execution resource resolver returned no valid writer-resource receipt");
+    // The report is unreadable; do not echo it, because the resolver's stdout
+    // may itself carry operator data. Classify and stay fail-closed.
+    throw new ExecutionResourceResolverError(
+      `${EXECUTION_RESOURCE_RESOLVER_FAILED_PREFIX}: invalid_receipt`,
+      { reason: "invalid_receipt", exitCode: 0, signal: null, stderrExcerpt: null },
+    );
   }
   return receipt;
 }

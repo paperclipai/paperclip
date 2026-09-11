@@ -112,6 +112,8 @@ Verify with `pnpm exec vitest run server/src/services/recovery-engineer-policy.t
 
 Contained process runners report pre-model admission failures with exit codes 96 (`image_prerequisite_missing`), 97 (`host_pi_unavailable`), 98 (`broker_unavailable`), and 99 (`containment_unavailable`). Native requires a version-1 `run_admission` stdout envelope whose run ID, rejection status, reason, exit code, and `modelStarted: false` agree before classifying one. An exit code alone stays a generic failure. These are failures for the existing recovery path, never workspace-contention deferrals; recording a clearer reason does not repair the prerequisite or authorize a retry.
 
+Writer-resource resolver failures use `execution_resource_resolver_failed`, with bounded redacted diagnostics in `resultJson.executionResourceResolverFailure`. No worker is dispatched without a valid receipt. These technical failures remain eligible for the configured recovery engineer; a resolver exit alone is not evidence of a missing credential or a human configuration decision. Missing issue project scope remains `configuration_incomplete` with `missingBindings: ["projectId"]`. Historical failures whose stderr was discarded cannot be diagnosed retroactively from their exit code.
+
 ### Mobile-friendly preview (`pnpm dev:mobile`)
 
 The vite dev server serves an unbundled module graph. This is fast to reload on a local machine but too heavy for phones and tablets on slow links (airplane wifi, mobile data, distant tailnet peers). `pnpm dev:mobile` builds the UI once and serves the small production bundle on port `3101` via `vite preview`, proxying `/api` requests to the dev API on `3100`.

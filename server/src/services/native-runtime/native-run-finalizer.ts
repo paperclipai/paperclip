@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   approvals,
@@ -116,6 +116,7 @@ async function acceptedInteractionFromRun(input: {
   companyId: string;
   issueId: string;
   runId: string;
+  agentId: string;
 }) {
   return input.db.select({ id: issueThreadInteractions.id })
     .from(issueThreadInteractions)
@@ -124,6 +125,10 @@ async function acceptedInteractionFromRun(input: {
       eq(issueThreadInteractions.issueId, input.issueId),
       eq(issueThreadInteractions.sourceRunId, input.runId),
       eq(issueThreadInteractions.status, "accepted"),
+      // The run's own agent cannot resolve the governance this run raised: a
+      // self-issued acceptance is not an independent resolution, so the gate
+      // stays unresolved and the arbiter keeps the real review path.
+      sql`(${issueThreadInteractions.resolvedByAgentId} is null or ${issueThreadInteractions.resolvedByAgentId} <> ${input.agentId})`,
     ))
     .limit(1)
     .then((rows) => rows[0] ?? null);
@@ -562,6 +567,7 @@ export async function finalizeNativeRun(input: {
         companyId: run.companyId,
         issueId: authoritativeIssue.id,
         runId: run.id,
+        agentId: run.agentId,
       }),
     ]);
     const decision = resolveNativeFinalizerStatus({

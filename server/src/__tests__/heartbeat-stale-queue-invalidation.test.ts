@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentWakeupRequests,
+  approvals,
   companies,
   costEvents,
   createDb,
@@ -14,6 +15,7 @@ import {
   documentRevisions,
   documents,
   heartbeatRuns,
+  issueApprovals,
   issueComments,
   issueDocuments,
   issues,
@@ -2294,5 +2296,465 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.status).toBe("succeeded");
     expect(run?.errorCode).toBeNull();
     expect(countExecuteCallsForRun(runId)).toBe(1);
+  });
+
+  async function seedReviewerAgent(companyId: string) {
+    const reviewerAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: reviewerAgentId,
+      companyId,
+      name: "RecoveryReviewer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    return reviewerAgentId;
+  }
+
+  async function seedSucceededRun(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    runId?: string;
+    at?: Date;
+    contextExtras?: Record<string, unknown>;
+    livenessState?: null;
+  }) {
+    const runId = input.runId ?? randomUUID();
+    const at = input.at ?? new Date("2026-09-10T21:33:00.000Z");
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "succeeded",
+      startedAt: at,
+      finishedAt: new Date(at.getTime() + 1_000),
+      createdAt: at,
+      updatedAt: new Date(at.getTime() + 1_000),
+      livenessState: input.livenessState ?? null,
+      contextSnapshot: {
+        issueId: input.issueId,
+        wakeReason: "issue_comment",
+        ...(input.contextExtras ?? {}),
+      },
+    });
+    return runId;
+  }
+
+  async function seedReviewInteraction(input: {
+    companyId: string;
+    issueId: string;
+    kind?: string;
+    status?: string;
+    continuationPolicy?: string;
+    addresseeAgentId?: string | null;
+    createdByAgentId?: string | null;
+    resolvedByAgentId?: string | null;
+    resolvedByRunId?: string | null;
+    sourceRunId?: string | null;
+    resolvedAt?: Date | null;
+    createdAt?: Date;
+    effectiveResolverPolicy?: string;
+  }) {
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId: input.companyId,
+      issueId: input.issueId,
+      kind: input.kind ?? "request_confirmation",
+      status: input.status ?? "accepted",
+      continuationPolicy: input.continuationPolicy ?? "wake_assignee",
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: input.effectiveResolverPolicy ?? "anyone",
+      resolverPolicyProvenance: "explicit",
+      addresseeAgentId: input.addresseeAgentId ?? null,
+      addresseeUserId: null,
+      createdByAgentId: input.createdByAgentId ?? null,
+      resolvedByAgentId: input.resolvedByAgentId ?? null,
+      resolvedByRunId: input.resolvedByRunId ?? null,
+      sourceRunId: input.sourceRunId ?? null,
+      payload: {
+        version: 1,
+        prompt: "Independently verify the existing bounded coordination repair",
+        review: {
+          candidate: { workspaceKey: "recovery-repair", revision: "8cf1afb0743ca64a749d7e2bad2f1c5e2fe0e740" },
+          expectedModel: "openai-codex/gpt-5.6-sol",
+        },
+      },
+      result: { version: 1, outcome: "accepted" },
+      resolvedAt: input.resolvedAt === undefined ? new Date("2026-09-10T21:33:33.000Z") : input.resolvedAt,
+      createdAt: input.createdAt ?? new Date("2026-09-10T21:31:51.000Z"),
+      updatedAt: input.resolvedAt === undefined ? new Date("2026-09-10T21:33:33.000Z") : input.resolvedAt ?? input.createdAt ?? new Date("2026-09-10T21:31:51.000Z"),
+    });
+    return interactionId;
+  }
+
+  /** One queued continuation parked by prose while the durable review state is `seed`. */
+  async function seedParkedContinuationWithReview(input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    seed: (ctx: { companyId: string; agentId: string; issueId: string }) => Promise<void>;
+  }) {
+    await seedParkingContinuationSummary(input);
+    await input.seed({ companyId: input.companyId, agentId: input.agentId, issueId: input.issueId });
+    return await seedQueuedRun({
+      companyId: input.companyId,
+      agentId: input.agentId,
+      issueId: input.issueId,
+      wakeReason: "issue_continuation_needed",
+      invocationSource: "automation",
+      contextExtras: { retryReason: "issue_continuation_needed" },
+    });
+  }
+
+  // COD-204: accepted interaction c422c611 accepted at 21:33:33 by the addressed
+  // reviewer, then the 21:36 continuation was cancelled for the summary's
+  // pre-acceptance "wait for reviewer feedback" prose.
+  it("resumes the parked continuation when the current review was accepted by the addressed reviewer", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const reviewerAgentId = await seedReviewerAgent(companyId);
+    const issueId = await seedParkableIssue(companyId, agentId);
+    const reviewedRunId = await seedSucceededRun({ companyId, agentId, issueId });
+    const reviewerRunId = await seedSucceededRun({ companyId, agentId: reviewerAgentId, issueId });
+
+    const { runId } = await seedParkedContinuationWithReview({
+      companyId,
+      agentId,
+      issueId,
+      seed: async () => {
+        await seedReviewInteraction({
+          companyId,
+          issueId,
+          addresseeAgentId: reviewerAgentId,
+          createdByAgentId: agentId,
+          resolvedByAgentId: reviewerAgentId,
+          resolvedByRunId: reviewerRunId,
+          sourceRunId: reviewedRunId,
+        });
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => (await settledRun(runId))?.status === "succeeded");
+
+    const settled = await settledRun(runId);
+    expect(settled?.errorCode).not.toBe("issue_continuation_waiting_on_review");
+    expect(settled?.status).toBe("succeeded");
+    expect(countExecuteCallsForRun(runId)).toBe(1);
+
+    const [claimed] = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId));
+    expect(claimed?.contextSnapshot).toMatchObject({
+      acceptedReviewResume: {
+        source: "queued_run_staleness_gate",
+        resolverKind: "agent",
+        resolvedByAgentId: reviewerAgentId,
+      },
+    });
+  });
+
+  it("keeps parking the continuation while a pending review request supersedes the accepted one", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const reviewerAgentId = await seedReviewerAgent(companyId);
+    const issueId = await seedParkableIssue(companyId, agentId);
+    const reviewerRunId = await seedSucceededRun({ companyId, agentId: reviewerAgentId, issueId });
+
+    const { runId } = await seedParkedContinuationWithReview({
+      companyId,
+      agentId,
+      issueId,
+      seed: async () => {
+        await seedReviewInteraction({
+          companyId,
+          issueId,
+          addresseeAgentId: reviewerAgentId,
+          resolvedByAgentId: reviewerAgentId,
+          resolvedByRunId: reviewerRunId,
+          createdAt: new Date("2026-09-10T21:20:00.000Z"),
+          resolvedAt: new Date("2026-09-10T21:21:00.000Z"),
+        });
+        await seedReviewInteraction({
+          companyId,
+          issueId,
+          status: "pending",
+          addresseeAgentId: reviewerAgentId,
+          resolvedByAgentId: null,
+          resolvedAt: null,
+          createdAt: new Date("2026-09-10T21:35:00.000Z"),
+        });
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => (await settledRun(runId))?.status === "cancelled");
+
+    const settled = await settledRun(runId);
+    expect(settled?.status).toBe("cancelled");
+    expect(settled?.errorCode).toBe("issue_continuation_waiting_on_review");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("keeps parking when the newest review request ended non-accepted", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const reviewerAgentId = await seedReviewerAgent(companyId);
+    const issueId = await seedParkableIssue(companyId, agentId);
+    const reviewerRunId = await seedSucceededRun({ companyId, agentId: reviewerAgentId, issueId });
+
+    const { runId } = await seedParkedContinuationWithReview({
+      companyId,
+      agentId,
+      issueId,
+      seed: async () => {
+        await seedReviewInteraction({
+          companyId,
+          issueId,
+          addresseeAgentId: reviewerAgentId,
+          resolvedByAgentId: reviewerAgentId,
+          resolvedByRunId: reviewerRunId,
+          createdAt: new Date("2026-09-10T21:07:56.000Z"),
+          resolvedAt: new Date("2026-09-10T21:28:33.380Z"),
+          status: "expired",
+        });
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => (await settledRun(runId))?.status === "cancelled");
+
+    const settled = await settledRun(runId);
+    expect(settled?.status).toBe("cancelled");
+    expect(settled?.errorCode).toBe("issue_continuation_waiting_on_review");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("keeps parking when the acceptance did not come from the addressed reviewer", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const reviewerAgentId = await seedReviewerAgent(companyId);
+    const otherAgentId = await seedReviewerAgent(companyId);
+    const issueId = await seedParkableIssue(companyId, agentId);
+    const otherRunId = await seedSucceededRun({ companyId, agentId: otherAgentId, issueId });
+
+    const { runId } = await seedParkedContinuationWithReview({
+      companyId,
+      agentId,
+      issueId,
+      seed: async () => {
+        await seedReviewInteraction({
+          companyId,
+          issueId,
+          addresseeAgentId: reviewerAgentId,
+          resolvedByAgentId: otherAgentId,
+          resolvedByRunId: otherRunId,
+        });
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => (await settledRun(runId))?.status === "cancelled");
+
+    const settled = await settledRun(runId);
+    expect(settled?.status).toBe("cancelled");
+    expect(settled?.errorCode).toBe("issue_continuation_waiting_on_review");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("keeps parking when a run's own agent resolved the review of its own evidence", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = await seedParkableIssue(companyId, agentId);
+    const evidenceRunId = await seedSucceededRun({ companyId, agentId, issueId });
+    const selfResolveRunId = await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      at: new Date("2026-09-10T21:32:00.000Z"),
+    });
+
+    const { runId } = await seedParkedContinuationWithReview({
+      companyId,
+      agentId,
+      issueId,
+      seed: async () => {
+        await seedReviewInteraction({
+          companyId,
+          issueId,
+          createdByAgentId: agentId,
+          sourceRunId: evidenceRunId,
+          resolvedByAgentId: agentId,
+          resolvedByRunId: selfResolveRunId,
+        });
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => (await settledRun(runId))?.status === "cancelled");
+
+    const settled = await settledRun(runId);
+    expect(settled?.status).toBe("cancelled");
+    expect(settled?.errorCode).toBe("issue_continuation_waiting_on_review");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("keeps parking when a legacy self-addressed review was resolved by the evidence run's agent", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = await seedParkableIssue(companyId, agentId);
+    const evidenceRunId = await seedSucceededRun({ companyId, agentId, issueId });
+    const selfResolveRunId = await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      at: new Date("2026-09-10T21:32:00.000Z"),
+    });
+
+    const { runId } = await seedParkedContinuationWithReview({
+      companyId,
+      agentId,
+      issueId,
+      seed: async () => {
+        await seedReviewInteraction({
+          companyId,
+          issueId,
+          // Legacy row: the evidence run's own agent is also the addressee. The
+          // addressee match must not launder self-review into acceptance.
+          addresseeAgentId: agentId,
+          createdByAgentId: agentId,
+          sourceRunId: evidenceRunId,
+          resolvedByAgentId: agentId,
+          resolvedByRunId: selfResolveRunId,
+        });
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => (await settledRun(runId))?.status === "cancelled");
+
+    const settled = await settledRun(runId);
+    expect(settled?.status).toBe("cancelled");
+    expect(settled?.errorCode).toBe("issue_continuation_waiting_on_review");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("keeps parking while a linked approval is still pending", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const reviewerAgentId = await seedReviewerAgent(companyId);
+    const issueId = await seedParkableIssue(companyId, agentId);
+    const reviewerRunId = await seedSucceededRun({ companyId, agentId: reviewerAgentId, issueId });
+
+    const { runId } = await seedParkedContinuationWithReview({
+      companyId,
+      agentId,
+      issueId,
+      seed: async () => {
+        await seedReviewInteraction({
+          companyId,
+          issueId,
+          addresseeAgentId: reviewerAgentId,
+          resolvedByAgentId: reviewerAgentId,
+          resolvedByRunId: reviewerRunId,
+        });
+        const approvalId = randomUUID();
+        await db.insert(approvals).values({
+          id: approvalId,
+          companyId,
+          type: "issue_delivery",
+          status: "pending",
+          payload: { title: "Approve the delivery" },
+        });
+        await db.insert(issueApprovals).values({
+          companyId,
+          issueId,
+          approvalId,
+        });
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => (await settledRun(runId))?.status === "cancelled");
+
+    const settled = await settledRun(runId);
+    expect(settled?.status).toBe("cancelled");
+    expect(settled?.errorCode).toBe("issue_continuation_waiting_on_review");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("keeps parking when the resolver policy excludes the agent that resolved the review", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const reviewerAgentId = await seedReviewerAgent(companyId);
+    const issueId = await seedParkableIssue(companyId, agentId);
+    const reviewerRunId = await seedSucceededRun({ companyId, agentId: reviewerAgentId, issueId });
+
+    const { runId } = await seedParkedContinuationWithReview({
+      companyId,
+      agentId,
+      issueId,
+      seed: async () => {
+        await seedReviewInteraction({
+          companyId,
+          issueId,
+          effectiveResolverPolicy: "human_only",
+          addresseeAgentId: reviewerAgentId,
+          resolvedByAgentId: reviewerAgentId,
+          resolvedByRunId: reviewerRunId,
+        });
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForCondition(async () => (await settledRun(runId))?.status === "cancelled");
+
+    const settled = await settledRun(runId);
+    expect(settled?.status).toBe("cancelled");
+    expect(settled?.errorCode).toBe("issue_continuation_waiting_on_review");
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("does not dispatch a second continuation for the review acceptance that already resumed", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const reviewerAgentId = await seedReviewerAgent(companyId);
+    const issueId = await seedParkableIssue(companyId, agentId);
+    const interactionId = await seedReviewInteraction({
+      companyId,
+      issueId,
+      addresseeAgentId: reviewerAgentId,
+      resolvedByAgentId: reviewerAgentId,
+    });
+    await seedSucceededRun({
+      companyId,
+      agentId,
+      issueId,
+      at: new Date("2026-09-10T21:34:00.000Z"),
+      livenessState: null,
+      contextExtras: {
+        retryReason: "issue_continuation_needed",
+        acceptedReviewResume: {
+          interactionId,
+          source: "queued_run_staleness_gate",
+          resolvedAt: "2026-09-10T21:33:33.000Z",
+        },
+      },
+    });
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    const interactionWakes = await db
+      .select({ id: agentWakeupRequests.id, payload: agentWakeupRequests.payload })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.status, "queued"),
+      ));
+    expect(
+      interactionWakes.filter((wake) =>
+        (wake.payload as Record<string, unknown>)?.source === "issue.interaction_continuation_recovery",
+      ),
+    ).toHaveLength(0);
   });
 });

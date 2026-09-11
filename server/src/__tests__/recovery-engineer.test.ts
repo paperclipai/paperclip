@@ -314,6 +314,46 @@ describeEmbeddedPostgres("native recovery engineer", () => {
     expect(context.resumeGate.status).toBe("verification_required");
   });
 
+  it("routes a resolver crash to the configured recovery engineer instead of a human configuration gate", async () => {
+    const seeded = await seedCompany();
+    const sourceRun = await seedRun({
+      companyId: seeded.companyId,
+      agentId: seeded.ownerAgentId,
+      issueId: seeded.sourceIssueId,
+      status: "failed",
+      errorCode: "execution_resource_resolver_failed",
+      error: "execution resource resolver failed: 1 - stderr: cannot read canonical lane lock",
+    });
+    const recovery = recoveryEngineerService(db, {
+      enqueueWakeup: async (agentId, options) => {
+        const issueId = options.contextSnapshot?.issueId;
+        if (typeof issueId !== "string") throw new Error("Expected recovery wake issueId");
+        return seedRun({ companyId: seeded.companyId, agentId, issueId, status: "queued" });
+      },
+    });
+
+    await expect(recovery.observeRunTerminal(sourceRun)).resolves.toMatchObject({
+      observed: true,
+      duplicate: false,
+    });
+    const incident = await db.select().from(recoveryEngineerIncidents)
+      .where(eq(recoveryEngineerIncidents.companyId, seeded.companyId))
+      .then((rows) => rows[0]!);
+    const diagnosisRun = await db.select().from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, incident.diagnosisRunId!))
+      .then((rows) => rows[0]!);
+    expect(incident.status).toBe("diagnosing");
+    expect(diagnosisRun).toMatchObject({
+      agentId: seeded.recoveryAgentId,
+      nativeIssueId: incident.maintenanceIssueId,
+      status: "queued",
+    });
+    const sourceIssue = await db.select().from(issues)
+      .where(eq(issues.id, seeded.sourceIssueId))
+      .then((rows) => rows[0]!);
+    expect(sourceIssue.assigneeAgentId).toBe(seeded.ownerAgentId);
+  });
+
   it("deduplicates repeated terminal events and escalates its own failed diagnosis once", async () => {
     const seeded = await seedCompany();
     const sourceRun = await seedRun({

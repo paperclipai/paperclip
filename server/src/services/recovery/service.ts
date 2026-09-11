@@ -78,6 +78,10 @@ import {
   DISPOSITION_REPAIR_MAX_ATTEMPTS,
 } from "./disposition-repair.js";
 import {
+  isCurrentAuthoritativeResolution,
+  readReviewWaitState,
+} from "./review-wait-state.js";
+import {
   buildRunnerTimeoutContinuationIdempotencyKey,
   decideRunnerTimeoutContinuation,
   findExistingRunnerTimeoutContinuationWake,
@@ -934,11 +938,25 @@ export function recoveryService(
         kind: issueThreadInteractions.kind,
         status: issueThreadInteractions.status,
         continuationPolicy: issueThreadInteractions.continuationPolicy,
+        requestedResolverPolicy: issueThreadInteractions.requestedResolverPolicy,
+        effectiveResolverPolicy: issueThreadInteractions.effectiveResolverPolicy,
+        resolverPolicyProvenance: issueThreadInteractions.resolverPolicyProvenance,
+        addresseeAgentId: issueThreadInteractions.addresseeAgentId,
+        addresseeUserId: issueThreadInteractions.addresseeUserId,
+        createdByAgentId: issueThreadInteractions.createdByAgentId,
+        createdByUserId: issueThreadInteractions.createdByUserId,
+        resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
+        resolvedByUserId: issueThreadInteractions.resolvedByUserId,
+        resolvedByRunId: issueThreadInteractions.resolvedByRunId,
         sourceRunId: issueThreadInteractions.sourceRunId,
+        sourceRunAgentId: heartbeatRuns.agentId,
+        payload: issueThreadInteractions.payload,
         resolvedAt: issueThreadInteractions.resolvedAt,
+        createdAt: issueThreadInteractions.createdAt,
         updatedAt: issueThreadInteractions.updatedAt,
       })
       .from(issueThreadInteractions)
+      .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, issueThreadInteractions.sourceRunId))
       .where(
         and(
           eq(issueThreadInteractions.companyId, companyId),
@@ -969,7 +987,7 @@ export function recoveryService(
           eq(heartbeatRuns.status, "succeeded"),
           sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
           interactionId
-            ? sql`${heartbeatRuns.contextSnapshot} ->> 'interactionId' = ${interactionId}`
+            ? sql`(${heartbeatRuns.contextSnapshot} ->> 'interactionId' = ${interactionId} or ${heartbeatRuns.contextSnapshot} -> 'acceptedReviewResume' ->> 'interactionId' = ${interactionId})`
             : sql`true`,
           or(gte(heartbeatRuns.createdAt, since), gte(heartbeatRuns.finishedAt, since)),
         ),
@@ -3124,7 +3142,35 @@ export function recoveryService(
         }
       }
 
-      const acceptedContinuationInteraction = await getLatestAcceptedContinuationInteraction(issue.companyId, issue.id);
+      const latestAcceptedContinuationInteraction = await getLatestAcceptedContinuationInteraction(issue.companyId, issue.id);
+      // Exact-actor/current-head admissibility: an accepted review a newer
+      // review request superseded, or one whose recorded resolver was not the
+      // addressed and authorized actor, is history rather than a live
+      // continuation lineage. Question/suggestion interactions only need the
+      // authoritative resolver.
+      const reviewWaitState = latestAcceptedContinuationInteraction
+        ? await readReviewWaitState(db, { companyId: issue.companyId, issueId: issue.id })
+        : null;
+      const acceptedContinuationAdmissibility =
+        latestAcceptedContinuationInteraction && reviewWaitState
+          ? isCurrentAuthoritativeResolution(latestAcceptedContinuationInteraction, reviewWaitState)
+          : null;
+      if (acceptedContinuationAdmissibility && !acceptedContinuationAdmissibility.admissible) {
+        logger.info(
+          {
+            event: "accepted_interaction_continuation_inadmissible",
+            issueId: issue.id,
+            interactionId: latestAcceptedContinuationInteraction!.id,
+            interactionKind: latestAcceptedContinuationInteraction!.kind,
+            reviewWaitState: reviewWaitState!.kind,
+            reason: acceptedContinuationAdmissibility.reason,
+          },
+          "accepted interaction is not the current authoritative resolution; not resuming from it",
+        );
+      }
+      const acceptedContinuationInteraction = acceptedContinuationAdmissibility?.admissible
+        ? latestAcceptedContinuationInteraction
+        : null;
       const acceptedInteractionResolvedAt = acceptedContinuationInteraction
         ? acceptedContinuationInteraction.resolvedAt ?? acceptedContinuationInteraction.updatedAt
         : null;

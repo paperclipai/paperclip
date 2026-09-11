@@ -30,6 +30,7 @@ import {
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { NATIVE_WRITER_ROOT_BUSY_REASON_CODE } from "../services/execution-resource-admission.ts";
 import {
+  EXECUTION_RESOURCE_RESOLVER_FAILED_CODE,
   WORKSPACE_BUSY_ERROR_CODE,
   WORKSPACE_BUSY_RETRY_REASON,
   heartbeatService,
@@ -277,6 +278,26 @@ process.exit(0);
     );
     expect(run).not.toBeNull();
     return await waitForRunToLeaveActiveStates(run!.id);
+  }
+
+  /** The durable continuation the failed-run recovery queues for the issue. */
+  async function waitForRecoveryContinuationRun(issueId: string, timeoutMs = 5_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const run = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(and(
+          inArray(heartbeatRuns.status, ["queued", "scheduled_retry", "running"]),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+        ))
+        .orderBy(desc(heartbeatRuns.createdAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (run) return run;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return null;
   }
 
   /**
@@ -686,5 +707,151 @@ process.exit(0);
     ).toMatchObject({ reasonCode: NATIVE_WRITER_ROOT_BUSY_REASON_CODE });
     const writerRun = await invokeRun(writer.agentId, writer.issueId);
     expect(writerRun?.status).toBe("cancelled");
+  });
+
+  /**
+   * The three configuration_incomplete runs in the window carried
+   * missingBindings: [] with reason execution_resource_resolver_failed: the
+   * resolver subprocess exited 1. That is a technical execution failure, not a
+   * missing setting, so it must stay fail-closed without becoming a human
+   * configuration gate.
+   */
+  it("classifies a resolver subprocess failure as technical, preserving sanitized diagnostics and the issue owner", async () => {
+    const companyId = await seedCompany();
+    const leakedSecret = "resolver-secret-value-0123456789abcdef";
+    const failingResolver = await writeScript("resolver-exits-nonzero.mjs", `
+process.stderr.write("resolve-execution-resource: cannot read canonical lane lock\\n");
+process.stderr.write(${JSON.stringify(`{"apiKey": "${leakedSecret}"}\n`)});
+process.exit(1);
+`);
+    const startedFile = path.join(fixtureDir, "resolver-failure-started.txt");
+    await fs.rm(startedFile, { force: true });
+    const worker = await writeScript("resolver-failure-worker.mjs", `
+import { writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(startedFile)}, '');
+process.exit(0);
+`);
+    const { agentId, issueId } = await seedAgentAndIssue({
+      companyId,
+      agentName: "ResolverFailureWorker",
+      adapterConfig: {
+        command: process.execPath,
+        args: [worker],
+        cwd: fixtureDir,
+        timeoutSec: 30,
+        graceSec: 5,
+        executionResourceResolver: {
+          command: process.execPath,
+          entry: failingResolver,
+          template: failingResolver,
+        },
+      },
+    });
+    const run = await heartbeat.invoke(
+      agentId,
+      "assignment",
+      { issueId, wakeReason: "issue_assigned" },
+      "system",
+    );
+    expect(run).not.toBeNull();
+    const settled = await waitForRunToLeaveActiveStates(run!.id);
+
+    // Fail-closed: the adapter body never started, so the marker it would have
+    // written is absent.
+    const workerStarted = await fs
+      .stat(startedFile)
+      .then(() => true)
+      .catch(() => false);
+    expect(workerStarted).toBe(false);
+
+    // Fail-closed, but classified as a technical execution failure with its own
+    // code: no human configuration gate, no adapter/model work.
+    expect(settled?.status).toBe("failed");
+    expect(settled?.errorCode).toBe(EXECUTION_RESOURCE_RESOLVER_FAILED_CODE);
+    expect(settled?.errorCode).not.toBe("configuration_incomplete");
+    expect(settled?.resultJson ?? {}).not.toHaveProperty("configurationIncomplete");
+    expect(settled?.resultJson).toMatchObject({
+      executionResourceResolverFailure: {
+        reason: "execution_resource_resolver_failed",
+        failureReason: "nonzero_exit",
+        exitCode: 1,
+      },
+    });
+    expect(settled?.error).toContain("execution resource resolver failed");
+    expect(settled?.error).toContain("cannot read canonical lane lock");
+
+    // The issue owner is preserved so the existing recovery path can act.
+    const issue = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId, status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toEqual({ assigneeAgentId: agentId, status: "in_progress" });
+
+    // Durable next actor: the existing failed-run recovery queues one bounded
+    // continuation for this issue and owns its execution lock.
+    const recoveryRun = await waitForRecoveryContinuationRun(issueId);
+    expect(recoveryRun).not.toBeNull();
+    expect(recoveryRun?.contextSnapshot).toMatchObject({
+      retryReason: "issue_continuation_needed",
+      source: "issue.continuation_recovery",
+    });
+    const lockedIssue = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(lockedIssue?.executionRunId).toBe(recoveryRun?.id);
+
+    // The bounded stderr excerpt survives for diagnosis, without the secret.
+    const events = await heartbeat.listEvents(run!.id, 0, 200);
+    const failureEvent = events.find((event) =>
+      typeof event.message === "string" && event.message.includes("Canonical writer-root resolver failed"),
+    );
+    expect(failureEvent).toBeTruthy();
+    const failureEvidence = JSON.stringify(failureEvent);
+    expect(failureEvidence).toContain("cannot read canonical lane lock");
+    expect(failureEvidence).not.toContain(leakedSecret);
+    expect(settled?.error).not.toContain(leakedSecret);
+    expect(JSON.stringify(settled?.resultJson ?? {})).not.toContain(leakedSecret);
+  });
+
+  it("keeps a resolver scope gap (no project identity) as a human configuration gate", async () => {
+    const companyId = await seedCompany();
+    const resolver = await writeResolver("resolver-scope-gap.mjs", {
+      access: "exclusive",
+      writerRootKey: ROOT_KEY,
+    });
+    const worker = await writeScript("resolver-scope-gap-worker.mjs", "process.exit(0);\n");
+    const { agentId, issueId } = await seedAgentAndIssue({
+      companyId,
+      agentName: "ResolverScopeGap",
+      adapterConfig: {
+        command: process.execPath,
+        args: [worker],
+        cwd: fixtureDir,
+        timeoutSec: 30,
+        graceSec: 5,
+        executionResourceResolver: {
+          command: process.execPath,
+          entry: resolver,
+          template: resolver,
+        },
+      },
+    });
+    // The operator's own scope is incomplete: no project identity to resolve a
+    // canonical lane for. That stays a configuration verdict for a human owner.
+    await db.update(issues).set({ projectId: null }).where(eq(issues.id, issueId));
+
+    const settled = await invokeRun(agentId, issueId);
+
+    expect(settled?.status).toBe("failed");
+    expect(settled?.errorCode).toBe("configuration_incomplete");
+    expect(settled?.resultJson).toMatchObject({
+      configurationIncomplete: {
+        reason: "execution_resource_resolver_scope_incomplete",
+        missingBindings: ["projectId"],
+      },
+    });
   });
 });

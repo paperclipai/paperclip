@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -20,6 +20,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueRelations,
+  issueThreadInteractions,
   issues,
   projects,
   projectWorkspaces,
@@ -865,5 +866,184 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
 
     const holderRun = await heartbeat.getRun(fixture.holderRunId);
     expect(holderRun?.status).toBe("running");
+  });
+
+  async function countRunsForIssue(companyId: string, issueId: string) {
+    const rows = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+      ));
+    return rows.length;
+  }
+
+  /**
+   * The 107-run deferral storm in the window: each cycle cancelled a run and
+   * created another, so one live holder produced a 33-run ladder per issue.
+   * A wait that carries its resource identity must instead stay a single entry
+   * in the durable admission queue.
+   */
+  it("keeps a due workspace-busy wait unpromoted while its holder is still live", async () => {
+    const fixture = await seedWorkspaceFixture();
+    const run = await heartbeat.invoke(
+      fixture.agentId,
+      "assignment",
+      { issueId: fixture.issueId, wakeReason: "issue_assigned" },
+      "system",
+    );
+    expect(run).not.toBeNull();
+    await waitForRunToLeaveActiveStates(run!.id);
+    const retryRun = await waitForRetryRun(run!.id);
+    expect(retryRun?.status).toBe("scheduled_retry");
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      workspaceBusyWait: {
+        resourceKey: `project-workspace:${fixture.projectWorkspaceId}`,
+        deferrals: 1,
+      },
+    });
+    const runsBefore = await countRunsForIssue(fixture.companyId, fixture.issueId);
+
+    const afterDue = new Date(new Date(retryRun!.scheduledRetryAt!).getTime() + 1_000);
+    const promotion = await heartbeat.promoteDueScheduledRetries(afterDue);
+    expect(promotion.runIds).not.toContain(retryRun!.id);
+
+    const stillWaiting = await heartbeat.getRun(retryRun!.id);
+    expect(stillWaiting?.status).toBe("scheduled_retry");
+    expect(new Date(stillWaiting!.scheduledRetryAt!).getTime()).toBeGreaterThan(afterDue.getTime());
+    expect(await countRunsForIssue(fixture.companyId, fixture.issueId)).toBe(runsBefore);
+    // The live holder was neither disturbed nor evicted.
+    expect((await heartbeat.getRun(fixture.holderRunId))?.status).toBe("running");
+  });
+
+  it("re-arms a workspace-busy wait in place when dispatch meets the same contention", async () => {
+    const fixture = await seedWorkspaceFixture();
+    const run = await heartbeat.invoke(
+      fixture.agentId,
+      "assignment",
+      { issueId: fixture.issueId, wakeReason: "issue_assigned" },
+      "system",
+    );
+    expect(run).not.toBeNull();
+    await waitForRunToLeaveActiveStates(run!.id);
+    const retryRun = await waitForRetryRun(run!.id);
+    const runsBefore = await countRunsForIssue(fixture.companyId, fixture.issueId);
+
+    // Promotion race: the wait became claimable while the holder is still live.
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "queued" })
+      .where(eq(heartbeatRuns.id, retryRun!.id));
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToLeaveActiveStates(retryRun!.id);
+
+    const rearmed = await heartbeat.getRun(retryRun!.id);
+    expect(rearmed?.status).toBe("scheduled_retry");
+    expect(rearmed?.errorCode).toBeNull();
+    expect(rearmed?.contextSnapshot).toMatchObject({
+      workspaceBusyWait: { deferrals: 2 },
+    });
+    // Same row, same queue entry: no cancelled run, no chained retry row.
+    expect(await countRunsForIssue(fixture.companyId, fixture.issueId)).toBe(runsBefore);
+    if (retryRun!.wakeupRequestId) {
+      const wakeup = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, retryRun!.wakeupRequestId))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeup?.status).toBe("queued");
+    }
+    expect(executedRunIds).not.toContain(retryRun!.id);
+  });
+
+  /**
+   * de69578a: a workspace_busy retry of an addressed review wake lost the
+   * `interaction_pending` reason and fell into the plain owner check, so the
+   * deferred reviewer wake was refused instead of replayed.
+   *
+   * The wake is raised through the real production surface (`heartbeat.wakeup`
+   * with the payload the interaction-creation route sends), not a seeded row.
+   * `enrichWakeContextSnapshot` keeps interaction authority in the run context
+   * only for `payload.mutation === "interaction"` or a pending
+   * `interaction_pending` reason, and the claim path needs that context before
+   * it admits the addressed non-assignee run.
+   */
+  it("preserves an addressed interaction wake across a workspace-busy deferral", async () => {
+    const fixture = await seedWorkspaceFixture();
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId: fixture.companyId,
+      issueId: fixture.issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: fixture.agentId,
+      addresseeAgentId: fixture.nonAssigneeAgentId,
+      effectiveResolverPolicy: "anyone",
+      payload: { version: 1, prompt: "Review the published head" },
+    });
+
+    const run = await heartbeat.wakeup(fixture.nonAssigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "interaction_pending",
+      payload: {
+        issueId: fixture.issueId,
+        interactionId,
+        interactionKind: "request_confirmation",
+        sourceCommentId: null,
+        sourceRunId: null,
+        mutation: "interaction",
+      },
+      idempotencyKey: `interaction-pending:${interactionId}`,
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: {
+        issueId: fixture.issueId,
+        taskId: fixture.issueId,
+        interactionId,
+        interactionKind: "request_confirmation",
+        sourceCommentId: null,
+        sourceRunId: null,
+        wakeReason: "interaction_pending",
+        source: "issue.interaction.created",
+      },
+    });
+    expect(run).not.toBeNull();
+    const deferred = await waitForRunToLeaveActiveStates(run!.id);
+    expect(deferred?.status).toBe("cancelled");
+    expect(deferred?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
+    // The enqueue path kept the interaction authority the claim path re-verifies.
+    expect(deferred?.contextSnapshot).toMatchObject({
+      wakeReason: "interaction_pending",
+      interactionId,
+    });
+
+    const retryRun = await waitForRetryRun(run!.id);
+    expect(retryRun?.scheduledRetryReason).toBe(WORKSPACE_BUSY_RETRY_REASON);
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      wakeReason: "interaction_pending",
+      interactionId,
+      workspaceBusyDeferredWhileAssignee: false,
+    });
+
+    // Holder finishes; the deferred reviewer wake must execute rather than be
+    // cancelled for the assignee mismatch the interaction wake exists to bypass.
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, fixture.holderRunId));
+
+    const afterDue = new Date(new Date(retryRun!.scheduledRetryAt!).getTime() + 1_000);
+    const promotion = await heartbeat.promoteDueScheduledRetries(afterDue);
+    expect(promotion.runIds).toContain(retryRun!.id);
+
+    await heartbeat.resumeQueuedRuns();
+    const finishedRetry = await waitForRunToLeaveActiveStates(retryRun!.id);
+    expect(finishedRetry?.status).toBe("succeeded");
+    expect(finishedRetry?.errorCode).not.toBe("issue_assignee_changed");
+    expect(executedRunIds).toContain(retryRun!.id);
   });
 });

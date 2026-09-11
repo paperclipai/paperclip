@@ -375,9 +375,12 @@ import {
   NATIVE_WRITER_ROOT_BUSY_REASON_CODE,
   RUNNER_RESOURCE_WAIT_ERROR_CODE,
   admitCanonicalWriterRoot,
+  findCanonicalWriterRootHolder,
+  isWriterRootWaitKey,
   readExecutionResourceResolverConfig,
   readRunnerResourceWait,
   resolveExecutionWriterResourceReceipt,
+  ExecutionResourceResolverError,
   type ExecutionWriterResourceReceipt,
   type WriterRootWaitEvidence,
 } from "./execution-resource-admission.js";
@@ -394,6 +397,11 @@ import {
   REVIEW_PATH_RECOVERY_INSTRUCTION,
   reviewPathConsumedRefFromRun,
 } from "./recovery/review-path-recovery.js";
+import {
+  buildAcceptedReviewResume,
+  readReviewWaitState,
+  type AcceptedReviewResume,
+} from "./recovery/review-wait-state.js";
 import { getNativeDeliveryWait } from "./delivery/native-delivery-wait.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
@@ -766,6 +774,26 @@ export class ConfigurationIncompleteFailure extends Error {
   }
 }
 
+/** The operator-configured writer-root resolver could not prove a lane for this
+ * run (subprocess failure, timeout, or an unreadable receipt). Fail-closed, but
+ * a TECHNICAL execution failure rather than a missing setting: it carries its own
+ * error code and a stable reason so recovery consumes exactly this class
+ * instead of every unknown setup fault, and no human configuration gate is
+ * implied. Only the operator's missing scope (no project identity) is a
+ * configuration verdict. */
+export const EXECUTION_RESOURCE_RESOLVER_FAILED_CODE = "execution_resource_resolver_failed";
+
+export class ExecutionResourceResolverFailure extends Error {
+  code = EXECUTION_RESOURCE_RESOLVER_FAILED_CODE;
+  resultJson: Record<string, unknown>;
+
+  constructor(message: string, resultJson: Record<string, unknown>) {
+    super(message);
+    this.name = "ExecutionResourceResolverFailure";
+    this.resultJson = resultJson;
+  }
+}
+
 // Build the configuration-incomplete result payload for a workspace base ref
 // that never resolved to a commit. The setup catch maps this to errorCode
 // `configuration_incomplete`, so the recovery path routes it to a human owner
@@ -820,12 +848,19 @@ export class WorkspaceBusyDeferral extends Error {
   projectWorkspaceId: string | null;
   deferralAttempt: number;
   wasIssueAssignee: boolean;
+  /** The canonical root this run asked for, when native admission knew it. It is
+   * what lets a repeated refusal wait on the same queue instead of chaining a new
+   * run per cycle. */
+  requestedWriterRootKey: string | null;
+  requestedAccess: string | null;
 
   constructor(
     input: {
       projectWorkspaceId: string | null;
       deferralAttempt: number;
       wasIssueAssignee: boolean;
+      requestedWriterRootKey?: string | null;
+      requestedAccess?: string | null;
     } & (
       | { holder: SharedWorkspaceHolder; resourceWait?: never }
       | { resourceWait: WriterRootWaitEvidence; holder?: never }
@@ -848,6 +883,8 @@ export class WorkspaceBusyDeferral extends Error {
     this.projectWorkspaceId = input.projectWorkspaceId;
     this.deferralAttempt = input.deferralAttempt;
     this.wasIssueAssignee = input.wasIssueAssignee;
+    this.requestedWriterRootKey = input.requestedWriterRootKey ?? null;
+    this.requestedAccess = input.requestedAccess ?? null;
   }
 }
 
@@ -2549,6 +2586,12 @@ function isConfigurationIncompleteFailure(
   error: unknown,
 ): error is ConfigurationIncompleteFailure {
   return error instanceof ConfigurationIncompleteFailure;
+}
+
+function isExecutionResourceResolverFailure(
+  error: unknown,
+): error is ExecutionResourceResolverFailure {
+  return error instanceof ExecutionResourceResolverFailure;
 }
 
 export function isConfigurationIncompleteFailedRun(
@@ -6830,6 +6873,13 @@ function normalizeInteractionContinuationWakeContext(
   payload: Record<string, unknown> | null | undefined,
 ) {
   if (isInteractionResolutionWakePayload(payload)) return;
+  // A pending addressed-interaction wake carries its authority in the context:
+  // the claim path re-verifies `interactionId` against the persisted
+  // interaction and the canonical audience before it lets a non-assignee run.
+  // Clearing it here silently downgraded such a wake to an assignee wake, so a
+  // deferred reviewer wake died as `issue_assignee_changed`. Preserving the
+  // context grants nothing by itself; the persisted-row check still decides.
+  if (readNonEmptyString(contextSnapshot["wakeReason"]) === "interaction_pending") return;
   clearInteractionContinuationWakeContext(contextSnapshot);
 }
 
@@ -11110,6 +11160,17 @@ export function heartbeatService(
       });
       publishRunLifecyclePluginEvent(updated);
       emitTerminalAgentTaskRun(updated, previousStatus);
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        // A run that held a canonical writer root releases its durable waiters
+        // the moment it leaves `running`: the wait ends on the holder's own
+        // lifecycle instead of on the next poll interval.
+        await releaseWorkspaceBusyWaiters(updated).catch((releaseErr) => {
+          logger.warn(
+            { err: releaseErr, runId: updated.id },
+            "failed to release workspace-busy waiters after a run left running",
+          );
+        });
+      }
       return { run: updated, updated: true as const };
     }
 
@@ -13996,6 +14057,16 @@ export function heartbeatService(
       }
     }
 
+    // A durable workspace-busy wait is promoted only when its resource is
+    // actually free. Re-checking here (not at dispatch) keeps a still-held wait
+    // out of the claim path entirely: no claim, no cancel, no notice, and the
+    // holder is never disturbed.
+    const workspaceWait = readWorkspaceBusyWait(contextSnapshot);
+    if (workspaceWait && (await workspaceBusyHolderStillLive(dueRun, workspaceWait, now))) {
+      const extended = await extendWorkspaceBusyWaitAtPromotion(dueRun, workspaceWait, now);
+      return { outcome: "not_promoted", run: extended ?? dueRun };
+    }
+
     const promoted = await db
       .update(heartbeatRuns)
       .set({
@@ -14051,6 +14122,15 @@ export function heartbeatService(
       random?: () => number;
       retryReason?: string;
       wakeReason?: string;
+      /**
+       * Interaction wake reasons are authority the claim path re-verifies from
+       * the run's own context (`interaction_pending` addressee wakes, verified
+       * tree-control interaction wakes). A retry that overwrites the reason
+       * downgrades the run to a plain assignee wake, so the retried wake is
+       * refused by the owner check instead of being replayed. Keep the original
+       * reason in the retry context; the retryReason still records the deferral.
+       */
+      preservedWakeReason?: string | null;
       maxAttempts?: number;
       delayMs?: number;
     },
@@ -14242,7 +14322,7 @@ export function heartbeatService(
       {
         ...contextSnapshot,
         retryOfRunId: run.id,
-        wakeReason,
+        wakeReason: opts?.preservedWakeReason ?? wakeReason,
         retryReason,
         ...(shouldQuarantineWorkspaceForRetry
           ? {
@@ -14915,6 +14995,297 @@ export function heartbeatService(
       .then((rows) => rows[0] ?? null);
   }
 
+  // -- Durable workspace-busy waits ---------------------------------------
+  //
+  // Contention is a wait, not a failure. The first refusal for a resource
+  // establishes a durable wait entry (the run row itself, parked as a scheduled
+  // retry) instead of chaining one cancelled run per retry cycle. Every later
+  // refusal for the same resource re-arms that same entry in place, the
+  // promotion gate re-checks the holder before a wait is promoted, and a holder
+  // leaving `running` releases its waiters immediately. Nothing kills a genuine
+  // holder and nothing caps elapsed wait time: the wait ends exactly when the
+  // resource's live holder does.
+  const PROJECT_WORKSPACE_WAIT_KEY_PREFIX = "project-workspace:";
+
+  function workspaceBusyWaitResourceKey(deferral: WorkspaceBusyDeferral) {
+    // A canonical root wait is keyed by the receipt's own root key; one root is
+    // one queue, so every waiter on it coalesces onto the same entry.
+    if (isWriterRootWaitKey(deferral.requestedWriterRootKey)) {
+      return deferral.requestedWriterRootKey;
+    }
+    return deferral.projectWorkspaceId
+      ? `${PROJECT_WORKSPACE_WAIT_KEY_PREFIX}${deferral.projectWorkspaceId}`
+      : null;
+  }
+
+  function readWorkspaceBusyWait(context: Record<string, unknown>) {
+    const wait = parseObject(context.workspaceBusyWait);
+    const resourceKey = readNonEmptyString(wait.resourceKey);
+    if (!resourceKey) return null;
+    const deferrals = Number(wait.deferrals);
+    const promotionWaits = Number(wait.promotionWaits);
+    return {
+      resourceKey,
+      writerRootKey: readNonEmptyString(wait.writerRootKey),
+      access: readNonEmptyString(wait.access),
+      holderRunId: readNonEmptyString(wait.holderRunId),
+      holderIssueId: readNonEmptyString(wait.holderIssueId),
+      projectWorkspaceId: readNonEmptyString(wait.projectWorkspaceId),
+      issueId: readNonEmptyString(wait.issueId),
+      since: readNonEmptyString(wait.since),
+      dueAt: readNonEmptyString(wait.dueAt),
+      deferrals: Number.isSafeInteger(deferrals) && deferrals > 0 ? deferrals : 0,
+      promotionWaits:
+        Number.isSafeInteger(promotionWaits) && promotionWaits > 0
+          ? promotionWaits
+          : 0,
+    };
+  }
+
+  /** The same liveness rule the admission gate uses: a holder is released by the
+   * run lifecycle, never by its age, so a wait never overtakes a live holder and
+   * never waits on a row that already left `running`. */
+  async function workspaceBusyHolderStillLive(
+    run: typeof heartbeatRuns.$inferSelect,
+    wait: NonNullable<ReturnType<typeof readWorkspaceBusyWait>>,
+    now = new Date(),
+  ) {
+    if (isWriterRootWaitKey(wait.resourceKey)) {
+      // The persisted request decides compatibility: a reader waits only for a
+      // writer, never for another reader the admission would have admitted.
+      const requestedAccess =
+        wait.access === EXECUTION_WRITER_RESOURCE_ACCESS.readOnly
+          ? EXECUTION_WRITER_RESOURCE_ACCESS.readOnly
+          : EXECUTION_WRITER_RESOURCE_ACCESS.exclusive;
+      const holder = await findCanonicalWriterRootHolder(db, {
+        writerRootKey: wait.resourceKey,
+        requestedAccess,
+        excludeRunId: run.id,
+      });
+      return Boolean(holder);
+    }
+    if (wait.projectWorkspaceId) {
+      const experimentalSettings = await instanceSettings.getExperimental();
+      const holder = await findSharedWorkspaceHolder({
+        companyId: run.companyId,
+        projectWorkspaceId: wait.projectWorkspaceId,
+        excludeIssueId: wait.issueId ?? "",
+        excludeRunId: run.id,
+        honorIsolatedWorkspaceModes: experimentalSettings.enableIsolatedWorkspaces,
+        now,
+      });
+      return Boolean(holder);
+    }
+    return false;
+  }
+
+  function buildWorkspaceBusyWait(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    deferral: WorkspaceBusyDeferral;
+    busyEvidence: Record<string, unknown>;
+    previous: ReturnType<typeof readWorkspaceBusyWait>;
+    dueAt: Date;
+    now: Date;
+  }) {
+    const resourceKey = workspaceBusyWaitResourceKey(input.deferral);
+    if (!resourceKey) return null;
+    // Only the native admission evidence names the holder run; a contained
+    // runner's refusal envelope names a container instead.
+    const nativeWait =
+      input.deferral.resourceWait?.reasonCode === NATIVE_WRITER_ROOT_BUSY_REASON_CODE
+        ? input.deferral.resourceWait
+        : null;
+    return {
+      resourceKey,
+      writerRootKey: input.deferral.requestedWriterRootKey,
+      access: input.deferral.requestedAccess,
+      source: input.busyEvidence.source ?? null,
+      holderRunId:
+        input.deferral.holder?.runId ??
+        nativeWait?.holderRunId ??
+        input.previous?.holderRunId ??
+        null,
+      holderIssueId:
+        input.deferral.holder?.issueId ??
+        nativeWait?.holderIssueId ??
+        input.previous?.holderIssueId ??
+        null,
+      projectWorkspaceId: input.deferral.projectWorkspaceId,
+      issueId:
+        readNonEmptyString(parseObject(input.run.contextSnapshot).issueId),
+      since: input.previous?.since ?? input.now.toISOString(),
+      dueAt: input.dueAt.toISOString(),
+      deferrals: (input.previous?.deferrals ?? 0) + 1,
+      promotionWaits: input.previous?.promotionWaits ?? 0,
+    };
+  }
+
+  /** Re-arm the run that is already waiting for this resource: same row, same
+   * queue position, no cancel, no new run, no notice. */
+  async function rearmWorkspaceBusyWaitRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    deferral: WorkspaceBusyDeferral,
+    wait: NonNullable<ReturnType<typeof readWorkspaceBusyWait>>,
+    busyEvidence: Record<string, unknown>,
+  ) {
+    const now = new Date();
+    const dueAt = new Date(now.getTime() + computeWorkspaceBusyRetryDelayMs());
+    const write = await setRunStatusIfRunning(run.id, "scheduled_retry", {
+      error: null,
+      errorCode: null,
+      finishedAt: null,
+      scheduledRetryAt: dueAt,
+      scheduledRetryReason: WORKSPACE_BUSY_RETRY_REASON,
+      resultJson: {
+        ...parseObject(run.resultJson),
+        workspaceBusy: {
+          ...busyEvidence,
+          deferralAttempt: deferral.deferralAttempt,
+          rearmedInPlace: true,
+          wait: { ...wait, dueAt: dueAt.toISOString() },
+        },
+      },
+      contextSnapshot: {
+        ...parseObject(run.contextSnapshot),
+        workspaceBusyWait: { ...wait, dueAt: dueAt.toISOString() },
+      },
+    });
+    if (!write.updated) {
+      logger.info(
+        { runId: run.id, currentStatus: write.run?.status ?? null },
+        "skipping workspace-busy re-arm because the run already left running state",
+      );
+      return null;
+    }
+    // The attempt is over without being terminal, so the in-memory "what is this
+    // run doing right now" status must not outlive it.
+    clearHeartbeatRunRuntimeStatus(run.id);
+    if (run.wakeupRequestId) {
+      // The wake belongs to this same waiting run, so it goes back to the queued
+      // pool instead of being cancelled and re-created. Clearing the claim keeps
+      // the claim-time wake checks able to adopt it again after promotion.
+      await db
+        .update(agentWakeupRequests)
+        .set({
+          status: "queued",
+          claimedAt: null,
+          finishedAt: null,
+          error: null,
+          updatedAt: now,
+        })
+        .where(eq(agentWakeupRequests.id, run.wakeupRequestId))
+        .catch((wakeErr) => {
+          logger.warn(
+            { err: wakeErr, runId: run.id, wakeupRequestId: run.wakeupRequestId },
+            "failed to requeue the wake of a re-armed workspace-busy wait",
+          );
+        });
+    }
+    await appendRunEvent(write.run, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: `Still waiting for ${wait.resourceKey}: ${deferral.message}. Wait ${wait.deferrals} re-armed in place; no new run was created.`,
+      payload: {
+        ...busyEvidence,
+        resourceKey: wait.resourceKey,
+        deferrals: wait.deferrals,
+        rearmedInPlace: true,
+      },
+    }).catch(() => undefined);
+    return write.run;
+  }
+
+  /** Extend a queued wait that is due but whose resource is still held. The
+   * caller's clock is authoritative: the same `now` that decided the wait was
+   * due must decide when it becomes due again, so a tester-supplied schedule
+   * clock and the real clock can never disagree. */
+  async function extendWorkspaceBusyWaitAtPromotion(
+    run: typeof heartbeatRuns.$inferSelect,
+    wait: NonNullable<ReturnType<typeof readWorkspaceBusyWait>>,
+    now: Date,
+  ) {
+    const dueAt = new Date(now.getTime() + computeWorkspaceBusyRetryDelayMs());
+    const nextWait = {
+      ...wait,
+      dueAt: dueAt.toISOString(),
+      promotionWaits: wait.promotionWaits + 1,
+    };
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({
+        scheduledRetryAt: dueAt,
+        contextSnapshot: {
+          ...parseObject(run.contextSnapshot),
+          workspaceBusyWait: nextWait,
+        },
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, run.id),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!updated) return null;
+    await appendRunEvent(updated, {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "info",
+      message: `Workspace wait not promoted: ${wait.resourceKey} is still held by a live run. Wait extended in place.`,
+      payload: {
+        resourceKey: wait.resourceKey,
+        promotionWaits: nextWait.promotionWaits,
+        scheduledRetryAt: dueAt.toISOString(),
+      },
+    }).catch(() => undefined);
+    return updated;
+  }
+
+  /** A holder that leaves `running` releases every wait entry that names it or
+   * its resource, so waiters are promoted on the holder's own lifecycle instead
+   * of after another poll interval. */
+  async function releaseWorkspaceBusyWaiters(
+    finishedRun: typeof heartbeatRuns.$inferSelect,
+    now = new Date(),
+  ) {
+    const context = parseObject(finishedRun.contextSnapshot);
+    const heldRootKey = readNonEmptyString(
+      parseObject(context.executionWriterResource).writerRootKey,
+    );
+    const resourceKey = isWriterRootWaitKey(heldRootKey) ? heldRootKey : null;
+    const released = await db
+      .update(heartbeatRuns)
+      .set({ scheduledRetryAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          or(
+            resourceKey
+              ? sql`${heartbeatRuns.contextSnapshot} -> 'workspaceBusyWait' ->> 'resourceKey' = ${resourceKey}`
+              : sql`false`,
+            sql`${heartbeatRuns.contextSnapshot} -> 'workspaceBusyWait' ->> 'holderRunId' = ${finishedRun.id}`,
+          ),
+        ),
+      )
+      .returning({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot });
+    for (const waiter of released.slice(0, 20)) {
+      const wait = readWorkspaceBusyWait(parseObject(waiter.contextSnapshot));
+      logger.info(
+        {
+          event: "workspace_busy_waiter_released",
+          waiterRunId: waiter.id,
+          holderRunId: finishedRun.id,
+          resourceKey: wait?.resourceKey ?? resourceKey,
+        },
+        "workspace-busy holder left running; waiter is due now",
+      );
+    }
+    return released.length;
+  }
+
   // Terminal handling for a WorkspaceBusyDeferral thrown by the pre-dispatch
   // gate or reported by a contained runner that refused before model launch:
   // cancel the run (contention is not a failure), schedule a workspace_busy
@@ -14957,6 +15328,27 @@ export function heartbeatService(
             containerName: resourceWait?.containerName ?? null,
             detail: resourceWait?.detail ?? null,
           };
+    const retryDelayMs = computeWorkspaceBusyRetryDelayMs();
+    const previousWait = readWorkspaceBusyWait(parseObject(run.contextSnapshot));
+    const wait = buildWorkspaceBusyWait({
+      run,
+      deferral,
+      busyEvidence,
+      previous: previousWait,
+      dueAt: new Date(now.getTime() + retryDelayMs),
+      now,
+    });
+    // This run is already the durable wait entry for the same resource: keep it
+    // waiting in place rather than cancelling it and chaining yet another run.
+    if (wait && previousWait && previousWait.resourceKey === wait.resourceKey) {
+      const rearmed = await rearmWorkspaceBusyWaitRun(
+        run,
+        deferral,
+        wait,
+        busyEvidence,
+      );
+      if (rearmed) return;
+    }
     const cancelWrite = await setRunStatusIfRunning(run.id, "cancelled", {
       error: deferral.message,
       errorCode: WORKSPACE_BUSY_ERROR_CODE,
@@ -14965,6 +15357,7 @@ export function heartbeatService(
         workspaceBusy: {
           ...busyEvidence,
           deferralAttempt: deferral.deferralAttempt,
+          ...(wait ? { wait } : {}),
         },
       },
       // Recorded on the run (and inherited by the scheduled retry's context)
@@ -14973,6 +15366,7 @@ export function heartbeatService(
       contextSnapshot: {
         ...parseObject(run.contextSnapshot),
         workspaceBusyDeferredWhileAssignee: deferral.wasIssueAssignee,
+        ...(wait ? { workspaceBusyWait: wait } : {}),
       },
     });
     if (!cancelWrite.updated) {
@@ -14990,6 +15384,17 @@ export function heartbeatService(
     const cancelledRun =
       cancelWrite.run ?? (await getRun(run.id).catch(() => null));
     const agentRow = await getAgent(run.agentId).catch(() => null);
+    const deferredContext = parseObject(run.contextSnapshot);
+    const deferredWakeReason = readNonEmptyString(deferredContext.wakeReason);
+    // An interaction wake (an addressed pending-interaction wake or a verified
+    // tree-control interaction wake) is not an assignee wake: the claim path
+    // re-verifies that authority from the retry's own context. Losing the reason
+    // in the deferral turned a deferred reviewer wake into a failed owner check.
+    const preservedWakeReason =
+      deferredWakeReason === "interaction_pending" ||
+      allowsIssueInteractionWake(deferredContext)
+        ? deferredWakeReason
+        : null;
     let scheduleOutcome: string | null = null;
     if (cancelledRun && agentRow) {
       const scheduleResult = await scheduleBoundedRetryForRun(
@@ -14999,10 +15404,11 @@ export function heartbeatService(
           now,
           retryReason: WORKSPACE_BUSY_RETRY_REASON,
           wakeReason: WORKSPACE_BUSY_RETRY_WAKE_REASON,
+          preservedWakeReason,
           // Always admit the next attempt: workspace-busy deferral is bounded by
           // holder liveness, not by an attempt counter.
           maxAttempts: (cancelledRun.scheduledRetryAttempt ?? 0) + 1,
-          delayMs: computeWorkspaceBusyRetryDelayMs(),
+          delayMs: retryDelayMs,
         },
       ).catch((scheduleErr) => {
         logger.error(
@@ -15655,6 +16061,7 @@ export function heartbeatService(
     context: Record<string, unknown>;
     issueId: string | null;
     responsibleUserId: string;
+    acceptedReviewResume?: AcceptedReviewResume;
   };
 
   async function prepareQueuedRunClaim(
@@ -15710,6 +16117,7 @@ export function heartbeatService(
     }
 
     const issueId = readNonEmptyString(context.issueId);
+    let acceptedReviewResume: AcceptedReviewResume | undefined;
     if (issueId) {
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
         run.companyId,
@@ -15797,6 +16205,7 @@ export function heartbeatService(
         );
         return null;
       }
+      acceptedReviewResume = staleness.acceptedReviewResume;
     }
 
     const responsibleUserId = await resolveResponsibleUserIdForRun({
@@ -15811,7 +16220,7 @@ export function heartbeatService(
         responsibleUserId: null,
       },
     });
-    return { run, context, issueId, responsibleUserId };
+    return { run, context, issueId, responsibleUserId, acceptedReviewResume };
   }
 
   type QueuedRunClaimCommitOutcome =
@@ -15964,6 +16373,14 @@ export function heartbeatService(
           issueId,
           staleness,
         };
+      }
+      if (staleness.acceptedReviewResume) {
+        prepared.acceptedReviewResume = staleness.acceptedReviewResume;
+      } else {
+        // The commit-time recheck is authoritative: a park the prepare step
+        // superseded must not be attributed to this run if the durable state
+        // no longer justifies the resume.
+        prepared.acceptedReviewResume = undefined;
       }
     }
 
@@ -16120,6 +16537,12 @@ export function heartbeatService(
         : lockedRun.contextSnapshot,
     );
     claimedContext.executionResourceReservation = reservation;
+    if (prepared.acceptedReviewResume) {
+      // The accepted current review is the lineage this resume belongs to, so a
+      // later recovery sweep can attribute the run to that acceptance instead
+      // of dispatching a duplicate continuation for it.
+      claimedContext.acceptedReviewResume = prepared.acceptedReviewResume;
+    }
 
     if (wake) {
       await txDb
@@ -16410,7 +16833,7 @@ export function heartbeatService(
   }
 
   type QueuedRunStaleness =
-    | { stale: false }
+    | { stale: false; acceptedReviewResume?: AcceptedReviewResume }
     | {
         stale: true;
         reason: string;
@@ -16505,6 +16928,7 @@ export function heartbeatService(
       };
     }
 
+    let acceptedReviewResume: AcceptedReviewResume | null = null;
     if (
       issue.status === "in_progress" &&
       !wakeCommentId &&
@@ -16537,29 +16961,73 @@ export function heartbeatService(
           context,
         });
         if (!executableRepairIntent) {
-          return {
-            stale: true,
-            errorCode: "issue_continuation_waiting_on_review",
-            reason:
-              "Cancelled because the continuation summary says the executor should wait for reviewer feedback or approval before more work starts",
-            details: {
-              issueId,
-              wakeReason,
-              retryReason,
-              nextAction: continuationSummaryBody,
-            },
-          };
-        }
-        logger.info(
-          {
-            event: "continuation_park_superseded_by_executable_repair",
-            runId: run.id,
+          // Prose is not authority on whether the review wait is still real.
+          // An accepted current review (exact actor, current head) supersedes
+          // the park, so the owner resumes under the acceptance's own lineage
+          // instead of burning bounded disposition-repair attempts proving the
+          // park was already stale. Pending review/approval governance still
+          // parks normally.
+          const reviewWaitState = await readReviewWaitState(dbOrTx, {
+            companyId: run.companyId,
             issueId,
-            agentId: run.agentId,
-            repairKind: executableRepairIntent.kind,
-          },
-          "queued continuation proceeds because a current executable repair intent owns the work",
-        );
+          });
+          if (reviewWaitState.kind !== "accepted_current_review") {
+            return {
+              stale: true,
+              errorCode: "issue_continuation_waiting_on_review",
+              reason:
+                "Cancelled because the continuation summary says the executor should wait for reviewer feedback or approval before more work starts",
+              details: {
+                issueId,
+                wakeReason,
+                retryReason,
+                nextAction: continuationSummaryBody,
+                reviewWaitState: reviewWaitState.kind,
+                ...(reviewWaitState.kind === "review_wait_open"
+                  ? {
+                      reviewWaitReason: reviewWaitState.reason,
+                      reviewWaitTargetId: reviewWaitState.interactionId,
+                    }
+                  : {}),
+                ...(reviewWaitState.kind === "closed_review_not_accepted"
+                  ? { reviewWaitStatus: reviewWaitState.status }
+                  : {}),
+                ...(reviewWaitState.kind === "non_authoritative_resolution"
+                  ? { reviewWaitDenial: reviewWaitState.reason }
+                  : {}),
+              },
+            };
+          }
+          acceptedReviewResume = buildAcceptedReviewResume(
+            reviewWaitState.interaction,
+          );
+          logger.info(
+            {
+              event: "continuation_park_superseded_by_accepted_review",
+              runId: run.id,
+              issueId,
+              agentId: run.agentId,
+              interactionId: acceptedReviewResume.interactionId,
+              interactionResolvedAt: acceptedReviewResume.resolvedAt,
+              interactionContinuationPolicy:
+                acceptedReviewResume.continuationPolicy,
+              resolutionActorKind: acceptedReviewResume.resolverKind,
+            },
+            "queued continuation proceeds because the current review wait was already accepted",
+          );
+          context.acceptedReviewResume = acceptedReviewResume;
+        } else {
+          logger.info(
+            {
+              event: "continuation_park_superseded_by_executable_repair",
+              runId: run.id,
+              issueId,
+              agentId: run.agentId,
+              repairKind: executableRepairIntent.kind,
+            },
+            "queued continuation proceeds because a current executable repair intent owns the work",
+          );
+        }
       }
     }
 
@@ -16679,7 +17147,9 @@ export function heartbeatService(
       }
     }
 
-    return { stale: false };
+    return acceptedReviewResume
+      ? { stale: false, acceptedReviewResume }
+      : { stale: false };
   }
 
   async function cancelRunForStaleIssue(
@@ -19717,23 +20187,54 @@ export function heartbeatService(
             },
           });
         } catch (error) {
-          // Provisioning exists to be enforced: a run that cannot prove its
-          // writer identity is a configuration blocker for its human owner, not
-          // a dispatched-then-failed run that spends retry budget.
-          throw new ConfigurationIncompleteFailure(
+          // A resolver subprocess that crashed, timed out, or returned an
+          // unreadable receipt is a TECHNICAL execution failure, not a missing
+          // setting: the run stays fail-closed (no adapter or model work), but
+          // it carries its own error code and a stable reason so recovery
+          // consumes exactly this class instead of a human configuration gate.
+          // Only the operator's missing scope above (no project identity) is a
+          // configuration verdict for a human owner. The sanitized, bounded
+          // stderr excerpt travels in the message, the run event and the result
+          // JSON, so the cause is diagnosable without exposing raw output.
+          const resolverFailureInfo =
+            error instanceof ExecutionResourceResolverError ? error.info : null;
+          await appendRunEvent(run, {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message:
+              "Canonical writer-root resolver failed before dispatch; the run is not dispatched",
+            payload: {
+              reason: "execution_resource_resolver_failed",
+              failureReason: resolverFailureInfo?.reason ?? null,
+              exitCode: resolverFailureInfo?.exitCode ?? null,
+              signal: resolverFailureInfo?.signal ?? null,
+              stderrExcerpt: resolverFailureInfo?.stderrExcerpt ?? null,
+              companyId: agent.companyId,
+              agentId: agent.id,
+              issueId: issueRef?.id ?? issueId ?? null,
+              projectId: writerScopeProjectId,
+              resolverCommand: executionResourceResolver.command,
+              resolverEntry: executionResourceResolver.entry,
+            },
+          }).catch(() => undefined);
+          throw new ExecutionResourceResolverFailure(
             error instanceof Error
               ? error.message
               : "Canonical writer-root resolution failed",
             {
-              configurationIncomplete: {
+              executionResourceResolverFailure: {
                 reason: "execution_resource_resolver_failed",
+                failureReason: resolverFailureInfo?.reason ?? null,
+                exitCode: resolverFailureInfo?.exitCode ?? null,
+                signal: resolverFailureInfo?.signal ?? null,
+                stderrExcerpt: resolverFailureInfo?.stderrExcerpt ?? null,
                 companyId: agent.companyId,
                 agentId: agent.id,
                 issueId: issueRef?.id ?? issueId ?? null,
                 projectId: writerScopeProjectId,
                 resolverCommand: executionResourceResolver.command,
                 resolverEntry: executionResourceResolver.entry,
-                missingBindings: [],
               },
             },
           );
@@ -19806,6 +20307,8 @@ export function heartbeatService(
                   ? (run.scheduledRetryAttempt ?? 0)
                   : 0,
               wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
+              requestedWriterRootKey: receipt.writerRootKey,
+              requestedAccess: receipt.access,
             });
           }
           // The reservation must survive the rest of the run's lifecycle: the
@@ -22616,6 +23119,16 @@ export function heartbeatService(
                       ? (run.scheduledRetryAttempt ?? 0)
                       : 0,
                   wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
+                  // The runner's refusal envelope names no root, so the only root
+                  // this run can claim to be waiting on is the one its own held
+                  // receipt named. Without one the wait is scoped to the project
+                  // workspace and the promotion probe re-checks that instead.
+                  requestedWriterRootKey: readNonEmptyString(
+                    parseObject(context.executionWriterResource).writerRootKey,
+                  ),
+                  requestedAccess: readNonEmptyString(
+                    parseObject(context.executionWriterResource).access,
+                  ),
                 }),
               ).catch((deferralErr) => {
                 logger.error(
@@ -23681,6 +24194,8 @@ export function heartbeatService(
           : null;
         const configurationIncompleteSetupFailure =
           isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
+        const executionResourceResolverSetupFailure =
+          isExecutionResourceResolverFailure(outerErr) ? outerErr : null;
         const unresolvedBaseRefSetupFailure = isUnresolvedWorkspaceBaseRefError(
           outerErr,
         )
@@ -23693,6 +24208,7 @@ export function heartbeatService(
         const setupFailureErrorCode =
           workspaceValidationSetupFailure?.code ??
           configurationIncompleteSetupFailure?.code ??
+          executionResourceResolverSetupFailure?.code ??
           (unresolvedBaseRefSetupFailure
             ? CONFIGURATION_INCOMPLETE_FAILURE_CODE
             : null) ??
@@ -23718,6 +24234,7 @@ export function heartbeatService(
                     resultJson:
                       workspaceValidationSetupFailure?.resultJson ??
                       configurationIncompleteSetupFailure?.resultJson ??
+                      executionResourceResolverSetupFailure?.resultJson ??
                       (unresolvedBaseRefSetupFailure
                         ? buildUnresolvedWorkspaceBaseRefResultJson(
                             run,
