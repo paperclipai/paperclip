@@ -421,25 +421,6 @@ export function parseIssueExecutionState(input: unknown): IssueExecutionState | 
   return parsed.data;
 }
 
-/**
- * Verify that a stage decision was derived from the execution state and policy
- * that still exist after the issue row is locked. This keeps two stale clients
- * from recording different decisions for one stage.
- */
-export function executionDecisionSnapshotMatches(
-  expected: Pick<IssueLike, "executionPolicy" | "executionState">,
-  current: Pick<IssueLike, "executionPolicy" | "executionState">,
-): boolean {
-  const expectedState = parseIssueExecutionState(expected.executionState);
-  const currentState = parseIssueExecutionState(current.executionState);
-  if (expectedState?.status !== "pending" || currentState?.status !== "pending") return false;
-
-  const expectedPolicy = normalizeIssueExecutionPolicy(expected.executionPolicy ?? null);
-  const currentPolicy = normalizeIssueExecutionPolicy(current.executionPolicy ?? null);
-  return JSON.stringify({ state: expectedState, policy: expectedPolicy }) ===
-    JSON.stringify({ state: currentState, policy: currentPolicy });
-}
-
 export function assigneePrincipal(input: AssigneeLike): IssueExecutionStagePrincipal | null {
   if (input.assigneeAgentId) {
     return { type: "agent", agentId: input.assigneeAgentId, userId: null };

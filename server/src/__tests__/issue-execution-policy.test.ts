@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  applyIssueExecutionPolicyTransition,
-  executionDecisionSnapshotMatches,
-  normalizeIssueExecutionPolicy,
-  parseIssueExecutionState,
-} from "../services/issue-execution-policy.ts";
+import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -163,46 +158,6 @@ describe("parseIssueExecutionState", () => {
     });
     expect(state).not.toBeNull();
     expect(state!.status).toBe("pending");
-  });
-});
-
-describe("executionDecisionSnapshotMatches", () => {
-  const policy = approvalOnlyPolicy();
-  const state: IssueExecutionState = {
-    status: "pending",
-    currentStageId: policy.stages[0].id,
-    currentStageIndex: 0,
-    currentStageType: "approval",
-    currentParticipant: { type: "user", userId: ctoUserId, agentId: null },
-    returnAssignee: { type: "agent", agentId: coderAgentId, userId: null },
-    reviewRequest: null,
-    completedStageIds: [],
-    lastDecisionId: null,
-    lastDecisionOutcome: null,
-  };
-
-  it("accepts an unchanged pending stage snapshot", () => {
-    expect(executionDecisionSnapshotMatches(
-      { executionPolicy: policy, executionState: state },
-      { executionPolicy: structuredClone(policy), executionState: structuredClone(state) },
-    )).toBe(true);
-  });
-
-  it("rejects a stage that another decision or policy update changed", () => {
-    expect(executionDecisionSnapshotMatches(
-      { executionPolicy: policy, executionState: state },
-      { executionPolicy: policy, executionState: { ...state, lastDecisionId: "decision-2" } },
-    )).toBe(false);
-    expect(executionDecisionSnapshotMatches(
-      { executionPolicy: policy, executionState: state },
-      {
-        executionPolicy: {
-          ...policy,
-          stages: [{ ...policy.stages[0], id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }],
-        },
-        executionState: state,
-      },
-    )).toBe(false);
   });
 });
 
