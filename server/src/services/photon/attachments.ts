@@ -84,6 +84,7 @@ export async function downloadPhotonAttachment(
     (candidate) => candidate.guid === locator.attachmentGuid,
   );
   if (
+    source.guid !== locator.messageGuid ||
     !source.chatGuids.includes(locator.chatGuid) ||
     !attachment ||
     attachment.isSticker ||

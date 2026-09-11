@@ -518,6 +518,16 @@ describe("Photon native prompts and media", () => {
         attachmentGuid: "a",
       }),
     ).rejects.toThrow("does not belong");
+    const wrongMessage = await f.client.messages.get("different-message");
+    wrongMessage.content.attachments = [{ guid: "a" }] as typeof wrongMessage.content.attachments;
+    f.client.messages.get.mockResolvedValueOnce(wrongMessage);
+    await expect(downloadPhotonAttachment(f.adapter.client, "line", {
+      kind: "photon_attachment",
+      lineId: "line",
+      chatGuid: f.chat.guid,
+      messageGuid: "m",
+      attachmentGuid: "a",
+    })).rejects.toThrow("does not belong");
     expect(f.client.attachments.downloadStream).not.toHaveBeenCalled();
     const png = await sharp({
       create: { width: 2, height: 2, channels: 3, background: "white" },
