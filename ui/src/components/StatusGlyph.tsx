@@ -6,7 +6,7 @@ import {
   CircleDashed,
   CircleDot,
   CircleMinus,
-  RotateCw,
+  LoaderCircle,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -18,7 +18,7 @@ import { taskStatusIconVar, taskStatusIconVarDefault } from "../lib/status-color
  * `viewBox="0 0 24 24"` so they scale proportionally at any size), so the whole
  * set reads as one consistent icon family:
  *
- *   backlog → circle-dashed · todo → circle · in_progress → rotate-cw ·
+ *   backlog → circle-dashed · todo → circle · in_progress → animated loader-circle ·
  *   in_review → circle-dot · done → circle-check · blocked → circle-minus ·
  *   cancelled → ban · in_queue → circle-minus (blocked recoloured blue).
  *
@@ -48,7 +48,7 @@ export type StatusGlyphStatus =
 const STATUS_ICON: Record<string, LucideIcon> = {
   backlog: CircleDashed,
   todo: Circle,
-  in_progress: RotateCw,
+  in_progress: LoaderCircle,
   in_review: CircleDot,
   done: CircleCheck,
   blocked: CircleMinus,
@@ -78,7 +78,7 @@ export function StatusGlyph({ status, size = "md", className, title }: StatusGly
   return (
     <Icon
       size={px}
-      className={cn("inline-block shrink-0 align-middle", className)}
+      className={cn("inline-block shrink-0 align-middle", status === "in_progress" && "motion-safe:animate-spin", className)}
       style={{ color: `var(${cssVar})` } as CSSProperties}
       {...a11y}
     >

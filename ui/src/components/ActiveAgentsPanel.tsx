@@ -1,4 +1,4 @@
-import { memo, useMemo, type CSSProperties } from "react";
+import { memo, useMemo } from "react";
 import { Link } from "@/lib/router";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
@@ -7,13 +7,12 @@ import type { TranscriptEntry } from "../adapters";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn, relativeTime } from "../lib/utils";
-import { Ban, Check, CircleAlert, CircleDashed, Clock3, LoaderCircle, TimerOff } from "lucide-react";
+import { Clock3 } from "lucide-react";
 import { Identity } from "./Identity";
 import { StatusGlyph } from "./StatusGlyph";
 import { RunChatSurface } from "./RunChatSurface";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
-import { Badge } from "@/components/ui/badge";
 
 const MIN_DASHBOARD_RUNS = 4;
 const DASHBOARD_RUN_CARD_LIMIT = 4;
@@ -23,14 +22,14 @@ const DASHBOARD_MAX_CHUNKS_PER_RUN = 40;
 const EMPTY_TRANSCRIPT: TranscriptEntry[] = [];
 const EMPTY_RUNS: LiveRunForIssue[] = [];
 
-const runStatusPresentation = {
-  running: { label: "Running", icon: LoaderCircle, color: "--status-agent-running" },
-  queued: { label: "Queued", icon: Clock3, color: "--status-agent-paused" },
-  succeeded: { label: "Succeeded", icon: Check, color: "--status-task-done" },
-  failed: { label: "Failed", icon: CircleAlert, color: "--status-agent-error" },
-  timed_out: { label: "Timed out", icon: TimerOff, color: "--status-agent-error" },
-  cancelled: { label: "Cancelled", icon: Ban, color: "--status-agent-idle" },
-  interrupted: { label: "Interrupted", icon: Ban, color: "--status-agent-paused" },
+const runStatusLabels: Record<string, string> = {
+  running: "Running",
+  queued: "Queued",
+  succeeded: "Succeeded",
+  failed: "Failed",
+  timed_out: "Timed out",
+  cancelled: "Cancelled",
+  interrupted: "Interrupted",
 };
 
 interface ActiveAgentsPanelProps {
@@ -168,13 +167,7 @@ export const AgentRunCard = memo(function AgentRunCard({
   issueLoadFailed?: boolean;
   className?: string;
 }) {
-  const status = runStatusPresentation[run.status as keyof typeof runStatusPresentation] ?? {
-    label: run.status.replace(/[_-]/g, " "),
-    icon: CircleDashed,
-    color: "--status-agent-idle",
-  };
-  const StatusIcon = status.icon;
-  const isWorking = run.status === "running" && (!run.execution || run.execution.phase === "working");
+  const statusLabel = runStatusLabels[run.status] ?? run.status.replace(/[_-]/g, " ");
   const runUrl = `/agents/${run.agentId}/runs/${run.id}`;
   const timestamp = run.finishedAt
     ? `Finished ${relativeTime(run.finishedAt)}`
@@ -193,20 +186,11 @@ export const AgentRunCard = memo(function AgentRunCard({
       <div className={cn("flex shrink-0 flex-col gap-3 p-3", showTranscript && "border-b border-border/60")}>
         <Link
           to={runUrl}
-          title={`${run.agentName} — ${status.label} · ${timestamp}`}
-          aria-label={`${run.agentName} — ${status.label}. View run`}
+          title={`${run.agentName} — ${statusLabel} · ${timestamp}`}
+          aria-label={`${run.agentName} — ${statusLabel}. View run`}
           className="flex min-w-0 items-center gap-2 rounded-md text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <Identity name={run.agentName} className="gap-2 font-medium" />
-          <Badge
-            variant="outline"
-            className="status-chip dashboard-run-status text-(length:--text-nano) leading-normal tracking-(--tracking-eyebrow) uppercase"
-            data-status={run.status}
-            style={{ "--sc": `var(${status.color})` } as CSSProperties}
-          >
-            <StatusIcon aria-hidden className={cn(isWorking && "motion-safe:animate-spin")} />
-            {status.label}
-          </Badge>
         </Link>
 
         {run.issueId ? (

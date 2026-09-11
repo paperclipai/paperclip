@@ -245,12 +245,17 @@ describe("ActiveAgentsPanel", () => {
         />
       ))}</>);
     });
-    const badges = [...container.querySelectorAll(".dashboard-run-status")];
-    expect(badges.map((badge) => badge.textContent)).toEqual([
-      "Running", "Queued", "Succeeded", "Failed", "Timed out", "Cancelled", "Interrupted",
+    const headers = [...container.querySelectorAll('a[aria-label$=". View run"]')];
+    expect(headers.map((header) => header.getAttribute("aria-label"))).toEqual([
+      "Agent 0 — Running. View run", "Agent 1 — Queued. View run",
+      "Agent 2 — Succeeded. View run", "Agent 3 — Failed. View run",
+      "Agent 4 — Timed out. View run", "Agent 5 — Cancelled. View run",
+      "Agent 6 — Interrupted. View run",
     ]);
+    expect(headers.every((header) => header.querySelector("svg") === null)).toBe(true);
+    expect(container.querySelector(".status-chip")).toBeNull();
     expect(container.querySelectorAll('[aria-label="Task in review"]')).toHaveLength(7);
-    expect(container.querySelectorAll(".motion-safe\\:animate-spin")).toHaveLength(1);
+    expect(container.querySelectorAll(".motion-safe\\:animate-spin")).toHaveLength(0);
     expect(container.querySelector('a[aria-label="Agent 0 — Running. View run"]')?.getAttribute("href"))
       .toBe("/agents/agent-0/runs/run-0");
     await act(async () => root.unmount());
@@ -282,7 +287,8 @@ describe("ActiveAgentsPanel", () => {
         }}
       />);
     });
-    expect(container.querySelector(".dashboard-run-status")?.textContent).toBe("Running");
+    expect(container.querySelector('a[aria-label="Agent 0 — Running. View run"]')).not.toBeNull();
+    expect(container.querySelector(".status-chip")).toBeNull();
     expect(container.querySelectorAll(".motion-safe\\:animate-spin")).toHaveLength(0);
     await act(async () => root.unmount());
   });
