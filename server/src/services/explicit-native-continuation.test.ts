@@ -116,6 +116,14 @@ const support = await getEmbeddedPostgresTestSupport();
     const [paused] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, waiting.id));
     expect(paused.payload?.executionWait).toMatchObject({ reason: "issue_tree_hold_active" });
     await db.update(issueTreeHolds).set({ status: "released" }).where(eq(issueTreeHolds.id, holdId));
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1, maxDailyRuns: 0 } } }).where(eq(agents.id, f.agentId));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await makeDue();
+      await heartbeatService(db).resumeExecutionWaitComments();
+    }
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(1);
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, f.agentId));
     await makeDue();
     await Promise.all([heartbeatService(db).resumeExecutionWaitComments(), heartbeatService(db).resumeExecutionWaitComments()]);
     const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));

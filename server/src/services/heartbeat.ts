@@ -26477,6 +26477,11 @@ export function heartbeatService(
             tx,
           );
           if (dailyCapBlock) {
+            if (executionWaitRequestId && executionBlocker) {
+              continuationWait = { reason: dailyCapBlock.reason,
+                message: "The agent has reached its daily limit. Your message is saved until work can resume." };
+              return deferBlockedExecution(executionBlocker);
+            }
             const now = new Date();
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
