@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, inArray } from "drizzle-orm";
 import {
   activityLog,
+  agentTaskSessions,
   agentWakeupRequests,
   agents,
   companies,
@@ -44,6 +45,7 @@ import {
   claimNativeSessionResumptions,
   dispatchNativeSessionResumptions,
 } from "../services/native-runtime/native-finalization-reconciler.js";
+import { nativeToolContractFingerprintForTarget } from "../services/native-runtime/native-session-resume.js";
 
 const legacyAdapterExecute = vi.hoisted(() => vi.fn(async () => ({
   exitCode: 0,
@@ -1368,6 +1370,368 @@ describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
           }),
         }),
       ]);
+    }, 30_000);
+  },
+);
+
+describe.each(["failed_rotation_binding", "provider_config_drift"] as const)(
+  "native Goal offline-control persisted-input guard (%s)",
+  (variant) => {
+    it("fails before the provider backend when exact Goal continuity is unavailable", async () => {
+      const temporary = await startEmbeddedPostgresTestDatabase(
+        "paperclip-native-goal-offline-control-",
+      );
+      const db = createDb(temporary.connectionString);
+      let heartbeat: ReturnType<typeof heartbeatService> | null = null;
+      try {
+        const companyId = randomUUID();
+        const agentId = randomUUID();
+        const projectId = randomUUID();
+        const projectWorkspaceId = randomUUID();
+        const executionWorkspaceId = randomUUID();
+        const issueId = randomUUID();
+        const sourceRunId = randomUUID();
+        const failedRotationRunId = randomUUID();
+        const currentRunId = randomUUID();
+        const sourceSessionId = randomUUID();
+        const failedRotationSessionId = randomUUID();
+        const runnerInstanceId = randomUUID();
+        const contractId = randomUUID();
+        const requestId = randomUUID();
+        const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
+        const contract = {
+          revision: "native-goal-offline-control-v1",
+          objective: "Keep the established Goal on its exact provider session",
+          criteria: [
+            {
+              id: "continuity",
+              requirement: "Resume without creating a replacement provider session",
+            },
+          ],
+        };
+        const contractSha = "native-goal-offline-control-contract";
+        const buildExecution = (
+          runId: string,
+          sessionId: string,
+          model: string | null,
+        ): NativeExecutionInputV1 => ({
+          schema: "paperclip.native-execution-input.v1",
+          binding: {
+            companyId,
+            runId,
+            issueId,
+            agentId,
+            executionWorkspaceId,
+          },
+          task: {
+            identifier: "NGO-1",
+            title: "Resume an offline Goal control",
+            description: null,
+            prompt: "Apply only the pending Goal control.",
+            workMode: "standard",
+          },
+          workspace: {
+            cwd: repoRoot,
+            repoUrl: null,
+            repoRef: null,
+            branchName: null,
+          },
+          session: {
+            normalizedSessionId: sessionId,
+            driverKind: "codex_app_server",
+            protocolVersion: 1,
+          },
+          provider: { kind: "codex", model },
+          completionContract: {
+            id: contractId,
+            sha256: contractSha,
+            schemaVersion: "paperclip.completion-contract.v1",
+            contract,
+          },
+          interactionResponses: [],
+          credentialBindings: [],
+        });
+        const sourceExecution = buildExecution(
+          sourceRunId,
+          sourceSessionId,
+          null,
+        );
+        const currentExecution = buildExecution(
+          currentRunId,
+          variant === "failed_rotation_binding"
+            ? failedRotationSessionId
+            : sourceSessionId,
+          variant === "provider_config_drift" ? "different-model" : null,
+        );
+        const sourceCheckpoint: PersistedNativeSession = {
+          backendKind: "mock",
+          sessionId: "driver-established-goal",
+          identity: {
+            companyId,
+            runId: sourceRunId,
+            issueId,
+            agentId,
+            sessionId: sourceSessionId,
+          },
+          providerSessionId: "provider-established-goal",
+          providerRecoveryPolicy: "same_session_only",
+          cursor: "1",
+          activeTurnId: null,
+          semanticResult: null,
+          terminal: null,
+          terminalTurns: [],
+          pendingRuntimeRequests: [],
+          goal: {
+            threadId: "provider-established-goal",
+            objective: "Complete the isolated native Goal fixture",
+            status: "budgetLimited",
+            tokenBudget: 12_000,
+            tokensUsed: 20_283,
+            timeUsedSeconds: 120,
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          lineage: [],
+        };
+
+        await db.insert(companies).values({
+          id: companyId,
+          name: "Native Goal offline control",
+          issuePrefix: "NGO",
+          status: "active",
+          defaultResponsibleUserId: "responsible-user",
+        });
+        await db.insert(projects).values({
+          id: projectId,
+          companyId,
+          name: "Native Goal project",
+          status: "active",
+        });
+        await db.insert(projectWorkspaces).values({
+          id: projectWorkspaceId,
+          companyId,
+          projectId,
+          name: "Native Goal source workspace",
+          cwd: repoRoot,
+          isPrimary: true,
+        });
+        await db.insert(agents).values({
+          id: agentId,
+          companyId,
+          name: "Native Goal runner",
+          adapterType: "paperclip_runner",
+          adapterConfig: { workspaceStrategy: { type: "project_primary" } },
+          status: "active",
+          runtimeConfig: {
+            heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+            nativeRunner: {
+              mode: "native",
+              backend: "codex_app_server",
+              protocolVersion: 1,
+            },
+          },
+        });
+        await db.insert(issues).values({
+          id: issueId,
+          companyId,
+          projectId,
+          projectWorkspaceId,
+          issueNumber: 1,
+          identifier: "NGO-1",
+          title: "Resume an offline Goal control",
+          status: "in_progress",
+          assigneeAgentId: agentId,
+          workMode: "standard",
+        });
+        await db.insert(executionWorkspaces).values({
+          id: executionWorkspaceId,
+          companyId,
+          projectId,
+          projectWorkspaceId,
+          sourceIssueId: issueId,
+          mode: "shared_workspace",
+          strategyType: "project_primary",
+          name: "Established Goal workspace",
+          status: "active",
+          cwd: repoRoot,
+          providerType: "local_fs",
+        });
+        await db
+          .update(issues)
+          .set({
+            executionWorkspaceId,
+            executionWorkspacePreference: "reuse_existing",
+            executionWorkspaceSettings: { mode: "shared_workspace" },
+          })
+          .where(eq(issues.id, issueId));
+        await db.insert(completionContracts).values({
+          id: contractId,
+          companyId,
+          issueId,
+          revision: 1,
+          schemaVersion: "paperclip.completion-contract.v1",
+          policyVersion: "native-goal-offline-control-v1",
+          risk: "standard",
+          completionAuthority: "server_arbiter",
+          incompleteCriteriaPolicy: "preserve_non_terminal",
+          contractJson: contract,
+          canonicalSha256: contractSha,
+          createdByActorType: "system",
+          createdByActorId: "test",
+        });
+        await db.insert(heartbeatRuns).values([
+          {
+            id: sourceRunId,
+            companyId,
+            agentId,
+            nativeIssueId: issueId,
+            status: "succeeded",
+            invocationSource: "on_demand",
+            runtimeMode: "native",
+            runtimeModeResolvedAt: new Date("2026-09-12T00:00:00.000Z"),
+            runnerProfileJson: {
+              mode: "native",
+              backend: "codex_app_server",
+              protocolVersion: 1,
+              nativeExecutionInput: sourceExecution,
+              sessionCheckpoint: sourceCheckpoint,
+              nativeToolContractFingerprint:
+                nativeToolContractFingerprintForTarget("local"),
+            },
+            runnerInstanceId,
+            nativeSessionId: sourceSessionId,
+            completionContractId: contractId,
+            completionContractSha256: contractSha,
+            createdAt: new Date("2026-09-12T00:00:00.000Z"),
+          },
+          {
+            id: failedRotationRunId,
+            companyId,
+            agentId,
+            nativeIssueId: issueId,
+            status: "failed",
+            invocationSource: "automation",
+            runtimeMode: "native",
+            runtimeModeResolvedAt: new Date("2026-09-12T00:01:00.000Z"),
+            runnerProfileJson: {
+              mode: "native",
+              backend: "codex_app_server",
+              protocolVersion: 1,
+              nativeExecutionInput: buildExecution(
+                failedRotationRunId,
+                failedRotationSessionId,
+                null,
+              ),
+            },
+            runnerInstanceId: randomUUID(),
+            nativeSessionId: failedRotationSessionId,
+            completionContractId: contractId,
+            completionContractSha256: contractSha,
+            createdAt: new Date("2026-09-12T00:01:00.000Z"),
+          },
+          {
+            id: currentRunId,
+            companyId,
+            agentId,
+            nativeIssueId: issueId,
+            status: "queued",
+            invocationSource: "automation",
+            triggerDetail: "system",
+            runtimeMode: "native",
+            runtimeModeResolvedAt: new Date("2026-09-12T00:02:00.000Z"),
+            runnerProfileJson: {
+              mode: "native",
+              backend: "codex_app_server",
+              protocolVersion: 1,
+              nativeExecutionInput: currentExecution,
+            },
+            completionContractId: contractId,
+            completionContractSha256: contractSha,
+            contextSnapshot: {
+              issueId,
+              taskKey: issueId,
+              resumeIntent: true,
+              goalControlRequestId: requestId,
+              runnerGoalControl: {
+                requestId,
+                action: "edit",
+                tokenBudget: 100_000,
+              },
+              skipIssueComment: true,
+            },
+            createdAt: new Date("2026-09-12T00:02:00.000Z"),
+          },
+        ]);
+        await db.insert(agentTaskSessions).values({
+          companyId,
+          agentId,
+          adapterType: "paperclip_runner",
+          taskKey: issueId,
+          sessionParamsJson: {
+            sessionId: failedRotationSessionId,
+            cwd: repoRoot,
+          },
+          sessionDisplayId: "provider-failed-rotation",
+          lastRunId: failedRotationRunId,
+          goalJson: {
+            objective: "Complete the isolated native Goal fixture",
+            status: "budget_limited",
+            tokenBudget: 12_000,
+            tokensUsed: 20_283,
+            elapsedSeconds: 120,
+            iterations: 2,
+            workingNow: false,
+          },
+          goalStatus: "budget_limited",
+          goalDesiredState: "active",
+          goalRevision: 12,
+          goalSourceId: `${runnerInstanceId}:${sourceRunId}`,
+          goalSourceCursor: 4,
+        });
+        await db
+          .update(issues)
+          .set({ executionRunId: currentRunId })
+          .where(eq(issues.id, issueId));
+        await instanceSettingsService(db).updateExperimental({
+          enableNativeRunner: true,
+        });
+
+        const backendFactory = vi.fn((): NativeSessionBackend => ({
+          async descriptor() {
+            throw new Error("provider backend must not be constructed");
+          },
+          async openSession() {
+            throw new Error("replacement provider session must not open");
+          },
+        }));
+        heartbeat = heartbeatService(db, {
+          runtimeEnv: { PAPERCLIP_INSTANCE_ID: "goal-offline-control-test" },
+          nativeSessionBackendFactory: backendFactory,
+        });
+
+        await heartbeat.resumeQueuedRuns();
+        await heartbeat.drainActiveRunExecutions();
+
+        expect(backendFactory).not.toHaveBeenCalled();
+        await expect(
+          db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, currentRunId)),
+        ).resolves.toEqual([
+          expect.objectContaining({
+            status: "failed",
+            errorCode: "native_goal_resume_authority_unavailable",
+            nativeSessionId: null,
+          }),
+        ]);
+        await expect(
+          db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)),
+        ).resolves.toHaveLength(3);
+      } finally {
+        if (heartbeat) await heartbeat.drainActiveRunExecutions();
+        await temporary.cleanup();
+      }
     }, 30_000);
   },
 );
