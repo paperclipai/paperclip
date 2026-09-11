@@ -34,9 +34,19 @@ export function hasRemoteTerminationReceipt(lease: LeaseIdentity & {
     remoteTerminationReceipt(lease, receipt));
 }
 
-export async function remoteExecutionHasStopped(db: Db, companyId: string, runId: string) {
+export function remoteLeaseCleanupScope(lease: Pick<LeaseIdentity, "provider" | "providerLeaseId">) {
+  return lease.provider && lease.provider !== "local" && lease.providerLeaseId
+    ? JSON.stringify([lease.provider, lease.providerLeaseId]) : undefined;
+}
+
+export async function stoppedRemoteCleanupScopes(db: Db, companyId: string, runId: string) {
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, runId),
   ));
-  return leases.length > 0 && leases.every(hasRemoteTerminationReceipt);
+  if (leases.length === 0 || !leases.every(hasRemoteTerminationReceipt)) return null;
+  return [...new Set(leases.map(lease => remoteLeaseCleanupScope(lease)!))];
+}
+
+export async function remoteExecutionHasStopped(db: Db, companyId: string, runId: string) {
+  return await stoppedRemoteCleanupScopes(db, companyId, runId) !== null;
 }

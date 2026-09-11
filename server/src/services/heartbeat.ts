@@ -1,5 +1,5 @@
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
-import { remoteExecutionHasStopped, remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
@@ -9927,9 +9927,11 @@ export function heartbeatService(
     // The provider receipt arrives after adapter settlement. A remote ACP child
     // has no host PID, so only this target-aware boundary can acknowledge Stop.
     const stopped = await getRun(runId);
-    if (stopped?.runtimeMode === "native" &&
-        await remoteExecutionHasStopped(db, companyId, runId)) {
-      completeTerminatedRemoteNativeSessionCleanup({ companyId, runId });
+    if (stopped?.runtimeMode === "native") {
+      const scopes = await stoppedRemoteCleanupScopes(db, companyId, runId);
+      for (const remoteCleanupScope of scopes ?? []) {
+        completeTerminatedRemoteNativeSessionCleanup({ companyId, runId, remoteCleanupScope });
+      }
     }
     if (stopped?.runtimeMode === "legacy" && stopped.status === "cancelled" &&
         parseObject(stopped.resultJson?.executionCancellation).state === "requested" &&

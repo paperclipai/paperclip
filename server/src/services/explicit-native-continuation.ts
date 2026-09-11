@@ -1,5 +1,5 @@
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
-import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
@@ -91,7 +91,9 @@ export async function admitExplicitNativeContinuation(input: {
     if (remote) {
       // Never interpret remote PIDs using the control-plane host's process table.
       if (!leases.every(hasRemoteTerminationReceipt)) return null;
-      if (!input.dryRun && !completeTerminatedRemoteNativeSessionCleanup({ companyId, runId: run.id })) return null;
+      if (!input.dryRun && !leases.every(lease => completeTerminatedRemoteNativeSessionCleanup({
+        companyId, runId: run.id, remoteCleanupScope: remoteLeaseCleanupScope(lease)!,
+      }))) return null;
     } else {
       if (leases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed")) return null;
       if (!unusedAdmission) {

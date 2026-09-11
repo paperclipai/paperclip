@@ -126,17 +126,23 @@ export function completeRetainedNativeSessionCleanup(
 }
 
 /** Control-plane-only cleanup boundary after the environment provider confirmed
- * termination of every remote lease for this exact run. This retires process
+ * termination of the exact remote resource for this run. This retires process
  * ownership, not checkpoints, action outcomes, or authorization to run again.
  * An in-flight close must settle first: it must never reach a reused sandbox.
  */
 export function completeTerminatedRemoteNativeSessionCleanup(binding: {
   companyId: string;
   runId: string;
+  remoteCleanupScope: string;
 }): boolean {
-  const matches = [...quarantinedSessionCleanups].filter(({ session }) => {
+  if (!binding.remoteCleanupScope) return false;
+  const matches = [...quarantinedSessionCleanups].filter(({ session, domain }) => {
     const identity = session.identity();
-    return identity.companyId === binding.companyId && identity.runId === binding.runId;
+    // Domains are created internally from company, backend kind/name, and the
+    // optional remote resource. Local domains have no fourth element.
+    const [, , , remoteCleanupScope] = JSON.parse(domain) as string[];
+    return identity.companyId === binding.companyId && identity.runId === binding.runId &&
+      remoteCleanupScope === binding.remoteCleanupScope;
   });
   if (matches.some(entry => entry.attempt || entry.recovery)) return false;
   for (const entry of matches) {
