@@ -441,7 +441,7 @@ describe("createAcpPermissionObserver — per-run budgets", () => {
     expect(settled.length).toBe(256);
   });
 
-  it("emits a summary event with only the three counters and the type, using an exact key match", async () => {
+  it("emits a summary event with only the four counters and the type, using an exact key match", async () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
       emitLog: (event) => events.push(event),
