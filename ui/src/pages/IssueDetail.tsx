@@ -975,6 +975,7 @@ function IssueDetailLoadingState({
             <>
               <StatusIcon
                 status={headerSeed.status}
+                className="size-3"
                 blockerAttention={headerSeed.blockerAttention}
               />
               {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
@@ -3641,7 +3642,7 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
       breadcrumbStatus ? (
         <StatusIcon
           status={breadcrumbStatus}
-          size="lg"
+          className="size-3"
           blockerAttention={breadcrumbBlockerAttention}
         />
       ) : undefined,
@@ -6828,7 +6829,7 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
   const issueStatusControl = (
     <StatusIcon
       status={issue.status}
-      size="lg"
+      className="size-3"
       blockerAttention={issue.blockerAttention}
       onChange={(status) => updateIssue.mutate({ status })}
     />
