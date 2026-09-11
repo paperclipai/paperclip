@@ -346,8 +346,16 @@ callers of this reusable verification workflow reuse the same dependency cache.
 
 Workspace crates and installed Cargo binaries are excluded. Every run still
 builds the Runner workspace and runs `check:all`, including the Rust and
-TypeScript tests. Only a successful master-push run verifying that push's exact
-SHA saves the shared cache. Manual candidate verification can restore it without
-saving. A miss or eviction costs compilation time but does not change the checks.
+TypeScript tests. Only an own-repository master-push run verifying that push's exact
+SHA can restore the cache, and only a successful run saves it. PR, tag, and
+manual candidate verification compile without this cache. A miss or eviction costs compilation time but does not change the checks.
 To discard old dependency caches, increment the shared-key version and let the
 next successful master verification warm it again.
+
+The trust boundary is the protected master branch, not the cache-key text.
+GitHub does not let master restore caches created by a child branch, sibling
+branch, tag, or PR merge ref. Both permitted restore scopes (current branch and
+default branch) are master here. A workflow with authority to execute arbitrary
+code on master can affect verification directly and is already trusted. The
+cache contains dependency build artifacts, not credentials or workspace output.
+See [GitHub cache access restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache).

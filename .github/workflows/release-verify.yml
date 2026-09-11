@@ -236,6 +236,9 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
 
       - name: Cache Runner Rust dependencies
+        # Restore and save only within trusted master-push verification. GitHub
+        # isolates branch/PR caches from master; other callers compile afresh.
+        if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: packages/paperclip-runner/runner -> target

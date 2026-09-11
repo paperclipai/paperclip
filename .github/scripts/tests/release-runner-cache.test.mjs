@@ -18,11 +18,13 @@ test("Runner dependency caching selects the package's pinned compiler before com
   assert.match(runner, /shared-key: release-runner-v1/);
 });
 
-test("the shared cache excludes workspace artifacts and only saves the exact master-push source", () => {
+test("the shared cache excludes workspace artifacts and only restores or saves the exact master-push source", () => {
   assert.match(runner, /cache-workspace-crates: false/);
   assert.match(runner, /cache-bin: false/);
   const saveIf = runner.match(/^\s*save-if: (.+)$/m)?.[1];
   assert.equal(saveIf, "${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}");
+  const cacheStep = runner.split("      - name: Cache Runner Rust dependencies")[1].split("      - name: Install dependencies")[0];
+  assert.equal(cacheStep.match(/^\s*if: (.+)$/m)?.[1], saveIf);
   assert.doesNotMatch(runner, /cache-on-failure: true|cache-all-crates: true/);
 });
 
