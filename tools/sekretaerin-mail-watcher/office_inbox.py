@@ -13,6 +13,7 @@ statt Walters Mailbox-Status (\\Seen) zu verändern.
 from __future__ import annotations
 import html as _html
 import imaplib
+from datetime import datetime, timedelta
 import json
 import re
 from email import message_from_bytes
@@ -161,6 +162,70 @@ def _parse_unblock(subject: str, body: str) -> str | None:
             if m:
                 return m.group(0).lower()
     return None
+
+
+MAXIM_STATE = Path.home() / ".paperclip" / "state" / "office-maxim-forward-uids.json"
+MAXIM_ADDR = "maximjastrow@googlemail.com"
+# Wie weit zurueck ueberhaupt geschaut wird. Ohne Fenster wuerde ein leerer State
+# das gesamte Postfach durchgehen und Walter mit Altmails zuschuetten.
+MAXIM_FENSTER_TAGE = 7
+
+
+def load_processed_maxim() -> set[str]:
+    if not MAXIM_STATE.exists():
+        return set()
+    try:
+        return set(json.loads(MAXIM_STATE.read_text(encoding="utf-8")).get("uids", []))
+    except (json.JSONDecodeError, OSError):
+        return set()
+
+
+def save_processed_maxim(uids: set[str]) -> None:
+    MAXIM_STATE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = MAXIM_STATE.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"uids": sorted(uids)[-500:]}, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(MAXIM_STATE)
+
+
+def walter_ist_empfaenger(msg) -> bool:
+    """Steht Walter in To oder Cc? Nur die Kopfzeilen zaehlen, nicht der Fliesstext."""
+    empf = (_decode(msg.get("To", "")) + " " + _decode(msg.get("Cc", ""))).lower()
+    return any(m in empf for m in WALTER_MARKERS)
+
+
+def fetch_maxim_without_walter(processed: set[str], *, imap=None, heute=None) -> list[dict]:
+    """Maxims Mails an office@, in denen Walter weder in To noch in Cc steht.
+    Liefert [{uid, subject, from, to, cc, date, body}]. `imap` injizierbar fuer Tests."""
+    seit = ((heute or datetime.now()) - timedelta(days=MAXIM_FENSTER_TAGE)).strftime("%d-%b-%Y")
+    host, user, pw = load_creds()
+    M = imap or imaplib.IMAP4_SSL(host, 993)
+    if imap is None:
+        M.login(user, pw)
+    M.select("INBOX")
+    typ, data = M.uid("search", None, '(FROM "%s" SINCE %s)' % (MAXIM_ADDR, seit))
+    out: list[dict] = []
+    for uid in data[0].split():
+        uid_s = uid.decode() if isinstance(uid, bytes) else str(uid)
+        if uid_s in processed:
+            continue
+        typ, dd = M.uid("fetch", uid, "(RFC822)")
+        if not dd or not dd[0]:
+            continue
+        msg = message_from_bytes(dd[0][1])
+        if walter_ist_empfaenger(msg):
+            continue  # Walter ist dabei -> nichts weiterzuleiten
+        out.append({
+            "uid": uid_s,
+            "subject": _decode(msg.get("Subject", "")),
+            "from": _decode(msg.get("From", "")),
+            "to": _decode(msg.get("To", "")),
+            "cc": _decode(msg.get("Cc", "")),
+            "date": _decode(msg.get("Date", "")),
+            "body": _body_text(msg),
+        })
+    if imap is None:
+        M.logout()
+    return out
 
 
 def fetch_unblock_commands(processed: set[str], *, imap=None) -> list[dict]:

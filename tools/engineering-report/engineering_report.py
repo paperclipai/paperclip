@@ -31,7 +31,7 @@ import urllib.error
 from datetime import datetime, timedelta, timezone
 
 # --- Konfiguration ------------------------------------------------------------
-API_BASE = "http://localhost:3100"
+API_BASE = os.environ.get("PAPERCLIP_API_URL", "http://localhost:3100").rstrip("/")
 COMPANY_ID = "9cebf3cf-efe8-4597-a400-f06488900a87"  # WHITESTAG
 AUTH_PATH = os.path.expanduser("~/.paperclip/auth.json")
 

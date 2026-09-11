@@ -20,6 +20,27 @@ WEBHOOK_SECRET = _load_mailhub_secret()
 SECRET_FILE = Path.home() / ".paperclip" / "state" / "luna-approval-secret"
 FROM = "office@whitestag.ai"
 REPLY_TO = "ws@whitestag.ai"
+FORWARD_TO = "ws@whitestag.ai"  # Ziel der Maxim-Weiterleitungen
+
+# Empfaenger, bei denen Walter zwingend eine Kopie bekommt (Wunsch vom
+# 2026-08-30, hier nachgezogen am 2026-08-31). Identisch zu CC_PFLICHT in
+# ~/.claude/scripts/mailhub-send.py — dort bricht das Skript ohne Kopie ab,
+# hier wird sie automatisch gesetzt: dieser Pfad laeuft unbeaufsichtigt, ein
+# Abbruch wuerde die Mail still liegen lassen statt sie mit Kopie zu senden.
+CC_PFLICHT = {
+    "maximjastrow@googlemail.com": "ws@whitestag.ai",
+}
+
+
+def pflicht_cc(to: str, cc: str = "") -> str:
+    """Ergaenzt fehlende Pflicht-Kopien und gibt das vollstaendige cc-Feld zurueck."""
+    vorhanden = [a.strip() for a in cc.split(",") if a.strip()]
+    bekannt = ("%s,%s" % (to, cc)).lower()
+    for adresse, kopie_an in CC_PFLICHT.items():
+        if adresse in bekannt and kopie_an.lower() not in bekannt:
+            vorhanden.append(kopie_an)
+            bekannt += "," + kopie_an.lower()
+    return ", ".join(vorhanden)
 _secret_cache: str | None = None
 
 
@@ -35,10 +56,49 @@ def build_payload(entry: dict, secret: str) -> dict:
         "from": FROM, "to": entry["to"], "subject": entry["subject"],
         "text": entry.get("body_md", ""), "html": entry["rendered_html"],
         "replyTo": REPLY_TO, "inReplyTo": entry.get("in_reply_to", ""),
+        "cc": pflicht_cc(entry["to"], entry.get("cc", "")),
         "attachments": entry.get("attachments", []),  # Inline-Logos (cid)
         "approval": secret,
         "signatur": "none",  # Luna signiert selbst (Vorschau vor Freigabe)
     }
+
+
+def build_forward_payload(mail: dict) -> dict:
+    """Kopie einer Maxim-Mail an Walter. Kein approval noetig: office@ -> ws@ laesst
+    der Relay ohne Gate durch. `signatur: none`, damit unter Maxims Text keine
+    Luna-Signatur klebt — es ist eine Weiterleitung, kein Schreiben von uns."""
+    kopf = (
+        "WEITERLEITUNG — diese Mail von Maxim ging an office@, du standest nicht im Verteiler.\n\n"
+        "Von:     %s\n"
+        "An:      %s\n"
+        "Cc:      %s\n"
+        "Datum:   %s\n"
+        "Betreff: %s\n\n"
+        "---\n\n"
+    ) % (mail.get("from", ""), mail.get("to", ""), mail.get("cc", "") or "(keine)",
+         mail.get("date", ""), mail.get("subject", ""))
+    return {
+        "from": FROM, "to": FORWARD_TO,
+        "subject": "Kopie von Maxim: %s" % (mail.get("subject") or "(ohne Betreff)"),
+        "text": kopf + (mail.get("body") or ""),
+        "signatur": "none",
+    }
+
+
+def forward_to_walter(mail: dict, *, urlopen=urllib.request.urlopen) -> tuple[int, str]:
+    """Weiterleitung absenden. Gleiche Fehlersemantik wie send_approved:
+    Status 0 = nicht-terminal (Retry im naechsten Tick)."""
+    payload = build_forward_payload(mail)
+    req = urllib.request.Request(
+        WEBHOOK, data=json.dumps(payload).encode(), method="POST",
+        headers={"Content-Type": "application/json", "X-Mailhub-Secret": WEBHOOK_SECRET})
+    try:
+        with urlopen(req, timeout=30) as r:
+            return r.status, r.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode()
+    except Exception as e:  # noqa: BLE001 — URLError/Timeout/Socket: nicht-terminal -> Retry
+        return 0, f"{type(e).__name__}: {e}"
 
 
 def send_approved(entry: dict, *, urlopen=urllib.request.urlopen) -> tuple[int, str]:

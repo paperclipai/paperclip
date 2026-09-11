@@ -33,7 +33,7 @@ import office_inbox as office_inbox  # noqa: E402
 
 WALTER_SENDERS = ("w.schonenbrocher", "walter", "ws@whitestag.ai")
 
-BASE = "http://localhost:3100"
+BASE = os.environ.get("PAPERCLIP_API_URL", "http://localhost:3100").rstrip("/")
 COMPANY = "9cebf3cf-efe8-4597-a400-f06488900a87"
 AGENT = "e24b8d9d-143e-4141-b413-4361aa618771"
 MAILDIR = Path.home() / "Obsidian" / "WHITESTAG-Vault" / "E-Mails"
@@ -304,6 +304,45 @@ def process_office_approvals(*, dry_run, send=approval_send.send_approved,
     return results
 
 
+def process_maxim_forwards(*, dry_run, forward=approval_send.forward_to_walter):
+    """Walters Regel 3 (2026-08-31): Schreibt Maxim an office@, ohne dass Walter in
+    To oder Cc steht, bekommt Walter eine Kopie. Liste von {uid, subject, action}.
+
+    Erster Lauf ohne State wird NUR eingelesen, nicht verschickt ("seed"): sonst
+    kaeme beim Scharfschalten der gesamte Rueckstand des Fensters auf einmal an.
+    Bearbeitete UIDs werden gemerkt, sonst ginge dieselbe Mail alle 5 Minuten neu raus.
+    """
+    erstlauf = not office_inbox.MAXIM_STATE.exists()
+    processed = office_inbox.load_processed_maxim()
+    try:
+        mails = office_inbox.fetch_maxim_without_walter(processed)
+    except Exception as e:  # noqa: BLE001 — office@ nicht erreichbar darf Tick nicht killen
+        print(f"WARN Maxim-Weiterleitung: Abruf fehlgeschlagen: {e}", file=sys.stderr)
+        return []
+    results = []
+    for m in mails:
+        kurz = (m.get("subject") or "")[:60]
+        if erstlauf:
+            processed.add(m["uid"])
+            results.append({"uid": m["uid"], "subject": kurz, "action": "seed"})
+            continue
+        if dry_run:
+            results.append({"uid": m["uid"], "subject": kurz, "action": "would-forward"})
+            continue
+        status, body = forward(m)
+        if 200 <= status < 300:
+            print(f"Maxim-Mail an Walter weitergeleitet: {kurz}")
+            processed.add(m["uid"])
+            results.append({"uid": m["uid"], "subject": kurz, "action": "forwarded"})
+        else:
+            # UID NICHT merken -> naechster Tick versucht es erneut.
+            print(f"WARN Weiterleitung fehlgeschlagen ({status}): {body[:200]}", file=sys.stderr)
+            results.append({"uid": m["uid"], "subject": kurz, "action": "forward-error"})
+    if not dry_run:
+        office_inbox.save_processed_maxim(processed)
+    return results
+
+
 def process_unblock_commands(*, dry_run):
     """Liest Walters 'Entsperren <adresse>'-Mails aus office@ und entfernt die
     Adresse von der Blockliste (still). Liste von {uid, addr, action}. Bearbeitete
@@ -534,7 +573,7 @@ def main() -> None:
 
     # --- Vier-Augen: Freigaben & TTL zuerst (deterministisch, kein LLM) ---
     if not a.dry_run:
-        for tok in approval_queue.expire_stale(ttl_days=7):
+        for tok in approval_queue.expire_stale(ttl_hours=24):
             print(f"Freigabe #{tok} nach TTL verfallen.")
     # PRIMÄR: office@-Posteingang (dorthin gehen Walters Antworten direkt, zuverlässig).
     office_results = process_office_approvals(dry_run=a.dry_run, save_sent=ews_sent.save_to_sent)
@@ -543,6 +582,9 @@ def main() -> None:
     unblock_results = process_unblock_commands(dry_run=a.dry_run)
     if unblock_results:
         print(f"Entsperr-Kommandos: {unblock_results}")
+    maxim_results = process_maxim_forwards(dry_run=a.dry_run)
+    if maxim_results:
+        print(f"Maxim-Weiterleitungen: {maxim_results}")
     # Triage-Issues abschließen, die Luna erledigt hat, die aber der Adapter-Guard
     # blockiert hat (Modell rief den terminalen Status-Call nicht auf).
     reconciled = reconcile_blocked_triage(dry_run=a.dry_run)

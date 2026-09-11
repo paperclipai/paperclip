@@ -105,9 +105,21 @@ def mark(token: str, status: str, **extra) -> dict:
     return e
 
 
-def expire_stale(ttl_days: int = 7, now: datetime | None = None) -> list[str]:
+def expire_stale(ttl_hours: int = 24, now: datetime | None = None) -> list[str]:
+    """Verwirft Entwuerfe, auf die Walter nicht rechtzeitig geantwortet hat.
+
+    Frist: 24 Stunden ab `created` (Walters Regel vom 2026-09-01). Keine Antwort
+    innerhalb der Frist = **nicht** freigegeben; der Entwurf geht weg, statt sich
+    als pending anzusammeln. Vorher galten 7 Tage — damit lagen zuletzt 14 alte
+    Entwuerfe in der Queue, und ein pending-Eintrag blockiert ueber
+    `find_pending_duplicate` jeden neuen Entwurf an denselben Empfaenger.
+
+    Der Parameter zaehlt bewusst **Stunden**, nicht Tage: `ttl_days=1` haette
+    dieselbe Wirkung, laedt aber dazu ein, die Frist beim naechsten Anfassen auf
+    ganze Tage zu runden.
+    """
     now = now or datetime.now()
-    cutoff = now - timedelta(days=ttl_days)
+    cutoff = now - timedelta(hours=ttl_hours)
     expired = []
     for e in list_pending():
         try:

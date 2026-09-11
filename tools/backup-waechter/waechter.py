@@ -11,6 +11,10 @@ schickt auch keine Fehlermeldung.
   3. Claude-Code-Ordner, Nextcloud  (täglich 05:00)  — Grenze 30 h
   4. Vault-Spiegel auf der NAS      (täglich 04:00)  — Grenze 30 h
   5. Vault in der Nextcloud         (sonntags 03:30) — Grenze 9 Tage
+  6. SSD-Sicherung, lokal           (täglich 03:30)  — Grenze 30 h
+  7. Systemgeheimnisse, Nextcloud   (täglich 05:45)  — Grenze 30 h
+  8. NAS-Projektordner, Nextcloud   (täglich 06:15)  — Grenze 30 h
+  9. n8n, Nextcloud                 (täglich 05:45)  — Grenze 30 h
 Dazu die Belegung des Nextcloud-Kontos (Warnung ab 80 %).
 
 WICHTIG: Nicht direkt per launchd starten. macOS verweigert einem launchd-Job
@@ -53,6 +57,18 @@ RESTIC_PASS = os.path.expanduser("~/.restic/repo.pass")
 TAG_VAULT = "obsidian-vault"
 TAG_DB = "paperclip-db"
 TAG_CODE = "claude-code"
+# Seit 04.09.2026: Schluessel, Secrets, .claude und Postgres@18 (Port 5432),
+# sowie die Projektordner von Windows-Rechner und MacBook.
+TAG_SECRETS = "system-secrets"
+TAG_NAS = "nas-projekte"
+# n8n mit eigenem Schlagwort: die 2,2-GB-Datenbank aendert sich taeglich
+# komplett, ihre Aufbewahrung soll getrennt kuerzbar bleiben.
+TAG_N8N = "n8n"
+
+# Lokale Sicherung auf die Thunderbolt-SSD (de.whitestag.ssd-backup).
+# Die Statusdatei liegt bewusst lokal und nicht auf der Platte selbst: sonst
+# waere der Stand bei abgezogener SSD "nicht ermittelbar" statt "ueberfaellig".
+SSD_STATUS = os.path.expanduser("~/.paperclip/logs/ssd-backup-last.json")
 
 STD = timedelta(hours=1)
 TAG = timedelta(days=1)
@@ -232,6 +248,64 @@ def belegung():
         return None
 
 
+def vorheriger_stand():
+    """Kennzahlen des letzten Laufs, fuer die Zuwachs-Spalte im Bericht.
+
+    Leeres Dict, wenn es keinen Vorlauf gibt — der erste Bericht zeigt dann
+    schlicht keinen Zuwachs, statt eine erfundene Zahl auszuweisen.
+    """
+    try:
+        with open(STATUS, encoding="utf-8") as fh:
+            return json.load(fh).get("kennzahlen") or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def ssd_kennzahlen():
+    """Snapshot-Zahl und Belegung der SSD aus deren Statusdatei."""
+    try:
+        with open(SSD_STATUS, encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return {"ssd_snapshots": d.get("snapshots", 0),
+            "ssd_belegt_kb": d.get("belegt_kb", 0),
+            "ssd_frei_kb": d.get("frei_kb", 0),
+            "ssd_fehlende_quellen": d.get("fehlende_quellen", 0)}
+
+
+def zaehle_je_tag(snaps, tags):
+    """Anzahl Snapshots je Schlagwort. Leeres Dict, wenn das Repo stumm war."""
+    if snaps is None:
+        return {}
+    ergebnis = {}
+    for t in tags:
+        ergebnis[t] = sum(1 for x in snaps if t in (x.get("tags") or []))
+    return ergebnis
+
+
+def _gb(kb):
+    return kb / 1024 / 1024
+
+
+def _delta_text(jetzt_wert, vorher_wert, einheit="GB"):
+    """Zuwachs gegenueber dem Vorlauf, oder leer wenn kein Vergleich moeglich.
+
+    Ein Zuwachs von exakt 0 wird ausgewiesen, nicht verschwiegen: er ist das
+    Warnzeichen dafuer, dass ein Job zwar laeuft, aber nichts mehr sichert.
+    """
+    if vorher_wert is None or jetzt_wert is None:
+        return ""
+    d = jetzt_wert - vorher_wert
+    if einheit == "GB":
+        if abs(d) < 0.05:
+            return " (unverändert)"
+        return f" ({d:+.1f} GB)"
+    if d == 0:
+        return " (unverändert)"
+    return f" ({d:+d})"
+
+
 def sende(betreff, html, text):
     try:
         with open(MAILHUB_ENV, encoding="utf-8") as fh:
@@ -255,7 +329,54 @@ def sende(betreff, html, text):
         return False
 
 
-def baue_html(befund, anzahl, alarm):
+def baue_bericht(kennzahlen, vorher):
+    """Tabelle mit Umfang und Zuwachs. Leerer String, wenn nichts vorliegt."""
+    if not kennzahlen:
+        return ""
+
+    zeilen = []
+
+    def zeile(name, wert, zuwachs=""):
+        zeilen.append(
+            f"<tr><td style='padding:3px 12px 3px 0'>{name}</td>"
+            f"<td style='padding:3px 0;text-align:right;white-space:nowrap'>"
+            f"{wert}<span style='color:#5f6368'>{zuwachs}</span></td></tr>")
+
+    for schluessel, name in (("claude-code", "Claude-Code-Ordner"),
+                             ("paperclip-db", "Paperclip-Datenbank"),
+                             ("obsidian-vault", "Obsidian-Vault"),
+                             ("system-secrets", "Systemgeheimnisse"),
+                             ("nas-projekte", "NAS-Projektordner"),
+                             ("n8n", "n8n")):
+        n = kennzahlen.get("snaps", {}).get(schluessel)
+        if n is None:
+            continue
+        alt = (vorher.get("snaps") or {}).get(schluessel)
+        zeile(f"{name} (Hetzner)", f"{n} Snapshots",
+              _delta_text(n, alt, "stk"))
+
+    if "ssd_snapshots" in kennzahlen:
+        zeile("SSD-Sicherung (lokal)",
+              f"{kennzahlen['ssd_snapshots']} Snapshots",
+              _delta_text(kennzahlen["ssd_snapshots"],
+                          vorher.get("ssd_snapshots"), "stk"))
+        belegt = _gb(kennzahlen.get("ssd_belegt_kb", 0))
+        alt_belegt = (_gb(vorher["ssd_belegt_kb"])
+                      if "ssd_belegt_kb" in vorher else None)
+        zeile("&nbsp;&nbsp;belegt", f"{belegt:.1f} GB",
+              _delta_text(belegt, alt_belegt))
+        zeile("&nbsp;&nbsp;frei", f"{_gb(kennzahlen.get('ssd_frei_kb', 0)):.0f} GB")
+
+    if kennzahlen.get("nc_used_gb") is not None:
+        zeile("Hetzner belegt", f"{kennzahlen['nc_used_gb']:.1f} GB",
+              _delta_text(kennzahlen["nc_used_gb"], vorher.get("nc_used_gb")))
+
+    return ("<h3 style='font-size:15px;margin:18px 0 6px'>Umfang</h3>"
+            "<table style='font-size:14px;border-collapse:collapse'>"
+            + "".join(zeilen) + "</table>")
+
+
+def baue_html(befund, anzahl, alarm, kennzahlen=None, vorher=None):
     farbe, kopf = ("#d93025", "Sicherungen: Problem") if alarm else \
                   ("#188038", "Sicherungen: alles grün")
     liste = "".join(f"<li>{z}</li>" for z in befund.zeilen)
@@ -271,10 +392,12 @@ def baue_html(befund, anzahl, alarm):
             f"<ul style='font-size:14px;line-height:1.7'>{liste}</ul>"
             f"<p style='font-size:14px'>{anzahl} Sicherungen der Datenbank "
             f"liegen auf der NAS.</p>"
+            f"{baue_bericht(kennzahlen or {}, vorher or {})}"
             f"<p style='color:#9aa0a6;font-size:12px'>Wächter "
-            f"<code>de.whitestag.backup-waechter</code>, täglich 09:00. "
-            f"Die Lebendmeldung kommt montags und donnerstags — bleibt sie "
-            f"aus, ist der Wächter selbst tot.</p></div>")
+            f"<code>de.whitestag.backup-waechter</code>, täglich 07:00 — "
+            f"nach dem letzten Sicherungslauf (06:15). Der Betreff trägt das "
+            f"Ergebnis; bleibt der Bericht ganz aus, ist der Wächter selbst "
+            f"tot.</p></div>")
 
 
 def main():
@@ -315,13 +438,29 @@ def main():
         pruefung.Pruefling("Repo-Pruefung (Hetzner)",
                            status_stand(REPO_PRUEF_STATUS),
                            GRENZE_REPO_PRUEFUNG, "Statusdatei"),
+        # Seit 04.09.2026. Die SSD haengt dauerhaft am Mac; faellt der Lauf
+        # aus, ist das kein Sonderfall, sondern ein Ausfall wie jeder andere.
+        pruefung.Pruefling("SSD-Sicherung (lokal)",
+                           status_stand(SSD_STATUS),
+                           GRENZE_TAEGLICH, "Statusdatei"),
+        pruefung.Pruefling("Systemgeheimnisse (Nextcloud)",
+                           aus_repo(TAG_SECRETS),
+                           GRENZE_TAEGLICH, "restic"),
+        pruefung.Pruefling("NAS-Projektordner (Nextcloud)",
+                           aus_repo(TAG_NAS),
+                           GRENZE_TAEGLICH, "restic"),
+        pruefung.Pruefling("n8n (Nextcloud)", aus_repo(TAG_N8N),
+                           GRENZE_TAEGLICH, "restic"),
     ]
     befund = pruefung.bewerte(jetzt, prueflinge)
 
     # Platzwarnung als zusaetzliche Zeile und ggf. zusaetzliches Problem.
+    # `belegung()` fragt rclone ueber das Netz — bewusst nur EIN Aufruf, der
+    # sowohl die Warnung als auch die Kennzahl im Bericht speist.
+    belegt_bytes = belegung()
     kontingent = KONTINGENT_GB * 1024 ** 3 if KONTINGENT_GB else None
     platz_problem, platz_zeile = pruefung.bewerte_platz(
-        belegung(), kontingent, PLATZ_SCHWELLE)
+        belegt_bytes, kontingent, PLATZ_SCHWELLE)
     befund = pruefung.Befund(
         ok=befund.ok and platz_problem is None,
         probleme=befund.probleme + ([platz_problem] if platz_problem else []),
@@ -331,24 +470,62 @@ def main():
     for zeile in befund.zeilen:
         log(zeile)
 
+    # Kennzahlen fuer den Bericht. VOR dem Ueberschreiben des Status lesen,
+    # sonst vergleicht der Zuwachs gegen sich selbst.
+    vorher = vorheriger_stand()
+    kennzahlen = {
+        "snaps": zaehle_je_tag(snaps, [TAG_CODE, TAG_DB, TAG_VAULT,
+                                       TAG_SECRETS, TAG_NAS, TAG_N8N]),
+        "nc_used_gb": (belegt_bytes / 1024 ** 3
+                       if belegt_bytes is not None else None),
+    }
+    kennzahlen.update(ssd_kennzahlen())
+
+    # Ein unvollstaendiger SSD-Snapshot (NAS beim Lauf nicht gemountet) ist
+    # kein Grund fuer Alarm — die Sicherung lief ja — aber er gehoert in den
+    # Bericht, sonst faellt monatelang niemandem auf, dass Ordner fehlen.
+    fehlend = kennzahlen.get("ssd_fehlende_quellen") or 0
+    if fehlend:
+        befund = pruefung.Befund(
+            ok=befund.ok,
+            probleme=befund.probleme,
+            zeilen=befund.zeilen + [
+                f"Hinweis: der letzte SSD-Lauf konnte {fehlend} Quelle(n) "
+                f"nicht erreichen (NAS nicht gemountet?)."],
+        )
+
     with open(STATUS, "w", encoding="utf-8") as fh:
         json.dump({"stand": "ok" if befund.ok else "problem",
                    "zeit": jetzt.isoformat(timespec="seconds"),
                    "probleme": befund.probleme,
-                   "sicherungen_nas": anzahl}, fh, ensure_ascii=False)
+                   "sicherungen_nas": anzahl,
+                   "kennzahlen": kennzahlen}, fh, ensure_ascii=False)
+
+    geprueft = len(prueflinge)
 
     if not befund.ok:
         log("PROBLEM: " + " | ".join(befund.probleme))
         if versand:
-            sende("ALARM: Sicherung überfällig",
-                  baue_html(befund, anzahl, alarm=True),
+            sende(f"ALARM {jetzt:%d.%m.}: Sicherung überfällig",
+                  baue_html(befund, anzahl, alarm=True, kennzahlen=kennzahlen,
+                            vorher=vorher),
                   "Sicherung überfällig: " + " | ".join(befund.probleme))
         return 1
 
     log("Alles grün.")
-    if versand and (erzwinge or pruefung.heartbeat_faellig(jetzt)):
-        sende("Sicherungen: alles grün",
-              baue_html(befund, anzahl, alarm=False),
+    # Seit 04.09.2026 taeglich statt montags/donnerstags — auf Walters Wunsch
+    # ein Bericht, der zeigt, WAS gesichert wurde, nicht nur DASS.
+    #
+    # Der Einwand aus pruefung.heartbeat_faellig() bleibt gueltig: eine Mail,
+    # die jeden Morgen kommt, wird zur Gewohnheit. Dagegen steht das Ergebnis
+    # im Betreff ("8/8 grün"), sodass sich das Postfach ueberfliegen laesst,
+    # ohne eine Mail zu oeffnen — und eine fehlende Zeile faellt beim
+    # Ueberfliegen auf. `heartbeat_faellig` bleibt unangetastet, damit die
+    # Rueckkehr zum alten Rhythmus eine Zeile Arbeit ist.
+    if versand:
+        sende(f"Sicherungen {jetzt:%d.%m.}: {geprueft}/{geprueft} grün",
+              baue_html(befund, anzahl, alarm=False, kennzahlen=kennzahlen,
+                        vorher=vorher),
               "Alle Sicherungen aktuell.")
     return 0
 
