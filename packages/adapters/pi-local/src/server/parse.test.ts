@@ -260,6 +260,68 @@ describe("parsePiJsonl", () => {
     const parsed = parsePiJsonl(stdout);
     expect(parsed.errors).toEqual([]);
   });
+
+  it("keeps costUsd as null when no usage event is emitted", () => {
+    const stdout = [
+      JSON.stringify({ type: "agent_start" }),
+      JSON.stringify({
+        type: "turn_end",
+        message: { role: "assistant", content: "Done" },
+      }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.usage.costUsd).toBeNull();
+  });
+
+  it("keeps costUsd as null when usage event omits cost (Gemini-style)", () => {
+    // Gemini ACP output reports token counts but no USD cost field.
+    const stdout = [
+      JSON.stringify({
+        type: "usage",
+        usage: {
+          inputTokens: 120,
+          outputTokens: 60,
+          cachedInputTokens: 0,
+          // No costUsd or cost.total field — Gemini does not emit this.
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.usage.inputTokens).toBe(120);
+    expect(parsed.usage.outputTokens).toBe(60);
+    expect(parsed.usage.costUsd).toBeNull();
+  });
+
+  it("accumulates cost correctly in mixed turns (some with cost, some without)", () => {
+    // First turn: Gemini — no cost. Second turn: Claude — has cost.
+    const stdout = [
+      JSON.stringify({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          content: "No cost reported",
+          usage: { input: 40, output: 20, cacheRead: 0 },
+          // No cost block.
+        },
+      }),
+      JSON.stringify({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          content: "Cost reported",
+          usage: { input: 30, output: 10, cacheRead: 0, cost: { total: 0.002 } },
+        },
+      }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.usage.inputTokens).toBe(70);
+    expect(parsed.usage.outputTokens).toBe(30);
+    // When at least one turn reports cost, the total should accumulate from null correctly.
+    expect(parsed.usage.costUsd).toBeCloseTo(0.002, 4);
+  });
 });
 
 describe("isPiUnknownSessionError", () => {
