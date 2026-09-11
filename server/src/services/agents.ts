@@ -42,6 +42,7 @@ import {
   assertClaudeOAuthBindingInvariant,
   claudeOAuthClaimRejectedError,
   CLAUDE_LOCAL_ADAPTER_TYPE,
+  isFixedClaudeOAuthBinding,
   secretService,
   type ClaudeOAuthBindingInvariantDecision,
 } from "./secrets.js";
@@ -97,12 +98,20 @@ interface RevisionMetadata {
  * from that actor. The path binds the fixed reference to the owner stored value
  * with no login round trip. It is distinct from `allowInternalBindingOverride`,
  * which does no ownership check.
+ *
+ * The `inheritedFromAgentId` field is the hire-inheritance path. The route
+ * sets it only for an authenticated agent actor whose hire request inherited
+ * the fixed reference from that named parent. The service re-reads the parent
+ * agent inside the write transaction and binds the fixed reference only when
+ * the parent exists, is in the same company, is a `claude_local` agent, and
+ * already holds the exact fixed binding.
  */
 interface ClaudeLoginContext {
   storedSessionId?: string | null;
   ownerUserId?: string | null;
   allowInternalBindingOverride?: boolean;
   applyExistingWithoutClaim?: boolean;
+  inheritedFromAgentId?: string | null;
 }
 
 interface UpdateAgentOptions {
@@ -557,6 +566,16 @@ export function agentService(db: Db) {
    * owner or a missing stored value raises the same fixed claim error, so the
    * caller cannot tell the reasons apart.
    *
+   * The hire-inheritance path (`inheritedFromAgentId`) binds the fixed
+   * reference with no login round trip and no stored owner value, because the
+   * owning user resolves per run, not from a value stored against this agent.
+   * The gate re-reads the named parent agent inside this transaction and
+   * permits the bind only when the parent exists, is in the same company, is a
+   * `claude_local` agent, and already holds the exact fixed binding. The route
+   * derives this identifier from the authenticated agent actor, never from the
+   * request body, so the gate treats it as a claim to verify, not a trusted
+   * value.
+   *
    * A controlled internal override skips the claim for a migration or an
    * administrator repair. The function creates the fixed user-secret definition
    * before the caller runs the declaration synchronization, so the synchronized
@@ -586,6 +605,31 @@ export function agentService(db: Db) {
           ownerUserId,
         );
         if (!stored) {
+          throw claudeOAuthClaimRejectedError();
+        }
+      } else if (input.claudeLogin?.inheritedFromAgentId) {
+        // The hire-inheritance path. Re-read the named parent inside this
+        // transaction; a caller-supplied identifier never binds on its own.
+        const parentId = input.claudeLogin.inheritedFromAgentId;
+        const parent = await txDb
+          .select({
+            companyId: agents.companyId,
+            adapterType: agents.adapterType,
+            adapterConfig: agents.adapterConfig,
+          })
+          .from(agents)
+          .where(eq(agents.id, parentId))
+          .then((rows) => rows[0] ?? null);
+        const parentAdapterConfig = parent && isPlainRecord(parent.adapterConfig) ? parent.adapterConfig : null;
+        const parentEnv =
+          parentAdapterConfig && isPlainRecord(parentAdapterConfig.env) ? parentAdapterConfig.env : null;
+        const parentBinding = parentEnv ? parentEnv.CLAUDE_CODE_OAUTH_TOKEN : null;
+        if (
+          !parent ||
+          parent.companyId !== input.companyId ||
+          parent.adapterType !== CLAUDE_LOCAL_ADAPTER_TYPE ||
+          !isFixedClaudeOAuthBinding(parentBinding)
+        ) {
           throw claudeOAuthClaimRejectedError();
         }
       } else if (!input.consume) {

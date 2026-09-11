@@ -797,6 +797,108 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     expect(JSON.stringify(definitions)).not.toContain("sk-secret-resolve");
   });
 
+  // --- The hire-inheritance path (no login round trip, no stored owner value) -
+
+  async function seedParentAgent(
+    parentScope: Scope,
+    options: { adapterType?: string; holdsFixedBinding?: boolean } = {},
+  ) {
+    const [row] = await db
+      .insert(agents)
+      .values({
+        companyId: parentScope.companyId,
+        name: `Parent ${randomUUID().slice(0, 8)}`,
+        role: "engineer",
+        status: "idle",
+        adapterType: options.adapterType ?? "claude_local",
+        adapterConfig: {
+          env: options.holdsFixedBinding === false ? {} : { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING } },
+        },
+        runtimeConfig: {},
+      })
+      .returning();
+    return row!;
+  }
+
+  async function countDeclarationsForCompany(companyId: string): Promise<number> {
+    const rows = await db
+      .select()
+      .from(userSecretDeclarations)
+      .where(eq(userSecretDeclarations.companyId, companyId));
+    return rows.length;
+  }
+
+  it("binds the inherited fixed reference from a named claude_local parent with no claim and no stored owner value", async () => {
+    const scope = await seedScope();
+    const parent = await seedParentAgent(scope);
+
+    const created = await agentService(db).create(scope.companyId, createInput(scope), {
+      claudeLogin: { inheritedFromAgentId: parent.id },
+    });
+
+    const persisted = created.adapterConfig as { env: Record<string, unknown> };
+    expect(persisted.env.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject(FIXED_BINDING);
+    expect(await countDeclarationsForAgent(created.id)).toBe(1);
+  });
+
+  it("rejects an inherited claim when the named parent holds no fixed binding", async () => {
+    const scope = await seedScope();
+    const parent = await seedParentAgent(scope, { holdsFixedBinding: false });
+
+    await expect(
+      agentService(db).create(scope.companyId, createInput(scope), {
+        claudeLogin: { inheritedFromAgentId: parent.id },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    // Only the seeded parent exists; the rejected create inserted no child.
+    expect(await countAgents(scope.companyId)).toBe(1);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
+  });
+
+  it("rejects an inherited claim naming a parent in another company", async () => {
+    const scope = await seedScope();
+    const foreignScope = await seedScope();
+    const parent = await seedParentAgent(foreignScope);
+
+    await expect(
+      agentService(db).create(scope.companyId, createInput(scope), {
+        claudeLogin: { inheritedFromAgentId: parent.id },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    expect(await countAgents(scope.companyId)).toBe(0);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
+    expect(await countUserSecretDefinitions(scope.companyId)).toBe(0);
+  });
+
+  it("rejects an inherited claim naming an unknown or deleted parent", async () => {
+    const scope = await seedScope();
+
+    await expect(
+      agentService(db).create(scope.companyId, createInput(scope), {
+        claudeLogin: { inheritedFromAgentId: randomUUID() },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    expect(await countAgents(scope.companyId)).toBe(0);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
+  });
+
+  it("rejects an inherited claim naming a non-claude_local parent that still holds the fixed binding shape", async () => {
+    const scope = await seedScope();
+    // The parent's stored env happens to carry the exact fixed-binding shape
+    // under a non-claude_local adapter type. Complete mediation requires the
+    // gate to check the adapter type itself, not only the binding shape.
+    const parent = await seedParentAgent(scope, { adapterType: "codex_local" });
+
+    await expect(
+      agentService(db).create(scope.companyId, createInput(scope), {
+        claudeLogin: { inheritedFromAgentId: parent.id },
+      }),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    // Only the seeded parent exists; the rejected create inserted no child.
+    expect(await countAgents(scope.companyId)).toBe(1);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
+  });
+
   // --- The atomic credential-claim writer (item 2) ---------------------------
 
   function claimScope(scope: Scope): SetupTokenSessionScope {
