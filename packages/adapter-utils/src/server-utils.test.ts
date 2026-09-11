@@ -362,16 +362,18 @@ describe("removeMaintainerOnlySkillSymlinks", () => {
       const skillsHome = path.join(root, "skills");
       await fs.mkdir(skillsHome, { recursive: true });
 
-      // A skill this lane materialized as a plain directory (the shape an
-      // earlier build without the manifest could leave behind) and no
-      // longer selects.
+      // A skill this lane materialized as an owned copy (the shape the
+      // Agent Client Protocol lane's permission-error fallback writes) and
+      // no longer selects.
       const staleManagedDir = path.join(skillsHome, "old-skill");
-      await fs.mkdir(staleManagedDir, { recursive: true });
+      const staleSource = path.join(root, "old-skill-source");
+      await fs.mkdir(staleSource, { recursive: true });
       await fs.writeFile(
-        path.join(staleManagedDir, "SKILL.md"),
+        path.join(staleSource, "SKILL.md"),
         "# old\n",
         "utf8",
       );
+      await materializePaperclipSkillCopy(staleSource, staleManagedDir);
       await writeManagedGeminiSkillsManifest(skillsHome, ["old-skill"]);
 
       // An entry the manifest never named: a skill the user put in their
@@ -481,6 +483,70 @@ describe("removeMaintainerOnlySkillSymlinks", () => {
 
       expect(removed).toEqual(["maintainer-skill"]);
       await expect(fs.lstat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a user's own directory that replaced a formerly managed entry between runs", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      const source = path.join(root, "source-skill");
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# notes\n", "utf8");
+
+      // Run 1: the lane links the selected skill and records it as managed.
+      const target = path.join(skillsHome, "notes");
+      await ensurePaperclipSkillSymlink(source, target);
+      await writeManagedGeminiSkillsManifest(skillsHome, ["notes"]);
+
+      // Between runs, the user removes the link by hand and writes their
+      // own directory at the same name.
+      await fs.unlink(target);
+      await fs.mkdir(target, { recursive: true });
+      await fs.writeFile(
+        path.join(target, "SKILL.md"),
+        "# my own notes\n",
+        "utf8",
+      );
+
+      // Run 2: the skill is no longer selected. The manifest still names
+      // "notes", but the entry on disk is now the user's own directory, not
+      // a lane-owned shape. The prune must keep it and must not report it
+      // as removed.
+      const removed = await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+      expect(removed).toEqual([]);
+      await expect(
+        fs.readFile(path.join(target, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# my own notes\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a manifest-named entry that is a regular file, not a lane-owned shape", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      await fs.mkdir(skillsHome, { recursive: true });
+
+      const target = path.join(skillsHome, "stray-file");
+      await fs.writeFile(target, "not a skill\n", "utf8");
+      await writeManagedGeminiSkillsManifest(skillsHome, ["stray-file"]);
+
+      const removed = await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+      expect(removed).toEqual([]);
+      await expect(fs.readFile(target, "utf8")).resolves.toBe(
+        "not a skill\n",
+      );
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

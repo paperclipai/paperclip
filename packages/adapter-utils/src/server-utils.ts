@@ -4506,6 +4506,29 @@ export async function writeManagedGeminiSkillsManifest(
 }
 
 /**
+ * Test if `target` carries a valid materialized-skill sentinel, the marker
+ * `materializePaperclipSkillCopy` writes into a directory it owns.
+ */
+async function hasValidMaterializedSkillSentinel(
+  target: string,
+): Promise<boolean> {
+  try {
+    const raw = JSON.parse(
+      await fs.readFile(
+        path.join(target, MATERIALIZED_SKILL_SENTINEL),
+        "utf8",
+      ),
+    ) as unknown;
+    const parsed = parseObject(raw);
+    return (
+      parsed.version === 1 && typeof parsed.sourceFingerprint === "string"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Test if the Gemini lane owns the entry at `target` after it materializes
  * `source` there. Only an owned entry may enter the managed-skills
  * manifest. An owned entry is one of:
@@ -4537,22 +4560,34 @@ export async function isManagedGeminiSkillEntry(
   }
 
   if (existing.isDirectory()) {
-    try {
-      const raw = JSON.parse(
-        await fs.readFile(
-          path.join(target, MATERIALIZED_SKILL_SENTINEL),
-          "utf8",
-        ),
-      ) as unknown;
-      const parsed = parseObject(raw);
-      return (
-        parsed.version === 1 && typeof parsed.sourceFingerprint === "string"
-      );
-    } catch {
-      return false;
-    }
+    return hasValidMaterializedSkillSentinel(target);
   }
 
+  return false;
+}
+
+/**
+ * Test if `target` carries a shape the Gemini lane could have created, with
+ * no check against a specific skill source. `removeMaintainerOnlySkillSymlinks`
+ * calls this at the point of removal, because the manifest only records what
+ * the lane owned at the end of the last run — it does not prove the entry is
+ * still the lane's now. A lane-owned shape is one of:
+ *
+ * - a symbolic link, of any target; or
+ * - a directory that carries a valid materialized-skill sentinel.
+ *
+ * A plain directory with no sentinel, a regular file, and every other entry
+ * type are not a lane-owned shape, even when the manifest names the entry.
+ */
+export async function isLaneOwnedSkillEntryShape(
+  target: string,
+): Promise<boolean> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing) return false;
+  if (existing.isSymbolicLink()) return true;
+  if (existing.isDirectory()) {
+    return hasValidMaterializedSkillSentinel(target);
+  }
   return false;
 }
 
@@ -4570,12 +4605,23 @@ export async function removeMaintainerOnlySkillSymlinks(
 
       const target = path.join(skillsHome, entry.name);
 
-      // A name in the manifest is a skill this lane owns. Prune it in full —
-      // a directory, a file, or a symlink to any source — because the lane
-      // itself wrote it and no longer selects it.
+      // A name in the manifest is a skill this lane owned at the end of the
+      // last run. That does not prove the lane still owns it now: a user
+      // action between runs can replace the entry with their own directory
+      // at the same name. Remove it only when its shape on disk is still
+      // lane-owned — a symbolic link, or a directory with a valid
+      // materialized-skill sentinel.
       if (managed.has(entry.name)) {
-        await fs.rm(target, { recursive: true, force: true }).catch(() => {});
-        removed.push(entry.name);
+        if (await isLaneOwnedSkillEntryShape(target)) {
+          await fs.rm(target, { recursive: true, force: true }).catch(() => {});
+          removed.push(entry.name);
+        } else {
+          // eslint-disable-next-line no-console
+          console.warn(
+            `[paperclip] kept Gemini managed-skill entry "${entry.name}" — ` +
+              "its shape on disk is not lane-owned.",
+          );
+        }
         continue;
       }
 
