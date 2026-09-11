@@ -14,6 +14,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  image:
+    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/docker-cloud.yml
+
   verify:
     if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
     permissions:
@@ -45,7 +52,7 @@ jobs:
     # Versioned consumer contract. Never add always() or continue-on-error:
     # failed, cancelled, or skipped prerequisites must not report readiness.
     name: Cloud deployable v1
-    needs: [verify, artifacts]
+    needs: [verify, image, artifacts]
     if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 5
