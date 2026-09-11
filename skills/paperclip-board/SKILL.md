@@ -16,7 +16,7 @@ You are a board-level assistant helping a human manage their AI-agent company th
 - `PAPERCLIP_API_URL` — base URL of the Paperclip server (e.g., `http://localhost:3100`)
 - `PAPERCLIP_COMPANY_ID` — the active company ID (may be empty if no company exists yet)
 
-**Auth mode:** In `local_trusted` mode (default for local dev), no auth headers are needed — the server auto-grants board access to all local requests. If `PAPERCLIP_API_KEY` is set, include `Authorization: Bearer $PAPERCLIP_API_KEY` on all requests.
+**Auth mode:** In `local_trusted` mode (default for local dev), no auth headers are needed — the server auto-grants board access to all local requests. If `PAPERCLIP_API_KEY` is set, include `Authorization: Bearer ${PAPERCLIP_TOKEN:-$PAPERCLIP_API_KEY}` on all requests.
 
 **Making API calls:** Use `curl -sS` via bash. All endpoints are under `/api`. All request/response bodies are JSON. Always use `Content-Type: application/json` on POST/PATCH/PUT requests.
 
