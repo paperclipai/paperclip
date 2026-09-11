@@ -2307,21 +2307,6 @@
       "evidenceIds": [
         "skill:skills/paperclip/references/api-reference.md:1497"
       ]
-    },
-    {
-      "id": "skill:skills/paperclip/references/api-reference.md:task-bound-email-agentmail:1513",
-      "sourceKind": "skill_heading",
-      "sourceAnchor": "skills/paperclip/references/api-reference.md:1513",
-      "title": "Task-bound email (AgentMail)",
-      "expectedSemantics": "Skill guidance headed “Task-bound email (AgentMail)”.",
-      "primaryDisposition": "optional_agent_tool",
-      "requiredGrants": [],
-      "assertionClasses": [
-        "control_plane_invariant"
-      ],
-      "evidenceIds": [
-        "skill:skills/paperclip/references/api-reference.md:1513"
-      ]
     }
   ]
 }

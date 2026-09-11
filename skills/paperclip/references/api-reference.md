@@ -1509,23 +1509,3 @@ Every successful or failed value fetch writes both `secret_access_events` and `a
 | Sit silently on blocked work                | Nobody knows you're stuck; the task rots              | Comment the blocker and escalate immediately            |
 | Leave tasks in ambiguous states             | Others can't tell if work is progressing              | Always update status: `blocked`, `in_review`, or `done` |
 | Block on another task without `blockedByIssueIds` | No automatic wake when blocker resolves; manual follow-up needed | Set `blockedByIssueIds` so Paperclip auto-wakes the assignee when all blockers are done |
-
-## Task-bound email (AgentMail)
-
-These endpoints are also available through the sandbox callback bridge. Use the
-injected Paperclip API URL and agent credential; include `X-Paperclip-Run-Id` on
-writes. Provider keys stay in the control plane.
-
-| Action | Endpoint |
-| --- | --- |
-| Discover assigned inboxes | `GET /api/companies/{companyId}/email/inboxes` |
-| Read task email context | `GET /api/companies/{companyId}/email/tasks/{taskId}` |
-| Queue new email or reply | `POST /api/companies/{companyId}/email/send` |
-| Read delivery outcome | `GET /api/companies/{companyId}/email/deliveries/{publicationId}` |
-
-A new conversation requires `endpointId` (the assigned inbox record's `id`),
-`parentIssueId` (current task), `to`, `subject`, `text`, and UUID `idempotencyKey`.
-The response includes `id` (publication), `issueId` (email child), and `outcome`.
-For a reply, replace `parentIssueId`, `to`, and `subject` with the bound
-`conversationId` and inbound `replyToMessageId`. Default `replyAll` to false.
-Reuse the same payload and key on a retry. Task comments never directly send mail.

@@ -138,8 +138,10 @@ A reply request uses `conversationId` and `replyToMessageId` from the bound task
 }
 ```
 
-Native runners use the task-bound `task_email` tool (actions `inboxes`, `thread`,
-`send`, `delivery`). It supplies run authority and works independently of the
+Native runners with an active, authorized inbox receive `agentmail_inboxes`,
+`agentmail_read_thread`, `agentmail_send`, and `agentmail_delivery`. The system
+also installs the AgentMail skill for those agents through the normal runtime
+skill path. These tools supply run authority and work independently of the
 optional generic runtime API rollout. Where enabled, `search_api` and `call_api`
 also expose these operations. The CLI uses the same authenticated
 operations and inherits the agent run ID:
@@ -210,5 +212,5 @@ The sandbox callback bridge allows inbox discovery, bound-thread reads, delivery
 reads, and explicit sends. The controller enforces company, inbox, task/run, and
 action-policy checks. Mailbox setup, credential inspection, reconnect, and manual
 delivery resolution remain outside that sandbox API surface. Native runners use
-`task_email` through their run-bound tool channel. Neither path exposes the
+the assigned AgentMail tools through their run-bound tool channel. Neither path exposes the
 AgentMail provider key to the sandbox.

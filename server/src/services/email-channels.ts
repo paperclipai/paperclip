@@ -1,6 +1,7 @@
+import { HttpError } from "../errors.js";
 import { createHash, randomUUID } from "node:crypto";
 import WebSocket from "ws";
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
   type Db,
   agents,
@@ -17,6 +18,7 @@ import {
   toolApplications,
   toolConnections,
   companySecretBindings,
+  companySecrets,
   heartbeatRuns,
   issues,
   toolProfiles,
@@ -383,6 +385,12 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       connection.status !== "active"
     )
       throw conflict("This email inbox is not active");
+    const runtimeSecretId = connection.credentialSecretRefs.find((ref) => ref.configPath === "credentials.apiKey")?.secretId;
+    const [runtimeSecret] = runtimeSecretId ? await db.select({ id: companySecrets.id }).from(companySecrets).where(and(
+      eq(companySecrets.id, runtimeSecretId), eq(companySecrets.companyId, endpoint.companyId),
+      eq(companySecrets.status, "active"), isNull(companySecrets.deletedAt),
+    )) : [];
+    if (!runtimeSecret) throw conflict("This email inbox credential is unavailable");
     const sourceId = connection.config.credentialConnectionId;
     if (typeof sourceId === "string")
       await emailConnectionService(db, fetchImpl).assertAgentAccess(
@@ -2582,7 +2590,26 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       ),
     };
   }
+  async function assignedInboxes(companyId: string, agentId: string) {
+    if (!(await enabled())) return [];
+    const rows = await db.select().from(chatEndpoints).where(and(
+      eq(chatEndpoints.companyId, companyId), eq(chatEndpoints.assignedAgentId, agentId),
+      eq(chatEndpoints.provider, "agentmail"), eq(chatEndpoints.status, "active"),
+    ));
+    const result: Awaited<ReturnType<typeof summary>>[] = [];
+    for (const row of rows) {
+      try {
+        const current = await active(row);
+        if (current.companyId === companyId && current.assignedAgentId === agentId)
+          result.push(await summary(current));
+      } catch (error) {
+        if (!(error instanceof HttpError) || ![403, 404, 409].includes(error.status)) throw error;
+      }
+    }
+    return result.sort((a, b) => a.id.localeCompare(b.id));
+  }
   return {
+    assignedInboxes,
     requireEnabled,
     authorizeRead,
     setup,

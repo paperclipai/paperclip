@@ -3950,7 +3950,8 @@ export async function readPaperclipRuntimeSkillEntries(
   const configuredEntries = normalizeConfiguredPaperclipRuntimeSkills(
     config.paperclipRuntimeSkills,
   );
-  if (configuredEntries.length > 0) return configuredEntries;
+  // An explicit empty assignment must not fall back to every bundled skill.
+  if (Array.isArray(config.paperclipRuntimeSkills)) return configuredEntries;
   return listPaperclipSkillEntries(moduleDir, additionalCandidates);
 }
 

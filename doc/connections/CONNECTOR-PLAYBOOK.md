@@ -426,6 +426,62 @@ connection work or enforce a real tenant boundary. Follow these rules:
   label is not enforcement. The provider, gateway, wrapper, or managed header/
   query projection must enforce the boundary.
 
+#### Connector-provided skills and tools
+
+Connectors may contribute bundled skills with optional native tools. Keep provider-specific
+instructions out of the universal Paperclip skill and provider-specific tools
+out of the universal runner catalog. Use the trusted connector contribution
+registry in `server/src/services/connector-runtime.ts`; AgentMail is the first
+consumer. This registry describes bundled server implementations, not executable
+code or skill URLs supplied by a credential or external message.
+
+For each contribution, declare its connector key, bundled skill, namespaced tool
+definitions, resource-assignment resolver, and execution handler. Use names such
+as `agentmail_send` rather than extending core tools with provider-specific
+branches. Existing MCP connectors continue to use their normal MCP tool catalog;
+they do not need a duplicate native wrapper just to supply a skill.
+
+**Resolve eligibility from current assignments and access.** An AgentMail account
+credential alone does not give an agent email capabilities. An active inbox
+assigned to that agent does, provided both the inbox connection and saved
+credential access remain authorized and the experimental chat-connector flag is
+on. Other connectors must define an equally concrete assignment rule. Keep every
+lookup company-scoped. Revoked grants, disabled connections, removed assignments,
+and experimental gates must remove the contribution. Fail closed on lookup errors.
+
+**Install skills transparently through the existing runtime skill path.** Merge
+system-managed contributions with the agent's chosen skills for each run, without
+writing them into its saved skill preferences. Deduplicate multiple resources
+from the same connector into one skill. Include only authorized resource context,
+never provider secrets; treat resource values as data. Supply the short skill
+description for discovery and keep detailed instructions in the skill. The same
+resolved set must reach local CLI adapters, sandbox adapters, and native runners.
+The agent Skills page should identify automatic contributions and explain that
+assignment controls them; they are not independently enabled/disabled there.
+
+**Bind tools to the same resolved skill assignment.** Native sessions advertise
+only contributions present in their pinned runtime skill bundle. Include skill
+content, resource assignments, and tool revisions in session compatibility so a
+changed assignment cannot reuse stale declarations. Revalidate live assignment,
+company/task/run authority, and configured action policy on every execution.
+Removing a tool from discovery alone is not revocation enforcement. Retained
+provider sessions and previously issued calls must fail after access is revoked.
+
+**Avoid shared runtime contamination.** Do not install assignment-specific skills
+into a company-wide or user-wide runtime home. Use immutable skill bundles and
+scoped runtime directories. Codex CLI connector runs use a separate home per
+agent and connector-skill revision, seeded from the selected model credential
+home. Disconnecting returns to a runtime without those skills; another agent must
+never inherit them. Preserve explicit model identity and normal session recovery.
+
+Required tests cover no assignment, credential access without a resource,
+authorized assignment, multiple resources with one skill, cross-company access,
+revocation during a retained run, disabled flags/connections, and reassignment.
+Verify skill installation and removal in both CLI/sandbox and native execution,
+including tool discovery, runtime cache changes, and absence of provider secrets.
+Exercise an actual connector operation through the contributed tool, not just
+its declaration. Record which runtime paths were tested live versus deterministically.
+
 #### Connection UX and user journeys
 
 Design the whole journey, from finding the app to doing useful work with an

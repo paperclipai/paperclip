@@ -1,3 +1,6 @@
+import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills } from "../services/connector-runtime.js";
+import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
+import { resolvePaperclipDesiredSkillNames, resolveLegacyPaperclipDesiredSkillNames } from "@paperclipai/adapter-utils/server-utils";
 import express from "express";
 import type WebSocket from "ws";
 import request from "supertest";
@@ -59,7 +62,6 @@ import {
 import { emailConnectionService } from "../services/email-connections.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { emailSendSchema } from "@paperclipai/shared";
-import { executeTaskEmail } from "../services/native-runtime/task-email-tool.js";
 import { chatChannelService } from "../services/chat-channels.js";
 
 describe("AgentMail durable email pipeline", () => {
@@ -107,6 +109,75 @@ describe("AgentMail durable email pipeline", () => {
     else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = previous;
     rmSync(folder, { recursive: true, force: true });
   });
+  it("installs one connector skill and provider tools only for the assigned agent", async () => {
+    const f = await fixture();
+    const binding = { companyId: f.companyId, agentId: f.agentId };
+    const assignments = await resolveConnectorAssignments(db, binding);
+    expect(assignments).toHaveLength(1);
+    expect(assignments[0].resources[0].id).toBe(f.endpointId);
+    const base = { paperclipSkillSync: { desiredSkills: [] } };
+    const configured = await applyConnectorSkills(base, [], assignments);
+    expect(base.paperclipSkillSync.desiredSkills).toEqual([]);
+    expect(resolvePaperclipDesiredSkillNames(configured, configured.paperclipRuntimeSkills)).toEqual(["paperclipai/paperclip/agentmail"]);
+    expect(resolveLegacyPaperclipDesiredSkillNames(configured, configured.paperclipRuntimeSkills)).toContain("paperclipai/paperclip/agentmail");
+    const markdown = readFileSync(path.join(configured.paperclipRuntimeSkills[0].source, "SKILL.md"), "utf8");
+    expect(markdown).toContain(f.endpointId);
+    expect(markdown).toContain("agentmail_send");
+    expect(markdown).not.toContain("test-key");
+    const authority = new PaperclipRunnerToolAuthority(db, { ...binding, issueId: randomUUID(), runId: randomUUID(), connectorAssignments: assignments });
+    expect(authority.definitions().filter((tool) => String(tool.name).startsWith("agentmail_")).map((tool) => tool.name)).toEqual([
+      "agentmail_inboxes", "agentmail_read_thread", "agentmail_send", "agentmail_delivery",
+    ]);
+    expect(authority.definitions().some((tool) => tool.name === "task_email")).toBe(false);
+    expect(await resolveConnectorAssignments(db, { ...binding, agentId: randomUUID() })).toEqual([]);
+    expect(await resolveConnectorAssignments(db, { ...binding, companyId: randomUUID() })).toEqual([]);
+    const disconnected = await applyConnectorSkills(configured, configured.paperclipRuntimeSkills, []);
+    expect(disconnected.paperclipRuntimeSkills).toEqual([]);
+    expect(disconnected.paperclipConnectorSkillDigest).toBeNull();
+    expect(resolvePaperclipDesiredSkillNames(disconnected, [])).toEqual([]);
+    expect(new PaperclipRunnerToolAuthority(db, { ...binding, issueId: randomUUID(), runId: randomUUID() }).definitions().some((tool) => String(tool.name).startsWith("agentmail_"))).toBe(false);
+    const snapshot = annotateConnectorSkills({ adapterType: "codex_local", supported: true, mode: "ephemeral", desiredSkills: [assignments[0].skillKey], entries: [{ key: assignments[0].skillKey, runtimeName: "agentmail", desired: true, managed: true, state: "configured" }], warnings: [] }, assignments);
+    expect(snapshot.entries[0]).toMatchObject({ readOnly: true, originLabel: "AgentMail assignment" });
+    expect(snapshot.entries[0].detail).toContain(assignments[0].resources[0].label);
+    await db.update(chatEndpoints).set({ status: "paused" }).where(eq(chatEndpoints.id, f.endpointId));
+    expect(await resolveConnectorAssignments(db, binding)).toEqual([]);
+  });
+
+  it("deduplicates multiple inboxes into one skill and changes the runtime bundle on reassignment", async () => {
+    const first = await fixture();
+    const second = await fixture();
+    const binding = { companyId: first.companyId, agentId: first.agentId };
+    const before = await applyConnectorSkills({}, [], await resolveConnectorAssignments(db, binding));
+    await second.service.control(second.endpointId, "remove", { userId: "email-board" });
+    const extra = await second.service.setup(first.companyId, {
+      assignedAgentId: first.agentId, apiKey: "test-key", inboxId: second.address,
+      receiveMode: "websocket", idempotencyKey: randomUUID(),
+    }, { userId: "email-board" });
+    const assignments = await resolveConnectorAssignments(db, binding);
+    expect(assignments).toHaveLength(1);
+    expect(assignments[0].resources).toHaveLength(2);
+    const after = await applyConnectorSkills(before, before.paperclipRuntimeSkills, assignments);
+    expect(after.paperclipRuntimeSkills).toHaveLength(1);
+    expect(after.paperclipConnectorSkillDigest).not.toBe(before.paperclipConnectorSkillDigest);
+    expect(after.paperclipRuntimeSkills[0].source).not.toBe(before.paperclipRuntimeSkills[0].source);
+    const markdown = readFileSync(path.join(after.paperclipRuntimeSkills[0].source, "SKILL.md"), "utf8");
+    expect(markdown).toContain(first.address);
+    expect(markdown).toContain(second.address);
+    await second.service.control(extra.id, "remove", { userId: "email-board" });
+    expect((await resolveConnectorAssignments(db, binding))[0].resources).toHaveLength(1);
+  });
+
+  it("removes connector contributions when the experimental gate or credential access is revoked", async () => {
+    const f = await fixture();
+    const binding = { companyId: f.companyId, agentId: f.agentId };
+    await instanceSettingsService(db).updateExperimental({ enableChatConnectors: false });
+    try { expect(await resolveConnectorAssignments(db, binding)).toEqual([]); }
+    finally { await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true }); }
+    const endpoint = await f.service.getEndpoint(f.endpointId);
+    await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, endpoint.connectionId));
+    expect(await resolveConnectorAssignments(db, binding)).toEqual([]);
+  });
+
   it("can replay the additive email migration without losing existing data", async () => {
     const migration = readFileSync(new URL("../../../packages/db/src/migrations/0272_light_kate_bishop.sql", import.meta.url), "utf8");
     await db.execute(sql.raw(migration));
@@ -806,6 +877,8 @@ describe("AgentMail durable email pipeline", () => {
       companyId: f.companyId,
       agentId: f.agentId,
       status: "running",
+      runtimeMode: "native",
+      nativeIssueId: conversation.issueId,
       contextSnapshot: { issueId: conversation.issueId },
     });
     await db
@@ -826,11 +899,15 @@ describe("AgentMail durable email pipeline", () => {
       text: "Explicit agent reply",
       idempotencyKey: randomUUID(),
     });
-    const queued = (await executeTaskEmail(db, binding, {
-      action: "send",
-      request,
-    })) as { id: string; outcome: string };
+    const authority = new PaperclipRunnerToolAuthority(db, {
+      ...binding, workMode: "standard", connectorAssignments: await resolveConnectorAssignments(db, binding),
+    });
+    const queued = (await authority.execute({ tool: "agentmail_send", callId: randomUUID(), arguments: { request } })) as { id: string; outcome: string };
     expect(queued.outcome).toBe("queued");
+    const assignedEndpoint = await f.service.getEndpoint(f.endpointId);
+    await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, assignedEndpoint.connectionId));
+    await expect(authority.execute({ tool: "agentmail_read_thread", callId: randomUUID(), arguments: {} })).rejects.toThrow(/no longer assigned or authorized/);
+    await db.update(toolConnections).set({ enabled: true }).where(eq(toolConnections.id, assignedEndpoint.connectionId));
     expect(f.sends).toHaveLength(0);
     const comment = await issueService(db).addComment(
       conversation.issueId,
@@ -933,6 +1010,8 @@ describe("AgentMail durable email pipeline", () => {
       svc.credential(randomUUID(), connection.id, actor),
     ).rejects.toThrow(/not found/);
     await f.service.control(f.endpointId, "remove", actor);
+    // Credential permission alone must not install skills or tools.
+    expect(await resolveConnectorAssignments(db, { companyId: f.companyId, agentId: f.agentId })).toEqual([]);
     const endpoint = await f.service.setup(
       f.companyId,
       {
@@ -945,6 +1024,7 @@ describe("AgentMail durable email pipeline", () => {
       actor,
     );
     expect(endpoint.address).toBe(f.address);
+    expect(await resolveConnectorAssignments(db, { companyId: f.companyId, agentId: f.agentId })).toHaveLength(1);
     const installs = await db
       .select()
       .from(toolConnectionInstalls)
@@ -959,6 +1039,7 @@ describe("AgentMail durable email pipeline", () => {
     await expect(
       svc.assertAgentAccess(f.companyId, connection.id, f.agentId),
     ).rejects.toThrow(/no longer has access/);
+    expect(await resolveConnectorAssignments(db, { companyId: f.companyId, agentId: f.agentId })).toEqual([]);
     await db
       .update(connectionGrants)
       .set({ status: "revoked" })

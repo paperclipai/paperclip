@@ -5,8 +5,7 @@ import { emailChannelService } from "../email-channels.js";
 import { forbidden, notFound } from "../../errors.js";
 import { instanceSettingsService } from "../instance-settings.js";
 
-export const TASK_EMAIL_TOOL = {
-  name: "task_email",
+const AGENTMAIL_EMAIL_CONTRACT = {
   description:
     "Use an assigned AgentMail inbox for this task. Internal comments and final responses never send email. List inboxes, read the current email thread, explicitly send a new email child task or reply, and inspect delivery. Requires experimental email connections. A send needs a UUID idempotencyKey; preserve it and the identical payload on retry. A reply uses conversationId and replyToMessageId from thread; replyAll defaults false and excludes Bcc. Sending does not close the task.",
   inputSchema: {
@@ -47,6 +46,59 @@ export const TASK_EMAIL_TOOL = {
     additionalProperties: false,
   },
 } as const;
+// Connector-owned definitions. They are never part of the universal runner catalog.
+export const AGENTMAIL_TOOLS = [
+  {
+    name: "agentmail_inboxes",
+    action: "inboxes",
+    description: "List your active assigned AgentMail inboxes.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentmail_read_thread",
+    action: "thread",
+    description:
+      "Read the current task's AgentMail email thread, recipients, messages and attachments.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentmail_send",
+    action: "send",
+    description: AGENTMAIL_EMAIL_CONTRACT.description,
+    inputSchema: {
+      type: "object",
+      properties: {
+        request: AGENTMAIL_EMAIL_CONTRACT.inputSchema.properties.request,
+      },
+      required: ["request"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "agentmail_delivery",
+    action: "delivery",
+    description:
+      "Check delivery of an AgentMail publication belonging to your task.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        publicationId:
+          AGENTMAIL_EMAIL_CONTRACT.inputSchema.properties.publicationId,
+      },
+      required: ["publicationId"],
+      additionalProperties: false,
+    },
+  },
+] as const;
+
 const schema = z
   .object({
     action: z.enum(["inboxes", "thread", "send", "delivery"]),
@@ -55,7 +107,7 @@ const schema = z
   })
   .strict();
 
-export async function executeTaskEmail(
+export async function executeAgentmailTool(
   db: Db,
   binding: {
     companyId: string;
@@ -79,16 +131,18 @@ export async function executeTaskEmail(
       },
     },
   });
-  if (input.action === "inboxes")
-    return (await service.list(binding.companyId)).filter(
-      (e) => e.assignedAgentId === binding.agentId,
-    );
+  const inboxes = await service.assignedInboxes(
+    binding.companyId,
+    binding.agentId,
+  );
+  if (!inboxes.length) throw forbidden("No active assigned AgentMail inbox");
+  if (input.action === "inboxes") return inboxes;
   await service.authorizeRead(binding.companyId, binding.issueId, {
     agentId: binding.agentId,
     runId: binding.runId,
   });
   const thread = await service.thread(binding.companyId, binding.issueId);
-  if (thread && thread.endpoint.assignedAgentId !== binding.agentId)
+  if (thread && !inboxes.some((inbox) => inbox.id === thread.endpoint.id))
     throw notFound("Email task not found");
   if (input.action === "thread") return thread;
   if (input.action === "delivery") {
@@ -102,7 +156,7 @@ export async function executeTaskEmail(
       runId: binding.runId,
     });
     const target = await service.thread(binding.companyId, delivery.issueId);
-    if (target?.endpoint.assignedAgentId !== binding.agentId)
+    if (!target || !inboxes.some((inbox) => inbox.id === target.endpoint.id))
       throw notFound("Email delivery not found");
     return delivery;
   }

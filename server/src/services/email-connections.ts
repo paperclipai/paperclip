@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import {
   type Db,
   agents,
   toolConnections,
   connectionGrants,
+  companySecrets,
   toolConnectionInstalls,
 } from "@paperclipai/db";
 import type { EmailConnectionInput } from "@paperclipai/shared";
@@ -34,6 +35,14 @@ export function emailConnectionService(
       );
     if (!connection || connection.config.provider !== "agentmail")
       throw notFound("Active AgentMail connection not found");
+    if (connection.config.emailCredential) {
+      const id = connection.credentialSecretRefs.find((ref) => ref.configPath === "credentials.controlKey")?.secretId;
+      const [secret] = id ? await db.select({ id: companySecrets.id }).from(companySecrets).where(and(
+        eq(companySecrets.id, id), eq(companySecrets.companyId, companyId),
+        eq(companySecrets.status, "active"), isNull(companySecrets.deletedAt),
+      )) : [];
+      if (!secret) throw forbidden("AgentMail credential is unavailable");
+    }
     const activeGrants = await db
       .select()
       .from(connectionGrants)

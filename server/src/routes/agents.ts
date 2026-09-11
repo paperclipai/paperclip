@@ -1,3 +1,4 @@
+import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@paperclipai/adapter-utils";
 import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
@@ -2900,8 +2901,8 @@ export function agentRoutes(
       requestedSkillEntries,
       mode,
     ).filter(
-      (entry) => adapterType !== "paperclip_runner"
-        || entry.key.trim().toLowerCase() !== PAPERCLIP_OPERATIONAL_SKILL_KEY,
+      (entry) => !isConnectorSkill(entry.key) && (adapterType !== "paperclip_runner"
+        || entry.key.trim().toLowerCase() !== PAPERCLIP_OPERATIONAL_SKILL_KEY),
     );
     const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
     const resolvedKeys = new Set([
@@ -3596,13 +3597,15 @@ export function agentRoutes(
       runtimeConfig,
       { materializeMissing: false },
     );
+    const connectorAssignments = await resolveConnectorAssignments(db, { companyId: agent.companyId, agentId: agent.id });
+    const connectorConfig = await applyConnectorSkills(runtimeSkillConfig, runtimeSkillConfig.paperclipRuntimeSkills, connectorAssignments);
     const snapshot = await adapter.listSkills({
       agentId: agent.id,
       companyId: agent.companyId,
       adapterType: agent.adapterType,
-      config: runtimeSkillConfig,
+      config: connectorConfig,
     });
-    res.json(snapshot);
+    res.json(annotateConnectorSkills(snapshot, connectorAssignments));
   });
 
   router.post(
@@ -3657,17 +3660,15 @@ export function agentRoutes(
         buildActorSecretContext(req, { consumerType: "agent", consumerId: updated.id }),
         { adapterType: updated.adapterType, skipUserSecrets: true },
       );
-      const runtimeSkillConfig = {
-        ...runtimeConfig,
-        paperclipRuntimeSkills: runtimeSkillEntries,
-      };
+      const connectorAssignments = await resolveConnectorAssignments(db, { companyId: updated.companyId, agentId: updated.id });
+      const runtimeSkillConfig = await applyConnectorSkills(runtimeConfig, runtimeSkillEntries, connectorAssignments);
       const snapshot = adapter?.syncSkills
         ? await adapter.syncSkills({
             agentId: updated.id,
             companyId: updated.companyId,
             adapterType: updated.adapterType,
             config: runtimeSkillConfig,
-          }, desiredSkills)
+          }, readPaperclipSkillSyncPreference(runtimeSkillConfig).desiredSkills)
         : adapter?.listSkills
           ? await adapter.listSkills({
               agentId: updated.id,
@@ -3699,7 +3700,7 @@ export function agentRoutes(
         },
       });
 
-      res.json(snapshot);
+      res.json(annotateConnectorSkills(snapshot, connectorAssignments));
     },
   );
 

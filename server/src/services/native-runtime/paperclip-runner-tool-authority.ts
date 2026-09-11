@@ -1,4 +1,4 @@
-import { TASK_EMAIL_TOOL, executeTaskEmail } from "./task-email-tool.js";
+import { isConnectorTool, executeConnectorTool, type ConnectorAssignment } from "../connector-runtime.js";
 import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../connection-tool-definitions.js";
@@ -87,6 +87,7 @@ type Binding = {
   apiUrl?: string;
   storage?: StorageService;
   /** Server-owned suppression for baseline evals; true never overrides operator opt-in. */
+  connectorAssignments?: ConnectorAssignment[];
   apiToolsEnabled?: boolean;
   workMode?: "standard" | "planning" | "ask";
   workspaceRoot?: string;
@@ -185,7 +186,7 @@ export class PaperclipRunnerToolAuthority {
     definitions.push(LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION);
     definitions.push(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION);
     definitions.push(READ_CHAT_ATTACHMENT_TOOL_DEFINITION);
-    return [...RUNTIME_CONNECTION_TOOL_DEFINITIONS, TASK_EMAIL_TOOL, ...definitions];
+    return [...RUNTIME_CONNECTION_TOOL_DEFINITIONS, ...(this.binding.connectorAssignments ?? []).flatMap((assignment) => assignment.tools), ...definitions];
   }
 
   async execute(call: {
@@ -193,11 +194,12 @@ export class PaperclipRunnerToolAuthority {
     callId: string;
     arguments: unknown;
   }): Promise<unknown> {
-    if (call.tool === TASK_EMAIL_TOOL.name) {
+    if (isConnectorTool(call.tool)) {
+      if (!(this.binding.connectorAssignments ?? []).some((assignment) => assignment.tools.some((tool) => tool.name === call.tool))) throw forbidden("Connector tool is not available to this run");
       const { run } = await this.#boundContext();
       const snapshot = record(run.contextSnapshot);
       if (isPaperclipExternalChatContractTurn(snapshot.paperclipWake) || String(snapshot.source ?? "").startsWith("chat:") || snapshot.paperclipExternalChatQuestionResponse) throw forbidden("Restricted chat runs cannot use email actions");
-      return executeTaskEmail(this.db, this.binding, call.arguments);
+      return executeConnectorTool(this.db, this.binding, call.tool, call.arguments);
     }
     if (RUNTIME_CONNECTION_TOOL_DEFINITIONS.some((tool) => tool.name === call.tool)) {
       await this.#boundContext();
