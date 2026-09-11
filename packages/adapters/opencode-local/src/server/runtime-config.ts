@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
 
 type PreparedOpenCodeRuntimeConfig = {
@@ -8,6 +9,44 @@ type PreparedOpenCodeRuntimeConfig = {
   notes: string[];
   cleanup: () => Promise<void>;
 };
+
+function sanitizeOpenCodeMcpName(raw: string): string {
+  const cleaned = raw
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned.length > 0 ? cleaned.slice(0, 64) : "paperclip-mcp";
+}
+
+function buildOpenCodeMcpServers(
+  servers: AdapterRuntimeMcpServer[],
+  reservedNames: Iterable<string> = [],
+): Record<string, Record<string, unknown>> {
+  const mcp: Record<string, Record<string, unknown>> = {};
+  const used = new Set<string>(reservedNames);
+  for (const server of servers) {
+    let name = sanitizeOpenCodeMcpName(server.name);
+    if (used.has(name)) name = sanitizeOpenCodeMcpName(`${server.name}-${server.connectionId.slice(0, 8)}`);
+    let suffix = 2;
+    while (used.has(name)) {
+      name = sanitizeOpenCodeMcpName(`${server.name}-${server.connectionId.slice(0, 8)}-${suffix}`);
+      suffix += 1;
+    }
+    used.add(name);
+    mcp[name] = {
+      type: "remote",
+      url: server.url,
+      enabled: true,
+      oauth: false,
+      headers: {
+        Authorization: `Bearer ${server.token}`,
+      },
+      timeout: 30_000,
+    };
+  }
+  return mcp;
+}
 
 function resolveXdgConfigHome(env: Record<string, string>): string {
   return (
@@ -106,9 +145,12 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
+  mcpServers?: AdapterRuntimeMcpServer[];
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
-  if (!skipPermissions) {
+  const mcpServers = input.mcpServers ?? [];
+  const needsRuntimeConfig = skipPermissions || mcpServers.length > 0;
+  if (!needsRuntimeConfig) {
     return {
       env: input.env,
       notes: [],
@@ -152,9 +194,12 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const existingPermission = isPlainObject(existingConfig.permission)
     ? existingConfig.permission
     : {};
-  const notes = [
-    "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
-  ];
+  const notes: string[] = [];
+  if (skipPermissions) {
+    notes.push(
+      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
+    );
+  }
 
   // Merge gateway/custom provider definitions supplied via PAPERCLIP_OPENCODE_PROVIDERS
   // (a JSON object in OpenCode's `provider` shape). OpenCode resolves a `--model
@@ -209,11 +254,33 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     ...existingConfig,
     permission: {
       ...existingPermission,
-      external_directory: "allow",
+      ...(skipPermissions ? { external_directory: "allow" } : {}),
     },
   };
   if (Object.keys(nextProvider).length > 0) {
     nextConfig.provider = nextProvider;
+  }
+
+  if (mcpServers.length > 0) {
+    const existingMcp = isPlainObject(existingConfig.mcp) ? existingConfig.mcp : {};
+    const injectedMcp = buildOpenCodeMcpServers(mcpServers, Object.keys(existingMcp));
+    nextConfig.mcp = {
+      ...existingMcp,
+      ...injectedMcp,
+    };
+    // Headless runs must be able to call Paperclip-managed MCP tools without
+    // interactive approval prompts for every gateway tool.
+    const permission = isPlainObject(nextConfig.permission)
+      ? { ...(nextConfig.permission as Record<string, unknown>) }
+      : {};
+    for (const name of Object.keys(injectedMcp)) {
+      permission[`mcp__${name}__*`] = "allow";
+      permission[`${name}_*`] = "allow";
+    }
+    nextConfig.permission = permission;
+    notes.push(
+      `Injected ${Object.keys(injectedMcp).length} Paperclip-managed MCP server(s) into the runtime OpenCode config: ${Object.keys(injectedMcp).join(", ")}.`,
+    );
   }
 
   // Pin OpenCode's auxiliary "small" model (used for session-title generation and

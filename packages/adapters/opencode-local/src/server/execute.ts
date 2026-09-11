@@ -324,10 +324,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   if (authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
-  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({ env, config });
+  const runtimeMcpServers = ctx.runtimeMcp?.getServers() ?? [];
+  const preparedRuntimeConfig = await prepareOpenCodeRuntimeConfig({
+    env,
+    config,
+    mcpServers: runtimeMcpServers,
+  });
   const localRuntimeConfigHome =
     preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
   try {
+    if (runtimeMcpServers.length > 0) {
+      await onLog(
+        "stdout",
+        `[paperclip] OpenCode will use ${runtimeMcpServers.length} Paperclip-managed MCP server(s): ${runtimeMcpServers.map((server) => server.name).join(", ")}.\n`,
+      );
+    }
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env })).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",

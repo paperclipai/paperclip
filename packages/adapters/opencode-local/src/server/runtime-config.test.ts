@@ -321,4 +321,118 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(prepared.notes).toEqual([]);
     await prepared.cleanup();
   });
+
+  it("injects Paperclip-managed remote MCP servers into the runtime OpenCode config", async () => {
+    const configHome = await makeConfigHome({
+      permission: { read: "allow" },
+    });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { dangerouslySkipPermissions: false },
+      mcpServers: [
+        {
+          name: "paperclip-assigned",
+          url: "http://localhost:3100/api/mcp/gateways/gw_test",
+          token: "run-scoped-token",
+          connectionId: "assignment:digest",
+        },
+      ],
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as {
+      mcp?: Record<string, unknown>;
+      permission?: Record<string, unknown>;
+    };
+    expect(runtimeConfig.mcp).toEqual({
+      "paperclip-assigned": {
+        type: "remote",
+        url: "http://localhost:3100/api/mcp/gateways/gw_test",
+        enabled: true,
+        oauth: false,
+        headers: { Authorization: "Bearer run-scoped-token" },
+        timeout: 30_000,
+      },
+    });
+    expect(runtimeConfig.permission?.["mcp__paperclip-assigned__*"]).toBe("allow");
+    expect(runtimeConfig.permission?.external_directory).toBeUndefined();
+    expect(prepared.notes.join("\n")).toContain("Paperclip-managed MCP server(s)");
+    await prepared.cleanup();
+  });
+
+  it("renames a managed MCP server instead of overwriting an existing user-defined entry of the same name", async () => {
+    const userDiscordConfig = { type: "local", command: ["my-discord-mcp"] };
+    const configHome = await makeConfigHome({
+      permission: { read: "allow" },
+      mcp: { discord: userDiscordConfig },
+    });
+
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      mcpServers: [
+        {
+          name: "discord",
+          url: "https://gateway.example/mcp/discord",
+          token: "tok-discord",
+          connectionId: "conn-aaaaaaaa",
+        },
+      ],
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as { mcp?: Record<string, unknown> };
+    expect(runtimeConfig.mcp?.discord).toEqual(userDiscordConfig);
+    expect(runtimeConfig.mcp?.["discord-conn-aaa"]).toMatchObject({
+      type: "remote",
+      url: "https://gateway.example/mcp/discord",
+    });
+    await prepared.cleanup();
+  });
+
+  it("dedupes managed MCP server names against each other when no existing config entry collides", async () => {
+    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      mcpServers: [
+        {
+          name: "discord",
+          url: "https://gateway.example/mcp/a",
+          token: "tok-a",
+          connectionId: "conn-aaaaaaaa",
+        },
+        {
+          name: "discord",
+          url: "https://gateway.example/mcp/b",
+          token: "tok-b",
+          connectionId: "conn-bbbbbbbb",
+        },
+      ],
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(
+        path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+        "utf8",
+      ),
+    ) as { mcp?: Record<string, unknown> };
+    expect(runtimeConfig.mcp?.discord).toMatchObject({ url: "https://gateway.example/mcp/a" });
+    expect(runtimeConfig.mcp?.["discord-conn-bbb"]).toMatchObject({
+      url: "https://gateway.example/mcp/b",
+    });
+    await prepared.cleanup();
+  });
 });
