@@ -4513,7 +4513,17 @@ export async function materializePaperclipSkillCopy(
       await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)
     )
       return result;
-    await copyEntry(sourceRoot, tempRoot, path.basename(sourceRoot));
+    try {
+      await copyEntry(sourceRoot, tempRoot, path.basename(sourceRoot));
+    } catch (err) {
+      if (err instanceof PaperclipSkillAdmissionRejectedError) {
+        // Fail closed at the target, not only at the temporary root: a
+        // rejected entry must not leave a stale, ungated copy from an
+        // earlier run in place under `targetRoot`.
+        await fs.rm(targetRoot, { recursive: true, force: true }).catch(() => {});
+      }
+      throw err;
+    }
     await fs.writeFile(
       path.join(tempRoot, MATERIALIZED_SKILL_SENTINEL),
       `${JSON.stringify(

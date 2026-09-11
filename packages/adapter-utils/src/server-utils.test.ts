@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import {
   applyPaperclipWorkspaceEnv,
@@ -493,6 +493,91 @@ describe("materializePaperclipSkillCopy", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("removes a previously materialized copy when a later run is rejected", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      const first = await materializePaperclipSkillCopy(source, target);
+      expect(first.copiedFiles).toBe(1);
+      await expect(
+        fs.readFile(path.join(target, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# skill\n");
+
+      await fs.writeFile(
+        path.join(source, ".env"),
+        "SECRET_TOKEN=leaked\n",
+        "utf8",
+      );
+
+      const rejection = await materializePaperclipSkillCopy(
+        source,
+        target,
+      ).catch((err: unknown) => err);
+      expect(rejection).toBeInstanceOf(PaperclipSkillAdmissionRejectedError);
+      expect(
+        (rejection as PaperclipSkillAdmissionRejectedError).rejectionClass,
+      ).toBe("env_file");
+      expect((rejection as Error).message).not.toContain(source);
+      expect((rejection as Error).message).not.toContain("SECRET_TOKEN");
+
+      // The earlier, ungated copy must not survive the rejection.
+      await expect(fs.stat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves the target directory unchanged when a non-admission failure interrupts materialization", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      const first = await materializePaperclipSkillCopy(source, target);
+      expect(first.copiedFiles).toBe(1);
+
+      // Change the source so the next call cannot short-circuit on a
+      // matching fingerprint and must attempt a fresh copy.
+      await fs.writeFile(path.join(source, "extra.txt"), "more\n", "utf8");
+
+      const copyFileSpy = vi
+        .spyOn(fs, "copyFile")
+        .mockRejectedValue(new Error("ENOSPC: no space left on device"));
+      try {
+        const failure = await materializePaperclipSkillCopy(
+          source,
+          target,
+        ).catch((err: unknown) => err);
+        expect(failure).not.toBeInstanceOf(PaperclipSkillAdmissionRejectedError);
+        expect((failure as Error).message).toContain("ENOSPC");
+      } finally {
+        copyFileSpy.mockRestore();
+      }
+
+      // A transient input/output error is not an admission rejection, so
+      // the target from the earlier successful materialization must stay
+      // exactly as it was.
+      await expect(
+        fs.readFile(path.join(target, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# skill\n");
+      await expect(
+        fs.stat(path.join(target, "extra.txt")),
+      ).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("materializeSelectedPaperclipSkillsIntoDir", () => {
@@ -549,6 +634,81 @@ describe("materializeSelectedPaperclipSkillsIntoDir", () => {
       expect(rejectionLine).toContain("env_file");
       expect(rejectionLine).not.toContain(dangerousSource);
       expect(rejectionLine).not.toContain("SECRET");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes a stale copy of a newly rejected skill while leaving every other selected skill in place", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skills-dir-"),
+    );
+    try {
+      const safeSource = path.join(root, "safe-skill");
+      const turningBadSource = path.join(root, "turning-bad-skill");
+      const targetDir = path.join(root, "target");
+      await fs.mkdir(safeSource, { recursive: true });
+      await fs.writeFile(path.join(safeSource, "SKILL.md"), "# safe\n", "utf8");
+      await fs.mkdir(turningBadSource, { recursive: true });
+      await fs.writeFile(
+        path.join(turningBadSource, "SKILL.md"),
+        "# turning bad\n",
+        "utf8",
+      );
+
+      const entries = [
+        { key: "safe", runtimeName: "safe-skill", source: safeSource },
+        {
+          key: "turning-bad",
+          runtimeName: "turning-bad-skill",
+          source: turningBadSource,
+        },
+      ];
+
+      // First run: both skills are clean, both get materialized.
+      await materializeSelectedPaperclipSkillsIntoDir({
+        targetDir,
+        label: "Test",
+        entries,
+        onLog: async () => {},
+      });
+      await expect(
+        fs.readFile(
+          path.join(targetDir, "turning-bad-skill", "SKILL.md"),
+          "utf8",
+        ),
+      ).resolves.toBe("# turning bad\n");
+
+      // Second run: one previously admitted skill now carries a denied
+      // file. It must lose its stale copy; the other skill is untouched.
+      await fs.writeFile(
+        path.join(turningBadSource, ".env"),
+        "SECRET=leaked\n",
+        "utf8",
+      );
+
+      const logLines: string[] = [];
+      await materializeSelectedPaperclipSkillsIntoDir({
+        targetDir,
+        label: "Test",
+        entries,
+        onLog: async (_stream, chunk) => {
+          logLines.push(chunk);
+        },
+      });
+
+      await expect(
+        fs.readFile(path.join(targetDir, "safe-skill", "SKILL.md"), "utf8"),
+      ).resolves.toBe("# safe\n");
+      await expect(
+        fs.stat(path.join(targetDir, "turning-bad-skill")),
+      ).rejects.toThrow();
+
+      const rejectionLine = logLines.find((line) =>
+        line.includes("turning-bad-skill"),
+      );
+      expect(rejectionLine).toBeDefined();
+      expect(rejectionLine).toContain("env_file");
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
