@@ -374,6 +374,18 @@ const RETRY_AFTER_HINT_RE = /retry[-_\s]?after[:\s]+(\d+)\s*s?\b/i;
 // can shorten it, but long enough to break the immediate hot-loop.
 const HERMES_GATEWAY_QUOTA_FALLBACK_SEC = 60;
 
+// ECMAScript Dates only cover ±8.64e15 ms around the epoch. A finite but
+// out-of-range value (e.g. "Retry-After: 9999999999999999") builds an Invalid
+// Date whose toISOString() throws, and on the terminal-event path that
+// exception would escape result mapping and reject execute() instead of
+// yielding a handled failure. Serialise through this guard instead.
+const MAX_DATE_MS = 8_640_000_000_000_000;
+
+function toSafeIsoTimestamp(ms: number): string | null {
+  if (!Number.isFinite(ms) || Math.abs(ms) > MAX_DATE_MS) return null;
+  return new Date(ms).toISOString();
+}
+
 function parseHermesRetryAfterHeader(raw: string | null | undefined, now = Date.now()): string | null {
   if (raw === null || raw === undefined) return null;
   const value = String(raw).trim();
@@ -382,12 +394,30 @@ function parseHermesRetryAfterHeader(raw: string | null | undefined, now = Date.
   if (/^\d+$/.test(value)) {
     const seconds = Number.parseInt(value, 10);
     if (!Number.isFinite(seconds) || seconds < 0) return null;
-    return new Date(now + seconds * 1000).toISOString();
+    return toSafeIsoTimestamp(now + seconds * 1000);
   }
   // HTTP-date form
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) return null;
-  return new Date(parsed).toISOString();
+  return toSafeIsoTimestamp(parsed);
+}
+
+// The direct HTTP 429 path only sees the synthetic "Hermes gateway HTTP 429"
+// message, which says nothing about *who* is throttling. The upstream quota
+// signal, when present, lives in the response body — either as a plain-text
+// body (wrapped as { text }) or as an { error | message | detail } record.
+function extractQuotaSignalFromBody(body: unknown): string | null {
+  if (typeof body === "string") return nonEmpty(body);
+  const record = asRecord(body);
+  if (!record) return null;
+  const nestedError = asRecord(record.error);
+  return (
+    nonEmpty(record.error) ??
+    nonEmpty(nestedError?.message) ??
+    nonEmpty(record.message) ??
+    nonEmpty(record.detail) ??
+    nonEmpty(record.text)
+  );
 }
 
 function detectProviderQuotaExhaustion(
@@ -411,13 +441,18 @@ function detectProviderQuotaExhaustion(
     if (Number.isFinite(parsed) && parsed > 0) seconds = parsed;
   }
   if (seconds === null) seconds = HERMES_GATEWAY_QUOTA_FALLBACK_SEC;
-  const retryNotBefore = new Date(now + seconds * 1000).toISOString();
+  // An absurd retry hint must not turn into an exception (or a null backoff
+  // that re-enables the hot-loop): degrade to the fallback cool-down.
+  const retryNotBefore =
+    toSafeIsoTimestamp(now + seconds * 1000) ??
+    toSafeIsoTimestamp(now + HERMES_GATEWAY_QUOTA_FALLBACK_SEC * 1000);
   return { errorCode: "hermes_gateway_rate_limited", errorFamily: "provider_quota", retryNotBefore };
 }
 
 export const __providerQuotaInternals = {
   parseHermesRetryAfterHeader,
   detectProviderQuotaExhaustion,
+  extractQuotaSignalFromBody,
 };
 
 function fetchFailureMessage(err: unknown): string {
@@ -840,16 +875,19 @@ function errorResult(err: unknown, redactText: TextRedactor = sanitizeSensitiveT
   const hermesError = err as HermesHttpError;
   const code = hermesError.code ?? "hermes_gateway_protocol_error";
   const classified = hermesError.status ? classifyHttpError(hermesError.status) : null;
-  const rawMessage = err instanceof Error ? err.message : String(err);
   const errorMessage = code === "hermes_gateway_auth_failed"
     ? `${redactErrorMessage(err, redactText)}. Check adapterConfig.apiKey matches the Hermes API_SERVER_KEY for the running gateway.`
     : redactErrorMessage(err, redactText);
-  // On real HTTP 429s, upgrade the family to provider_quota (more specific than
-  // transient_upstream) when the message or body signals it, and synthesise
-  // retryNotBefore from the message if the header was missing.
+  // On real HTTP 429s without a retry-after header, upgrade the family to
+  // provider_quota (more specific than transient_upstream) only when the
+  // response *body* carries an upstream quota signature, and synthesise
+  // retryNotBefore from it. The synthetic "Hermes gateway HTTP 429" message
+  // must not be consulted: it matches the broad 429 matcher for every
+  // headerless 429, including the gateway merely throttling requests, which
+  // has to stay transient_upstream.
   const quotaOverride =
     hermesError.status === 429 && !hermesError.retryNotBefore
-      ? detectProviderQuotaExhaustion(rawMessage)
+      ? detectProviderQuotaExhaustion(extractQuotaSignalFromBody(hermesError.body))
       : null;
   return {
     exitCode: 1,
