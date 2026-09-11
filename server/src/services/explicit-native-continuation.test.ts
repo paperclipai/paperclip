@@ -135,6 +135,19 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await admit(f)).toBeNull();
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
   });
+  it.each(["foreign_source", "missing_authorization", "nonterminal_source"])("rejects unverified interruption context: %s", async kind => {
+    const f = await seed();
+    let previousRunId: string = f.sourceRunId;
+    if (kind === "foreign_source") previousRunId = (await seed()).sourceRunId;
+    if (kind === "nonterminal_source") {
+      await admit(f);
+      await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    }
+    await expect(buildExecutionContinuation({ db, companyId: f.companyId, issueId: f.issueId,
+      agentId: f.agentId, context: { previousRunId: f.sourceRunId,
+        explicitUserContinuation: { previousRunId, commentId: f.commentId } },
+      summary: null, exposeLowTrustRaw: false })).rejects.toThrow("continuation_user_authorization_missing");
+  });
   it("keeps one new turn under concurrent delivery of the same message", async () => {
     const f = await seed();
     const results = await Promise.all([admit(f), admit(f)]);

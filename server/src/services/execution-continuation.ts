@@ -209,7 +209,7 @@ export async function buildExecutionContinuation(input: {
       row.authorType === "user" && !row.createdByRunId && !row.deleted && row.body.trim().length > 0,
   );
   const priorRuns = await db
-    .select({ id: heartbeatRuns.id, result: heartbeatRuns.resultJson, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+    .select({ id: heartbeatRuns.id, result: heartbeatRuns.resultJson, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, runtimeMode: heartbeatRuns.runtimeMode })
     .from(heartbeatRuns)
     .where(
       and(
@@ -254,7 +254,21 @@ export async function buildExecutionContinuation(input: {
     ["succeeded", "failed", "timed_out", "interrupted", "cancelled"].includes(run.status) &&
     !(run.status === "cancelled" && run.errorCode === "execution_reconciliation_required"),
   );
-  const explicitUserSource = string(object(input.context.explicitUserContinuation).previousRunId);
+  const explicitContinuation = object(input.context.explicitUserContinuation);
+  const explicitUserSource = string(explicitContinuation.previousRunId);
+  if (explicitUserSource) {
+    const predecessor = priorRuns.find(run => run.id === explicitUserSource &&
+      run.runtimeMode === "native" && ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status));
+    const authorization = reconciliations.map(row => object(row.evidence.explicitUserContinuation))
+      .find(value => value.previousRunId === explicitUserSource &&
+        value.commentId === explicitContinuation.commentId &&
+        priorRuns.some(run => run.id === value.runId) &&
+        rows.some(comment => comment.id === value.commentId &&
+          comment.authorType === "user" && comment.authorUserId === value.actorId &&
+          !comment.createdByRunId && !comment.deletedAt));
+    if (!predecessor || !authorization || explicitUserSource !== sourceRunId)
+      throw new Error("continuation_user_authorization_missing");
+  }
   const interruptedRunId = explicitUserSource ?? (lastTerminal && lastTerminal.status !== "succeeded" &&
     (hasConversationContinuationPolicy(lastTerminal.result) ||
       lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
