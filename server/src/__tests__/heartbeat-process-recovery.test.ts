@@ -11335,6 +11335,96 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
+  it.each(["issue", "wake", "run", "native", "close", "cancel"] as const)(
+    "rechecks admission after transient database contention: %s",
+    async (mode) => {
+      const source = await seedCommittedChatControlStop();
+      await db.update(chatPublications).set({ state: "pending" })
+        .where(eq(chatPublications.id, source.publicationId));
+      const child = await seedChatAutomaticChild(source);
+      // Board comments use the automation transport but are fresh user work.
+      if (!["close", "cancel"].includes(mode)) {
+        await db.update(agentWakeupRequests).set({
+          requestedByActorType: "user", requestedByActorId: "responsible-user",
+          reason: "issue_commented",
+        }).where(eq(agentWakeupRequests.id, child.wakeupRequestId));
+        await db.update(heartbeatRuns).set({ retryOfRunId: null })
+          .where(eq(heartbeatRuns.id, child.runId));
+      }
+      if (mode === "native") {
+        await db.update(agents).set({
+          adapterType: "paperclip_runner",
+          adapterConfig: { provider: "codex", model: "gpt-5.6-luna" },
+        }).where(eq(agents.id, source.agentId));
+      }
+      const factory = vi.fn(() => { throw new NativeRunnerOwnershipUnverifiedError(); });
+      let release!: () => void;
+      let locked: Promise<unknown> | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const heartbeat = heartbeatService(db, {
+        nativeSessionBackendFactory: factory,
+        beforeChatControlRecoveryCheck: async ({ stage }) => {
+          if (stage !== "dispatch") return;
+          let ready!: () => void;
+          const acquired = new Promise<void>((resolve) => { ready = resolve; });
+          const held = new Promise<void>((resolve) => { release = resolve; });
+          locked = db.transaction(async (tx) => {
+            if (mode === "wake") {
+              await tx.select().from(agentWakeupRequests)
+                .where(eq(agentWakeupRequests.id, child.wakeupRequestId)).for("update");
+            } else if (mode === "run" || mode === "cancel") {
+              await tx.select().from(heartbeatRuns)
+                .where(eq(heartbeatRuns.id, child.runId)).for("update");
+            } else if (mode === "close") {
+              await tx.select().from(chatConversations)
+                .where(eq(chatConversations.id, source.conversationId)).for("update");
+            } else {
+              await tx.select().from(issues)
+                .where(eq(issues.id, source.issueId)).for("update");
+            }
+            ready();
+            await held;
+            expect(mockAdapterExecute).not.toHaveBeenCalled();
+            expect(factory).not.toHaveBeenCalled();
+            if (mode === "close") {
+              await tx.update(chatPublications).set({ state: "published" })
+                .where(eq(chatPublications.id, source.publicationId));
+            } else if (mode === "cancel") {
+              await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() })
+                .where(eq(heartbeatRuns.id, child.runId));
+            }
+          });
+          await acquired;
+          timer = setTimeout(release, 250);
+        },
+      });
+      try {
+        await heartbeat.resumeQueuedRuns();
+        await heartbeat.drainActiveRunExecutions();
+      } finally {
+        if (timer) clearTimeout(timer);
+        release?.();
+        await locked;
+        await heartbeat.drainActiveRunExecutions();
+      }
+      expect(locked).toBeDefined();
+      const settled = await heartbeat.getRun(child.runId);
+      expect(settled?.errorCode).not.toBe(CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE);
+      if (mode === "native") {
+        expect(factory).toHaveBeenCalledTimes(1);
+        expect(readChatControlRecoveryAdmission(settled!)).toBe("admitted");
+      } else if (mode === "close" || mode === "cancel") {
+        expect(mockAdapterExecute).not.toHaveBeenCalled();
+        expect(settled?.status).toBe("cancelled");
+        if (mode === "close") expect(settled?.errorCode).toBe(CHAT_CONTROL_RECOVERY_STOP_CODE);
+      } else {
+        expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+        expect(settled?.status).toBe("succeeded");
+        expect(readChatControlRecoveryAdmission(settled!)).toBe("admitted");
+      }
+    },
+  );
+
   it("defers unresolved automatic ancestry at claim and records a distinct nonretrying failure after claim", async () => {
     const source = await seedCommittedChatControlStop();
     await db

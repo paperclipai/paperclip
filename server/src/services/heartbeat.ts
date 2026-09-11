@@ -547,6 +547,7 @@ import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
+import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
 import {
   environmentRuntimeService,
   type ProviderResourceDisposition,
@@ -799,7 +800,7 @@ function nonRetryablePreflightFailureCode(error: unknown): string | null {
 class ChatControlRecoveryUnresolvedError extends Error {
   constructor() {
     super(
-      "Automatic continuation source could not be verified before provider admission. Review the task and send a fresh request; this attempt will not automatically retry.",
+      "Run admission could not acquire its database locks after bounded retries. No provider work started. Review database contention and send a fresh request; this attempt will not automatically retry.",
     );
   }
 }
@@ -16401,9 +16402,11 @@ export function heartbeatService(
     }
     let terminal: typeof heartbeatRuns.$inferSelect | null = null;
     try {
-      const result = await db.transaction(async (tx) => {
+      const attempt = () => db.transaction(async (tx) => {
+        terminal = null;
         // Same queue-edit lock order, then the close committer's conversation
-        // row. NOWAIT makes contention a scoped deferral, never authority.
+        // row. NOWAIT releases partial locks on contention. Claim defers to the
+        // queue; dispatch retries this transaction before considering failure.
         const [issue] = await tx
           .select({ id: issues.id })
           .from(issues)
@@ -16567,6 +16570,9 @@ export function heartbeatService(
           );
         return null;
       });
+      const result = stage === "dispatch"
+        ? await retryChatControlAdmission(attempt)
+        : await attempt();
       if (terminal) {
         const settled = terminal as typeof heartbeatRuns.$inferSelect;
         publishLiveEvent({

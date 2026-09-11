@@ -837,6 +837,14 @@ Every continuation carries the triggering request, ordered user direction, inter
 
 ### Interrupted conversation continuation
 
+Before provider dispatch, chat-control admission retries transient database lock
+contention with up to 50 waits of 100 ms. Each attempt starts a new transaction
+and rechecks the current run and committed conversation-close evidence. No lock
+is held between attempts, and no provider call is retried. Queue claims remain
+nonblocking. Persistent contention retains the bounded admission failure, with
+an explicit database-lock error; missing or invalid source evidence still stops
+the run without retrying the admission check.
+
 An interrupted conversation does not permanently block its task. For local conversational adapters, Paperclip starts a new bounded turn with the existing session when compatible, or the full task conversation when the session is unavailable. The prompt says: “Your previous run was interrupted. Continue from where you left off.” The agent decides what remains from the history and latest user request. Paperclip never automatically replays recorded tool calls. Unknown past action outcomes are not a task-wide execution gate, and no action-reconciliation questionnaire is required.
 
 Shutdown, process loss, and provider failure use the existing durable failure retry counter and delay. Ordinary failure recovery permits at most two automatic retries in a failure chain. Accepted-interaction infrastructure recovery retains its existing bounded policy. Repeated scheduler visits reuse the same successor; restarting the server does not reset the counter. After exhaustion, automatic attempts stop. A new explicit user message can start a fresh run and failure budget. Productive max-turn continuation and confirmed workspace waits keep their separate existing semantics.
