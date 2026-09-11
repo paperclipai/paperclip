@@ -1,3 +1,4 @@
+import { TaskChatProjectCreatedCard } from "./TaskChatProjectCreatedCard";
 import { useMemo, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
@@ -93,6 +94,7 @@ function renderItem(
   attachments: IssueAttachment[] = [],
 ) {
   switch (item.kind) {
+    case "project_created": return <TaskChatProjectCreatedCard item={item} />;
     case "message": {
       // Compute the actions once: the bubble renders them for a runless reply
       // (footer = actions + timestamp), while an attached turn hands them to

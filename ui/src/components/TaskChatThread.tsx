@@ -1,3 +1,5 @@
+import type { ActivityEvent } from "@paperclipai/shared";
+import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
 import { TaskChatScrollReady } from "@/components/task-chat/scroll-navigation";
@@ -394,6 +396,8 @@ function resolvedWithoutUserFacingResponse(value: unknown): boolean {
 }
 
 export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread> & {
+  conversationMode?: boolean;
+  creationActivity?: ActivityEvent[];
   initialHistoryPending?: boolean;
   initialHistoryError?: boolean;
   onRetryInitialHistory?: () => void;
@@ -499,6 +503,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     imageUploadHandler,
     mentions,
     enableReassign,
+    conversationMode,
     reassignOptions,
     currentAssigneeValue,
     issueStatus,
@@ -536,6 +541,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     resumeAssigneePending = false,
   } = props;
   const queryClient = useQueryClient();
+  const createdProjectItems = useProjectCreatedItems(props.creationActivity ?? [], companyId);
   const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
     string | null
   >(null);
@@ -1266,10 +1272,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         },
       });
     }
+    for (const item of createdProjectItems) {
+      entries.push({ id: item.id, item, ms: toMs(item.timestamp), order: 2 });
+    }
     return entries.sort(
       (a, b) => a.ms - b.ms || a.order - b.order || a.id.localeCompare(b.id),
     );
   }, [
+    createdProjectItems,
     comments,
     projectedComments,
     commentItems,
@@ -1386,6 +1396,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       if (liveRun && source.id === liveRun.id) continue;
       const entries = transcriptByRun.get(source.id) ?? [];
       const meta = linkedRunMetaById.get(source.id);
+      // /new is represented by its durable comment boundary, not an empty
+      // model response or a completed-run notice.
+      if (meta?.resultJson?.conversationReset === true) { settledRunIds.add(source.id); continue; }
       // A queued continuation can become unnecessary while another turn finishes
       // the task. Keep that cancellation in the run log, not the conversation.
       // Apply this before native stop markers are assembled as well.
@@ -1652,8 +1665,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               id,
               kind: "marker",
               variant: "turn_boundary",
-              label: "Run completed",
-              detail: "The runner returned no user-facing response.",
+              label: source.status === "cancelled" ? "Stopped" : "Run completed",
+              detail: source.status === "cancelled" ? "This turn was cancelled before it returned a response." : "The runner returned no user-facing response.",
             },
           });
         }
@@ -2960,6 +2973,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       onImageUpload={imageUploadHandler}
                       mentions={mentions}
                       enableReassign={enableReassign}
+                      conversationMode={conversationMode}
                       reassignOptions={reassignOptions}
                       agentMap={agentMap}
                       userProfileMap={userProfileMap}
