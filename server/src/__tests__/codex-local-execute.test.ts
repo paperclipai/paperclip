@@ -624,21 +624,109 @@ describe("codex execute", () => {
       expect(result.errorMessage).toBeNull();
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
-      expect(capture.paperclipWakePayloadJson).not.toBeNull();
-      expect(JSON.parse(capture.paperclipWakePayloadJson ?? "{}")).toMatchObject({
-        reason: "issue_commented",
-        latestCommentId: "comment-2",
-        commentIds: ["comment-1", "comment-2"],
-      });
+      // The prompt is the only delivery path for the wake payload now; the
+      // launch env no longer carries a second copy.
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
+      expect(capture.paperclipWakePayloadJson).toBeNull();
       expect(capture.prompt).toContain("## Paperclip Wake Payload");
       expect(capture.prompt).toContain("Treat this wake payload as the highest-priority change for the current heartbeat.");
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
       expect(capture.prompt).toContain(
         "acknowledge the latest comment and explain how it changes your next action.",
       );
+      expect(capture.prompt).toContain("- reason: issue_commented");
+      expect(capture.prompt).toContain("- latest comment id: comment-2");
       expect(capture.prompt).toContain("First comment");
       expect(capture.prompt).toContain("Second comment");
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("the launch env omits PAPERCLIP_WAKE_PAYLOAD_JSON", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-wake-env-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    await seedSharedCodexAuth(root);
+
+    try {
+      const result = await execute({
+        runId: "run-wake-env",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          issueId: "issue-1",
+          taskId: "issue-1",
+          wakeReason: "issue_commented",
+          wakeCommentId: "comment-2",
+          paperclipWake: {
+            reason: "issue_commented",
+            issue: {
+              id: "issue-1",
+              identifier: "PAP-874",
+              title: "chat-speed issues",
+              status: "in_progress",
+              priority: "medium",
+            },
+            commentIds: ["comment-2"],
+            latestCommentId: "comment-2",
+            comments: [
+              {
+                id: "comment-2",
+                issueId: "issue-1",
+                body: "Second comment",
+                bodyTruncated: false,
+                createdAt: "2026-03-28T14:35:10.000Z",
+                author: { type: "user", id: "user-1" },
+              },
+            ],
+            commentWindow: {
+              requestedCount: 1,
+              includedCount: 1,
+              missingCount: 0,
+            },
+            truncated: false,
+            fallbackFetchNeeded: false,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorMessage).toBeNull();
+
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
+      expect(capture.paperclipWakePayloadJson).toBeNull();
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
@@ -1181,26 +1269,19 @@ process.exit(1);
       expect(result.errorMessage).toBeNull();
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      expect(capture.paperclipEnvKeys).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
-      expect(capture.paperclipWakePayloadJson).not.toBeNull();
-      expect(JSON.parse(capture.paperclipWakePayloadJson ?? "{}")).toMatchObject({
-        reason: "issue_assigned",
-        issue: {
-          identifier: "PAP-1201",
-          title: "Fix gallery opening for inline images",
-          status: "in_progress",
-          priority: "medium",
-        },
-        checkedOutByHarness: true,
-        commentIds: [],
-      });
+      // The prompt is the only delivery path for the wake payload now; the
+      // launch env no longer carries a second copy.
+      expect(capture.paperclipEnvKeys).not.toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
+      expect(capture.paperclipWakePayloadJson).toBeNull();
       expect(capture.prompt).toContain("## Paperclip Wake Payload");
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
+      expect(capture.prompt).toContain("- reason: issue_assigned");
       expect(capture.prompt).toContain("- issue: PAP-1201 Fix gallery opening for inline images");
+      expect(capture.prompt).toContain("- issue status: in_progress");
+      expect(capture.prompt).toContain("- issue priority: medium");
       expect(capture.prompt).not.toContain("- pending comments:");
       expect(capture.prompt).not.toContain("acknowledge the latest comment");
       expect(capture.prompt).not.toContain("Execution contract:");
-      expect(capture.prompt).toContain("- issue status: in_progress");
       expect(capture.prompt).toContain("- checkout: already claimed by the harness for this run");
       expect(capture.prompt).toContain("The harness already checked out this issue for the current run.");
     } finally {

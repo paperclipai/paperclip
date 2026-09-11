@@ -1590,6 +1590,42 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(list.body.actions).toHaveLength(1);
   });
 
+  it("recovers the resolved recovery-action history the wake payload's item cap omits", async () => {
+    const { sourceIssueId, companyId } = await seedCompany();
+    const resolvedIds = Array.from({ length: 34 }, () => randomUUID());
+    await db.insert(issueRecoveryActions).values(
+      resolvedIds.map((id, index) => ({
+        id,
+        companyId,
+        sourceIssueId,
+        kind: "liveness" as const,
+        status: "resolved" as const,
+        cause: "process_lost",
+        fingerprint: `fp-${index}`,
+        evidence: { executionReconciliation: { decision: "retry" } },
+        nextAction: "none",
+        createdAt: new Date(Date.UTC(2026, 8, 3, 0, index)),
+      })),
+    );
+    const app = createApp();
+
+    // The default view stays unchanged: it reports only the active action,
+    // never the resolved history, so a caller who does not ask for history
+    // does not get a much larger response by surprise.
+    const defaultView = await request(app).get(`/api/issues/${sourceIssueId}/recovery-actions`).expect(200);
+    expect(defaultView.body.active).toBeNull();
+    expect(defaultView.body.actions).toEqual([]);
+
+    // `status=resolved` is the retrieval path the wake prompt now names for
+    // the omitted rows: it must return every resolved action, not just the
+    // newest 30 the wake payload keeps, in the same oldest-first order.
+    const history = await request(app)
+      .get(`/api/issues/${sourceIssueId}/recovery-actions?status=resolved`)
+      .expect(200);
+    expect(history.body.actions).toHaveLength(34);
+    expect(history.body.actions.map((row: { id: string }) => row.id)).toEqual(resolvedIds);
+  });
+
   it("projects recovery action metadata into the structured wake payload", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const action = await issueRecoveryActionService(db).upsertSourceScoped({

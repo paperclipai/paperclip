@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { issueRecoveryActions } from "@paperclipai/db";
 import type {
@@ -168,6 +168,31 @@ export function issueRecoveryActionService(db: Db) {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     return row ? toReadModel(row) : null;
+  }
+
+  // The wake payload keeps only the newest WAKE_CONTEXT_ITEM_CAP resolved
+  // recovery actions and reports the rest as an omitted count. This is the
+  // retrieval path for that omitted history: the same source rows, in the
+  // same order, with no cap. Match the resolved-status filter and the
+  // createdAt/id order the wake payload uses, so a caller can reconstruct
+  // the full list the cap drew from.
+  async function listResolvedForIssue(
+    companyId: string,
+    sourceIssueId: string,
+    dbOrTx: DbOrTransaction = db,
+  ): Promise<IssueRecoveryAction[]> {
+    const rows = await dbOrTx
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, sourceIssueId),
+          eq(issueRecoveryActions.status, "resolved"),
+        ),
+      )
+      .orderBy(asc(issueRecoveryActions.createdAt), asc(issueRecoveryActions.id));
+    return rows.map(toReadModel);
   }
 
   async function listActiveForIssues(companyId: string, sourceIssueIds: string[]) {
@@ -501,6 +526,7 @@ export function issueRecoveryActionService(db: Db) {
   return {
     getActiveForIssue,
     listActiveForIssues,
+    listResolvedForIssue,
     resolveActiveForIssue,
     upsertSourceScoped,
   };

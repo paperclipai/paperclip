@@ -8919,10 +8919,19 @@ export function issueRoutes(
       trigger: "read_projection",
       actor: getActorInfo(req),
     });
-    res.json({
-      active,
-      actions: active ? [active] : [],
-    });
+    // The default response reports only the active action. The wake payload
+    // caps its resolved-recovery-outcome list and tells the agent to fetch
+    // the rest here with `?status=resolved`; return the full resolved
+    // history, oldest first, so that fetch actually recovers the omitted
+    // rows instead of repeating the capped active-only view.
+    const wantsResolvedHistory =
+      typeof req.query.status === "string" && req.query.status.trim().toLowerCase() === "resolved";
+    const actions = wantsResolvedHistory
+      ? await recoveryActionsSvc.listResolvedForIssue(issue.companyId, issue.id)
+      : active
+        ? [active]
+        : [];
+    res.json({ active, actions });
   });
 
   router.post(

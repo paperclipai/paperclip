@@ -579,7 +579,9 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).toContain("Paperclip runtime note:");
     expect(prompt).toContain("PAPERCLIP_AGENT_ID");
     expect(prompt).toContain("PAPERCLIP_API_KEY");
-    expect(prompt).toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
+    // The wake payload rides only the prompt body now, not a launch env var,
+    // so it no longer appears in the PAPERCLIP_* runtime note list.
+    expect(prompt).not.toContain("PAPERCLIP_WAKE_PAYLOAD_JSON");
     expect(prompt).toContain("Paperclip API access note:");
     expect(prompt).toContain('PAPERCLIP_API_BASE="${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"');
     expect(prompt).toContain("$PAPERCLIP_API_BASE/api/agents/me");

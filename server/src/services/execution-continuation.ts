@@ -16,6 +16,47 @@ const object = (v: unknown): Record<string, unknown> =>
     : {};
 const string = (v: unknown) =>
   typeof v === "string" && v.length > 0 ? v : null;
+
+/**
+ * A guard against a pathological item count in one list of the wake payload.
+ * This is not a size bound: a kept item can still hold a large body.
+ */
+const WAKE_CONTEXT_ITEM_CAP = 30;
+
+function capToNewest<T>(items: T[], cap: number): { kept: T[]; omitted: number } {
+  if (items.length <= cap) return { kept: items, omitted: 0 };
+  return { kept: items.slice(items.length - cap), omitted: items.length - cap };
+}
+
+/**
+ * Keep every origin message when the cap has room for all of them, then fill
+ * the rest of the cap with the newest non-origin messages. When there are
+ * more origin messages than the cap allows, keep only the newest origin
+ * messages, so the total kept count never goes over the cap.
+ */
+function capMessagesKeepingOrigins<T extends { id: string }>(
+  items: T[],
+  cap: number,
+  originCommentIds: string[],
+): { kept: T[]; omitted: number } {
+  if (items.length <= cap) return { kept: items, omitted: 0 };
+  const originSet = new Set(originCommentIds);
+  const origin = items.filter((item) => originSet.has(item.id));
+  const nonOrigin = items.filter((item) => !originSet.has(item.id));
+  const keepOriginIds = new Set(
+    origin.slice(Math.max(origin.length - cap, 0)).map((item) => item.id),
+  );
+  const remainingSlots = Math.max(cap - keepOriginIds.size, 0);
+  const keepNonOriginIds = new Set(
+    nonOrigin
+      .slice(Math.max(nonOrigin.length - remainingSlots, 0))
+      .map((item) => item.id),
+  );
+  const kept = items.filter(
+    (item) => keepOriginIds.has(item.id) || keepNonOriginIds.has(item.id),
+  );
+  return { kept, omitted: items.length - kept.length };
+}
 export function continuationOriginCommentIds(context: unknown): string[] {
   const c = object(context);
   const prior = object(c.executionContinuation);
@@ -182,11 +223,11 @@ export async function buildExecutionContinuation(input: {
   const deliveredMessages = Array.isArray(priorEnvelope.messages)
     ? priorEnvelope.messages.map(object)
     : null;
-  const resumeDelta =
-    deliveredMessages && input.previousContextRunId
-      ? {
-          baseRunId: input.previousContextRunId,
-          messages: messages.filter(
+  const previousContextRunId = input.previousContextRunId ?? null;
+  const deltaMessageCap =
+    deliveredMessages && previousContextRunId
+      ? capMessagesKeepingOrigins(
+          messages.filter(
             (message) =>
               originCommentIds.includes(message.id) ||
               !deliveredMessages.some(
@@ -196,11 +237,24 @@ export async function buildExecutionContinuation(input: {
                   prior.body === message.body &&
                   prior.deleted === message.deleted &&
                   prior.authorId === message.authorId &&
-                  (prior.createdByRunId ?? null) === message.createdByRunId &&
+                  (prior.createdByRunId ?? null) ===
+                    message.createdByRunId &&
                   JSON.stringify(prior.sourceTrust) ===
                     JSON.stringify(message.sourceTrust),
               ),
           ),
+          WAKE_CONTEXT_ITEM_CAP,
+          originCommentIds,
+        )
+      : null;
+  const resumeDelta =
+    deltaMessageCap && previousContextRunId
+      ? {
+          baseRunId: previousContextRunId,
+          messages: deltaMessageCap.kept,
+          ...(deltaMessageCap.omitted > 0
+            ? { omittedMessageCount: deltaMessageCap.omitted }
+            : {}),
         }
       : undefined;
   const latestRequest = messages.findLast(
@@ -248,15 +302,49 @@ export async function buildExecutionContinuation(input: {
         eq(issueRecoveryActions.sourceIssueId, issueId),
         eq(issueRecoveryActions.status, "resolved"),
       ),
-    );
-  return {
-    ...(resumeDelta ? { resumeDelta } : {}),
-    recoveryOutcomes: reconciliations
+    )
+    .orderBy(asc(issueRecoveryActions.createdAt), asc(issueRecoveryActions.id));
+  const cappedMessages = capMessagesKeepingOrigins(
+    messages,
+    WAKE_CONTEXT_ITEM_CAP,
+    originCommentIds,
+  );
+  const cappedRecoveryOutcomes = capToNewest(
+    reconciliations
       .filter((row) => row.evidence.executionReconciliation)
       .map((row) => ({
         recoveryActionId: row.id,
         decision: row.evidence.executionReconciliation,
       })),
+    WAKE_CONTEXT_ITEM_CAP,
+  );
+  const cappedInteractionOutcomes = capToNewest(
+    interactions
+      .filter((row) => row.status !== "pending")
+      .map((row) => ({
+        id: row.id,
+        kind: row.kind,
+        status: row.status,
+        result: row.result,
+      })),
+    WAKE_CONTEXT_ITEM_CAP,
+  );
+  const cappedCompletedActions = capToNewest(
+    completedActions,
+    WAKE_CONTEXT_ITEM_CAP,
+  );
+  const cappedUnresolvedInteractionIds = capToNewest(
+    interactions
+      .filter((row) => row.status === "pending")
+      .map((row) => row.id),
+    WAKE_CONTEXT_ITEM_CAP,
+  );
+  return {
+    ...(resumeDelta ? { resumeDelta } : {}),
+    recoveryOutcomes: cappedRecoveryOutcomes.kept,
+    ...(cappedRecoveryOutcomes.omitted > 0
+      ? { recoveryOutcomesOmittedCount: cappedRecoveryOutcomes.omitted }
+      : {}),
     version: 1,
     companyId,
     issueId,
@@ -267,24 +355,30 @@ export async function buildExecutionContinuation(input: {
     },
     originCommentIds,
     objective: latestRequest?.body ?? issue.description ?? issue.title,
-    messages,
-    interactionOutcomes: interactions
-      .filter((row) => row.status !== "pending")
-      .map((row) => ({
-        id: row.id,
-        kind: row.kind,
-        status: row.status,
-        result: row.result,
-      })),
+    messages: cappedMessages.kept,
+    interactionOutcomes: cappedInteractionOutcomes.kept,
+    ...(cappedInteractionOutcomes.omitted > 0
+      ? { interactionOutcomesOmittedCount: cappedInteractionOutcomes.omitted }
+      : {}),
     completedWork: input.summary,
-    completedActions,
-    unresolvedInteractionIds: interactions
-      .filter((row) => row.status === "pending")
-      .map((row) => row.id),
+    completedActions: cappedCompletedActions.kept,
+    ...(cappedCompletedActions.omitted > 0
+      ? { completedActionsOmittedCount: cappedCompletedActions.omitted }
+      : {}),
+    unresolvedInteractionIds: cappedUnresolvedInteractionIds.kept,
+    ...(cappedUnresolvedInteractionIds.omitted > 0
+      ? {
+          unresolvedInteractionIdsOmittedCount:
+            cappedUnresolvedInteractionIds.omitted,
+        }
+      : {}),
     coverage: {
       kind: "full_task_history",
       throughCommentId: messages.at(-1)?.id ?? null,
       summaryThroughCommentId: null,
+      ...(cappedMessages.omitted > 0
+        ? { omittedMessageCount: cappedMessages.omitted }
+        : {}),
     },
   };
 }

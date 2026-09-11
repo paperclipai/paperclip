@@ -7,6 +7,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueRecoveryActions,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -16,6 +17,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
 import { buildExecutionContinuation, currentContinuationOrigins } from "./execution-continuation.js";
+import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
   "authorized continuation context",
@@ -263,6 +265,293 @@ const support = await getEmbeddedPostgresTestSupport();
           exposeLowTrustRaw: false,
         }),
       ).rejects.toThrow("continuation_task_ownership_changed");
+    });
+  },
+);
+
+(support.supported ? describe : describe.skip)("wake context item cap: messages", () => {
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let db: ReturnType<typeof createDb>;
+  const companyId = randomUUID(),
+    agentId = randomUUID(),
+    issueId = randomUUID();
+  let messageIds: string[] = [];
+  beforeAll(async () => {
+    database = await startEmbeddedPostgresTestDatabase(
+      "paperclip-continuation-cap-",
+    );
+    db = createDb(database.connectionString);
+    await db
+      .insert(companies)
+      .values({ id: companyId, name: "Cap", issuePrefix: "CAP" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Executor",
+      role: "engineer",
+      adapterType: "paperclip_runner",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Cap test",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    messageIds = Array.from({ length: 40 }, () => randomUUID());
+    await db.insert(issueComments).values(
+      messageIds.map((id, index) => ({
+        id,
+        companyId,
+        issueId,
+        authorType: "user" as const,
+        authorUserId: "local-board",
+        body: index === messageIds.length - 1 ? "Latest request." : `Message ${index}`,
+        createdAt: new Date(Date.UTC(2026, 8, 1, 0, index)),
+      })),
+    );
+  }, 30_000);
+  afterAll(async () => {
+    await database?.cleanup();
+  });
+  const build = (context: Record<string, unknown> = {}) =>
+    buildExecutionContinuation({
+      db,
+      companyId,
+      issueId,
+      agentId,
+      context,
+      summary: null,
+      exposeLowTrustRaw: false,
+    });
+  it("stops the messages list at the item cap", async () => {
+    const context = await build();
+    expect(context.messages).toHaveLength(30);
+  });
+  it("keeps every origin message even past the cap", async () => {
+    const context = await build({ commentIds: [messageIds[0]] });
+    expect(context.messages.map((row) => row.id)).toContain(messageIds[0]);
+  });
+  it("keeps each kept message object complete", async () => {
+    const context = await build();
+    for (const message of context.messages) {
+      expect(message).toHaveProperty("authorType");
+      expect(message).toHaveProperty("authorId");
+      expect(message).toHaveProperty("sourceTrust");
+    }
+  });
+  it("keeps the objective independent of the cap", async () => {
+    // Origin messages fill the whole cap, pushing the newest (non-origin) message out of `messages`.
+    const originIds = messageIds.slice(0, 30);
+    const context = await build({ commentIds: originIds });
+    expect(context.messages.map((row) => row.id)).toEqual(originIds);
+    expect(context.objective).toBe("Latest request.");
+  });
+  it("reports the number of dropped messages on coverage.omittedMessageCount", async () => {
+    const context = await build();
+    expect(context.coverage.omittedMessageCount).toBe(10);
+  });
+  it("bounds the origin messages by the cap when there are more than 30 of them", async () => {
+    // 35 origin ids, oldest first. The cap must keep only the newest 30 of
+    // them; it must not let the origin set grow the kept list past the cap.
+    const originIds = messageIds.slice(0, 35);
+    const context = await build({ commentIds: originIds });
+    expect(context.messages).toHaveLength(30);
+    expect(context.messages.map((row) => row.id)).toEqual(originIds.slice(5));
+    expect(context.coverage.omittedMessageCount).toBe(10);
+  });
+});
+
+(support.supported ? describe : describe.skip)(
+  "wake context item cap: other lists",
+  () => {
+    let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+    let db: ReturnType<typeof createDb>;
+    const companyId = randomUUID(),
+      agentId = randomUUID(),
+      issueId = randomUUID(),
+      baseRunId = randomUUID();
+    let recoveryActionIds: string[] = [];
+    beforeAll(async () => {
+      database = await startEmbeddedPostgresTestDatabase(
+        "paperclip-continuation-cap-lists-",
+      );
+      db = createDb(database.connectionString);
+      await db
+        .insert(companies)
+        .values({ id: companyId, name: "CapLists", issuePrefix: "CAL" });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Executor",
+        role: "engineer",
+        adapterType: "paperclip_runner",
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Cap lists test",
+        status: "in_progress",
+        assigneeAgentId: agentId,
+      });
+      // A prior run that delivered zero messages, so every new comment below
+      // appears as a resumeDelta.messages entry.
+      await db.insert(heartbeatRuns).values({
+        id: baseRunId,
+        companyId,
+        agentId,
+        status: "succeeded",
+        contextSnapshot: {
+          issueId,
+          executionContinuation: { messages: [] },
+        },
+      });
+      await db.insert(issueComments).values(
+        Array.from({ length: 40 }, (_, index) => ({
+          id: randomUUID(),
+          companyId,
+          issueId,
+          authorType: "user" as const,
+          authorUserId: "local-board",
+          body: `Delta message ${index}`,
+          createdAt: new Date(Date.UTC(2026, 8, 2, 0, index)),
+        })),
+      );
+      await db.insert(issueThreadInteractions).values([
+        ...Array.from({ length: 40 }, () => ({
+          id: randomUUID(),
+          companyId,
+          issueId,
+          kind: "connection_intent" as const,
+          status: "accepted",
+          payload: {
+            version: 1 as const,
+            serviceSlug: "gmail",
+            serviceName: "Gmail",
+            serviceLogoUrl: null,
+            requestingAgentId: agentId,
+            requestingAgentName: "Executor",
+            phase: "requested" as const,
+          },
+        })),
+        ...Array.from({ length: 40 }, () => ({
+          id: randomUUID(),
+          companyId,
+          issueId,
+          kind: "connection_intent" as const,
+          status: "pending",
+          payload: {
+            version: 1 as const,
+            serviceSlug: "gmail",
+            serviceName: "Gmail",
+            serviceLogoUrl: null,
+            requestingAgentId: agentId,
+            requestingAgentName: "Executor",
+            phase: "requested" as const,
+          },
+        })),
+      ]);
+      await db.insert(heartbeatRuns).values(
+        Array.from({ length: 40 }, (_, index) => ({
+          id: randomUUID(),
+          companyId,
+          agentId,
+          status: "succeeded" as const,
+          contextSnapshot: { issueId },
+          resultJson: {
+            apiToolReceipts: {
+              receipt: {
+                state: "completed",
+                operationId: `op-${index}`,
+                result: { ok: true },
+              },
+            },
+          },
+        })),
+      );
+      recoveryActionIds = Array.from({ length: 40 }, () => randomUUID());
+      await db.insert(issueRecoveryActions).values(
+        recoveryActionIds.map((id, index) => ({
+          id,
+          companyId,
+          sourceIssueId: issueId,
+          kind: "liveness",
+          status: "resolved",
+          cause: "process_lost",
+          fingerprint: `fp-${index}`,
+          evidence: { executionReconciliation: { decision: "retry" } },
+          nextAction: "none",
+          createdAt: new Date(Date.UTC(2026, 8, 3, 0, index)),
+        })),
+      );
+    }, 30_000);
+    afterAll(async () => {
+      await database?.cleanup();
+    });
+    it("applies the item cap to resumeDelta.messages, interactionOutcomes, unresolvedInteractionIds, completedActions, and recoveryOutcomes", async () => {
+      const context = await buildExecutionContinuation({
+        db,
+        companyId,
+        issueId,
+        agentId,
+        previousContextRunId: baseRunId,
+        context: {},
+        summary: null,
+        exposeLowTrustRaw: false,
+      });
+      expect(context.resumeDelta?.messages).toHaveLength(30);
+      expect(context.interactionOutcomes).toHaveLength(30);
+      expect(context.unresolvedInteractionIds).toHaveLength(30);
+      expect(context.completedActions).toHaveLength(30);
+      expect(context.recoveryOutcomes).toHaveLength(30);
+    });
+    it("reports the number of dropped delta messages on resumeDelta.omittedMessageCount", async () => {
+      const context = await buildExecutionContinuation({
+        db,
+        companyId,
+        issueId,
+        agentId,
+        previousContextRunId: baseRunId,
+        context: {},
+        summary: null,
+        exposeLowTrustRaw: false,
+      });
+      expect(context.resumeDelta?.omittedMessageCount).toBe(10);
+    });
+    it("reports the number of dropped items on each of the other four lists", async () => {
+      const context = await buildExecutionContinuation({
+        db,
+        companyId,
+        issueId,
+        agentId,
+        previousContextRunId: baseRunId,
+        context: {},
+        summary: null,
+        exposeLowTrustRaw: false,
+      });
+      expect(context.interactionOutcomesOmittedCount).toBe(10);
+      expect(context.unresolvedInteractionIdsOmittedCount).toBe(10);
+      expect(context.completedActionsOmittedCount).toBe(10);
+      expect(context.recoveryOutcomesOmittedCount).toBe(10);
+    });
+    it("keeps the newest 30 recovery outcomes by createdAt", async () => {
+      const context = await buildExecutionContinuation({
+        db,
+        companyId,
+        issueId,
+        agentId,
+        previousContextRunId: baseRunId,
+        context: {},
+        summary: null,
+        exposeLowTrustRaw: false,
+      });
+      expect(context.recoveryOutcomes?.map((row) => row.recoveryActionId)).toEqual(
+        recoveryActionIds.slice(10),
+      );
+    });
+    it("recovers every dropped recovery outcome through the resolved-history retrieval path", async () => {
+      const resolved = await issueRecoveryActionService(db).listResolvedForIssue(companyId, issueId);
+      expect(resolved.map((row) => row.id)).toEqual(recoveryActionIds);
     });
   },
 );

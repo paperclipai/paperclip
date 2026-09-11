@@ -315,8 +315,8 @@ The runner, package driver, and model/harness never receive:
 - the local agent JWT, `PAPERCLIP_API_KEY`, a board session, or a board API key;
 - managed MCP gateway credentials, runner-lease/bootstrap credentials, or
   credential-broker secret material;
-- `PAPERCLIP_WAKE_PAYLOAD_JSON`, rendered Paperclip wake text, Paperclip skill
-  instructions, the Paperclip API manual, or run-scoped skill material;
+- rendered Paperclip wake text, Paperclip skill instructions, the Paperclip
+  API manual, or run-scoped skill material;
 - raw `process.env`, agent/project/routine env maps, `runtimeConfig.env`, or the
   legacy adapter's generic execution context;
 - authority to choose a company, issue, agent, policy, approval, or status;
