@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronLeft,
@@ -264,6 +264,16 @@ export function QuestionForm({
   const [working, setWorking] = useState<"submit" | "cancel" | null>(null);
   const [inputUploading, setInputUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const promptRef = useRef<HTMLParagraphElement>(null);
+  const previousPage = useRef(page);
+
+  useEffect(() => {
+    if (previousPage.current !== page) {
+      promptRef.current?.focus();
+      previousPage.current = page;
+    }
+  }, [page]);
+
   const [filters, setFilters] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -316,6 +326,7 @@ export function QuestionForm({
   }
 
   function toggleOption(optionId: string) {
+    if (disabled || working || inputUploading) return;
     const optionIds = multiple
       ? selected.includes(optionId)
         ? selected.filter((candidate) => candidate !== optionId)
@@ -326,11 +337,16 @@ export function QuestionForm({
       selectedOptionIds: optionIds,
       ...(!multiple ? { customText: undefined } : {}),
     };
-    // Picking only selects. Next / Submit answers moves on or sends, so a
-    // click can never start work by itself.
     setAnswers({ ...answers, [question.id]: nextAnswer });
-    if (!multiple)
+    if (!multiple) {
       setCustomActive((current) => ({ ...current, [question.id]: false }));
+      // A single choice completes this page. The last page still needs an
+      // explicit submit, and custom answers stay open for typing.
+      if (page < questionSet.questions.length - 1) {
+        setError(null);
+        setPage(page + 1);
+      }
+    }
   }
 
   function toggleCustom() {
@@ -465,6 +481,7 @@ export function QuestionForm({
         if (
           disabled ||
           working ||
+          event.repeat ||
           question.answerMode === "text" ||
           event.metaKey ||
           event.ctrlKey ||
@@ -508,6 +525,8 @@ export function QuestionForm({
           </p>
         ) : null}
         <p
+          ref={promptRef}
+          tabIndex={-1}
           id={`${id}-${question.id}-prompt`}
           className="text-sm font-medium leading-5 text-foreground"
         >

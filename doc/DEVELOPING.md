@@ -82,6 +82,11 @@ pnpm build-storybook
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
 
+Use **Chat & Comments → Issue Thread Interactions → Composer Questions Auto Advance**
+to try the paged composer form. A single selection advances to the next question.
+Multi-select and custom answers wait for Next, and the final page waits for
+Submit answers. The adjacent **Verified** story exercises the full flow.
+
 The Storybook visual regression suite uses external PNG baselines instead of
 committed screenshots:
 

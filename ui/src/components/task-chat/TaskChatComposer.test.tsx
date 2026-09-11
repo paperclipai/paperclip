@@ -2058,7 +2058,7 @@ describe("TaskChatComposer", () => {
       });
     });
 
-    it("moves through questions with Next, Skip leaves one unanswered, Submit answers sends", async () => {
+    it("advances single selections, preserves answers when going back, and skips optional answers", async () => {
       const onSubmit = vi.fn();
       render(
         <TaskChatComposer
@@ -2118,14 +2118,16 @@ describe("TaskChatComposer", () => {
       flushSync(() => byLabel("Staging")?.click());
       await flushAsync();
       expect(onSubmit).not.toHaveBeenCalled();
-      expect(byLabel("Next")?.disabled).toBe(false);
-      flushSync(() => byLabel("Next")?.click());
-      await flushAsync();
       expect(container.textContent).toContain("When?");
+      expect(document.activeElement?.textContent).toBe("When?");
 
-      // Page 2: optional. Pick, then Skip anyway — the pick is dropped.
+      // Page 2: pick advances. Go back to confirm it is saved, then skip.
       flushSync(() => byLabel("Today")?.click());
       await flushAsync();
+      expect(container.textContent).toContain("Who?");
+      flushSync(() => container.querySelector<HTMLButtonElement>('button[aria-label="Previous question"]')?.click());
+      await flushAsync();
+      expect(byLabel("Today")?.getAttribute("aria-checked")).toBe("true");
       flushSync(() => byLabel("Skip")?.click());
       await flushAsync();
       expect(container.textContent).toContain("Who?");
@@ -2142,6 +2144,58 @@ describe("TaskChatComposer", () => {
       expect(response.answers.env).toEqual({ selectedOptionIds: ["staging"] });
       expect(response.answers.when).toBeUndefined();
       expect(response.answers.who).toEqual({ selectedOptionIds: ["me"] });
+    });
+
+    it.each(["click", "keyboard"])("advances a single choice by %s, while Other and multi-select stay put", async (input) => {
+      const onSubmit = vi.fn();
+      render(<QuestionForm
+        id="selection-modes"
+        questionSet={{
+          schema: "paperclip.question_set.v1",
+          questions: [
+            { id: "storage", prompt: "Storage?", required: true, answerMode: "single_select",
+              options: [{ id: "sqlite", label: "SQLite" }], customAnswer: { enabled: true } },
+            { id: "features", prompt: "Features?", required: true, answerMode: "multi_select",
+              options: [{ id: "auth", label: "Sign in" }, { id: "search", label: "Search" }] },
+            { id: "notes", prompt: "Notes?", required: false, answerMode: "text" },
+          ],
+        }}
+        initialResponse={{ schema: "paperclip.question_response.v1", answers: { storage: { selectedOptionIds: ["sqlite"] } } }}
+        onSubmit={onSubmit}
+      />);
+      const byLabel = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+        .find((button) => button.textContent?.trim() === label)!;
+      // Restoring a selection does not advance. Other needs text first.
+      expect(container.textContent).toContain("1 of 3");
+      flushSync(() => byLabel("Other").click());
+      await flushAsync();
+      expect(container.textContent).toContain("1 of 3");
+      expect(container.querySelector('[data-testid="question-other-answer-composer"]')).not.toBeNull();
+      expect(byLabel("Next").disabled).toBe(true);
+      flushSync(() => {
+        if (input === "click") byLabel("SQLite").click();
+        else byLabel("SQLite").dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+      });
+      await flushAsync();
+      expect(container.textContent).toContain("2 of 3");
+      expect(document.activeElement?.textContent).toBe("Features?");
+      flushSync(() => document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "1", repeat: true, bubbles: true })));
+      expect(byLabel("Sign in").getAttribute("aria-checked")).toBe("false");
+      flushSync(() => byLabel("Sign in").click());
+      flushSync(() => byLabel("Search").click());
+      expect(container.textContent).toContain("2 of 3");
+      expect(byLabel("Sign in").getAttribute("aria-checked")).toBe("true");
+      expect(byLabel("Search").getAttribute("aria-checked")).toBe("true");
+      expect(onSubmit).not.toHaveBeenCalled();
+      flushSync(() => byLabel("Next").click());
+      await flushAsync();
+      expect(container.textContent).toContain("3 of 3");
+      flushSync(() => byLabel("Submit answers").click());
+      await flushAsync();
+      expect(onSubmit).toHaveBeenCalledExactlyOnceWith({
+        schema: "paperclip.question_response.v1",
+        answers: { storage: { selectedOptionIds: ["sqlite"] }, features: { selectedOptionIds: ["auth", "search"] } },
+      });
     });
 
     it("Skip on the last question submits the other answers", async () => {
@@ -2190,7 +2244,6 @@ describe("TaskChatComposer", () => {
           container.querySelectorAll<HTMLButtonElement>("button"),
         ).find((button) => button.textContent?.trim() === label);
       flushSync(() => byLabel("Staging")?.click());
-      flushSync(() => byLabel("Next")?.click());
       await flushAsync();
       expect(container.textContent).toContain("Anything else?");
       flushSync(() => byLabel("Skip")?.click());
