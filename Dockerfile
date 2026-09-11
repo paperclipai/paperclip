@@ -296,7 +296,7 @@ COPY packages ./packages
 COPY server/package.json ./server/package.json
 COPY ui/package.json ./ui/package.json
 COPY cli/package.json ./cli/package.json
-ARG PAPERCLIP_RUNNER_LOCK_SHA256=101481086be52f63be8b83b9047d70aeb0995a4ebe1deb638a43346386f9085e
+ARG PAPERCLIP_RUNNER_LOCK_SHA256=3d4577e64214452e3c1f65e32c9223cf34d17d5cf84aa4658f0fefa158fe6de5
 RUN printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
     && sha256sum -c /tmp/provider-lock.sha256 \
     && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
