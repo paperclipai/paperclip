@@ -2,7 +2,7 @@ import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBinding
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections, toolConnectionInstalls as aiConnectionInstalls } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
-import { assertAiConnectionCreateAccess, responsibleUserForAiRequest } from "./ai-connections.js";
+import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
 import { isAiConnectionCompatible } from "@paperclipai/shared";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@paperclipai/adapter-utils";
 import { executionProjectionForRun, executionProjectionsForRuns } from "../services/execution-projection.js";
@@ -3164,14 +3164,15 @@ export function agentRoutes(
 
   async function validateManagedAgentBinding(req: Request, companyId: string, agentId: string, adapterType: string, config: Record<string, unknown>, binding: AiConnectionBinding, environmentId: string | null | undefined, test: boolean, newAgent = false) {
     const userId = responsibleUserForAiRequest(req);
-    const selection = await aiConnectionService(db).select({ companyId, agentId, userId, adapterType, model: config.model, runnerProvider: config.provider, acpxAgent: config.acpxAgent, binding, allowUninstalledPersonal: newAgent, allowLegacyValidation: test });
+    const allowUninstalledShared = newAgent && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, binding);
+    const selection = await aiConnectionService(db).select({ companyId, agentId, userId, adapterType, model: config.model, runnerProvider: config.provider, acpxAgent: config.acpxAgent, binding, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: test });
     if (test) {
       if (environmentId) await assertAdapterTestEnvironmentForCompany(companyId, environmentId);
       const target = await resolveAdapterTestExecutionContext({ companyId, adapterType, environmentId: environmentId ?? null });
       let managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
       try {
         if (!target.executionTarget && target.fallbackChecks.some(check => check.level === "error")) throw unprocessable("The agent environment is not available for adoption");
-        managed = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding, config, allowUninstalledPersonal: newAgent, allowLegacyValidation: true });
+        managed = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: userId, adapterType, binding, config, allowUninstalledPersonal: newAgent, allowUninstalledShared, allowLegacyValidation: true });
         const result = await testManagedEnvironment(adapterType, { companyId, adapterType, config: managed.config, executionTarget: target.executionTarget, environmentName: target.environmentName }, binding);
         if (result.status === "fail" || result.checks.some(check => check.code === ADAPTER_AUTH_MISSING_CHECK_CODE)) throw unprocessable("The selected AI connection failed validation in this agent’s environment");
         if (selection.connection.config.aiLegacyAdoption === true) await db.update(toolConnections).set({ healthStatus: "ok", config: { ...selection.connection.config, aiLegacyAdoption: false }, updatedAt: new Date() }).where(eq(toolConnections.id, selection.connection.id));
@@ -3327,7 +3328,7 @@ export function agentRoutes(
             effectiveAdapterConfig.apiKey = req.body.testCredentials.API_SERVER_KEY;
           }
         }
-        const managed = aiBinding ? await prepareManagedAiRuntime(db, { companyId, agentId: req.body.agentId ?? "", responsibleUserId: responsibleUserForAiRequest(req), adapterType: type, binding: aiBinding, config: effectiveAdapterConfig, allowUninstalledPersonal: !req.body.agentId }) : null;
+        const managed = aiBinding ? await prepareManagedAiRuntime(db, { companyId, agentId: req.body.agentId ?? "", responsibleUserId: responsibleUserForAiRequest(req), adapterType: type, binding: aiBinding, config: effectiveAdapterConfig, allowUninstalledPersonal: !req.body.agentId, allowUninstalledShared: !req.body.agentId && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, aiBinding) }) : null;
         let result;
         try {
           result = managed && aiBinding ? await testManagedEnvironment(type, { companyId, adapterType: type, config: managed.config, executionTarget, environmentName }, aiBinding) : await adapter.testEnvironment({ companyId, adapterType: type, config: effectiveAdapterConfig, executionTarget, environmentName });

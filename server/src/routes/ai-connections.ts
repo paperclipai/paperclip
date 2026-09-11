@@ -18,6 +18,7 @@ import {
   isAiConnectionCompatible,
   type AiConnectionLoginIntent,
   type AiProvider,
+  type AiConnectionBinding,
 } from "@paperclipai/shared";
 import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
@@ -109,6 +110,24 @@ export async function assertAiConnectionCreateAccess(
   if (membership?.membershipRole === "viewer")
     throw forbidden("Viewers cannot create AI connections");
   return userId;
+}
+
+/** Creating an agent may install a shared connection only with the existing
+ * connection-configure authority. An agent actor cannot grant itself access. */
+export async function canInstallSharedAiConnectionForNewAgent(
+  db: Db, req: Request, companyId: string, binding: AiConnectionBinding,
+): Promise<boolean> {
+  if (req.actor.type !== "board" || binding.mode !== "shared") return false;
+  assertCompanyAccess(req, companyId);
+  const member = req.actor.memberships?.find(m => m.companyId === companyId && m.status === "active");
+  if (member?.membershipRole === "viewer") return false;
+  const userId = getActorInfo(req).actorId;
+  const [connection] = await db.select({ creator: toolConnections.createdByUserId })
+    .from(toolConnections).where(and(eq(toolConnections.companyId, companyId),
+      eq(toolConnections.id, binding.connectionId), eq(toolConnections.connectionPurpose, "ai")));
+  if (!connection) return false;
+  return req.actor.source === "local_implicit" || req.actor.isInstanceAdmin === true ||
+    connection.creator === userId || await accessService(db).hasPermission(companyId, "user", userId, "tools:manage_connections");
 }
 
 /** Fixed provider endpoints; credentials are never sent to a caller-supplied URL or through a redirect. */
@@ -204,7 +223,9 @@ export function aiConnectionRoutes(db: Db) {
             eq(toolConnections.connectionPurpose, "ai"),
           ),
         );
-      if (!connection) throw notFound("AI connection not found");
+      if (!connection || !(await service.list(companyId, getActorInfo(req).actorId)).some(account => account.id === connection.id))
+        throw notFound("AI connection not found");
+      res.setHeader("Cache-Control", "no-store");
       res.json(
         await db
           .select({

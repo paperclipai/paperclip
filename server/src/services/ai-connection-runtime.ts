@@ -196,6 +196,7 @@ export async function prepareManagedAiRuntime(
     adapterType: string;
     binding: AiConnectionBinding;
     allowUninstalledPersonal?: boolean;
+    allowUninstalledShared?: boolean;
     allowLegacyValidation?: boolean;
     config: Record<string, unknown>;
   },

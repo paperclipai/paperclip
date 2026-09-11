@@ -215,6 +215,7 @@ export function aiConnectionService(db: Db) {
     runnerProvider?: unknown;
     acpxAgent?: unknown;
     allowUninstalledPersonal?: boolean;
+    allowUninstalledShared?: boolean;
     allowLegacyValidation?: boolean;
     binding: AiConnectionBinding;
   }) {
@@ -352,9 +353,9 @@ export function aiConnectionService(db: Db) {
     if (
       !installs.length &&
       !(
-        input.allowUninstalledPersonal &&
-        binding.mode === "responsible_user" &&
-        grant.subjectUserId === userId
+        (input.allowUninstalledPersonal &&
+          binding.mode === "responsible_user" && grant.subjectUserId === userId) ||
+        (input.allowUninstalledShared && binding.mode === "shared" && grant.kind === "organization")
       )
     )
       throw forbidden("This connection is not permitted for this agent");

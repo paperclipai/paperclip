@@ -5,7 +5,7 @@ import { mkdtemp, rm, access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, companyMemberships, connectionGrants, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, adapterAuthSessions, environments } from "@paperclipai/db";
+import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, adapterAuthSessions, environments } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
@@ -15,7 +15,7 @@ import { secretService } from "../services/secrets.js";
 import { connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
 import express from "express";
 import request from "supertest";
-import { aiConnectionRoutes, responsibleUserForAiRequest } from "../routes/ai-connections.js";
+import { aiConnectionRoutes, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "../routes/ai-connections.js";
 import { validateAiApiKey } from "../routes/ai-connections.js";
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -300,5 +300,76 @@ describe("managed AI connections", () => {
     expect(responsibleUserForAiRequest(req)).toBeNull();
     await expect(service.select({ ...input, userId: responsibleUserForAiRequest(req) })).rejects.toThrow();
   });
+
+  it("protects active-run attribution with the connection human audience", async () => {
+    const account = await create("alice", "Private run attribution");
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", contextSnapshot: { aiConnection: { connectionId: account.connectionId, grantId: account.grantId } } });
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId: String(req.headers["x-test-user"] ?? "alice"), companyIds: [companyId] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const url = `/api/companies/${companyId}/ai-connections/${account.connectionId}/active-runs`;
+    const own = await request(app).get(url);
+    expect(own.status).toBe(200);
+    expect(own.headers["cache-control"]).toBe("no-store");
+    expect(own.body).toEqual([expect.objectContaining({ id: runId, agentId })]);
+    expect((await request(app).get(url).set("x-test-user", "bob")).status).toBe(404);
+    await db.update(connectionGrants).set({ kind: "organization", subjectUserId: null }).where(eq(connectionGrants.id, account.grantId));
+    await db.insert(connectionGrantMembers).values({ companyId, grantId: account.grantId, subjectType: "user", subjectId: "alice" });
+    expect((await request(app).get(url).set("x-test-user", "bob")).status).toBe(404);
+    await db.insert(connectionGrantMembers).values({ companyId, grantId: account.grantId, subjectType: "user", subjectId: "bob" });
+    expect((await request(app).get(url).set("x-test-user", "bob")).body).toEqual(own.body);
+    expect((await request(app).get(url.replace(companyId, otherCompanyId))).status).toBe(403);
+  });
+  it("permits new-agent shared installation only for a connection configurator, without bypassing audience", async () => {
+    const account = await service.save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "shared", name: "Restricted shared", apiKey: "fixture", agentIds: [], allAgents: false }, "fixture-restricted");
+    const selected = { provider: "anthropic", method: "api_key", mode: "shared", ...account } as const;
+    const futureAgentId = randomUUID();
+    const req = (userId: string, role = "member") => ({ actor: { type: "board", source: "session", userId, companyIds: [companyId], memberships: [{ companyId, membershipRole: role, status: "active" }] } }) as express.Request;
+    expect(await canInstallSharedAiConnectionForNewAgent(db, req("alice"), companyId, selected)).toBe(true);
+    expect(await canInstallSharedAiConnectionForNewAgent(db, req("bob"), companyId, selected)).toBe(false);
+    expect(await canInstallSharedAiConnectionForNewAgent(db, req("alice", "viewer"), companyId, selected)).toBe(false);
+    expect(await canInstallSharedAiConnectionForNewAgent(db, { actor: { type: "agent", onBehalfOfUserId: "alice" } } as express.Request, companyId, selected)).toBe(false);
+    const selectionInput = { ...input, agentId: futureAgentId, userId: "alice", binding: selected };
+    await expect(service.select(selectionInput)).rejects.toThrow("not permitted for this agent");
+    const run = await prepareManagedAiRuntime(db, { companyId, agentId: futureAgentId, responsibleUserId: "alice", adapterType: "claude_local", binding: selected, config: { cwd: home, model: "same-model" }, allowUninstalledShared: true });
+    expect(run.config.model).toBe("same-model");
+    await run.cleanup();
+    await db.insert(connectionGrantMembers).values({ companyId, grantId: account.grantId, subjectType: "user", subjectId: "bob" });
+    await expect(service.select({ ...selectionInput, allowUninstalledShared: true })).rejects.toThrow("not shared with the responsible user");
+    await db.delete(connectionGrantMembers).where(eq(connectionGrantMembers.grantId, account.grantId));
+    await db.insert(agents).values({ id: futureAgentId, companyId, name: "New shared agent", adapterType: "claude_local" });
+    await db.insert(toolConnectionInstalls).values({ companyId, connectionId: account.connectionId, targetType: "agent", targetId: futureAgentId, createdByUserId: "alice" });
+    expect((await service.select(selectionInput)).grant.id).toBe(account.grantId);
+  });
+
+  it("creates and hires agents with an authorized restricted shared connection", async () => {
+    const { agentRoutes } = await import("../routes/agents.js");
+    await db.update(companies).set({ requireBoardApprovalForNewAgents: false }).where(eq(companies.id, companyId));
+    const account = await service.save(companyId, "alice", { provider: "anthropic", method: "api_key", ownership: "shared", name: "Shared creation routes", apiKey: "fixture", agentIds: [], allAgents: false }, "fixture-create-routes");
+    const selected = { ...binding, mode: "shared", ...account } as const;
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "local_implicit", userId: "alice", companyIds: [companyId] };
+      next();
+    });
+    app.use("/api", agentRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    for (const endpoint of ["agents", "agent-hires"]) {
+      const response = await request(app).post(`/api/companies/${companyId}/${endpoint}`).send({ name: `Shared ${endpoint}`, role: "general", adapterType: "claude_local", adapterConfig: { model: "claude-sonnet-4-6" }, runtimeConfig: { aiConnection: selected } });
+      expect(response.status, JSON.stringify(response.body)).toBe(201);
+      const agent = endpoint === "agents" ? response.body : response.body.agent;
+      expect(agent.adapterConfig.model).toBe("claude-sonnet-4-6");
+      expect(agent.runtimeConfig.aiConnection).toEqual(selected);
+      const installs = await db.select().from(toolConnectionInstalls).where(and(eq(toolConnectionInstalls.connectionId, account.connectionId), eq(toolConnectionInstalls.targetId, agent.id)));
+      expect(installs).toHaveLength(1);
+      expect((await service.select({ ...input, agentId: agent.id, userId: "alice", binding: selected })).grant.id).toBe(account.grantId);
+    }
+  }, 30000);
 
 });
