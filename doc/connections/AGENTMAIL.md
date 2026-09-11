@@ -35,7 +35,9 @@ human grants, and agent access in one database transaction.
 
 ## Receiving and task lifecycle
 
-WebSocket is the default and needs no public HTTP URL. The service holds a
+WebSocket is the default and needs no public HTTP URL. The server authenticates
+with an Authorization header, keeping the provider key out of the connection URL
+([provider handshake](https://www.agentmail.to/docs/api-reference/websockets/websockets)). The service holds a
 renewable database lease, subscribes to the connected inbox, and reconnects with
 backoff. Webhook mode needs the configured public HTTPS webhook base URL. Setup
 registers a Paperclip-owned webhook. The raw request body is verified using Svix

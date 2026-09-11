@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import WebSocket from "ws";
 import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
 import {
   type Db,
@@ -75,7 +76,7 @@ export interface EmailChannelOptions {
   storage?: StorageService;
   publicBaseUrl?: string;
   fetch?: typeof fetch;
-  createSocket?: (url: string) => WebSocket;
+  createSocket?: (url: string, options: WebSocket.ClientOptions) => WebSocket;
 }
 const plainEmailMarkdown = (value: string) =>
   value.replace(/[\\`*_{}\[\]()<>!#|~]/g, "\\$&");
@@ -893,7 +894,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
           .where(eq(chatEndpoints.id, endpoint.id));
         await tx
           .update(toolConnections)
-          .set({ status: "active", enabled: true, healthStatus: "healthy" })
+          .set({ status: "active", enabled: true, healthStatus: "ok" })
           .where(eq(toolConnections.id, endpoint.connectionId));
       });
       await audit(endpoint, "email_endpoint.connected", actor);
@@ -1895,7 +1896,7 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
       await db
         .update(toolConnections)
         .set({
-          healthStatus: "healthy",
+          healthStatus: "ok",
           healthMessage: "Connected",
           lastError: null,
           healthCheckedAt: new Date(),
@@ -1915,9 +1916,10 @@ export function emailChannelService(db: Db, options: EmailChannelOptions) {
     const token = `${owner}:${randomUUID()}`;
     if (!(await lease(endpoint, "email-socket", token))) return;
     const key = await credential(endpoint);
-    // The provider's documented WebSocket protocol uses a query credential. Never persist/log this URL.
-    const socket = (options.createSocket ?? ((url) => new WebSocket(url)))(
-      `wss://ws.agentmail.to/v0?api_key=${encodeURIComponent(key)}`,
+    // Keep the credential out of URLs captured by connection diagnostics.
+    const socket = (options.createSocket ?? ((url, config) => new WebSocket(url, config)))(
+      "wss://ws.agentmail.to/v0",
+      { headers: { Authorization: `Bearer ${key}` } },
     );
     const state = { socket, token, connected: false };
     sockets.set(endpoint.id, state);

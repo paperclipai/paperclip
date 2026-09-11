@@ -1,4 +1,5 @@
 import express from "express";
+import type WebSocket from "ws";
 import request from "supertest";
 import { issueRoutes } from "../routes/issues.js";
 import { errorHandler } from "../middleware/index.js";
@@ -708,6 +709,10 @@ describe("AgentMail durable email pipeline", () => {
     await f.service.tick();
     await second.tick();
     expect(f.createSocket).toHaveBeenCalledTimes(1);
+    expect(f.createSocket).toHaveBeenCalledWith(
+      "wss://ws.agentmail.to/v0",
+      { headers: { Authorization: "Bearer test-key" } },
+    );
     expect(secondSocket).not.toHaveBeenCalled();
     f.socket.dispatchEvent(new Event("open"));
     expect(JSON.parse(f.socket.send.mock.calls[0][0])).toMatchObject({
