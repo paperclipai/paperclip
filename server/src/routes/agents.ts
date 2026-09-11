@@ -3149,6 +3149,16 @@ export function agentRoutes(
         const savedAgent = await getAccessibleResource(req, res, svc.getById(savedAgentId), "Agent not found");
         if (!savedAgent) return;
         if (savedAgent.companyId !== companyId) throw notFound("Agent not found");
+        const providerAdapter = savedAgent.adapterType === "paperclip_runner"
+          ? inputAdapterConfig.provider === "codex"
+            ? "codex_local"
+            : inputAdapterConfig.provider === "acpx" && inputAdapterConfig.acpxAgent === "claude"
+              ? "claude_local"
+              : null
+          : null;
+        if (savedAgent.adapterType !== type && providerAdapter !== type) {
+          throw unprocessable("Saved agent is not compatible with the adapter being tested");
+        }
         await assertCanUpdateAgent(req, savedAgent);
         adapterConfigForTest = restoreRedactedAgentEnv(inputAdapterConfig, savedAgent.adapterConfig);
       }

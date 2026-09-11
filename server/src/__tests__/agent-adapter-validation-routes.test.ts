@@ -565,6 +565,23 @@ describe("agent routes adapter validation", () => {
     );
   });
 
+  it("rejects redacted-value restoration from an incompatible saved agent", async () => {
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter(externalAdapter);
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl)
+        .post("/api/companies/company-1/adapters/external_test/test-environment")
+        .send({
+          agentId: "11111111-1111-4111-8111-111111111111",
+          adapterConfig: { env: { CODEX_HOME: { type: "plain", value: "***REDACTED***" } } },
+        }),
+    );
+
+    expect(res.status).toBe(422);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+  });
+
   it("rejects unknown adapter types even when schema accepts arbitrary strings", async () => {
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
