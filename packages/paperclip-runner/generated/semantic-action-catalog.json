@@ -1708,10 +1708,11 @@
         "repositoryUrls": {
           "description": "Existing HTTPS GitHub repository URLs, including repos absent from the catalog.",
           "items": {
-            "minLength": 1,
+            "maxLength": 2000,
+            "pattern": "^https://github\\.com/(?!\\.{1,2}/)[A-Za-z0-9_.-]+/(?!\\.{1,2}/?$)[A-Za-z0-9_.-]+/?$",
             "type": "string"
           },
-          "maxItems": 200,
+          "maxItems": 100,
           "type": "array",
           "uniqueItems": true
         },
@@ -1759,7 +1760,7 @@
       "standard",
       "skill_test"
     ],
-    "description": "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution.",
+    "description": "Create one child task under the active task.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -1796,14 +1797,6 @@
           "minLength": 1,
           "type": "string"
         },
-        "initialPlan": {
-          "description": "Relevant markdown plan to persist on the new task before it starts.",
-          "maxLength": 20000,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "priority": {
           "enum": [
             "critical",
@@ -1812,16 +1805,8 @@
             "low"
           ]
         },
-        "projectId": {
-          "description": "Project identifier for the new task.",
-          "maxLength": 20000,
-          "type": [
-            "string",
-            "null"
-          ]
-        },
         "title": {
-          "description": "Task title.",
+          "description": "Child task title.",
           "maxLength": 500,
           "minLength": 1,
           "type": "string"
@@ -1888,7 +1873,7 @@
       "delegation:tasks:create"
     ],
     "schema": "paperclip.semantic-action.v1",
-    "title": "Create task",
+    "title": "Create child task",
     "version": 1
   },
   {
