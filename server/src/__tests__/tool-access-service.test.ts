@@ -42,7 +42,6 @@ import {
   toolPolicies,
   toolProfileBindings,
   toolProfileEntries,
-  toolMcpGateways,
   toolProfiles,
   toolRuntimeMetricCounters,
   toolRuntimeSlots,
