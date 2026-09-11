@@ -1384,6 +1384,18 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       if (liveRun && source.id === liveRun.id) continue;
       const entries = transcriptByRun.get(source.id) ?? [];
       const meta = linkedRunMetaById.get(source.id);
+      // A queued continuation can become unnecessary while another turn finishes
+      // the task. Keep that cancellation in the run log, not the conversation.
+      // Apply this before native stop markers are assembled as well.
+      if (
+        source.status === "cancelled" &&
+        entries.length === 0 &&
+        (meta?.errorCode === "issue_not_in_progress" ||
+          (meta?.errorCode === "issue_terminal_status" && !meta.startedAt))
+      ) {
+        settledRunIds.add(source.id);
+        continue;
+      }
       const acceptedSummary = acceptedSemanticResultSummary(meta?.resultJson);
       const parsedSource = transcriptToTaskChatItems(entries, {
         runId: source.id,
@@ -1516,16 +1528,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         });
       }
       if (entries.length === 0) {
-        // A queued continuation cancelled after the task was completed or parked
-        // never produced a provider turn. Keep its record in the run log without
-        // presenting it as a completed chat response.
-        if (
-          source.status === "cancelled" &&
-          meta?.errorCode === "issue_not_in_progress"
-        ) {
-          settledRunIds.add(source.id);
-          continue;
-        }
         if (sourceIsPaperclipRunner && sourceYielded) {
           settledRunIds.add(source.id);
           continue;

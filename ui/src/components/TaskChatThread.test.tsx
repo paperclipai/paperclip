@@ -1229,31 +1229,72 @@ describe("TaskChatThread runtime transcript selection", () => {
     },
   );
 
-  it("does not show a completed-response notice for a redundant cancelled continuation", () => {
-    render(
-      <TaskChatThread
-        comments={[]}
-        onAdd={async () => {}}
-        linkedRuns={[
-          {
-            runId: "connection-continuation-skipped",
-            status: "cancelled",
-            errorCode: "issue_not_in_progress",
-            startedAt: null,
-            agentId: "agent-1",
-            agentName: "Runner",
-            adapterType: "paperclip_runner",
-            createdAt: "2026-09-07T18:00:00.000Z",
-            finishedAt: "2026-09-07T18:00:01.000Z",
-          },
-        ]}
-      />,
-    );
-    expect(container.textContent).not.toContain(
-      "The runner returned no user-facing response.",
-    );
-    expect(container.textContent).not.toContain("Run completed");
-  });
+  it.each([
+    ["legacy", "issue_not_in_progress"],
+    ["native", "issue_not_in_progress"],
+    ["legacy", "issue_terminal_status"],
+    ["native", "issue_terminal_status"],
+  ] as const)(
+    "hides a redundant cancelled continuation (%s, %s)",
+    (runtimeMode, errorCode) => {
+      render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          linkedRuns={[
+            {
+              runId: "connection-continuation-skipped",
+              runtimeMode,
+              status: "cancelled",
+              errorCode,
+              startedAt: null,
+              agentId: "agent-1",
+              agentName: "Runner",
+              adapterType: "paperclip_runner",
+              createdAt: "2026-09-07T18:00:00.000Z",
+              finishedAt: "2026-09-07T18:00:01.000Z",
+            },
+          ]}
+        />,
+      );
+      expect(container.textContent).not.toContain(
+        "The runner returned no user-facing response.",
+      );
+      expect(container.textContent).not.toContain("Run completed");
+      expect(container.textContent).not.toContain("Couldn't start");
+      expect(container.textContent).not.toContain("Run cancelled");
+      expect(container.textContent).not.toContain("before returning an answer");
+    },
+  );
+
+  it.each(["legacy", "native"] as const)(
+    "keeps a cancellation visible when the %s run had already started",
+    (runtimeMode) => {
+      render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          linkedRuns={[
+            {
+              runId: "started-cancellation",
+              runtimeMode,
+              status: "cancelled",
+              errorCode: "issue_terminal_status",
+              agentId: "agent-1",
+              agentName: "Runner",
+              adapterType: "paperclip_runner",
+              createdAt: "2026-09-07T18:00:00.000Z",
+              startedAt: "2026-09-07T18:00:00.500Z",
+              finishedAt: "2026-09-07T18:00:01.000Z",
+            },
+          ]}
+        />,
+      );
+      expect(container.textContent).toContain(
+        runtimeMode === "native" ? "Run cancelled" : "Stopped",
+      );
+    },
+  );
 
   it("does not treat a progress comment as the final response of a failed native run", () => {
     nativeTranscriptState.transcriptByRun.set("native-progress-failed", [
