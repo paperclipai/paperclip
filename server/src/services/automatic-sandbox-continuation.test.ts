@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, createDb, environmentLeases, environments, heartbeatRuns,
   issueComments, issueRecoveryActions, issues, issueThreadInteractions } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
@@ -10,6 +10,10 @@ import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY } from "./conversation-continuation.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
+
+import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
+import { adapterExecutionControls } from "./adapter-execution-control.js";
+import { LegacyControllerLeaseLostError } from "./legacy-controller-lease.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("automatic sandbox conversation recovery", () => {
@@ -53,6 +57,39 @@ const support = await getEmbeddedPostgresTestSupport();
   async function successors(runId: string) {
     return db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId));
   }
+  it.each([
+    { leaseLost: true, throws: false }, { leaseLost: true, throws: true },
+    { leaseLost: false, throws: false }, { leaseLost: false, throws: true },
+  ])("distinguishes lease loss from user cancellation ($leaseLost, throws: $throws)", async ({ leaseLost, throws }) => {
+    const f = await seed();
+    const adapterType = "lease_loss_test";
+    registerServerAdapter({ type: adapterType,
+      execute: async ({ onCancellationReady }) => {
+        await onCancellationReady?.();
+        adapterExecutionControls.get(f.run.id)!.controller.abort(leaseLost ? new LegacyControllerLeaseLostError() : new Error("Operator stopped run"));
+        if (throws) throw new Error("Adapter interrupted");
+        return { exitCode: 1, signal: null, timedOut: false };
+      },
+      testEnvironment: async () => ({ adapterType, status: "pass", checks: [], testedAt: new Date().toISOString() }),
+    });
+    const heartbeat = heartbeatService(db);
+    try {
+      await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+      await db.update(agents).set({ adapterType }).where(eq(agents.id, f.agentId));
+      await db.update(heartbeatRuns).set({ status: "queued", errorCode: null, error: null, finishedAt: null })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      await heartbeat.resumeQueuedRuns();
+      await vi.waitFor(async () => {
+        const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+        expect(saved.status).toBe(leaseLost ? "failed" : "cancelled");
+        if (leaseLost) expect(saved.errorCode).toBe("process_lost");
+        else expect(saved.errorCode).not.toBe("process_lost");
+      }, { timeout: 10000 });
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      unregisterServerAdapter(adapterType);
+    }
+  });
   it("automatically resumes a historical startup failure after exact provider termination", async () => {
     const f = await seed();
     await heartbeatService(db).resumeInterruptedSandboxRuns();

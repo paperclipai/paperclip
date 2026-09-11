@@ -7,6 +7,10 @@ export const legacyControllerBootId = randomUUID();
 export const LEGACY_CONTROLLER_LEASE_MS = 60_000;
 export const LEGACY_CONTROLLER_RENEW_MS = 10_000;
 
+export class LegacyControllerLeaseLostError extends Error {
+  constructor() { super("Legacy controller lease lost"); this.name = "LegacyControllerLeaseLostError"; }
+}
+
 type Run = typeof heartbeatRuns.$inferSelect;
 
 /** Commit these fields in the same UPDATE that claims a queued run. */
@@ -70,7 +74,7 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
   }
   let stopped = false;
   let pending = false;
-  const lost = () => { if (!stopped) controller.abort(new Error("Legacy controller lease lost")); };
+  const lost = () => { if (!stopped) controller.abort(new LegacyControllerLeaseLostError()); };
   let deadline = setTimeout(lost, Math.max(0,
     (run.controllerLeaseExpiresAt?.getTime() ?? 0) - Date.now()));
   deadline.unref();
@@ -86,6 +90,9 @@ export function watchLegacyControllerLease(db: Db, run: Run, controller: AbortCo
     let renewed: boolean;
     try {
       renewed = await Promise.race([renewLegacyControllerLease(db, run, stage), aborted]);
+    } catch {
+      lost();
+      throw controller.signal.reason;
     } finally {
       controller.signal.removeEventListener("abort", onAbort);
     }

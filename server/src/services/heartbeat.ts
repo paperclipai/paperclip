@@ -1,6 +1,6 @@
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { prepareAutomaticSandboxContinuation, runHasUnconfirmedRemoteExecution, SANDBOX_INFRASTRUCTURE_ERRORS } from "./automatic-sandbox-continuation.js";
-import { legacyControllerBootId, legacyControllerClaim, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
+import { LegacyControllerLeaseLostError, legacyControllerBootId, legacyControllerClaim, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
@@ -23642,12 +23642,13 @@ export function heartbeatService(
               failedProcessRunCancellations.get(run.id))
             : undefined;
         await processCancellation?.settled;
+        const controllerLost = executionControl.controller.signal.reason instanceof LegacyControllerLeaseLostError;
         let outcome: RunSessionOutcome;
         const latestRun = await getRun(run.id);
         if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
           outcome = latestRun.status;
         } else if (executionControl.controller.signal.aborted) {
-          outcome = "cancelled";
+          outcome = controllerLost ? "failed" : "cancelled";
         } else if (adapterResult.nativeFinalization) {
           const nativeTerminal =
             adapterResult.nativeFinalization.terminal.runTerminalState;
@@ -23689,7 +23690,7 @@ export function heartbeatService(
           usageBasis: adapterResult.usageBasis ?? null,
         });
         const normalizedUsage = sessionUsageResolution.normalizedUsage;
-        const runErrorMessage =
+        const runErrorMessage = controllerLost ? "Legacy controller lease lost" :
           outcome === "cancelled"
             ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
             : outcome === "succeeded"
@@ -23701,7 +23702,7 @@ export function heartbeatService(
                 );
         const recordedResponsibleUserDenialCode =
           normalizeResponsibleUserDenialCode(latestRun?.errorCode);
-        const runErrorCode =
+        const runErrorCode = controllerLost ? "process_lost" :
           outcome === "timed_out"
             ? "timeout"
             : outcome === "cancelled"
@@ -24394,7 +24395,9 @@ export function heartbeatService(
               : null;
           })
           .catch(() => null);
+        const controllerLost = executionControl.controller.signal.reason instanceof LegacyControllerLeaseLostError;
         const failureErrorCode =
+          (controllerLost ? "process_lost" : null) ??
           workspaceValidationFailure?.code ??
           configurationIncompleteFailure?.code ??
           nonRetryablePreflightFailureCode(err) ??
@@ -24429,7 +24432,7 @@ export function heartbeatService(
           );
         });
 
-        const stoppedDuringFailure = executionControl.controller.signal.aborted;
+        const stoppedDuringFailure = executionControl.controller.signal.aborted && !controllerLost;
         const stopSnapshot = stoppedDuringFailure ? await getRun(run.id) : null;
         const failureOutcome = stoppedDuringFailure ? "cancelled" : "failed";
         const failedRunWrite = await setRunStatusIfRunning(run.id, failureOutcome, {
@@ -24640,6 +24643,7 @@ export function heartbeatService(
         const nonRetryablePreflightCode =
           nonRetryablePreflightFailureCode(outerErr);
         const setupFailureErrorCode =
+          (executionControl.controller.signal.reason instanceof LegacyControllerLeaseLostError ? "process_lost" : null) ??
           workspaceValidationSetupFailure?.code ??
           configurationIncompleteSetupFailure?.code ??
           (unresolvedBaseRefSetupFailure ||
