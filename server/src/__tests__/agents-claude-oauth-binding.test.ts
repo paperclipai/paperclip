@@ -27,6 +27,7 @@ import {
   assertClaudeOAuthBindingInvariant,
   CLAUDE_OAUTH_CLAIM_REJECTED,
   CLAUDE_OAUTH_CREDENTIAL_CONFLICT,
+  claudeOAuthBindingsMatchExactly,
   claudeOAuthClaimRejectedError,
   isFixedClaudeOAuthBinding,
   secretService,
@@ -187,6 +188,22 @@ describe("assertClaudeOAuthBindingInvariant", () => {
     const error = claudeOAuthClaimRejectedError();
     expect(error.status).toBe(409);
     expect(error.message).toBe(CLAUDE_OAUTH_CLAIM_REJECTED);
+  });
+
+  it("matches two fixed bindings only when their version selectors are exactly equal", () => {
+    expect(claudeOAuthBindingsMatchExactly(FIXED_BINDING, FIXED_BINDING)).toBe(true);
+    expect(
+      claudeOAuthBindingsMatchExactly({ ...FIXED_BINDING, version: 5 }, { ...FIXED_BINDING, version: 5 }),
+    ).toBe(true);
+    expect(
+      claudeOAuthBindingsMatchExactly({ ...FIXED_BINDING, version: 5 }, { ...FIXED_BINDING, version: 2 }),
+    ).toBe(false);
+    expect(
+      claudeOAuthBindingsMatchExactly({ ...FIXED_BINDING, version: 5 }, { ...FIXED_BINDING, version: "latest" }),
+    ).toBe(false);
+    // Neither side needs the exact fixed shape only; both sides do.
+    expect(claudeOAuthBindingsMatchExactly(FIXED_BINDING, { type: "plain", value: "x" })).toBe(false);
+    expect(claudeOAuthBindingsMatchExactly(null, FIXED_BINDING)).toBe(false);
   });
 });
 
@@ -801,7 +818,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
 
   async function seedParentAgent(
     parentScope: Scope,
-    options: { adapterType?: string; holdsFixedBinding?: boolean } = {},
+    options: { adapterType?: string; holdsFixedBinding?: boolean; version?: number } = {},
   ) {
     const [row] = await db
       .insert(agents)
@@ -812,7 +829,14 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
         status: "idle",
         adapterType: options.adapterType ?? "claude_local",
         adapterConfig: {
-          env: options.holdsFixedBinding === false ? {} : { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING } },
+          env:
+            options.holdsFixedBinding === false
+              ? {}
+              // A binding written through the normal persistence path always
+              // carries a resolved version, "latest" by default. Match that
+              // shape here, so only `options.version` simulates a pinned
+              // version, or a version change since the child copied it.
+              : { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: options.version ?? "latest" } },
         },
         runtimeConfig: {},
       })
@@ -839,6 +863,40 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     const persisted = created.adapterConfig as { env: Record<string, unknown> };
     expect(persisted.env.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject(FIXED_BINDING);
     expect(await countDeclarationsForAgent(created.id)).toBe(1);
+  });
+
+  it("binds the inherited reference when the child's copied version still matches the parent's current version", async () => {
+    const scope = await seedScope();
+    const parent = await seedParentAgent(scope, { version: 5 });
+
+    const created = await agentService(db).create(
+      scope.companyId,
+      createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 5 } }),
+      { claudeLogin: { inheritedFromAgentId: parent.id } },
+    );
+
+    const persisted = created.adapterConfig as { env: Record<string, unknown> };
+    expect(persisted.env.CLAUDE_CODE_OAUTH_TOKEN).toMatchObject({ ...FIXED_BINDING, version: 5 });
+    expect(await countDeclarationsForAgent(created.id)).toBe(1);
+  });
+
+  it("rejects an inherited claim when the parent's version moved after the route copied the child's reference", async () => {
+    const scope = await seedScope();
+    // The parent now holds version 5. The child's reference, copied before this
+    // transaction, still names version 2 — a concurrent parent rotation moved
+    // the parent's version between the copy and this write.
+    const parent = await seedParentAgent(scope, { version: 5 });
+
+    await expect(
+      agentService(db).create(
+        scope.companyId,
+        createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 2 } }),
+        { claudeLogin: { inheritedFromAgentId: parent.id } },
+      ),
+    ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
+    // Only the seeded parent exists; the rejected create inserted no child.
+    expect(await countAgents(scope.companyId)).toBe(1);
+    expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
   });
 
   it("rejects an inherited claim when the named parent holds no fixed binding", async () => {

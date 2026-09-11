@@ -40,9 +40,10 @@ import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import {
   assertClaudeOAuthBindingInvariant,
+  claudeOAuthBindingsMatchExactly,
   claudeOAuthClaimRejectedError,
   CLAUDE_LOCAL_ADAPTER_TYPE,
-  isFixedClaudeOAuthBinding,
+  readClaudeOAuthBinding,
   secretService,
   type ClaudeOAuthBindingInvariantDecision,
 } from "./secrets.js";
@@ -569,12 +570,15 @@ export function agentService(db: Db) {
    * The hire-inheritance path (`inheritedFromAgentId`) binds the fixed
    * reference with no login round trip and no stored owner value, because the
    * owning user resolves per run, not from a value stored against this agent.
-   * The gate re-reads the named parent agent inside this transaction and
-   * permits the bind only when the parent exists, is in the same company, is a
-   * `claude_local` agent, and already holds the exact fixed binding. The route
-   * derives this identifier from the authenticated agent actor, never from the
-   * request body, so the gate treats it as a claim to verify, not a trusted
-   * value.
+   * The route copies the parent's reference onto the child before this
+   * transaction starts, so a concurrent version change on the parent can
+   * leave the child holding a stale version. The gate re-reads the named
+   * parent agent inside this transaction and permits the bind only when the
+   * parent exists, is in the same company, is a `claude_local` agent, and its
+   * current reference matches the child's copied reference exactly, including
+   * the version selector. The route derives the parent identifier from the
+   * authenticated agent actor, never from the request body, so the gate
+   * treats it as a claim to verify, not a trusted value.
    *
    * A controlled internal override skips the claim for a migration or an
    * administrator repair. The function creates the fixed user-secret definition
@@ -589,6 +593,13 @@ export function agentService(db: Db) {
       consume: boolean;
       environmentId: string | null;
       claudeLogin?: ClaudeLoginContext;
+      /**
+       * The adapter config the write is about to persist. The
+       * `inheritedFromAgentId` path reads the child's copied
+       * `CLAUDE_CODE_OAUTH_TOKEN` reference from it, to compare against the
+       * parent's current reference.
+       */
+      childAdapterConfig?: unknown;
     },
   ): Promise<void> {
     const ownerUserId = input.claudeLogin?.ownerUserId ?? null;
@@ -610,6 +621,10 @@ export function agentService(db: Db) {
       } else if (input.claudeLogin?.inheritedFromAgentId) {
         // The hire-inheritance path. Re-read the named parent inside this
         // transaction; a caller-supplied identifier never binds on its own.
+        // Compare the parent's current reference against the reference
+        // already copied onto the child, including the version selector, so
+        // a concurrent version change on the parent cannot leave the child
+        // bound to a stale version.
         const parentId = input.claudeLogin.inheritedFromAgentId;
         const parent = await txDb
           .select({
@@ -620,15 +635,13 @@ export function agentService(db: Db) {
           .from(agents)
           .where(eq(agents.id, parentId))
           .then((rows) => rows[0] ?? null);
-        const parentAdapterConfig = parent && isPlainRecord(parent.adapterConfig) ? parent.adapterConfig : null;
-        const parentEnv =
-          parentAdapterConfig && isPlainRecord(parentAdapterConfig.env) ? parentAdapterConfig.env : null;
-        const parentBinding = parentEnv ? parentEnv.CLAUDE_CODE_OAUTH_TOKEN : null;
+        const parentBinding = readClaudeOAuthBinding(parent?.adapterConfig ?? null);
+        const childBinding = readClaudeOAuthBinding(input.childAdapterConfig ?? null);
         if (
           !parent ||
           parent.companyId !== input.companyId ||
           parent.adapterType !== CLAUDE_LOCAL_ADAPTER_TYPE ||
-          !isFixedClaudeOAuthBinding(parentBinding)
+          !claudeOAuthBindingsMatchExactly(parentBinding, childBinding)
         ) {
           throw claudeOAuthClaimRejectedError();
         }
@@ -886,6 +899,7 @@ export function agentService(db: Db) {
           consume: true,
           environmentId: (data.defaultEnvironmentId as string | null | undefined) ?? null,
           claudeLogin: options?.claudeLogin,
+          childAdapterConfig: adapterConfig,
         });
         const created = await tx
           .insert(agents)
