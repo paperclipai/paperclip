@@ -29,8 +29,20 @@ describe("issueActiveRun", () => {
     expect(resolveIssueActiveRun(issue, initialRun)).toBe(initialRun);
     expect(resolveIssueActiveRun(issue, initialRun, [otherRun, refreshedRun])).toBe(refreshedRun);
     expect(resolveIssueActiveRun(issue, initialRun, [otherRun])).toBe(initialRun);
-    expect(resolveIssueActiveRun(issue, null, [refreshedRun])).toBeNull();
+    expect(resolveIssueActiveRun(issue, null, [refreshedRun])).toBe(refreshedRun);
     expect(resolveIssueActiveRun(makeIssue({ status: "done" }), initialRun, [refreshedRun])).toBeNull();
+  });
+
+  it("selects the task's replacement run instead of the cached predecessor", () => {
+    const issue = makeIssue({ status: "in_progress", executionRunId: "run-new" });
+    const oldRun = { id: "run-old", status: "running" } as LiveRunForIssue;
+    const newRun = { id: "run-new", status: "running" } as LiveRunForIssue;
+
+    expect(resolveIssueActiveRun(issue, oldRun, [oldRun, newRun])).toBe(newRun);
+    expect(resolveIssueActiveRun(issue, oldRun, [oldRun])).toBeNull();
+    expect(resolveIssueActiveRun(issue, oldRun)).toBeNull();
+    expect(resolveIssueActiveRun(issue, null, [newRun])).toBe(newRun);
+    expect(resolveIssueActiveRun(makeIssue({ status: "in_progress" }), oldRun, [oldRun, newRun])).toBe(oldRun);
   });
 
   it("tracks active runs while an issue is still in progress", () => {
