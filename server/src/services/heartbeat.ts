@@ -1,5 +1,6 @@
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
-import { legacyControllerBootId, legacyControllerClaim, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
+import { hasLaterSandboxExecution, prepareAutomaticSandboxContinuation, runHasUnconfirmedRemoteExecution, SANDBOX_INFRASTRUCTURE_ERRORS } from "./automatic-sandbox-continuation.js";
+import { LegacyControllerLeaseLostError, legacyControllerBootId, legacyControllerClaim, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
@@ -14838,6 +14839,11 @@ export function heartbeatService(
       };
     }
 
+    if (run.runtimeMode === "legacy" && SANDBOX_INFRASTRUCTURE_ERRORS.includes(run.errorCode ?? "") &&
+        await runHasUnconfirmedRemoteExecution(db, run.companyId, run.id)) {
+      return { outcome: "not_scheduled" as const, reason: "Waiting for confirmed sandbox termination",
+        errorCode: "remote_execution_cleanup_pending" as const, issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
+    }
     if (legacyExecutionNeedsReconciliation(run)) {
       return {
         outcome: "not_scheduled" as const,
@@ -15056,6 +15062,13 @@ export function heartbeatService(
               run: existing,
               reusedExisting: true,
             };
+        }
+        // Preparation and scheduling can be separated by a crash or another
+        // admission. Recheck latest execution while holding the issue lock.
+        if (issueId && parseObject(run.resultJson?.automaticSandboxRecovery).state === "provider_terminated" &&
+            await hasLaterSandboxExecution(tx as unknown as Db, run, issueId)) {
+          return { outcome: "not_scheduled", reason: "A later execution owns the current task",
+            errorCode: "issue_execution_lock_changed", issueId, details: { runId: run.id } };
         }
         if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
           if (issueId) {
@@ -16926,6 +16939,7 @@ export function heartbeatService(
                   .set({
                     status: "running",
                     ...legacyControllerClaim(run.runtimeMode),
+                    runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
                     responsibleUserId,
                     startedAt: lockedRun.startedAt ?? claimedAt,
                     updatedAt: claimedAt,
@@ -17023,6 +17037,7 @@ export function heartbeatService(
                 .set({
                   status: "running",
                     ...legacyControllerClaim(run.runtimeMode),
+                    runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
                   responsibleUserId,
                   startedAt: lockedRun.startedAt ?? claimedAt,
                   contextSnapshot: withQueuedCommentIdsInRunContext(
@@ -17090,6 +17105,7 @@ export function heartbeatService(
             .set({
               status: "running",
                     ...legacyControllerClaim(run.runtimeMode),
+                    runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
               responsibleUserId,
               startedAt: run.startedAt ?? claimedAt,
               updatedAt: claimedAt,
@@ -18414,8 +18430,11 @@ export function heartbeatService(
       // inherit legacy retry or termination authority. Use their PID/group only
       // for a read-only liveness check so a lost in-memory handle cannot cause
       // overlapping provider/tool execution while that child is still alive.
+      const [remoteLease] = run.runtimeMode === "legacy" ? await db.select({ id: environmentLeases.id })
+        .from(environmentLeases).where(and(eq(environmentLeases.companyId, run.companyId),
+          eq(environmentLeases.heartbeatRunId, run.id), sql`${environmentLeases.provider} is not null and ${environmentLeases.provider} != 'local'`)).limit(1) : [];
       const checksPersistedChildLiveness =
-        currentAdapterTracksLocalChild || run.runtimeMode === "native";
+        !remoteLease && (currentAdapterTracksLocalChild || run.runtimeMode === "native");
       const processPidAlive =
         checksPersistedChildLiveness &&
         run.processPid &&
@@ -18600,6 +18619,37 @@ export function heartbeatService(
     }
 
     return { reaped: reaped.length, runIds: reaped };
+  }
+
+  async function resumeInterruptedSandboxRuns() {
+    const candidates = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.runtimeMode, "legacy"), inArray(heartbeatRuns.status, ["failed", "interrupted"]),
+      inArray(heartbeatRuns.errorCode, SANDBOX_INFRASTRUCTURE_ERRORS),
+      sql`exists (select 1 from ${environmentLeases} where ${environmentLeases.companyId} = "heartbeat_runs"."company_id"
+        and ${environmentLeases.heartbeatRunId} = "heartbeat_runs"."id")`,
+      sql`not exists (select 1 from heartbeat_runs successor where successor.company_id = "heartbeat_runs"."company_id"
+        and successor.retry_of_run_id = "heartbeat_runs"."id")`,
+      sql`coalesce(${heartbeatRuns.resultJson}->'automaticSandboxRecovery'->>'state', '') != 'attempts_exhausted'`,
+    )).orderBy(asc(heartbeatRuns.updatedAt)).limit(20);
+    let scheduled = 0;
+    for (const candidate of candidates) {
+      if (activeRunExecutions.has(candidate.id) || adapterExecutionControls.has(candidate.id)) continue;
+      try {
+        const prepared = await prepareAutomaticSandboxContinuation(db, candidate);
+        if (!prepared) continue;
+        const result = await scheduleBoundedRetryForRun(prepared.run, prepared.agent);
+        if (result.outcome === "scheduled") scheduled += 1;
+        if (result.outcome === "retry_exhausted") await db.update(heartbeatRuns).set({
+          resultJson: sql`jsonb_set(${heartbeatRuns.resultJson}, '{automaticSandboxRecovery,state}', '"attempts_exhausted"'::jsonb)`,
+        }).where(and(eq(heartbeatRuns.id, candidate.id), eq(heartbeatRuns.companyId, candidate.companyId)));
+      } catch (err) {
+        logger.warn({ err, runId: candidate.id }, "automatic sandbox continuation will retry");
+      } finally {
+        // Rotate blocked work through the bounded page without resetting attempts.
+        await db.update(heartbeatRuns).set({ updatedAt: new Date() }).where(eq(heartbeatRuns.id, candidate.id));
+      }
+    }
+    return { scheduled };
   }
 
   async function resumeQueuedRuns() {
@@ -19326,6 +19376,23 @@ export function heartbeatService(
         return;
       }
 
+      const selectedAdapter = (run.runnerProfileJson?.adapterDispatch as Record<string, unknown> | undefined)?.adapterType;
+      if (run.runtimeMode === "legacy" && typeof selectedAdapter === "string" && selectedAdapter !== agent.adapterType) {
+        // Settings can change between claim and preparation. Select type and
+        // config from the same agent snapshot, then persist the actual adapter
+        // before any provisioning. Never combine an old type with new config.
+        await controllerLease.assertOwned();
+        const [selectedRun] = await db.update(heartbeatRuns).set({
+          runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+        }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.status, "running"), run.controllerBootId
+            ? eq(heartbeatRuns.controllerBootId, legacyControllerBootId) : isNull(heartbeatRuns.controllerBootId))).returning();
+        if (!selectedRun) {
+          executionControl.controller.abort(new LegacyControllerLeaseLostError());
+          executionControl.controller.signal.throwIfAborted();
+        }
+        run = selectedRun;
+      }
       const runtime = await ensureRuntimeState(agent);
       const context = parseObject(run.contextSnapshot);
       const authorizeFailedChatRetryExecution = () =>
@@ -22667,12 +22734,13 @@ export function heartbeatService(
                 nativeRuntimeResolution.resolverVersion,
               runtimeModeReason: nativeRuntimeResolution.reason,
               runtimeModeResolvedAt: run.runtimeModeResolvedAt ?? new Date(),
-              // Preserve only this row's server-owned admission field at the
-              // atomic write, never an input or previous runner's profile.
-              runnerProfileJson: sql`case when ${heartbeatRuns.runnerProfileJson} ? ${CHAT_CONTROL_RECOVERY_ADMISSION_KEY}
-                then ${JSON.stringify(providerTraceRequested ? { providerTrace: { mode: "raw", traceId: providerTraceCapture?.metadata.id ?? null, maxBytes: PROVIDER_TRACE_MAX_BYTES } } : {})}::jsonb
-                  || jsonb_build_object(${CHAT_CONTROL_RECOVERY_ADMISSION_KEY}::text, ${heartbeatRuns.runnerProfileJson} -> ${CHAT_CONTROL_RECOVERY_ADMISSION_KEY})
-                else ${JSON.stringify(providerTraceRequested ? { providerTrace: { mode: "raw", traceId: providerTraceCapture?.metadata.id ?? null, maxBytes: PROVIDER_TRACE_MAX_BYTES } } : null)}::jsonb end`,
+              // Retain only this run's server-authored dispatch and admission evidence.
+              runnerProfileJson: sql`(case when ${heartbeatRuns.runnerProfileJson} ? ${CHAT_CONTROL_RECOVERY_ADMISSION_KEY}
+                then jsonb_build_object(${CHAT_CONTROL_RECOVERY_ADMISSION_KEY}::text, ${heartbeatRuns.runnerProfileJson}->${CHAT_CONTROL_RECOVERY_ADMISSION_KEY})
+                else '{}'::jsonb end)
+                || (case when ${heartbeatRuns.runnerProfileJson} ? 'adapterDispatch'
+                  then jsonb_build_object('adapterDispatch', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch') else '{}'::jsonb end)
+                || ${JSON.stringify(providerTraceRequested ? { providerTrace: { mode: "raw", traceId: providerTraceCapture?.metadata.id ?? null, maxBytes: PROVIDER_TRACE_MAX_BYTES } } : {})}::jsonb`,
               updatedAt: new Date(),
             })
             .where(eq(heartbeatRuns.id, run.id));
@@ -23594,12 +23662,13 @@ export function heartbeatService(
               failedProcessRunCancellations.get(run.id))
             : undefined;
         await processCancellation?.settled;
+        const controllerLost = executionControl.controller.signal.reason instanceof LegacyControllerLeaseLostError;
         let outcome: RunSessionOutcome;
         const latestRun = await getRun(run.id);
         if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
           outcome = latestRun.status;
         } else if (executionControl.controller.signal.aborted) {
-          outcome = "cancelled";
+          outcome = controllerLost ? "failed" : "cancelled";
         } else if (adapterResult.nativeFinalization) {
           const nativeTerminal =
             adapterResult.nativeFinalization.terminal.runTerminalState;
@@ -23641,7 +23710,7 @@ export function heartbeatService(
           usageBasis: adapterResult.usageBasis ?? null,
         });
         const normalizedUsage = sessionUsageResolution.normalizedUsage;
-        const runErrorMessage =
+        const runErrorMessage = controllerLost ? "Legacy controller lease lost" :
           outcome === "cancelled"
             ? (latestRun?.error ?? adapterResult.errorMessage ?? "Cancelled")
             : outcome === "succeeded"
@@ -23653,7 +23722,7 @@ export function heartbeatService(
                 );
         const recordedResponsibleUserDenialCode =
           normalizeResponsibleUserDenialCode(latestRun?.errorCode);
-        const runErrorCode =
+        const runErrorCode = controllerLost ? "process_lost" :
           outcome === "timed_out"
             ? "timeout"
             : outcome === "cancelled"
@@ -24346,7 +24415,9 @@ export function heartbeatService(
               : null;
           })
           .catch(() => null);
+        const controllerLost = executionControl.controller.signal.reason instanceof LegacyControllerLeaseLostError;
         const failureErrorCode =
+          (controllerLost ? "process_lost" : null) ??
           workspaceValidationFailure?.code ??
           configurationIncompleteFailure?.code ??
           nonRetryablePreflightFailureCode(err) ??
@@ -24381,7 +24452,7 @@ export function heartbeatService(
           );
         });
 
-        const stoppedDuringFailure = executionControl.controller.signal.aborted;
+        const stoppedDuringFailure = executionControl.controller.signal.aborted && !controllerLost;
         const stopSnapshot = stoppedDuringFailure ? await getRun(run.id) : null;
         const failureOutcome = stoppedDuringFailure ? "cancelled" : "failed";
         const failedRunWrite = await setRunStatusIfRunning(run.id, failureOutcome, {
@@ -24592,6 +24663,7 @@ export function heartbeatService(
         const nonRetryablePreflightCode =
           nonRetryablePreflightFailureCode(outerErr);
         const setupFailureErrorCode =
+          (executionControl.controller.signal.reason instanceof LegacyControllerLeaseLostError ? "process_lost" : null) ??
           workspaceValidationSetupFailure?.code ??
           configurationIncompleteSetupFailure?.code ??
           (unresolvedBaseRefSetupFailure ||
@@ -28136,6 +28208,7 @@ export function heartbeatService(
     reconcileHotRestartAdoption,
     recoverNativeRunsAfterRestart,
     reapOrphanedRuns,
+    resumeInterruptedSandboxRuns,
     sweepPendingCleanupLeases,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that

@@ -846,7 +846,7 @@ Local recovery records a server-authored stop receipt before it clears a verifie
 
 If cleanup or another execution gate is still pending, the message stays in its existing queue receipt. Startup and periodic scheduling reconsider up to 50 due receipts per pass, at most once per 30 seconds per receipt, without calling a model or resetting recovery attempts. Cleanup callbacks use the same admission path. The issue lock prevents concurrent workers from delivering an adopted or discarded receipt again. The queued-message area shows the current wait reason. Pauses, approvals, budgets, ownership, and external chat authorization remain enforced. A message sent before the run finished does not grant new post-stop authority.
 
-Historical legacy interruption holds for conversational adapters no longer block new messages or Resume. Classification uses the run’s saved adapter invocation or continuation policy, never the agent’s current adapter settings. Missing historical adapter evidence retains the hold. A terminal row with a live predecessor process or unreleased environment lease still blocks actual admission and Resume. Retry scheduling can happen before cleanup, but grants no execution authority. Recovery folds their obsolete no-replay bookkeeping without changing task ownership, status, or automatically waking old work. The audit trail remains readable. Native integrity and ownership holds, and non-conversational adapter holds, remain enforced.
+Historical legacy interruption holds for conversational adapters no longer block new messages or Resume. Classification uses the run’s saved adapter invocation or continuation policy, never the agent’s current adapter settings. For remote process-loss and shutdown incidents, missing historical adapter evidence can be replaced by exact sandbox termination proof before starting a fresh conversational turn. A known process or webhook adapter never gains that eligibility from a later settings change. A terminal row with a live predecessor process or unreleased environment lease still blocks actual admission and Resume. Automatic retries for these remote infrastructure incidents wait for provider termination receipts before scheduling. Other transient retries retain their existing scheduling path; execution still waits for termination. Recovery folds their obsolete no-replay bookkeeping without changing task ownership or status; eligible interrupted sandbox work continues through the bounded retry scheduler. The audit trail remains readable. Native integrity and ownership holds, and non-conversational adapter holds, remain enforced.
 
 The server projection remains available for diagnostics. Normal working, finishing, and interaction waits add no badges or cards to task lists or feeds. Active transcript headers keep saying Working during automatic retry and execution confirmation; attempts, causes, and recovery decisions belong in the run log. Recovery uses the existing transcript and run log rather than adding a reconciliation form. A cancelled run that never started says “Couldn't start” instead of implying that the agent answered.
 
@@ -972,3 +972,24 @@ operator attention is needed at that threshold, while automatic cleanup continue
 Provider outages never convert a live sandbox into an abandoned manual task.
 
 A live cleanup attempt renews its durable claim every 30 seconds. Another sweep in the same controller cannot overlap it, even if the deadline passes. Completion writes require the current attempt identity. After controller loss, cleanup can repeat destruction of the exact quarantined provider resource; providers must make that operation idempotent. A timeout or claim expiry does not prove termination.
+
+### Automatic continuation after sandbox loss
+
+For legacy conversational runs lost during startup, shutdown, or loss of execution
+context, the server confirms termination of every recorded remote lease and then
+schedules one successor through normal admission. Historical leases with only a
+file-cleanup success are queued for provider cleanup; that success is not a stop
+receipt. Startup and periodic sweeps complete this sequence after another restart.
+
+The new turn retains task history, accepted confirmations, and the latest user
+direction. It can reuse a compatible session and workspace through the existing
+continuation path. Unknown external effects remain unknown; no recorded tool call
+is replayed. Competing sweeps share the predecessor claim and the existing maximum
+of two automatic failure retries. Exhaustion stops inference retries, not sandbox
+cleanup, and does not restore an action-reconciliation hold. Pauses, budget stops,
+pending approvals, task completion, reassignment, and later executions still gate
+admission. Native runners keep their supported reattachment protocol.
+
+Historical released reusable leases without termination receipts are not reclaimed by an old run. A concurrent resume can own the provider resource before its new lease row exists. Those runs remain gated until termination is confirmed. New cleanup attempts retain their durable pending-cleanup ownership.
+
+For historical task-bound runs with no adapter evidence, termination authorizes a fresh task conversation with the currently assigned conversational agent. It does not establish which adapter ran previously. Recovery records that identity as unknown and forces a fresh session while supplying the task history and latest request. This is an intentional exception to historical adapter classification, not permission to replay old process, webhook, or tool commands. Known non-conversational dispatch evidence remains ineligible for this automatic path.
