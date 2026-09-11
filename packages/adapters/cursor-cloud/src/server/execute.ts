@@ -527,6 +527,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       runId: run.id,
       ...(model?.id ? { model: model.id } : {}),
     }));
+    await onLog(
+      "stdout",
+      `${JSON.stringify({
+        type: "cursor_cloud.env",
+        reuseSession: Boolean(canReuseSession && session),
+        envKeys: Object.keys(remoteEnv).sort(),
+        hasPaperclipToken: Boolean(remoteEnv.PAPERCLIP_TOKEN),
+        hasPaperclipApiUrl: Boolean(remoteEnv.PAPERCLIP_API_URL),
+        paperclipApiUrlHost: (() => {
+          try {
+            return remoteEnv.PAPERCLIP_API_URL ? new URL(remoteEnv.PAPERCLIP_API_URL).host : null;
+          } catch {
+            return null;
+          }
+        })(),
+      })}\n`,
+    );
     await emitStatus(onLog, "running", `Started Cursor run ${run.id}.`);
 
     const streamPromise = streamRun(run, onLog).catch((err) => {
