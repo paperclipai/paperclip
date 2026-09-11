@@ -10064,10 +10064,7 @@ export function heartbeatService(
         sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
         eq(issues.assigneeAgentId, agentWakeupRequests.agentId)))
       .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
-      .where(and(exists(db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
-        eq(issueRecoveryActions.companyId, issues.companyId), eq(issueRecoveryActions.sourceIssueId, issues.id),
-        executionBlockerPredicate(),
-      ))), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      .where(and(eq(agentWakeupRequests.status, "deferred_issue_execution"),
         eq(agentWakeupRequests.requestedByActorType, "user"),
         sql`${agentWakeupRequests.payload}->'executionWait' is not null`,
         lte(agentWakeupRequests.updatedAt, new Date(Date.now() - 30_000)),
@@ -10089,7 +10086,26 @@ export function heartbeatService(
       // Match normal admission's deterministic current blocker selection. An
       // arbitrary historical action must not choose the retry's source run.
       const blocker = await getExecutionBlocker(db, wake.companyId, issueId);
-      const sourceId = blocker?.runId;
+      if (!blocker) {
+        // Cleanup may already have resolved the recovery action. The saved
+        // receipt remains work; normal admission rechecks ownership, holds,
+        // budgets and any blocker created since this read under the issue lock.
+        if (wake.idempotencyKey?.startsWith("chat-inbound:") ||
+            !["issue_commented", "issue_reopened_via_comment"].includes(wake.reason ?? "")) continue;
+        const payload = parseObject(wake.payload);
+        const context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+        await enqueueWakeup(wake.agentId, {
+          source: wake.source as WakeupOptions["source"],
+          triggerDetail: (wake.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
+          reason: wake.reason, payload, contextSnapshot: context,
+          requestedByActorType: "user", requestedByActorId: wake.requestedByActorId,
+          idempotencyKey: `execution-wait-comment:${wake.id}`,
+        }, wake.id).catch(err => {
+          logger.warn({ err, requestId: wake.id }, "failed to resume saved execution-wait message after recovery");
+        });
+        continue;
+      }
+      const sourceId = blocker.runId;
       if (!sourceId || !isUuidLike(sourceId)) continue;
       const run = await getRun(sourceId);
       if (!run || run.companyId !== wake.companyId || run.agentId !== wake.agentId) continue;
@@ -25604,6 +25620,14 @@ export function heartbeatService(
             if (!pending || !wakeCommentId || !queuedCommentIdsFromWakePayload(pending.payload).includes(wakeCommentId)) {
               return { kind: "deferred" as const };
             }
+            const [comment] = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+              eq(issueComments.companyId, agent.companyId), eq(issueComments.issueId, issueId),
+              sql`${issueComments.id}::text = ${wakeCommentId}`, eq(issueComments.authorType, "user"),
+              eq(issueComments.authorUserId, opts.requestedByActorId ?? ""),
+              isNull(issueComments.deletedAt), isNull(issueComments.createdByRunId),
+              sql`length(trim(${issueComments.body})) > 0`,
+            ));
+            if (!comment) return { kind: "deferred" as const };
           }
           let automaticParentRunId: string | null = null;
           if (
