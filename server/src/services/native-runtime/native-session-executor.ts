@@ -1,3 +1,4 @@
+import { PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import { resolveConnectorAssignments, isConnectorSkill } from "../connector-runtime.js";
 import {
@@ -7598,6 +7599,17 @@ async function executePaperclipNativeSessionWithinScope(
       input.db,
       input.execution.binding,
     );
+    // Invalidate prior stop evidence before a backend can spawn. A crash between
+    // spawn and the PID callback must not make an old receipt authorize a turn.
+    await appendHeartbeatRunEvent(input.db, {
+      companyId: input.execution.binding.companyId,
+      runId: input.execution.binding.runId,
+      agentId: input.execution.binding.agentId,
+      eventType: PROCESS_START_REQUESTED,
+      stream: "system",
+      level: "info",
+      message: "Native execution requested; prior local stop evidence no longer applies.",
+    });
     const runnerdBackend =
       input.useRunnerd && input.backend === undefined
         ? await createRunnerdBackend({

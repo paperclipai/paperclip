@@ -6889,8 +6889,11 @@ export function issueRoutes(
           ?? (await getNativeSessionSteeringState(steering.steeringRunId)
             .then((state) => state.disposition)
             .catch(() => "temporarily_unavailable" as const));
+    const wait = queueState?.state === "deferred" ? readObject(readObject(wake?.payload).executionWait) : {};
     return buildQueuedCommentQueueSnapshot({
       issueId: input.issue.id,
+      executionWait: typeof wait.reason === "string" && typeof wait.message === "string"
+        ? { reason: wait.reason, message: wait.message } : null,
       queueId: wake?.id ?? null,
       state: queueState?.state ?? null,
       activeRunId: input.activeRun?.id ?? null,

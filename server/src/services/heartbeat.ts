@@ -1,8 +1,9 @@
+import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
-import { getExecutionBlocker } from "./execution-blocker.js";
+import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
 import {
@@ -49,6 +50,7 @@ import {
   asc,
   desc,
   eq,
+  exists,
   getTableColumns,
   gt,
   gte,
@@ -8599,19 +8601,27 @@ export async function persistHeartbeatRunProcessMetadata(
     () => null,
   );
   const startedAt = new Date(observedStartedAt ?? meta.startedAt);
-  return db
-    .update(heartbeatRuns)
-    .set({
-      processPid: meta.pid,
-      processGroupId: meta.processGroupId,
-      processStartedAt: Number.isNaN(startedAt.getTime())
-        ? new Date()
-        : startedAt,
-      updatedAt: new Date(),
-    })
-    .where(eq(heartbeatRuns.id, runId))
-    .returning()
-    .then((rows) => rows[0] ?? null);
+  return db.transaction(async tx => {
+    const run = await tx
+      .update(heartbeatRuns)
+      .set({
+        processPid: meta.pid,
+        processGroupId: meta.processGroupId,
+        processStartedAt: Number.isNaN(startedAt.getTime())
+          ? new Date()
+          : startedAt,
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, runId))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (run?.runtimeMode === "native") await appendHeartbeatRunEvent(tx as unknown as Db, {
+      companyId: run.companyId, runId, agentId: run.agentId,
+      eventType: PROCESS_IDENTITY_RECORDED, stream: "system", level: "info",
+      message: "Process identity recorded; prior stop evidence no longer applies.",
+    });
+    return run;
+  });
 }
 
 async function terminateHeartbeatRunProcess(input: {
@@ -9949,9 +9959,9 @@ export function heartbeatService(
     }
   }
 
-  async function resumeRemoteStopComments(run: typeof heartbeatRuns.$inferSelect) {
-    if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id) ||
-        !(await remoteExecutionHasStopped(db, run.companyId, run.id))) return;
+  async function resumeRemoteStopComments(run: typeof heartbeatRuns.$inferSelect, requestId?: string) {
+    if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id)) return;
+    if (run.runtimeMode !== "native" && !(await remoteExecutionHasStopped(db, run.companyId, run.id))) return;
     const issueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
     if (!issueId) return;
     const legacyContinuation = run.runtimeMode === "legacy" && run.status === "cancelled" &&
@@ -9962,9 +9972,11 @@ export function heartbeatService(
       eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
       eq(agentWakeupRequests.status, "deferred_issue_execution"),
       eq(agentWakeupRequests.requestedByActorType, "user"),
+      requestId ? eq(agentWakeupRequests.id, requestId) : undefined,
       sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
-    )).orderBy(asc(agentWakeupRequests.requestedAt));
+    )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(50);
     for (const wake of pending) {
+      if (wake.idempotencyKey?.startsWith("chat-inbound:")) continue;
       const payload = parseObject(wake.payload);
       const context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
       const commentId = deriveCommentId(context, payload);
@@ -9978,16 +9990,73 @@ export function heartbeatService(
           isNull(issueComments.createdByRunId), gt(issueComments.createdAt, run.finishedAt),
         ));
         if (!comment?.body.trim()) continue;
-      } else if (!await admitExplicitNativeContinuation({ db, companyId: run.companyId, issueId,
-        agentId: run.agentId, actorType: wake.requestedByActorType, actorId: wake.requestedByActorId,
-        reason: wake.reason, commentId, successorRunId: randomUUID(), dryRun: true })) continue;
+      } else {
+        let wait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
+        const admitted = await admitExplicitNativeContinuation({ db, companyId: run.companyId, issueId,
+          agentId: run.agentId, actorType: wake.requestedByActorType, actorId: wake.requestedByActorId,
+          reason: wake.reason, commentId, successorRunId: randomUUID(), dryRun: true,
+          onBlocked: (reason, message) => { wait = { reason, message }; },
+        });
+        if (!admitted) {
+          await db.update(agentWakeupRequests).set({
+            payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}',
+              coalesce(${agentWakeupRequests.payload}->'executionWait', '{}'::jsonb) || ${JSON.stringify(wait)}::jsonb)`,
+            updatedAt: new Date(),
+          }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, run.companyId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution")));
+          continue;
+        }
+      }
       // Re-enter ordinary admission with the original user's authority. It
       // atomically adopts the deferred comments and still applies every gate.
       await enqueueWakeup(run.agentId, { source: wake.source as WakeupOptions["source"], triggerDetail: (wake.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
         reason: wake.reason, payload, contextSnapshot: context,
         requestedByActorType: "user", requestedByActorId: wake.requestedByActorId,
-        idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` });
+        idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` }, wake.id);
       break;
+    }
+  }
+
+  async function resumeExecutionWaitComments() {
+    if ((await getSchedulingSuppression()).suppressed) return;
+    const waits = await db.select({ wake: agentWakeupRequests })
+      .from(agentWakeupRequests)
+      .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+        eq(issues.assigneeAgentId, agentWakeupRequests.agentId)))
+      .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
+      .where(and(exists(db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, issues.companyId), eq(issueRecoveryActions.sourceIssueId, issues.id),
+        executionBlockerPredicate(),
+      ))), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        eq(agentWakeupRequests.requestedByActorType, "user"),
+        sql`${agentWakeupRequests.payload}->'executionWait' is not null`,
+        lte(agentWakeupRequests.updatedAt, new Date(Date.now() - 30_000)),
+        notInArray(issues.status, ["done", "cancelled"])))
+      .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
+    const seen = new Set<string>();
+    for (const { wake } of waits) {
+      const issueId = String(wake.payload?.issueId);
+      if (seen.has(issueId)) continue;
+      seen.add(issueId);
+      // Advance the cursor even for invalid evidence so one damaged task cannot
+      // starve later requests in this bounded scan. Preserve concurrent edits.
+      const [claimed] = await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
+        eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        lte(agentWakeupRequests.updatedAt, new Date(Date.now() - 30_000)),
+      )).returning({ id: agentWakeupRequests.id });
+      if (!claimed) continue;
+      // Match normal admission's deterministic current blocker selection. An
+      // arbitrary historical action must not choose the retry's source run.
+      const blocker = await getExecutionBlocker(db, wake.companyId, issueId);
+      const sourceId = blocker?.runId;
+      if (!sourceId || !isUuidLike(sourceId)) continue;
+      const run = await getRun(sourceId);
+      if (!run || run.companyId !== wake.companyId || run.agentId !== wake.agentId) continue;
+      await resumeRemoteStopComments(run, wake.id).catch(err => {
+        logger.warn({ err, runId: run.id }, "failed to resume saved execution-wait message");
+      });
     }
   }
 
@@ -18016,31 +18085,35 @@ export function heartbeatService(
         });
         continue;
       }
-      const cleared = await db
-        .update(heartbeatRuns)
-        .set({
-          processPid: null,
-          processGroupId: null,
-          processStartedAt: null,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(heartbeatRuns.id, run.id),
-            eq(heartbeatRuns.runtimeMode, "native"),
-            run.processPid === null
-              ? isNull(heartbeatRuns.processPid)
-              : eq(heartbeatRuns.processPid, run.processPid),
-            run.processGroupId === null
-              ? isNull(heartbeatRuns.processGroupId)
-              : eq(heartbeatRuns.processGroupId, run.processGroupId),
-            run.processStartedAt === null
-              ? isNull(heartbeatRuns.processStartedAt)
-              : eq(heartbeatRuns.processStartedAt, run.processStartedAt),
-          ),
-        )
-        .returning({ id: heartbeatRuns.id })
-        .then((rows) => rows[0] ?? null);
+      const cleared = await db.transaction(async tx => {
+        const cleared = await tx
+          .update(heartbeatRuns)
+          .set({
+            processPid: null,
+            processGroupId: null,
+            processStartedAt: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(heartbeatRuns.id, run.id),
+              eq(heartbeatRuns.runtimeMode, "native"),
+              run.processPid === null
+                ? isNull(heartbeatRuns.processPid)
+                : eq(heartbeatRuns.processPid, run.processPid),
+              run.processGroupId === null
+                ? isNull(heartbeatRuns.processGroupId)
+                : eq(heartbeatRuns.processGroupId, run.processGroupId),
+              run.processStartedAt === null
+                ? isNull(heartbeatRuns.processStartedAt)
+                : eq(heartbeatRuns.processStartedAt, run.processStartedAt),
+            ),
+          )
+          .returning({ id: heartbeatRuns.id })
+          .then((rows) => rows[0] ?? null);
+        if (cleared) await recordNativeLocalProcessStop(tx as unknown as Db, run);
+        return cleared;
+      });
       if (cleared) claimableNativeRunIds.add(cleared.id);
     }
 
@@ -18474,6 +18547,7 @@ export function heartbeatService(
 
   async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
+    await resumeExecutionWaitComments();
     const cutoff = await getWorktreeExecutionCutoff();
 
     const queuedRuns = await db
@@ -19106,31 +19180,35 @@ export function heartbeatService(
       }
       runningProcesses.delete(run.id);
       if (run.processPid || run.processGroupId || run.processStartedAt) {
-        const cleared = await db
-          .update(heartbeatRuns)
-          .set({
-            processPid: null,
-            processGroupId: null,
-            processStartedAt: null,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(heartbeatRuns.id, run.id),
-              eq(heartbeatRuns.runtimeMode, "native"),
-              run.processPid === null
-                ? isNull(heartbeatRuns.processPid)
-                : eq(heartbeatRuns.processPid, run.processPid),
-              run.processGroupId === null
-                ? isNull(heartbeatRuns.processGroupId)
-                : eq(heartbeatRuns.processGroupId, run.processGroupId),
-              run.processStartedAt === null
-                ? isNull(heartbeatRuns.processStartedAt)
-                : eq(heartbeatRuns.processStartedAt, run.processStartedAt),
-            ),
-          )
-          .returning()
-          .then((rows) => rows[0] ?? null);
+        const cleared = await db.transaction(async tx => {
+          const cleared = await tx
+            .update(heartbeatRuns)
+            .set({
+              processPid: null,
+              processGroupId: null,
+              processStartedAt: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, run.id),
+                eq(heartbeatRuns.runtimeMode, "native"),
+                run.processPid === null
+                  ? isNull(heartbeatRuns.processPid)
+                  : eq(heartbeatRuns.processPid, run.processPid),
+                run.processGroupId === null
+                  ? isNull(heartbeatRuns.processGroupId)
+                  : eq(heartbeatRuns.processGroupId, run.processGroupId),
+                run.processStartedAt === null
+                  ? isNull(heartbeatRuns.processStartedAt)
+                  : eq(heartbeatRuns.processStartedAt, run.processStartedAt),
+              ),
+            )
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (cleared) await recordNativeLocalProcessStop(tx as unknown as Db, run);
+          return cleared;
+        });
         if (!cleared) {
           const current = await getRun(run.id);
           if (current) {
@@ -24818,7 +24896,7 @@ export function heartbeatService(
     }
   }
 
-  async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
+  async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}, executionWaitRequestId?: string) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = {
@@ -24946,6 +25024,20 @@ export function heartbeatService(
       patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
       waitCondition?: Record<string, unknown>,
     ) => {
+      if (executionWaitRequestId) {
+        await db.update(agentWakeupRequests).set({
+          payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}',
+            coalesce(${agentWakeupRequests.payload}->'executionWait', '{}'::jsonb) || ${JSON.stringify({
+              reason: skipReason, message: patch.error ?? (skipReason === "issue_tree_hold_active"
+                ? "This task is paused. Resume it to send your saved message."
+                : "Waiting for task execution to be enabled. Your message is saved."),
+            })}::jsonb)`,
+          updatedAt: new Date(),
+        }).where(and(eq(agentWakeupRequests.id, executionWaitRequestId),
+          eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution")));
+        return { created: false };
+      }
       const request = {
         ...durableReceiptFields,
         companyId: agent.companyId,
@@ -25191,7 +25283,7 @@ export function heartbeatService(
 
     const invokability = await getAgentInvokability(agent);
     if (!invokability.invokable) {
-      if (opts.requestedByActorType !== "user") {
+      if (opts.requestedByActorType !== "user" || executionWaitRequestId) {
         await writeSkippedRequest("agent.not_invokable", {
           error: invokability.message,
         }, { status: agent.status, reason: invokability.reason });
@@ -25305,6 +25397,20 @@ export function heartbeatService(
             sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
           );
 
+          if (executionWaitRequestId) {
+            const [pending] = await tx.select().from(agentWakeupRequests).where(and(
+              eq(agentWakeupRequests.id, executionWaitRequestId), eq(agentWakeupRequests.companyId, agent.companyId),
+              eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              eq(agentWakeupRequests.requestedByActorType, "user"),
+              eq(agentWakeupRequests.requestedByActorId, opts.requestedByActorId ?? ""),
+              sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+            ));
+            // The issue lock serializes cleanup callbacks and periodic workers.
+            // An adopted, discarded, or edited receipt is no longer authority.
+            if (!pending || !wakeCommentId || !queuedCommentIdsFromWakePayload(pending.payload).includes(wakeCommentId)) {
+              return { kind: "deferred" as const };
+            }
+          }
           let automaticParentRunId: string | null = null;
           if (
             source === "automation" &&
@@ -25609,10 +25715,18 @@ export function heartbeatService(
             reconciledSourceRunId = sourceRunId;
           }
 
+          let continuationWait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
           const deferBlockedExecution = async (
             executionBlocker: NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>,
           ) => {
-            const condition = { recoveryActionId: executionBlocker.recoveryActionId };
+            const condition = { recoveryActionId: executionBlocker.recoveryActionId, ...continuationWait };
+            if (executionWaitRequestId) {
+              await tx.update(agentWakeupRequests).set({
+                payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}', ${JSON.stringify(condition)}::jsonb)`,
+                updatedAt: new Date(),
+              }).where(eq(agentWakeupRequests.id, executionWaitRequestId));
+              return { kind: "deferred" as const };
+            }
             if (durableRequest || wakeCommentId || hasInteractionContinuationWakeContext(enrichedContextSnapshot)) {
               await tx.insert(agentWakeupRequests).values({
                 ...durableReceiptFields,
@@ -25659,6 +25773,7 @@ export function heartbeatService(
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
             reason, commentId: wakeCommentId ?? null, successorRunId: explicitContinuationRunId,
             dryRun: true,
+            onBlocked: (reason, message) => { continuationWait = { reason, message }; },
           }))) return deferBlockedExecution(executionBlocker);
 
           const issueStateGuard = opts.issueStateGuard;
@@ -26375,6 +26490,11 @@ export function heartbeatService(
             tx,
           );
           if (dailyCapBlock) {
+            if (executionWaitRequestId && executionBlocker) {
+              continuationWait = { reason: dailyCapBlock.reason,
+                message: "The agent has reached its daily limit. Your message is saved until work can resume." };
+              return deferBlockedExecution(executionBlocker);
+            }
             const now = new Date();
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
@@ -26469,7 +26589,7 @@ export function heartbeatService(
               !wake.idempotencyKey?.startsWith("chat-inbound:") &&
               !isInteractionResolutionWakePayload(deferredPayload) &&
               !hasInteractionContinuationWakeContext(deferredContext) &&
-              (deferredContext.wakeReason ?? wake.reason) === "issue_commented" &&
+              ["issue_commented", "issue_reopened_via_comment"].includes(String(deferredContext.wakeReason ?? wake.reason)) &&
               queuedCommentIdsFromWakePayload(wake.payload).length > 0
             );
           });
@@ -27995,6 +28115,7 @@ export function heartbeatService(
 
     releaseEnvironmentLeasesForRun,
     resumeRemoteStopComments,
+    resumeExecutionWaitComments,
 
     sweepStaleIssueLocks,
 
