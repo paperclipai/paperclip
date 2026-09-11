@@ -4699,11 +4699,16 @@ export async function runChildProcess(
               }, opts.timeoutSec * 1000)
             : null;
 
-        child.stdout?.on("data", (chunk: unknown) => {
+        // Decode as streaming UTF-8. A multibyte character can be split across
+        // two `data` events, so per-chunk decoding corrupts it; the stream's
+        // StringDecoder holds the incomplete sequence until the rest arrives.
+        child.stdout?.setEncoding("utf8");
+        child.stderr?.setEncoding("utf8");
+
+        child.stdout?.on("data", (text: string) => {
           const readable = child.stdout;
           if (!readable) return;
           readable.pause();
-          const text = String(chunk);
           stdout = appendWithCap(stdout, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
@@ -4717,11 +4722,10 @@ export async function runChildProcess(
             });
         });
 
-        child.stderr?.on("data", (chunk: unknown) => {
+        child.stderr?.on("data", (text: string) => {
           const readable = child.stderr;
           if (!readable) return;
           readable.pause();
-          const text = String(chunk);
           stderr = appendWithCap(stderr, text);
           maybeArmTerminalResultCleanup();
           logChain = logChain
