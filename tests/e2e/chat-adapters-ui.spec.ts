@@ -1531,7 +1531,8 @@ test.describe.serial("native chat adapter UI", () => {
       ).toBeVisible();
       await expectSetupRail(page);
       await selectMaya(page);
-      expect(mock.createdWithAgentId).toBe(seed.agentId);
+      // The selection schedules a request; clicking alone does not await it.
+      await expect.poll(() => mock.createdWithAgentId).toBe(seed.agentId);
       expect(mock.createdWithAgentId).not.toBe(seed.otherAgentId);
       await expect(
         page.getByRole("button", { name: "Choose an active agent" }),

@@ -427,6 +427,9 @@ jobs:
   build-and-push-cloud:
     if: github.event_name != 'push' || github.ref != 'refs/heads/master'
     uses: ./.github/workflows/docker-cloud.yml
+    with:
+      staging_artifact_base_url: ${{ inputs.staging_artifact_base_url || '' }}
+      staging_lock_sha256: ${{ inputs.staging_lock_sha256 || '' }}
     permissions:
       contents: read
       packages: write
