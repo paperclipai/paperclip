@@ -2026,11 +2026,12 @@ describe("agent issue mutation checkout ownership", () => {
       expect.soft(mockLogActivity).not.toHaveBeenCalled();
       // This is a route-boundary test, not a fake SQL engine: inspect the
       // actual compiled predicate so a global or active-only query cannot pass.
+      // Only restricted chat bindings use this recovery gate; email uses normal agent work.
       expect(db.chatBindingQueries).toHaveLength(1);
       expect(db.chatBindingQueries[0].sql).toBe(
-        '("chat_conversations"."company_id" = $1 and "chat_conversations"."issue_id" = $2)',
+        '("chat_endpoints"."external_execution_policy" = $1 and "chat_conversations"."company_id" = $2 and "chat_conversations"."issue_id" = $3)',
       );
-      expect(db.chatBindingQueries[0].params).toEqual([companyId, issueId]);
+      expect(db.chatBindingQueries[0].params).toEqual(["restricted", companyId, issueId]);
     },
   );
 
@@ -2157,7 +2158,7 @@ describe("agent issue mutation checkout ownership", () => {
       ).toHaveBeenCalledExactlyOnceWith(chatRetryActionId);
       expect(order).toEqual(["begin", "stage", "commit", "dispatch"]);
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
-      expect(db.chatBindingQueries[0].params).toEqual([companyId, issueId]);
+      expect(db.chatBindingQueries[0].params).toEqual(["restricted", companyId, issueId]);
     });
 
     it("keeps committed recovery resolution successful when immediate dispatch rejects", async () => {

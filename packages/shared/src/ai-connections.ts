@@ -10,8 +10,12 @@ export const connectionPurposeTransportSchema = z.discriminatedUnion(
     }),
     z.object({
       connectionPurpose: z.literal("channel"),
-      transport: z.literal("chat_sdk"),
-    }),
+      transport: z.enum(["chat_sdk", "rest_api"]),
+      config: z.object({ provider: z.string().optional() }).passthrough().optional(),
+    }).refine(
+      (connection) => connection.transport === "chat_sdk" || connection.config?.provider === "agentmail",
+      { message: "REST channel connections require the AgentMail provider", path: ["config", "provider"] },
+    ),
     z.object({
       connectionPurpose: z.literal("ai"),
       transport: z.literal("runtime_auth"),

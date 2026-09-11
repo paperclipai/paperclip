@@ -34,6 +34,7 @@ import {
   agents,
   approvals,
   chatConversations,
+  chatEndpoints,
   chatPublications,
   companyMemberships,
   documents,
@@ -9106,8 +9107,10 @@ export function issueRoutes(
           const [chatBinding] = await tx
             .select({ id: chatConversations.id })
             .from(chatConversations)
+            .innerJoin(chatEndpoints, eq(chatEndpoints.id, chatConversations.endpointId))
             .where(
               and(
+                eq(chatEndpoints.externalExecutionPolicy, "restricted"),
                 eq(chatConversations.companyId, lockedIssue.companyId),
                 eq(chatConversations.issueId, lockedIssue.id),
               ),

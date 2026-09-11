@@ -1,5 +1,6 @@
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
+import { resolveConnectorAssignments, isConnectorSkill } from "../connector-runtime.js";
 import {
   boundedExecutionCleanup,
   EXECUTION_CONTROL_DEADLINE_MS,
@@ -9619,7 +9620,11 @@ async function createRunnerdBackendWithinSessionClaim(
     input.db,
     input.execution.binding,
   );
+  const pinnedSkills = new Set("runtimeContext" in input.execution ? input.execution.runtimeContext.skills.map((skill) => skill.key) : []);
+  const connectorAssignments = [...pinnedSkills].some(isConnectorSkill)
+    ? await resolveConnectorAssignments(input.db, input.execution.binding) : [];
   const authority = new PaperclipRunnerToolAuthority(input.db, {
+    connectorAssignments: connectorAssignments.filter((assignment) => pinnedSkills.has(assignment.skillKey)),
     companyId: input.execution.binding.companyId,
     issueId: input.execution.binding.issueId,
     runId: input.execution.binding.runId,

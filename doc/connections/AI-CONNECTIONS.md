@@ -121,7 +121,7 @@ provider-side revocation.
 
 ## Legacy adoption
 
-Migration `0272` indexes only explicitly owned personal secrets with a recognized
+Migration `0273` indexes only explicitly owned personal secrets with a recognized
 provider/method and matching agent configuration. It keeps original secret
 references and leaves every agent's legacy authentication unchanged. Reconnecting
 an indexed account creates a private grant credential instead of rotating the
