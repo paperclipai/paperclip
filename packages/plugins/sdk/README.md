@@ -430,7 +430,38 @@ before worker startup, are checksum-recorded, and may create or alter objects
 only inside the plugin namespace. Runtime `ctx.db.query()` allows `SELECT` from
 `ctx.db.namespace` plus manifest-whitelisted `public` core tables. Runtime
 `ctx.db.execute()` allows `INSERT`, `UPDATE`, and `DELETE` only against the
-plugin namespace.
+plugin namespace. Use the host-owned declarative transaction API when one
+logical transition needs multiple writes:
+
+```ts
+await ctx.db.executeTransaction({
+  steps: [
+    {
+      sql: `INSERT INTO ${ctx.db.namespace}.claims (id) VALUES ($1)`,
+      params: [claimId],
+      expectRowCount: 1,
+    },
+    {
+      sql: `DELETE FROM ${ctx.db.namespace}.leases WHERE id = $1`,
+      params: [leaseId],
+      expectRowCount: 1,
+    },
+  ],
+});
+```
+
+The host validates the complete bounded batch before opening the transaction,
+applies every step on one database transaction, and rolls everything back on a
+SQL error or exact `expectRowCount` mismatch. A mismatch surfaces with
+`PLUGIN_RPC_ERROR_CODES.CONDITION_FAILED`. The API intentionally accepts data
+rather than a callback, so no live transaction crosses the JSON-RPC boundary.
+The SDK test harness applies the same transaction SQL policy before it calls a
+configured database driver, so test statements should use `ctx.db.namespace`.
+Each step is a single-table mutation; express a multi-table transition as
+multiple ordered steps. Targets must be plugin-owned base tables, and steps
+reject `RETURNING`, secondary-table reads, comments, and functions outside a
+small side-effect-free allowlist. Bind dynamic values as parameters. Fixed
+limits are exported as `PLUGIN_DATABASE_TRANSACTION_LIMITS`.
 
 ### Trusted Local Folders
 

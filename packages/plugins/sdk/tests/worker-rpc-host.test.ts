@@ -157,6 +157,133 @@ describe("worker performAction context", () => {
   });
 });
 
+describe("worker plugin database transaction bridge", () => {
+  it("sends one declarative RPC call and preserves the host invocation id", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    const nestedRequests: Array<{
+      method: string;
+      params: unknown;
+      invocationId: string | null;
+    }> = [];
+    let nextRequestId = 1;
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.actions.register("atomic", async () => ctx.db.executeTransaction({
+          steps: [
+            {
+              sql: "INSERT INTO plugin_test.rows (id) VALUES ($1)",
+              params: ["row-1"],
+              expectRowCount: 1,
+            },
+            {
+              sql: "DELETE FROM plugin_test.locks WHERE id = $1",
+              params: ["row-1"],
+              expectRowCount: 1,
+            },
+          ],
+        }));
+      },
+    });
+    const worker = startWorkerRpcHost({
+      plugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    function callWorker(
+      method: string,
+      params: unknown,
+      invocation?: PluginInvocationContext,
+    ) {
+      const id = `host-${nextRequestId++}`;
+      const request = {
+        ...createRequest(method, params, id),
+        ...(invocation ? { paperclipInvocation: invocation } : {}),
+      };
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(request));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+        return;
+      }
+      if (!isJsonRpcRequest(message) || message.method !== "db.executeTransaction") return;
+      nestedRequests.push({
+        method: message.method,
+        params: message.params,
+        invocationId: (message as { paperclipInvocationId?: string }).paperclipInvocationId ?? null,
+      });
+      hostToWorker.write(serializeMessage(createSuccessResponse(message.id, {
+        results: [{ rowCount: 1 }, { rowCount: 1 }],
+      })));
+    });
+
+    try {
+      await callWorker("initialize", {
+        manifest: {
+          id: "paperclip.db-transaction-test",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Database transaction test",
+          description: "Test plugin",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["database.namespace.write"],
+          entrypoints: {},
+          database: { migrationsDir: "migrations" },
+        },
+        config: {},
+        databaseNamespace: "plugin_test",
+      });
+
+      await expect(callWorker(
+        "performAction",
+        { key: "atomic", params: {}, companyId: "company-a" },
+        { id: "invocation-atomic", scope: { companyId: "company-a" } },
+      )).resolves.toEqual({ results: [{ rowCount: 1 }, { rowCount: 1 }] });
+      expect(nestedRequests).toEqual([{
+        method: "db.executeTransaction",
+        params: {
+          steps: [
+            {
+              sql: "INSERT INTO plugin_test.rows (id) VALUES ($1)",
+              params: ["row-1"],
+              expectRowCount: 1,
+            },
+            {
+              sql: "DELETE FROM plugin_test.locks WHERE id = $1",
+              params: ["row-1"],
+              expectRowCount: 1,
+            },
+          ],
+        },
+        invocationId: "invocation-atomic",
+      }]);
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  });
+});
+
 describe("worker invocation scope propagation", () => {
   it("keeps overlapping company scopes local to each getData invocation", async () => {
     const hostToWorker = new PassThrough();
