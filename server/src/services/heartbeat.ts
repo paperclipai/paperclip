@@ -27428,7 +27428,13 @@ export function heartbeatService(
                     resultJson: {
                       ...persistedCancellationResult,
                       ...(resultJson ?? {}),
-                      ...(processCancellationSettlement && agent
+                      // A scheduler placeholder has no process to acknowledge.
+                      // Preserve its normal release policy instead of treating
+                      // it as an operator stop of provider work.
+                      ...(processCancellationSettlement && agent && running && (
+                        (Number.isInteger(running.child.pid) && (running.child.pid ?? 0) > 0) ||
+                        (Number.isInteger(running.processGroupId) && (running.processGroupId ?? 0) > 0)
+                      )
                         ? mergeRunStopMetadataForAgent(agent, "cancelled", {
                             resultJson: {
                               ...resultJson,
