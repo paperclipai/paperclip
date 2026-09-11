@@ -166,7 +166,7 @@ export async function ensureCursorSkillsInjected(
     );
     return;
   }
-  const removedSkills = await removeMaintainerOnlySkillSymlinks(
+  const { removed: removedSkills } = await removeMaintainerOnlySkillSymlinks(
     skillsHome,
     skillsEntries.map((entry) => entry.runtimeName),
   );

@@ -93,7 +93,7 @@ async function ensurePiSkillsInjected(
   const selectedEntries = skillsEntries.filter((entry) => desiredSet.has(entry.key));
   if (selectedEntries.length === 0) return;
   await fs.mkdir(PI_AGENT_SKILLS_DIR, { recursive: true });
-  const removedSkills = await removeMaintainerOnlySkillSymlinks(
+  const { removed: removedSkills } = await removeMaintainerOnlySkillSymlinks(
     PI_AGENT_SKILLS_DIR,
     selectedEntries.map((entry) => entry.runtimeName),
   );

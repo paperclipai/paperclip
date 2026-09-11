@@ -159,7 +159,7 @@ async function ensureGeminiSkillsInjected(
     );
     return;
   }
-  const removedSkills = await removeMaintainerOnlySkillSymlinks(
+  const { removed: removedSkills, failedToRemove } = await removeMaintainerOnlySkillSymlinks(
     skillsHome,
     selectedEntries.map((entry) => entry.runtimeName),
   );
@@ -169,8 +169,17 @@ async function ensureGeminiSkillsInjected(
       `[paperclip] Removed stale Gemini skill "${skillName}" from ${skillsHome}\n`,
     );
   }
+  for (const failedEntry of failedToRemove) {
+    await onLog(
+      "stderr",
+      `[paperclip] Failed to remove stale Gemini skill "${failedEntry.name}" from ${skillsHome}; it stays in the managed-skill manifest for a later retry.\n`,
+    );
+  }
 
-  const ownedSkillNames: string[] = [];
+  // Keep every entry this lane still owns but could not remove, so the next
+  // prune can retry it. None of these names overlap `selectedEntries`: the
+  // loop above only reports a failure for a name outside that selection.
+  const ownedSkills: Array<{ name: string; source: string }> = [...failedToRemove];
   for (const entry of selectedEntries) {
     const target = path.join(skillsHome, entry.runtimeName);
 
@@ -192,10 +201,10 @@ async function ensureGeminiSkillsInjected(
     // the attempt above. A real user directory returns "skipped" too, so
     // the result string alone cannot tell them apart.
     if (await isManagedGeminiSkillEntry(target, entry.source)) {
-      ownedSkillNames.push(entry.runtimeName);
+      ownedSkills.push({ name: entry.runtimeName, source: path.resolve(entry.source) });
     }
   }
-  await writeManagedGeminiSkillsManifest(skillsHome, ownedSkillNames);
+  await writeManagedGeminiSkillsManifest(skillsHome, ownedSkills);
 }
 
 async function buildGeminiSkillsDir(

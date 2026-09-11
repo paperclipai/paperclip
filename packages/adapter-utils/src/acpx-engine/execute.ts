@@ -1354,12 +1354,24 @@ async function prepareGeminiSkillRuntime(input: {
   await fs.mkdir(skillsHome, { recursive: true });
 
   const allowedSkillNames = selectedSkills.map((entry) => entry.runtimeName);
-  const removedSkills = await removeMaintainerOnlySkillSymlinks(skillsHome, allowedSkillNames);
+  const { removed: removedSkills, failedToRemove } = await removeMaintainerOnlySkillSymlinks(
+    skillsHome,
+    allowedSkillNames,
+  );
   for (const skillName of removedSkills) {
     await input.onLog("stdout", `[paperclip] Removed stale ACPX Gemini skill "${skillName}" from ${skillsHome}\n`);
   }
+  for (const failedEntry of failedToRemove) {
+    await input.onLog(
+      "stderr",
+      `[paperclip] Failed to remove stale ACPX Gemini skill "${failedEntry.name}" from ${skillsHome}; it stays in the managed-skill manifest for a later retry.\n`,
+    );
+  }
 
-  const ownedSkillNames: string[] = [];
+  // Keep every entry this lane still owns but could not remove, so the next
+  // prune can retry it. None of these names overlap `selectedSkills`: the
+  // loop above only reports a failure for a name outside `allowedSkillNames`.
+  const ownedSkills: Array<{ name: string; source: string }> = [...failedToRemove];
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
@@ -1389,10 +1401,10 @@ async function prepareGeminiSkillRuntime(input: {
     // pointed at the right source, both return "skipped" too, so the
     // result string alone cannot tell an owned entry from a user one.
     if (await isManagedGeminiSkillEntry(target, entry.source)) {
-      ownedSkillNames.push(entry.runtimeName);
+      ownedSkills.push({ name: entry.runtimeName, source: path.resolve(entry.source) });
     }
   }
-  await writeManagedGeminiSkillsManifest(skillsHome, ownedSkillNames);
+  await writeManagedGeminiSkillsManifest(skillsHome, ownedSkills);
 
   return {
     identity: {
