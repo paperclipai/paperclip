@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  connectionReviewSuite,
   runnerEnvironments,
   runnerMatrix,
   openRouterBreadthExcludedExecutionIds,
@@ -24,6 +25,14 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it("defines sixteen local connection-review journeys without expanding the default matrix", () => {
+    expect(connectionReviewSuite.expectedMatrixSize).toBe(16);
+    expect(new Set(connectionReviewSuite.profiles.map(profile => profile.id))).toEqual(new Set(["runner-codex", "runner-acpx-claude", "legacy-codex", "legacy-claude"]));
+    expect(connectionReviewSuite.environments.map(environment => environment.id)).toEqual(["local"]);
+    expect(connectionReviewSuite.tasks.map(task => task.toolReviewDecision)).toEqual(["approve", "decline", "always", "restart"]);
+    expect(connectionReviewSuite.tasks.every(task => task.flow === "governed_tool_review")).toBe(true);
+  });
+
   it("validates the core, local-integrity, breadth, and warm suites", () => {
     expect(runnerProfiles).toHaveLength(7);
     expect(openRouterBreadthProfiles).toHaveLength(4);

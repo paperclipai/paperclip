@@ -58,7 +58,6 @@ import {
 } from "./parse.js";
 import {
   createKimiAcpExecutor,
-  formatKimiAcpFallbackMessage,
   resolveKimiExecutionEngineForRun,
 } from "./acp.js";
 import { firstNonEmptyLine } from "./utils.js";
@@ -186,18 +185,20 @@ async function buildKimiSkillsDir(
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const engineSelection = await resolveKimiExecutionEngineForRun(ctx);
+  if (engineSelection.unavailableReason) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "adapter_engine_unavailable",
+      errorMessage: engineSelection.unavailableReason,
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+    };
+  }
   if (engineSelection.engine === "acp") {
-    try {
-      return await executeKimiAcp(ctx);
-    } catch (err) {
-      // An explicitly requested ACP engine surfaces its failure; the default
-      // (auto) selection falls back to the CLI lane with a diagnostic note.
-      if (engineSelection.explicit) throw err;
-      const reason = err instanceof Error ? err.message : String(err);
-      await ctx.onLog("stderr", formatKimiAcpFallbackMessage(`Kimi ACP startup failed: ${reason}`));
-    }
-  } else if (!engineSelection.explicit && engineSelection.fallbackReason) {
-    await ctx.onLog("stderr", formatKimiAcpFallbackMessage(engineSelection.fallbackReason));
+    return executeKimiAcp(ctx);
   }
 
   const { runId, agent, runtime, config, context, onLog, onMeta, onEvent, onSpawn, authToken } = ctx;

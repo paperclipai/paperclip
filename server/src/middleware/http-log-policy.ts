@@ -37,7 +37,57 @@ function normalizePath(url: string): string {
   return pathname.length > 0 ? pathname : "/";
 }
 
-export function shouldSilenceHttpSuccessLog(method: string | undefined, url: string | undefined, statusCode: number): boolean {
+const SECRET_SENSITIVE_HTTP_PATHS = [
+  /^\/api\/chat-endpoints\/[^/]+\/setup(?:-secret)?(?:\/|$)/,
+];
+const SECRET_SENSITIVE_HTTP_METHODS = new Set(["POST", "PUT", "PATCH"]);
+
+/** Provider payloads are private even when a method/signature is rejected. */
+export function isPrivateChatWebhookHttpRequest(
+  method: string | undefined,
+  url: string | undefined,
+): boolean {
+  if (!method || !url) return false;
+  let pathname = normalizePath(url);
+  if (/^https?:\/\//i.test(pathname)) {
+    // Do not let URL dot-segment normalization erase an explicitly supplied
+    // ingress namespace on a malformed absolute-form callback.
+    const rawPath = pathname.replace(/^https?:\/\/[^/]*/i, "");
+    if (/^\/api\/chat-webhooks(?:\/|$)/i.test(rawPath)) return true;
+    try {
+      pathname = new URL(url).pathname;
+    } catch {
+      return false;
+    }
+  }
+  // This namespace is reserved for provider ingress, including malformed or
+  // unknown callback paths. Rejecting a route must not make its payload public.
+  return /^\/api\/chat-webhooks(?:\/|$)/i.test(pathname);
+}
+
+/**
+ * These routes accept or create one-time connector credentials. A provider or
+ * validation error can echo credential material in its message even after the
+ * structured request body has been redacted, so HTTP failure logs use generic
+ * error metadata for the whole route. Webhook failures also use generic error
+ * metadata: raw provider text/files/credentials cannot be named-field redacted.
+ */
+export function isSecretSensitiveHttpRequest(
+  method: string | undefined,
+  url: string | undefined,
+): boolean {
+  if (isPrivateChatWebhookHttpRequest(method, url)) return true;
+  if (!method || !url) return false;
+  if (!SECRET_SENSITIVE_HTTP_METHODS.has(method.toUpperCase())) return false;
+  const pathname = normalizePath(url);
+  return SECRET_SENSITIVE_HTTP_PATHS.some((pattern) => pattern.test(pathname));
+}
+
+export function shouldSilenceHttpSuccessLog(
+  method: string | undefined,
+  url: string | undefined,
+  statusCode: number,
+): boolean {
   if (statusCode >= 400) return false;
   if (statusCode === 304) return true;
   if (!method || !url) return false;
@@ -45,6 +95,11 @@ export function shouldSilenceHttpSuccessLog(method: string | undefined, url: str
 
   const pathname = normalizePath(url);
   if (SILENCED_SUCCESS_STATIC_PATHS.has(pathname)) return true;
-  if (SILENCED_SUCCESS_STATIC_PREFIXES.some((prefix) => pathname.startsWith(prefix))) return true;
+  if (
+    SILENCED_SUCCESS_STATIC_PREFIXES.some((prefix) =>
+      pathname.startsWith(prefix),
+    )
+  )
+    return true;
   return SILENCED_SUCCESS_API_PATHS.some((pattern) => pattern.test(pathname));
 }

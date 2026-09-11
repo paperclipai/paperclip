@@ -1,5 +1,7 @@
 import express from "express";
 import request from "supertest";
+import { type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockAgentService = vi.hoisted(() => ({
@@ -22,6 +24,11 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
 }));
 
+const mockExecutionProjection = vi.hoisted(() => ({
+  executionProjectionForRun: vi.fn(async () => null),
+  executionProjectionsForRuns: vi.fn(async () => new Map()),
+}));
+
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
   getExperimental: vi.fn(),
@@ -30,6 +37,7 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 
 const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
+  redactForRuns: vi.fn(async (_companyId: string, values: unknown[]) => values),
   redactForRun: vi.fn(
     async (_companyId: string, _runId: string, value: unknown) => value,
   ),
@@ -62,8 +70,16 @@ const mockWorkspaceOperationService = vi.hoisted(() => ({
 }));
 
 const routeAgentId = "11111111-1111-4111-8111-111111111111";
+const failedChatRunId = "22222222-2222-4222-8222-222222222222";
+const failedChatIssueId = "33333333-3333-4333-8333-333333333333";
+const retryActionId = "44444444-4444-4444-8444-444444444444";
+const mockChatRunRetries = vi.hoisted(() => ({
+  prepareFailedChatRunRetry: vi.fn(),
+  processFailedChatRunRetry: vi.fn(),
+}));
 
 function registerModuleMocks() {
+  vi.doMock("../services/execution-projection.js", () => mockExecutionProjection);
   vi.doMock("../routes/authz.js", async () =>
     vi.importActual("../routes/authz.js"),
   );
@@ -142,6 +158,7 @@ async function createApp(
     source: "local_implicit",
     isInstanceAdmin: false,
   },
+  options: { chatRunRetries?: typeof mockChatRunRetries } = {},
 ) {
   // Vitest tracks factory-mock resolution in one shared call stack. Importing
   // these graphs concurrently can drop the services/index factory mock and
@@ -158,7 +175,7 @@ async function createApp(
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", agentRoutes(db as any));
+  app.use("/api", agentRoutes(db as any, options));
   app.use(errorHandler);
   return app;
 }
@@ -193,6 +210,37 @@ function createRuntimeRequestDbStub(row: Record<string, unknown>) {
     limit: vi.fn(async () => [row]),
   };
   return { select: vi.fn(() => query) };
+}
+
+function createFailedChatRetryDb(chatBound = true) {
+  const predicates: ReturnType<PgDialect["sqlToQuery"]>[] = [];
+  const order: string[] = [];
+  const query = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn((condition: SQL) => {
+      predicates.push(new PgDialect().sqlToQuery(condition));
+      return query;
+    }),
+    limit: vi.fn(async () => (chatBound ? [{ id: "chat-conversation" }] : [])),
+  };
+  const tx = { transactionMarker: "exact-retry-transaction" };
+  const db = {
+    select: vi.fn(() => query),
+    transaction: vi.fn(
+      async (callback: (value: typeof tx) => Promise<unknown>) => {
+        order.push("begin");
+        try {
+          const result = await callback(tx);
+          order.push("commit");
+          return result;
+        } catch (error) {
+          order.push("rollback");
+          throw error;
+        }
+      },
+    ),
+  };
+  return { db, tx, order, predicates };
 }
 
 async function requestApp(
@@ -237,6 +285,8 @@ describe("agent live run routes", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
+    mockChatRunRetries.processFailedChatRunRetry.mockReset();
     mockAccessService.canUser.mockResolvedValue(true);
     mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
       allowed: true,
@@ -440,7 +490,11 @@ describe("agent live run routes", () => {
       expect.objectContaining({ id: "run-1", issueId: "issue-1" }),
       { companyId: "company-1", issueId: "issue-1" },
     );
+    expect(mockExecutionProjection.executionProjectionForRun).toHaveBeenCalledWith(
+      expect.anything(), "company-1", "run-1",
+    );
     expect(res.body).toMatchObject({
+      execution: null,
       currentStatusMessage: "Syncing workspace to environment",
       currentStatusUpdatedAt: "2026-04-10T09:30:05.000Z",
       currentToolName: "bash",
@@ -562,6 +616,8 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(limit).toHaveBeenCalledWith(50);
     expect(res.body).toHaveLength(50);
+    expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalledTimes(1);
+    expect(mockRunSecretRedactionRegistry.redactForRun).not.toHaveBeenCalled();
     expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(
       50,
     );
@@ -606,6 +662,8 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(limit).toHaveBeenCalledWith(50);
     expect(res.body).toHaveLength(50);
+    expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalledTimes(1);
+    expect(mockRunSecretRedactionRegistry.redactForRun).not.toHaveBeenCalled();
   });
 
   it("does not pad with recent runs when no minCount is requested", async () => {
@@ -815,6 +873,402 @@ describe("agent live run routes", () => {
         responsibleUserId: "local-board",
         originIdentityContextId: null,
       },
+    });
+  });
+
+  describe("exact failed chat run retry", () => {
+    const retryBody = {
+      failedRunId: failedChatRunId,
+      reason: "retry_failed_run",
+    };
+    const selectedRun = {
+      id: failedChatRunId,
+      companyId: "company-1",
+      agentId: routeAgentId,
+      status: "failed",
+      contextSnapshot: {
+        issueId: failedChatIssueId,
+        taskId: failedChatIssueId,
+        taskKey: "PAP-FAILED-CHAT",
+        source: "chat:slack",
+        wakeCommentId: "original-comment",
+      },
+    };
+
+    beforeEach(() => {
+      mockAgentService.getById.mockResolvedValue({
+        id: routeAgentId,
+        companyId: "company-1",
+      });
+      mockHeartbeatService.getRun.mockResolvedValue(selectedRun);
+      mockChatRunRetries.prepareFailedChatRunRetry.mockResolvedValue({
+        actionId: retryActionId,
+        issueId: failedChatIssueId,
+      });
+      mockChatRunRetries.processFailedChatRunRetry.mockResolvedValue({
+        actionId: retryActionId,
+        issueId: failedChatIssueId,
+        runId: null,
+        status: "deferred",
+      });
+    });
+
+    it.each([
+      ["failed", "deferred", null],
+      ["timed_out", "running", "55555555-5555-4555-8555-555555555555"],
+    ])(
+      "stages the exact %s run before dispatch and returns its %s receipt",
+      async (runStatus, status, runId) => {
+        const fixture = createFailedChatRetryDb();
+        mockHeartbeatService.getRun.mockResolvedValue({
+          ...selectedRun,
+          status: runStatus,
+        });
+        mockChatRunRetries.prepareFailedChatRunRetry.mockImplementation(
+          async () => {
+            fixture.order.push("stage");
+            return { actionId: retryActionId, issueId: failedChatIssueId };
+          },
+        );
+        const receipt = {
+          actionId: retryActionId,
+          issueId: failedChatIssueId,
+          runId,
+          status,
+        };
+        mockChatRunRetries.processFailedChatRunRetry.mockImplementation(
+          async () => {
+            fixture.order.push("dispatch");
+            return receipt;
+          },
+        );
+        const res = await requestApp(
+          await createApp(fixture.db, undefined, {
+            chatRunRetries: mockChatRunRetries,
+          }),
+          (url) =>
+            request(url)
+              .post(`/api/agents/${routeAgentId}/wakeup`)
+              .send({
+                ...retryBody,
+                payload: {
+                  issueId: "forged-issue",
+                  taskKey: "forged-task",
+                  wakeCommentIds: ["forged-comment"],
+                  retryOfRunId: "forged-run",
+                },
+                idempotencyKey: "untrusted-idempotency-key",
+              }),
+        );
+
+        expect(res.status, JSON.stringify(res.body)).toBe(202);
+        expect(res.body).toEqual(receipt);
+        expect(mockHeartbeatService.getRun).toHaveBeenCalledWith(
+          failedChatRunId,
+        );
+        expect(
+          mockChatRunRetries.prepareFailedChatRunRetry,
+        ).toHaveBeenCalledExactlyOnceWith(fixture.tx, {
+          companyId: "company-1",
+          issueId: failedChatIssueId,
+          agentId: routeAgentId,
+          failedRunId: failedChatRunId,
+          initiatedByUserId: "local-board",
+        });
+        expect(
+          mockChatRunRetries.processFailedChatRunRetry,
+        ).toHaveBeenCalledExactlyOnceWith(retryActionId);
+        expect(fixture.order).toEqual(["begin", "stage", "commit", "dispatch"]);
+        expect(fixture.predicates).toEqual([
+          {
+            sql: '("chat_conversations"."company_id" = $1 and "chat_conversations"."issue_id" = $2)',
+            params: ["company-1", failedChatIssueId],
+            typings: ["uuid", "uuid"],
+          },
+        ]);
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      { reason: "issue_assigned" },
+      { source: "automation" },
+      { triggerDetail: "system" },
+      { forceFreshSession: true },
+      { debug: { providerTrace: "raw" } },
+    ])(
+      "rejects execution-context overrides before staging: %j",
+      async (override) => {
+        const fixture = createFailedChatRetryDb();
+        const res = await requestApp(
+          await createApp(fixture.db, undefined, {
+            chatRunRetries: mockChatRunRetries,
+          }),
+          (url) =>
+            request(url)
+              .post(`/api/agents/${routeAgentId}/wakeup`)
+              .send({ ...retryBody, ...override }),
+        );
+        expect(res.status, JSON.stringify(res.body)).toBe(400);
+        expect(
+          mockChatRunRetries.prepareFailedChatRunRetry,
+        ).not.toHaveBeenCalled();
+        expect(
+          mockChatRunRetries.processFailedChatRunRetry,
+        ).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      null,
+      { ...selectedRun, companyId: "other-company" },
+      { ...selectedRun, agentId: "other-agent" },
+    ])(
+      "does not retry a missing or wrong-scope selected run: %j",
+      async (run) => {
+        mockHeartbeatService.getRun.mockResolvedValue(run);
+        const fixture = createFailedChatRetryDb();
+        const res = await requestApp(
+          await createApp(fixture.db, undefined, {
+            chatRunRetries: mockChatRunRetries,
+          }),
+          (url) =>
+            request(url)
+              .post(`/api/agents/${routeAgentId}/wakeup`)
+              .send(retryBody),
+        );
+        expect(res.status, JSON.stringify(res.body)).toBe(404);
+        expect(fixture.db.select).not.toHaveBeenCalled();
+        expect(
+          mockChatRunRetries.prepareFailedChatRunRetry,
+        ).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["running", "queued", "succeeded", "cancelled"])(
+      "rejects selected %s runs",
+      async (status) => {
+        mockHeartbeatService.getRun.mockResolvedValue({
+          ...selectedRun,
+          status,
+        });
+        const fixture = createFailedChatRetryDb();
+        const res = await requestApp(
+          await createApp(fixture.db, undefined, {
+            chatRunRetries: mockChatRunRetries,
+          }),
+          (url) =>
+            request(url)
+              .post(`/api/agents/${routeAgentId}/wakeup`)
+              .send(retryBody),
+        );
+        expect(res.status, JSON.stringify(res.body)).toBe(409);
+        expect(
+          mockChatRunRetries.prepareFailedChatRunRetry,
+        ).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["agent", "company", "permission"])(
+      "denies %s authority before retry selection",
+      async (denial) => {
+        const fixture = createFailedChatRetryDb();
+        const actor =
+          denial === "agent"
+            ? {
+                type: "agent",
+                agentId: routeAgentId,
+                companyId: "company-1",
+                source: "agent_key",
+              }
+            : {
+                type: "board",
+                userId: "member",
+                companyIds: denial === "company" ? [] : ["company-1"],
+                source: "session",
+              };
+        if (denial === "permission")
+          mockAccessService.decide.mockResolvedValue({
+            allowed: false,
+            explanation: "Invocation denied",
+          });
+        const res = await requestApp(
+          await createApp(fixture.db, actor, {
+            chatRunRetries: mockChatRunRetries,
+          }),
+          (url) =>
+            request(url)
+              .post(`/api/agents/${routeAgentId}/wakeup`)
+              .send(retryBody),
+        );
+        expect([403, 404]).toContain(res.status);
+        expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+        expect(
+          mockChatRunRetries.prepareFailedChatRunRetry,
+        ).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      },
+    );
+
+    it("keeps an unconfigured chat retry fail-closed", async () => {
+      const fixture = createFailedChatRetryDb();
+      const res = await requestApp(await createApp(fixture.db), (url) =>
+        request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody),
+      );
+      expect(res.status).toBe(409);
+      expect(res.body.details?.code).toBe(
+        "chat_failed_run_retry_requires_authorized_context",
+      );
+      expect(fixture.db.transaction).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("rolls back staging denial without falling back to a generic wake", async () => {
+      const fixture = createFailedChatRetryDb();
+      const { HttpError } =
+        await vi.importActual<typeof import("../errors.js")>("../errors.js");
+      mockChatRunRetries.prepareFailedChatRunRetry.mockRejectedValue(
+        new HttpError(409, "The original chat generation is retired", {
+          code: "chat_retry_source_denied",
+        }),
+      );
+      const res = await requestApp(
+        await createApp(fixture.db, undefined, {
+          chatRunRetries: mockChatRunRetries,
+        }),
+        (url) =>
+          request(url)
+            .post(`/api/agents/${routeAgentId}/wakeup`)
+            .send(retryBody),
+      );
+      expect(res.status).toBe(409);
+      expect(res.body.details?.code).toBe("chat_retry_source_denied");
+      expect(fixture.order).toEqual(["begin", "rollback"]);
+      expect(
+        mockChatRunRetries.processFailedChatRunRetry,
+      ).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("does not use generic retry when the selected chat run lost its binding", async () => {
+      const fixture = createFailedChatRetryDb(false);
+      const res = await requestApp(
+        await createApp(fixture.db, undefined, {
+          chatRunRetries: mockChatRunRetries,
+        }),
+        (url) =>
+          request(url)
+            .post(`/api/agents/${routeAgentId}/wakeup`)
+            .send(retryBody),
+      );
+      expect(res.status).toBe(409);
+      expect(res.body.details?.code).toBe(
+        "chat_failed_run_retry_requires_authorized_context",
+      );
+      expect(
+        mockChatRunRetries.prepareFailedChatRunRetry,
+      ).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("returns the committed intent when immediate retry dispatch rejects", async () => {
+      const fixture = createFailedChatRetryDb();
+      mockChatRunRetries.processFailedChatRunRetry.mockImplementation(
+        async () => {
+          fixture.order.push("dispatch");
+          throw new Error("PRIVATE immediate dispatch failure");
+        },
+      );
+      const res = await requestApp(
+        await createApp(fixture.db, undefined, {
+          chatRunRetries: mockChatRunRetries,
+        }),
+        (url) =>
+          request(url)
+            .post(`/api/agents/${routeAgentId}/wakeup`)
+            .send(retryBody),
+      );
+      expect(res.status, JSON.stringify(res.body)).toBe(202);
+      expect(res.body).toEqual({
+        actionId: retryActionId,
+        issueId: failedChatIssueId,
+        runId: null,
+        status: "queued",
+      });
+      expect(fixture.order).toEqual(["begin", "commit", "dispatch"]);
+      expect(
+        mockChatRunRetries.prepareFailedChatRunRetry,
+      ).toHaveBeenCalledTimes(1);
+      expect(
+        mockChatRunRetries.processFailedChatRunRetry,
+      ).toHaveBeenCalledExactlyOnceWith(retryActionId);
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      expect(res.text).not.toContain("PRIVATE");
+    });
+
+    it("rejects exact selectors on legacy invoke instead of starting a generic run", async () => {
+      const fixture = createFailedChatRetryDb();
+      const res = await requestApp(
+        await createApp(fixture.db, undefined, {
+          chatRunRetries: mockChatRunRetries,
+        }),
+        (url) =>
+          request(url)
+            .post(`/api/agents/${routeAgentId}/heartbeat/invoke`)
+            .send(retryBody),
+      );
+      expect(res.status, JSON.stringify(res.body)).toBe(400);
+      expect(
+        mockChatRunRetries.prepareFailedChatRunRetry,
+      ).not.toHaveBeenCalled();
+      expect(
+        mockChatRunRetries.processFailedChatRunRetry,
+      ).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      expect(fixture.db.transaction).not.toHaveBeenCalled();
+    });
+
+    it("preserves non-chat retry using only the selected run's server task fields", async () => {
+      const fixture = createFailedChatRetryDb(false);
+      mockHeartbeatService.getRun.mockResolvedValue({
+        ...selectedRun,
+        contextSnapshot: { ...selectedRun.contextSnapshot, source: "board" },
+      });
+      const res = await requestApp(
+        await createApp(fixture.db, undefined, {
+          chatRunRetries: mockChatRunRetries,
+        }),
+        (url) =>
+          request(url)
+            .post(`/api/agents/${routeAgentId}/wakeup`)
+            .send({
+              ...retryBody,
+              payload: {
+                issueId: "forged",
+                taskKey: "forged",
+                wakeCommentId: "forged",
+              },
+            }),
+      );
+      expect(res.status, JSON.stringify(res.body)).toBe(202);
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledExactlyOnceWith(
+        routeAgentId,
+        expect.objectContaining({
+          reason: "retry_failed_run",
+          payload: {
+            issueId: failedChatIssueId,
+            taskId: failedChatIssueId,
+            taskKey: "PAP-FAILED-CHAT",
+          },
+        }),
+      );
+      expect(
+        mockChatRunRetries.prepareFailedChatRunRetry,
+      ).not.toHaveBeenCalled();
     });
   });
 

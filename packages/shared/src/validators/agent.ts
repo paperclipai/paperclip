@@ -98,6 +98,12 @@ export const createAgentSchema = z.object({
   // round trip. The server permits the no-claim bind only for a user actor and
   // only when that owner already has a stored value. It carries no token.
   applyStoredClaudeLogin: z.boolean().optional(),
+  // Narrow intent flag set by the onboarding wizard when it hires the very first
+  // agent (the chief of staff). It is not an agent column: the server consumes
+  // it to seed the server-owned chief-of-staff persona over the agent's entry
+  // instruction file instead of the generic default, and honors it only for
+  // board-authored requests. Mirrors onboardingFirstTask on issue create.
+  onboardingFirstAgent: z.boolean().optional(),
 });
 
 export type CreateAgent = z.infer<typeof createAgentSchema>;
@@ -128,7 +134,7 @@ export const createAgentHireSchema = createAgentSchema.extend({
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
 
 export const updateAgentSchema = objectWithoutDefaults(
-  createAgentSchema.omit({ permissions: true }),
+  createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true }),
 )
   .partial()
   .extend({
@@ -205,18 +211,26 @@ export const agentMineInboxQuerySchema = z.object({
 export type AgentMineInboxQuery = z.infer<typeof agentMineInboxQuerySchema>;
 
 export const wakeAgentSchema = z.object({
-  source: z.enum(["timer", "assignment", "on_demand", "automation"]).optional().default("on_demand"),
+  source: z
+    .enum(["timer", "assignment", "on_demand", "automation"])
+    .optional()
+    .default("on_demand"),
   triggerDetail: z.enum(["manual", "ping", "callback", "system"]).optional(),
   reason: z.string().optional().nullable(),
+  /** Select an exact failed run; its chat request and actor are server-derived. */
+  failedRunId: z.string().uuid().optional(),
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
   idempotencyKey: z.string().optional().nullable(),
   forceFreshSession: z.preprocess(
     (value) => (value === null ? undefined : value),
     z.boolean().optional().default(false),
   ),
-  debug: z.object({
-    providerTrace: z.literal("raw"),
-  }).strict().optional(),
+  debug: z
+    .object({
+      providerTrace: z.literal("raw"),
+    })
+    .strict()
+    .optional(),
 });
 
 export type WakeAgent = z.infer<typeof wakeAgentSchema>;
@@ -228,6 +242,22 @@ export const resetAgentSessionSchema = z.object({
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
 export const testAdapterEnvironmentSchema = z.object({
+  /** One-shot provider keys for a probe. Never persist these in agent config. */
+  testCredentials: z.object({
+    ANTHROPIC_API_KEY: z.string().max(16384),
+    OPENAI_API_KEY: z.string().max(16384),
+    OPENROUTER_API_KEY: z.string().max(16384),
+    GEMINI_API_KEY: z.string().max(16384),
+    XAI_API_KEY: z.string().max(16384),
+    GROQ_API_KEY: z.string().max(16384),
+    OPENCODE_API_KEY: z.string().max(16384),
+    CURSOR_API_KEY: z.string().max(16384),
+    KIMI_MODEL_API_KEY: z.string().max(16384),
+    API_SERVER_KEY: z.string().max(16384),
+    ZAI_API_KEY: z.string().max(16384),
+    KIMI_API_KEY: z.string().max(16384),
+    MINIMAX_API_KEY: z.string().max(16384),
+  }).partial().strict().optional(),
   adapterConfig: adapterConfigSchema.optional().default({}),
   /**
    * Optional environment to run the adapter test inside. When omitted, the

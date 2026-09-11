@@ -149,7 +149,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     return { companyId, ownerUserId, agentId };
   }
 
-  it("uses the issue responsible user for comment, mention, and dependency wakes", async () => {
+  it("uses the issue responsible user for automated dependency wakes without a message context", async () => {
     const { companyId, agentId } = await seedCompany();
     const issueResponsibleUserId = `issue-owner-${randomUUID()}`;
     const commenterUserId = `commenter-${randomUUID()}`;
@@ -163,21 +163,89 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       responsibleUserId: issueResponsibleUserId,
     });
 
-    for (const wakeReason of ["issue_commented", "issue_comment_mentioned", "issue_blockers_resolved"]) {
+    const sourceRunIds: string[] = [];
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const wakeReason = "issue_blockers_resolved";
       const run = await heartbeat.wakeup(agentId, {
         source: "automation",
         triggerDetail: "system",
         reason: wakeReason,
-        payload: { issueId, commentId: randomUUID() },
+        payload: { issueId },
         requestedByActorType: "user",
         requestedByActorId: commenterUserId,
         contextSnapshot: { issueId, taskId: issueId, wakeReason },
       });
       expect(run).not.toBeNull();
+      sourceRunIds.push(run!.id);
       const completed = await waitForRun(db, run!.id);
       expect(completed?.responsibleUserId).toBe(issueResponsibleUserId);
+      expect(completed?.status).toBe("succeeded");
+      // A terminal row can precede the execution's final queue/lease cleanup.
+      // This test starts independent wakes, not a burst that may be deferred.
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
     }
+    // The deliberately disposition-free adapter response schedules one bounded
+    // handoff per source run. Those automatic continuations retain its identity.
+    const runs = await db.select().from(heartbeatRuns);
+    const handoffs = runs.filter((run) => !sourceRunIds.includes(run.id));
+    expect(handoffs).toHaveLength(3);
+    expect(
+      handoffs.map((run) => run.contextSnapshot?.parentRunId).sort(),
+    ).toEqual(sourceRunIds.sort());
+    for (const handoff of handoffs) {
+      expect(handoff.contextSnapshot?.wakeReason).toBe(
+        "finish_successful_run_handoff",
+      );
+      expect(handoff.responsibleUserId).toBe(issueResponsibleUserId);
+      expect(handoff.status).toBe("succeeded");
+    }
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(runs.length);
   });
+
+  it.each(["issue_commented", "issue_comment_mentioned"])(
+    "uses the persisted message author for %s without changing issue ownership",
+    async (wakeReason) => {
+      const { companyId, agentId } = await seedCompany();
+      const issueResponsibleUserId = `issue-owner-${randomUUID()}`;
+      const commenterUserId = `commenter-${randomUUID()}`;
+      const issueId = randomUUID();
+      const commentId = randomUUID();
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Message-authored work",
+        status: "todo",
+        assigneeAgentId: agentId,
+        responsibleUserId: issueResponsibleUserId,
+      });
+      await db.insert(issueComments).values({
+        id: commentId,
+        companyId,
+        issueId,
+        authorUserId: commenterUserId,
+        body: `Current request for ${wakeReason}`,
+      });
+
+      const run = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: wakeReason,
+        payload: { issueId, commentId },
+        // Request metadata is not authority to replace the stored author.
+        requestedByActorType: "user",
+        requestedByActorId: `different-requester-${randomUUID()}`,
+        contextSnapshot: { issueId, taskId: issueId, wakeReason },
+      });
+
+      expect(run).not.toBeNull();
+      const completed = await waitForRun(db, run!.id);
+      expect(completed?.status).toBe("succeeded");
+      expect(completed?.responsibleUserId).toBe(commenterUserId);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(issue?.responsibleUserId).toBe(issueResponsibleUserId);
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("uses the triggering user for manual UI/API runs", async () => {
     const { agentId } = await seedCompany();
@@ -226,11 +294,11 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
-      reason: "issue_commented",
-      payload: { issueId, commentId: randomUUID() },
+      reason: "issue_blockers_resolved",
+      payload: { issueId },
       requestedByActorType: "user",
       requestedByActorId: `commenter-${randomUUID()}`,
-      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_commented" },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_blockers_resolved" },
     });
     expect(run).not.toBeNull();
     const completed = await waitForRun(db, run!.id);

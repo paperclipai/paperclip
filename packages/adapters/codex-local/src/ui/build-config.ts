@@ -1,6 +1,7 @@
 import {
   buildAdapterEnvConfig,
   isPaperclipRunnerProvider,
+  normalizeLegacyRunnerProvider,
   resolvePaperclipRunnerModel,
   resolvePaperclipRunnerIdleTimeoutMs,
   resolvePaperclipRunnerPermissionMode,
@@ -71,7 +72,7 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
 /** Build a provider profile accepted by the experimental Rust runner. */
 export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string, unknown> {
   const config = buildCodexLocalConfig(v);
-  const schemaValues = { ...(v.adapterSchemaValues ?? {}) };
+  const schemaValues = normalizeLegacyRunnerProvider({ ...(v.adapterSchemaValues ?? {}) });
   for (const unsupportedKey of [
     "engine",
     "agentCommand",
@@ -81,7 +82,6 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     "warmHandleIdleMs",
     "dangerouslyBypassApprovalsAndSandbox",
     "dangerouslyBypassSandbox",
-    "instructionsFilePath",
     "modelReasoningEffort",
     "search",
     "fastMode",
@@ -95,7 +95,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   const provider = isPaperclipRunnerProvider(providerCandidate)
     ? providerCandidate
     : "codex";
-  const acpxAgent = schemaValues.acpxAgent === "codex" ? "codex" : "claude";
+
   const schemaModel = typeof schemaValues.model === "string"
     ? schemaValues.model.trim()
     : "";
@@ -233,8 +233,8 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
       : {}),
     ...(provider === "acpx"
       ? {
-          acpxAgent,
-          model: acpxAgent === "claude" ? "claude-sonnet-5" : "gpt-5.6-sol",
+          acpxAgent: "claude",
+          model: configuredModel || schemaModel || resolvePaperclipRunnerModel("acpx", undefined),
         }
       : {}),
     ...(provider === "claude_managed"

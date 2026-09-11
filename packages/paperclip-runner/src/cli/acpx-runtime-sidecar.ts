@@ -23,6 +23,7 @@ import {
   type NormalizedAcpForm,
 } from "../drivers/acpx/acp-question-adapter.js";
 import { openCodexAcpxRuntime } from "../drivers/acpx/codex-runtime-adapter.js";
+import { acpxGoalProjection } from "../drivers/acpx/session-goals.js";
 import { acpxProviderSessionIdentity } from "../drivers/acpx/recovery-identity.js";
 import {
   resolveQualifiedAcpxProfile,
@@ -79,6 +80,10 @@ import {
 
 const MAX_PENDING_TOOLS = 512;
 const MAX_PENDING_INPUTS = 16;
+let goalSourceRevision = 0;
+function observedGoalProjection(...args: Parameters<typeof acpxGoalProjection>) {
+  return { ...acpxGoalProjection(...args), providerRevision: ++goalSourceRevision };
+}
 
 function reportRetainedAcpxCleanupFailure(
   input: AcpxRetainedCleanupFailure,
@@ -262,6 +267,11 @@ async function dispatch(
           tools: params.tools,
           handler: waitForTool,
         },
+        onGoalUpdate: (goal) => {
+          // Admission can emit a snapshot before the verified host is assigned.
+          // session.goal.get publishes that snapshot after session.open instead.
+          if (host) emit("runtime.goal", observedGoalProjection(host.goalCapability(), goal, turnId !== null));
+        },
       },
       {
         retainAdmissionCleanup: retainFailedAdmissionCleanup,
@@ -432,6 +442,33 @@ async function dispatch(
       pendingToolCount: tools.size,
       pendingInputCount: inputs.size,
     };
+  }
+  if (request.command === "session.goal.get") {
+    const activeHost = requireHost();
+    return observedGoalProjection(activeHost.goalCapability(), activeHost.goalSnapshot(), turnId !== null);
+  }
+  if (request.command === "session.goal.set") {
+    const activeHost = requireHost();
+    if (Object.prototype.hasOwnProperty.call(request.params, "tokenBudget")) {
+      throw new Error("The negotiated ACP goal extension does not support token budget control");
+    }
+    const objective = text(request.params.objective).trim();
+    const status = text(request.params.status).trim();
+    const action = objective
+      ? "set"
+      : status === "paused"
+        ? "pause"
+        : status === "active"
+          ? "resume"
+          : null;
+    if (!action) throw new Error("session.goal.set requires an objective or active/paused status");
+    const goal = await activeHost.controlGoal(action, objective || undefined);
+    return observedGoalProjection(activeHost.goalCapability(), goal, turnId !== null);
+  }
+  if (request.command === "session.goal.clear") {
+    const activeHost = requireHost();
+    await activeHost.controlGoal("clear");
+    return observedGoalProjection(activeHost.goalCapability(), null, turnId !== null);
   }
   if (request.command === "session.suspend") {
     if (turnId || tools.size > 0 || inputs.size > 0) {

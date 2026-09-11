@@ -139,9 +139,32 @@ const artifactsSchema = {
   },
 } as const;
 
+const responseWakeContinuationSchema = {
+  type: "object",
+  description:
+    "Required when reportedWorkDisposition is yielded. Wait for the next response without scheduling work; include kind, summary, and a stable idempotencyKey.",
+  additionalProperties: false,
+  required: ["kind", "summary", "idempotencyKey"],
+  properties: {
+    kind: { type: "string", const: "response_wake" },
+    summary: {
+      type: "string",
+      minLength: 1,
+      description:
+        "Internal control-plane reason to wait for the next response. Keep routine waiting and continuation bookkeeping here, not in the top-level user-facing summary. This field is not the answer to the user's request.",
+    },
+    idempotencyKey: { type: "string", minLength: 1 },
+  },
+} as const;
+
 const commonResultProperties = {
   schema: { type: "string", const: "paperclip.run_result.v1" },
-  summary: { type: "string", minLength: 1 },
+  summary: {
+    type: "string",
+    minLength: 1,
+    description:
+      "The complete user-facing answer for this turn. Do not replace the requested answer with routine work/control bookkeeping. Include the requested result and any genuine actionable failure, limitation, or required user action. Unless explicitly requested, omit routine preparation, unconfirmed-delivery, and wait/review status; put the response-wake reason in continuation.summary. Never claim delivery without a confirmed receipt.",
+  },
   completionClaim: completionClaimSchema,
   evidence: evidenceSchema,
   verification: verificationSchema,
@@ -163,7 +186,8 @@ export const PRP_COMPLETION_RESULT_OUTPUT_SCHEMA = {
   ],
   properties: {
     ...commonResultProperties,
-    reportedWorkDisposition: { enum: ["done", "needs_review"] },
+    reportedWorkDisposition: { enum: ["done", "needs_review", "yielded"] },
+    continuation: responseWakeContinuationSchema,
   },
   allOf: [
     {
@@ -173,6 +197,11 @@ export const PRP_COMPLETION_RESULT_OUTPUT_SCHEMA = {
     {
       if: { properties: { reportedWorkDisposition: { const: "needs_review" } }, required: ["reportedWorkDisposition"] },
       then: { properties: { attentionRequests: { minItems: 1 } } },
+    },
+    {
+      if: { properties: { reportedWorkDisposition: { const: "yielded" } }, required: ["reportedWorkDisposition"] },
+      then: { required: ["continuation"] },
+      else: { not: { required: ["continuation"] } },
     },
   ],
 } as const;
@@ -323,10 +352,18 @@ export const PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA = {
   ],
   properties: {
     ...providerCommonResultProperties,
-    reportedWorkDisposition: { enum: ["done", "needs_review", "completed"] },
+    reportedWorkDisposition: { enum: ["done", "needs_review", "yielded", "completed"] },
     verification: providerVerificationCompatibilitySchema,
     attentionRequests: providerAttentionCompatibilitySchema,
+    continuation: responseWakeContinuationSchema,
   },
+  // Keep the provider-facing root a concrete object. Codex code-mode renders a
+  // root allOf containing only an if/then constraint as `args: unknown`, hiding
+  // every required field from the model. This equivalent direct conditional
+  // preserves validation without obscuring the object-shaped tool signature.
+  if: { properties: { reportedWorkDisposition: { const: "yielded" } }, required: ["reportedWorkDisposition"] },
+  then: { required: ["continuation"] },
+  else: { not: { required: ["continuation"] } },
 } as const;
 
 export const PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA = {

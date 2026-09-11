@@ -172,7 +172,10 @@ export interface CredentialPromotion {
    * the service records a failed login instead of `authenticated` and never
    * runs `commit`. A promotion that omits this runs `commit` directly.
    */
-  runTerminalCommit?<T>(commit: () => Promise<T>, context: CredentialPromotionContext): Promise<T>;
+  runTerminalCommit?<T>(
+    commit: (resultClaim?: Record<string, unknown>) => Promise<T>,
+    context: CredentialPromotionContext,
+  ): Promise<T>;
 }
 
 /** The redacted lifecycle phases. Each phase carries no secret data. */
@@ -277,6 +280,9 @@ export interface AdapterAuthSessionRow {
   promotionExpiresAt: Date | null;
   finishedAt: Date | null;
   failureReason: string | null;
+  /** The non-secret result claim of a terminal success, written atomically
+   *  with the terminal status. Null for failures and claim-less flows. */
+  resultClaim: Record<string, unknown> | null;
 }
 
 export interface InsertAdapterAuthSessionInput {
@@ -303,6 +309,13 @@ export interface SetAdapterAuthSessionStatusInput {
    * unchanged. A `Date` sets a live claim; `null` clears the claim.
    */
   promotionExpiresAt?: Date | null;
+  /**
+   * The non-secret result claim to record with a terminal-success write.
+   * `undefined` leaves the column unchanged. Writing it in the SAME
+   * conditional write as the terminal status means a claim can never exist
+   * for a session that did not authenticate, and a restart never loses it.
+   */
+  resultClaim?: Record<string, unknown> | null;
 }
 
 /**
@@ -487,6 +500,7 @@ function toRow(row: typeof adapterAuthSessions.$inferSelect): AdapterAuthSession
     promotionExpiresAt: row.promotionExpiresAt ?? null,
     finishedAt: row.finishedAt ?? null,
     failureReason: row.failureReason ?? null,
+    resultClaim: (row.resultClaim as Record<string, unknown> | null) ?? null,
   };
 }
 
@@ -501,6 +515,7 @@ function buildStatusPatch(input: SetAdapterAuthSessionStatusInput) {
     ...(input.promotionExpiresAt !== undefined
       ? { promotionExpiresAt: input.promotionExpiresAt }
       : {}),
+    ...(input.resultClaim !== undefined ? { resultClaim: input.resultClaim } : {}),
   };
 }
 
@@ -1017,6 +1032,7 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
         failureReason?: string | null;
         finishedAt?: Date | null;
         promotionExpiresAt?: Date | null;
+        resultClaim?: Record<string, unknown> | null;
       },
     ): Promise<boolean> {
       const run = statusTail.then(
@@ -1121,7 +1137,7 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
       // Publish `authenticated` only when the final conditional write still finds
       // the held claim. A lost write means the claim expired and the reaper
       // reclaimed the row, so the service never publishes `authenticated`.
-      const commitAuthenticated = () =>
+      const commitAuthenticated = (resultClaim?: Record<string, unknown>) =>
         terminate({
           sessionId,
           lease,
@@ -1130,6 +1146,7 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
           expectedStatuses: ["promoting"],
           conditionalTransition,
           activity,
+          resultClaim: resultClaim ?? null,
         });
       const promotionContext: CredentialPromotionContext = {
         sessionId,
@@ -1218,9 +1235,12 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
         failureReason?: string | null;
         finishedAt?: Date | null;
         promotionExpiresAt?: Date | null;
+        resultClaim?: Record<string, unknown> | null;
       },
     ) => Promise<boolean>;
     activity: (phase: LoginSessionActivityPhase) => void;
+    /** The non-secret claim to record atomically with a terminal success. */
+    resultClaim?: Record<string, unknown> | null;
   }): Promise<DeviceLoginOutcome> {
     const { sessionId, lease, terminal, reason, expectedStatuses, conditionalTransition, activity } =
       ctx;
@@ -1249,6 +1269,7 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
       finishedAt,
       failureReason: write.failureReason,
       promotionExpiresAt: null,
+      ...(ctx.resultClaim !== undefined ? { resultClaim: ctx.resultClaim } : {}),
     });
     if (!committed) {
       // The reaper already terminated the row. Leave its terminal in place. The

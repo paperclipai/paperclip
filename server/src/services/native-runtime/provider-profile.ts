@@ -404,7 +404,7 @@ export function resolvePaperclipRunnerProviderProfile(
     };
   }
 
-  const acpxAgent = config.acpxAgent;
+  const acpxAgent = config.acpxAgent ?? "claude";
   if (acpxAgent !== "claude" && acpxAgent !== "codex" && acpxAgent !== "pi") {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_agent_unavailable",
@@ -412,7 +412,7 @@ export function resolvePaperclipRunnerProviderProfile(
     );
   }
   const qualifiedModel = QUALIFIED_ACPX_RUNNER_MODELS[acpxAgent];
-  if (model !== qualifiedModel) {
+  if (acpxAgent === "codex" && model !== qualifiedModel) {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_model_unqualified",
       `Paperclip Runner ACPX ${acpxAgent} requires exact model ${qualifiedModel}.`,
@@ -421,7 +421,7 @@ export function resolvePaperclipRunnerProviderProfile(
   return {
     provider: "acpx",
     backend: "acpx_runtime",
-    model,
+    model: model || qualifiedModel,
     acpxAgent,
   };
 }

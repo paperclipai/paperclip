@@ -5,6 +5,8 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Browse } from "./Browse";
+import { getAppStoreDefinition } from "@paperclipai/shared";
+import { queryKeys } from "@/lib/queryKeys";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listApplicationsMock = vi.hoisted(() => vi.fn());
@@ -14,14 +16,20 @@ const archiveConnectionMock = vi.hoisted(() => vi.fn());
 const pushToastMock = vi.hoisted(() => vi.fn());
 const navigateMock = vi.hoisted(() => vi.fn());
 const setBreadcrumbsMock = vi.hoisted(() => vi.fn());
+const experimentalMock = vi.hoisted(() => vi.fn());
+const chatListMock = vi.hoisted(() => vi.fn());
+vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: { getExperimental: experimentalMock } }));
+vi.mock("@/api/chatEndpoints", () => ({ chatEndpointsApi: { list: chatListMock } }));
 
 vi.mock("@/api/tools", () => ({
   toolsApi: {
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listApplications: (companyId: string) => listApplicationsMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
-    archiveConnection: (connectionId: string, options?: { confirmComposioChildren?: boolean }) =>
-      archiveConnectionMock(connectionId, options),
+    archiveConnection: (
+      connectionId: string,
+      options?: { confirmComposioChildren?: boolean },
+    ) => archiveConnectionMock(connectionId, options),
   },
 }));
 
@@ -126,10 +134,20 @@ describe("Connectors landing page", () => {
   let root: ReturnType<typeof createRoot>;
 
   beforeEach(() => {
+    experimentalMock.mockResolvedValue({ enableChatConnectors: true });
+    chatListMock.mockResolvedValue([]);
     listGalleryMock.mockResolvedValue({
       apps: [
-        galleryEntry({ key: "notion", name: "Notion", tagline: "Read and update workspace content." }),
-        galleryEntry({ key: "jira", name: "Jira", tagline: "Track projects and issues." }),
+        galleryEntry({
+          key: "notion",
+          name: "Notion",
+          tagline: "Read and update workspace content.",
+        }),
+        galleryEntry({
+          key: "jira",
+          name: "Jira",
+          tagline: "Track projects and issues.",
+        }),
         galleryEntry({
           key: "gmail",
           name: "Gmail",
@@ -169,21 +187,63 @@ describe("Connectors landing page", () => {
       );
     });
     await flushReact();
+    return client;
   }
+
+  it("defaults to tools-only GitHub and hides chat-only catalog and existing chat accounts", async () => {
+    experimentalMock.mockResolvedValue({});
+    listGalleryMock.mockResolvedValue({ apps: ["github", "discord", "telegram", "microsoft-teams"].map(getAppStoreDefinition) });
+    listApplicationsMock.mockResolvedValue({ applications: [application({
+      id: "chat-app", type: "chat", name: "Private bot", applicationKey: "chat:github:endpoint-1", metadata: { purpose: "channel" },
+    })] });
+    await renderBrowse();
+    expect(chatListMock).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-app-slug="github"]')).not.toBeNull();
+    for (const slug of ["discord", "telegram", "microsoft-teams", "slack"]) {
+      expect(container.querySelector(`[data-app-slug="${slug}"]`)).toBeNull();
+    }
+    expect(container.textContent).not.toContain("Private bot");
+    expect(container.textContent).not.toContain("Chat with agents");
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub"]')!.click());
+    expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github");
+  });
+
+  it("restores the GitHub intent chooser when enabled and hides cached chat rows immediately when disabled", async () => {
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("github")] });
+    chatListMock.mockResolvedValue([{ id: "endpoint-1", provider: "github", status: "active", assignedAgentName: "Chat agent", botLabel: "Chat bot", assignedAgentId: "agent-1" }]);
+    const client = await renderBrowse();
+    expect(chatListMock).toHaveBeenCalledWith("company-1");
+    expect(container.querySelector('[data-app-slug="telegram"]')).not.toBeNull();
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Add connection GitHub"]')!.click());
+    expect(navigateMock).toHaveBeenLastCalledWith("/apps/chat/connect?provider=github&toolHref=%2Fapps%2Fconnect%3Fsource%3Dgithub");
+    await act(() => { client.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: false }); });
+    await flushReact();
+    expect(container.querySelector('[data-app-slug="telegram"]')).toBeNull();
+    expect(container.textContent).not.toContain("Chat agent");
+    expect(container.querySelector('a[href*="/apps/chat/"]')).toBeNull();
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Connect GitHub"]')!.click());
+    expect(navigateMock).toHaveBeenLastCalledWith("/apps/connect?source=github");
+  });
 
   it("renders one connector list with the requested header and no gallery sections", async () => {
     await renderBrowse();
 
     expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Connectors" }]);
-    expect(setBreadcrumbsMock).not.toHaveBeenCalledWith(expect.arrayContaining([
-      expect.objectContaining({ href: "/dashboard" }),
-    ]));
-    expect(container.querySelector("header")?.textContent).not.toContain("Connectors");
+    expect(setBreadcrumbsMock).not.toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({ href: "/dashboard" })]),
+    );
+    expect(container.querySelector("header")?.textContent).not.toContain(
+      "Connectors",
+    );
     expect(
       container.querySelector('header input[aria-label="Search connectors"]'),
     ).toBeTruthy();
-    expect(container.querySelector("header")?.classList).toContain("justify-start");
-    expect(container.querySelector("header")?.classList).not.toContain("justify-end");
+    expect(container.querySelector("header")?.classList).toContain(
+      "justify-start",
+    );
+    expect(container.querySelector("header")?.classList).not.toContain(
+      "justify-end",
+    );
     expect(container.querySelector('[aria-label="Popular apps"]')).toBeNull();
     expect(container.querySelector('[aria-label="Connected apps"]')).toBeNull();
     expect(container.querySelector('[aria-label="All apps"]')).toBeNull();
@@ -193,10 +253,24 @@ describe("Connectors landing page", () => {
           '[aria-label="Connector list"] > [data-app-slug]',
         ),
       ).map((row) => row.dataset.appSlug),
-    ).toEqual(["gmail", "jira", "notion", "custom-mcp"]);
-    expect(container.querySelector('button[aria-label="Connect Jira"]')).toBeTruthy();
+    ).toEqual([
+      "discord",
+      "github",
+      "gmail",
+      "jira",
+      "microsoft-teams",
+      "notion",
+      "slack",
+      "telegram",
+      "custom-mcp",
+    ]);
     expect(
-      container.querySelector<HTMLButtonElement>('button[aria-label="Unavailable Gmail"]')?.disabled,
+      container.querySelector('button[aria-label="Connect Jira"]'),
+    ).toBeTruthy();
+    expect(
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Unavailable Gmail"]',
+      )?.disabled,
     ).toBe(true);
     expect(container.textContent).toContain("Connect your own tool");
 
@@ -213,7 +287,9 @@ describe("Connectors landing page", () => {
 
     await act(async () => {
       Array.from(container.querySelectorAll("button"))
-        .find((button) => button.textContent?.includes("Connect your own MCP server"))
+        .find((button) =>
+          button.textContent?.includes("Connect your own MCP server"),
+        )
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(navigateMock).toHaveBeenCalledWith("/apps/byo");
@@ -268,12 +344,18 @@ describe("Connectors landing page", () => {
     expect(notion.textContent).toContain("Connected by");
     expect(notion.textContent).toContain("Dotta");
     expect(notion.textContent).toContain("The saved sign-in expired.");
-    expect(notion.querySelector('button[aria-label="Add account Notion"]')).toBeTruthy();
     expect(
-      notion.querySelector('button[aria-label="Manage devinfoley@gmail.com connection"]'),
+      notion.querySelector('button[aria-label="Add account Notion"]'),
     ).toBeTruthy();
     expect(
-      notion.querySelector('button[aria-label="Manage ops@example.com connection"]'),
+      notion.querySelector(
+        'button[aria-label="Manage devinfoley@gmail.com connection"]',
+      ),
+    ).toBeTruthy();
+    expect(
+      notion.querySelector(
+        'button[aria-label="Manage ops@example.com connection"]',
+      ),
     ).toBeTruthy();
 
     await act(async () => {
@@ -287,7 +369,9 @@ describe("Connectors landing page", () => {
 
     await act(async () => {
       notion
-        .querySelector<HTMLButtonElement>('button[aria-label="Add account Notion"]')
+        .querySelector<HTMLButtonElement>(
+          'button[aria-label="Add account Notion"]',
+        )
         ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     expect(navigateMock).toHaveBeenCalledWith(
@@ -315,12 +399,15 @@ describe("Connectors landing page", () => {
     expect(menuTrigger).toBeTruthy();
 
     await act(async () => {
-      menuTrigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      menuTrigger?.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true }),
+      );
     });
     await flushReact();
 
-    const removeItem = Array.from(document.body.querySelectorAll<HTMLElement>("[role=\"menuitem\"]"))
-      .find((item) => item.textContent?.trim() === "Remove connection");
+    const removeItem = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="menuitem"]'),
+    ).find((item) => item.textContent?.trim() === "Remove connection");
     expect(removeItem).toBeTruthy();
     expect(removeItem?.getAttribute("data-variant")).toBe("destructive");
 
@@ -334,9 +421,9 @@ describe("Connectors landing page", () => {
       "Remove devinfoley@gmail.com connection?",
     );
 
-    const confirmButton = Array.from(document.body.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Remove connection",
-    );
+    const confirmButton = Array.from(
+      document.body.querySelectorAll("button"),
+    ).find((button) => button.textContent?.trim() === "Remove connection");
     expect(confirmButton).toBeTruthy();
 
     await act(async () => {
@@ -438,8 +525,10 @@ describe("Connectors landing page", () => {
     );
     expect(container.textContent).toContain("Internal search");
     expect(container.textContent).toContain("search.internal.example");
-    expect(Array.from(container.querySelectorAll("button")).some(
-      (button) => button.textContent === "Try again",
-    )).toBe(true);
+    expect(
+      Array.from(container.querySelectorAll("button")).some(
+        (button) => button.textContent === "Try again",
+      ),
+    ).toBe(true);
   });
 });
