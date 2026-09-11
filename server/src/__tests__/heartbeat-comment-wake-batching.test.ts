@@ -1383,6 +1383,20 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(issueAfterPromotion?.completedAt).not.toBeNull();
 
       expect(gateway.getAgentPayloads()).toHaveLength(1);
+      await waitFor(async () => {
+        const deferred = await db
+          .select({ status: agentWakeupRequests.status })
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.agentId, mentionedAgentId),
+            ),
+          )
+          .then((rows) => rows[0] ?? null);
+        return deferred?.status === "cancelled";
+      }, 90_000);
+
       const deferred = await db
         .select()
         .from(agentWakeupRequests)
