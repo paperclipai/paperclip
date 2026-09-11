@@ -34,8 +34,9 @@ beforeEach(async () => {
   api.downloadUrl.mockReturnValue("/download");
   api.operation.mockImplementation(async (_owner, operation) => {
     if (operation.action === "delete") {
-      deleted.push(...active.filter((file) => file.path === operation.path));
-      active = active.filter((file) => file.path !== operation.path);
+      const matches = (file: typeof a) => file.path === operation.path || file.path.startsWith(`${operation.path}/`);
+      deleted.push(...active.filter(matches));
+      active = active.filter((file) => !matches(file));
     } else {
       active.push(...deleted.filter((file) => file.id === operation.fileId));
       deleted = deleted.filter((file) => file.id !== operation.fileId);
@@ -69,6 +70,39 @@ describe("cached file selection and retained trash", () => {
     await act(async () => { resolvePreview({ content: { data: "restored file contents" } }); });
     await settle();
     expect(container.textContent).toContain("restored file contents");
+  });
+  it("moves an empty directory to trash when its checkbox is selected", async () => {
+    active = [{ id: "empty", path: "empty", kind: "directory" }];
+    await act(async () => { await client.invalidateQueries(); });
+    await settle();
+    await click(checkbox("empty"));
+    expect(checkbox("empty").checked).toBe(true);
+    await click(button("Move 1 item to trash")!);
+    expect(active).toEqual([]);
+    expect(deleted.map((file) => file.path)).toEqual(["empty"]);
+  });
+  it("deletes a selected directory once, including all its children", async () => {
+    active = [{ id: "dir", path: "docs", kind: "directory" }, { ...a, path: "docs/a.txt" }];
+    await act(async () => { await client.invalidateQueries(); });
+    await settle();
+    await click(checkbox("docs"));
+    await click(button("Move 1 item to trash")!);
+    expect(active).toEqual([]);
+    expect(api.operation).toHaveBeenCalledTimes(1);
+    expect(api.operation).toHaveBeenCalledWith(owner, { action: "delete", path: "docs" }, expect.any(String));
+  });
+  it("does not recursively delete a parent after a child is unchecked", async () => {
+    active = [{ id: "dir", path: "docs", kind: "directory" }, { ...a, path: "docs/a.txt" }, { ...b, path: "docs/b.txt" }];
+    await act(async () => { await client.invalidateQueries(); });
+    await settle();
+    await click(container.querySelector<HTMLElement>('[data-file-tree-path="docs"]')!);
+    await click(checkbox("docs"));
+    await click(checkbox("docs/a.txt"));
+    expect(checkbox("docs").checked).toBe(false);
+    expect(checkbox("docs").indeterminate).toBe(true);
+    await click(button("Move 1 file to trash")!);
+    expect(active.map((file) => file.path)).toEqual(["docs", "docs/a.txt"]);
+    expect(api.operation).toHaveBeenCalledWith(owner, { action: "delete", path: "docs/b.txt" }, expect.any(String));
   });
   it("only shows trash action for checked files and restores from the Trash tab", async () => {
     expect(button("to trash")).toBeUndefined();

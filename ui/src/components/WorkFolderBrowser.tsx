@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, FolderPlus, RefreshCw, RotateCcw, Trash2, Upload } from "lucide-react";
 import type { WorkFile, WorkFolderOwner } from "@paperclipai/shared";
 import { workFoldersApi } from "@/api/work-folders";
-import { FileTree, type FileTreeNode } from "@/components/FileTree";
+import { FileTree, collectAllPaths, type FileTreeNode } from "@/components/FileTree";
 import { FileContentViewer } from "@/components/FileViewerSheet";
 import { Button } from "@/components/ui/button";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
@@ -48,9 +48,21 @@ export function WorkFolderBrowser({ owner, exampleFiles, readOnly = false, fillH
     enabled: !exampleFiles, refetchInterval: 15_000, retry: false });
   const syncQuery = useQuery({ queryKey: [...key, "sync"], queryFn: () => workFoldersApi.sync(owner), enabled: !exampleFiles, refetchInterval: 5000, retry: false });
   const files = exampleFiles ?? filesQuery.data?.files ?? [];
-  const checkedPaths = files.filter((file) => file.kind === "file" && checkedFiles.has(file.path)).map((file) => file.path);
   const selected = files.find((file) => file.path === selectedPath);
   const nodes = useMemo(() => tree(files), [files]);
+  const availablePaths = collectAllPaths(nodes);
+  const checkedPaths = [...checkedFiles].filter((path) => availablePaths.has(path));
+  const checkedPathSet = new Set(checkedPaths);
+  const deletePaths = checkedPaths.filter((path) => {
+    let parent = path;
+    while (parent.includes("/")) {
+      parent = parent.slice(0, parent.lastIndexOf("/"));
+      if (checkedPathSet.has(parent)) return false;
+    }
+    return true;
+  });
+  const filePaths = new Set(files.filter((file) => file.kind === "file").map((file) => file.path));
+  const selectionLabel = deletePaths.every((path) => filePaths.has(path)) ? "file" : "item";
   const preview = useQuery({ queryKey: [...key, "preview", selected?.path, selected?.sha256],
     queryFn: () => workFoldersApi.preview(owner, selected!), enabled: !exampleFiles && !trash && selected?.kind === "file", retry: false });
   const mutation = useMutation({ mutationFn: async (action: { type: "upload"; files: File[] } | { type: "mkdir" } | { type: "deleteSelected"; paths: string[] } | { type: "restore" | "purge"; fileId: string } | { type: "refresh" }) => {
@@ -60,8 +72,8 @@ export function WorkFolderBrowser({ owner, exampleFiles, readOnly = false, fillH
     else if (action.type === "deleteSelected") {
       for (const path of action.paths) {
         await workFoldersApi.operation(owner, { action: "delete", path }, crypto.randomUUID());
-        setCheckedFiles((before) => { const next = new Set(before); next.delete(path); return next; });
-        setSelectedPath((before) => before === path ? null : before);
+        setCheckedFiles((before) => new Set([...before].filter((candidate) => candidate !== path && !candidate.startsWith(`${path}/`))));
+        setSelectedPath((before) => before === path || before?.startsWith(`${path}/`) ? null : before);
       }
     }
     else if (action.type === "restore" || action.type === "purge") await workFoldersApi.operation(owner, { action: action.type, fileId: action.fileId }, crypto.randomUUID());
@@ -96,7 +108,7 @@ export function WorkFolderBrowser({ owner, exampleFiles, readOnly = false, fillH
         <TabsTrigger value="files">Files</TabsTrigger>
         <TabsTrigger value="trash">Trash</TabsTrigger>
       </TabsList>
-      {!trash && canManageTrash && checkedPaths.length > 0 && <Button variant="outline" size="sm" disabled={disabled} onClick={() => mutation.mutate({ type: "deleteSelected", paths: checkedPaths })}><Trash2 aria-hidden />Move {checkedPaths.length} {checkedPaths.length === 1 ? "file" : "files"} to trash</Button>}
+      {!trash && canManageTrash && deletePaths.length > 0 && <Button variant="outline" size="sm" disabled={disabled} onClick={() => mutation.mutate({ type: "deleteSelected", paths: deletePaths })}><Trash2 aria-hidden />Move {deletePaths.length} {selectionLabel}{deletePaths.length === 1 ? "" : "s"} to trash</Button>}
       {!readOnly && <Button variant="outline" size="sm" disabled={disabled || !statuses.some((status) => status.active)} onClick={() => mutation.mutate({ type: "refresh" })}><RefreshCw aria-hidden />Refresh sandbox</Button>}
       <span className="text-xs text-muted-foreground" role="status">{saveLabel}</span>
       {lastSaved && <span className="text-xs text-muted-foreground">Last agent save {new Date(lastSaved).toLocaleTimeString()}</span>}
@@ -127,13 +139,16 @@ export function WorkFolderBrowser({ owner, exampleFiles, readOnly = false, fillH
     </div>)}</TabsContent> : <TabsContent value="files" className={cn("grid min-h-0 gap-3 md:grid-cols-3", fillHeight && "flex-1 grid-rows-2 md:grid-rows-1")}>
       <div className={cn("min-h-0 overflow-auto rounded-md border", !fillHeight && "max-h-96")}><FileTree nodes={nodes} selectedFile={selectedPath} expandedDirs={expanded}
         onToggleDir={(filePath) => { setSelectedPath(filePath); setExpanded((before) => { const next = new Set(before); if (next.has(filePath)) next.delete(filePath); else next.add(filePath); return next; }); }}
-        showCheckboxes={canManageTrash && !exampleFiles} checkedFiles={new Set(checkedPaths)}
+        showCheckboxes={canManageTrash && !exampleFiles} checkedFiles={new Set(checkedPaths)} includeDirectoriesInSelection
         onToggleCheck={(path, kind) => {
           if (disabled) return;
-          const paths = kind === "file" ? [path] : files.filter((file) => file.kind === "file" && file.path.startsWith(`${path}/`)).map((file) => file.path);
+          const paths = kind === "file" ? [path] : [...availablePaths].filter((candidate) => candidate === path || candidate.startsWith(`${path}/`));
           setCheckedFiles((before) => {
             const next = new Set(before);
             const remove = paths.every((candidate) => before.has(candidate));
+            // A partial child selection must never leave its parent selected
+            // for a recursive delete.
+            for (const ancestor of before) if (path.startsWith(`${ancestor}/`)) next.delete(ancestor);
             for (const candidate of paths) { if (remove) next.delete(candidate); else next.add(candidate); }
             return next;
           });
