@@ -115,7 +115,7 @@ export interface BuiltInAgentBundleDefinition {
     description: string;
     status: "active" | "paused";
     priority: "critical" | "high" | "medium" | "low";
-    concurrencyPolicy: "always_enqueue" | "coalesce_if_active" | "skip_if_active";
+    concurrencyPolicy: "always_enqueue" | "coalesce_if_active" | "skip_if_active" | "cancel_previous";
     catchUpPolicy: "enqueue_missed_with_cap" | "skip_missed";
     variables: RoutineVariable[];
     triggers: Array<{
@@ -1363,7 +1363,7 @@ export function builtInAgentService(db: Db) {
       title: routine.title,
       description: routine.description ?? "",
       priority: routine.priority as "critical" | "high" | "medium" | "low",
-      concurrencyPolicy: routine.concurrencyPolicy as "always_enqueue" | "coalesce_if_active" | "skip_if_active",
+      concurrencyPolicy: routine.concurrencyPolicy as "always_enqueue" | "coalesce_if_active" | "skip_if_active" | "cancel_previous",
       catchUpPolicy: routine.catchUpPolicy as "enqueue_missed_with_cap" | "skip_missed",
       variables: routine.variables ?? [],
     }, triggers) : null;
@@ -1438,7 +1438,7 @@ export function builtInAgentService(db: Db) {
       title: routine.title,
       description: routine.description ?? "",
       priority: routine.priority as "critical" | "high" | "medium" | "low",
-      concurrencyPolicy: routine.concurrencyPolicy as "always_enqueue" | "coalesce_if_active" | "skip_if_active",
+      concurrencyPolicy: routine.concurrencyPolicy as "always_enqueue" | "coalesce_if_active" | "skip_if_active" | "cancel_previous",
       catchUpPolicy: routine.catchUpPolicy as "enqueue_missed_with_cap" | "skip_missed",
       variables: routine.variables ?? [],
     }, triggers) : null;
