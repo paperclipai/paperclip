@@ -12,7 +12,7 @@ import {
   updateExecutionProfileSchema,
   upsertRouteRuleSchema,
 } from "@paperclipai/shared";
-import { forbidden, notFound } from "../errors.js";
+import { HttpError, forbidden, notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { issueService } from "../services/issues.js";
 import { routingService, type RoutingActor, type RoutingWakeup } from "../services/routing/service.js";
@@ -143,10 +143,19 @@ export function routingRoutes(db: Db, opts: { enqueueWakeup?: RoutingWakeup | nu
     const actor = routingActor(req);
     const decision = await svc.escalate(issue.id, req.body.reason, req.body.note, actor);
     if (decision.state !== "routed") {
-      res.status(201).json({ decision, dispatch: null });
+      res.status(201).json({ decision, dispatch: null, dispatchError: null });
       return;
     }
-    res.status(201).json({ decision, dispatch: await svc.dispatch(issue.id, actor) });
+    // The rescue revision is already durable; a dispatch conflict (live run,
+    // exhausted pool slot, model drift) is reported next to it rather than
+    // hiding the recorded revision behind a bare 409.
+    try {
+      res.status(201).json({ decision, dispatch: await svc.dispatch(issue.id, actor), dispatchError: null });
+    } catch (error) {
+      if (!(error instanceof HttpError && error.status === 409)) throw error;
+      const details = error.details && typeof error.details === "object" ? error.details : {};
+      res.status(201).json({ decision, dispatch: null, dispatchError: { message: error.message, ...details } });
+    }
   });
 
   router.post("/issues/:issueId/routing/override", validate(overrideRouteSchema), async (req, res) => {

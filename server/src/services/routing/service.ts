@@ -70,6 +70,9 @@ export const ROUTING_SYSTEM_ACTOR: RoutingActor = {
   responsibleUserId: null,
 };
 
+/** The transactional surface the heartbeat exposes to pre-admission bindings. */
+export type RoutingWakeBindingTx = Pick<Db, "select" | "insert" | "update" | "execute">;
+
 export type RoutingWakeup = (
   agentId: string,
   opts: {
@@ -82,6 +85,10 @@ export type RoutingWakeup = (
     requestedByActorId?: string | null;
     idempotencyKey?: string;
     issueStateGuard?: { statuses: string[]; assigneeAgentId: string };
+    /** Runs inside every committed admission; a throw rolls the admission back. */
+    bindWake?: (tx: RoutingWakeBindingTx) => Promise<void> | void;
+    /** Runs inside the transaction that inserts the run; a throw rolls run and wake back. */
+    bindRun?: ((run: typeof heartbeatRuns.$inferSelect, tx: RoutingWakeBindingTx) => Promise<void> | void) | null;
   },
 ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
 
@@ -221,6 +228,46 @@ function participantColumns<P extends ParticipantPrefix>(prefix: P, participant:
     [`${prefix}Effort`]: participant?.effort ?? null,
   } as ParticipantColumns<P>;
   return columns;
+}
+
+/**
+ * Pre-admission fence executed inside the heartbeat's wake transaction. The
+ * decision must still be the issue's current revision and the claim must still
+ * be active; otherwise the whole admission rolls back. Only the supplied
+ * transaction handle is used — an outer-db query here would deadlock.
+ */
+async function fenceRouteAdmission(tx: RoutingWakeBindingTx, decision: RouteDecision, claimId: string | null) {
+  const latest = await tx
+    .select({ revision: routeDecisions.revision })
+    .from(routeDecisions)
+    .where(and(eq(routeDecisions.companyId, decision.companyId), eq(routeDecisions.issueId, decision.issueId)))
+    .orderBy(desc(routeDecisions.revision))
+    .limit(1)
+    .then((rows) => rows[0]?.revision ?? 0);
+  if (latest !== decision.revision) {
+    throw conflict("Route decision was superseded before the wake was admitted", {
+      code: "route_decision_superseded",
+      decisionRevision: decision.revision,
+      currentRevision: latest,
+    });
+  }
+  if (!claimId) return;
+  const claim = await tx
+    .select({ id: routePoolClaims.id })
+    .from(routePoolClaims)
+    .where(and(eq(routePoolClaims.id, claimId), isNull(routePoolClaims.releasedAt)))
+    .then((rows) => rows[0] ?? null);
+  if (!claim) {
+    throw conflict("Route pool claim was released before the wake was admitted", { code: "route_claim_released", claimId });
+  }
+}
+
+/** Links the claim to its run inside the run-insert transaction so authority never lags execution. */
+async function bindClaimToRun(tx: RoutingWakeBindingTx, claimId: string, runId: string) {
+  await tx
+    .update(routePoolClaims)
+    .set({ runId })
+    .where(and(eq(routePoolClaims.id, claimId), isNull(routePoolClaims.releasedAt)));
 }
 
 /** Public detail summary: ids, families, models and reason codes only — never config or errors. */
@@ -901,6 +948,8 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
         requestedByActorId: actor.actorId,
         idempotencyKey: `route:${decision.id}:${claim.id}`,
         issueStateGuard: { statuses: ["todo", "in_progress", "blocked", "in_review"], assigneeAgentId: workerAgent.id },
+        bindWake: (tx) => fenceRouteAdmission(tx, decision, claim.id),
+        bindRun: (run, tx) => bindClaimToRun(tx, claim.id, run.id),
       });
       if (!run) {
         await releaseClaim(claim.id, "wake_rejected");
@@ -1139,6 +1188,8 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
         requestedByActorId: actor.actorId,
         idempotencyKey: `route-review:${decision.id}:${reviewIssue.id}`,
         issueStateGuard: { statuses: ["todo", "in_progress"], assigneeAgentId: reviewer.agentId },
+        bindWake: (tx) => fenceRouteAdmission(tx, decision, claim?.id ?? null),
+        bindRun: claim ? (run, tx) => bindClaimToRun(tx, claim.id, run.id) : null,
       });
       if (run && claim) {
         await db.update(routePoolClaims).set({ runId: run.id }).where(eq(routePoolClaims.id, claim.id));

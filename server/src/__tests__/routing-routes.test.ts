@@ -42,25 +42,36 @@ describeEmbeddedPostgres("task attempt routing routes", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   const wakes: WakeCall[] = [];
   let rejectWakes = false;
+  let supersedeDuringAdmission = false;
 
-  /** Fake scheduler seam: records the wake and persists a queued run the way enqueueWakeup does. */
+  /** Fake scheduler seam: mirrors enqueueWakeup's admission contract — bindWake and bindRun run inside the admission transaction. */
   const enqueueWakeup: RoutingWakeup = async (agentId, opts) => {
     wakes.push({ agentId, opts });
     if (rejectWakes) return null;
     const agent = await db.select().from(agents).where(eq(agents.id, agentId)).then((rows) => rows[0]!);
-    return db
-      .insert(heartbeatRuns)
-      .values({
-        companyId: agent.companyId,
-        agentId,
-        status: "queued",
-        invocationSource: "on_demand",
-        contextSnapshot: opts.contextSnapshot ?? {},
-      })
-      .returning()
-      .then((rows) => rows[0]!);
+    return db.transaction(async (tx) => {
+      const run = await tx
+        .insert(heartbeatRuns)
+        .values({
+          companyId: agent.companyId,
+          agentId,
+          status: "queued",
+          invocationSource: "on_demand",
+          contextSnapshot: opts.contextSnapshot ?? {},
+        })
+        .returning()
+        .then((rows) => rows[0]!);
+      await opts.bindRun?.(run, tx);
+      if (supersedeDuringAdmission) {
+        // A concurrent override lands between routing and admission.
+        const current = await tx.select().from(routeDecisions).where(eq(routeDecisions.issueId, String(opts.contextSnapshot?.issueId))).then((rows) => rows[0]!);
+        const { id: _id, createdAt: _createdAt, ...rest } = current;
+        await tx.insert(routeDecisions).values({ ...rest, revision: current.revision + 1, supersedesDecisionId: current.id, revisionKind: "override", note: "concurrent" });
+      }
+      await opts.bindWake?.(tx);
+      return run;
+    });
   };
-
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routing-");
     db = createDb(tempDb.connectionString);
@@ -69,6 +80,7 @@ describeEmbeddedPostgres("task attempt routing routes", () => {
   afterEach(async () => {
     wakes.length = 0;
     rejectWakes = false;
+    supersedeDuringAdmission = false;
     await db.delete(routePoolClaims);
     await db.delete(routeDecisions);
     await db.delete(routeRules);
@@ -300,6 +312,21 @@ describeEmbeddedPostgres("task attempt routing routes", () => {
       const drifted = await board.post(`/api/issues/${issueId}/routing/dispatch`);
       expect(drifted.status).toBe(409);
       expect(drifted.body.details.code).toBe("execution_profile_model_drift");
+    });
+
+    it("rolls the admission back when the decision is superseded before the wake commits", async () => {
+      const a = await seedCompany();
+      await seedDefaults(a.companyId, a.bindings);
+      const issueId = await seedIssue(a.companyId);
+      const board = request(app(boardActor(a.companyId)));
+      await board.post(`/api/issues/${issueId}/routing/route`).send({ facts: featureFacts });
+      supersedeDuringAdmission = true;
+      const res = await board.post(`/api/issues/${issueId}/routing/dispatch`);
+      expect(res.status).toBe(409);
+      expect(res.body.details.code).toBe("route_decision_superseded");
+      // No run was admitted for the stale decision and its slot was released.
+      expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+      expect(await db.select().from(routePoolClaims).where(isNull(routePoolClaims.releasedAt))).toHaveLength(0);
     });
 
     it("releases the slot and records the refusal when the scheduler rejects the wake", async () => {

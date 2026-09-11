@@ -4704,7 +4704,7 @@ registerCurrentRoute({
   tags: ["routing"],
   summary: "Escalate and dispatch the opposite-family rescuer (board only)",
   body: rescueRouteSchema,
-  responses: { 201: r.ok(z.object({ decision: routeDecisionSchema, dispatch: routeDispatchResultSchema.nullable() }).strict()), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  responses: { 201: r.ok(z.object({ decision: routeDecisionSchema, dispatch: routeDispatchResultSchema.nullable(), dispatchError: z.object({ message: z.string(), code: z.string().optional() }).passthrough().nullable() }).strict()), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
 registerCurrentRoute({
