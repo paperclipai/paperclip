@@ -37,7 +37,7 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const dockerfile = readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
-const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "docker.yml"), "utf8");
+const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "docker-cloud.yml"), "utf8");
 const serverPackageJson = JSON.parse(
   readFileSync(path.join(repoRoot, "server", "package.json"), "utf8"),
 ) as { peerDependencies?: Record<string, string> };
