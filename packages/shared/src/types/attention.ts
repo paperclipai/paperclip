@@ -11,6 +11,7 @@ export const ATTENTION_SOURCE_KINDS = [
   "issue_thread_interaction",
   "join_request",
   "recovery_action",
+  // Legacy persisted decision sources remain readable; no feed items are generated.
   "productivity_review",
   "blocker_attention",
   "review",

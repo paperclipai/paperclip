@@ -356,7 +356,9 @@ function startInput(options?: {
           command: options?.command ?? serviceCommand(),
           env: { PAPERCLIP_PUBLIC_URL: "http://127.0.0.1:3100" },
           port: options?.port ?? { type: "auto", envKey: "PORT" },
-          readiness: { type: "http", urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 5 },
+          // These lifecycle tests spawn real servers; cold CI startup can take
+          // five seconds before the first listener is ready.
+          readiness: { type: "http", urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 10 },
           ...(expose ? { expose } : {}),
         }],
       },

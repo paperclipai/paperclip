@@ -1,3 +1,4 @@
+import { EmailEndpointSetup } from "./EmailEndpointSetup";
 import {
   useEffect,
   useMemo,
@@ -35,6 +36,7 @@ import {
 } from "./github-private-key-file";
 
 const providerNames: Record<ChatProvider, string> = {
+  agentmail: "AgentMail",
   slack: "Slack",
   github: "GitHub",
   discord: "Discord",
@@ -122,6 +124,10 @@ function SetupRail({ step }: { step: number }) {
 }
 
 export function ChatEndpointSetup() {
+  const [params] = useSearchParams();
+  return params.get("provider") === "agentmail" ? <EmailEndpointSetup /> : <ChatSdkEndpointSetup />;
+}
+function ChatSdkEndpointSetup() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();

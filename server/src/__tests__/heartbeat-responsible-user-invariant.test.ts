@@ -267,10 +267,10 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const run = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
-      reason: "productivity_review",
+      reason: "scheduled_maintenance",
       requestedByActorType: "system",
       requestedByActorId: null,
-      contextSnapshot: { wakeReason: "productivity_review" },
+      contextSnapshot: { wakeReason: "scheduled_maintenance" },
     });
 
     expect(run).not.toBeNull();

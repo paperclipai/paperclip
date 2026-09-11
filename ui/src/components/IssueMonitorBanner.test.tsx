@@ -193,4 +193,42 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
 
     flushSync(() => root.unmount());
   });
+
+  it("removes both countdowns and Check now when the retry starts, then shows a newly scheduled retry", () => {
+    const root = createRoot(container);
+    const issue = {
+      status: "in_progress",
+      scheduledRetry: {
+        status: "scheduled_retry",
+        scheduledRetryAt: new Date(NOW.getTime() - 2 * 60_000).toISOString(),
+        scheduledRetryAttempt: 1,
+      },
+    } as Issue;
+    const render = (next: Issue) => flushSync(() => root.render(
+      <>
+        <IssueMonitorBanner issue={next} onCheckNow={vi.fn()} />
+        <IssueMonitorComposerStrip issue={next} onCheckNow={vi.fn()} />
+      </>,
+    ));
+
+    render(issue);
+    expect(container.textContent).toContain("Overdue by 2m");
+
+    for (const status of ["queued", "running"] as const) {
+      const promoted = { ...issue, scheduledRetry: { ...issue.scheduledRetry!, status } };
+      render(promoted);
+      expect(hasVisibleMonitorSurface(promoted)).toBe(false);
+      expect(container.textContent).toBe("");
+      expect(container.querySelector("button")).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    }
+
+    render({ ...issue, scheduledRetry: { ...issue.scheduledRetry!, scheduledRetryAt: new Date(NOW.getTime() + 5 * 60_000).toISOString() } });
+    expect(container.textContent).toContain("Resumes in 5m");
+
+    render({ ...issue, status: "done" });
+    expect(container.textContent).toBe("");
+    expect(vi.getTimerCount()).toBe(0);
+    flushSync(() => root.unmount());
+  });
 });

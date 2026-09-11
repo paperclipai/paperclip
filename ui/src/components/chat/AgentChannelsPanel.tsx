@@ -13,6 +13,7 @@ const providerNames: Record<ChatProvider, string> = {
   discord: "Discord",
   "microsoft-teams": "Microsoft Teams",
   telegram: "Telegram",
+  agentmail: "AgentMail",
 };
 
 export function AgentChannelsPanel({
@@ -39,7 +40,7 @@ export function AgentChannelsPanel({
         <div>
           <h2 className="text-lg font-semibold">Channels</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Provider identities that let people chat with this agent.
+            Chat and email identities connected to this agent.
           </p>
         </div>
         <Button asChild size="sm">
@@ -53,9 +54,9 @@ export function AgentChannelsPanel({
         <p className="text-sm text-muted-foreground">Loading channels…</p>
       ) : endpoints.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border p-5">
-          <p className="text-sm font-medium">No chat channels connected</p>
+          <p className="text-sm font-medium">No channels connected</p>
           <p className="mt-1 text-sm text-muted-foreground">
-            Connect Slack, GitHub, Discord, Microsoft Teams, or Telegram from
+            Connect AgentMail, Slack, GitHub, Discord, Microsoft Teams, or Telegram from
             Connectors.
           </p>
           <Button asChild className="mt-3" variant="outline" size="sm">

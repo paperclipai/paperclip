@@ -205,6 +205,7 @@ import {
   splitRemoteUrlCredential,
 } from "./remote-url-credentials.js";
 import { secretService } from "./secrets.js";
+import { agentmailApi } from "./agentmail-api.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import {
   readSignedToolArgumentsPayload,
@@ -7363,11 +7364,48 @@ export function toolAccessService(
     };
   }
 
+  function isAgentMailConnection(connection: typeof toolConnections.$inferSelect) {
+    return connection.transport === "rest_api" && connection.config.provider === "agentmail";
+  }
+
+  async function validateAgentMailConnection(
+    connection: typeof toolConnections.$inferSelect,
+  ) {
+    const configPath = connection.config.emailCredential
+      ? "credentials.controlKey"
+      : "credentials.apiKey";
+    const ref = connection.credentialSecretRefs.find(
+      (candidate) => candidate.configPath === configPath,
+    );
+    if (!ref) {
+      throw unprocessable("Reconnect AgentMail to restore its API key", {
+        code: "missing_secret",
+      });
+    }
+    const key = await secrets.resolveSecretValue(
+      connection.companyId,
+      ref.secretId,
+      ref.versionSelector ?? "latest",
+      {
+        consumerType: "tool_connection",
+        consumerId: connection.id,
+        configPath,
+        actorType: "system",
+        actorId: null,
+      },
+    );
+    await agentmailApi(key).whoami();
+  }
+
   async function discoverTools(
     connection: typeof toolConnections.$inferSelect,
     credentialHeaders?: Record<string, string>,
     actor?: ActorInfo,
   ): Promise<McpToolDescriptor[]> {
+    if (isAgentMailConnection(connection)) {
+      await validateAgentMailConnection(connection);
+      return [];
+    }
     if (connection.transport === "mcp_remote")
       return remoteTools(connection, credentialHeaders, actor);
     if (isComposioConnection(connection)) {
@@ -7495,6 +7533,8 @@ export function toolAccessService(
           });
         for (const grant of grantsToCheck)
           await refreshManagedGitHubGrantAccess(connection, grant, actor);
+      } else if (isAgentMailConnection(connection)) {
+        await validateAgentMailConnection(connection);
       } else if (connection.transport === "mcp_remote") {
         await assertComposioConnectedAccountActive(connection);
         const credentialHeaders =
@@ -7516,11 +7556,13 @@ export function toolAccessService(
         config.sourceTemplateKey === "github" &&
           oauth.connectorProfile === "github.code"
           ? "GitHub account, installation, and repository access are available."
-          : isComposioConnection(connection)
-            ? "Composio accepted the API key and returned its toolkits."
-            : connection.transport === "local_stdio"
-              ? "Approved stdio template is ready."
-              : "Remote MCP server responded to tools/list.",
+          : isAgentMailConnection(connection)
+            ? "AgentMail API key is connected."
+            : isComposioConnection(connection)
+              ? "Composio accepted the API key and returned its toolkits."
+              : connection.transport === "local_stdio"
+                ? "Approved stdio template is ready."
+                : "Remote MCP server responded to tools/list.",
       );
       const runtimeSlot = await ensureRuntimeSlot(updated);
       await audit({
@@ -7759,7 +7801,9 @@ export function toolAccessService(
         config: normalizedConfig,
         transportConfig: normalizedTransportConfig,
         healthStatus: "ok",
-        healthMessage: "Tool catalog refreshed.",
+        healthMessage: isAgentMailConnection(connection)
+          ? "AgentMail API key is connected."
+          : "Tool catalog refreshed.",
         healthCheckedAt: refreshedAt,
         lastHealthAt: refreshedAt,
         lastCatalogRefreshAt: refreshedAt,

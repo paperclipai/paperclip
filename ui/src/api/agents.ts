@@ -223,6 +223,7 @@ export const agentsApi = {
     type: string,
     data: {
       adapterConfig: Record<string, unknown>;
+      agentId?: string;
       testCredentials?: Record<string, string>;
       environmentId?: string | null;
     },

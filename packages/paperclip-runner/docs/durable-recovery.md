@@ -12,6 +12,51 @@ WebSocket acceptance header are not authentication. A production bridge should
 still use `wss://` for defense in depth and remains a separately reviewed
 deployment phase.
 
+## Execution duration and operation deadlines
+
+Native turns have no total elapsed-time limit unless the operator configures
+`timeoutSec` on the agent. Zero means unlimited. The controller passes that
+setting separately from bootstrap, recovery, checkpoint, and finalization
+operation bounds. A live turn must not inherit the internal 15-minute operation
+deadline; tool waits count toward an explicitly configured turn duration.
+
+The native-session API exposes `turnTimeoutMs` for that duration. An explicit
+`timeoutMs` retains its prior operation/turn behavior for existing embedding
+callers, while `turnTimeoutMs: 0` overrides its turn bound. Cancellation, budget
+controls, input handoffs, and bounded cleanup remain independent.
+
+Normal runner launches also set `--max-runtime-ms 0`, meaning no total process
+lifetime limit. The standalone durable runner defaults to the same value.
+Explicit positive limits still stop at their deadline; connection/auth attempts,
+reconnect grace, cancellation, and idle cleanup remain bounded independently.
+Neither quiet tool execution nor a productive turn is an idle session.
+
+The authenticated welcome advertises `connectionLeaseRenewalVersion: 1`.
+Supporting runners send `lease_renew` halfway through the remaining lease,
+independently of provider output. The request carries the current expiry and
+revocation epoch under the exact connection, lease, and run identity. The
+controller persists an extended expiry before returning `lease_renewed`, which
+also echoes the request's previous expiry. The runner updates its in-memory
+lease without replacing its process, provider, thread, turn, token, or epoch.
+Retries of the same observed expiry replay the persisted extension. Renewal
+never admits an expired, revoked, or differently bound credential.
+
+If a reply is lost, reconnect authentication may reconcile a later expiry only
+when this runner has an outstanding renewal on that same credential. Warm
+handoff receipts continue to bind exact expiry and renewal pauses during their
+transition. Old controllers that do not advertise renewal retain their bounded
+lease behavior; deploying both updated controller and runner is required.
+
+Tests simulate three weeks of renewal on one authenticated connection, exercise
+lost-reply reconnect without reexecuting provider startup, and keep a quiet
+active Codex fixture in the same runner/provider PIDs beyond its original lease
+expiry. These are boundary regressions, not a weeks-long real-provider soak.
+
+Provider startup ownership summaries validate goal commands with their required
+PRP v2 command vocabulary. Incoming wire commands still undergo the negotiated
+protocol validation before execution; ordinary persisted v1 summaries remain
+compatible.
+
 ## Connection and authentication
 
 The connection starts in this order:
