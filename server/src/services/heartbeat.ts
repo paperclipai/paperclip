@@ -193,11 +193,14 @@ import {
   materializeNativeInteractionResponses,
   nativeCompletionRequestsForComments,
   NativeCancellationPendingRecoveryError,
+  NativeGoalResumeCheckpointUnavailableError,
+  nativeExecutionMatchesGoalResumeAnchor,
   nativeToolContractFingerprintForTarget,
   prepareNativeSessionBootstrapPersistence,
   prepareNativeWorkspaceSync,
   readNativeWorkspaceSyncReference,
   recordNativeFinalizationFailure,
+  resolveNativeTaskSessionResumeSeed,
   type NativeRestartRecoveryClaim,
   rebindNativeSessionCheckpoint,
   reconcileNativeFinalizations,
@@ -749,6 +752,8 @@ const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
 const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
+const NATIVE_GOAL_RESUME_UNAVAILABLE_CODE =
+  "native_goal_resume_authority_unavailable";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON =
   "execution_review_participant_recovery";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON =
@@ -764,6 +769,7 @@ const NON_RETRYABLE_PREFLIGHT_FAILURE_CODES = new Set<string>([
   "low_trust_requires_sandbox_environment",
   "low_trust_runtime_services_denied",
   "chat_failed_run_retry_not_authorized",
+  NATIVE_GOAL_RESUME_UNAVAILABLE_CODE,
   CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE,
 ]);
 // Error codes that mark a pre-dispatch setup failure. The adapter process never
@@ -777,6 +783,8 @@ const PRE_ADAPTER_SETUP_FAILURE_CODES = new Set<string>([
 ]);
 
 function nonRetryablePreflightFailureCode(error: unknown): string | null {
+  if (error instanceof NativeGoalResumeCheckpointUnavailableError)
+    return NATIVE_GOAL_RESUME_UNAVAILABLE_CODE;
   if (error instanceof ChatControlRecoveryUnresolvedError)
     return CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE;
   if (
@@ -789,6 +797,14 @@ function nonRetryablePreflightFailureCode(error: unknown): string | null {
   if (!(error instanceof HttpError) || error.status !== 422) return null;
   const code = readNonEmptyString(parseObject(error.details).code);
   return code && NON_RETRYABLE_PREFLIGHT_FAILURE_CODES.has(code) ? code : null;
+}
+
+function nativeGoalResumeUnavailable(reason: string) {
+  return new HttpError(
+    422,
+    "The established native session Goal cannot be resumed from its exact provider checkpoint and execution workspace. No replacement provider session was started.",
+    { code: NATIVE_GOAL_RESUME_UNAVAILABLE_CODE, reason },
+  );
 }
 class ChatControlRecoveryUnresolvedError extends Error {
   constructor() {
@@ -19776,10 +19792,14 @@ export function heartbeatService(
           : null;
       const persistedNativeExecutionWorkspaceId =
         persistedNativeExecutionInput?.binding.executionWorkspaceId ?? null;
+      const nativeGoalResumeWake = Boolean(
+        readNonEmptyString(context.goalControlRequestId) ||
+          context.resumeSessionGoalHeartbeat === true,
+      );
+      const nativeGoalResumeRequired =
+        nativeGoalResumeWake && taskSession?.goalJson != null;
       const nativeGoalResumeAnchor =
-        issueRef &&
-        (readNonEmptyString(context.goalControlRequestId) ||
-          context.resumeSessionGoalHeartbeat === true)
+        issueRef && nativeGoalResumeWake
           ? await findNativeGoalResumeAnchor(db, {
               goalSourceId: taskSession?.goalSourceId,
               companyId: agent.companyId,
@@ -19788,16 +19808,38 @@ export function heartbeatService(
               currentRunId: run.id,
             })
           : null;
+      if (nativeGoalResumeRequired && !nativeGoalResumeAnchor) {
+        throw nativeGoalResumeUnavailable("goal_source_binding_invalid");
+      }
+      if (
+        nativeGoalResumeRequired &&
+        persistedNativeExecutionInput &&
+        nativeGoalResumeAnchor &&
+        !nativeExecutionMatchesGoalResumeAnchor({
+          execution: persistedNativeExecutionInput,
+          anchor: nativeGoalResumeAnchor,
+          companyId: agent.companyId,
+          agentId: agent.id,
+          issueId: issueRef!.id,
+          currentRunId: run.id,
+        })
+      ) {
+        throw nativeGoalResumeUnavailable(
+          "current_run_goal_source_binding_mismatch",
+        );
+      }
       const requestedExecutionWorkspaceId =
         persistedNativeExecutionWorkspaceId ??
-        nativeGoalResumeAnchor?.executionWorkspaceId ??
+        nativeGoalResumeAnchor?.managedExecutionWorkspaceId ??
         readNonEmptyString(issueRef?.executionWorkspaceId);
       const existingExecutionWorkspace = requestedExecutionWorkspaceId
         ? await executionWorkspacesSvc.getById(requestedExecutionWorkspaceId)
         : null;
       const nativeRecoveryExecutionWorkspaceId =
         resolveNativeRecoveryExecutionWorkspaceBinding({
-          bindingId: persistedNativeExecutionWorkspaceId,
+          bindingId:
+            persistedNativeExecutionWorkspaceId ??
+            nativeGoalResumeAnchor?.managedExecutionWorkspaceId,
           persistedWorkspaceFound: existingExecutionWorkspace !== null,
         });
       const workspaceReuseRequest =
@@ -19809,6 +19851,15 @@ export function heartbeatService(
           existingExecutionWorkspaceStatus:
             existingExecutionWorkspace?.status ?? null,
         });
+      if (
+        nativeGoalResumeRequired &&
+        nativeGoalResumeAnchor?.managedExecutionWorkspaceId &&
+        !workspaceReuseRequest.existingExecutionWorkspaceAvailable
+      ) {
+        throw nativeGoalResumeUnavailable(
+          "goal_source_execution_workspace_unavailable",
+        );
+      }
       const requestedShouldReuseExisting =
         workspaceReuseRequest.requestedShouldReuseExisting;
       const reusableExistingExecutionWorkspace =
@@ -20252,16 +20303,8 @@ export function heartbeatService(
         sessionConfigFreshness.reasons.join("; ") || null;
       const taskSessionForRun = resetTaskSession ? null : taskSession;
       const nativeGoalResumeSessionParams =
-        nativeGoalResumeAnchor && taskSessionForRun
+        nativeGoalResumeAnchor
           ? {
-              ...(normalizeResumeParamsForAdapter(
-                agent.adapterType,
-                stripPaperclipSessionMetadataFromSessionParams(
-                  sessionCodec.deserialize(
-                    taskSessionForRun.sessionParamsJson ?? null,
-                  ),
-                ),
-              ) ?? {}),
               sessionId: nativeGoalResumeAnchor.normalizedSessionId,
               cwd: nativeGoalResumeAnchor.workspaceCwd,
             }
@@ -21890,9 +21933,7 @@ export function heartbeatService(
                   })(),
                 });
           const taskNativeSessionId = readNonEmptyString(
-            nativeGoalResumeAnchor && taskSessionForRun
-              ? nativeGoalResumeAnchor.normalizedSessionId
-              : taskSessionDecodedParams?.sessionId,
+            taskSessionDecodedParams?.sessionId,
           );
           // Compatibility for native retry rows created before same-run restart
           // recovery existed. Only an entirely unused replacement row may
@@ -21957,14 +21998,14 @@ export function heartbeatService(
               : null;
           const legacyRetrySessionId =
             compatibleLegacyRetrySource?.nativeSessionId;
-          const taskResumeRunId =
-            taskSessionForRun?.lastRunId &&
-            taskSessionForRun.lastRunId !== run.id &&
-            isNativeSessionId(taskNativeSessionId)
-              ? taskSessionForRun.lastRunId
-              : null;
-          const resumableTaskSessionId = taskResumeRunId
-            ? taskNativeSessionId
+          const taskResumeSeed = resolveNativeTaskSessionResumeSeed({
+            goalResumeAnchor: nativeGoalResumeAnchor,
+            taskSessionLastRunId: taskSessionForRun?.lastRunId,
+            taskSessionNormalizedSessionId: taskNativeSessionId,
+            currentRunId: run.id,
+          });
+          const resumableTaskSessionId = taskResumeSeed
+            ? taskResumeSeed.normalizedSessionId
             : (legacyRetrySessionId ?? null);
           const requestedNativeSessionId =
             run.nativeSessionId ?? resumableTaskSessionId;
@@ -21987,6 +22028,15 @@ export function heartbeatService(
                   beforeCreatedAt: run.createdAt,
                 })
               : null;
+          if (
+            nativeGoalResumeRequired &&
+            !persistedNativeExecutionInput &&
+            !previousNativeRun
+          ) {
+            throw nativeGoalResumeUnavailable(
+              "goal_source_checkpoint_unavailable_or_superseded",
+            );
+          }
           nativeRunnerInstanceId =
             previousNativeRun?.runnerInstanceId &&
             previousNativeRun.nativeSessionId ===
@@ -22203,6 +22253,7 @@ export function heartbeatService(
                 previousRun: previousNativeRun,
                 normalizedSessionId: nativeSessionId,
                 executionTargetKind: executionTarget?.kind ?? "local",
+                requireCheckpoint: nativeGoalResumeRequired,
                 buildExecution: ({ normalizedSessionId, resumedSession }) =>
                   buildNativeExecutionInput({
                     companyId: agent.companyId,

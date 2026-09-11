@@ -64,12 +64,15 @@ import {
   findNativeSessionResumeRun,
   NATIVE_TOOL_CONTRACT_FINGERPRINT,
   isUnusedLegacyNativeRetryReplacement,
+  NativeGoalResumeCheckpointUnavailableError,
+  nativeExecutionMatchesGoalResumeAnchor,
   nativeToolContractFingerprintForTarget,
   nativeSessionIdForBootstrapPersistence,
   nativeSessionProviderEvidence,
   prepareNativeSessionBootstrapPersistence,
   rebindNativeSessionCheckpoint,
   resolveNativeGoalResumeAnchor,
+  resolveNativeTaskSessionResumeSeed,
   selectNativeSessionResumeRun,
 } from "./native-session-resume.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
@@ -420,9 +423,15 @@ it("wires exact-session recovery and guarded selected identity into heartbeat pe
   expect(source).toContain("await findNativeSessionResumeRun(db,");
   expect(source).toContain("await findNativeGoalResumeAnchor(db,");
   expect(source).toContain(
-    "nativeGoalResumeAnchor?.executionWorkspaceId",
+    "nativeGoalResumeAnchor?.managedExecutionWorkspaceId",
   );
   expect(source).toContain("nativeGoalResumeAnchor.normalizedSessionId");
+  expect(source).toContain("resolveNativeTaskSessionResumeSeed({");
+  expect(source).toContain("goalResumeAnchor: nativeGoalResumeAnchor,");
+  expect(source).toContain("requireCheckpoint: nativeGoalResumeRequired,");
+  expect(source).toContain(
+    '"goal_source_checkpoint_unavailable_or_superseded"',
+  );
   expect(source).toContain(
     "await prepareNativeSessionBootstrapPersistence(tx,",
   );
@@ -469,8 +478,134 @@ describe("native Goal resume authority", () => {
       sourceRunId: previousRunId,
       normalizedSessionId,
       executionWorkspaceId: managedWorkspaceId,
+      managedExecutionWorkspaceId: managedWorkspaceId,
       workspaceCwd: "/managed-workspace",
+      workspaceRepoUrl: null,
+      workspaceRepoRef: null,
+      workspaceBranchName: null,
     });
+  });
+
+  it("ignores a later failed rotation in task-session metadata", () => {
+    const anchor = resolveNativeGoalResumeAnchor({
+      goalSourceId: `${runnerInstanceId}:${previousRunId}`,
+      companyId,
+      agentId,
+      issueId,
+      currentRunId,
+      sourceRun: sourceRun(),
+    });
+    const failedRotationRunId = randomUUID();
+    const failedRotationSessionId = randomUUID();
+    expect(
+      resolveNativeTaskSessionResumeSeed({
+        goalResumeAnchor: anchor,
+        taskSessionLastRunId: failedRotationRunId,
+        taskSessionNormalizedSessionId: failedRotationSessionId,
+        currentRunId,
+      }),
+    ).toEqual({
+      sourceRunId: previousRunId,
+      normalizedSessionId,
+    });
+  });
+
+  it("accepts only a same-run immutable execution input bound to that Goal authority", () => {
+    const anchor = resolveNativeGoalResumeAnchor({
+      goalSourceId: `${runnerInstanceId}:${previousRunId}`,
+      companyId,
+      agentId,
+      issueId,
+      currentRunId,
+      sourceRun: sourceRun(),
+    })!;
+    expect(
+      nativeExecutionMatchesGoalResumeAnchor({
+        execution: execution(
+          currentRunId,
+          "/managed-workspace",
+          "standard",
+          { id: managedWorkspaceId },
+        ),
+        anchor,
+        companyId,
+        agentId,
+        issueId,
+        currentRunId,
+      }),
+    ).toBe(true);
+    expect(
+      nativeExecutionMatchesGoalResumeAnchor({
+        execution: execution(currentRunId, "/rotated-workspace"),
+        anchor,
+        companyId,
+        agentId,
+        issueId,
+        currentRunId,
+      }),
+    ).toBe(false);
+  });
+
+  it("forbids a fresh provider replacement when exact Goal continuity is required", () => {
+    const source = sourceRun();
+    const profile = source.runnerProfileJson as Record<string, unknown>;
+    const checkpoint = profile.sessionCheckpoint as Record<string, unknown>;
+    checkpoint.goal = {
+      threadId: "provider-thread-123",
+      objective: "Continue only on this provider thread.",
+      status: "budget_limited",
+      tokenBudget: 12_000,
+      tokensUsed: 20_283,
+      timeUsedSeconds: 120,
+    };
+    const buildExecution = vi.fn(
+      ({ normalizedSessionId: selected }: { normalizedSessionId: string }) => {
+        const current = execution(currentRunId, "/different-workspace");
+        return {
+          ...current,
+          session: { ...current.session, normalizedSessionId: selected },
+        };
+      },
+    );
+    expect(() =>
+      buildNativeExecutionWithCheckpoint({
+        previousRun: source,
+        normalizedSessionId,
+        requireCheckpoint: true,
+        buildExecution,
+      }),
+    ).toThrow(NativeGoalResumeCheckpointUnavailableError);
+    expect(buildExecution).toHaveBeenCalledTimes(1);
+  });
+
+  it("forbids replacement after configuration drift or a newer progress barrier", () => {
+    const source = sourceRun();
+    const changedRuntime = execution(
+      currentRunId,
+      "/managed-workspace",
+      "standard",
+      { id: managedWorkspaceId },
+    );
+    changedRuntime.runtimeContext = {
+      ...changedRuntime.runtimeContext,
+      aggregateDigest: `sha256:${"f".repeat(64)}`,
+    };
+    expect(() =>
+      buildNativeExecutionWithCheckpoint({
+        previousRun: source,
+        normalizedSessionId,
+        requireCheckpoint: true,
+        buildExecution: () => changedRuntime,
+      }),
+    ).toThrow(NativeGoalResumeCheckpointUnavailableError);
+    expect(() =>
+      buildNativeExecutionWithCheckpoint({
+        previousRun: null,
+        normalizedSessionId,
+        requireCheckpoint: true,
+        buildExecution: () => changedRuntime,
+      }),
+    ).toThrow(NativeGoalResumeCheckpointUnavailableError);
   });
 
   it.each([
@@ -534,7 +669,11 @@ describe("native Goal resume authority", () => {
           sourceRunId: previousRunId,
           normalizedSessionId,
           executionWorkspaceId: managedWorkspaceId,
+          managedExecutionWorkspaceId: managedWorkspaceId,
           workspaceCwd: "/managed-workspace",
+          workspaceRepoUrl: null,
+          workspaceRepoRef: null,
+          workspaceBranchName: null,
         });
         expect(
           await findNativeGoalResumeAnchor(db, {

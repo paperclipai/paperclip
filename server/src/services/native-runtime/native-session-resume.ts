@@ -247,7 +247,16 @@ export type NativeGoalResumeAnchor = {
   sourceRunId: string;
   normalizedSessionId: string;
   executionWorkspaceId: string;
+  managedExecutionWorkspaceId: string | null;
   workspaceCwd: string;
+  workspaceRepoUrl: string | null;
+  workspaceRepoRef: string | null;
+  workspaceBranchName: string | null;
+};
+
+export type NativeTaskSessionResumeSeed = {
+  sourceRunId: string;
+  normalizedSessionId: string;
 };
 
 type NativeGoalSourceRun = {
@@ -332,8 +341,66 @@ export function resolveNativeGoalResumeAnchor(input: {
     sourceRunId: run.id,
     normalizedSessionId: run.nativeSessionId,
     executionWorkspaceId: execution.binding.executionWorkspaceId,
+    managedExecutionWorkspaceId:
+      execution.binding.executionWorkspaceId === run.id
+        ? null
+        : execution.binding.executionWorkspaceId,
     workspaceCwd: execution.workspace.cwd,
+    workspaceRepoUrl: execution.workspace.repoUrl,
+    workspaceRepoRef: execution.workspace.repoRef,
+    workspaceBranchName: execution.workspace.branchName,
   };
+}
+
+/** Validate a same-run immutable input against the earlier Goal authority. */
+export function nativeExecutionMatchesGoalResumeAnchor(input: {
+  execution: NativeExecutionInput;
+  anchor: NativeGoalResumeAnchor;
+  companyId: string;
+  agentId: string;
+  issueId: string;
+  currentRunId: string;
+}): boolean {
+  const { execution, anchor } = input;
+  const workspaceMatches = anchor.managedExecutionWorkspaceId
+    ? execution.binding.executionWorkspaceId ===
+      anchor.managedExecutionWorkspaceId
+    : execution.binding.executionWorkspaceId === input.currentRunId &&
+      execution.workspace.cwd === anchor.workspaceCwd &&
+      execution.workspace.repoUrl === anchor.workspaceRepoUrl &&
+      execution.workspace.repoRef === anchor.workspaceRepoRef &&
+      execution.workspace.branchName === anchor.workspaceBranchName;
+  return (
+    execution.binding.runId === input.currentRunId &&
+    execution.binding.companyId === input.companyId &&
+    execution.binding.agentId === input.agentId &&
+    execution.binding.issueId === input.issueId &&
+    execution.session.normalizedSessionId === anchor.normalizedSessionId &&
+    workspaceMatches
+  );
+}
+
+/** Goal authority outranks task-session pointers written by a failed rotation. */
+export function resolveNativeTaskSessionResumeSeed(input: {
+  goalResumeAnchor: NativeGoalResumeAnchor | null;
+  taskSessionLastRunId: string | null | undefined;
+  taskSessionNormalizedSessionId: string | null | undefined;
+  currentRunId: string;
+}): NativeTaskSessionResumeSeed | null {
+  if (input.goalResumeAnchor) {
+    return {
+      sourceRunId: input.goalResumeAnchor.sourceRunId,
+      normalizedSessionId: input.goalResumeAnchor.normalizedSessionId,
+    };
+  }
+  return input.taskSessionLastRunId &&
+    input.taskSessionLastRunId !== input.currentRunId &&
+    isNativeSessionId(input.taskSessionNormalizedSessionId)
+    ? {
+        sourceRunId: input.taskSessionLastRunId,
+        normalizedSessionId: input.taskSessionNormalizedSessionId,
+      }
+    : null;
 }
 
 /** Find a Goal projection's server-authenticated native resume authority. */
@@ -515,6 +582,7 @@ export function buildNativeExecutionWithCheckpoint(input: {
     Parameters<typeof rebindNativeSessionCheckpoint>[0]["previousRun"] | null;
   normalizedSessionId: string;
   executionTargetKind?: NativeToolExecutionTargetKind;
+  requireCheckpoint?: boolean;
   buildExecution: (options: {
     normalizedSessionId: string;
     resumedSession: boolean;
@@ -541,6 +609,9 @@ export function buildNativeExecutionWithCheckpoint(input: {
       checkpoint,
       normalizedSessionId: input.normalizedSessionId,
     };
+  if (input.requireCheckpoint) {
+    throw new NativeGoalResumeCheckpointUnavailableError();
+  }
   // Rebuild both task context and wake instructions. Merely rotating the ID
   // leaves a fresh provider with a compact delta and missing task context.
   const normalizedSessionId = randomUUID();
@@ -552,6 +623,15 @@ export function buildNativeExecutionWithCheckpoint(input: {
     checkpoint: null,
     normalizedSessionId,
   };
+}
+
+export class NativeGoalResumeCheckpointUnavailableError extends Error {
+  constructor() {
+    super(
+      "The established native session Goal cannot resume from its exact provider checkpoint. No replacement provider session was started.",
+    );
+    this.name = "NativeGoalResumeCheckpointUnavailableError";
+  }
 }
 
 /**
