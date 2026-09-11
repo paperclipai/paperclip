@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const VALID_TEMPLATES = ["default", "connector", "workspace", "environment"] as const;
@@ -74,6 +75,24 @@ function getLocalSdkPackagePath(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "sdk");
 }
 
+/**
+ * Version pin for the npm-published `@paperclipai/plugin-sdk`, used when no local
+ * SDK checkout exists (the published CLI outside the monorepo). The SDK is
+ * published in lockstep with the `paperclipai` package, so the CLI's own version
+ * is the right pin; falls back to `latest` when that cannot be resolved (for
+ * example a source build that was never published).
+ */
+function getPublishedSdkDependency(): string {
+  try {
+    const require = createRequire(import.meta.url);
+    const cliPackage = require("paperclipai/package.json") as { version?: string };
+    if (cliPackage.version) return cliPackage.version;
+  } catch {
+    // not running from an installed paperclipai package
+  }
+  return "latest";
+}
+
 function getRepoRootFromSdkPath(sdkPath: string): string {
   return path.resolve(sdkPath, "..", "..", "..");
 }
@@ -144,17 +163,29 @@ export function scaffoldPluginProject(options: ScaffoldPluginOptions): string {
   const author = options.author ?? "Plugin Author";
   const category = options.category ?? (template === "workspace" ? "workspace" : template === "environment" ? "environment" : "connector");
   const manifestId = packageToManifestId(options.pluginName);
-  const localSdkPath = path.resolve(options.sdkPath ?? getLocalSdkPackagePath());
+  const explicitSdkPath = options.sdkPath ? path.resolve(options.sdkPath) : null;
+  if (explicitSdkPath && !fs.existsSync(path.join(explicitSdkPath, "package.json"))) {
+    throw new Error(`--sdk-path does not point at a package (no package.json): ${explicitSdkPath}`);
+  }
+  const localSdkPath = explicitSdkPath ?? getLocalSdkPackagePath();
+  // The import.meta.url-relative default only exists when this file runs from a
+  // monorepo checkout. From the published CLI the walk lands on a path inside the
+  // install (e.g. an npx cache) where no packages/plugins/sdk exists — in that
+  // case scaffold against the npm-published SDK instead of failing on a phantom
+  // packages/shared path.
+  const hasLocalSdk = fs.existsSync(path.join(localSdkPath, "package.json"));
   const localSharedPath = getLocalSharedPackagePath(localSdkPath);
   const repoRoot = getRepoRootFromSdkPath(localSdkPath);
-  const useWorkspaceSdk = isInsideDir(outputDir, repoRoot);
+  const useWorkspaceSdk = hasLocalSdk && isInsideDir(outputDir, repoRoot);
 
   fs.mkdirSync(outputDir, { recursive: true });
 
-  const packedSharedTarball = useWorkspaceSdk ? null : packLocalPackage(localSharedPath, outputDir);
+  const packedSharedTarball = hasLocalSdk && !useWorkspaceSdk ? packLocalPackage(localSharedPath, outputDir) : null;
   const sdkDependency = useWorkspaceSdk
     ? "workspace:*"
-    : `file:${toPosixPath(path.relative(outputDir, packLocalPackage(localSdkPath, outputDir)))}`;
+    : hasLocalSdk
+      ? `file:${toPosixPath(path.relative(outputDir, packLocalPackage(localSdkPath, outputDir)))}`
+      : getPublishedSdkDependency();
 
   const packageJson = {
     name: options.pluginName,
@@ -679,7 +710,9 @@ folder on your machine.
 
 ${sdkDependency.startsWith("file:")
   ? `This scaffold snapshots \`@paperclipai/plugin-sdk\` and \`@paperclipai/shared\` from a local Paperclip checkout at:\n\n\`${toPosixPath(localSdkPath)}\`\n\nThe packed tarballs live in \`.paperclip-sdk/\` for local development. Before publishing this plugin, switch those dependencies to published package versions once they are available on npm.\n\n`
-  : ""}
+  : sdkDependency === "workspace:*"
+  ? ""
+  : `This scaffold depends on the npm-published \`@paperclipai/plugin-sdk@${sdkDependency}\` (no local Paperclip checkout was found). Pass \`--sdk-path\` to develop against an unpublished SDK checkout instead.\n\n`}
 
 ## Install Into Paperclip
 
