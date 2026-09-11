@@ -21,6 +21,7 @@ import { describe, expect, it } from "vitest";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const dockerfile = readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
 const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "docker.yml"), "utf8");
+const cloudWorkflow = readFileSync(path.join(repoRoot, ".github", "workflows", "docker-cloud.yml"), "utf8");
 
 /**
  * Return the text of the Dockerfile stage that starts at the named target.
@@ -68,7 +69,7 @@ describe("docker build-stamp wiring", () => {
   });
 
   it("passes PAPERCLIP_BUILD_COMMIT as a build-arg for both image targets", () => {
-    const argLines = [...workflow.matchAll(/^\s*PAPERCLIP_BUILD_COMMIT=.*$/gm)];
+    const argLines = [...`${workflow}\n${cloudWorkflow}`.matchAll(/^\s*PAPERCLIP_BUILD_COMMIT=.*$/gm)];
     expect(
       argLines.length,
       "the docker workflow must pass PAPERCLIP_BUILD_COMMIT for the production and cloud builds",
