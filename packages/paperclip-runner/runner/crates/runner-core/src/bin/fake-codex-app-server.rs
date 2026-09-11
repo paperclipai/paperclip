@@ -1619,56 +1619,71 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }))?;
                     }
                     if emit_post_completion_passive_statuses {
-                        if let Some(gate) = post_completion_notification_gate.as_ref() {
-                            let deadline = std::time::Instant::now() + Duration::from_secs(5);
-                            while !gate.is_file() {
-                                if std::time::Instant::now() >= deadline {
-                                    return Err(
-                                        "post-completion notification gate timed out".into()
-                                    );
+                        let gate = post_completion_notification_gate.clone();
+                        let thread_id = state.thread_id.clone();
+                        let tail_turn_id = provider_turn_id.clone();
+                        // Goal reconciliation reads must remain responsive while
+                        // the test holds back the post-terminal passive notices.
+                        thread::spawn(move || {
+                            let result = (|| -> io::Result<()> {
+                                if let Some(gate) = gate.as_ref() {
+                                    let deadline =
+                                        std::time::Instant::now() + Duration::from_secs(5);
+                                    while !gate.is_file() {
+                                        if std::time::Instant::now() >= deadline {
+                                            return Err(io::Error::new(
+                                                io::ErrorKind::TimedOut,
+                                                "post-completion notification gate timed out",
+                                            ));
+                                        }
+                                        thread::sleep(Duration::from_millis(1));
+                                    }
                                 }
-                                thread::sleep(Duration::from_millis(1));
+                                for notification in [
+                                    json!({
+                                        "method": "deprecationNotice",
+                                        "params": {"summary": "A provider setting is deprecated", "details": null}
+                                    }),
+                                    json!({
+                                        "method": "remoteControl/status/changed",
+                                        "params": {"status": "disabled", "environmentId": null}
+                                    }),
+                                    json!({
+                                        "method": "mcpServer/startupStatus/updated",
+                                        "params": {"name": "codex_apps", "status": "ready", "error": null}
+                                    }),
+                                    json!({
+                                        "method": "account/rateLimits/updated",
+                                        "params": {"rateLimits": {}}
+                                    }),
+                                    json!({
+                                        "method": "rawResponseItem/completed",
+                                        "params": {"threadId": thread_id, "turnId": tail_turn_id, "item": {"id": "raw-tail", "type": "reasoning"}}
+                                    }),
+                                    json!({
+                                        "method": "rawResponse/completed",
+                                        "params": {"threadId": thread_id, "turnId": tail_turn_id, "response": {"id": "response-tail"}}
+                                    }),
+                                    json!({
+                                        "method": "thread/goal/updated",
+                                        "params": {"threadId": thread_id, "goal": "finish the turn"}
+                                    }),
+                                    json!({
+                                        "method": "thread/goal/cleared",
+                                        "params": {"threadId": thread_id}
+                                    }),
+                                ] {
+                                    send(notification)?;
+                                }
+                                if let Some(gate) = gate.as_ref() {
+                                    fs::write(gate.with_extension("emitted"), b"emitted")?;
+                                }
+                                Ok(())
+                            })();
+                            if let Err(error) = result {
+                                eprintln!("post-completion passive tail failed: {error}");
                             }
-                        }
-                        for notification in [
-                            json!({
-                                "method": "deprecationNotice",
-                                "params": {"summary": "A provider setting is deprecated", "details": null}
-                            }),
-                            json!({
-                                "method": "remoteControl/status/changed",
-                                "params": {"status": "disabled", "environmentId": null}
-                            }),
-                            json!({
-                                "method": "mcpServer/startupStatus/updated",
-                                "params": {"name": "codex_apps", "status": "ready", "error": null}
-                            }),
-                            json!({
-                                "method": "account/rateLimits/updated",
-                                "params": {"rateLimits": {}}
-                            }),
-                            json!({
-                                "method": "rawResponseItem/completed",
-                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id, "item": {"id": "raw-tail", "type": "reasoning"}}
-                            }),
-                            json!({
-                                "method": "rawResponse/completed",
-                                "params": {"threadId": state.thread_id, "turnId": provider_turn_id, "response": {"id": "response-tail"}}
-                            }),
-                            json!({
-                                "method": "thread/goal/updated",
-                                "params": {"threadId": state.thread_id, "goal": "finish the turn"}
-                            }),
-                            json!({
-                                "method": "thread/goal/cleared",
-                                "params": {"threadId": state.thread_id}
-                            }),
-                        ] {
-                            send(notification)?;
-                        }
-                        if let Some(gate) = post_completion_notification_gate.as_ref() {
-                            fs::write(gate.with_extension("emitted"), b"emitted")?;
-                        }
+                        });
                     }
                     if emit_post_completion_foreign_turn {
                         let gate = post_completion_notification_gate.clone();
