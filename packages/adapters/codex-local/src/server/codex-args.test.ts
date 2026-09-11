@@ -8,7 +8,10 @@ describe("buildCodexExecArgs", () => {
     expect(result.args).toContain("features.shell_snapshot=false");
     expect(result.args.indexOf("allow_login_shell=false")).toBeGreaterThan(result.args.indexOf("allow_login_shell=true"));
     expect(result.args.slice(-1)).toEqual(["-"]);
-    expect(buildCodexExecArgs({}).args).toEqual(["exec", "--json", "-"]);
+    expect(buildCodexExecArgs({}).args).toEqual([
+      "exec", "--json", "-c", 'sandbox_mode="workspace-write"',
+      "-c", "sandbox_workspace_write.network_access=true", "-",
+    ]);
   });
 
   it("forwards GPT-6 Astra, its ultra reasoning effort, and fast mode", () => {
