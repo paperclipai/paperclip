@@ -65,6 +65,7 @@ const chatProviderName = (provider) =>
     "microsoft-teams": "Microsoft Teams",
     slack: "Slack",
     telegram: "Telegram",
+    "imessage-photon": "iMessage Photon",
   })[provider];
 const channelMethod = (
   provider,
@@ -363,6 +364,14 @@ const apps = [
         docs: "https://learn.microsoft.com/en-us/microsoftteams/platform/bots/how-to/create-a-bot-for-teams",
       },
     ),
+  ],
+  [
+    "imessage-photon", "iMessage Photon",
+    "Message a Paperclip agent from Apple Messages using a dedicated Photon number.",
+    "communication", "photon.codes", ["https://photon.codes/*"],
+    channelMethod("imessage-photon", [field("projectSecret", "Project secret", "Photon project secret")], ["direct_message", "group_chat"],
+      "Connect a Photon Cloud project with a dedicated number. Link people and explicitly enable each group before it can start work.",
+      { register: "https://photon.codes/", docs: "https://photon.codes/docs/spectrum-ts/providers/imessage/connection-and-routing" }),
   ],
   [
     "telegram",

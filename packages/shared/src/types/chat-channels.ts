@@ -6,6 +6,7 @@ export const CHAT_PROVIDERS = [
   "microsoft-teams",
   "telegram",
   "agentmail",
+  "imessage-photon",
 ] as const;
 export type ChatProvider = (typeof CHAT_PROVIDERS)[number];
 
@@ -255,6 +256,7 @@ export interface ChatEndpointResource {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+  participants?: string[];
 }
 
 export interface ChatExternalPrincipal {
@@ -467,6 +469,7 @@ export interface UpdateChatEndpointInput {
 export interface ConfigureChatEndpointInput {
   action: "configure" | "verify" | "pause" | "resume" | "reconnect" | "remove";
   credentials?: Record<string, string>;
+  photon?: PhotonChannelConfiguration;
 }
 
 export interface NormalizedChatEvent {
@@ -502,4 +505,17 @@ export interface NormalizedChatEvent {
     attachmentUrls?: string[];
   };
   raw: Record<string, unknown>;
+}
+
+/** Safe Photon project inspection; credentials and line tokens are never serialized. */
+export interface PhotonProjectInspection {
+  projectId: string;
+  projectName: string;
+  allocation: "dedicated" | "shared";
+  eligible: boolean;
+  lines: Array<{ lineId: string; phoneNumber: string; eligible: boolean; unavailableReason?: string }>;
+}
+export interface PhotonChannelConfiguration {
+  projectId: string;
+  lineId: string;
 }

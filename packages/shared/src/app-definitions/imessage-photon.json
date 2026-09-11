@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "slug": "imessage-photon",
+  "name": "iMessage Photon",
+  "description": "Message a Paperclip agent from Apple Messages using a dedicated Photon number.",
+  "categories": [
+    "communication"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/imessage-photon.png"
+  },
+  "urlPatterns": [
+    "https://photon.codes/*"
+  ],
+  "methods": [
+    {
+      "key": "chat-agent",
+      "label": "Chat with an agent",
+      "purpose": "channel",
+      "provider": "imessage-photon",
+      "transport": "chat_sdk",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Let people in iMessage Photon start and continue work with one Paperclip agent.",
+      "credentialFields": [
+        {
+          "key": "projectSecret",
+          "label": "Project secret",
+          "type": "password",
+          "required": true,
+          "placeholder": "Photon project secret",
+          "secret": true
+        }
+      ],
+      "guidanceMd": "Connect a Photon Cloud project with a dedicated number. Link people and explicitly enable each group before it can start work.",
+      "consoleLinks": {
+        "register": "https://photon.codes/",
+        "docs": "https://photon.codes/docs/spectrum-ts/providers/imessage/connection-and-routing"
+      },
+      "riskTier": "S3",
+      "requiredResourceFilters": [
+        "direct_message",
+        "group_chat"
+      ]
+    }
+  ]
+}
