@@ -14,6 +14,8 @@ import type {
   IssueThreadInteraction,
 } from "@paperclipai/shared";
 import { heartbeatsApi } from "@/api/heartbeats";
+import { nativeRunEventsToTranscript } from "./transcript/native-run-events";
+import type { HeartbeatRunEvent } from "@paperclipai/shared";
 
 const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
@@ -142,29 +144,59 @@ function render(ui: ReactElement) {
 }
 
 it("coordinates first reveal while keeping the composer and visible history mounted through refresh", async () => {
-  const props = { issueId: "coordinated-issue", comments: [], onAdd: async () => {} };
+  const props = {
+    issueId: "coordinated-issue",
+    comments: [],
+    onAdd: async () => {},
+  };
   render(<TaskChatThread {...props} initialHistoryPending />);
   const composer = container.querySelector('[data-testid="mock-editor"]');
   expect(composer).not.toBeNull();
   expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
   render(<TaskChatThread {...props} initialHistoryPending={false} />);
-  await act(async () => { await new Promise((resolve) => requestAnimationFrame(resolve)); });
+  await act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
   expect(container.querySelector('[aria-busy="false"]')).not.toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
   render(<TaskChatThread {...props} initialHistoryPending />);
-  expect(container.querySelector('[data-testid="task-chat-history-loading"]')).toBeNull();
+  expect(
+    container.querySelector('[data-testid="task-chat-history-loading"]'),
+  ).toBeNull();
   expect(container.querySelector('[data-testid="mock-editor"]')).toBe(composer);
 });
 
 it("keeps an acknowledged optimistic bubble mounted with its canonical comment target", () => {
-  const comment = { companyId: "company", issueId: "issue", authorAgentId: null, presentation: null, metadata: null, updatedAt: new Date("2026-09-09T12:00:00Z"), id: "optimistic-one", clientId: "optimistic-one", body: "Keep this message in place", authorType: "user" as const, authorUserId: "board", createdAt: new Date("2026-09-09T12:00:00Z") };
+  const comment = {
+    companyId: "company",
+    issueId: "issue",
+    authorAgentId: null,
+    presentation: null,
+    metadata: null,
+    updatedAt: new Date("2026-09-09T12:00:00Z"),
+    id: "optimistic-one",
+    clientId: "optimistic-one",
+    body: "Keep this message in place",
+    authorType: "user" as const,
+    authorUserId: "board",
+    createdAt: new Date("2026-09-09T12:00:00Z"),
+  };
   render(<TaskChatThread comments={[comment]} onAdd={async () => {}} />);
   const row = container.querySelector('[data-thread-anchor="optimistic-one"]');
   expect(row).not.toBeNull();
-  render(<TaskChatThread comments={[{ ...comment, id: "canonical-one" }]} onAdd={async () => {}} />);
-  expect(container.querySelector('[data-thread-anchor="optimistic-one"]')).toBe(row);
+  render(
+    <TaskChatThread
+      comments={[{ ...comment, id: "canonical-one" }]}
+      onAdd={async () => {}}
+    />,
+  );
+  expect(container.querySelector('[data-thread-anchor="optimistic-one"]')).toBe(
+    row,
+  );
   expect(row?.id).toBe("comment-canonical-one");
-  expect(container.textContent?.match(/Keep this message in place/g)).toHaveLength(1);
+  expect(
+    container.textContent?.match(/Keep this message in place/g),
+  ).toHaveLength(1);
 });
 
 function fakeScrollGeometry(
@@ -388,9 +420,7 @@ describe("TaskChatThread draft pass-through", () => {
     const dock = container.querySelector(
       '[data-testid="task-chat-composer-dock"]',
     );
-    const thread = container.querySelector(
-      '[data-testid="task-chat-thread"]',
-    );
+    const thread = container.querySelector('[data-testid="task-chat-thread"]');
     expect(thread?.classList).not.toContain("h-(--tc-thread-max-h)");
     expect(thread?.classList).toContain("flex-1");
     expect(dock?.classList).toContain("px-2");
@@ -1026,6 +1056,57 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(onRetryFailedRun).toHaveBeenCalledWith("native-failed");
   });
 
+  it("explains a native provider usage limit without exposing its error code", async () => {
+    const onRetryFailedRun = vi.fn();
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        issueStatus="blocked"
+        onRetryFailedRun={onRetryFailedRun}
+        linkedRuns={[
+          {
+            runId: "native-usage-limit",
+            runtimeMode: "native",
+            status: "failed",
+            errorCode: "native_provider_usage_limit",
+            agentId: "agent-1",
+            agentName: "Runner",
+            adapterType: "paperclip_runner",
+            createdAt: "2026-08-25T18:00:00.000Z",
+            startedAt: "2026-08-25T18:00:00.000Z",
+            finishedAt: "2026-08-25T18:00:02.000Z",
+          },
+        ]}
+      />,
+    );
+
+    const marker = container.querySelector(
+      '[data-testid="task-chat-collapsible-marker"]',
+    );
+    expect(marker?.textContent).toContain("Usage limit reached");
+    expect(marker?.textContent).not.toContain("Run failed");
+    const disclosure = marker?.querySelector<HTMLButtonElement>(
+      'button[aria-expanded="false"]',
+    );
+    expect(disclosure).not.toBeNull();
+    flushSync(() => disclosure!.click());
+    const details = container.querySelector(
+      '[data-testid="task-chat-collapsible-marker-details"]',
+    );
+    expect(details?.textContent).toContain(
+      "The model provider has reached its current usage limit. Try again after the limit resets.",
+    );
+    expect(details?.textContent).not.toContain("native_provider_usage_limit");
+    const retry = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-run-failed-try-again"]',
+    );
+    expect(retry).not.toBeNull();
+    flushSync(() => retry!.click());
+    await Promise.resolve();
+    expect(onRetryFailedRun).toHaveBeenCalledWith("native-usage-limit");
+  });
+
   it("explains a legacy run prevented from starting by a reconciliation hold", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
       runId: "blocked-legacy", runtimeMode: "legacy", status: "cancelled",
@@ -1149,12 +1230,28 @@ describe("TaskChatThread runtime transcript selection", () => {
   );
 
   it("does not show a completed-response notice for a redundant cancelled continuation", () => {
-    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
-      runId: "connection-continuation-skipped", status: "cancelled", errorCode: "issue_not_in_progress", startedAt: null,
-      agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
-      createdAt: "2026-09-07T18:00:00.000Z", finishedAt: "2026-09-07T18:00:01.000Z",
-    }]} />);
-    expect(container.textContent).not.toContain("The runner returned no user-facing response.");
+    render(
+      <TaskChatThread
+        comments={[]}
+        onAdd={async () => {}}
+        linkedRuns={[
+          {
+            runId: "connection-continuation-skipped",
+            status: "cancelled",
+            errorCode: "issue_not_in_progress",
+            startedAt: null,
+            agentId: "agent-1",
+            agentName: "Runner",
+            adapterType: "paperclip_runner",
+            createdAt: "2026-09-07T18:00:00.000Z",
+            finishedAt: "2026-09-07T18:00:01.000Z",
+          },
+        ]}
+      />,
+    );
+    expect(container.textContent).not.toContain(
+      "The runner returned no user-facing response.",
+    );
     expect(container.textContent).not.toContain("Run completed");
   });
 
@@ -1475,6 +1572,238 @@ describe("TaskChatThread runtime transcript selection", () => {
     ).toContain("Continued after steering · Working for");
     expect(container.textContent).toContain(
       `Queued ${new Date("2026-08-25T17:59:32.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · Steered ${new Date("2026-08-25T18:00:02.000Z").toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`,
+    );
+  });
+
+  it.each([
+    "missing_result_metadata",
+    "yielded_result_metadata",
+    "steered_missing_result_metadata",
+    "persisted_response_comment",
+    "pending_attention",
+    "live",
+    "failed",
+    "proposed",
+    "question",
+    "approval",
+  ])("renders only an authorized terminal response-wake answer: %s", (mode) => {
+    const runId = "native-checklist-response";
+    const summary =
+      "**Before release**\n- Test and rehearse rollback.\n\n**During release**\n- Deploy incrementally and watch errors.\n\n**After release**\n- Verify workflows and record follow-ups.";
+    const result = {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "yielded",
+      summary,
+      completionClaim: { objectiveSatisfied: true, remainingWork: [] },
+      continuation: {
+        kind: "response_wake",
+        idempotencyKey: "next-chat-input",
+      },
+      attentionRequests:
+        mode === "question" || mode === "approval"
+          ? [
+              {
+                kind:
+                  mode === "question"
+                    ? "ask_user_questions"
+                    : "request_confirmation",
+              },
+            ]
+          : [],
+      evidence: [],
+      verification: [],
+      artifacts: [],
+    };
+    const event = (
+      seq: number,
+      eventType: string,
+      payload: Record<string, unknown>,
+    ) =>
+      ({
+        id: seq,
+        companyId: "company-1",
+        agentId: "agent-1",
+        stream: "system",
+        level: "info",
+        color: null,
+        message: null,
+        runId,
+        seq,
+        eventType,
+        createdAt: new Date("2026-08-25T18:00:00Z"),
+        payload: {
+          prpEvent: {
+            schema: "paperclip.prp.event.v1",
+            schemaVersion: 1,
+            runId,
+            eventType,
+            sourceEventId: `checklist-${seq}`,
+            sourceKind:
+              eventType === "run.result.accepted" ||
+              eventType === "run.terminal"
+                ? "control_plane"
+                : "runner",
+            sourceInstanceId: "runner-1",
+            sourceSeq: seq,
+            normalizedSessionId: "session-1",
+            emittedAt: `2026-08-25T18:00:0${seq}Z`,
+            payload,
+          },
+        },
+      }) satisfies HeartbeatRunEvent;
+    nativeTranscriptState.transcriptByRun.set(
+      runId,
+      nativeRunEventsToTranscript([
+        event(1, "item.completed", {
+          kind: "agentMessage",
+          channel: "progress",
+          item: {
+            id: "preamble",
+            type: "agentMessage",
+            channel: "progress",
+            text: "I’m providing the requested checklist and leaving the task open.",
+          },
+        }),
+        event(2, "run.result.proposed", result),
+        ...(mode === "proposed"
+          ? []
+          : [event(3, "run.result.accepted", { result })]),
+        event(4, "run.terminal", {
+          schema: "paperclip.prp.terminal.v1",
+          turnTerminalState: "completed",
+          runTerminalState: "succeeded",
+          reportedWorkDisposition: "yielded",
+        }),
+      ]),
+    );
+    render(
+      <TaskChatThread
+        comments={
+          mode === "steered_missing_result_metadata"
+            ? [
+                {
+                  id: "response-wake-steering",
+                  companyId: "company-1",
+                  issueId: "issue-1",
+                  authorType: "user",
+                  authorAgentId: null,
+                  authorUserId: "user-1",
+                  body: "Keep the task open for follow-up.",
+                  presentation: null,
+                  metadata: null,
+                  runId: null,
+                  followUpRequested: true,
+                  consumedByRunId: runId,
+                  steeredIntoRunId: runId,
+                  conversationAnchorAt: new Date("2026-08-25T18:00:03.500Z"),
+                  createdAt: new Date("2026-08-25T18:00:03.000Z"),
+                  updatedAt: new Date("2026-08-25T18:00:03.500Z"),
+                },
+              ]
+            : mode === "persisted_response_comment"
+              ? [
+                  {
+                    id: "private-board-response",
+                    companyId: "company-1",
+                    issueId: "issue-1",
+                    authorType: "agent",
+                    authorAgentId: "agent-1",
+                    authorUserId: null,
+                    body: summary,
+                    presentation: null,
+                    metadata: null,
+                    createdByRunId: runId,
+                    runId,
+                    createdAt: new Date("2026-08-25T18:00:29.000Z"),
+                    updatedAt: new Date("2026-08-25T18:00:29.000Z"),
+                  },
+                ]
+              : []
+        }
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        interactions={
+          mode === "pending_attention"
+            ? [planReviewInteraction("pending", "revision-3", runId)]
+            : []
+        }
+        activeRun={
+          mode === "live"
+            ? {
+                id: runId,
+                runtimeMode: "native",
+                status: "running",
+                invocationSource: "issue",
+                triggerDetail: null,
+                agentId: "agent-1",
+                agentName: "Runner",
+                adapterType: "paperclip_runner",
+                createdAt: "2026-08-25T18:00:00Z",
+                startedAt: "2026-08-25T18:00:00Z",
+                finishedAt: null,
+              }
+            : undefined
+        }
+        linkedRuns={[
+          {
+            runId,
+            runtimeMode: "native",
+            status:
+              mode === "live"
+                ? "running"
+                : mode === "failed"
+                  ? "failed"
+                  : "succeeded",
+            agentId: "agent-1",
+            agentName: "Runner",
+            adapterType: "paperclip_runner",
+            createdAt: "2026-08-25T18:00:00Z",
+            startedAt: "2026-08-25T18:00:00Z",
+            finishedAt: mode === "live" ? null : "2026-08-25T18:00:30Z",
+            resultJson: mode.endsWith("missing_result_metadata")
+              ? { recoveredExecutionFailure: { errorCode: "adapter_failed" } }
+              : {
+                  nativeResult: result,
+                  ...(mode === "persisted_response_comment"
+                    ? {
+                        presentationDecision: {
+                          schema: "paperclip.run_presentation_decision.v1",
+                          chosenSource: "existing_issue_comment",
+                          commentId: "private-board-response",
+                        },
+                      }
+                    : {}),
+                },
+          },
+        ]}
+      />,
+    );
+    const responses = container.querySelectorAll(
+      '[data-testid="task-chat-final-response"]',
+    );
+    if (mode === "persisted_response_comment") {
+      expect(responses).toHaveLength(0);
+      expect(container.textContent?.split("Before release")).toHaveLength(2);
+      expect(
+        container.querySelector('[data-testid="task-chat-agent-bubble"]')
+          ?.textContent,
+      ).toContain("After release");
+      return;
+    }
+    if (
+      mode !== "missing_result_metadata" &&
+      mode !== "yielded_result_metadata" &&
+      mode !== "steered_missing_result_metadata"
+    ) {
+      expect(responses).toHaveLength(0);
+      return;
+    }
+    expect(responses).toHaveLength(1);
+    expect(responses[0]?.textContent).toContain("Before release");
+    expect(responses[0]?.textContent).toContain("After release");
+    expect(responses[0]?.textContent).not.toContain("I’m providing");
+    expect(container.textContent).not.toContain(
+      "The runner returned no user-facing response.",
     );
   });
 
@@ -2943,6 +3272,141 @@ describe("TaskChatThread live transcript", () => {
     });
     expect(container.textContent).not.toContain("no longer attached");
   });
+
+  it.each(["done", "yielded"])(
+    "renders one native turn while its completion comment refresh is delayed: %s",
+    (disposition) => {
+      const runId = "native-delayed-comment";
+      const summary = "DELAYED-CANONICAL-REPLY";
+      nativeTranscriptState.transcriptByRun.set(runId, [
+        {
+          kind: "assistant",
+          ts: "2026-08-07T00:00:01Z",
+          text: "UNIQUE-PROGRESS-LINE",
+          channel: "progress",
+        },
+        {
+          kind: "assistant",
+          ts: "2026-08-07T00:00:02Z",
+          text: summary,
+          channel: "final",
+        },
+        {
+          kind: "run_result",
+          ts: "2026-08-07T00:00:03Z",
+          disposition,
+          summary,
+          objectiveSatisfied: true,
+          verification: [],
+          remainingWork: [],
+          blocker: null,
+          artifacts: [],
+          ...(disposition === "yielded"
+            ? {
+                acceptedResponseWake: {
+                  runId,
+                  sourceEventId: "accepted-result",
+                },
+              }
+            : {}),
+        },
+        {
+          kind: "run_terminal",
+          ts: "2026-08-07T00:00:04Z",
+          turnState: "completed",
+          runState: "succeeded",
+          disposition,
+        },
+      ]);
+      const activeRun = {
+        id: runId,
+        runtimeMode: "native" as const,
+        status: "running",
+        invocationSource: "issue" as const,
+        triggerDetail: null,
+        startedAt: "2026-08-07T00:00:00Z",
+        createdAt: "2026-08-07T00:00:00Z",
+        finishedAt: null,
+        agentId: "agent-1",
+        agentName: "Runner",
+        adapterType: "paperclip_runner",
+      };
+      const linkedRun = {
+        ...activeRun,
+        runId,
+        status: "succeeded",
+        finishedAt: "2026-08-07T00:00:05Z",
+        resultJson: {
+          nativeResult: {
+            schema: "paperclip.run_result.v1",
+            reportedWorkDisposition: disposition,
+            summary,
+          },
+          presentationDecision: {
+            schema: "paperclip.run_presentation_decision.v1",
+            chosenSource: "existing_issue_comment",
+            commentId: "delayed-comment",
+          },
+        },
+      };
+      render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          issueStatus="in_progress"
+          activeRun={activeRun}
+        />,
+      );
+      // The terminal run/event query wins the race, but the canonical comment
+      // request is still pending. The settled answer already owns the turn.
+      render(
+        <TaskChatThread
+          comments={[]}
+          onAdd={async () => {}}
+          issueStatus="in_progress"
+          linkedRuns={[linkedRun]}
+        />,
+      );
+      expect(container.textContent?.split("UNIQUE-PROGRESS-LINE")).toHaveLength(
+        2,
+      );
+      expect(container.textContent?.split(summary)).toHaveLength(2);
+      expect(
+        container.querySelector('[data-testid="task-chat-live-transcript"]'),
+      ).toBeNull();
+      render(
+        <TaskChatThread
+          comments={[
+            {
+              id: "delayed-comment",
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorType: "agent",
+              authorAgentId: "agent-1",
+              authorUserId: null,
+              createdByRunId: runId,
+              runId,
+              body: summary,
+              presentation: null,
+              metadata: null,
+              createdAt: new Date("2026-08-07T00:00:05Z"),
+              updatedAt: new Date("2026-08-07T00:00:05Z"),
+            },
+          ]}
+          onAdd={async () => {}}
+          issueStatus="in_progress"
+          linkedRuns={[linkedRun]}
+        />,
+      );
+      expect(container.textContent?.split("UNIQUE-PROGRESS-LINE")).toHaveLength(
+        2,
+      );
+      expect(container.textContent?.split(summary)).toHaveLength(2);
+      expect(
+        container.querySelector('[data-testid="task-chat-final-response"]'),
+      ).toBeNull();
+    },
+  );
 
   it("keeps the transcript mounted through run settle until the settled turn renders (PAP-462 B4)", () => {
     transcriptState.transcriptByRun.set("run-1", [

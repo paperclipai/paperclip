@@ -149,6 +149,41 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
     const originalSettings = await json(
       await request.get("/api/instance/settings/experimental"),
     );
+    const statusMetadata: Record<string, string | null>[] = [];
+    page.on("websocket", (socket) => {
+      socket.on("framereceived", ({ payload: frame }) => {
+        try {
+          const event = JSON.parse(
+            typeof frame === "string" ? frame : frame.toString("utf8"),
+          );
+          if (
+            event.companyId !== company.id ||
+            event.type !== "heartbeat.run.status"
+          )
+            return;
+          // Retain only scalar status routing evidence for this owned company,
+          // never raw frames, provider output, errors, or tool payloads.
+          const entry: Record<string, string | null> = {};
+          for (const key of [
+            "runId",
+            "agentId",
+            "status",
+            "issueId",
+            "deliveryId",
+            "startedAt",
+            "finishedAt",
+          ] as const) {
+            const value = event.payload?.[key];
+            if (value === null || typeof value === "string") entry[key] = value;
+          }
+          if (typeof event.createdAt === "string")
+            entry.eventCreatedAt = event.createdAt;
+          statusMetadata.push(entry);
+        } catch {
+          // Non-JSON frames are irrelevant and are not retained.
+        }
+      });
+    });
     try {
       await json(
         await request.patch("/api/instance/settings/experimental", {
@@ -346,8 +381,10 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       expect(await json(await request.get(`/api/issues/${child.id}/live-runs`))).toEqual([]);
       await reconcileDemoExecution(request, parent.id, parentRun.id);
       await reconcileDemoExecution(request, child.id, childRun.id);
-      await running(request, parent.id, adapter);
-      await running(request, child.id, adapter);
+      const resumedParentRun = await running(request, parent.id, adapter);
+      const resumedChildRun = await running(request, child.id, adapter);
+      expect(resumedParentRun.id).not.toBe(parentRun.id);
+      expect(resumedChildRun.id).not.toBe(childRun.id);
       await menu(page, "Pause subtree");
       await expect(page.getByRole("dialog")).toHaveCount(0);
       await expect(
@@ -385,10 +422,35 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         (await json(await request.get(`/api/heartbeat-runs/${otherRun.id}`)))
           .status,
       ).toBe("running");
+      // The child was never opened, so no child run-history cache can hide a
+      // missing task association. Observe this new run's retryable terminal
+      // delivery before judging the final notification state.
+      await expect
+        .poll(
+          () =>
+            statusMetadata.find(
+              (entry) =>
+                entry.runId === resumedChildRun.id &&
+                entry.status === "cancelled" &&
+                typeof entry.deliveryId === "string" &&
+                entry.deliveryId.length > 0,
+            ),
+          // The real status-delivery sweep runs every 15 seconds.
+          { timeout: 20_000 },
+        )
+        .toMatchObject({
+          runId: resumedChildRun.id,
+          issueId: child.id,
+          status: "cancelled",
+        });
+      await expect(
+        page.getByRole("button", { name: "Dismiss notification" }),
+      ).toHaveCount(0);
       await page.screenshot({
         path: testInfo.outputPath(`${adapter}-cancelled.png`),
       });
     } finally {
+      const statusEvidence = JSON.stringify(statusMetadata, null, 2);
       // The company is disposable and scoped to this test invocation.
       await request.patch(`/api/companies/${company.id}`, {
         data: { status: "archived" },
@@ -399,6 +461,10 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
             originalSettings.enableClassicTaskInterface,
           enableNativeRunner: originalSettings.enableNativeRunner,
         },
+      });
+      await testInfo.attach("owned-company-status-metadata", {
+        body: statusEvidence,
+        contentType: "application/json",
       });
     }
   });

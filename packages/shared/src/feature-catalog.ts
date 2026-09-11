@@ -100,6 +100,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: true,
     selfHostedDefault: true,
   },
+  enableChatConnectors: {
+    title: "Chat connectors",
+    description:
+      "Show experimental chat connector setup and Board surfaces. Existing connections keep running when hidden; GitHub and other tool connectors are unaffected.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enablePipelines: {
     title: "Pipelines",
     description: "Enable pipeline definitions and pipeline-driven case production surfaces.",

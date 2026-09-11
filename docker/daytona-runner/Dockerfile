@@ -134,7 +134,7 @@ RUN /bin/sh -lc 'set -eu; \
       command -v "$command_name" >/dev/null || { echo "FATAL: $command_name not on PATH for daytona user" >&2; exit 1; }; \
     done; \
     test "$(acpx --version)" = "0.13.1"; \
-    test "$(claude-agent-acp --version)" = "0.70.0"; \
+    test "$(claude-agent-acp --version)" = "0.73.0"; \
     test "$(codex-acp --version)" = "@agentclientprotocol/codex-acp 1.6.2"'
 
 LABEL io.paperclip.runner.content-id="${PAPERCLIP_RUNNER_CONTENT_ID}" \

@@ -1460,6 +1460,7 @@ export class DurablePrpControlPlane {
   #expectedRunnerDigest: string;
   #server: Server | null = null;
   #connections = new Set<AuthorityConnection>();
+  #connectionProcessing = new Map<AuthorityConnection, Promise<void>>();
   #pendingSemanticCalls = new Set<string>();
   #semanticResultPersistenceFailed = false;
   #port: number | null = null;
@@ -1571,6 +1572,23 @@ export class DurablePrpControlPlane {
       await new Promise<void>((resolveClose) =>
         server.close(() => resolveClose()),
       );
+    }
+  }
+
+  /** Join admitted wire work after ingress has stopped, including queued
+   * frames on already-closed connections. This proves settlement, not a
+   * successful commit or reusable checkpoint; callers still inspect those
+   * durable receipts and own the wait's deadline. Ordinary stop stays bounded
+   * by socket ownership rather than arbitrary external commit callbacks. */
+  async drainPendingConnectionProcessing(): Promise<void> {
+    const assertIngressStopped = () => {
+      if (this.#server !== null || this.#connections.size !== 0)
+        throw new Error("Connection processing drain requires stopped ingress.");
+    };
+    assertIngressStopped();
+    while (this.#connectionProcessing.size > 0) {
+      await Promise.allSettled([...this.#connectionProcessing.values()]);
+      assertIngressStopped();
     }
   }
 
@@ -1981,6 +1999,13 @@ export class DurablePrpControlPlane {
         processing = processing
           .then(() => this.#handleJson(connection, value))
           .catch(() => connection.close());
+        const tail = processing;
+        this.#connectionProcessing.set(connection, tail);
+        const release = () => {
+          if (this.#connectionProcessing.get(connection) === tail)
+            this.#connectionProcessing.delete(connection);
+        };
+        void tail.then(release, release);
       },
       onClose: () => this.#connections.delete(connection),
     });

@@ -120,16 +120,17 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
     hasExistingExecutionPath: vi.fn(async () => false),
     hasExplicitBlockerPath: vi.fn(async () => false),
     isAutomaticRecoverySuppressedByPauseHold: vi.fn(async () => false),
+    isImmediateRecoverySourceBlocked: vi.fn(async () => false),
     queueReviewParticipantRecoveryRun: vi.fn(async () => runSummary("review-recovery")),
     queueImmediateRecoveryRun: vi.fn(async () => runSummary("immediate-recovery")),
     ...overrides,
   };
 }
 
-function createFakeIssueLock(host: WakeQueueHost, transaction: WakeQueueTransaction): IssueLockWriter {
+function createFakeIssueLock(host: WakeQueueHost, transaction: WakeQueueTransaction, issue = ISSUE): IssueLockWriter {
   return {
     withIssueExecutionLock: vi.fn(async (_input, fn) => {
-      const result = await fn({ primaryIssue: ISSUE, run: RUN }, { host, transaction });
+      const result = await fn({ primaryIssue: issue, run: RUN }, { host, transaction });
       return { ...result, run: RUN };
     }),
   };
@@ -143,6 +144,99 @@ function createFakeRecovery(): RecoveryEscalationPort {
 }
 
 describe("releaseIssueExecution", () => {
+  it.each([true, false])(
+    "preserves failed-chat retry input without reopening only with adapter proof: %s",
+    async (authorizedFailedChatRetry) => {
+      const queue = [
+        wakeCandidate({
+          authorizedFailedChatRetry,
+          queuedCommentIds: ["original-comment"],
+          deferredCommentIds: ["original-comment"],
+          deferredContextSeed: {
+            issueId: ISSUE.id,
+            wakeCommentIds: ["original-comment"],
+            retryOfRunId: "original-failed-run",
+            chatFailedRunRetry: { requestId: "exact-request" },
+          },
+        }),
+      ];
+      const transaction = createFakeTransaction({
+        findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      });
+      const host = createFakeHost();
+      const release = createReleaseIssueExecution({
+        issueLock: createFakeIssueLock(host, transaction, {
+          ...ISSUE,
+          status: "done",
+        }),
+        recovery: createFakeRecovery(),
+      });
+
+      const result = await release({
+        companyId: RUN.companyId,
+        runId: RUN.id,
+        now: new Date(),
+      });
+
+      expect(transaction.normalizeDeferredWakeCommentIds).not.toHaveBeenCalled();
+      expect(transaction.reopenIssue).not.toHaveBeenCalled();
+      if (authorizedFailedChatRetry) {
+        expect(transaction.getQueuedCommentLiveness).not.toHaveBeenCalled();
+        expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+        expect(transaction.finalizePromotedWake).toHaveBeenCalledWith(
+          expect.objectContaining({
+            authorizedFailedChatRetry: true,
+            contextSnapshot: expect.objectContaining({
+              wakeCommentIds: ["original-comment"],
+              retryOfRunId: "original-failed-run",
+              chatFailedRunRetry: { requestId: "exact-request" },
+            }),
+          }),
+        );
+        expect(result.outcome.kind).toBe("promoted");
+      } else {
+        expect(transaction.getQueuedCommentLiveness).toHaveBeenCalledTimes(1);
+        expect(transaction.cancelDeferredWake).toHaveBeenCalledTimes(1);
+        expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+        expect(result.outcome.kind).toBe("released");
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "applies an exact source denial only after independent deferred input: %s",
+    async (hasDeferredInput) => {
+      const transaction = createFakeTransaction({
+        findNextDeferredWake: vi.fn(async () =>
+          hasDeferredInput ? wakeCandidate() : null,
+        ),
+        isImmediateRecoverySourceBlocked: vi.fn(async () => true),
+      });
+      const release = createReleaseIssueExecution({
+        issueLock: createFakeIssueLock(createFakeHost(), transaction),
+        recovery: createFakeRecovery(),
+      });
+
+      const result = await release({
+        companyId: RUN.companyId,
+        runId: RUN.id,
+        now: new Date(),
+      });
+
+      expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
+      if (hasDeferredInput) {
+        expect(transaction.isImmediateRecoverySourceBlocked).not.toHaveBeenCalled();
+        expect(result.outcome.kind).toBe("promoted");
+      } else {
+        expect(transaction.isImmediateRecoverySourceBlocked).toHaveBeenCalledWith({
+          companyId: RUN.companyId,
+          runId: RUN.id,
+        });
+        expect(result.outcome.kind).toBe("blocked");
+      }
+    },
+  );
+
   it("processes the deferred wakes in requestedAt order", async () => {
     const claimOrder: string[] = [];
     const queue = [wakeCandidate({ id: "wake-earliest" }), wakeCandidate({ id: "wake-latest" })];
@@ -449,6 +543,7 @@ function admissionInput(
 function createFakeAdmissionReader(overrides: Partial<WakeAdmissionReader> = {}): WakeAdmissionReader {
   return {
     isSameExecutionAgent: vi.fn(async () => true),
+    matchesActiveWakeActor: vi.fn(async () => true),
     findExistingDeferredWake: vi.fn(async () => null),
     ...overrides,
   };
@@ -485,6 +580,250 @@ function createFakeAdmissionHelpers(
 }
 
 describe("admitWakeBehindIssueExecution", () => {
+  it.each(["running", "queued"])(
+    "keeps a dedicated durable continuation separate from a %s execution and an existing deferred wake",
+    async (status) => {
+      const durableReceipt = {
+        id: "dedicated-receipt",
+        requestedAt: new Date("2026-09-10T00:00:00Z"),
+      };
+      const writer = createFakeAdmissionWriter();
+      const reader = createFakeAdmissionReader({
+        findExistingDeferredWake: vi.fn(async () => ({
+          id: "unrelated-deferred-wake",
+          payload: {},
+          deferredContext: {},
+          coalescedCount: 0,
+        })),
+      });
+      const helpers = createFakeAdmissionHelpers();
+      const admit = createAdmitWakeBehindIssueExecution({
+        reader,
+        writer,
+        helpers,
+      });
+      const contextSnapshot = {
+        issueId: "issue-1",
+        externalChatContinuation: true,
+        interactionId: "exact-interaction",
+        sourceRunId: "exact-source-run",
+      };
+
+      const result = await admit(
+        SCOPE,
+        admissionInput({
+          activeExecutionRun: { ...ACTIVE_EXECUTION_RUN, status },
+          allowRunCoalescing: false,
+          durableReceipt,
+          contextSnapshot,
+        }),
+      );
+
+      expect(result).toEqual({ kind: "deferred" });
+      expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
+      expect(reader.findExistingDeferredWake).not.toHaveBeenCalled();
+      expect(writer.mergeIntoExistingDeferredWake).not.toHaveBeenCalled();
+      expect(writer.insertNewDeferredWake).toHaveBeenCalledExactlyOnceWith(
+        SCOPE,
+        expect.objectContaining({
+          durableReceipt,
+          payload: {
+            issueId: "issue-1",
+            _paperclipWakeContext: contextSnapshot,
+          },
+        }),
+      );
+    },
+  );
+
+  it("partitions durable admission by the exact actor before considering a deferred merge", async () => {
+    const durableReceipt = {
+      id: "other-actor-receipt",
+      requestedAt: new Date("2026-09-10T00:00:00Z"),
+    };
+    const writer = createFakeAdmissionWriter();
+    const reader = createFakeAdmissionReader({
+      matchesActiveWakeActor: vi.fn(async () => false),
+    });
+    const helpers = createFakeAdmissionHelpers();
+    const admit = createAdmitWakeBehindIssueExecution({
+      reader,
+      writer,
+      helpers,
+    });
+
+    const result = await admit(
+      SCOPE,
+      admissionInput({
+        activeExecutionRun: {
+          ...ACTIVE_EXECUTION_RUN,
+          wakeupRequestId: "active-wake",
+        },
+        durableReceipt,
+        requestedByActorType: "user",
+        requestedByActorId: "other-user",
+      }),
+    );
+
+    expect(result).toEqual({ kind: "deferred" });
+    expect(reader.matchesActiveWakeActor).toHaveBeenCalledExactlyOnceWith(
+      SCOPE,
+      {
+        companyId: "company-1",
+        wakeupRequestId: "active-wake",
+        requestedByActorType: "user",
+        requestedByActorId: "other-user",
+      },
+    );
+    expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
+    expect(reader.findExistingDeferredWake).toHaveBeenCalledExactlyOnceWith(
+      SCOPE,
+      {
+        companyId: "company-1",
+        agentId: "wake-agent",
+        issueId: "issue-1",
+        durableActor: { type: "user", id: "other-user" },
+      },
+    );
+    expect(writer.insertNewDeferredWake).toHaveBeenCalledExactlyOnceWith(
+      SCOPE,
+      expect.objectContaining({ durableReceipt }),
+    );
+  });
+
+  it("retains the durable receipt when the exact actor coalesces into the active execution", async () => {
+    const durableReceipt = {
+      id: "coalesced-receipt",
+      requestedAt: new Date("2026-09-10T00:00:00Z"),
+    };
+    const writer = createFakeAdmissionWriter();
+    const reader = createFakeAdmissionReader();
+    const helpers = createFakeAdmissionHelpers();
+    const admit = createAdmitWakeBehindIssueExecution({
+      reader,
+      writer,
+      helpers,
+    });
+
+    const result = await admit(
+      SCOPE,
+      admissionInput({
+        activeExecutionRun: {
+          ...ACTIVE_EXECUTION_RUN,
+          wakeupRequestId: "active-wake",
+        },
+        durableReceipt,
+      }),
+    );
+
+    expect(result).toEqual({ kind: "coalesced", run: { id: "merged-run-1" } });
+    expect(reader.matchesActiveWakeActor).toHaveBeenCalledExactlyOnceWith(
+      SCOPE,
+      {
+        companyId: "company-1",
+        wakeupRequestId: "active-wake",
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      },
+    );
+    expect(
+      writer.coalesceIntoActiveExecutionRun,
+    ).toHaveBeenCalledExactlyOnceWith(
+      SCOPE,
+      expect.objectContaining({ durableReceipt }),
+    );
+    expect(reader.findExistingDeferredWake).not.toHaveBeenCalled();
+  });
+
+  it("retains an independent receipt when durable input merges into an existing deferred wake", async () => {
+    const durableReceipt = {
+      id: "merged-deferred-receipt",
+      requestedAt: new Date("2026-09-10T00:00:00Z"),
+    };
+    const writer = createFakeAdmissionWriter();
+    const reader = createFakeAdmissionReader({
+      isSameExecutionAgent: vi.fn(async () => false),
+      findExistingDeferredWake: vi.fn(async () => ({
+        id: "existing-deferred-wake",
+        runId: "existing-deferred-run",
+        payload: { issueId: "issue-1", preserved: true },
+        deferredContext: { preservedContext: true },
+        coalescedCount: 2,
+      })),
+    });
+    const helpers = createFakeAdmissionHelpers();
+    const admit = createAdmitWakeBehindIssueExecution({
+      reader,
+      writer,
+      helpers,
+    });
+
+    const result = await admit(
+      SCOPE,
+      admissionInput({
+        durableReceipt,
+        reason: "question_response",
+        idempotencyKey: "exact-receipt-key",
+      }),
+    );
+
+    expect(result).toEqual({ kind: "deferred" });
+    expect(
+      writer.mergeIntoExistingDeferredWake,
+    ).toHaveBeenCalledExactlyOnceWith(
+      SCOPE,
+      expect.objectContaining({
+        existingDeferredWakeId: "existing-deferred-wake",
+        nextCoalescedCount: 3,
+        mergedPayload: {
+          issueId: "issue-1",
+          preserved: true,
+          _paperclipWakeContext: {
+            preservedContext: true,
+            wakeReason: "issue_commented",
+          },
+        },
+        coalescedReceipt: {
+          ...durableReceipt,
+          agentId: "wake-agent",
+          source: "on_demand",
+          triggerDetail: null,
+          reason: "question_response",
+          payload: {
+            issueId: "issue-1",
+            coalescedIntoWakeupRequestId: "existing-deferred-wake",
+          },
+          requestedByActorType: "user",
+          requestedByActorId: "user-1",
+          idempotencyKey: "exact-receipt-key",
+          runId: "existing-deferred-run",
+        },
+      }),
+    );
+    expect(writer.insertNewDeferredWake).not.toHaveBeenCalled();
+    expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps ordinary non-durable coalescing independent of durable actor lookup", async () => {
+    const writer = createFakeAdmissionWriter();
+    const reader = createFakeAdmissionReader({
+      matchesActiveWakeActor: vi.fn(async () => false),
+    });
+    const helpers = createFakeAdmissionHelpers();
+    const admit = createAdmitWakeBehindIssueExecution({
+      reader,
+      writer,
+      helpers,
+    });
+
+    expect(await admit(SCOPE, admissionInput())).toEqual({
+      kind: "coalesced",
+      run: { id: "merged-run-1" },
+    });
+    expect(reader.matchesActiveWakeActor).not.toHaveBeenCalled();
+    expect(writer.coalesceIntoActiveExecutionRun).toHaveBeenCalledTimes(1);
+  });
+
   it("returns the coalesce outcome and calls the writer one time when the same agent's run absorbs the wake", async () => {
     const writer = createFakeAdmissionWriter();
     const reader = createFakeAdmissionReader();

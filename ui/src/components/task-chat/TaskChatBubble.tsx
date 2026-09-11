@@ -28,6 +28,7 @@ import {
   hydrateAttachmentRefs,
   isImageAttachment,
   stripStandaloneImageEmbeds,
+  type AttachmentRef,
 } from "./task-chat-attachments";
 import { TaskChatSystemNotice } from "./TaskChatSystemNotice";
 import type { TaskChatMessageItem } from "./task-chat-model";
@@ -129,6 +130,16 @@ function galleryItemForImage(
   };
 }
 
+function uniqueAttachmentRefs(refs: AttachmentRef[]): AttachmentRef[] {
+  return refs.filter(
+    (ref, index) =>
+      refs.findIndex(
+        (candidate) =>
+          (ref.id && candidate.id === ref.id) || candidate.url === ref.url,
+      ) === index,
+  );
+}
+
 export function TaskChatBubble({
   item,
   animateEntry = true,
@@ -179,15 +190,26 @@ export function TaskChatBubble({
     embeddedImageRefs,
     attachments,
   );
-  const imageRefs = [
+  const boundAttachmentRefs: AttachmentRef[] = attachments
+    .filter((attachment) => attachment.issueCommentId === item.id)
+    .map((attachment) => ({
+      id: attachment.id,
+      name: attachment.originalFilename?.trim() || "attachment",
+      url: attachment.contentPath,
+      contentType: attachment.contentType,
+      byteSize: attachment.byteSize,
+      openPath: attachment.openPath,
+      downloadPath: attachment.downloadPath,
+    }));
+  const imageRefs = uniqueAttachmentRefs([
     ...hydratedEmbeddedRefs,
     ...hydratedLinkedRefs.filter(isImageAttachment),
-  ].filter((ref, index, refs) =>
-    refs.findIndex((candidate) => candidate.url === ref.url) === index,
-  );
-  const attachmentRefs = hydratedLinkedRefs.filter(
-    (ref) => !isImageAttachment(ref),
-  );
+    ...boundAttachmentRefs.filter(isImageAttachment),
+  ]);
+  const attachmentRefs = uniqueAttachmentRefs([
+    ...hydratedLinkedRefs.filter((ref) => !isImageAttachment(ref)),
+    ...boundAttachmentRefs.filter((ref) => !isImageAttachment(ref)),
+  ]);
   const galleryItems: GalleryMediaItem[] =
     lightboxSrc !== null && !imageRefs.some((ref) => ref.url === lightboxSrc)
       ? // A clicked image the extractor missed (e.g. inline HTML) still gets a
@@ -251,7 +273,7 @@ export function TaskChatBubble({
           data-testid="task-chat-bubble-media"
         >
           <span className="text-xs text-muted-foreground">
-            Screenshots · {imageRefs.length}
+            Images · {imageRefs.length}
           </span>
           <div className="grid grid-cols-4 gap-2">
             {imageRefs

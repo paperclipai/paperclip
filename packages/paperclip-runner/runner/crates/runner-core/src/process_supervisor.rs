@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
@@ -633,6 +634,8 @@ pub struct SupervisedProcess {
     child: Child,
     stdin: Option<ChildStdin>,
     output: Receiver<ProcessOutput>,
+    stdout_closed: Cell<bool>,
+    stdout_failed: Cell<bool>,
     process_group_id: u32,
     shutdown_grace: Duration,
     finished: bool,
@@ -641,6 +644,14 @@ pub struct SupervisedProcess {
 }
 
 impl SupervisedProcess {
+    #[cfg(test)]
+    pub(crate) fn replace_output_receiver_for_test(
+        &mut self,
+        output: Receiver<ProcessOutput>,
+    ) -> Receiver<ProcessOutput> {
+        std::mem::replace(&mut self.output, output)
+    }
+
     pub fn spawn(
         program: &Path,
         args: &[String],
@@ -806,6 +817,8 @@ impl SupervisedProcess {
             child,
             stdin: Some(stdin),
             output,
+            stdout_closed: Cell::new(false),
+            stdout_failed: Cell::new(false),
             process_group_id,
             shutdown_grace,
             finished: false,
@@ -842,7 +855,35 @@ impl SupervisedProcess {
         &self,
         timeout: Duration,
     ) -> Result<ProcessOutput, RecvTimeoutError> {
-        self.output.recv_timeout(timeout)
+        let result = self.output.recv_timeout(timeout);
+        match &result {
+            Ok(output) => self.observe_output(output),
+            Err(RecvTimeoutError::Disconnected) if !self.stdout_closed.get() => {
+                self.stdout_failed.set(true);
+            }
+            _ => {}
+        }
+        result
+    }
+
+    fn observe_output(&self, output: &ProcessOutput) {
+        match output {
+            ProcessOutput::StdoutClosed => self.stdout_closed.set(true),
+            ProcessOutput::StdoutError(_) => self.stdout_failed.set(true),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn stdout_drained(&self) -> bool {
+        self.stdout_closed.get() && !self.stdout_failed.get()
+    }
+
+    pub(crate) fn stdout_failed(&self) -> bool {
+        self.stdout_failed.get()
+    }
+
+    pub(crate) fn shutdown_grace(&self) -> Duration {
+        self.shutdown_grace
     }
 
     pub fn receive_stdout_line(
@@ -873,7 +914,15 @@ impl SupervisedProcess {
     }
 
     pub(crate) fn try_recv(&self) -> Result<ProcessOutput, mpsc::TryRecvError> {
-        self.output.try_recv()
+        let result = self.output.try_recv();
+        match &result {
+            Ok(output) => self.observe_output(output),
+            Err(mpsc::TryRecvError::Disconnected) if !self.stdout_closed.get() => {
+                self.stdout_failed.set(true);
+            }
+            _ => {}
+        }
+        result
     }
 
     pub fn try_wait(&mut self) -> Result<Option<ProcessExitFact>, LocalRunnerError> {
@@ -982,6 +1031,72 @@ fn exit_fact(status: ExitStatus) -> ProcessExitFact {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    #[cfg(unix)]
+    fn stdout_eof_is_sticky_across_consumers_while_stderr_remains_open() {
+        for use_try_recv in [false, true] {
+            let mut process = SupervisedProcess::spawn(
+                Path::new("/bin/sh"),
+                &[
+                    "-c".to_owned(),
+                    "printf 'tail\\n'; exec 1>&-; read -r finish; printf 'stderr-tail\\n' >&2"
+                        .to_owned(),
+                ],
+                Duration::from_secs(2),
+                1024,
+            )
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut saw_tail = false;
+            while !process.stdout_drained() {
+                assert!(Instant::now() < deadline);
+                let output = if use_try_recv {
+                    process.try_recv().ok()
+                } else {
+                    process.recv_timeout(Duration::from_millis(1)).ok()
+                };
+                if let Some(ProcessOutput::Stdout(line)) = output {
+                    assert_eq!(line, "tail");
+                    saw_tail = true;
+                }
+            }
+            assert!(saw_tail);
+            assert!(
+                process.try_wait().unwrap().is_none(),
+                "stderr/child are still live after stdout EOF"
+            );
+            assert_eq!(
+                process
+                    .receive_stdout_line(Duration::from_millis(1))
+                    .unwrap(),
+                None
+            );
+            assert!(process.stdout_drained());
+            process.send(&serde_json::json!({"finish": true})).unwrap();
+            process.wait().unwrap();
+            assert!(process.stdout_drained());
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn stdout_read_error_never_becomes_successful_drain() {
+        let mut process = SupervisedProcess::spawn(
+            Path::new("/bin/sh"),
+            &["-c".to_owned(), "printf 'oversized-frame\\n'".to_owned()],
+            Duration::from_secs(2),
+            4,
+        )
+        .unwrap();
+        assert!(process.receive_stdout_line(Duration::from_secs(5)).is_err());
+        assert!(process.stdout_failed());
+        assert!(!process.stdout_drained());
+        process.wait().unwrap();
+        while process.try_recv().is_ok() {}
+        assert!(process.stdout_failed());
+        assert!(!process.stdout_drained());
+    }
 
     fn verified_artifact(path: &Path, bytes: &[u8]) -> VerifiedProcessArtifact {
         fs::write(path, bytes).unwrap();

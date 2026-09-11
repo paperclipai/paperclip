@@ -1,6 +1,20 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
+import {
+  Outlet,
+  useLocation,
+  useNavigate,
+  useNavigationType,
+  useParams,
+} from "@/lib/router";
 import { Sidebar } from "./Sidebar.production";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar.production";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
@@ -32,7 +46,10 @@ import { useKeyboardShortcuts } from "../hooks/useKeyboardShortcuts";
 import { useCompanyPageMemory } from "../hooks/useCompanyPageMemory";
 import { healthApi } from "../api/health";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { resolveArchivedCompanyBounce, shouldSyncCompanySelectionFromRoute } from "../lib/company-selection";
+import {
+  resolveArchivedCompanyBounce,
+  shouldSyncCompanySelectionFromRoute,
+} from "../lib/company-selection";
 import { useOptionalToastActions } from "../context/ToastContext";
 import {
   applyMainContentScrollTop,
@@ -45,13 +62,25 @@ import { scheduleMainContentFocus } from "../lib/main-content-focus";
 import { pinDocumentScrollToZero } from "../lib/pin-document-scroll";
 import { cn } from "../lib/utils";
 import { NotFoundPage } from "../pages/NotFound";
-import { PluginSlotMount, resolveRouteSidebarSlot, usePluginSlots } from "../plugins/slots";
+import {
+  PluginSlotMount,
+  resolveRouteSidebarSlot,
+  usePluginSlots,
+} from "../plugins/slots";
 
-function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefined): string | null {
-  return getCompanyPathSegments(pathname, companyPrefix)[0]?.toLowerCase() ?? null;
+function getCompanyRouteSegment(
+  pathname: string,
+  companyPrefix: string | undefined,
+): string | null {
+  return (
+    getCompanyPathSegments(pathname, companyPrefix)[0]?.toLowerCase() ?? null
+  );
 }
 
-function getCompanyPathSegments(pathname: string, companyPrefix: string | undefined): string[] {
+function getCompanyPathSegments(
+  pathname: string,
+  companyPrefix: string | undefined,
+): string[] {
   if (!companyPrefix) return [];
   const segments = pathname.split("/").filter(Boolean);
   if (segments.length < 2) return [];
@@ -63,6 +92,7 @@ const RESERVED_APP_SUBPATHS = new Set([
   "browse",
   "connections",
   "connect",
+  "chat",
   "review",
   "attention",
   "gateways",
@@ -70,7 +100,10 @@ const RESERVED_APP_SUBPATHS = new Set([
   "app",
 ]);
 
-function isSkillsStoreRoute(pathname: string, companyPrefix: string | undefined) {
+function isSkillsStoreRoute(
+  pathname: string,
+  companyPrefix: string | undefined,
+) {
   const segments = pathname.split("/").filter(Boolean);
   if (segments[0]?.toLowerCase() === "skills") return true;
   if (!companyPrefix) return false;
@@ -103,10 +136,10 @@ export function Layout() {
     selectionSource,
     setSelectedCompanyId,
   } = useCompany();
-  const {
-    companyPrefix,
-    pluginRoutePath: matchedPluginRoutePath,
-  } = useParams<{ companyPrefix: string; pluginRoutePath?: string }>();
+  const { companyPrefix, pluginRoutePath: matchedPluginRoutePath } = useParams<{
+    companyPrefix: string;
+    pluginRoutePath?: string;
+  }>();
   const navigate = useNavigate();
   const location = useLocation();
   const navigationType = useNavigationType();
@@ -115,15 +148,22 @@ export function Layout() {
     "/company/export",
     "/company/import",
   ].some((settingsPath) => location.pathname.includes(settingsPath));
-  const companyPathSegments = getCompanyPathSegments(location.pathname, companyPrefix);
+  const companyPathSegments = getCompanyPathSegments(
+    location.pathname,
+    companyPrefix,
+  );
   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
   const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
   const appDetailConnectionId =
-    isAppsRoute && companyPathSegments[1] && !RESERVED_APP_SUBPATHS.has(companyPathSegments[1].toLowerCase())
+    isAppsRoute &&
+    companyPathSegments[1] &&
+    !RESERVED_APP_SUBPATHS.has(companyPathSegments[1].toLowerCase())
       ? companyPathSegments[1]
       : null;
   const appDetailApplicationId =
-    isAppsRoute && companyPathSegments[1]?.toLowerCase() === "app" && companyPathSegments[2]
+    isAppsRoute &&
+    companyPathSegments[1]?.toLowerCase() === "app" &&
+    companyPathSegments[2]
       ? companyPathSegments[2]
       : null;
   // The Skills Store renders its own secondary (category) sidebar, so the main
@@ -140,12 +180,21 @@ export function Layout() {
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
     const requestedPrefix = companyPrefix.toUpperCase();
-    return companies.find((company) => company.issuePrefix.toUpperCase() === requestedPrefix) ?? null;
+    return (
+      companies.find(
+        (company) => company.issuePrefix.toUpperCase() === requestedPrefix,
+      ) ?? null
+    );
   }, [companies, companyPrefix]);
   const hasUnknownCompanyPrefix =
-    Boolean(companyPrefix) && !companiesLoading && companies.length > 0 && !matchedCompany;
+    Boolean(companyPrefix) &&
+    !companiesLoading &&
+    companies.length > 0 &&
+    !matchedCompany;
   const pluginRoutePath = useMemo(
-    () => matchedPluginRoutePath?.toLowerCase() ?? getCompanyRouteSegment(location.pathname, companyPrefix),
+    () =>
+      matchedPluginRoutePath?.toLowerCase() ??
+      getCompanyRouteSegment(location.pathname, companyPrefix),
     [companyPrefix, location.pathname, matchedPluginRoutePath],
   );
   const routeSidebarCompanyId = matchedCompany?.id ?? null;
@@ -175,7 +224,10 @@ export function Layout() {
   ) : appDetailConnectionId ? (
     <AppDetailSidebar kind="connection" connectionId={appDetailConnectionId} />
   ) : appDetailApplicationId ? (
-    <AppDetailSidebar kind="application" applicationId={appDetailApplicationId} />
+    <AppDetailSidebar
+      kind="application"
+      applicationId={appDetailApplicationId}
+    />
   ) : isAppsRoute || isToolsRoute ? (
     <AppsSidebar />
   ) : routeSidebarSlot ? (
@@ -192,15 +244,17 @@ export function Layout() {
     queryFn: () => healthApi.get(),
     retry: false,
     refetchInterval: (query) => {
-      const data = query.state.data as { devServer?: { enabled?: boolean } } | undefined;
+      const data = query.state.data as
+        { devServer?: { enabled?: boolean } } | undefined;
       return data?.devServer?.enabled ? 2000 : false;
     },
     refetchIntervalInBackground: true,
   });
-  const keyboardShortcutsEnabled = useQuery({
-    queryKey: queryKeys.instance.generalSettings,
-    queryFn: () => instanceSettingsApi.getGeneral(),
-  }).data?.keyboardShortcuts === true;
+  const keyboardShortcutsEnabled =
+    useQuery({
+      queryKey: queryKeys.instance.generalSettings,
+      queryFn: () => instanceSettingsApi.getGeneral(),
+    }).data?.keyboardShortcuts === true;
 
   // A secondary sidebar always collapses the app sidebar to its rail (still
   // peek-able) — a hard invariant that overrides the user pin while the route
@@ -223,15 +277,24 @@ export function Layout() {
       onboardingTriggered.current = true;
       openOnboarding();
     }
-  }, [companies, companiesLoading, openOnboarding, health?.cloud, health?.deploymentMode]);
+  }, [
+    companies,
+    companiesLoading,
+    openOnboarding,
+    health?.cloud,
+    health?.deploymentMode,
+  ]);
 
   useEffect(() => {
     if (!companyPrefix || companiesLoading || companies.length === 0) return;
 
     if (!matchedCompany) {
-      const fallback = (selectedCompanyId ? companies.find((company) => company.id === selectedCompanyId) : null)
-        ?? companies[0]
-        ?? null;
+      const fallback =
+        (selectedCompanyId
+          ? companies.find((company) => company.id === selectedCompanyId)
+          : null) ??
+        companies[0] ??
+        null;
       if (fallback && selectedCompanyId !== fallback.id) {
         setSelectedCompanyId(fallback.id, { source: "route_sync" });
       }
@@ -240,7 +303,9 @@ export function Layout() {
 
     if (companyPrefix !== matchedCompany.issuePrefix) {
       const suffix = location.pathname.replace(/^\/[^/]+/, "");
-      navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}`, { replace: true });
+      navigate(`/${matchedCompany.issuePrefix}${suffix}${location.search}`, {
+        replace: true,
+      });
       return;
     }
 
@@ -290,12 +355,14 @@ export function Layout() {
 
   const togglePanel = togglePanelVisible;
   const openSearch = useCallback(() => {
-    document.dispatchEvent(new KeyboardEvent("keydown", {
-      key: "k",
-      metaKey: true,
-      bubbles: true,
-      cancelable: true,
-    }));
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "k",
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
   }, []);
 
   // Peek (hover flyout) triggers for the collapsed rail. Opening has a tiny
@@ -482,7 +549,9 @@ export function Layout() {
     }
 
     const onScroll = () => {
-      updateMobileNavVisibility(window.scrollY || document.documentElement.scrollTop || 0);
+      updateMobileNavVisibility(
+        window.scrollY || document.documentElement.scrollTop || 0,
+      );
     };
 
     onScroll();
@@ -544,14 +613,18 @@ export function Layout() {
     previousPathname.current = location.pathname;
 
     const isHistoryPop = navigationType === "POP";
-    const restoredScrollTop = isHistoryPop ? scrollMemory.current.recall(location.key) : 0;
+    const restoredScrollTop = isHistoryPop
+      ? scrollMemory.current.recall(location.key)
+      : 0;
     activeScrollKey.current = location.key;
 
     if (isHistoryPop) {
       applyMainContentScrollTop(main, restoredScrollTop);
       // Cached page content can finish laying out a frame after commit; re-apply
       // once it has so the restored offset isn't clamped to a shorter interim height.
-      const raf = requestAnimationFrame(() => applyMainContentScrollTop(main, restoredScrollTop));
+      const raf = requestAnimationFrame(() =>
+        applyMainContentScrollTop(main, restoredScrollTop),
+      );
       return () => cancelAnimationFrame(raf);
     }
 
@@ -563,139 +636,153 @@ export function Layout() {
   return (
     <GeneralSettingsProvider value={{ keyboardShortcutsEnabled }}>
       <div
-      className={cn(
-        "bg-background text-foreground pt-(--sz-safe-top)",
-        // overflow-x-clip on mobile keeps a stray wide descendant from making the
-        // whole viewport scroll horizontally. clip (not hidden) leaves overflow-y
-        // computed as visible, so native body scroll + the sticky breadcrumb keep
-        // working.
-        isMobile ? "min-h-dvh overflow-x-clip" : "flex h-dvh flex-col overflow-clip",
-      )}
-      >
-      <a
-        href="#main-content"
-        className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-(--z-200) focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        Skip to Main Content
-      </a>
-      <WorktreeBanner />
-      <DevRestartBanner devServer={health?.devServer} />
-      <div className={cn("min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
-        {isMobile && sidebarOpen && (
-          <button
-            type="button"
-            className="fixed inset-0 z-40 bg-black/50"
-            onClick={() => setSidebarOpen(false)}
-            aria-label="Close sidebar"
-          />
+        className={cn(
+          "bg-background text-foreground pt-(--sz-safe-top)",
+          // overflow-x-clip on mobile keeps a stray wide descendant from making the
+          // whole viewport scroll horizontally. clip (not hidden) leaves overflow-y
+          // computed as visible, so native body scroll + the sticky breadcrumb keep
+          // working.
+          isMobile
+            ? "min-h-dvh overflow-x-clip"
+            : "flex h-dvh flex-col overflow-clip",
         )}
-
-        {isMobile ? (
-          <div
-            className={cn(
-              "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-(--sz-safe-top) transition-transform duration-100 ease-out",
-              sidebarOpen ? "translate-x-0" : "-translate-x-full"
-            )}
-          >
-            <div className="flex flex-1 min-h-0 overflow-hidden">
-              <div className="w-60 shrink-0 overflow-hidden">
-                {hasSecondarySidebar ? secondarySidebar : <Sidebar />}
-              </div>
-            </div>
-            <SidebarAccountMenu
-              deploymentMode={health?.deploymentMode}
+      >
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-(--z-200) focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          Skip to Main Content
+        </a>
+        <WorktreeBanner />
+        <DevRestartBanner devServer={health?.devServer} />
+        <div
+          className={cn(
+            "min-h-0 flex-1",
+            isMobile ? "w-full" : "flex overflow-clip",
+          )}
+        >
+          {isMobile && sidebarOpen && (
+            <button
+              type="button"
+              className="fixed inset-0 z-40 bg-black/50"
+              onClick={() => setSidebarOpen(false)}
+              aria-label="Close sidebar"
             />
-          </div>
-        ) : (
-          <SidebarShell
-            open={sidebarOpen}
-            collapsed={collapsed}
-            peeking={peeking}
-            resizable
-            onPanelMouseEnter={handlePanelPointerEnter}
-            onPanelMouseLeave={handlePanelPointerLeave}
-            onPanelFocusCapture={collapsed ? handlePanelFocus : undefined}
-            onPanelBlurCapture={collapsed ? handlePanelBlur : undefined}
-          >
-            <div className="flex flex-1 min-h-0">
-              <Sidebar />
-            </div>
-            <SidebarAccountMenu
-              deploymentMode={health?.deploymentMode}
-            />
-          </SidebarShell>
-        )}
+          )}
 
-        {!isMobile && hasSecondarySidebar ? (
-          <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
-        ) : null}
-
-        <div className={cn("flex min-w-0 flex-col", isMobile ? "w-full" : "h-full flex-1")}>
-          <div
-            className={cn(
-              isMobile && "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
-            )}
-          >
-            <StandaloneBrowserControls mobile={isMobile} />
-            <BreadcrumbBar />
-            {isMobile && isCompanySettingsRoute ? (
-              <div className="border-b border-border px-4 pb-3">
-                <CompanySettingsNav />
-              </div>
-            ) : null}
-          </div>
-          <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
-            <main
-              id="main-content"
-              ref={mainContentRef}
-              tabIndex={-1}
-              // Publish the pinned-composer bottom offset to descendants
-              // (PAP-495): while the auto-hiding mobile nav is on screen, raise
-              // it to the nav height so a sticky composer clears the nav; drop
-              // it back to the safe-area dock when the nav hides. Desktop leaves
-              // the token at its :root default.
-              style={
-                isMobile
-                  ? ({
-                      "--tc-composer-bottom": mobileNavVisible
-                        ? "var(--sz-calc-14)"
-                        : "var(--sz-calc-8)",
-                    } as CSSProperties)
-                  : undefined
-              }
+          {isMobile ? (
+            <div
               className={cn(
-                "flex-1 p-4 outline-none md:p-6",
-                // Reserve the scrollbar gutter on desktop so pages whose height
-                // changes (e.g. switching skill-detail tabs) don't widen/shift
-                // when the vertical scrollbar appears or disappears (PAP-10907).
-                isMobile
-                  ? "overflow-visible pb-(--sz-calc-14)"
-                  : "overflow-auto [scrollbar-gutter:stable]",
+                "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-(--sz-safe-top) transition-transform duration-100 ease-out",
+                sidebarOpen ? "translate-x-0" : "-translate-x-full",
               )}
             >
-              {hasUnknownCompanyPrefix ? (
-                <NotFoundPage
-                  scope="invalid_company_prefix"
-                  requestedPrefix={companyPrefix ?? selectedCompany?.issuePrefix}
-                />
-              ) : (
-                <RouteErrorBoundary>
-                  <Outlet />
-                </RouteErrorBoundary>
+              <div className="flex flex-1 min-h-0 overflow-hidden">
+                <div className="w-60 shrink-0 overflow-hidden">
+                  {hasSecondarySidebar ? secondarySidebar : <Sidebar />}
+                </div>
+              </div>
+              <SidebarAccountMenu deploymentMode={health?.deploymentMode} />
+            </div>
+          ) : (
+            <SidebarShell
+              open={sidebarOpen}
+              collapsed={collapsed}
+              peeking={peeking}
+              resizable
+              onPanelMouseEnter={handlePanelPointerEnter}
+              onPanelMouseLeave={handlePanelPointerLeave}
+              onPanelFocusCapture={collapsed ? handlePanelFocus : undefined}
+              onPanelBlurCapture={collapsed ? handlePanelBlur : undefined}
+            >
+              <div className="flex flex-1 min-h-0">
+                <Sidebar />
+              </div>
+              <SidebarAccountMenu deploymentMode={health?.deploymentMode} />
+            </SidebarShell>
+          )}
+
+          {!isMobile && hasSecondarySidebar ? (
+            <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
+          ) : null}
+
+          <div
+            className={cn(
+              "flex min-w-0 flex-col",
+              isMobile ? "w-full" : "h-full flex-1",
+            )}
+          >
+            <div
+              className={cn(
+                isMobile &&
+                  "sticky top-0 z-20 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
               )}
-            </main>
-            <PropertiesPanel />
+            >
+              <StandaloneBrowserControls mobile={isMobile} />
+              <BreadcrumbBar />
+              {isMobile && isCompanySettingsRoute ? (
+                <div className="border-b border-border px-4 pb-3">
+                  <CompanySettingsNav />
+                </div>
+              ) : null}
+            </div>
+            <div className={cn(isMobile ? "block" : "flex flex-1 min-h-0")}>
+              <main
+                id="main-content"
+                ref={mainContentRef}
+                tabIndex={-1}
+                // Publish the pinned-composer bottom offset to descendants
+                // (PAP-495): while the auto-hiding mobile nav is on screen, raise
+                // it to the nav height so a sticky composer clears the nav; drop
+                // it back to the safe-area dock when the nav hides. Desktop leaves
+                // the token at its :root default.
+                style={
+                  isMobile
+                    ? ({
+                        "--tc-composer-bottom": mobileNavVisible
+                          ? "var(--sz-calc-14)"
+                          : "var(--sz-calc-8)",
+                      } as CSSProperties)
+                    : undefined
+                }
+                className={cn(
+                  "flex-1 p-4 outline-none md:p-6",
+                  // Reserve the scrollbar gutter on desktop so pages whose height
+                  // changes (e.g. switching skill-detail tabs) don't widen/shift
+                  // when the vertical scrollbar appears or disappears (PAP-10907).
+                  isMobile
+                    ? "overflow-visible pb-(--sz-calc-14)"
+                    : "overflow-auto [scrollbar-gutter:stable]",
+                )}
+              >
+                {hasUnknownCompanyPrefix ? (
+                  <NotFoundPage
+                    scope="invalid_company_prefix"
+                    requestedPrefix={
+                      companyPrefix ?? selectedCompany?.issuePrefix
+                    }
+                  />
+                ) : (
+                  <RouteErrorBoundary>
+                    <Outlet />
+                  </RouteErrorBoundary>
+                )}
+              </main>
+              <PropertiesPanel />
+            </div>
           </div>
         </div>
-      </div>
-      {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
-      <CommandPalette />
-      <NewIssueDialog />
-      <NewProjectDialog />
-      <NewGoalDialog />
-      <NewAgentDialog />
-      <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
-      <ToastViewport />
+        {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
+        <CommandPalette />
+        <NewIssueDialog />
+        <NewProjectDialog />
+        <NewGoalDialog />
+        <NewAgentDialog />
+        <KeyboardShortcutsCheatsheet
+          open={shortcutsOpen}
+          onOpenChange={setShortcutsOpen}
+        />
+        <ToastViewport />
       </div>
     </GeneralSettingsProvider>
   );

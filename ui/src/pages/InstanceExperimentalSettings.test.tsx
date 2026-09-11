@@ -76,6 +76,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableStreamlinedLeftNavigation: true,
     enableStreamlinedUi: true,
     enableApps: true,
+    enableChatConnectors: false,
     enablePipelines: false,
     enableCases: false,
     enableConferenceRoomChat: false,
@@ -198,6 +199,20 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
 
     expect(container.querySelector('button[aria-label="Toggle apps experimental setting"]')).toBeNull();
     expect(container.textContent).not.toContain("Show the Apps navigation");
+  });
+
+  it("defaults chat connectors off and persists an explicit toggle in both directions", async () => {
+    await renderPage();
+    const selector = 'button[aria-label="Toggle chat connectors experimental setting"]';
+    expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain("Existing chat connections keep running");
+    for (const enabled of [true, false]) {
+      await act(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableChatConnectors: enabled });
+      expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
+      expect(currentExperimentalSettings.enableApps).toBe(true);
+    }
   });
 
   it("does not render the Conference Room Chat experimental setting for now", async () => {
@@ -702,6 +717,19 @@ describe("InstanceExperimentalSettings — cloud-managed keys", () => {
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
       enableSummaries: true,
     });
+  });
+
+  it("keeps a managed chat connectors setting locked", async () => {
+    await renderPage({
+      ...defaultExperimentalSettings(),
+      managedKeys: { enableChatConnectors: { managed: true, managedBy: "paperclip-cloud" } },
+    });
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Toggle chat connectors experimental setting"]');
+    expect(toggle?.disabled).toBe(true);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain(MANAGED_BADGE_TEXT);
+    await act(() => toggle?.click());
+    expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
   });
 
   it("locks Status Cards when managed Summaries is disabled", async () => {

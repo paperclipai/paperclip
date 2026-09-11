@@ -79,6 +79,8 @@ export type DeferredWakeCandidate = {
   /** The comment ids the wake's context snapshot carries (a separate set from queuedCommentIds), used for the reopen check. */
   deferredCommentIds: string[];
   wakeReason: string | null;
+  /** Exact failed-chat retry authority revalidated by the transaction-bound adapter. */
+  authorizedFailedChatRetry?: boolean;
 };
 
 export type PromoteDeferredWakeInput = {
@@ -94,6 +96,8 @@ export type PromoteDeferredWakeInput = {
   payload: Record<string, unknown>;
   responsibleUserId: string;
   sessionBefore: string | null;
+  /** Only a proven failed-chat retry may retain its original retry lineage. */
+  authorizedFailedChatRetry?: boolean;
   now: Date;
 };
 
@@ -177,6 +181,8 @@ export interface WakeQueueTransaction {
   /** An open, non-hidden issue that still lists this issue as a `blocks` predecessor. */
   hasExplicitBlockerPath(input: { companyId: string; issueId: string }): Promise<boolean>;
   isAutomaticRecoverySuppressedByPauseHold(input: { companyId: string; issueId: string }): Promise<boolean>;
+  /** Deny-only facts from the exact finishing run and its durable chat wake owner. */
+  isImmediateRecoverySourceBlocked(input: { companyId: string; runId: string }): Promise<boolean>;
   queueReviewParticipantRecoveryRun(input: {
     companyId: string;
     issue: IssueSnapshot;
@@ -294,10 +300,30 @@ export type WakeAdmissionActiveExecutionRun = {
   agentId: string;
   status: string;
   contextSnapshot: unknown;
+  wakeupRequestId?: string | null;
+};
+
+/** Already authorized by the heartbeat admission transaction; identity, not a grant. */
+export type DurableWakeAdmissionReceipt = {
+  id: string;
+  requestedAt: Date;
+};
+
+export type CoalescedDeferredAdmissionReceipt = DurableWakeAdmissionReceipt & {
+  agentId: string;
+  source: string;
+  triggerDetail: string | null;
+  reason: string | null;
+  payload: Record<string, unknown>;
+  requestedByActorType: string | null;
+  requestedByActorId: string | null;
+  idempotencyKey: string | null;
+  runId: string | null;
 };
 
 export type ExistingDeferredWake = {
   id: string;
+  runId?: string | null;
   payload: Record<string, unknown>;
   /** `payload._paperclipWakeContext`, already parsed to a plain object. */
   deferredContext: Record<string, unknown>;
@@ -342,6 +368,16 @@ export type AdmitWakeBehindIssueExecutionResult =
 
 /** Read-only lookups the admission use case needs, each scoped to a company. */
 export interface WakeAdmissionReader {
+  /** A durable incoming request may share an active run only with the exact actor on its persisted wake receipt. */
+  matchesActiveWakeActor(
+    scope: TransactionScope,
+    input: {
+      companyId: string;
+      wakeupRequestId: string | null;
+      requestedByActorType: string | null;
+      requestedByActorId: string | null;
+    },
+  ): Promise<boolean>;
   /** True when the active execution run's agent and this wake's own agent share an execution-agent-name key. */
   isSameExecutionAgent(
     scope: TransactionScope,
@@ -354,7 +390,12 @@ export interface WakeAdmissionReader {
   ): Promise<boolean>;
   findExistingDeferredWake(
     scope: TransactionScope,
-    input: { companyId: string; agentId: string; issueId: string },
+    input: {
+      companyId: string;
+      agentId: string;
+      issueId: string;
+      durableActor?: { type: string | null; id: string | null };
+    },
   ): Promise<ExistingDeferredWake | null>;
 }
 
@@ -367,6 +408,7 @@ export interface WakeAdmissionWriter {
       companyId: string;
       activeExecutionRunId: string;
       mergedContextSnapshot: Record<string, unknown>;
+      durableReceipt?: DurableWakeAdmissionReceipt;
       agentId: string;
       source: string;
       triggerDetail: string | null;
@@ -384,6 +426,8 @@ export interface WakeAdmissionWriter {
       existingDeferredWakeId: string;
       mergedPayload: Record<string, unknown>;
       nextCoalescedCount: number;
+      /** Persist each durable input's own receipt atomically with the merge. */
+      coalescedReceipt?: CoalescedDeferredAdmissionReceipt;
     },
   ): Promise<void>;
   /** Queues a new deferred wake behind the active execution run. */
@@ -398,6 +442,7 @@ export interface WakeAdmissionWriter {
       requestedByActorType: string | null;
       requestedByActorId: string | null;
       idempotencyKey: string | null;
+      durableReceipt?: DurableWakeAdmissionReceipt;
     },
   ): Promise<void>;
 }

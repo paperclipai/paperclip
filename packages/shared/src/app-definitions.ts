@@ -23,6 +23,9 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "google-people",
   "google-workspace-search",
   "github",
+  "discord",
+  "microsoft-teams",
+  "telegram",
 ]);
 
 export const CONNECTABLE_APP_DEFINITIONS = APP_DEFINITIONS.filter((app) =>
@@ -54,7 +57,6 @@ export const APP_STORE_HIDDEN_SLUGS = new Set([
   "razorpay",
   "sanity",
   "similarweb",
-  "slack",
   "ticket-tailor",
   "ticktick",
   "xero",

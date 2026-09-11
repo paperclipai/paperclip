@@ -447,6 +447,68 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   // owns it. These tests drive the admission writer directly against a
   // transaction they open themselves, the same way `heartbeat.ts` will.
   describe("wake admission", () => {
+    it("rolls back a deferred merge when its own durable receipt insert fails", async () => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent({ companyId });
+      const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+      const wakeId = await seedDeferredWake({
+        companyId,
+        agentId,
+        issueId,
+        payload: { originalTarget: true },
+      });
+      const occupiedReceiptId = await seedDeferredWake({
+        companyId,
+        agentId,
+        issueId,
+        payload: { originalReceipt: true },
+      });
+      const before = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, companyId))
+        .orderBy(agentWakeupRequests.id);
+      const writer = createWakeAdmissionWriter();
+
+      await expect(
+        db.transaction(async (tx) => {
+          const scope = createAdmissionTransactionScope(
+            companyId,
+            tx as unknown as Db,
+          );
+          await writer.mergeIntoExistingDeferredWake(scope, {
+            companyId,
+            existingDeferredWakeId: wakeId,
+            mergedPayload: { issueId, changedByMerge: true },
+            nextCoalescedCount: 9,
+            coalescedReceipt: {
+              id: occupiedReceiptId,
+              requestedAt: new Date(),
+              agentId,
+              source: "automation",
+              triggerDetail: "system",
+              reason: "question_response",
+              payload: { issueId, coalescedIntoWakeupRequestId: wakeId },
+              requestedByActorType: "user",
+              requestedByActorId: "actor-1",
+              idempotencyKey: "colliding-receipt",
+              runId: null,
+            },
+          });
+        }),
+      ).rejects.toMatchObject({ cause: { code: "23505" } });
+
+      // The target update precedes the deliberately colliding INSERT. Both
+      // complete rows must be restored, including payload, count and timestamps.
+      const after = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.companyId, companyId))
+        .orderBy(agentWakeupRequests.id);
+      expect(after).toEqual(before);
+      expect(after).toHaveLength(2);
+    });
+
     // Review test (b): an admission adapter mutation with a foreign company
     // affects no row.
     it("refuses to merge into a deferred wake for a company that does not own it, and leaves the wake untouched", async () => {

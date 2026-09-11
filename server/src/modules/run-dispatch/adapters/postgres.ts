@@ -150,6 +150,7 @@ function statusEffect(run: HeartbeatRun, previousStatus: string | null): PostCom
     triggerDetail: run.triggerDetail,
     error: run.error,
     errorCode: run.errorCode,
+    contextSource: readNonEmptyString(parseObject(run.contextSnapshot).source),
     startedAt: run.startedAt,
     finishedAt: run.finishedAt,
     result: parseObject(run.resultJson),

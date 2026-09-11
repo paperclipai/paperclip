@@ -435,6 +435,8 @@ export interface TaskChatRunResultItem {
     scope: "current_track" | "task_wide";
   } | null;
   artifacts: Array<{ kind: string; ref: string; title?: string }>;
+  /** Proven by accepted native result and same-run successful terminal events. */
+  acceptedResponseWake?: { runId: string; sourceEventId: string };
 }
 
 export interface TaskChatRunTerminalItem {

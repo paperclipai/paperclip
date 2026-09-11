@@ -25,7 +25,7 @@ function row(id, group = "hb") {
 
 function validInventories() {
   const evaluations = Array.from({ length: 106 }, (_, index) => row(`eval-${index}`, capabilityGroups[index % capabilityGroups.length]));
-  const aliases = Array.from({ length: 41 }, (_, index) => ({
+  const aliases = Array.from({ length: 42 }, (_, index) => ({
     id: `mcp:tool-${index}`,
     name: `tool-${index}`,
     sourceAnchor: `source:${index + 1}`,
@@ -42,7 +42,7 @@ function validInventories() {
       schemaVersion: 2,
       inventoryRole: "normative",
       generatedFrom: ["skills/paperclip/SKILL.md"],
-      rows: Array.from({ length: 152 }, (_, index) => row(`capability-${index}`)),
+      rows: Array.from({ length: 153 }, (_, index) => row(`capability-${index}`)),
     },
     evaluations: {
       schemaVersion: 2,

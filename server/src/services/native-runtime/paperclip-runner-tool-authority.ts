@@ -3,6 +3,11 @@ import { connectionIntentService } from "../connection-intents.js";
 import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../connection-tool-definitions.js";
 import { connectionsSearchInputSchema, connectionRequestInputSchema, CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import { createHash } from "node:crypto";
+import { paperclipChatFilePreparationDelivery } from "@paperclipai/adapter-utils/chat-file-delivery";
+import {
+  isPaperclipExternalChatContractTurn,
+  normalizePaperclipWakePayload,
+} from "@paperclipai/adapter-utils/server-utils";
 import { runnerApiToolsEnabled } from "./runner-api-rollout.js";
 import { openRunnerApiWorkspaceFile } from "./runner-api-files.js";
 import { basename } from "node:path";
@@ -19,6 +24,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agents,
   agentWakeupRequests,
+  chatEndpoints,
   documentRevisions,
   heartbeatRuns,
   issueApprovals,
@@ -35,12 +41,36 @@ import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
 import { captureRunIdentity } from "../run-identity.js";
+import { prepareNativeRunnerFileHandoff } from "./native-runner-file-handoff.js";
+import { MAX_ATTACHMENT_BYTES } from "../../attachment-types.js";
+import {
+  READ_CURRENT_WAKE_COMMENTS_TOOL_DEFINITION,
+  READ_CURRENT_WAKE_COMMENTS_TOOL_NAME,
+  readCurrentWakeComments,
+  type CurrentWakeCommentsBinding,
+} from "./current-wake-comments.js";
+import {
+  authorizeChatAttachmentReuse,
+  authorizeChatConversationForBoundRun,
+  LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION,
+  LIST_CHAT_ATTACHMENTS_TOOL_NAME,
+  listAuthorizedChatAttachments,
+  prepareReusedChatAttachment,
+  REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION,
+  REUSE_CHAT_ATTACHMENT_TOOL_NAME,
+  type ChatAttachmentReuseSource,
+} from "./chat-attachment-reuse.js";
+import {
+  READ_CHAT_ATTACHMENT_TOOL_DEFINITION,
+  READ_CHAT_ATTACHMENT_TOOL_NAME,
+  type NativeChatAttachmentReadScope,
+} from "./chat-attachment-read.js";
 
 const IMPLEMENTED_OPERATIONS = new Set([
   "search_api", "call_api",
   "get_task_context", "get_task_history", "search_tasks", "report_progress",
   "request_human_input",
-  "create_task", "set_dependencies",
+  "create_task", "set_dependencies", "register_deliverable",
   "list_documents", "read_document", "list_document_revisions", "write_document",
   "list_agents", "get_agent", "list_approvals", "get_approval", "get_approval_context",
 ]);
@@ -58,6 +88,10 @@ type Binding = {
   /** Server-owned suppression for baseline evals; true never overrides operator opt-in. */
   apiToolsEnabled?: boolean;
   workMode?: "standard" | "planning" | "ask";
+  workspaceRoot?: string;
+  executionTargetKind?: "local" | "remote";
+  currentWakeComments?: CurrentWakeCommentsBinding;
+  chatAttachmentReadScope?: NativeChatAttachmentReadScope;
   enqueueWakeup?: (agentId: string, options: {
     source: "assignment";
     triggerDetail: "system";
@@ -97,20 +131,67 @@ export class PaperclipRunnerToolAuthority {
 
   definitions(): Array<Record<string, unknown>> {
     const workMode = this.binding.workMode ?? "standard";
-    return [...RUNTIME_CONNECTION_TOOL_DEFINITIONS, ...CAPABILITY_SEMANTIC_TOOL_CATALOG
-      .filter((descriptor) =>
-        IMPLEMENTED_OPERATIONS.has(descriptor.operationId)
-        && (runnerApiToolsEnabled(this.binding.companyId, this.binding.apiToolsEnabled) || !["search_api", "call_api"].includes(descriptor.operationId))
-        && descriptor.allowedModes.includes(workMode)
-      )
-      .map((descriptor) => ({
+    const definitions: Array<Record<string, unknown>> =
+      CAPABILITY_SEMANTIC_TOOL_CATALOG.filter(
+        (descriptor) =>
+          IMPLEMENTED_OPERATIONS.has(descriptor.operationId) &&
+          (runnerApiToolsEnabled(
+            this.binding.companyId,
+            this.binding.apiToolsEnabled,
+          ) ||
+            !["search_api", "call_api"].includes(descriptor.operationId)) &&
+          descriptor.allowedModes.includes(workMode) &&
+          (descriptor.operationId !== "register_deliverable" ||
+            (Boolean(this.binding.workspaceRoot) &&
+              (this.binding.executionTargetKind ?? "local") === "local")),
+      ).map((descriptor) => ({
         name: descriptor.operationId,
-        description: descriptor.description,
-        inputSchema: descriptor.inputSchema,
-      }))];
+        description:
+          descriptor.operationId === "register_deliverable"
+            ? "Prepare one verified workspace file for Paperclip's final task or external-chat response. This records the attachment, work product, and explicit same-run selection; it does not confirm provider delivery."
+            : descriptor.operationId === "request_human_input"
+              ? "Create a typed, durable human-input interaction on the current Paperclip task bound to this run. For structured questions and choices, use interactionKind 'questions' with payload.questions as described by the payload schema. Paperclip renders the interaction in its UI and, for connected chats, uses supported provider question controls or a safe fallback. Normal task permissions and review gates still apply."
+              : descriptor.description,
+        inputSchema:
+          descriptor.operationId === "register_deliverable"
+            ? {
+                ...descriptor.inputSchema,
+                properties: {
+                  ...descriptor.inputSchema.properties,
+                  filename: {
+                    ...(descriptor.inputSchema.properties?.filename ?? {}),
+                    description:
+                      "Basename for the prepared attachment. Directory components are rejected.",
+                  },
+                  byteSize: {
+                    ...(descriptor.inputSchema.properties?.byteSize ?? {}),
+                    minimum: 1,
+                    maximum: MAX_ATTACHMENT_BYTES,
+                  },
+                  contentRef: {
+                    ...(descriptor.inputSchema.properties?.contentRef ?? {}),
+                    description:
+                      "Workspace-relative source path. Absolute paths, URLs, traversal, and symlinks are rejected.",
+                  },
+                },
+              }
+            : descriptor.inputSchema,
+      }));
+    // Keep the provider session's direct tool catalog stable across ordinary
+    // and truncated external-chat turns. Execution still fails closed unless
+    // this exact run carries a server-verified current-wake binding.
+    definitions.push(READ_CURRENT_WAKE_COMMENTS_TOOL_DEFINITION);
+    definitions.push(LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION);
+    definitions.push(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION);
+    definitions.push(READ_CHAT_ATTACHMENT_TOOL_DEFINITION);
+    return [...RUNTIME_CONNECTION_TOOL_DEFINITIONS, ...definitions];
   }
 
-  async execute(call: { tool: string; callId: string; arguments: unknown }): Promise<unknown> {
+  async execute(call: {
+    tool: string;
+    callId: string;
+    arguments: unknown;
+  }): Promise<unknown> {
     if (RUNTIME_CONNECTION_TOOL_DEFINITIONS.some((tool) => tool.name === call.tool)) {
       await this.#boundContext();
       const { run } = await captureRunIdentity(this.db, this.binding);
@@ -143,16 +224,79 @@ export class PaperclipRunnerToolAuthority {
       }
       return result;
     }
-    if (!IMPLEMENTED_OPERATIONS.has(call.tool)) throw new Error("paperclip_runner_tool_not_advertised");
-    if (!runnerApiToolsEnabled(this.binding.companyId, this.binding.apiToolsEnabled) && ["search_api", "call_api"].includes(call.tool)) throw new Error("paperclip_runner_tool_not_advertised");
+    if (
+      !IMPLEMENTED_OPERATIONS.has(call.tool) &&
+      call.tool !== READ_CURRENT_WAKE_COMMENTS_TOOL_NAME &&
+      call.tool !== LIST_CHAT_ATTACHMENTS_TOOL_NAME &&
+      call.tool !== REUSE_CHAT_ATTACHMENT_TOOL_NAME &&
+      call.tool !== READ_CHAT_ATTACHMENT_TOOL_NAME
+    ) {
+      throw new Error("paperclip_runner_tool_not_advertised");
+    }
+    if (
+      !runnerApiToolsEnabled(
+        this.binding.companyId,
+        this.binding.apiToolsEnabled,
+      ) &&
+      ["search_api", "call_api"].includes(call.tool)
+    ) {
+      throw new Error("paperclip_runner_tool_not_advertised");
+    }
     const context = await this.#boundContext();
-    const descriptor = CAPABILITY_SEMANTIC_TOOL_CATALOG.find((candidate) => candidate.operationId === call.tool);
-    if (!descriptor || !descriptor.allowedModes.includes(
-      context.issue.workMode as "standard" | "planning" | "ask",
-    )) {
+    const input = record(call.arguments);
+    if (call.tool === READ_CHAT_ATTACHMENT_TOOL_NAME) {
+      const scope = this.binding.chatAttachmentReadScope;
+      const identityKeys = ["companyId", "issueId", "runId", "agentId"] as const;
+      if (!scope || identityKeys.some((key) => scope.options.binding[key] !== this.binding[key])) {
+        throw new Error("paperclip_runner_chat_attachment_read_scope_unavailable");
+      }
+      if (Object.keys(input).some((key) => key !== "sourceCommentId" && key !== "attachmentId")) {
+        throw new Error("paperclip_runner_chat_attachment_read_arguments_invalid");
+      }
+      return scope.read({
+        sourceCommentId: requiredUuid(input.sourceCommentId),
+        attachmentId: requiredUuid(input.attachmentId),
+      });
+    }
+    if (call.tool === READ_CURRENT_WAKE_COMMENTS_TOOL_NAME) {
+      if (!this.binding.currentWakeComments) {
+        throw new Error("paperclip_runner_tool_not_advertised");
+      }
+      return readCurrentWakeComments(
+        this.db,
+        this.binding.currentWakeComments,
+        input,
+      );
+    }
+    if (call.tool === LIST_CHAT_ATTACHMENTS_TOOL_NAME) {
+      return listAuthorizedChatAttachments({
+        db: this.db,
+        binding: this.binding,
+        sourceCommentId:
+          input.sourceCommentId === null || input.sourceCommentId === undefined
+            ? null
+            : requiredUuid(input.sourceCommentId),
+        limit: boundedLimit(input.limit, 20, 50),
+        cursor:
+          input.cursor === null || input.cursor === undefined
+            ? null
+            : requiredString(input.cursor),
+      });
+    }
+    if (call.tool === REUSE_CHAT_ATTACHMENT_TOOL_NAME) {
+      return this.#reuseChatAttachment(input);
+    }
+    const descriptor = CAPABILITY_SEMANTIC_TOOL_CATALOG.find(
+      (candidate) => candidate.operationId === call.tool,
+    );
+    if (
+      !descriptor ||
+      !descriptor.allowedModes.includes(
+        context.issue.workMode as "standard" | "planning" | "ask",
+      )
+    ) {
       throw new Error("paperclip_runner_tool_mode_denied");
     }
-    const input = record(call.arguments);
     switch (call.tool) {
       case "search_api": return searchRunnerApi(call.arguments);
       case "call_api": return this.#callApi(call.callId, call.arguments);
@@ -235,6 +379,7 @@ export class PaperclipRunnerToolAuthority {
       case "create_task": return this.#createTask(input,
         (await captureRunIdentity(this.db, this.binding)).context?.id ?? null);
       case "set_dependencies": return this.#setDependencies(input);
+      case "register_deliverable": return this.#registerDeliverable(input);
       default: throw new Error("paperclip_runner_tool_not_bound");
     }
   }
@@ -642,6 +787,176 @@ export class PaperclipRunnerToolAuthority {
     });
   }
 
+  async #registerDeliverable(input: Record<string, unknown>): Promise<unknown> {
+    const idempotencyKey = requiredString(input.idempotencyKey);
+    const workspaceRoot = this.binding.workspaceRoot?.trim();
+    if (!workspaceRoot) {
+      throw new Error("paperclip_runner_file_handoff_workspace_unavailable");
+    }
+    let publication:
+      Awaited<ReturnType<typeof persistActivity>>["publication"] | null = null;
+    let rollbackDefinitePreCommitFailure: (() => Promise<void>) | null = null;
+    const result = await this.#withMutationReceipt(
+      "register_deliverable",
+      idempotencyKey,
+      input,
+      async (tx, context) => {
+        const prepared = await prepareNativeRunnerFileHandoff({
+          db: tx,
+          binding: {
+            companyId: this.binding.companyId,
+            issueId: this.binding.issueId,
+            runId: this.binding.runId,
+            agentId: this.binding.agentId,
+            workspaceRoot,
+            executionTargetKind: this.binding.executionTargetKind ?? "local",
+          },
+          deliverable: {
+            filename: typeof input.filename === "string" ? input.filename : "",
+            contentType:
+              typeof input.contentType === "string" ? input.contentType : "",
+            byteSize:
+              typeof input.byteSize === "number" ? input.byteSize : Number.NaN,
+            sha256: typeof input.sha256 === "string" ? input.sha256 : "",
+            contentRef:
+              typeof input.contentRef === "string" ? input.contentRef : "",
+            title: typeof input.title === "string" ? input.title : "",
+          },
+          storage: this.binding.storage,
+        });
+        rollbackDefinitePreCommitFailure =
+          prepared.rollbackDefinitePreCommitFailure;
+        if (prepared.result.disposition === "applied") {
+          const activity = await persistActivity(tx, {
+            companyId: this.binding.companyId,
+            actorType: "agent",
+            actorId: this.binding.agentId,
+            agentId: this.binding.agentId,
+            runId: this.binding.runId,
+            issueId: this.binding.issueId,
+            action: "issue.attachment_added",
+            entityType: "issue",
+            entityId: this.binding.issueId,
+            details: {
+              attachmentId: prepared.result.entityRefs[0],
+              workProductId: prepared.result.entityRefs[1],
+              commentId: prepared.result.entityRefs[2],
+              identifier: context.issue.identifier,
+              issueTitle: context.issue.title,
+              source: "paperclip_runner_protocol",
+            },
+          });
+          publication = activity.publication;
+        }
+        return prepared.result;
+      },
+      {
+        onDefinitePreCommitFailure: async () => {
+          const rollback = rollbackDefinitePreCommitFailure;
+          rollbackDefinitePreCommitFailure = null;
+          await rollback?.();
+        },
+      },
+    );
+    if (publication) publishActivity(publication);
+    return result;
+  }
+
+  async #reuseChatAttachment(input: Record<string, unknown>): Promise<unknown> {
+    const idempotencyKey = requiredString(input.idempotencyKey);
+    if (idempotencyKey.length > 200) {
+      throw new Error("paperclip_runner_tool_input_invalid");
+    }
+    const sourceCommentId = requiredUuid(input.sourceCommentId);
+    const attachmentId = requiredUuid(input.attachmentId);
+    const title = requiredString(input.title);
+    if (title.length > 500) throw new Error("paperclip_runner_tool_input_invalid");
+    let source: ChatAttachmentReuseSource | null = null;
+    let publication:
+      Awaited<ReturnType<typeof persistActivity>>["publication"] | null = null;
+    let rollbackDefinitePreCommitFailure: (() => Promise<void>) | null = null;
+    const authorize = async (tx: Db, contextSnapshot: unknown) => {
+      source = await authorizeChatAttachmentReuse({
+        db: tx,
+        binding: this.binding,
+        contextSnapshot,
+        sourceCommentId,
+        attachmentId,
+      });
+    };
+    const result = await this.#withMutationReceipt(
+      REUSE_CHAT_ATTACHMENT_TOOL_NAME,
+      idempotencyKey,
+      input,
+      async (tx, context) => {
+        if (context.issue.workMode === "ask") {
+          throw new Error("paperclip_runner_tool_mode_denied");
+        }
+        await authorize(tx, context.run.contextSnapshot);
+        const resultJson = record(context.run.resultJson);
+        for (const receipt of Object.values(record(resultJson.semanticToolReceipts))) {
+          const candidate = receipt as ToolReceipt | undefined;
+          if (candidate?.operationId !== REUSE_CHAT_ATTACHMENT_TOOL_NAME) continue;
+          const priorInput = record(candidate.input);
+          if (
+            priorInput.sourceCommentId === sourceCommentId &&
+            priorInput.attachmentId === attachmentId
+          ) {
+            return { ...record(candidate.result), disposition: "duplicate" };
+          }
+        }
+        const prepared = await prepareReusedChatAttachment({
+          db: tx,
+          binding: this.binding,
+          source: source!,
+          title,
+          storage: this.binding.storage,
+        });
+        rollbackDefinitePreCommitFailure =
+          prepared.rollbackDefinitePreCommitFailure;
+        const activity = await persistActivity(tx, {
+          companyId: this.binding.companyId,
+          actorType: "agent",
+          actorId: this.binding.agentId,
+          agentId: this.binding.agentId,
+          runId: this.binding.runId,
+          issueId: this.binding.issueId,
+          action: "issue.attachment_added",
+          entityType: "issue",
+          entityId: this.binding.issueId,
+          details: {
+            attachmentId: prepared.result.prepared.attachmentId,
+            workProductId: prepared.result.prepared.workProductId,
+            commentId: prepared.result.prepared.commentId,
+            identifier: context.issue.identifier,
+            issueTitle: context.issue.title,
+            source: "paperclip_runner_chat_attachment_reuse",
+            sourceCommentId,
+            sourceAttachmentId: attachmentId,
+            sourceSha256: source!.sha256,
+          },
+        });
+        publication = activity.publication;
+        return prepared.result;
+      },
+      {
+        beforeReceiptReplay: async (tx, context) => {
+          if (context.issue.workMode === "ask") {
+            throw new Error("paperclip_runner_tool_mode_denied");
+          }
+          await authorize(tx, context.run.contextSnapshot);
+        },
+        onDefinitePreCommitFailure: async () => {
+          const rollback = rollbackDefinitePreCommitFailure;
+          rollbackDefinitePreCommitFailure = null;
+          await rollback?.();
+        },
+      },
+    );
+    if (publication) publishActivity(publication);
+    return result;
+  }
+
   async #acceptedPlan(contextSnapshot: unknown): Promise<{
     documentId: string;
     revisionId: string;
@@ -705,32 +1020,117 @@ export class PaperclipRunnerToolAuthority {
     operationId: string,
     idempotencyKey: string,
     input: Record<string, unknown>,
-    effect: (tx: Db, context: {
-      run: typeof heartbeatRuns.$inferSelect;
-      issue: typeof issues.$inferSelect;
-      actor: typeof agents.$inferSelect;
-    }) => Promise<unknown>,
+    effect: (
+      tx: Db,
+      context: {
+        run: typeof heartbeatRuns.$inferSelect;
+        issue: typeof issues.$inferSelect;
+        actor: typeof agents.$inferSelect;
+      },
+    ) => Promise<unknown>,
+    options: {
+      onDefinitePreCommitFailure?: () => Promise<void>;
+      beforeReceiptReplay?: (
+        tx: Db,
+        context: {
+          run: typeof heartbeatRuns.$inferSelect;
+          issue: typeof issues.$inferSelect;
+          actor: typeof agents.$inferSelect;
+        },
+      ) => Promise<void>;
+    } = {},
   ): Promise<unknown> {
     return this.db.transaction(async (tx) => {
-      const context = await this.#lockAuthorizedMutationContext(tx as unknown as Db);
-      const resultJson = record(context.run.resultJson);
-      const receipts = record(resultJson.semanticToolReceipts);
-      const prior = receipts[idempotencyKey] as ToolReceipt | undefined;
-      if (prior !== undefined) {
-        if (prior.operationId !== operationId || canonicalJson(prior.input) !== canonicalJson(input)) {
-          throw new Error("paperclip_runner_tool_idempotency_conflict");
+      try {
+        const context = await this.#lockAuthorizedMutationContext(
+          tx as unknown as Db,
+        );
+        const isFilePreparation =
+          operationId === "register_deliverable" ||
+          operationId === REUSE_CHAT_ATTACHMENT_TOOL_NAME;
+        const snapshot = record(context.run.contextSnapshot);
+        const wake = snapshot.paperclipWake;
+        const normalized = normalizePaperclipWakePayload(wake);
+        let provider =
+          normalized?.issue?.id === this.binding.issueId &&
+          isPaperclipExternalChatContractTurn(wake)
+            ? normalized.externalChatProvider
+            : null;
+        if (
+          isFilePreparation &&
+          snapshot.source === "issue.interaction.respond" &&
+          snapshot.paperclipExternalChatQuestionResponse
+        ) {
+          // Answer text is invocation-only, so the persisted wake cannot use
+          // the prompt-shape question predicate. Resolve the durable answer
+          // chain and current reach/principal before effects or receipt replay;
+          // a marker alone never supplies the provider or new authority.
+          const authorized = await authorizeChatConversationForBoundRun(
+            tx as unknown as Db,
+            this.binding,
+            context.run.contextSnapshot,
+            "nonblocking",
+          );
+          const [endpoint] = await tx
+            .select({ provider: chatEndpoints.provider })
+            .from(chatEndpoints)
+            .where(
+              and(
+                eq(chatEndpoints.id, authorized.endpointId),
+                eq(chatEndpoints.companyId, this.binding.companyId),
+                eq(chatEndpoints.assignedAgentId, this.binding.agentId),
+              ),
+            );
+          if (!endpoint) {
+            throw new Error("paperclip_runner_chat_attachment_binding_denied");
+          }
+          provider = endpoint.provider;
         }
-        return prior.result;
+        // Describe file preparation from the locked, server-built wake, never
+        // from file/tool arguments. Replays of older receipts gain the same
+        // honest delivery guidance without repeating their committed effect.
+        const describeResult = (result: unknown): unknown => {
+          if (!isFilePreparation) return result;
+          return {
+            ...record(result),
+            fileDelivery: paperclipChatFilePreparationDelivery(provider),
+          };
+        };
+        const resultJson = record(context.run.resultJson);
+        const receipts = record(resultJson.semanticToolReceipts);
+        const prior = receipts[idempotencyKey] as ToolReceipt | undefined;
+        if (prior !== undefined) {
+          if (
+            prior.operationId !== operationId ||
+            canonicalJson(prior.input) !== canonicalJson(input)
+          ) {
+            throw new Error("paperclip_runner_tool_idempotency_conflict");
+          }
+          await options.beforeReceiptReplay?.(tx as unknown as Db, context);
+          return describeResult(prior.result);
+        }
+        const result = JSON.parse(
+          JSON.stringify(
+            describeResult(await effect(tx as unknown as Db, context)),
+          ),
+        ) as unknown;
+        receipts[idempotencyKey] = {
+          operationId,
+          input,
+          result,
+        } satisfies ToolReceipt;
+        await tx
+          .update(heartbeatRuns)
+          .set({
+            resultJson: { ...resultJson, semanticToolReceipts: receipts },
+            updatedAt: new Date(),
+          })
+          .where(eq(heartbeatRuns.id, this.binding.runId));
+        return result;
+      } catch (error) {
+        await options.onDefinitePreCommitFailure?.().catch(() => undefined);
+        throw error;
       }
-      const result = JSON.parse(JSON.stringify(
-        await effect(tx as unknown as Db, context),
-      )) as unknown;
-      receipts[idempotencyKey] = { operationId, input, result } satisfies ToolReceipt;
-      await tx.update(heartbeatRuns).set({
-        resultJson: { ...resultJson, semanticToolReceipts: receipts },
-        updatedAt: new Date(),
-      }).where(eq(heartbeatRuns.id, this.binding.runId));
-      return result;
     });
   }
 
@@ -898,10 +1298,18 @@ function nullableProviderId(value: unknown): string | null {
   return normalized === "null" || normalized === "undefined" ? null : normalized;
 }
 
-function boundedLimit(value: unknown): number {
+function requiredUuid(value: unknown): string {
+  const normalized = requiredString(value);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(normalized)) {
+    throw new Error("paperclip_runner_tool_input_invalid");
+  }
+  return normalized;
+}
+
+function boundedLimit(value: unknown, fallback = 50, maximum = 100): number {
   return typeof value === "number" && Number.isInteger(value)
-    ? Math.max(1, Math.min(value, 100))
-    : 50;
+    ? Math.max(1, Math.min(value, maximum))
+    : fallback;
 }
 
 function redactedActor(actor: {

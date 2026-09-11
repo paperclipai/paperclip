@@ -5,7 +5,8 @@ import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents as agentsTable, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
+import type { ChatChannelService } from "../services/chat-channels.js";
+import { activityLog, agents as agentsTable, chatConversations, companies, heartbeatRuns, issues as issuesTable, projects as projectsTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
 import { sha256Digest } from "../services/feedback-redaction.js";
 import {
@@ -430,6 +431,7 @@ async function withHireRunLock<T>(key: string, fn: () => Promise<T>): Promise<T>
 export function agentRoutes(
   db: Db,
   options: {
+    chatRunRetries?: Pick<ChatChannelService, "prepareFailedChatRunRetry" | "processFailedChatRunRetry">;
     pluginWorkerManager?: PluginWorkerManager;
     /** The active deployment mode. The confidential transport guard reads it. */
     deploymentMode?: DeploymentMode;
@@ -5407,13 +5409,107 @@ export function agentRoutes(
       return;
     }
 
+    let wakePayload = req.body.payload ?? null;
+    if (req.body.failedRunId) {
+      assertBoard(req);
+      if (
+        req.body.reason !== "retry_failed_run" ||
+        (opts.source ?? "on_demand") !== "on_demand" ||
+        (req.body.triggerDetail ?? "manual") !== "manual" ||
+        req.body.forceFreshSession === true ||
+        req.body.debug
+      ) {
+        throw badRequest(
+          "An exact failed-run retry cannot override its execution context.",
+        );
+      }
+      const failedRun = await heartbeat.getRun(req.body.failedRunId);
+      if (
+        !failedRun ||
+        failedRun.companyId !== agent.companyId ||
+        failedRun.agentId !== agent.id
+      ) {
+        throw notFound("Failed run not found");
+      }
+      if (!["failed", "timed_out"].includes(failedRun.status)) {
+        throw conflict("Only a failed run can be retried.");
+      }
+      const failedContext = asRecord(failedRun.contextSnapshot) ?? {};
+      const issueId =
+        typeof failedContext.issueId === "string"
+          ? failedContext.issueId
+          : null;
+      const chatBinding = issueId
+        ? await db
+            .select({ id: chatConversations.id })
+            .from(chatConversations)
+            .where(
+              and(
+                eq(chatConversations.companyId, agent.companyId),
+                eq(chatConversations.issueId, issueId),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0])
+        : null;
+      if (chatBinding) {
+        if (!options.chatRunRetries || !req.actor.userId) {
+          throw conflict("Chat retry authorization is unavailable.", {
+            code: "chat_failed_run_retry_requires_authorized_context",
+          });
+        }
+        const retry = await db.transaction((tx) =>
+          options.chatRunRetries!.prepareFailedChatRunRetry(tx, {
+            companyId: agent.companyId,
+            issueId: issueId!,
+            agentId: agent.id,
+            failedRunId: failedRun.id,
+            initiatedByUserId: req.actor.userId!,
+          }),
+        );
+        let receipt;
+        try {
+          receipt = await options.chatRunRetries.processFailedChatRunRetry(
+            retry.actionId,
+          );
+        } catch {
+          // Admission is already committed. Infrastructure/read failure must
+          // not report refusal or cause the caller to mint a second request.
+          logger.warn(
+            { retryActionId: retry.actionId },
+            "chat retry dispatch deferred to durable worker",
+          );
+          receipt = { ...retry, runId: null, status: "queued" as const };
+        }
+        res.status(202).json(receipt);
+        return;
+      }
+      if (
+        typeof failedContext.source === "string" &&
+        failedContext.source.startsWith("chat:")
+      ) {
+        throw conflict(
+          "The failed chat request no longer has an authorized conversation.",
+          { code: "chat_failed_run_retry_requires_authorized_context" },
+        );
+      }
+      // Non-chat runs retain the existing retry path, but the selected server
+      // record—not caller-supplied task/comment markers—selects its task.
+      wakePayload = Object.fromEntries(
+        ["issueId", "taskId", "taskKey"].flatMap((key) =>
+          typeof failedContext[key] === "string"
+            ? [[key, failedContext[key]]]
+            : [],
+        ),
+      );
+    }
     const run = await heartbeat.wakeup(id, {
       source: opts.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
       reason: req.body.reason ?? null,
-      payload: req.actor.type === "agent" && req.body.payload
-        ? { ...req.body.payload, commentId: undefined, wakeCommentId: undefined, wakeCommentIds: undefined }
-        : req.body.payload ?? null,
+      payload: req.actor.type === "agent" && wakePayload
+        ? { ...wakePayload, commentId: undefined, wakeCommentId: undefined, wakeCommentIds: undefined }
+        : wakePayload,
       idempotencyKey: req.body.idempotencyKey ?? null,
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",
       requestedByActorId: req.actor.type === "agent" ? req.actor.agentId ?? null : req.actor.userId ?? null,
@@ -5489,6 +5585,9 @@ export function agentRoutes(
     // / missing bodies. Only forwards fields the caller actually supplied so
     // an empty body produces the original fixed-arg `heartbeat.invoke()`
     // shape exactly.
+    if (req.body?.failedRunId !== undefined) {
+      throw badRequest("Use the wakeup endpoint to retry an exact failed run.");
+    }
     const id = req.params.id as string;
     const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!agent) return;

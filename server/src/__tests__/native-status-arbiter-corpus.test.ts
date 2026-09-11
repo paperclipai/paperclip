@@ -1787,9 +1787,9 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     };
   }
 
-  it("executes all 52 fixtures in their production consumers and joins all 70 matrix rows", async () => {
+  it("executes all 53 fixtures in their production consumers and joins all 70 matrix rows", async () => {
     expect(corpus.schema).toBe("paperclip.status-authority-conformance.v1");
-    expect(corpus.fixtures).toHaveLength(52);
+    expect(corpus.fixtures).toHaveLength(53);
 
     const observations = new Map<string, FixtureObservation>();
     for (const fixture of corpus.fixtures) observations.set(fixture.id, await executeFixture(fixture));
@@ -2062,6 +2062,278 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       lastStatusDecisionId: issues.lastStatusDecisionId,
     }).from(issues).where(eq(issues.id, seeded.issueId))).resolves.toEqual([
       { status: priorStatus, statusVersion: 0, lastStatusDecisionId: null },
+    ]);
+  });
+
+  it("keeps assessment lineage run-local while superseding an issue decision from another run", async () => {
+    const fixture = corpus.fixtures.find((candidate) => candidate.mode === "native");
+    if (!fixture) throw new Error("native corpus fixture missing");
+    const seeded = await seedFixture(fixture);
+    const priorRunId = randomUUID();
+    const priorResultId = randomUUID();
+    const priorAssessmentId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: priorRunId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      runtimeMode: "native",
+      runtimeModeResolvedAt: new Date(),
+      nativeIssueId: seeded.issueId,
+      contextSnapshot: { issueId: seeded.issueId },
+      completionContractId: seeded.contractId!,
+      completionContractSha256: `contract:${fixture.id}`,
+    });
+    await db.insert(nativeRunResults).values({
+      id: priorResultId,
+      companyId,
+      issueId: seeded.issueId,
+      runId: priorRunId,
+      completionContractId: seeded.contractId!,
+      serverFingerprint: `cross-run-prior:${priorRunId}`,
+      schemaStatus: "accepted",
+      resultJson: { result: {}, terminal: { runTerminalState: "succeeded" } },
+      canonicalSha256: `cross-run-prior:${priorResultId}`,
+    });
+    await db.insert(workAssessments).values({
+      id: priorAssessmentId,
+      companyId,
+      issueId: seeded.issueId,
+      runId: priorRunId,
+      contractId: seeded.contractId!,
+      resultId: priorResultId,
+      triggerKind: "native_result",
+      triggerActorCompanyId: companyId,
+      priorIssueStatus: "in_progress",
+      priorStatusVersion: 0,
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      assessmentJson: { reason: "prior-run" },
+      inputDigest: `cross-run-prior:${priorAssessmentId}`,
+    });
+    const [priorDecision] = await db
+      .insert(statusDecisions)
+      .values({
+        companyId,
+        issueId: seeded.issueId,
+        runId: priorRunId,
+        assessmentId: priorAssessmentId,
+        decisionVersion: 1,
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        fromStatus: "in_progress",
+        toStatus: "in_review",
+        reasonCode: "prior_run_review",
+        decisionJson: { statusAction: "in_review" },
+        decisionDigest: `cross-run-prior:${seeded.issueId}`,
+        applicationState: "applied",
+        appliedAt: new Date(),
+      })
+      .returning({ id: statusDecisions.id });
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        statusVersion: 1,
+        lastStatusDecisionId: priorDecision!.id,
+      })
+      .where(eq(issues.id, seeded.issueId));
+
+    const reassessmentId = randomUUID();
+    await db.insert(workAssessments).values({
+      id: reassessmentId,
+      companyId,
+      issueId: seeded.issueId,
+      runId: seeded.runId,
+      contractId: seeded.contractId!,
+      resultId: seeded.resultId!,
+      triggerKind: "reconciliation",
+      triggerActorCompanyId: companyId,
+      priorIssueStatus: "in_review",
+      priorStatusVersion: 1,
+      priorDecisionId: priorDecision!.id,
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      assessmentJson: { reason: "current-run-reassessment" },
+      inputDigest: `cross-run-reassessment:${reassessmentId}`,
+      supersedesAssessmentId: seeded.assessmentId,
+    });
+    const committed = await commitNativeStatusDecision({
+      db,
+      companyId,
+      issueId: seeded.issueId,
+      runId: seeded.runId,
+      assessmentId: reassessmentId,
+      priorStatus: "in_review",
+      priorStatusVersion: 1,
+      priorDecisionId: priorDecision!.id,
+      decision: {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "preserve",
+        toStatus: "in_review",
+        reasonCode: "prior_status_terminal_preserved",
+        unblockDescriptor: null,
+        effects: [{ kind: "append_superseding_assessment" }],
+      },
+    });
+
+    await expect(
+      db
+        .select({ supersedesDecisionId: statusDecisions.supersedesDecisionId })
+        .from(statusDecisions)
+        .where(eq(statusDecisions.id, committed.decision.id)),
+    ).resolves.toEqual([
+      { supersedesDecisionId: priorDecision!.id },
+    ]);
+    const replayed = await commitNativeStatusDecision({
+      db,
+      companyId,
+      issueId: seeded.issueId,
+      runId: seeded.runId,
+      assessmentId: reassessmentId,
+      priorStatus: "in_review",
+      priorStatusVersion: 1,
+      priorDecisionId: priorDecision!.id,
+      decision: {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "preserve",
+        toStatus: "in_review",
+        reasonCode: "prior_status_terminal_preserved",
+        unblockDescriptor: null,
+        effects: [{ kind: "append_superseding_assessment" }],
+      },
+    });
+    expect(replayed).toMatchObject({
+      replayed: true,
+      decision: { id: committed.decision.id },
+    });
+    await expect(
+      db
+        .select({
+          supersedesAssessmentId: workAssessments.supersedesAssessmentId,
+        })
+        .from(workAssessments)
+        .where(eq(workAssessments.id, reassessmentId)),
+    ).resolves.toEqual([{ supersedesAssessmentId: seeded.assessmentId }]);
+    await expect(
+      db
+        .select({
+          payload: statusDecisionEffects.payload,
+        })
+        .from(statusDecisionEffects)
+        .where(eq(statusDecisionEffects.decisionId, committed.decision.id)),
+    ).resolves.toEqual([
+      {
+        payload: expect.objectContaining({
+          supersedesDecisionId: priorDecision!.id,
+          assessmentId: reassessmentId,
+          supersedesAssessmentId: seeded.assessmentId,
+        }),
+      },
+    ]);
+  });
+
+  it("preserves an intermediate same-run assessment when the issue decision points to an older ancestor", async () => {
+    const fixture = corpus.fixtures.find((candidate) => candidate.mode === "native");
+    if (!fixture) throw new Error("native corpus fixture missing");
+    const seeded = await seedFixture(fixture);
+    const [priorDecision] = await db
+      .insert(statusDecisions)
+      .values({
+        companyId,
+        issueId: seeded.issueId,
+        runId: seeded.runId,
+        assessmentId: seeded.assessmentId,
+        decisionVersion: 1,
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        fromStatus: "in_progress",
+        toStatus: "in_review",
+        reasonCode: "prior_run_review",
+        decisionJson: { statusAction: "in_review" },
+        decisionDigest: `same-run-ancestor:${seeded.issueId}`,
+        applicationState: "applied",
+        appliedAt: new Date(),
+      })
+      .returning({ id: statusDecisions.id });
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        statusVersion: 1,
+        lastStatusDecisionId: priorDecision!.id,
+      })
+      .where(eq(issues.id, seeded.issueId));
+    const intermediateAssessmentId = randomUUID();
+    const reassessmentId = randomUUID();
+    await db.insert(workAssessments).values([
+      {
+        id: intermediateAssessmentId,
+        companyId,
+        issueId: seeded.issueId,
+        runId: seeded.runId,
+        contractId: seeded.contractId!,
+        resultId: seeded.resultId!,
+        triggerKind: "reconciliation",
+        triggerActorCompanyId: companyId,
+        priorIssueStatus: "in_review",
+        priorStatusVersion: 1,
+        priorDecisionId: priorDecision!.id,
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        assessmentJson: { reason: "intermediate" },
+        inputDigest: `same-run-intermediate:${intermediateAssessmentId}`,
+        supersedesAssessmentId: seeded.assessmentId,
+      },
+      {
+        id: reassessmentId,
+        companyId,
+        issueId: seeded.issueId,
+        runId: seeded.runId,
+        contractId: seeded.contractId!,
+        resultId: seeded.resultId!,
+        triggerKind: "reconciliation",
+        triggerActorCompanyId: companyId,
+        priorIssueStatus: "in_review",
+        priorStatusVersion: 1,
+        priorDecisionId: priorDecision!.id,
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        assessmentJson: { reason: "latest" },
+        inputDigest: `same-run-latest:${reassessmentId}`,
+        supersedesAssessmentId: intermediateAssessmentId,
+      },
+    ]);
+    const committed = await commitNativeStatusDecision({
+      db,
+      companyId,
+      issueId: seeded.issueId,
+      runId: seeded.runId,
+      assessmentId: reassessmentId,
+      priorStatus: "in_review",
+      priorStatusVersion: 1,
+      priorDecisionId: priorDecision!.id,
+      decision: {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "preserve",
+        toStatus: "in_review",
+        reasonCode: "prior_status_terminal_preserved",
+        unblockDescriptor: null,
+        effects: [{ kind: "append_superseding_assessment" }],
+      },
+    });
+
+    await expect(
+      db
+        .select({ supersedesDecisionId: statusDecisions.supersedesDecisionId })
+        .from(statusDecisions)
+        .where(eq(statusDecisions.id, committed.decision.id)),
+    ).resolves.toEqual([
+      { supersedesDecisionId: priorDecision!.id },
+    ]);
+    await expect(
+      db
+        .select({
+          supersedesAssessmentId: workAssessments.supersedesAssessmentId,
+        })
+        .from(workAssessments)
+        .where(eq(workAssessments.id, reassessmentId)),
+    ).resolves.toEqual([
+      { supersedesAssessmentId: intermediateAssessmentId },
     ]);
   });
 

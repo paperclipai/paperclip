@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
   agents,
+  chatActions,
   heartbeatRuns,
   issueComments,
   issueRecoveryActions,
@@ -11,9 +12,16 @@ import {
   nativeRunFinalizations,
 } from "@paperclipai/db";
 import { legacyExecutionNeedsReconciliation } from "../../../services/legacy-execution-recovery.js";
+import {
+  authorizeFailedChatRunRetryWake,
+  FailedChatRunRetryAuthorizationError,
+} from "../../../services/durable-chat-wakeup.js";
+import { isRetiredExternalChatQuestionSource } from "../../../services/question-response-delivery.js";
+import { HttpError } from "../../../errors.js";
 import { evaluateAgentInvokabilityFromDb } from "../../../services/agent-invokability.js";
 import { issueTreeControlService, isVerifiedIssueTreeControlInteractionWake } from "../../../services/issue-tree-control.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "../../../services/recovery/pause-hold-guard.js";
+import { classifyContinuationFailure } from "../../../services/recovery/service.js";
 import { issueService } from "../../../services/issues.js";
 import { issueRecoveryActionService } from "../../../services/issue-recovery-actions.js";
 import { readContinuationAttempt } from "../../../services/recovery/run-liveness-continuations.js";
@@ -162,7 +170,7 @@ function buildHost(_tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
   };
 }
 
-function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueTransaction {
+function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, run: HeartbeatRunRow): WakeQueueTransaction {
   const treeControlSvc = issueTreeControlService(tx);
   const issuesSvc = issueService(tx);
 
@@ -179,20 +187,68 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueue
     },
 
     async findNextDeferredWake({ companyId, issueId }) {
-      const row = await tx
-        .select()
-        .from(agentWakeupRequests)
-        .where(
-          and(
-            eq(agentWakeupRequests.companyId, companyId),
-            eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
-            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
-          ),
-        )
-        .orderBy(asc(agentWakeupRequests.requestedAt))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      return row ? toDeferredWakeCandidate(row) : null;
+      while (true) {
+        const row = await tx
+          .select()
+          .from(agentWakeupRequests)
+          .where(
+            and(
+              eq(agentWakeupRequests.companyId, companyId),
+              eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+            ),
+          )
+          .orderBy(asc(agentWakeupRequests.requestedAt))
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (!row) return null;
+        const candidate = toDeferredWakeCandidate(row);
+        try {
+          const authorizedFailedChatRetry = await authorizeFailedChatRunRetryWake(
+            db,
+            tx,
+            {
+              phase: "promotion",
+              wakeupRequestId: row.id,
+              companyId,
+              agentId: row.agentId,
+              issueId,
+              contextSnapshot: candidate.deferredContextSeed,
+            },
+          );
+          return { ...candidate, authorizedFailedChatRetry };
+        } catch (error) {
+          // Retire only a proven denial. Transient failures roll back this
+          // transaction instead of discarding otherwise authorized work.
+          if (
+            !(error instanceof FailedChatRunRetryAuthorizationError) &&
+            !(
+              error instanceof HttpError &&
+              error.status >= 400 &&
+              error.status < 500
+            )
+          ) {
+            throw error;
+          }
+          const now = new Date();
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error:
+                "The exact failed chat request is no longer authorized. Send a new request in the current connected conversation.",
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(agentWakeupRequests.companyId, companyId),
+                eq(agentWakeupRequests.id, row.id),
+                eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+              ),
+            );
+        }
+      }
     },
 
     async getQueuedCommentLiveness({ companyId, issueId, wakeAgentId, finishingRunId, finishingRunAgentId, queuedCommentIds }) {
@@ -339,6 +395,9 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueue
           triggerDetail: input.triggerDetail,
           status: "queued",
           wakeupRequestId: input.wakeId,
+          retryOfRunId: input.authorizedFailedChatRetry
+            ? readNonEmptyString(input.contextSnapshot.retryOfRunId)
+            : null,
           contextSnapshot: input.contextSnapshot,
           responsibleUserId: input.responsibleUserId,
           sessionIdBefore: input.sessionBefore,
@@ -426,6 +485,33 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueue
 
     async isAutomaticRecoverySuppressedByPauseHold({ companyId, issueId }) {
       return isAutomaticRecoverySuppressedByPauseHold(tx, companyId, issueId, treeControlSvc);
+    },
+
+    async isImmediateRecoverySourceBlocked({ companyId, runId }) {
+      if (companyId !== run.companyId || runId !== run.id) {
+        throw new Error(
+          "wake-queue: recovery source does not match the locked execution",
+        );
+      }
+      const failedChatRequestOwner = run.wakeupRequestId
+        ? await tx
+            .select({ id: chatActions.id })
+            .from(chatActions)
+            .where(
+              and(
+                eq(chatActions.id, run.wakeupRequestId),
+                eq(chatActions.companyId, run.companyId),
+                inArray(chatActions.kind, ["inbound_wakeup", "failed_run_retry"]),
+              ),
+            )
+            .limit(1)
+            .then((rows) => rows[0] ?? null)
+        : null;
+      return (
+        Boolean(failedChatRequestOwner) ||
+        run.errorCode === "chat_failed_run_retry_not_authorized" ||
+        classifyContinuationFailure(run).kind === "non_retryable"
+      );
     },
 
     async queueReviewParticipantRecoveryRun({ companyId, issue, finishingRun, recoveryAgent, sessionBefore, now }) {
@@ -646,22 +732,61 @@ function requireAdmissionTx(scope: TransactionScope | null | undefined, companyI
 
 export function createWakeAdmissionReader(): WakeAdmissionReader {
   return {
+    async matchesActiveWakeActor(scope, input) {
+      const tx = requireAdmissionTx(scope, input.companyId);
+      if (!input.wakeupRequestId) return false;
+      const actor = await tx
+        .select({
+          type: agentWakeupRequests.requestedByActorType,
+          id: agentWakeupRequests.requestedByActorId,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, input.companyId),
+            eq(agentWakeupRequests.id, input.wakeupRequestId),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return (
+        actor !== null &&
+        actor.type === input.requestedByActorType &&
+        actor.id === input.requestedByActorId
+      );
+    },
     async isSameExecutionAgent(
       scope,
-      { companyId, activeExecutionRunAgentId, issueExecutionAgentNameKey, agentNameKey },
+      {
+        companyId,
+        activeExecutionRunAgentId,
+        issueExecutionAgentNameKey,
+        agentNameKey,
+      },
     ) {
       const tx = requireAdmissionTx(scope, companyId);
       const executionAgent = await tx
         .select({ name: agents.name })
         .from(agents)
-        .where(and(eq(agents.id, activeExecutionRunAgentId), eq(agents.companyId, companyId)))
+        .where(
+          and(
+            eq(agents.id, activeExecutionRunAgentId),
+            eq(agents.companyId, companyId),
+          ),
+        )
         .then((rows) => rows[0] ?? null);
       const executionAgentNameKey =
-        normalizeAgentNameKey(issueExecutionAgentNameKey) ?? normalizeAgentNameKey(executionAgent?.name);
-      return Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey;
+        normalizeAgentNameKey(issueExecutionAgentNameKey) ??
+        normalizeAgentNameKey(executionAgent?.name);
+      return (
+        Boolean(executionAgentNameKey) && executionAgentNameKey === agentNameKey
+      );
     },
 
-    async findExistingDeferredWake(scope, { companyId, agentId, issueId }) {
+    async findExistingDeferredWake(
+      scope,
+      { companyId, agentId, issueId, durableActor },
+    ) {
       const tx = requireAdmissionTx(scope, companyId);
       const row = await tx
         .select()
@@ -672,6 +797,22 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
             eq(agentWakeupRequests.agentId, agentId),
             eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
             sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+            ...(durableActor
+              ? [
+                  durableActor.type === null
+                    ? isNull(agentWakeupRequests.requestedByActorType)
+                    : eq(
+                        agentWakeupRequests.requestedByActorType,
+                        durableActor.type,
+                      ),
+                  durableActor.id === null
+                    ? isNull(agentWakeupRequests.requestedByActorId)
+                    : eq(
+                        agentWakeupRequests.requestedByActorId,
+                        durableActor.id,
+                      ),
+                ]
+              : []),
           ),
         )
         .orderBy(asc(agentWakeupRequests.requestedAt))
@@ -681,6 +822,7 @@ export function createWakeAdmissionReader(): WakeAdmissionReader {
       const payload = parseObject(row.payload);
       return {
         id: row.id,
+        runId: row.runId,
         payload,
         deferredContext: parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]),
         coalescedCount: row.coalescedCount,
@@ -697,16 +839,24 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
       const mergedRun = await tx
         .update(heartbeatRuns)
         .set({ contextSnapshot: input.mergedContextSnapshot, updatedAt: now })
-        .where(and(eq(heartbeatRuns.id, input.activeExecutionRunId), eq(heartbeatRuns.companyId, input.companyId)))
+        .where(
+          and(
+            eq(heartbeatRuns.id, input.activeExecutionRunId),
+            eq(heartbeatRuns.companyId, input.companyId),
+          ),
+        )
         .returning()
         .then((rows) => rows[0] ?? null);
       if (!mergedRun) {
         // The compare-and-set write affected no row. Throw to roll the
         // transaction back instead of recording a coalesced wake against a
         // run this write never touched.
-        throw new Error("wake-queue: the coalesce target run was not found for this company");
+        throw new Error(
+          "wake-queue: the coalesce target run was not found for this company",
+        );
       }
       await tx.insert(agentWakeupRequests).values({
+        ...input.durableReceipt,
         companyId: input.companyId,
         agentId: input.agentId,
         source: input.source,
@@ -745,13 +895,25 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         // The compare-and-set write affected no row: a concurrent writer
         // already moved this wake off `deferred_issue_execution`. Roll the
         // transaction back instead of leaving the merge half-applied.
-        throw new Error("wake-queue: the deferred wake to merge into was not found for this company");
+        throw new Error(
+          "wake-queue: the deferred wake to merge into was not found for this company",
+        );
+      }
+      if (input.coalescedReceipt) {
+        await tx.insert(agentWakeupRequests).values({
+          ...input.coalescedReceipt,
+          companyId: input.companyId,
+          status: "coalesced",
+          coalescedCount: 1,
+          finishedAt: new Date(),
+        });
       }
     },
 
     async insertNewDeferredWake(scope, input) {
       const tx = requireAdmissionTx(scope, input.companyId);
       await tx.insert(agentWakeupRequests).values({
+        ...input.durableReceipt,
         companyId: input.companyId,
         agentId: input.agentId,
         source: input.source,
@@ -874,12 +1036,32 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           };
         }
 
+        // The durable external answer owns the sole successor of this retired
+        // question source; release locks without creating another incident.
+        if (
+          run.runtimeMode === "native" &&
+          run.status === "cancelled" &&
+          run.errorCode === "external_chat_continuation" &&
+          (await isRetiredExternalChatQuestionSource(tx, {
+            companyId: run.companyId,
+            issueId: issueRow.id,
+            agentId: run.agentId,
+            runId: run.id,
+          }))
+        ) {
+          return {
+            outcome: { kind: "released" },
+            postCommitEffects: [],
+            run: runSnapshot,
+          };
+        }
+
         if (await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
         const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot };
-        const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps) });
+        const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
         return { ...result, run: runSnapshot };
       });
     },

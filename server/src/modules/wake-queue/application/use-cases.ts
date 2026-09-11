@@ -12,10 +12,10 @@ import {
   isWorkspaceValidationFailedRun,
   readNonEmptyString,
 } from "../domain/values.js";
-import { withRecoveryContext } from "../../../services/recovery/status-only-context.js";
 import type {
   AdmitWakeBehindIssueExecutionResult,
   DeferredWakeCandidate,
+  DurableWakeAdmissionReceipt,
   InvokableAgentSnapshot,
   IssueLockWriter,
   IssueSnapshot,
@@ -159,7 +159,10 @@ async function runReleaseDrain(
     processedWakeIds.add(candidate.id);
 
     let liveness = { liveNonSelfCommentIds: candidate.queuedCommentIds, containedSelfAuthoredComment: false };
-    if (candidate.queuedCommentIds.length > 0) {
+    if (
+      !candidate.authorizedFailedChatRetry &&
+      candidate.queuedCommentIds.length > 0
+    ) {
       liveness = await ports.transaction.getQueuedCommentLiveness({
         companyId: run.companyId,
         issueId: issue.id,
@@ -279,7 +282,11 @@ async function promoteDeferredWake(
 
   let currentIssue = issue;
 
-  if (workingCandidate.deferredCommentIds.length > 0 && (currentIssue.status === "done" || currentIssue.status === "cancelled")) {
+  if (
+    !workingCandidate.authorizedFailedChatRetry &&
+    workingCandidate.deferredCommentIds.length > 0 &&
+    (currentIssue.status === "done" || currentIssue.status === "cancelled")
+  ) {
     const selfAuthorship = await ports.transaction.getCommentSelfAuthorship({
       companyId: run.companyId,
       issueId: currentIssue.id,
@@ -288,9 +295,14 @@ async function promoteDeferredWake(
     });
     const shouldReopen =
       !selfAuthorship.allSelfAuthored &&
-      (workingCandidate.requestedByActorType === "user" || workingCandidate.wakeReason === "issue_reopened_via_comment");
+      (workingCandidate.requestedByActorType === "user" ||
+        workingCandidate.wakeReason === "issue_reopened_via_comment");
     if (shouldReopen) {
-      const reopened = await ports.transaction.reopenIssue({ companyId: run.companyId, issueId: currentIssue.id, runId: run.id });
+      const reopened = await ports.transaction.reopenIssue({
+        companyId: run.companyId,
+        issueId: currentIssue.id,
+        runId: run.id,
+      });
       if (reopened) {
         postCommitEffects.push({
           kind: "issue_reopened",
@@ -378,6 +390,7 @@ async function promoteDeferredWake(
     payload: promotedPayload,
     responsibleUserId,
     sessionBefore,
+    authorizedFailedChatRetry: workingCandidate.authorizedFailedChatRetry,
     now: input.now,
   });
 
@@ -394,8 +407,12 @@ async function runReleaseRecoveryTail(
   postCommitEffects: PostCommitEffect[],
 ): Promise<ReleaseTransactionResult> {
   const suppressImmediateRecovery = input.suppressImmediateRecovery ?? false;
-  const isStrandedRecoveryOrigin = issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND;
-  const recoveryAgent = await transaction.findInvokableAgent({ companyId: issue.companyId, agentId: run.agentId });
+  const isStrandedRecoveryOrigin =
+    issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND;
+  const recoveryAgent = await transaction.findInvokableAgent({
+    companyId: issue.companyId,
+    agentId: run.agentId,
+  });
 
   const currentParticipant = currentAgentParticipant(issue);
   const reviewParticipantApplies =
@@ -411,11 +428,17 @@ async function runReleaseRecoveryTail(
     !issue.assigneeUserId &&
     !issue.hiddenAt &&
     issue.assigneeAgentId === run.agentId &&
-    (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled");
+    (run.status === "failed" ||
+      run.status === "timed_out" ||
+      run.status === "cancelled");
 
-  const suppressedByPauseHold = (reviewParticipantApplies || immediateApplies)
-    ? await transaction.isAutomaticRecoverySuppressedByPauseHold({ companyId: issue.companyId, issueId: issue.id })
-    : false;
+  const suppressedByPauseHold =
+    reviewParticipantApplies || immediateApplies
+      ? await transaction.isAutomaticRecoverySuppressedByPauseHold({
+          companyId: issue.companyId,
+          issueId: issue.id,
+        })
+      : false;
 
   const hasExistingExecutionPath = reviewParticipantApplies
     ? await transaction.hasExistingExecutionPath({
@@ -425,29 +448,68 @@ async function runReleaseRecoveryTail(
         agentId: currentParticipant?.agentId ?? null,
       })
     : immediateApplies
-      ? await transaction.hasExistingExecutionPath({ companyId: issue.companyId, issueId: issue.id, excludeRunId: run.id, agentId: null })
+      ? await transaction.hasExistingExecutionPath({
+          companyId: issue.companyId,
+          issueId: issue.id,
+          excludeRunId: run.id,
+          agentId: null,
+        })
       : false;
 
-  const hasExplicitBlockerPath = immediateApplies && !reviewParticipantApplies
-    ? await transaction.hasExplicitBlockerPath({ companyId: issue.companyId, issueId: issue.id })
-    : false;
+  const hasExplicitBlockerPath =
+    immediateApplies && !reviewParticipantApplies
+      ? await transaction.hasExplicitBlockerPath({
+          companyId: issue.companyId,
+          issueId: issue.id,
+        })
+      : false;
 
-  const expectedRetryReason: "assignment_recovery" | "issue_continuation_needed" =
-    issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed";
+  const expectedRetryReason:
+    "assignment_recovery" | "issue_continuation_needed" =
+    issue.status === "todo"
+      ? "assignment_recovery"
+      : "issue_continuation_needed";
+
+  // A separately admitted deferred wake has already had its chance to promote.
+  // Only the generic immediate-recovery tail consumes this deny-only fact.
+  const sourceRequiresExplicitRecovery =
+    immediateApplies &&
+    !reviewParticipantApplies &&
+    !suppressImmediateRecovery &&
+    readNonEmptyString(run.contextSnapshot.retryReason) !==
+      ISSUE_DISPOSITION_REPAIR_RETRY_REASON &&
+    !hasExistingExecutionPath &&
+    !issue.monitorNextCheckAt &&
+    !hasExplicitBlockerPath &&
+    !suppressedByPauseHold &&
+    !isStrandedRecoveryOrigin
+      ? await transaction.isImmediateRecoverySourceBlocked({
+          companyId: run.companyId,
+          runId: run.id,
+        })
+      : false;
 
   const decision = decideReleaseRecovery({
     suppressImmediateRecovery,
     reviewParticipant: {
       applies: reviewParticipantApplies,
-      isExecutionReviewParticipantRecoveryRun: isExecutionReviewParticipantRecoveryRun(run),
+      isExecutionReviewParticipantRecoveryRun:
+        isExecutionReviewParticipantRecoveryRun(run),
     },
     immediate: {
       applies: immediateApplies,
-      isDispositionRepairRetry: readNonEmptyString(run.contextSnapshot.retryReason) === ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+      isDispositionRepairRetry:
+        readNonEmptyString(run.contextSnapshot.retryReason) ===
+        ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
       hasExplicitBlockerPath,
       isWorkspaceValidationFailedRun: isWorkspaceValidationFailedRun(run),
-      isConfigurationIncompleteFailedRun: isConfigurationIncompleteFailedRun(run),
-      automaticRecoveryAlreadyFailed: didAutomaticRecoveryFail(run, expectedRetryReason),
+      isConfigurationIncompleteFailedRun:
+        isConfigurationIncompleteFailedRun(run),
+      automaticRecoveryAlreadyFailed: didAutomaticRecoveryFail(
+        run,
+        expectedRetryReason,
+      ),
+      sourceRequiresExplicitRecovery,
     },
     shared: {
       hasExistingExecutionPath,
@@ -465,7 +527,11 @@ async function runReleaseRecoveryTail(
 
   if (decision.kind === "blocked_recovery_in_place") {
     return {
-      outcome: { kind: "blocked_recovery_in_place", issue, previousStatus: statusForBlock(issue) },
+      outcome: {
+        kind: "blocked_recovery_in_place",
+        issue,
+        previousStatus: statusForBlock(issue),
+      },
       postCommitEffects,
     };
   }
@@ -483,12 +549,17 @@ async function runReleaseRecoveryTail(
   }
 
   // Unreachable: decideReleaseRecovery only reaches "queue_review_participant_recovery" or "queue_recovery" when the shared recovery-agent facts are both true.
-  if (!recoveryAgent) throw new Error("wake-queue: queued a recovery run with no invokable recovery agent");
+  if (!recoveryAgent)
+    throw new Error(
+      "wake-queue: queued a recovery run with no invokable recovery agent",
+    );
 
   const sessionBefore = await host.resolveSessionBeforeForWakeup({
     companyId: issue.companyId,
     agentId: recoveryAgent.id,
-    taskKey: readNonEmptyString(run.contextSnapshot.taskKey) ?? readNonEmptyString(run.contextSnapshot.issueId),
+    taskKey:
+      readNonEmptyString(run.contextSnapshot.taskKey) ??
+      readNonEmptyString(run.contextSnapshot.issueId),
   });
 
   if (decision.kind === "queue_review_participant_recovery") {
@@ -501,34 +572,39 @@ async function runReleaseRecoveryTail(
       now: input.now,
     });
     postCommitEffects.push({ kind: "run_queued", run: queuedRun });
-    return { outcome: { kind: "queued_review_participant_recovery", run: queuedRun }, postCommitEffects };
+    return {
+      outcome: { kind: "queued_review_participant_recovery", run: queuedRun },
+      postCommitEffects,
+    };
   }
 
   // decision.kind === "queue_recovery"; resolve the responsible user here,
   // in the application layer, before the transaction port queues the run.
-  const { retryReason, recoveryReason, recoverySource } = deriveImmediateRecoveryContextLabels(issue.status);
-  const recoveryContextSnapshot = withRecoveryContext(
-    {
-      issueId: issue.id,
-      taskId: issue.id,
-      wakeReason: recoveryReason,
-      retryReason,
-      source: recoverySource,
-      retryOfRunId: run.id,
-    },
-    "normal_model",
-  );
+  const { retryReason, recoveryReason, recoverySource } =
+    deriveImmediateRecoveryContextLabels(issue.status);
+  // This fresh normal-model seed carries no inherited recovery/model-profile fields.
+  const recoveryContextSnapshot: Record<string, unknown> = {
+    issueId: issue.id,
+    taskId: issue.id,
+    wakeReason: recoveryReason,
+    retryReason,
+    source: recoverySource,
+    retryOfRunId: run.id,
+  };
 
-  const recoveryResponsibleUserId = await resolveResponsibleUserForQueuedRun(host, {
-    companyId: issue.companyId,
-    contextSnapshot: recoveryContextSnapshot,
-    issue,
-    requestedByActorType: "system",
-    requestedByActorId: null,
-    source: "automation",
-    triggerDetail: "system",
-    existingRunResponsibleUserId: run.responsibleUserId,
-  });
+  const recoveryResponsibleUserId = await resolveResponsibleUserForQueuedRun(
+    host,
+    {
+      companyId: issue.companyId,
+      contextSnapshot: recoveryContextSnapshot,
+      issue,
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      source: "automation",
+      triggerDetail: "system",
+      existingRunResponsibleUserId: run.responsibleUserId,
+    },
+  );
   if (!recoveryResponsibleUserId) {
     throw new WakeQueueApplicationError(
       "responsible_user_unresolved",
@@ -555,7 +631,10 @@ async function runReleaseRecoveryTail(
     now: input.now,
   });
   postCommitEffects.push({ kind: "run_queued", run: queuedRun });
-  return { outcome: { kind: "queued_recovery", run: queuedRun }, postCommitEffects };
+  return {
+    outcome: { kind: "queued_recovery", run: queuedRun },
+    postCommitEffects,
+  };
 }
 
 function statusForBlock(issue: IssueSnapshot): "todo" | "in_progress" | "in_review" {
@@ -569,6 +648,9 @@ export type AdmitWakeBehindIssueExecutionInput = {
   agentNameKey: string | null;
   issueExecutionAgentNameKey: string | null;
   activeExecutionRun: WakeAdmissionActiveExecutionRun;
+  allowRunCoalescing?: boolean;
+  durableReceipt?: DurableWakeAdmissionReceipt;
+  reason?: string | null;
   /** Tracks which runs are still live in this process, for the zombie-run filter. */
   liveRunExecutions: { has(id: string): boolean };
   wakeCommentId: string | null;
@@ -606,12 +688,13 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       agentNameKey: input.agentNameKey,
     });
 
-    const shouldDeferFollowupWake = deps.helpers.shouldDeferFollowupWakeForSameIssue({
-      activeRunStatus: input.activeExecutionRun.status,
-      isSameExecutionAgent,
-      wakeCommentId: input.wakeCommentId,
-      forceFreshSession: input.forceFreshSession,
-    });
+    const shouldDeferFollowupWake =
+      deps.helpers.shouldDeferFollowupWakeForSameIssue({
+        activeRunStatus: input.activeExecutionRun.status,
+        isSameExecutionAgent,
+        wakeCommentId: input.wakeCommentId,
+        forceFreshSession: input.forceFreshSession,
+      });
     const shouldQueueFollowupForRunningWake =
       deps.helpers.shouldQueueFollowupForRunningIssueWake({
         contextSnapshot: input.contextSnapshot,
@@ -620,10 +703,23 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       input.activeExecutionRun.status === "running" &&
       isSameExecutionAgent;
     const availableActiveExecutionRun = isSameExecutionAgent
-      ? deps.helpers.filterZombieCoalesceTarget(input.activeExecutionRun, input.liveRunExecutions)
+      ? deps.helpers.filterZombieCoalesceTarget(
+          input.activeExecutionRun,
+          input.liveRunExecutions,
+        )
       : input.activeExecutionRun;
 
+    const sameDurableActor =
+      !input.durableReceipt ||
+      (await deps.reader.matchesActiveWakeActor(scope, {
+        companyId: input.companyId,
+        wakeupRequestId: availableActiveExecutionRun?.wakeupRequestId ?? null,
+        requestedByActorType: input.requestedByActorType,
+        requestedByActorId: input.requestedByActorId,
+      }));
     const decision = decideWakeAdmission({
+      allowRunCoalescing: input.allowRunCoalescing,
+      sameDurableActor,
       isSameExecutionAgent,
       shouldDeferFollowupWake,
       shouldQueueFollowupForRunningWake,
@@ -634,14 +730,21 @@ export function createAdmitWakeBehindIssueExecution(deps: {
 
     if (decision.kind === "coalesce") {
       const target = availableActiveExecutionRun!;
-      const mergedContextSnapshot = deps.helpers.mergeCoalescedContextSnapshot(target.contextSnapshot, input.contextSnapshot, {
-        preserveExistingInteractionContinuation:
-          target.status === "queued" || target.status === "scheduled_retry",
-      });
+      const mergedContextSnapshot = deps.helpers.mergeCoalescedContextSnapshot(
+        target.contextSnapshot,
+        input.contextSnapshot,
+        {
+          preserveExistingInteractionContinuation:
+            target.status === "queued" || target.status === "scheduled_retry",
+        },
+      );
       const run = await deps.writer.coalesceIntoActiveExecutionRun(scope, {
         companyId: input.companyId,
         activeExecutionRunId: target.id,
         mergedContextSnapshot,
+        ...(input.durableReceipt
+          ? { durableReceipt: input.durableReceipt }
+          : {}),
         agentId: input.agentId,
         source: input.source,
         triggerDetail: input.triggerDetail,
@@ -656,16 +759,31 @@ export function createAdmitWakeBehindIssueExecution(deps: {
     // decision.kind === "defer": only now does the module read for an
     // existing deferred wake, so the coalesce path (the common path) never
     // pays for this query.
-    const existingDeferred = await deps.reader.findExistingDeferredWake(scope, {
-      companyId: input.companyId,
-      agentId: input.agentId,
-      issueId: input.issueId,
-    });
+    const existingDeferred =
+      input.allowRunCoalescing === false
+        ? null
+        : await deps.reader.findExistingDeferredWake(scope, {
+            companyId: input.companyId,
+            agentId: input.agentId,
+            issueId: input.issueId,
+            ...(input.durableReceipt
+              ? {
+                  durableActor: {
+                    type: input.requestedByActorType,
+                    id: input.requestedByActorId,
+                  },
+                }
+              : {}),
+          });
 
     if (existingDeferred) {
-      const mergedDeferredContext = deps.helpers.mergeCoalescedContextSnapshot(existingDeferred.deferredContext, input.contextSnapshot, {
-        preserveExistingInteractionContinuation: true,
-      });
+      const mergedDeferredContext = deps.helpers.mergeCoalescedContextSnapshot(
+        existingDeferred.deferredContext,
+        input.contextSnapshot,
+        {
+          preserveExistingInteractionContinuation: true,
+        },
+      );
       const mergedPayload = {
         ...existingDeferred.payload,
         ...(input.payload ?? {}),
@@ -677,6 +795,25 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         existingDeferredWakeId: existingDeferred.id,
         mergedPayload,
         nextCoalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
+        ...(input.durableReceipt
+          ? {
+              coalescedReceipt: {
+                ...input.durableReceipt,
+                agentId: input.agentId,
+                source: input.source,
+                triggerDetail: input.triggerDetail,
+                reason: input.reason ?? null,
+                payload: {
+                  ...(input.payload ?? {}),
+                  coalescedIntoWakeupRequestId: existingDeferred.id,
+                },
+                requestedByActorType: input.requestedByActorType,
+                requestedByActorId: input.requestedByActorId,
+                idempotencyKey: input.idempotencyKey,
+                runId: existingDeferred.runId ?? null,
+              },
+            }
+          : {}),
       });
       return { kind: "deferred" };
     }
@@ -692,6 +829,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       source: input.source,
       triggerDetail: input.triggerDetail,
       payload: deferredPayload,
+      ...(input.durableReceipt ? { durableReceipt: input.durableReceipt } : {}),
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId,
       idempotencyKey: input.idempotencyKey,

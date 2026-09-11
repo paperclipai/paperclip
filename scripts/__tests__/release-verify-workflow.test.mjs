@@ -206,28 +206,16 @@ test("release verify workflow covers the same split test surface as stable PR ve
   assert.match(buildJob, /persist-credentials: false/);
   assert.doesNotMatch(buildJob, /cache: pnpm/);
 
-  for (const group of [
-    "general-server",
-    "general-workspaces-a",
-    "general-workspaces-b",
-  ]) {
+  for (const group of ["general-server-without-chat", "general-chat", "general-workspaces-a", "general-workspaces-b"]) {
     assert.match(verifyWorkflow, new RegExp(`group: ${group}`));
   }
-
-  for (const shardIndex of [0, 1, 2]) {
-    assert.match(
-      verifyWorkflow,
-      new RegExp(
-        `group: general-server[\\s\\S]*?shard_index: ${shardIndex}[\\s\\S]*?shard_count: 3`,
-      ),
-    );
+  for (const [group, count] of [["general-server-without-chat", 5], ["general-chat", 3]]) {
+    const rows = [...verifyWorkflow.matchAll(new RegExp(`group: ${group}\\n\\s+group_label: [^\\n]+\\n\\s+shard_index: (\\d+)\\n\\s+shard_count: (\\d+)`, "g"))];
+    assert.deepEqual(rows.map((row) => [Number(row[1]), Number(row[2])]),
+      Array.from({ length: count }, (_, index) => [index, count]));
   }
-
   for (const shardIndex of [0, 1, 2, 3, 4]) {
-    assert.match(
-      verifyWorkflow,
-      new RegExp(`shard_index: ${shardIndex}[\\s\\S]*?shard_count: 5`),
-    );
+    assert.match(verifyWorkflow, new RegExp(`shard_index: ${shardIndex}[\\s\\S]*?shard_count: 5`));
   }
 
   // workspaces-a splits with Vitest native --shard in pr.yml; release

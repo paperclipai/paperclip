@@ -718,7 +718,7 @@ function installDiscordNativeCommands(
   const snowflake = (value: unknown): value is string =>
     typeof value === "string" && /^[1-9][0-9]{16,19}$/.test(value);
   const denied =
-    "This command is not available here. Open the Paperclip task or ask an operator to link this account.";
+    "This command is not available here. Open the Paperclip task or ask an operator to check your chat access.";
   const unconfirmed =
     "This command could not be confirmed. Check the Paperclip task before trying again.";
   discord.handleGatewayInteraction = async (interaction) => {

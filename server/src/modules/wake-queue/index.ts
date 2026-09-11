@@ -5,7 +5,14 @@ import {
   createWakeAdmissionReader,
   createWakeAdmissionWriter,
 } from "./adapters/postgres.js";
+import { createQueuedCommentIssueLockWriter } from "./adapters/queued-comment-postgres.js";
+import type { QueuedCommentQueuePostgresAdapterDeps } from "./adapters/queued-comment-postgres.js";
 import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "./application/use-cases.js";
+import {
+  createDiscardQueuedComment,
+  createEditQueuedComment,
+  createReorderQueuedComments,
+} from "./application/queued-comment-use-cases.js";
 import type {
   IssueSnapshot,
   RecoveryEscalationPort,
@@ -29,6 +36,26 @@ export type {
   TransactionScope,
 } from "./application/ports.js";
 export type { AdmitWakeBehindIssueExecutionInput, AdmitWakeBehindIssueExecutionResult, ReleaseIssueExecutionInput } from "./application/use-cases.js";
+export {
+  QueuedCommentMutationError,
+  QueuedCommentMutationForbiddenError,
+} from "./application/queued-comment-use-cases.js";
+export type {
+  DiscardQueuedCommentInput,
+  DiscardQueuedCommentResult,
+  EditQueuedCommentInput,
+  EditQueuedCommentResult,
+  QueuedCommentMutationErrorCode,
+  ReorderQueuedCommentsInput,
+  ReorderQueuedCommentsResult,
+} from "./application/queued-comment-use-cases.js";
+export type {
+  QueuedCommentActivityPublication,
+  QueuedCommentActor,
+  QueuedCommentIssueContext,
+  QueuedCommentQueueSnapshot,
+} from "./application/queued-comment-ports.js";
+export type { QueuedCommentQueuePostgresAdapterDeps } from "./adapters/queued-comment-postgres.js";
 
 export type WakeQueueDeps = {
   /** Stays in `heartbeat.ts`; resolves the responsible user for a promoted or recovery run seed. */
@@ -80,3 +107,23 @@ export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
 }
 
 export type WakeQueue = ReturnType<typeof createWakeQueue>;
+
+/**
+ * Composes the three queued-comment queue mutations (edit, reorder,
+ * discard): the Postgres adapter, which owns the one transaction each
+ * mutation runs in, and the three use cases. This is a separate factory
+ * from `createWakeQueue` because these mutations need none of the release
+ * or admission host callbacks -- only the small set of comment-reference
+ * and external-object sync callbacks in `deps`, which a caller outside
+ * `heartbeat.ts` (the queued-comment route) can supply directly.
+ */
+export function createQueuedCommentQueue(db: Db, deps: QueuedCommentQueuePostgresAdapterDeps) {
+  const issueLock = createQueuedCommentIssueLockWriter(db, deps);
+  return {
+    editQueuedComment: createEditQueuedComment({ issueLock }),
+    reorderQueuedComments: createReorderQueuedComments({ issueLock }),
+    discardQueuedComment: createDiscardQueuedComment({ issueLock }),
+  };
+}
+
+export type QueuedCommentQueue = ReturnType<typeof createQueuedCommentQueue>;

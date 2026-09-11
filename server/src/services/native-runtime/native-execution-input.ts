@@ -13,7 +13,26 @@ import {
   parseNativeExecutionInput,
   resolveQualifiedAcpxProfile,
 } from "../../vendor/paperclip-runner/index.js";
-import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
+import {
+  isPaperclipExternalChatContractTurn,
+  isPaperclipExternalChatQuestionResponseTurn,
+  renderPaperclipWakePrompt,
+} from "@paperclipai/adapter-utils/server-utils";
+
+const NATIVE_EXTERNAL_CHAT_QUESTION_GUIDANCE = [
+  "## Native external-chat questions",
+  "A request for clickable choices, buttons, or a decision needed before continuing is not a self-contained text answer. The zero-API-call shortcut does not prohibit the structured question tool.",
+  'Use the available request_human_input tool with interactionKind="questions", continuationPolicy="wake_assignee", a title, prompt, and a stable idempotencyKey. Put the actual requested choices in payload.questions: each question needs an id, prompt, selectionMode="single", and options with stable id and label fields. Reuse the same key if that creation call must be retried.',
+  "Paperclip renders the supported question controls and authenticates the answer. Never fabricate answer URLs, query-string choice links, callback tokens, or fake Markdown buttons. Do not manually post a duplicate question card or use call_api as a substitute.",
+  "For one question at a time, read the current request and authoritative prior answers, then create only the next unanswered question. Wait for its real answer before asking another; do not infer a selection or answer your own interaction. Keep completion and disposition truthful while waiting, and preserve existing review or approval gates.",
+  "If the tool is unavailable or creation fails, report that actual limitation plainly; do not pretend interactive controls were created.",
+].join("\n");
+
+const NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE = [
+  "## GitHub attachment recovery navigation",
+  "Paperclip owns recovery navigation for unavailable GitHub attachments. It may append an authenticated task link after an accepted response, only when the current source remains authorized and a safe configured Board URL is available. The model does not select or authorize that link.",
+  "A task URL missing from your prompt or tool results is not evidence that no task link can be provided; do not claim that a link is unavailable merely because you cannot see its URL. Do not invent a URL or promise that a link will appear. Briefly explain the unavailable input and ask the user to attach it directly to this Paperclip task or paste the needed text. Never infer the file's contents or substitute an older file.",
+].join("\n");
 
 /** Closed constructor: callers cannot spread legacy context or environment data. */
 export function buildNativeExecutionInput(input: {
@@ -87,11 +106,69 @@ export function buildNativeExecutionInput(input: {
         input.model ?? "",
       )
     : null;
-  const wakePrompt = renderPaperclipWakePrompt(input.wakePayload, {
+  // Answers are materialized from the authoritative interaction only for this
+  // invocation; do not persist a duplicate answer in the durable wake snapshot.
+  const wake =
+    input.wakePayload &&
+    typeof input.wakePayload === "object" &&
+    !Array.isArray(input.wakePayload)
+      ? (input.wakePayload as Record<string, unknown>)
+      : null;
+  const question = wake?.externalChatQuestionResponse
+    ? input.interactionResponses?.find(
+        (response) =>
+          response.interactionId === wake.interactionId &&
+          response.kind === "ask_user_questions" &&
+          response.response.status === "answered",
+      )
+    : null;
+  const answerResult = question?.response.result as
+    Record<string, unknown> | undefined;
+  // The server supplies only the revalidated answer chain, in source order.
+  // Keep prior choices available even when this continuation starts a fresh
+  // provider session; never recover them from model prose or a transcript.
+  const answerChain = question
+    ? input.interactionResponses?.filter((response) =>
+        response.kind === "ask_user_questions" &&
+        response.response.status === "answered" &&
+        typeof (response.response.result as Record<string, unknown> | undefined)
+          ?.summaryMarkdown === "string")
+    : null;
+  const answerSummary =
+    answerChain && answerChain.length > 1 &&
+    answerChain.at(-1)?.interactionId === question?.interactionId
+      ? answerChain.map((response, index) => {
+          const label = index === answerChain.length - 1
+            ? "Latest answered question" : `Earlier answer ${index + 1}`;
+          return `${label}:\n${(response.response.result as Record<string, unknown>).summaryMarkdown}`;
+        }).join("\n\n")
+      : answerResult?.summaryMarkdown;
+  const wakePayload =
+    question && typeof answerSummary === "string"
+      ? {
+          ...wake,
+          questionResponse: {
+            interactionId: question.interactionId,
+            summaryMarkdown: answerSummary,
+          },
+        }
+      : input.wakePayload;
+  const wakePrompt = renderPaperclipWakePrompt(wakePayload, {
     resumedSession: input.resumedSession === true,
     suppressIssueDescription: input.taskPrompt.trim().length > 0,
+    nativeWakeReaderAvailable: true,
   });
-  const taskPrompt = [wakePrompt, input.taskPrompt.trim()]
+  const externalChatTurn =
+    isPaperclipExternalChatContractTurn(wakePayload) ||
+    isPaperclipExternalChatQuestionResponseTurn(wakePayload);
+  const taskPrompt = [
+    wakePrompt,
+    externalChatTurn ? NATIVE_EXTERNAL_CHAT_QUESTION_GUIDANCE : "",
+    externalChatTurn && wake?.externalChatProvider === "github"
+      ? NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE
+      : "",
+    input.taskPrompt.trim(),
+  ]
     .filter((section) => section.length > 0)
     .join("\n\n");
   return parseNativeExecutionInput({
@@ -107,8 +184,14 @@ export function buildNativeExecutionInput(input: {
     },
     task: {
       identifier: input.issue.identifier ?? input.issue.id,
-      title: input.issue.title,
-      description: input.issue.description,
+      // The issue title is durable background context and may itself contain an
+      // exact-output instruction from the thread's first message. Repeating it
+      // as the native turn title can override a newer provider message in small
+      // models. Keep the canonical title and description in task.prompt as
+      // explicitly labeled background, but give authenticated external-chat
+      // turns neutral structured fields.
+      title: externalChatTurn ? "External chat follow-up" : input.issue.title,
+      description: externalChatTurn ? null : input.issue.description,
       prompt: taskPrompt,
       workMode: input.issue.workMode,
     },
