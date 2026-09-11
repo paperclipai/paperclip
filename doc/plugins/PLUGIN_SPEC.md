@@ -428,6 +428,8 @@ When an agent invokes a plugin tool during a run, the host routes the call to th
 
 The worker executes the tool logic and returns a typed result. The host enforces capability gates — a plugin must declare `agent.tools.register` to contribute tools, and individual tools may require additional capabilities (e.g. `http.outbound` for tools that call external APIs).
 
+A tool handler must take the company it operates on from `runCtx.companyId`, never from its own parameters. Tool parameters come from a model, so a company named in a parameter is a suggestion, not an authorization. Do not declare `companyId` in `parametersSchema`: it asks the model for a value the plugin already holds authoritatively, and the host refuses the downstream call when the two disagree. A plugin that keeps the parameter for compatibility must validate it against `runCtx.companyId` and refuse a mismatch.
+
 ### 11.3 Tool Availability
 
 By default, plugin tools are available to all agents. The operator may restrict tool availability per agent or per project through plugin configuration.

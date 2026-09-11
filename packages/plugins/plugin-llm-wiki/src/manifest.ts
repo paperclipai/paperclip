@@ -324,13 +324,12 @@ const manifest: PaperclipPluginManifestV1 = {
       parametersSchema: {
         type: "object",
         properties: {
-          companyId: { type: "string" },
           wikiId: { type: "string" },
           spaceSlug: { type: "string" },
           query: { type: "string" },
           limit: { type: "number" }
         },
-        required: ["companyId", "wikiId", "query"]
+        required: ["wikiId", "query"]
       }
     },
     {
@@ -340,12 +339,11 @@ const manifest: PaperclipPluginManifestV1 = {
       parametersSchema: {
         type: "object",
         properties: {
-          companyId: { type: "string" },
           wikiId: { type: "string" },
           spaceSlug: { type: "string" },
           path: { type: "string" }
         },
-        required: ["companyId", "wikiId", "path"]
+        required: ["wikiId", "path"]
       }
     },
     {
@@ -355,7 +353,6 @@ const manifest: PaperclipPluginManifestV1 = {
       parametersSchema: {
         type: "object",
         properties: {
-          companyId: { type: "string" },
           wikiId: { type: "string" },
           spaceSlug: { type: "string" },
           path: { type: "string" },
@@ -363,7 +360,7 @@ const manifest: PaperclipPluginManifestV1 = {
           expectedHash: { type: "string" },
           summary: { type: "string" }
         },
-        required: ["companyId", "wikiId", "path", "contents"]
+        required: ["wikiId", "path", "contents"]
       }
     },
     {
@@ -373,14 +370,13 @@ const manifest: PaperclipPluginManifestV1 = {
       parametersSchema: {
         type: "object",
         properties: {
-          companyId: { type: "string" },
           wikiId: { type: "string" },
           spaceSlug: { type: "string" },
           path: { type: "string" },
           contents: { type: "string" },
           summary: { type: "string" }
         },
-        required: ["companyId", "wikiId", "path", "contents"]
+        required: ["wikiId", "path", "contents"]
       }
     },
     {
@@ -390,12 +386,11 @@ const manifest: PaperclipPluginManifestV1 = {
       parametersSchema: {
         type: "object",
         properties: {
-          companyId: { type: "string" },
           wikiId: { type: "string" },
           spaceSlug: { type: "string" },
           limit: { type: "number" }
         },
-        required: ["companyId", "wikiId"]
+        required: ["wikiId"]
       }
     },
     {
@@ -405,12 +400,11 @@ const manifest: PaperclipPluginManifestV1 = {
       parametersSchema: {
         type: "object",
         properties: {
-          companyId: { type: "string" },
           wikiId: { type: "string" },
           spaceSlug: { type: "string" },
           rawPath: { type: "string" }
         },
-        required: ["companyId", "wikiId", "rawPath"]
+        required: ["wikiId", "rawPath"]
       }
     },
     {
@@ -420,12 +414,11 @@ const manifest: PaperclipPluginManifestV1 = {
       parametersSchema: {
         type: "object",
         properties: {
-          companyId: { type: "string" },
           wikiId: { type: "string" },
           spaceSlug: { type: "string" },
           entry: { type: "string" }
         },
-        required: ["companyId", "wikiId", "entry"]
+        required: ["wikiId", "entry"]
       }
     },
     {
@@ -435,13 +428,12 @@ const manifest: PaperclipPluginManifestV1 = {
       parametersSchema: {
         type: "object",
         properties: {
-          companyId: { type: "string" },
           wikiId: { type: "string" },
           spaceSlug: { type: "string" },
           contents: { type: "string" },
           expectedHash: { type: "string" }
         },
-        required: ["companyId", "wikiId", "contents"]
+        required: ["wikiId", "contents"]
       }
     },
     {
@@ -451,12 +443,11 @@ const manifest: PaperclipPluginManifestV1 = {
       parametersSchema: {
         type: "object",
         properties: {
-          companyId: { type: "string" },
           wikiId: { type: "string" },
           spaceSlug: { type: "string" },
           path: { type: "string" }
         },
-        required: ["companyId", "wikiId", "path"]
+        required: ["wikiId", "path"]
       }
     },
     {
@@ -466,11 +457,10 @@ const manifest: PaperclipPluginManifestV1 = {
       parametersSchema: {
         type: "object",
         properties: {
-          companyId: { type: "string" },
           wikiId: { type: "string" },
           spaceSlug: { type: "string" }
         },
-        required: ["companyId", "wikiId"]
+        required: ["wikiId"]
       }
     }
   ],
