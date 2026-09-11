@@ -157,6 +157,17 @@ describe("managed AI connections", () => {
     await expect(db.update(toolConnections).set({ connectionPurpose: "tool" }).where(eq(toolConnections.id, selected.connection.id))).rejects.toThrow();
   });
   it("indexes only known user credentials, retains references, and is repeatable without adopting agents", async () => {
+    const selected = await service.select({ ...input, userId: "alice" });
+    const [emailConnection] = await db.insert(toolConnections).values({
+      companyId,
+      applicationId: selected.connection.applicationId,
+      name: "Existing AgentMail inbox",
+      uid: `agentmail-migration-${randomUUID()}`,
+      connectionPurpose: "channel",
+      transport: "rest_api",
+      authKind: "api_key",
+      config: { provider: "agentmail" },
+    }).returning();
     const vault = secretService(db);
     const definition = await vault.createUserSecretDefinition(companyId, { key: "legacy_claude", name: "Existing owned Claude key", provider: "local_encrypted" }, { userId: "alice" });
     const secret = await vault.createCurrentUserSecretValue(companyId, "alice", { definitionId: definition.id, value: "fixture-legacy" }, { userId: "alice" });
@@ -167,6 +178,8 @@ describe("managed AI connections", () => {
     const before = await service.list(companyId, "alice");
     for (const statement of migration.split("--> statement-breakpoint").filter(value => value.trim())) await db.execute(sql.raw(statement));
     expect(await service.list(companyId, "alice")).toEqual(before);
+    const [preservedEmail] = await db.select().from(toolConnections).where(eq(toolConnections.id, emailConnection.id));
+    expect(preservedEmail).toEqual(emailConnection);
     const indexed = before.find(account => account.name === secret.name)!;
     expect(indexed.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, indexed.grantId));

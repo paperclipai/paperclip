@@ -77,18 +77,20 @@ fn connection_attempt_deadline(
     disconnected_since: Option<Instant>,
 ) -> Instant {
     let now = Instant::now();
-    let runtime_remaining = config
-        .max_runtime
-        .saturating_sub(now.saturating_duration_since(started));
-    let remaining = disconnected_since.zip(config.reconnect_grace).map_or(
-        runtime_remaining,
-        |(disconnected_at, grace)| {
-            runtime_remaining
-                .min(grace.saturating_sub(now.saturating_duration_since(disconnected_at)))
-        },
-    );
-    // Validation caps max_runtime at seven days, and reconnect grace can only
-    // shorten this budget, so adding it to a current Instant cannot overflow.
+    // Bound each connection/auth attempt independently of a productive
+    // session's lifetime. Zero means there is no total runtime deadline.
+    let mut remaining = Duration::from_secs(30);
+    if !config.max_runtime.is_zero() {
+        remaining = remaining.min(
+            config
+                .max_runtime
+                .saturating_sub(now.saturating_duration_since(started)),
+        );
+    }
+    if let Some((disconnected_at, grace)) = disconnected_since.zip(config.reconnect_grace) {
+        remaining =
+            remaining.min(grace.saturating_sub(now.saturating_duration_since(disconnected_at)));
+    }
     now + remaining
 }
 
@@ -417,7 +419,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 ));
             }
         }
-        if started.elapsed() >= config.max_runtime {
+        if !config.max_runtime.is_zero() && started.elapsed() >= config.max_runtime {
             let _ = shutdown_preserving_cleanup(&state, &mut executor);
             record_recoverable_transport_failure(
                 &mut state,
@@ -514,7 +516,16 @@ pub fn run_durable_runner<E: CommandExecutor>(
             state.restore_v2_replay_events(&config)?;
         }
         state.last_connection_protocol_version = Some(protocol_version);
-        let connection = welcome.connection;
+        let mut connection = welcome.connection;
+        // Reconnect may follow a durably committed renewal whose reply was
+        // lost. Authentication admits an increased expiry only while our
+        // matching renewal is outstanding; identity and epoch stay exact.
+        if let Some(credential) = lease.as_mut() {
+            credential.expires_at_unix_ms = connection.expires_at_unix_ms;
+            credential.renewal_requested = false;
+        }
+        let mut next_lease_renewal =
+            lease_renewal_deadline(current_unix_ms()?, connection.expires_at_unix_ms);
         if let Some(transition) = state.warm_transition.clone() {
             if welcome.warm_transition_version != Some(1) {
                 return Err(DurableRunnerError::invalid(
@@ -739,7 +750,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
             continue;
         }
         loop {
-            if started.elapsed() >= config.max_runtime {
+            if !config.max_runtime.is_zero() && started.elapsed() >= config.max_runtime {
                 break;
             }
             if let Err(error) = send_outbox(
@@ -765,6 +776,38 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 return Err(DurableRunnerError::invalid(
                     "active connection lease expired; durable state is preserved",
                 ));
+            }
+            let now = current_unix_ms()?;
+            if welcome.lease_renewal_version == Some(1) && now >= next_lease_renewal {
+                // A failed write may still have reached the controller.
+                if let Some(credential) = lease.as_mut() {
+                    credential.renewal_requested = true;
+                }
+                if let Err(error) = transport.send_json(&control_envelope(
+                    &state,
+                    &connection,
+                    "lease_renew",
+                    json!({
+                        "connectionLeaseExpiresAtUnixMs": connection.expires_at_unix_ms,
+                        "connectionLeaseRevocationEpoch": connection.revocation_epoch,
+                    }),
+                )) {
+                    disconnected_since.get_or_insert_with(Instant::now);
+                    state.record_diagnostic(format!("lease renewal reconnect scheduled: {error}"));
+                    state.reconnect_count = state.reconnect_count.saturating_add(1);
+                    store.save(&state)?;
+                    break;
+                }
+                // Retry a lost reply before expiry without flooding the channel.
+                next_lease_renewal = now.saturating_add(
+                    5_000.min(
+                        connection
+                            .expires_at_unix_ms
+                            .saturating_sub(now)
+                            .saturating_div(2)
+                            .max(1),
+                    ),
+                );
             }
             // Read control before starting another fsynced provider batch.
             // Consuming the last cumulative ACK must not let a new output
@@ -799,6 +842,14 @@ pub fn run_durable_runner<E: CommandExecutor>(
                 break;
             }
             match message.get("kind").and_then(Value::as_str) {
+                Some("lease_renewed") => {
+                    let credential = lease.as_mut().ok_or_else(|| {
+                        DurableRunnerError::invalid("lease renewal requires a live credential")
+                    })?;
+                    apply_lease_renewal(&message, &mut connection, credential)?;
+                    next_lease_renewal =
+                        lease_renewal_deadline(current_unix_ms()?, connection.expires_at_unix_ms);
+                }
                 Some("ack") => {
                     let acked = message
                         .pointer("/payload/ackedSourceSeq")
@@ -983,6 +1034,47 @@ pub fn run_durable_runner<E: CommandExecutor>(
         let reconnect_deadline = connection_attempt_deadline(&config, started, disconnected_since);
         sleep_before_deadline(config.reconnect_delay, reconnect_deadline);
     }
+}
+
+fn lease_renewal_deadline(now: u64, expires_at: u64) -> u64 {
+    now.saturating_add(expires_at.saturating_sub(now) / 2)
+}
+
+fn apply_lease_renewal(
+    message: &Value,
+    connection: &mut ConnectionMetadata,
+    credential: &mut LeaseCredential,
+) -> Result<(), DurableRunnerError> {
+    let previous = message
+        .pointer("/payload/previousExpiresAtUnixMs")
+        .and_then(Value::as_u64);
+    let expiry = message
+        .pointer("/payload/connectionLeaseExpiresAtUnixMs")
+        .and_then(Value::as_u64);
+    let epoch = message
+        .pointer("/payload/connectionLeaseRevocationEpoch")
+        .and_then(Value::as_u64);
+    let Some(expiry) = expiry else {
+        return Err(DurableRunnerError::invalid(
+            "lease renewal expiry is required",
+        ));
+    };
+    if epoch != Some(connection.revocation_epoch)
+        || expiry < connection.expires_at_unix_ms
+        || previous.is_none_or(|old| old > connection.expires_at_unix_ms)
+        || (expiry > connection.expires_at_unix_ms
+            && (!credential.renewal_requested || previous != Some(connection.expires_at_unix_ms)))
+        || credential.lease_id != connection.lease_id
+        || credential.revocation_epoch != connection.revocation_epoch
+    {
+        return Err(DurableRunnerError::invalid(
+            "lease renewal changed the authenticated binding",
+        ));
+    }
+    connection.expires_at_unix_ms = expiry;
+    credential.expires_at_unix_ms = expiry;
+    credential.renewal_requested = false;
+    Ok(())
 }
 
 fn persist_lifecycle_before_shutdown<E: CommandExecutor>(
@@ -1902,6 +1994,25 @@ mod tests {
             }
             self.retained.acknowledge_events(count)
         }
+    }
+
+    #[test]
+    fn unlimited_lifetime_keeps_attempts_bounded_after_weeks_of_work() {
+        let mut config = config(std::env::temp_dir());
+        config.max_runtime = Duration::ZERO;
+        config.validate().unwrap();
+        let started = Instant::now() - Duration::from_secs(21 * 24 * 60 * 60);
+        let before = Instant::now();
+        let deadline = connection_attempt_deadline(&config, started, None);
+        assert!(deadline >= before + Duration::from_secs(29));
+        assert!(deadline <= Instant::now() + Duration::from_secs(30));
+        config.reconnect_grace = Some(Duration::from_secs(5));
+        let deadline = connection_attempt_deadline(&config, started, Some(Instant::now()));
+        assert!(deadline <= Instant::now() + Duration::from_secs(5));
+        config.max_runtime = Duration::from_secs(7 * 24 * 60 * 60);
+        assert!(connection_attempt_deadline(&config, started, None) <= Instant::now());
+        config.max_runtime = Duration::from_secs(30 * 24 * 60 * 60);
+        config.validate().unwrap();
     }
 
     #[test]
