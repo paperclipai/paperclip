@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
 
@@ -1365,6 +1366,60 @@ describe("Codex ACPX runtime adapter", () => {
     expect(() => runtimeOptions?.spawnAgent?.({ command: "ignored", args: [], options: {} }))
       .toThrow("provider spawned after ownership admission was sealed");
     await port.close({ reason: "test complete" });
+  });
+
+  it("uses a fresh single-use command after a cold model control consumes its launch", async () => {
+    const runtime = fakeRuntime();
+    const freshCommand = () => {
+      const command = fakeCommand();
+      vi.mocked(command.spawn).mockReturnValueOnce(fakeChild()).mockImplementation(() => {
+        throw new Error("Verified ACPX command lease is closed");
+      });
+      return command;
+    };
+    const first = freshCommand();
+    const second = freshCommand();
+    const openCommand = vi.fn(async () => second);
+    const owner = createAcpxCommandLeaseOwner(first, openCommand);
+    let runtimeOptions: AcpRuntimeOptions;
+    vi.mocked(runtime.setConfigOption!).mockImplementation(async () => {
+      runtimeOptions.spawnAgent!({ command: "ignored", args: [], options: {} });
+    });
+    vi.mocked(runtime.startTurn).mockImplementation(() => {
+      runtimeOptions.spawnAgent!({ command: "ignored", args: [], options: {} });
+      return {
+        requestId: "cold-turn",
+        promptStarted: Promise.resolve(),
+        events: { async *[Symbol.asyncIterator]() {} },
+        result: Promise.resolve({ status: "completed" }),
+        cancel: vi.fn(),
+        closeStream: vi.fn(),
+      };
+    });
+    const port = await openCodexAcpxRuntime(
+      {
+        ...openOptions(owner.command),
+        refreshConsumedCommand: owner.refreshConsumedCommand,
+      },
+      {
+        createRegistry: () => registry(),
+        createStore: () => store(),
+        awaitProviderOwnership: providerOwnershipEstablished,
+        awaitProviderExit: providerOwnershipEstablished,
+        createRuntime: (options) => {
+          runtimeOptions = options;
+          return runtime;
+        },
+      },
+    );
+    await port.setModel!("gpt-5.6-sol");
+    expect(openCommand).toHaveBeenCalledOnce();
+    const turn = port.startTurn({ text: "Resume", requestId: "cold-turn" });
+    await expect(turn.result).resolves.toMatchObject({ status: "completed" });
+    expect(first.spawn).toHaveBeenCalledOnce();
+    expect(second.spawn).toHaveBeenCalledOnce();
+    await port.close({ reason: "test complete" });
+    await owner.command.close();
   });
 
   it("admits a verified provider that starts with the first recovered turn", async () => {

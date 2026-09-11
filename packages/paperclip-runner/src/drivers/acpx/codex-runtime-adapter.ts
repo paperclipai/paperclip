@@ -265,6 +265,7 @@ export async function openQualifiedAcpxRuntime(
       update.goal === null ? null : structuredClone(update.goal),
     );
   };
+  const commandLaunches = { count: 0, refreshConsumedCommand: options.refreshConsumedCommand };
   const runtimeOptions: GoalAwareAcpRuntimeOptions = {
     cwd: options.cwd,
     sessionStore,
@@ -327,6 +328,7 @@ export async function openQualifiedAcpxRuntime(
       // handshake cannot create a provider process after authority is gone.
       options.signal?.throwIfAborted();
       options.assertWorkspaceHeld?.();
+      commandLaunches.count += 1;
       return children.add(
         options.command.spawn(input.args, input.options, {
           credentialFenceFds,
@@ -431,6 +433,7 @@ export async function openQualifiedAcpxRuntime(
       children,
       runtimeCloseTimeoutMs,
       goalState,
+      commandLaunches,
     );
   } catch (error) {
     const cleanupReason = "ACPX runtime identity validation failed";
@@ -857,6 +860,7 @@ function runtimePort(
   children: SpawnedChildSet,
   runtimeCloseTimeoutMs: number,
   goalState: AcpxRuntimeGoalState,
+  commandLaunches: { count: number; refreshConsumedCommand?: () => Promise<void> },
 ): AcpxRuntimePort {
   type RuntimeCloseAttempt = {
     readonly outcome: Promise<unknown | null>;
@@ -1161,6 +1165,7 @@ function runtimePort(
             // only for this control call, and verify ownership before return.
             const finishOwnershipAdmission =
               children.beginLifetimeOwnershipAdmission();
+            const spawnsBeforeControl = commandLaunches.count;
             try {
               await runtime.setConfigOption?.({
                 handle,
@@ -1169,6 +1174,11 @@ function runtimePort(
               });
             } finally {
               await finishOwnershipAdmission();
+            }
+            // Cold ACP config calls open and close a temporary connection.
+            // A later prompt needs a newly verified single-use launch snapshot.
+            if (commandLaunches.count > spawnsBeforeControl) {
+              await commandLaunches.refreshConsumedCommand?.();
             }
           },
         }
