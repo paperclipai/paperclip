@@ -1231,6 +1231,7 @@ export function paperclipRunnerTimelineItems(
   return parsed.filter(
     (item) =>
       activityIds.has(item.id) ||
+      (item.kind === "thinking" && Boolean(item.streaming)) ||
       item.kind === "plan_document" ||
       (item.kind === "protocol" && item.surface === "runtime_request"),
   );

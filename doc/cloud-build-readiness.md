@@ -123,6 +123,36 @@ registry checks can be rerun without deploying or changing mutable npm channels.
 When reverting this workflow, restore the master push trigger in
 `docker-cloud.yml` in the same change so master images continue to build.
 
+## Reserved AWS verification capacity
+
+`AWS_POST_MERGE_CI_ENABLED=true` routes cloud source verification, artifact
+waiting, readiness signals, and exact-master migrator preparation to the
+`paperclip-post-merge` runner group. The separate Fleet label is
+`runs-on/fleet=paperclip-post-merge-x64/env=public-ci`. Its 36 reserved slots use
+the same four-vCPU, 16-GiB machines as approved PR jobs. PR capacity is reduced
+to 64; image capacity stays at eight. The total ceiling remains 108 runners.
+This keeps PR bursts from consuming every post-merge verification slot.
+
+Every selector checks the canonical repository name and ID, master ref, and a
+push or manual event. Reusable verification also requires `inputs.ref` to equal
+that event's `github.sha`. The migrator route requires `cloud-migrator` and
+`inputs.source_ref == github.sha`. Branch/tag refs, PR events, arbitrary preview
+sources, and missing or disabled switches use GitHub-hosted runners. If another
+merge lands before a migrator dispatch resolves master, the older source uses
+GitHub-hosted runners too. npm publication always remains GitHub-hosted to keep
+its trusted-publisher identity.
+
+Before enabling the switch, deploy the separate Fleet and restrict its GitHub
+runner group to repository ID `1170821064` and these workflows at
+`refs/heads/master`: `cloud-readiness.yml`, `cloud-artifacts.yml`,
+`release-verify.yml`, `runner-chaos-evals.yml`, and `release.yml`. Do not authorize
+PR-controlled workflow versions. PR placement retains its independent pinned
+workflow and six-account author/actor allowlist.
+
+Disable the switch and rerun the whole workflow to restore GitHub-hosted
+placement. Assigned jobs keep their original runners. Readiness requirements,
+source checks, and npm integrity checks are unchanged.
+
 ## AWS cloud build routing
 
 `AWS_CLOUD_BUILDS_ENABLED=true` routes the Docker cloud job to the
@@ -145,3 +175,50 @@ workflow. Changing the variable does not migrate an already assigned job.
 Check the Actions job's runner name and runner group to verify placement. Record
 queue time, image verification completion, and `Cloud deployable v1` separately;
 source verification and the migrator still run on GitHub-hosted runners.
+
+
+### Typecheck Rust dependency cache
+
+Source verification's typecheck job builds the native Runner binary through the
+server's `prepare:runner-vendor` command. It restores and saves compiled Rust
+dependencies only for canonical master pushes that verify the event's exact SHA.
+The `release-typecheck-v1` cache is separate from Runner verification because
+those jobs compile different profiles. The pinned toolchain is selected before
+cache lookup. Workspace crates and installed cargo binaries are excluded, and
+all typechecks still execute. A missing or invalidated cache triggers compilation.
+
+### pnpm dependency store cache
+
+The Refresh Lockfile workflow does not cache the pnpm store. Its resolution-only
+command does not download packages and can save an empty default-branch cache
+before full install jobs finish. Jobs that install dependencies retain caching.
+
+After deploying this correction, remove any existing empty default-branch entry
+for the current lockfile key. List cache IDs, branches, and archive sizes first:
+
+```sh
+gh api --paginate 'repos/paperclipai/paperclip/actions/caches?ref=refs/heads/master&key=node-cache-Linux-x64-pnpm-&per_page=100' \
+  --jq '.actions_caches[] | {id, ref, key, size_in_bytes}'
+```
+
+Match the key and upload size against the cache-creation job's logs. The
+September 11 incident was cache ID `7559920987`, a 216-byte archive. This guarded
+command deletes only that observed entry. It leaves a populated replacement or
+an entry on another branch untouched, and does nothing if the old ID is absent:
+
+```sh
+bad_cache_id=7559920987
+bad_cache_key=node-cache-Linux-x64-pnpm-c3096ecb02a34aaa9782baaadafcb731510e1dba10dd661618c3a2ee91e58fa5
+entries="$(gh api --paginate --slurp 'repos/paperclipai/paperclip/actions/caches?ref=refs/heads/master&per_page=100')"
+if printf '%s\n' "$entries" | jq -e --argjson id "$bad_cache_id" --arg key "$bad_cache_key" '
+  [.[].actions_caches[] | select(.id == $id)] |
+  length == 1 and .[0].ref == "refs/heads/master" and
+  .[0].key == $key and .[0].size_in_bytes == 216
+' >/dev/null; then
+  gh api --method DELETE "repos/paperclipai/paperclip/actions/caches/$bad_cache_id"
+fi
+```
+
+A subsequent master install can populate the missing entry. Check the saved
+archive size and package reuse in install logs; a cache hit alone does not prove
+that the entry contains dependencies.

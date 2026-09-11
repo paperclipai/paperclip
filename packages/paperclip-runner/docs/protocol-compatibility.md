@@ -193,6 +193,13 @@ These envelopes are local Local runner implementation contracts.
 - A one-use bootstrap bearer capability returns a short-lived connection lease
   in `welcome`. Later connections use that lease. Neither raw capability is
   durable state.
+- `welcome.payload.connectionLeaseRenewalVersion: 1` opts into authenticated
+  `lease_renew` / `lease_renewed` control frames. Renewal extends the persisted
+  expiry on the same live authority without restarting provider work. Identity,
+  protocol, and revocation epoch remain fixed; expired or revoked leases cannot
+  renew. See [durable recovery](durable-recovery.md#execution-duration-and-operation-deadlines)
+  for retry and warm-handoff rules. Peers lacking this capability retain their
+  original lease expiry.
 - `hello.resume` reports the last processed controller sequence, next source
   sequence, cumulative ACK cursor, and current unacknowledged range.
 - `welcome` selects the one overlapping protocol version, returns the core's

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   agents,
@@ -63,6 +63,8 @@ import {
   reconcileNativeFinalizations,
   resolveNativeReconciliationStatus,
 } from "../services/native-runtime/native-finalization-reconciler.js";
+import * as activityLog from "../services/activity-log.js";
+import { dismissObsoleteNativePolicyReviews } from "../services/native-runtime/obsolete-policy-reviews.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -242,11 +244,11 @@ const nativeStatusEffectKinds = new Set<NativeStatusEffect["kind"]>([
 
 const supersedingDecisionStates = new Set([
   "new_evidence_satisfies_contract", "dependency_now_done", "explicit_resume_capability",
-  "board_cancelled_before_cas", "new_policy_requires_review", "authorized_writer_incremented_version",
+  "board_cancelled_before_cas", "authorized_writer_incremented_version",
 ]);
 
 const liveReconciliationStates = new Set([
-  "board_cancelled_before_cas", "new_evidence_satisfies_contract", "new_policy_requires_review",
+  "board_cancelled_before_cas", "new_evidence_satisfies_contract", "policy_version_changed",
 ]);
 
 function initialRunStatus(fixture: Fixture) {
@@ -319,7 +321,6 @@ function reconciliationFactsFor(completionState: string) {
     case "new_evidence_satisfies_contract": return { newEvidenceSatisfiesContract: true };
     case "dependency_now_done": return { dependencyResolved: true };
     case "explicit_resume_capability": return { authorizedResume: true };
-    case "new_policy_requires_review": return { policyVersionChanged: true };
     case "authorized_writer_incremented_version": return { statusVersionAdvanced: true };
     default: return null;
   }
@@ -529,7 +530,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       triggerActorCompanyId: companyId,
       priorIssueStatus: completionState === "board_cancelled_before_cas" ? "in_progress" : priorStatus,
       priorStatusVersion: 0,
-      policyVersion: completionState === "new_policy_requires_review"
+      policyVersion: completionState === "policy_version_changed"
         ? "phase6-v1"
         : NATIVE_STATUS_ARBITER_POLICY_VERSION,
       assessmentJson: {
@@ -955,7 +956,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
         issueId: seeded.issueId,
         assessmentId: seeded.assessmentId,
         decisionVersion: 1,
-        policyVersion: completionState === "new_policy_requires_review"
+        policyVersion: completionState === "policy_version_changed"
           ? "phase6-v1"
           : NATIVE_STATUS_ARBITER_POLICY_VERSION,
         fromStatus: completionState === "board_cancelled_before_cas" ? "in_progress" : priorIssueStatus,
@@ -980,20 +981,43 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
           updatedAt: new Date(Date.now() + 1_000),
         }).where(eq(issueWorkProducts.id, seeded.workProductId));
       }
-      const [reconciled] = await reconcileNativeFinalizations(db, [seeded.runId]);
-      if (!reconciled?.reconciliationDecision || !reconciled.decisionId) {
-        throw new Error(`${fixture.id}: live reconciliation did not commit an authoritative decision`);
+      if (completionState === "policy_version_changed") {
+        await db.insert(workspaceOperations).values({
+          companyId, heartbeatRunId: seeded.runId, issueId: seeded.issueId,
+          phase: "workspace_finalize", status: "succeeded", exitCode: 0, cwd: process.cwd(), finishedAt: new Date(),
+        });
       }
-      semanticConsumer = "native-reconciliation-consumer";
-      consumerDecision = pushDecisionConsumer(semanticConsumer, reconciled.reconciliationDecision);
-      liveEntrypointCommitted = true;
-      consumerExecutions.push({
-        consumer: "native-reconciliation-entrypoint",
-        observed: {
-          action: reconciled.reconciliationAction,
-          decisionId: reconciled.decisionId,
-        },
-      });
+      const [reconciled] = await reconcileNativeFinalizations(db, [seeded.runId]);
+      if (completionState === "policy_version_changed") {
+        const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId));
+        const assessments = await db.select().from(workAssessments).where(eq(workAssessments.issueId, seeded.issueId));
+        expect(decisions).toHaveLength(1);
+        expect(decisions[0]!.id).toBe(priorDecision!.id);
+        expect(assessments).toHaveLength(1);
+        expect(assessments[0]!.policyVersion).toBe("phase6-v1");
+        semanticConsumer = "native-reconciliation-consumer";
+        consumerDecision = pushDecisionConsumer(semanticConsumer, {
+          policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+          statusAction: "preserve", toStatus: decisions[0]!.toStatus as NativeStatusDecision["toStatus"],
+          reasonCode: decisions[0]!.reasonCode, unblockDescriptor: null, effects: [],
+        });
+        liveEntrypointCommitted = true;
+        consumerExecutions.push({ consumer: "native-reconciliation-entrypoint", observed: { decisionId: priorDecision!.id } });
+      } else {
+        if (!reconciled?.reconciliationDecision || !reconciled.decisionId) {
+          throw new Error(`${fixture.id}: live reconciliation did not commit an authoritative decision`);
+        }
+        semanticConsumer = "native-reconciliation-consumer";
+        consumerDecision = pushDecisionConsumer(semanticConsumer, reconciled.reconciliationDecision);
+        liveEntrypointCommitted = true;
+        consumerExecutions.push({
+          consumer: "native-reconciliation-entrypoint",
+          observed: {
+            action: reconciled.reconciliationAction,
+            decisionId: reconciled.decisionId,
+          },
+        });
+      }
     }
     if (
       seeded.nativeRecords
@@ -1858,7 +1882,10 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       ];
       for (const [field, expected] of mutations) {
         const mutated = { ...fixture, expected };
-        expect(comparisonFailures(mutated, observed), `${fixture.id}:${field}`).not.toEqual([]);
+        const mutationObserved = field === "forbiddenEffects" && observed.effects.length === 0
+          ? { ...observed, effects: [observedEffect] }
+          : observed;
+        expect(comparisonFailures(mutated, mutationObserved), `${fixture.id}:${field}`).not.toEqual([]);
       }
     }
   }, 60_000);
@@ -1973,24 +2000,177 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       .rejects.toThrow("native_pending_effect_target_missing:enqueue_continuation");
   }, 30_000);
 
-  it("preserves terminal issues when a newer reconciliation policy is available", () => {
-    expect(resolveNativeReconciliationStatus({
-      facts: { policyVersionChanged: true },
-      priorIssueStatus: "done",
-      agentId,
-    })).toMatchObject({
-      statusAction: "preserve",
-      toStatus: "done",
-      reasonCode: "prior_status_terminal_preserved",
-      effects: [{ kind: "append_superseding_assessment" }],
+  async function seedPolicyReview(options: { genuine?: boolean; priorStatus?: "in_progress" | "blocked" | "in_review" } = {}) {
+    const template = corpus.fixtures.find((candidate) => candidate.mode === "native")!;
+    const priorStatus = options.priorStatus ?? "in_progress";
+    const seeded = await seedFixture({
+      ...template, id: `policy-review-${randomUUID()}`,
+      given: { ...template.given, priorIssueStatus: priorStatus, completionState: "policy_review_cleanup" },
     });
+    const [assessment] = await db.select().from(workAssessments).where(eq(workAssessments.id, seeded.assessmentId));
+    const previousAssessmentId = randomUUID();
+    await db.insert(workAssessments).values({
+      ...assessment!, id: previousAssessmentId, policyVersion: "previous-policy",
+      inputDigest: `previous-assessment:${seeded.issueId}`,
+    });
+    await db.update(workAssessments).set({ supersedesAssessmentId: previousAssessmentId })
+      .where(eq(workAssessments.id, seeded.assessmentId));
+    const committed = await commitNativeStatusDecision({
+      db, companyId, issueId: seeded.issueId, runId: seeded.runId,
+      assessmentId: seeded.assessmentId, priorStatus, priorStatusVersion: 0, priorDecisionId: null,
+      decision: {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "in_review", toStatus: "in_review", reasonCode: "completion_review_required", unblockDescriptor: null,
+        effects: options.genuine
+          ? [{ kind: "bind_reviewer", prompt: "Review the release before publishing.", ownerUserId: null }]
+          : [
+            { kind: "bind_reviewer", prompt: "Review the superseding native policy assessment.", ownerUserId: null },
+            { kind: "append_superseding_assessment" },
+          ],
+      },
+    });
+    const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, seeded.issueId));
+    const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.id, committed.decision.id));
+    await db.insert(workspaceOperations).values({
+      companyId, heartbeatRunId: seeded.runId, issueId: seeded.issueId,
+      phase: "workspace_finalize", status: "succeeded", exitCode: 0, cwd: process.cwd(), finishedAt: new Date(),
+    });
+    return { ...seeded, decision: decision!, interaction: interaction! };
+  }
+
+  it("withdraws obsolete policy reviews, restores the prior status, and is idempotent", async () => {
+    const seeded = await seedPolicyReview();
+    await reconcileNativeFinalizations(db, [seeded.runId]);
+    const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, seeded.interaction.id));
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(interaction).toMatchObject({ status: "cancelled", result: { outcome: "withdrawn" } });
+    expect(issue).toMatchObject({ status: "in_progress", statusVersion: 2, lastStatusDecisionId: null });
+    const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId));
+    expect(decisions.find((row) => row.id === seeded.decision.id)).toEqual(seeded.decision);
+    await reconcileNativeFinalizations(db, [seeded.runId]);
+    expect(await db.select().from(issues).where(eq(issues.id, seeded.issueId))).toEqual([issue]);
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, seeded.issueId))).toEqual(decisions);
+  }, 30_000);
+
+  it.each(["accepted", "rejected"])("leaves an already %s review untouched", async (status) => {
+    const seeded = await seedPolicyReview();
+    await db.update(issueThreadInteractions).set({ status }).where(eq(issueThreadInteractions.id, seeded.interaction.id));
+    await dismissObsoleteNativePolicyReviews(db, [seeded.runId]);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue).toMatchObject({ status: "in_review", lastStatusDecisionId: seeded.decision.id });
+    const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, seeded.interaction.id));
+    expect(interaction!.status).toBe(status);
+  });
+
+  it("preserves real completion reviews and limits cleanup to the requested runs", async () => {
+    const genuine = await seedPolicyReview({ genuine: true });
+    const other = await seedPolicyReview();
+    await dismissObsoleteNativePolicyReviews(db, [genuine.runId]);
+    for (const seeded of [genuine, other]) {
+      const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, seeded.interaction.id));
+      expect(interaction!.status).toBe("pending");
+    }
+  });
+
+  it.each(["blocked", "done", "cancelled"])("dismisses the obsolete card without undoing a later %s status", async (status) => {
+    const seeded = await seedPolicyReview();
+    await issueService(db).update(seeded.issueId, { status });
+    const before = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    await dismissObsoleteNativePolicyReviews(db, [seeded.runId]);
+    expect(await db.select().from(issues).where(eq(issues.id, seeded.issueId))).toEqual(before);
+    const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, seeded.interaction.id));
+    expect(interaction!.status).toBe(status === "blocked" ? "cancelled" : "expired");
+  });
+
+  it("does not restore status after a newer decision or a status change back to review", async () => {
+    for (const changedPointer of [false, true]) {
+      const seeded = await seedPolicyReview();
+      if (changedPointer) {
+        await db.update(issues).set({ lastStatusDecisionId: null }).where(eq(issues.id, seeded.issueId));
+      } else {
+        await issueService(db).update(seeded.issueId, { status: "in_progress" });
+        await issueService(db).update(seeded.issueId, { status: "in_review" });
+      }
+      const before = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+      await dismissObsoleteNativePolicyReviews(db, [seeded.runId]);
+      expect(await db.select().from(issues).where(eq(issues.id, seeded.issueId))).toEqual(before);
+    }
+  });
+
+  it("keeps review status when a separate request still needs a response", async () => {
+    const seeded = await seedPolicyReview();
+    await db.insert(issueThreadInteractions).values({
+      companyId, issueId: seeded.issueId, kind: "request_confirmation", status: "pending",
+      payload: { version: 1, prompt: "Approve publishing the release." },
+    });
+    await dismissObsoleteNativePolicyReviews(db, [seeded.runId]);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+    expect(issue!.status).toBe("in_review");
+  });
+
+  it("isolates a failed cleanup candidate and retries it on the next pass", async () => {
+    const first = await seedPolicyReview();
+    const second = await seedPolicyReview();
+    const runIds = [first.runId, second.runId];
+    const transaction = vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("injected cleanup failure"));
+    try {
+      await expect(dismissObsoleteNativePolicyReviews(db, runIds)).resolves.toBeUndefined();
+    } finally {
+      transaction.mockRestore();
+    }
+    const statuses = await Promise.all([first, second].map(async (seeded) => {
+      const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, seeded.interaction.id));
+      return interaction!.status;
+    }));
+    expect(statuses.sort()).toEqual(["cancelled", "pending"]);
+    await dismissObsoleteNativePolicyReviews(db, runIds);
+    for (const seeded of [first, second]) {
+      const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+      expect(issue!.status).toBe("in_progress");
+    }
+  });
+
+  it("keeps committed cleanup and continues publication after a live event fails", async () => {
+    const first = await seedPolicyReview();
+    const second = await seedPolicyReview();
+    const publish = vi.spyOn(activityLog, "publishActivity").mockImplementationOnce(() => {
+      throw new Error("injected live publication failure");
+    });
+    try {
+      await dismissObsoleteNativePolicyReviews(db, [first.runId, second.runId]);
+      expect(publish.mock.calls.length).toBeGreaterThan(1);
+      for (const seeded of [first, second]) {
+        const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+        const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, seeded.interaction.id));
+        expect(issue!.status).toBe("in_progress");
+        expect(interaction!.status).toBe("cancelled");
+      }
+    } finally {
+      publish.mockRestore();
+    }
+  });
+
+  it("continues native finalization when the obsolete-card lookup fails", async () => {
+    const seeded = await seedPolicyReview({ genuine: true });
+    const select = vi.spyOn(db, "select").mockImplementationOnce(() => {
+      throw new Error("injected cleanup lookup failure");
+    });
+    try {
+      const reconciled = await reconcileNativeFinalizations(db, [seeded.runId]);
+      expect(reconciled).toHaveLength(1);
+      expect(reconciled[0]!.phase).toBe("committed");
+    } finally {
+      select.mockRestore();
+    }
+  });
+
+  it("preserves a later authoritative status during reconciliation", () => {
     expect(resolveNativeReconciliationStatus({
-      facts: { authoritativeStatusChanged: true, policyVersionChanged: true },
+      facts: { authoritativeStatusChanged: true },
       priorIssueStatus: "blocked",
       agentId,
     })).toMatchObject({
-      statusAction: "preserve",
-      toStatus: "blocked",
+      statusAction: "preserve", toStatus: "blocked",
       reasonCode: "prior_status_terminal_preserved",
     });
   });

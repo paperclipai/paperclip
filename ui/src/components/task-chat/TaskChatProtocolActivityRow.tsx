@@ -35,7 +35,8 @@ function StatusIcon({ status }: { status: "running" | "completed" | "failed" | "
   return <Circle className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />;
 }
 
-function stepStatusIcon(status: TaskChatProtocolStep["status"]) {
+function stepStatusIcon(status: TaskChatProtocolStep["status"], neutral = false) {
+  if (neutral && (status === "blocked" || status === "failed")) return <Circle className="h-3 w-3 text-muted-foreground" aria-hidden />;
   if (status === "in_progress") return <Loader2 className="h-3 w-3 animate-spin text-(--status-agent-running)" aria-hidden />;
   if (status === "completed") return <Check className="h-3 w-3 text-(--status-task-icon-done)" aria-hidden />;
   if (status === "blocked" || status === "failed") return <X className="h-3 w-3 text-destructive" aria-hidden />;
@@ -125,7 +126,7 @@ function ResearchDetails({ item }: { item: TaskChatProviderActivityItem }) {
   );
 }
 
-function ProviderDetails({ item }: { item: TaskChatProviderActivityItem }) {
+function ProviderDetails({ item, neutral = false }: { item: TaskChatProviderActivityItem; neutral?: boolean }) {
   if (item.family === "research") return <ResearchDetails item={item} />;
   return (
     <div className="flex min-w-0 flex-col gap-2">
@@ -133,7 +134,7 @@ function ProviderDetails({ item }: { item: TaskChatProviderActivityItem }) {
         <ol className="flex flex-col gap-1" aria-label="Plan steps">
           {item.steps.map((step) => (
             <li className="flex min-w-0 items-start gap-2" key={step.id}>
-              <span className="mt-0.5 shrink-0">{stepStatusIcon(step.status)}</span>
+              <span className="mt-0.5 shrink-0">{stepStatusIcon(step.status, neutral)}</span>
               <span className={cn("min-w-0", step.status === "completed" && "text-muted-foreground line-through")}>{step.label}</span>
             </li>
           ))}
@@ -226,11 +227,11 @@ function WorkspaceFileDetails({ item }: { item: TaskChatWorkspaceFileItem }) {
   );
 }
 
-function detailContent(item: TaskChatProtocolItem): ReactNode | null {
+function detailContent(item: TaskChatProtocolItem, neutral = false): ReactNode | null {
   switch (item.surface) {
     case "provider_activity": {
       const expandable = item.details.length > 0 || item.steps.length > 0 || item.links.length > 0 || item.children.length > 0 || Boolean(item.output) || Boolean(item.outputTruncated);
-      return expandable ? <ProviderDetails item={item} /> : null;
+      return expandable ? <ProviderDetails item={item} neutral={neutral} /> : null;
     }
     case "workspace_change": return <WorkspaceChangeDetails item={item} />;
     case "workspace_file": return <WorkspaceFileDetails item={item} />;
@@ -240,6 +241,32 @@ function detailContent(item: TaskChatProtocolItem): ReactNode | null {
     case "run_terminal":
       return null;
   }
+}
+
+function safeActivityHref(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    // A fixed HTTPS base accepts relative app paths and fragments as well as
+    // external HTTP(S) resources, but never executable or local-file schemes.
+    const url = new URL(value, "https://paperclip.invalid");
+    return url.protocol === "https:" || url.protocol === "http:" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function hasTaskChatProtocolActivityDetails(item: TaskChatProtocolItem): boolean {
+  if (item.surface === "resource") return Boolean(safeActivityHref(item.href));
+  return detailContent(item) !== null || (item.surface === "provider_activity" && Boolean(item.summary?.trim()));
+}
+
+export function TaskChatProtocolActivityDetails({ item, neutral = false }: { item: TaskChatProtocolItem; neutral?: boolean }) {
+  const detail = detailContent(item, neutral);
+  if (item.surface === "resource") {
+    const href = safeActivityHref(item.href);
+    return href ? <a href={href} className="text-foreground underline">{item.title}</a> : <p>{item.title}</p>;
+  }
+  return <>{item.surface === "provider_activity" && item.summary ? <p className="whitespace-pre-wrap break-words">{item.summary}</p> : null}{detail}</>;
 }
 
 function itemStatus(item: TaskChatProtocolItem): "running" | "completed" | "failed" | "interrupted" | "informational" {
@@ -292,9 +319,10 @@ export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolIt
     </>
   );
 
-  if (item.surface === "resource" && item.href) {
+  const resourceHref = item.surface === "resource" ? safeActivityHref(item.href) : undefined;
+  if (resourceHref) {
     return (
-      <a className="group/activity -mx-1.5 flex min-h-6 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-sm px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground" href={item.href} data-testid="task-chat-protocol-activity-row">
+      <a className="group/activity -mx-1.5 flex min-h-6 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-sm px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground" href={resourceHref} data-testid="task-chat-protocol-activity-row">
         {row}
       </a>
     );

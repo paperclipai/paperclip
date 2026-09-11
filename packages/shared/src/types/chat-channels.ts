@@ -5,6 +5,7 @@ export const CHAT_PROVIDERS = [
   "discord",
   "microsoft-teams",
   "telegram",
+  "agentmail",
 ] as const;
 export type ChatProvider = (typeof CHAT_PROVIDERS)[number];
 
@@ -202,10 +203,16 @@ export interface ChatEndpointSetupSecret {
   webhookSecret: string;
 }
 
+export type ChannelPublicationMode = "automatic" | "explicit";
+export type ExternalMessageExecutionPolicy = "restricted" | "agent";
+
 export interface ChatEndpoint {
   id: string;
   companyId: string;
   connectionId: string;
+  /** Older clients omit these fields; defaults are automatic/restricted. */
+  publicationMode?: ChannelPublicationMode;
+  externalExecutionPolicy?: ExternalMessageExecutionPolicy;
   provider: ChatProvider;
   publicId: string;
   status: ChatEndpointStatus;

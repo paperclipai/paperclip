@@ -7,6 +7,8 @@ import {
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
+  environmentLeases,
+  environments,
   issues,
 } from "@paperclipai/db";
 import {
@@ -297,6 +299,23 @@ describeEmbeddedPostgres("heartbeat teardown terminalizes the run before releasi
     });
 
     expect(releaseRunLeases).not.toHaveBeenCalled();
+  });
+
+  it.each(["daytona", "local"])("destroy after failed checkpoint requires a terminal remote owner: %s", async provider => {
+    const { companyId, agentId, runId } = await seed({ issueStatus: "blocked", runStatus: "running" });
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    const [environment] = await db.insert(environments).values({ name: `cleanup-${runId}`, driver: "sandbox" }).returning();
+    await db.insert(environmentLeases).values({ companyId, environmentId: environment.id,
+      heartbeatRunId: runId, agentId, provider, providerLeaseId: "sandbox-owned",
+      status: "active", leasePolicy: "ephemeral" });
+    const releaseRunLeases = vi.fn(async () => []);
+    const heartbeat = heartbeatService(db, {
+      environmentRuntime: { releaseRunLeases } as unknown as HeartbeatEnvironmentRuntime,
+      closeWarmNativeSessionsForRun: async () => ({ closed: 0, busy: 0, failed: 1 }),
+    });
+    await heartbeat.releaseEnvironmentLeasesForRun({ runId, companyId, agentId,
+      status: "cancelled", providerResourceDisposition: "destroy" });
+    expect(releaseRunLeases).toHaveBeenCalledTimes(provider === "daytona" ? 1 : 0);
   });
 
   it("terminalizes a running run to succeeded before release when the issue reached done", async () => {

@@ -242,6 +242,8 @@ export const resetAgentSessionSchema = z.object({
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
 export const testAdapterEnvironmentSchema = z.object({
+  /** Saved agent whose redacted environment entries are restored for this probe. */
+  agentId: z.string().guid().optional(),
   /** One-shot provider keys for a probe. Never persist these in agent config. */
   testCredentials: z.object({
     ANTHROPIC_API_KEY: z.string().max(16384),

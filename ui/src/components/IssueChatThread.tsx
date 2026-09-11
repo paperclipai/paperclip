@@ -1,4 +1,5 @@
 import { TaskChatPausedTakeover, type TaskComposerPause } from "./task-chat/TaskChatPausedTakeover";
+import { useEmailComment } from "./EmailMessageCard";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type {
   ReasoningMessagePart,
@@ -3488,7 +3489,12 @@ function CompactSystemNoticeRow({
   );
 }
 
-function SystemNoticeCommentRow({
+function SystemNoticeCommentRow(props: { message: ThreadMessage; anchorId?: string }) {
+  const custom = props.message.metadata.custom as Record<string, unknown>;
+  const email = useEmailComment(typeof custom.commentId === "string" ? custom.commentId : props.message.id);
+  return email ?? <SystemNoticeCommentContent {...props} />;
+}
+function SystemNoticeCommentContent({
   message,
   anchorId,
 }: {
