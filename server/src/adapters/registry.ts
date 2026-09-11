@@ -405,7 +405,6 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
     }
     if (profile.provider === "acpx") {
       try {
-        if (profile.acpxAgent !== "claude") throw new Error("Select Codex to use the native Codex runner.");
         const target = context.executionTarget;
         if (target?.kind === "remote") {
           const probe = await runAdapterExecutionTargetShellCommand(
@@ -414,13 +413,20 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           );
           if (probe.timedOut || probe.exitCode !== 0) throw new Error("Could not verify the remote ACPX runner platform.");
           const [os, arch] = probe.stdout.trim().split(/\s+/);
-          if (!((os === "Linux" && arch === "x86_64") || (os === "Darwin" && ["arm64", "x86_64"].includes(arch ?? "")))) {
-            throw new Error("ACPX Claude requires Linux x64 or macOS ARM64/x64.");
+          if (!((os === "Linux" && arch === "x86_64") || (profile.acpxAgent === "claude" && os === "Darwin" && ["arm64", "x86_64"].includes(arch ?? "")))) {
+            throw new Error(`ACPX ${profile.acpxAgent} requires Linux x64${profile.acpxAgent === "claude" ? " or macOS ARM64/x64" : ""}.`);
           }
           return {
             adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
             checks: [{ code: "acpx_remote_runtime_unverified", level: "warn" as const,
               message: "The remote platform is supported. Runtime package integrity and readiness must still be verified by the remote runner before launch." }],
+          };
+        }
+        if (profile.acpxAgent !== "claude") {
+          return {
+            adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
+            checks: [{ code: "acpx_runtime_unverified", level: "warn" as const,
+              message: `The ACPX ${profile.acpxAgent} profile is qualified. Runtime package integrity, platform support, and readiness must still be verified by the runner before launch.` }],
           };
         }
         const { probeAcpxClaudeInstallation } = await import("@paperclipai/paperclip-runner/live");
