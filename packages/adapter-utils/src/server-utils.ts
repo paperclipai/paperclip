@@ -4621,6 +4621,15 @@ export async function isManagedGeminiSkillEntry(
 }
 
 /**
+ * The kind of lane-owned shape `laneOwnedSkillEntryShape` found at an entry,
+ * or `null` when the entry is not lane-owned. A caller uses the kind to
+ * choose a removal call that cannot cross into a different entry kind if
+ * the entry changes between the check and the removal — see
+ * `removeMaintainerOnlySkillSymlinks`.
+ */
+type LaneOwnedSkillEntryKind = "symlink" | "directory" | null;
+
+/**
  * Test if `target` carries a shape the Gemini lane could have created for
  * `expectedSource`. `removeMaintainerOnlySkillSymlinks` calls this at the
  * point of removal, because the manifest only records what the lane owned
@@ -4634,24 +4643,40 @@ export async function isManagedGeminiSkillEntry(
  * with no sentinel, a regular file, and every other entry type are not a
  * lane-owned shape, even when the manifest names the entry.
  */
+async function laneOwnedSkillEntryShape(
+  target: string,
+  expectedSource: string,
+): Promise<LaneOwnedSkillEntryKind> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing) return null;
+  if (existing.isSymbolicLink()) {
+    const linkedPath = await fs.readlink(target).catch(() => null);
+    if (!linkedPath) return null;
+    const resolvedLinkedPath = path.isAbsolute(linkedPath)
+      ? linkedPath
+      : path.resolve(path.dirname(target), linkedPath);
+    return resolvedLinkedPath === path.resolve(expectedSource)
+      ? "symlink"
+      : null;
+  }
+  if (existing.isDirectory()) {
+    return (await hasValidMaterializedSkillSentinel(target))
+      ? "directory"
+      : null;
+  }
+  return null;
+}
+
+/**
+ * Test if `target` carries a shape the Gemini lane could have created for
+ * `expectedSource`. This wraps `laneOwnedSkillEntryShape` for a caller that
+ * only needs the yes/no answer, not the matched kind.
+ */
 export async function isLaneOwnedSkillEntryShape(
   target: string,
   expectedSource: string,
 ): Promise<boolean> {
-  const existing = await fs.lstat(target).catch(() => null);
-  if (!existing) return false;
-  if (existing.isSymbolicLink()) {
-    const linkedPath = await fs.readlink(target).catch(() => null);
-    if (!linkedPath) return false;
-    const resolvedLinkedPath = path.isAbsolute(linkedPath)
-      ? linkedPath
-      : path.resolve(path.dirname(target), linkedPath);
-    return resolvedLinkedPath === path.resolve(expectedSource);
-  }
-  if (existing.isDirectory()) {
-    return hasValidMaterializedSkillSentinel(target);
-  }
-  return false;
+  return (await laneOwnedSkillEntryShape(target, expectedSource)) !== null;
 }
 
 export async function removeMaintainerOnlySkillSymlinks(
@@ -4679,9 +4704,20 @@ export async function removeMaintainerOnlySkillSymlinks(
     // link or directory at the same name. Remove it only when its shape on
     // disk is still lane-owned for the recorded source.
     if (managedEntry) {
-      if (await isLaneOwnedSkillEntryShape(target, managedEntry.source)) {
+      const shape = await laneOwnedSkillEntryShape(target, managedEntry.source);
+      if (shape) {
         try {
-          await fs.rm(target, { recursive: true, force: true });
+          // Remove by the exact kind the check just confirmed, not a
+          // recursive call that would also remove a directory. A directory
+          // can replace a symlink in the instant between the check above
+          // and this removal; `fs.unlink` only ever removes a symlink, so
+          // that race can fail this call but can never delete a directory
+          // the check never approved.
+          if (shape === "symlink") {
+            await fs.unlink(target);
+          } else {
+            await fs.rm(target, { recursive: true, force: true });
+          }
           removed.push(entry.name);
         } catch (err) {
           // The removal failed, so this lane still owns the entry and a

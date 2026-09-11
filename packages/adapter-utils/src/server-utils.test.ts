@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import {
   applyPaperclipWorkspaceEnv,
@@ -506,6 +506,67 @@ describe("removeMaintainerOnlySkillSymlinks", () => {
         await expect(fs.lstat(target)).resolves.toBeDefined();
       } finally {
         await fs.chmod(skillsHome, 0o755);
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a directory that replaces a managed symlink in the instant between the ownership check and removal", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      const source = path.join(root, "source-skill");
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      const target = path.join(skillsHome, "raced-skill");
+      await fs.symlink(source, target);
+      await writeManagedGeminiSkillsManifest(skillsHome, [
+        { name: "raced-skill", source },
+      ]);
+
+      // The prune checks the link target, confirms lane ownership, then
+      // removes the entry. Between those two steps a concurrent process can
+      // replace the link with a populated directory of its own. Simulate
+      // that race at the read that follows the ownership check, so the
+      // removal call runs against the replaced directory, not the symlink
+      // it approved.
+      const originalReadlink = fs.readlink.bind(fs);
+      const readlinkSpy = vi
+        .spyOn(fs, "readlink")
+        .mockImplementationOnce(async (
+          ...readlinkArgs: Parameters<typeof fs.readlink>
+        ) => {
+          const real = await originalReadlink(...readlinkArgs);
+          await fs.unlink(target);
+          await fs.mkdir(target, { recursive: true });
+          await fs.writeFile(
+            path.join(target, "SKILL.md"),
+            "# raced in\n",
+            "utf8",
+          );
+          return real;
+        });
+
+      try {
+        const { removed, failedToRemove } =
+          await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+        // The removal call must not delete the directory that replaced the
+        // approved symlink. It must report the entry as failed, not
+        // removed, so a caller retries it on the next pass instead of
+        // silently dropping it from the manifest.
+        expect(removed).toEqual([]);
+        expect(failedToRemove).toEqual([{ name: "raced-skill", source }]);
+        await expect(
+          fs.readFile(path.join(target, "SKILL.md"), "utf8"),
+        ).resolves.toBe("# raced in\n");
+      } finally {
+        readlinkSpy.mockRestore();
       }
     } finally {
       await fs.rm(root, { recursive: true, force: true });
