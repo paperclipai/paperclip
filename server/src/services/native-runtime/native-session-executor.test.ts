@@ -4119,7 +4119,7 @@ function leaseDb(
             returning: () => Promise<Array<{ runId: string }>>;
           };
           result.returning = () =>
-            Promise.resolve([{ runId: coordinator.runId }]);
+            Promise.resolve([{ runId: coordinator.runId, nextEventSeq: 2 }]);
           return result;
         },
       };
@@ -4162,12 +4162,20 @@ function leaseDb(
       return query;
     },
   });
+  const insert = (table: unknown) => ({
+    values: (values: Record<string, unknown>) => {
+      updates.push({ table, values });
+      return { returning: async () => [values] };
+    },
+  });
   const tx = {
+    insert,
     execute: async () => [],
     select,
     update,
   };
   return {
+    insert,
     select,
     transaction: async (operation: (transaction: Db) => Promise<unknown>) =>
       operation(tx as unknown as Db),
@@ -5798,26 +5806,31 @@ describe("native warm session supervision", () => {
         return result;
       });
 
-    await executePaperclipNativeSession({
-      db: leaseDb(base),
-      execution: base,
-      runnerInstanceId: "runner",
-    });
-    await executePaperclipNativeSession({
-      db: leaseDb(lowered),
-      execution: lowered,
-      runnerInstanceId: "runner",
-    });
-    expect(firstClose).toHaveBeenCalledWith({
-      reason: "warm native session configuration changed",
-    });
-    await vi.waitFor(
-      () =>
-        expect(secondClose).toHaveBeenCalledWith({
-          reason: "warm native session idle timeout",
-        }),
-      { timeout: 500 },
-    );
+    // Filesystem work between calls can exceed the idle window on a busy host.
+    // Advance that window only after proving the permission change closed it.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await executePaperclipNativeSession({
+        db: leaseDb(base),
+        execution: base,
+        runnerInstanceId: "runner",
+      });
+      await executePaperclipNativeSession({
+        db: leaseDb(lowered),
+        execution: lowered,
+        runnerInstanceId: "runner",
+      });
+      expect(firstClose).toHaveBeenCalledWith({
+        reason: "warm native session configuration changed",
+      });
+      expect(secondClose).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(20);
+      expect(secondClose).toHaveBeenCalledWith({
+        reason: "warm native session idle timeout",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -6458,13 +6471,16 @@ describe("native process ownership", () => {
         highestContiguousSourceSeq: 1,
       };
     });
-    state.createBackend.mockImplementationOnce((_input, options) => ({
-      kind: "test",
-      onSpawn: options.onSpawn,
-    }));
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    state.createBackend.mockImplementationOnce((_input, options) => {
+      expect(updates).toContainEqual({ table: heartbeatRunEvents, values: expect.objectContaining({
+        eventType: "native.process_start_requested", runId: execution.binding.runId,
+      }) });
+      return { kind: "test", onSpawn: options.onSpawn };
+    });
 
     await executePaperclipNativeSession({
-      db: leaseDb(),
+      db: leaseDb(execution, {}, {}, updates),
       execution,
       runnerInstanceId: "runner",
       onSpawn,

@@ -169,7 +169,10 @@ export interface ExecuteNativeSessionOptions {
   /** Trusted provider resource identity: independent remote sandboxes must not
    * inherit each other's process-cleanup gates. Omit for local backends. */
   remoteCleanupScope?: string;
+  /** Operation bound; explicit values also preserve the legacy turn bound. */
   timeoutMs?: number;
+  /** Total turn duration. Zero or no configured bound allows long-running work. */
+  turnTimeoutMs?: number;
   /** Abort admission while waiting for prior cleanup in the same domain. */
   signal?: AbortSignal;
   /** Internal test seam; production bounds checkpoint persistence to 30 seconds. */
@@ -1158,9 +1161,19 @@ async function consumeTurn(
     return await Promise.race([
       consumer,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          reject(new Error(`native session timed out after ${timeoutMs}ms`));
-        }, timeoutMs);
+        if (timeoutMs <= 0) return;
+        // Node timers overflow above ~24.8 days. Keep explicit long deadlines
+        // in bounded chunks instead of accidentally firing them immediately.
+        const deadline = Date.now() + timeoutMs;
+        const checkDeadline = () => {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) {
+            reject(new Error(`native session timed out after ${timeoutMs}ms`));
+          } else {
+            timer = setTimeout(checkDeadline, Math.min(remaining, 2_147_483_647));
+          }
+        };
+        checkDeadline();
       }),
       handoffFailure,
       externalAbortFailure,
@@ -2233,7 +2246,7 @@ export async function executeNativeSession(
               session,
               options.controlPlane,
               input,
-              options.timeoutMs ?? 900_000,
+              options.turnTimeoutMs ?? options.timeoutMs ?? 0,
               options.runtimeInputLiveWindowMs ??
                 DEFAULT_NATIVE_RUNTIME_INPUT_LIVE_WINDOW_MS,
               options.keepSessionOpen

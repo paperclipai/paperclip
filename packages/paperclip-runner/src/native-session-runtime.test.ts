@@ -201,6 +201,88 @@ function highestContiguous(events: PrpEvent[]): number {
 }
 
 describe("executeNativeSession recovery", () => {
+  it.each([undefined, 0, 7 * 24 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000])(
+    "honors long-lived turn duration independently of operation bounds (%s)",
+    async (turnTimeoutMs) => {
+      vi.useFakeTimers();
+      let finish = () => {};
+      const waiting = new Promise<void>((resolve) => { finish = resolve; });
+      const capabilities = {
+        resume: true, typedEvents: true, steering: false,
+        interruption: true, structuredResult: true,
+      };
+      const cancel = vi.fn(async () => { finish(); });
+      const close = vi.fn(async () => { finish(); });
+      const session: NativeSession = {
+        identity: () => identity,
+        async capabilities() { return capabilities; },
+        async *events() {
+          yield runnerEvent(1, "tool.execution.started", { name: "wait for CI", status: "running" });
+          await waiting;
+          yield runnerEvent(2, "turn.completed");
+        },
+        async startTurn() { return { turnId: "turn-recovery" }; },
+        async result() { return { result, terminal, turnId: "turn-recovery" }; },
+        async snapshot() {
+          return { backendKind: "mock", sessionId: "driver-recovery", identity,
+            providerSessionId: "provider-recovery", cursor: null, activeTurnId: null,
+            pendingRuntimeRequests: [], lineage: [] };
+        },
+        cancel, close,
+      };
+      const appendEvent = vi.fn<ControlPlanePort["appendEvent"]>(async event => ({
+        cursor: event.sourceSeq, highestContiguousSourceSeq: event.sourceSeq,
+        disposition: "committed",
+      }));
+      const completeRun = vi.fn(async () => {});
+      try {
+        const execution = executeNativeSession({
+          input, turnTimeoutMs,
+          backend: {
+            async descriptor() { return { kind: "mock", name: "long-lived", version: "1", capabilities }; },
+            async openSession() { return session; },
+          },
+          controlPlane: {
+            async openRun() {}, async checkpointSession() {}, appendEvent,
+            async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; },
+            completeRun,
+          },
+          runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+        });
+        // Observe rejection before advancing the clock, including on the old implementation.
+        let failure: unknown;
+        const observed = execution.catch(error => { failure = error; return null; });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(appendEvent).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(6 * 24 * 60 * 60 * 1000);
+        expect(failure).toBeUndefined();
+        expect(cancel).not.toHaveBeenCalled();
+        expect(close).not.toHaveBeenCalled();
+        expect(completeRun).not.toHaveBeenCalled();
+        if (turnTimeoutMs) {
+          // Includes a 30-day bound beyond Node's single-timer maximum.
+          await vi.advanceTimersByTimeAsync(turnTimeoutMs - 6 * 24 * 60 * 60 * 1000 - 1);
+          expect(failure).toBeUndefined();
+          await vi.advanceTimersByTimeAsync(1);
+          await observed;
+          expect(failure).toBeInstanceOf(Error);
+          expect((failure as Error).message).toContain(`native session timed out after ${turnTimeoutMs}ms`);
+          expect(cancel).toHaveBeenCalledOnce();
+          expect(completeRun).not.toHaveBeenCalled();
+        } else {
+          await vi.advanceTimersByTimeAsync(2 * 24 * 60 * 60 * 1000);
+          finish();
+          expect(await observed).toMatchObject({ result });
+          expect(completeRun).toHaveBeenCalledOnce();
+          expect(cancel).not.toHaveBeenCalled();
+        }
+      } finally {
+        finish();
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it.each([false, true])("preserves a durable session failure when its stream closes (throws=%s)", async throws => {
     const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
     const session: NativeSession = {
