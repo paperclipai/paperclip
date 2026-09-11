@@ -2755,4 +2755,7 @@ export * from "./validators/recovery-engineer.js";
 export * from "./types/delivery.js";
 export * from "./validators/delivery.js";
 
+export * from "./types/routing.js";
+export * from "./validators/routing.js";
+
 export * from "./types/issue-overview.js";
