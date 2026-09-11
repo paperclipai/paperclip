@@ -518,6 +518,32 @@ describe("startServer feedback export wiring", () => {
     });
   });
 
+  it("never invokes the retired review detector at startup or on periodic recovery", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    const retiredDetector = vi.fn(async () => ({ created: 1, updated: 1, failed: 0 }));
+    const runtime = Object.assign(heartbeatServiceMock, { reconcileProductivityReviews: retiredDetector });
+    let intervalCallback: (() => void) | null = null;
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval").mockImplementation(((callback: () => void) => {
+      intervalCallback = callback;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval);
+    try {
+      await startServer();
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(1);
+      expect(intervalCallback).not.toBeNull();
+      intervalCallback?.();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(heartbeatServiceMock.sweepStaleIssueLocks).toHaveBeenCalledTimes(2);
+      expect(retiredDetector).not.toHaveBeenCalled();
+    } finally {
+      delete (runtime as Partial<typeof runtime>).reconcileProductivityReviews;
+      setIntervalSpy.mockRestore();
+    }
+  });
+
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       heartbeatSchedulerEnabled: true,
