@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import express from "express";
 import request from "supertest";
 import { getTableName } from "drizzle-orm";
@@ -544,6 +545,19 @@ describe("issue activity event routes", () => {
         }),
       );
     });
+  });
+
+  it("defers reusable sandbox cleanup when an issue transitions to done", async () => {
+    const source = await readFile(
+      new URL("../routes/issues.ts", import.meta.url),
+      "utf8",
+    );
+    const helperCall = "destroyReusableSandboxLeasesForTerminalIssue(";
+    const callSites = source.split(helperCall).length - 1;
+
+    // Terminal issue transitions must not tear down a reusable lease immediately.
+    // The terminal-workspace reaper destroys it after the configured cooldown.
+    expect(callSites).toBe(0);
   });
 
   it("logs successful_run_handoff_resolved when an in_progress issue transitions to done with a pending required handoff", async () => {

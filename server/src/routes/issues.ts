@@ -277,7 +277,6 @@ import {
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { stalledReviewDecisionService } from "../services/stalled-review-decisions.js";
 import { environmentService } from "../services/environments.js";
-import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { redactSensitiveText } from "../redaction.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
 import {
@@ -3703,9 +3702,6 @@ export function issueRoutes(
     syncCommentExternalObjectsSafely: (commentId, tx) => externalObjectsSvc.syncCommentSafely(commentId, tx),
   });
   const routinesSvc = routineService(db, {
-    pluginWorkerManager: opts.pluginWorkerManager,
-  });
-  const environmentRuntime = environmentRuntimeService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
   const issueTreeControlFactory = Object.prototype.hasOwnProperty.call(
@@ -7380,31 +7376,6 @@ export function issueRoutes(
         );
         await new Promise((resolve) => setTimeout(resolve, attempt * 250));
       }
-    }
-  }
-
-  async function destroyReusableSandboxLeasesForTerminalIssue(issue: {
-    id: string;
-    companyId: string;
-    status: string;
-    executionWorkspaceId?: string | null;
-  }) {
-    try {
-      await environmentRuntime.destroyReusableSandboxLeases({
-        companyId: issue.companyId,
-        issueId: issue.id,
-        executionWorkspaceId: issue.executionWorkspaceId ?? null,
-        failureReason: `issue_terminal_${issue.status}`,
-      });
-    } catch (err) {
-      logger.warn(
-        {
-          err,
-          issueId: issue.id,
-          executionWorkspaceId: issue.executionWorkspaceId ?? null,
-        },
-        "failed to destroy reusable sandbox leases for terminal issue",
-      );
     }
   }
 
@@ -14666,7 +14637,6 @@ export function issueRoutes(
             actor,
             source: "issue.status_transition.issue_closed",
           });
-          await destroyReusableSandboxLeasesForTerminalIssue(issue);
         }
         if (becameTerminal && issue.parentId) {
           const parent = await svc.getWakeableParentAfterChildCompletion(
@@ -17858,7 +17828,6 @@ export function issueRoutes(
             actor,
             source: "issue.status_transition.issue_closed",
           });
-          await destroyReusableSandboxLeasesForTerminalIssue(currentIssue);
         }
         if (becameTerminal && currentIssue.parentId) {
           const parent = await svc.getWakeableParentAfterChildCompletion(
