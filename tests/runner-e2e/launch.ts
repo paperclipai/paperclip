@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { prepareCodexCiSandbox } from "./codex-ci-sandbox.js";
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { createRequire } from "node:module";
@@ -645,6 +646,9 @@ async function runAttempt(input: {
       temporaryRoot,
       process.env.PATH,
     );
+    if (execution.environment.id === "local" && execution.profile.id === "runner-codex") {
+      await prepareCodexCiSandbox(repositoryRoot, temporaryRoot);
+    }
     const agentJwtSecret = secret(48);
     const decisionSigningSecret = secret(48);
     const toolActionSigningSecret = secret(48);

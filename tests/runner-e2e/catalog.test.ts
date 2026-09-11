@@ -354,7 +354,14 @@ describe("runner E2E catalog", () => {
           },
           executionId: execution!.id,
         }),
-      ).toMatchObject({ adapterConfig: { engine: "cli" } });
+      ).toMatchObject({
+        adapterConfig: {
+          engine: "cli",
+          ...(profileId === "legacy-codex"
+            ? { extraArgs: ["-c", "features.shell_snapshot=false"] }
+            : {}),
+        },
+      });
     }
   });
 

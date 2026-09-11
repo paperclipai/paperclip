@@ -360,7 +360,12 @@ fn executes_a_qualified_acpx_profile_through_the_native_selector() {
     assert!(events
         .iter()
         .any(|event| event.event_type == "run.terminal"));
+    // runner.drain must see this exact terminal suffix without polling the
+    // provider again. An empty default implementation strands the suffix and
+    // makes shared native transport closure fail after a successful reply.
+    assert_eq!(executor.retained_events().unwrap(), events);
     executor.acknowledge_events(events.len()).unwrap();
+    assert!(executor.retained_events().unwrap().is_empty());
     executor
         .execute(&command(4, "session.close", json!({})))
         .unwrap();

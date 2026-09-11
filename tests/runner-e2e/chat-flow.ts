@@ -1,5 +1,9 @@
 import { expect, type Page } from "@playwright/test";
-import type { RunnerApi } from "./api.js";
+import { pollUntil, type RunnerApi } from "./api.js";
+import type {
+  AskUserQuestionsPayload,
+  PaperclipQuestionSetPayload,
+} from "../../packages/shared/src/types/issue.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
 
@@ -22,6 +26,8 @@ export interface ChatRun {
   companyId: string;
   agentId: string;
   status: string;
+  error?: string | null;
+  errorCode?: string | null;
   runtimeMode?: string;
   contextSnapshot?: Record<string, unknown>;
   resultJson?: Record<string, unknown>;
@@ -40,17 +46,91 @@ type Plan = { body: string; latestRevisionId: string; updatedAt: string };
 export const isResetRun = (run: ChatRun) =>
   run.contextSnapshot?.conversationReset === true ||
   run.resultJson?.conversationReset === true;
-export function assertChatHandoff(
+export function chatRunFailure(
+  runs: ChatRun[],
+  allowCancelled = false,
+): string | undefined {
+  const failed = runs.find(
+    (run) =>
+      ["failed", "timed_out"].includes(run.status) ||
+      (!allowCancelled && run.status === "cancelled"),
+  );
+  return failed
+    ? `run ${failed.id} ${failed.status}${failed.errorCode ? ` (${failed.errorCode})` : ""}${failed.error ? `: ${failed.error}` : ""}`
+    : undefined;
+}
+
+/** Match the shared question form's durable/native presentation, including custom labels. */
+export function chatQuestionPresentation(
+  payload: AskUserQuestionsPayload,
+): PaperclipQuestionSetPayload {
+  if (payload.questionSet) return payload.questionSet;
+  return {
+    schema: "paperclip.question_set.v1",
+    ...(payload.submitLabel ? { submitLabel: payload.submitLabel } : {}),
+    questions: payload.questions.map((question) => {
+      const freeText = question.options.find((option) => option.freeText);
+      return {
+        id: question.id,
+        prompt: question.prompt,
+        required: question.required === true,
+        answerMode:
+          question.selectionMode === "multi" ? "multi_select" : "single_select",
+        ...(freeText
+          ? { customAnswer: { enabled: true as const, label: freeText.label } }
+          : {}),
+      };
+    }),
+  };
+}
+
+export function assertChatTaskHandoff(
   task: ChatIssue,
-  plan: Plan,
   runs: ChatRun[],
   source: ChatIssue,
 ) {
   expect(task.parentId).toBeNull();
   expect(task.projectId).toBeTruthy();
   expect(task.assigneeAgentId).toBe(source.assigneeAgentId);
-  expect(plan.body.trim()).not.toBe("");
   expect(runs.length).toBeGreaterThan(0);
+}
+
+/** A running row can precede creation of its log file. Only that expected 404 is retryable. */
+export async function readRunningChatLog(
+  api: Pick<RunnerApi, "request">,
+  runId: string,
+): Promise<string | undefined> {
+  const response = await api.request.get(
+    `/api/heartbeat-runs/${runId}/log?limitBytes=65536`,
+  );
+  if (response.status() === 404) return undefined;
+  if (!response.ok())
+    throw new Error(`Run ${runId} log returned ${response.status()}`);
+  return ((await response.json()) as { content?: string }).content;
+}
+
+/** Synthetic reset runs have durable events but never start a provider log. */
+export async function collectChatRunEvidence(
+  api: Pick<RunnerApi, "get">,
+  run: ChatRun,
+) {
+  return {
+    runId: run.id,
+    log: isResetRun(run)
+      ? null
+      : await api.get(`/api/heartbeat-runs/${run.id}/log?limitBytes=1048576`),
+    events: await api.get(`/api/heartbeat-runs/${run.id}/events?limit=1000`),
+  };
+}
+
+export function assertChatHandoff(
+  task: ChatIssue,
+  plan: Plan,
+  runs: ChatRun[],
+  source: ChatIssue,
+) {
+  assertChatTaskHandoff(task, runs, source);
+  expect(plan.body.trim()).not.toBe("");
   for (const run of runs) {
     expect(Date.parse(plan.updatedAt)).toBeLessThanOrEqual(
       Date.parse(run.startedAt!),
@@ -107,29 +187,35 @@ export async function runChatFlow(input: {
         a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
     );
   const idle = async (minimumProviderRuns: number) => {
-    await expect
-      .poll(
-        async () => {
-          const resolved = await api.get<ChatIssue | null>(chatPath);
-          if (!resolved) return false;
-          issue = resolved;
-          runs = await allRuns();
-          input.observe(issue, runs);
-          return (
-            runs.filter((run) => !isResetRun(run)).length >=
-              minimumProviderRuns &&
-            runs.every((run) => !["queued", "running"].includes(run.status)) &&
-            issue.status === "in_review" &&
-            issue.conversationState === "waiting"
-          );
-        },
-        {
-          timeout: 240_000,
-          intervals: [500, 1000, 2000],
-          message: "chat turn settles to waiting",
-        },
-      )
-      .toBe(true);
+    await pollUntil({
+      label: "chat turn settles to waiting",
+      deadlineAt: Date.now() + 240_000,
+      intervalMs: 1000,
+      load: async () => {
+        const resolved = await api.get<ChatIssue | null>(chatPath);
+        if (resolved) issue = resolved;
+        runs = await allRuns();
+        if (resolved) input.observe(resolved, runs);
+        return {
+          resolved: Boolean(resolved),
+          status: resolved?.status,
+          conversationState: resolved?.conversationState,
+          providerRunCount: runs.filter((run) => !isResetRun(run)).length,
+          activeRuns: runs
+            .filter((run) => ["queued", "running"].includes(run.status))
+            .map((run) => run.id),
+          failure: chatRunFailure(runs, caseId === "stop-new-resume"),
+        };
+      },
+      reject: (state) => state.failure,
+      accept: (state) =>
+        !state.failure &&
+        state.resolved &&
+        state.providerRunCount >= minimumProviderRuns &&
+        state.activeRuns.length === 0 &&
+        state.status === "in_review" &&
+        state.conversationState === "waiting",
+    });
   };
   const turn = async (text: string, count: number) => {
     await sendChatMessage(page, text);
@@ -194,10 +280,8 @@ export async function runChatFlow(input: {
                 const events = await api.get<Array<Record<string, unknown>>>(
                   `/api/heartbeat-runs/${active.id}/events?limit=1000`,
                 );
-                const log = await api.get<{ content?: string }>(
-                  `/api/heartbeat-runs/${active.id}/log?limitBytes=65536`,
-                );
-                if (!(events.length || log.content?.length)) return false;
+                const log = await readRunningChatLog(api, active.id);
+                if (!(events.length || log?.length)) return false;
                 cancelledId = active.id;
                 return true;
               },
@@ -273,6 +357,7 @@ export async function runChatFlow(input: {
       await noTasks();
     } else {
       let existingProject: { id: string; name: string } | undefined;
+      let acceptedPlan: Plan | undefined;
       if (caseId === "clarify-reuse") {
         existingProject = await api.post(
           `/api/companies/${f.company.id}/projects`,
@@ -290,19 +375,17 @@ export async function runChatFlow(input: {
           Array<{
             status: string;
             kind: string;
-            payload?: {
-              questions?: Array<{
-                selectionMode?: string;
-                answerMode?: string;
-                customAnswer?: { label?: string };
-              }>;
-            };
+            payload: AskUserQuestionsPayload;
           }>
         >(`/api/issues/${issue!.id}/interactions`);
-        const pendingQuestions = questions.find(
+        const pendingInteraction = questions.find(
           (row) =>
             row.status === "pending" && row.kind === "ask_user_questions",
-        )?.payload?.questions;
+        );
+        const questionSet = pendingInteraction
+          ? chatQuestionPresentation(pendingInteraction.payload)
+          : undefined;
+        const pendingQuestions = questionSet?.questions;
         expect(
           Boolean(pendingQuestions?.length) ||
             (await comments()).some(
@@ -324,7 +407,7 @@ export async function runChatFlow(input: {
             } else {
               await page
                 .getByRole(
-                  question.selectionMode === "multiple" ? "checkbox" : "radio",
+                  question.answerMode === "multi_select" ? "checkbox" : "radio",
                   {
                     name: question.customAnswer?.label ?? "Other",
                     exact: true,
@@ -343,7 +426,7 @@ export async function runChatFlow(input: {
               .getByRole("button", {
                 name:
                   index === pendingQuestions.length - 1
-                    ? "Submit answers"
+                    ? (questionSet?.submitLabel ?? "Submit answers")
                     : "Next",
                 exact: true,
               })
@@ -359,7 +442,7 @@ export async function runChatFlow(input: {
           .getByText("Plan mode", { exact: true })
           .click();
         await turn(
-          `Let's plan a two-sentence garden club welcome note. Write a plan in the plan panel, with the required phrase DRAFT_${nonce}. Do not create a project or task yet.`,
+          `Let's plan a two-sentence garden club welcome note. Write a plan in the plan panel, with the required phrase DRAFT_${nonce}, and present it for approval. When I approve the final revision, create a suitable repository-free project and an assigned task for yourself, copy the plan into that task, and have it save the note in its output document and finish. Do not create the project or task before approval.`,
           1,
         );
         const draft = await api.get<Plan>(
@@ -405,7 +488,7 @@ export async function runChatFlow(input: {
           .locator('[contenteditable="true"],textarea')
           .first()
           .fill(
-            `Revise the plan: replace DRAFT_${nonce} with ${marker}. The execution task should save the welcome note in its output document. Present this revised plan for approval; do not hand it off yet.`,
+            `Revise the plan: replace DRAFT_${nonce} with ${marker}. The execution task should save the welcome note in its output document. Present this revised plan for approval; wait for that approval before handing it off as agreed.`,
           );
         await reviseButton.click();
         await idle(2);
@@ -415,6 +498,7 @@ export async function runChatFlow(input: {
         expect(revised.body).toContain(marker);
         expect(revised.body).not.toContain(`DRAFT_${nonce}`);
         expect(revised.latestRevisionId).not.toBe(draft.latestRevisionId);
+        acceptedPlan = revised;
         await noTasks();
         const interactions = await api.get<
           Array<{
@@ -471,13 +555,25 @@ export async function runChatFlow(input: {
         .toBe("done");
       runs = await allRuns();
       input.observe(issue!, runs);
-      const plan = await api.get<Plan>(
-        `/api/issues/${child.id}/documents/plan`,
-      );
+      const plan =
+        caseId === "plan-handoff"
+          ? await api.get<Plan>(`/api/issues/${child.id}/documents/plan`)
+          : null;
       const taskRuns = runs.filter(
         (run) => run.contextSnapshot?.issueId === child.id,
       );
-      assertChatHandoff(child, plan, taskRuns, issue!);
+      if (plan) {
+        assertChatHandoff(child, plan, taskRuns, issue!);
+        expect(plan.body).toContain(marker);
+        expect(plan.body).not.toContain(`DRAFT_${nonce}`);
+        const sourcePlan = await api.get<Plan>(
+          `/api/issues/${issue!.id}/documents/plan`,
+        );
+        expect(sourcePlan.body).toBe(acceptedPlan!.body);
+        expect(sourcePlan.latestRevisionId).toBe(
+          acceptedPlan!.latestRevisionId,
+        );
+      } else assertChatTaskHandoff(child, taskRuns, issue!);
       const output = await api.get<Plan>(
         `/api/issues/${child.id}/documents/output`,
       );
@@ -572,15 +668,7 @@ export async function runChatFlow(input: {
       comments: await comments(),
       activity: await api.get(`/api/issues/${issue!.id}/activity`),
       runEvidence: await Promise.all(
-        runs.map(async (run) => ({
-          runId: run.id,
-          log: await api.get(
-            `/api/heartbeat-runs/${run.id}/log?limitBytes=1048576`,
-          ),
-          events: await api.get(
-            `/api/heartbeat-runs/${run.id}/events?limit=1000`,
-          ),
-        })),
+        runs.map((run) => collectChatRunEvidence(api, run)),
       ),
     });
     await input.capture(

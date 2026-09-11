@@ -38,6 +38,21 @@ export function isWaitingConversation(
     issue.status === "in_review"
   );
 }
+/** Execution tasks may link to a conversation, but never drive its turns.
+ * Apply before enqueue, including while a reply is still running: waiting until
+ * finalization is too late to prevent a deferred dependency follow-up.
+ */
+export function isConversationExecutionWake(
+  issue: ConversationIdentity | null | undefined,
+  reason: string | null | undefined,
+): boolean {
+  return isConversation(issue) && (
+    reason === "issue_blockers_resolved" ||
+    reason === "issue_children_completed" ||
+    reason === "issue_unblock_requested"
+  );
+}
+
 export function isConversationReset(body: string): boolean {
   return body.trim() === "/new";
 }
@@ -50,7 +65,7 @@ Before handing off work, inspect available projects and repositories. Every task
 
 Create ordinary assigned tasks, never subtasks of this conversation. Give each task a clear outcome, context, acceptance criteria, project, and appropriate assignee. Use create_task with initialPlan to copy the relevant plan into the new task before execution starts. Preserve the original plan here. When splitting work, include the relevant part of the plan in each task. Create and link each task before claiming it exists.
 
-Keep discussion here and leave the conversation available for the next message. Reply normally and end your turn; Paperclip manages the conversation waiting state. Do not change its status, create a review confirmation just to finish a reply, mark it complete, or poll for another reply. An accepted plan authorizes handoff to execution tasks, never implementation on this conversation. Honor normal approvals. Ask mode is non-mutating. Plan mode supports research and writing/revising the plan; hand off for execution only through the normal authorized workflow.`;
+Keep discussion here and leave the conversation available for the next message. Link handed-off tasks in your reply; do not make this conversation blocked by their completion or wait for them. Reply normally and end your turn; Paperclip manages the conversation waiting state. Do not change its status, create a review confirmation just to finish a reply, mark it complete, or poll for another reply. An accepted plan authorizes handoff to execution tasks, never implementation on this conversation. Honor normal approvals. Ask mode is non-mutating. Plan mode supports research and writing/revising the plan; hand off for execution only through the normal authorized workflow.`;
 
 /** Runs under the normal issue execution lock, before any provider session is read. */
 export async function prepareConversationTurn(

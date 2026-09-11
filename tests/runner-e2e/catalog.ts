@@ -208,7 +208,13 @@ export const runnerProfiles: readonly RunnerProfileFixture[] = [
     credential: "OPENAI_API_KEY",
     // Keep this fixture on the classic adapter/CLI lane. ACP execution is
     // covered independently by the native runner ACPX profiles below.
-    extraConfig: { engine: "cli" },
+    extraConfig: {
+      engine: "cli",
+      // Shell snapshots serialize inherited environment values into CODEX_HOME.
+      // These disposable runs carry short-lived API credentials; keep that
+      // optional optimization off rather than exempting leaked files from scans.
+      extraArgs: ["-c", "features.shell_snapshot=false"],
+    },
   }),
   legacyProfile({
     id: "legacy-claude",

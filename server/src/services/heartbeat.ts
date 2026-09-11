@@ -1,4 +1,4 @@
-import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
+import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 import { legacyExecutionNeedsReconciliation, terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
@@ -7704,6 +7704,14 @@ export function buildPaperclipTaskMarkdown(input: {
       (input.interaction?.kind === "request_confirmation" &&
         input.interaction.status === "accepted" &&
         issue?.workMode === "planning"));
+  const acceptedChatPlan = Boolean(
+    issue?.conversationAgentId &&
+    issue.workMode !== "ask" &&
+    !wakeComment &&
+    input.interaction?.kind === "request_confirmation" &&
+    input.interaction.status === "accepted" &&
+    (input.acceptedPlan?.revisionId || input.acceptedPlanContinuation),
+  );
   if (!issue && !wakeComment) return null;
 
   const lines = [
@@ -7717,6 +7725,13 @@ export function buildPaperclipTaskMarkdown(input: {
     );
     if (issue.conversationAgentId) {
       lines.push("", "Chat mode directive:", AGENT_CHAT_DIRECTIVE, `Current composer mode: ${issue.workMode ?? "standard"}.`);
+      if (acceptedChatPlan) {
+        lines.push(
+          "",
+          "Accepted chat plan directive:",
+          "The user has approved the plan for handoff. Perform that handoff now: select or create a suitable project, then create the ordinary assigned execution tasks with the relevant approved plan in initialPlan before execution starts. Do not stop at acknowledging approval or ask for another confirmation. Keep the original plan here, link the created tasks, and leave this conversation available for discussion. Do not implement here or create subtasks of this conversation.",
+        );
+      }
     } else if (issue.workMode === "ask") {
       lines.push(
         `- Work mode: ${quoteTaskScalar("ask")}`,
@@ -7755,7 +7770,7 @@ export function buildPaperclipTaskMarkdown(input: {
         "Implement the accepted plan on this issue when the work is small and cohesive. Use the paperclip-converting-plans-to-tasks skill to decide whether decomposition is justified. Create the minimum child issue graph only for qualifying ownership, parallelism, dependency, review, or lifecycle boundaries. Do not create a child merely because a plan was accepted.",
       );
     }
-    if (acceptedPlanContinuation && input.acceptedPlan?.revisionId) {
+    if ((acceptedPlanContinuation || acceptedChatPlan) && input.acceptedPlan?.revisionId) {
       const revisionNumber = input.acceptedPlan.revisionNumber
         ? ` revision ${input.acceptedPlan.revisionNumber}`
         : " revision";
@@ -23686,6 +23701,7 @@ export function heartbeatService(
     if (issueId) {
       const conversation = await getIssueExecutionContext(agent.companyId, issueId);
       if (isConversation(conversation)) {
+        if (isConversationExecutionWake(conversation, reason ?? readNonEmptyString(enrichedContextSnapshot.wakeReason))) return null;
         if (agent.id !== conversation!.conversationAgentId) return null;
         if (!(await instanceSettings.getExperimental()).enableAgentChat) return null;
         if (!wakeCommentId && isWaitingConversation(conversation) && !hasInteractionContinuationWakeContext(enrichedContextSnapshot)) return null;

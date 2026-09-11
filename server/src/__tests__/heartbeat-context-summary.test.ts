@@ -7,6 +7,29 @@ import {
 } from "../services/heartbeat.js";
 
 describe("buildPaperclipTaskMarkdown", () => {
+  it("hands an accepted chat plan to assigned project tasks using the approved revision", () => {
+    const prompt = buildPaperclipTaskMarkdown({
+      issue: { id: "chat", title: "Agent chat", workMode: "planning", conversationAgentId: "agent", description: null },
+      interaction: { kind: "request_confirmation", status: "accepted" },
+      acceptedPlan: { documentId: "plan-document", revisionId: "approved-revision", revisionNumber: 2 },
+    });
+    expect(prompt).toContain("Perform that handoff now");
+    expect(prompt).toContain("ordinary assigned execution tasks");
+    expect(prompt).toContain("initialPlan before execution starts");
+    expect(prompt).toContain("revision 2 approved-revision");
+    expect(prompt).not.toContain("Implement the accepted plan on this issue");
+  });
+
+  it.each(["ask", "new-comment", "unbound-confirmation"])("does not treat %s as plan handoff authorization", (kind) => {
+    const prompt = buildPaperclipTaskMarkdown({
+      issue: { id: "chat", title: "Agent chat", workMode: kind === "ask" ? "ask" : "planning", conversationAgentId: "agent", description: null },
+      interaction: { kind: "request_confirmation", status: "accepted" },
+      ...(kind === "unbound-confirmation" ? {} : { acceptedPlan: { documentId: "plan-document", revisionId: "approved-revision", revisionNumber: 2 } }),
+      ...(kind === "new-comment" ? { wakeComment: { id: "later-comment", body: "Please revise it again first." } } : {}),
+    });
+    expect(prompt).not.toContain("Perform that handoff now");
+  });
+
   it("adds planning directives for assignment and comment task context", () => {
     const assignment = buildPaperclipTaskMarkdown({
       issue: {

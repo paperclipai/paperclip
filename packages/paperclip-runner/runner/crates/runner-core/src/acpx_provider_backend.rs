@@ -1527,6 +1527,13 @@ impl CommandExecutor for AcpxCommandExecutor {
             return Ok(Vec::new());
         }
         self.poll_provider()?;
+        self.retained_events()
+    }
+
+    fn retained_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+        // Explicit drain runs while control traffic suppresses provider polling.
+        // Expose the already-retained suffix so runnerd can commit and ACK it
+        // before suspension, without restoring or advancing the provider.
         Ok(self
             .state
             .as_ref()
@@ -1803,6 +1810,57 @@ mod tests {
             "permissionModePinned": true,
             "runtimeContext": null,
         })
+    }
+
+    #[test]
+    fn retained_events_exposes_terminal_suffix_without_restoring_provider() {
+        let directory = temporary_directory("retained-terminal-suffix");
+        let config = test_config(&directory, None);
+        let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        // Invalid on-disk state would fail restoration. Retained-only reads
+        // must neither restore a provider nor inspect a different state owner.
+        fs::write(executor.state_path(), b"not provider state").unwrap();
+        assert!(executor.retained_events().unwrap().is_empty());
+
+        let operations = Vec::new();
+        let tool_set = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+            operations,
+        };
+        let mut state = AcpxDurableState::new(
+            serde_json::from_value(descriptor("claude")).unwrap(),
+            tool_set,
+            "retained-only-test".to_owned(),
+        );
+        state.lifecycle = "session_open".to_owned();
+        for event_type in ["turn.completed", "run.usage", "run.completed"] {
+            state
+                .push(NormalizedProviderEvent {
+                    event_type: event_type.to_owned(),
+                    priority: EventPriority::P0,
+                    payload: json!({}),
+                })
+                .unwrap();
+        }
+        executor.state = Some(state);
+        let suffix = executor.retained_events().unwrap();
+        assert_eq!(
+            suffix
+                .iter()
+                .map(|event| event.event_type.as_str())
+                .collect::<Vec<_>>(),
+            vec!["turn.completed", "run.usage", "run.completed"],
+        );
+        // Reading is not acknowledgement: a retry sees the exact same FIFO.
+        assert_eq!(executor.retained_events().unwrap(), suffix);
+        assert!(executor.session.is_none());
+        assert_eq!(
+            fs::read(executor.state_path()).unwrap(),
+            b"not provider state"
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

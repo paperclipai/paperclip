@@ -39,6 +39,7 @@ import {
   deliverConversationComments,
   conversationReplay,
   isWaitingConversation,
+  isConversationExecutionWake,
   prepareConversationTurn,
   settleConversationTurn,
   undeliveredConversationComments,
@@ -614,6 +615,35 @@ const support = await getEmbeddedPostgresTestSupport();
         eventType: "session.capabilities.updated", sourceRunId: run.id, sourceSeq: 500, payload: {},
       })).toBeNull();
     });
+    it("ignores execution dependency wakes during active and idle chat turns", async () => {
+      const chat = await create();
+      const heartbeat = heartbeatService(db);
+      const blocker = await issueService(db).create(companyId, { title: "Linked execution", status: "done" });
+      await issueService(db).update(chat.id, { blockedByIssueIds: [blocker.id] });
+      const ordinary = await issueService(db).create(companyId, {
+        title: "Ordinary dependent",
+        status: "in_review",
+        assigneeAgentId: agentId,
+        blockedByIssueIds: [blocker.id],
+      });
+      for (const state of [
+        { status: "in_review", conversationState: "waiting" },
+        { status: "blocked", conversationState: "active" },
+      ]) {
+        await db.update(issues).set(state).where(eq(issues.id, chat.id));
+        for (const reason of ["issue_blockers_resolved", "issue_children_completed", "issue_unblock_requested"]) {
+          expect(await heartbeat.wakeup(agentId, {
+            source: "automation",
+            reason,
+            contextSnapshot: { issueId: chat.id, wakeReason: reason },
+          })).toBeNull();
+        }
+        expect((await issueService(db).listWakeableBlockedDependents(blocker.id)).map((issue) => issue.id))
+          .toEqual([ordinary.id]);
+      }
+      expect((await issueService(db).getDependencyReadiness(chat.id)).blockerIssueIds).toEqual([blocker.id]);
+    });
+
     it("only parks answered turns and preserves idle across recovery classification", async () => {
       const issue = await create();
       const message = await issueService(db).addComment(
@@ -674,6 +704,20 @@ const support = await getEmbeddedPostgresTestSupport();
     });
   },
 );
+
+describe("conversation execution wake policy", () => {
+  it.each(["issue_blockers_resolved", "issue_children_completed", "issue_unblock_requested"])(
+    "suppresses %s only for conversation containers",
+    (reason) => {
+      expect(isConversationExecutionWake({ conversationAgentId: "agent", conversationUserId: "user" }, reason)).toBe(true);
+      expect(isConversationExecutionWake({}, reason)).toBe(false);
+    },
+  );
+  it.each(["issue_commented", "interaction_resolved", "run_failed", "issue_recovery_action_restored"])(
+    "preserves %s handling for pending conversation turns",
+    (reason) => expect(isConversationExecutionWake({ conversationAgentId: "agent", conversationUserId: "user" }, reason)).toBe(false),
+  );
+});
 
 describe("chat prompt policy", () => {
   it.each(["standard", "ask", "planning"])(

@@ -1,10 +1,17 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+import type { AskUserQuestionsPayload } from "../../packages/shared/src/types/issue.js";
 import {
   assertChatHandoff,
+  assertChatTaskHandoff,
+  chatQuestionPresentation,
+  chatRunFailure,
+  collectChatRunEvidence,
+  readRunningChatLog,
   isResetRun,
   type ChatIssue,
   type ChatRun,
 } from "./chat-flow.js";
+import type { RunnerApi } from "./api.js";
 import { runnerMatrix } from "./catalog.js";
 import { isPublicRunnerScreenshotRoute } from "./screenshot-policy.js";
 
@@ -76,6 +83,114 @@ describe("chat acceptance contracts", () => {
       ),
     ).toThrow();
     expect(() => assertChatHandoff(task, plan, [], source)).toThrow();
+  });
+  it("requires a plan for plan handoff, while direct requests need only normal task assignment", () => {
+    expect(() => assertChatTaskHandoff(task, [run], source)).not.toThrow();
+    expect(() =>
+      assertChatHandoff(task, { ...plan, body: "" }, [run], source),
+    ).toThrow();
+    expect(() =>
+      assertChatTaskHandoff({ ...task, projectId: null }, [run], source),
+    ).toThrow();
+  });
+  it("uses durable free-text labels, multi-selection, and the supplied submit label", () => {
+    const payload: AskUserQuestionsPayload = {
+      version: 1,
+      submitLabel: "Send brief",
+      questions: [
+        {
+          id: "audience",
+          prompt: "Who is it for?",
+          selectionMode: "multi",
+          required: true,
+          options: [
+            { id: "members", label: "New members" },
+            {
+              id: "custom",
+              label: "Another audience or occasion",
+              freeText: true,
+            },
+          ],
+        },
+      ],
+    };
+    const presentation = chatQuestionPresentation(payload);
+    expect(presentation.submitLabel).toBe("Send brief");
+    expect(presentation.questions[0]).toMatchObject({
+      answerMode: "multi_select",
+      customAnswer: { enabled: true, label: "Another audience or occasion" },
+    });
+    const nativePayload: AskUserQuestionsPayload = {
+      ...payload,
+      questionSet: {
+        schema: "paperclip.question_set.v1",
+        submitLabel: "Continue",
+        questions: [
+          {
+            id: "audience",
+            prompt: "Who is it for?",
+            required: true,
+            answerMode: "text",
+          },
+        ],
+      },
+    };
+    expect(chatQuestionPresentation(nativePayload)).toBe(
+      nativePayload.questionSet,
+    );
+  });
+  it("retains reset events without requesting a provider log, and does not hide missing real logs", async () => {
+    const get = vi.fn().mockResolvedValue([{ type: "session_reset" }]);
+    const reset = { ...run, resultJson: { conversationReset: true } };
+    await expect(collectChatRunEvidence({ get }, reset)).resolves.toEqual({
+      runId: run.id,
+      log: null,
+      events: [{ type: "session_reset" }],
+    });
+    expect(get.mock.calls).toEqual([
+      [`/api/heartbeat-runs/${run.id}/events?limit=1000`],
+    ]);
+    get.mockRejectedValue(new Error("Run log not found"));
+    await expect(collectChatRunEvidence({ get }, run)).rejects.toThrow(
+      "Run log not found",
+    );
+  });
+  it("waits for a newly running provider's log file without swallowing server failures", async () => {
+    const get = vi.fn().mockResolvedValue({ status: () => 404 });
+    const api = { request: { get } } as unknown as Pick<RunnerApi, "request">;
+    await expect(readRunningChatLog(api, "starting")).resolves.toBeUndefined();
+    get.mockResolvedValue({
+      status: () => 200,
+      ok: () => true,
+      json: async () => ({ content: "streamed reply" }),
+    });
+    await expect(readRunningChatLog(api, "running")).resolves.toBe(
+      "streamed reply",
+    );
+    get.mockResolvedValue({ status: () => 500, ok: () => false });
+    await expect(readRunningChatLog(api, "broken")).rejects.toThrow(
+      "log returned 500",
+    );
+  });
+  it("fails promptly on terminal provider failures while permitting only expected cancellations", () => {
+    expect(chatRunFailure([run])).toBeUndefined();
+    expect(chatRunFailure([{ ...run, status: "running" }])).toBeUndefined();
+    expect(
+      chatRunFailure([
+        {
+          ...run,
+          status: "failed",
+          errorCode: "permission_denied",
+          error: "sandbox unavailable",
+        },
+      ]),
+    ).toContain("run run failed (permission_denied): sandbox unavailable");
+    expect(chatRunFailure([{ ...run, status: "cancelled" }])).toContain(
+      "cancelled",
+    );
+    expect(
+      chatRunFailure([{ ...run, status: "cancelled" }], true),
+    ).toBeUndefined();
   });
   it("separates reset control runs from provider runs without treating failures as resets", () => {
     expect(isResetRun(run)).toBe(false);

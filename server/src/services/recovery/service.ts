@@ -3820,6 +3820,7 @@ export function recoveryService(
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
         eq(issues.status, "blocked"),
+        isNull(issues.conversationAgentId),
         visibleIssueCondition(),
         sql`${issues.assigneeAgentId} is not null`,
       ];

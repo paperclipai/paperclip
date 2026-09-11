@@ -6693,6 +6693,7 @@ export function issueService(db: Db) {
             eq(issueRelations.companyId, blockerIssue.companyId),
             eq(issueRelations.type, "blocks"),
             eq(issueRelations.issueId, blockerIssueId),
+            isNull(issues.conversationAgentId),
           ),
         );
       if (candidates.length === 0) return [];
