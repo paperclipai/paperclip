@@ -107,6 +107,99 @@ The payload never carries a command, an argument, a path, an environment value,
 or a raw identifier. The event rides the `ctx.onEvent` run-event bridge and is
 run-log-only. It needs no OTLP endpoint.
 
+## ACP Permission Handoff Observer Run-Log Events
+
+Paperclip writes four run-log event types for the ACP permission handoff. The
+producer is `createAcpPermissionObserver` in
+`packages/adapter-utils/src/acpx-engine/permission-observer.ts`. These events
+are run-log records, not first-party telemetry events. The generated
+telemetry contract does not cover them, so this section is their canonical
+contract.
+
+The observer is observation-only. It never answers, approves, or denies a
+permission request. It only records receipt and settlement, so an operator
+can tell a stalled handoff from a normal wait. An internal error in the
+observer resolves the hook to `undefined`, the same as a normal observation;
+the observer never blocks or changes the permission decision.
+
+Each field passes through a closed enumeration or a bounded scalar. The
+event never carries the raw ACP frame, the tool input, or another free-form
+payload. A session ID and a tool-call ID are capped at 200 characters each
+before they enter the payload.
+
+### `acpx.permission_observed`
+
+Paperclip writes this event when the engine receives a permission request.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `sessionId` | string | The session ID, capped at 200 characters. |
+| `toolCallId` | string | The tool-call ID, capped at 200 characters. |
+| `method` | string | The ACP method name, from a closed allowlist (`session/request_permission` or `unknown`). |
+| `toolKind` | string | The inferred tool kind, from a closed allowlist (`read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `switch_mode`, `other`, or `unknown`). |
+| `stage` | string | Always `requested` for this event. |
+| `permissionMode` | string | The run's effective permission mode, from a closed allowlist (`approve-all`, `approve-reads`, `deny-all`, or `unknown`). |
+| `transport` | string | The run's execution transport, from a closed allowlist (`local`, `ssh`, `sandbox`, or `unknown`). |
+
+### `acpx.permission_settled`
+
+Paperclip writes this event when a tracked tool call reaches a terminal
+status (`completed` or `failed`).
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `sessionId` | string | The session ID, capped at 200 characters. |
+| `toolCallId` | string | The tool-call ID, capped at 200 characters. |
+| `outcome` | string | The terminal outcome (`completed` or `failed`). |
+| `ageMs` | number | The time from receipt to settlement, in milliseconds, clamped to a maximum of 24 hours. |
+
+### `acpx.permission_unsettled`
+
+Paperclip writes one of these events for each permission request still open
+when the run finalizes. This is the signal that a handoff stalled.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `sessionId` | string | The session ID, capped at 200 characters. |
+| `toolCallId` | string | The tool-call ID, capped at 200 characters. |
+| `stage` | string | The last known tool-call stage, from a closed allowlist (`requested`, `pending`, `in_progress`, `completed`, `failed`, or `unknown`). |
+| `ageMs` | number | The time from receipt to run finalization, in milliseconds, clamped to a maximum of 24 hours. |
+
+### `acpx.permission_observer_truncated`
+
+Paperclip writes this event once per run, only when the observer suppressed
+an entry or an event. It carries no session ID, no tool-call ID, and no other
+agent-controlled value.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `suppressedLedgerEntries` | number | The count of open permission requests the observer could not track because the ledger was full. |
+| `suppressedObservedEvents` | number | The count of `acpx.permission_observed` events the observer dropped because that event's own budget was full. |
+| `suppressedSettledEvents` | number | The count of `acpx.permission_settled` events the observer dropped because that event's own budget was full. |
+| `suppressedUnsettledEvents` | number | The count of `acpx.permission_unsettled` events the observer dropped because that event's own budget was full. |
+
+### Bounded output
+
+The agent process is untrusted, so it picks how many permission requests it
+sends. The observer bounds its own memory and log volume against that input
+instead of trusting a limit the agent could exceed.
+
+The observer tracks open requests in a ledger capped at 256 entries. It also
+gives each event type its own emission budget of 256 events for the run. The
+four budgets are separate: `acpx.permission_settled` fires once per tool call
+the agent completes, so a normal long run can spend a shared budget before
+the run ends. A separate budget for `acpx.permission_unsettled` keeps that
+signal reachable even when the agent's normal traffic would otherwise spend
+a shared budget first.
+
+Each budget counts the cumulative number of emitted events for the run, not
+the live ledger size, so an agent cannot refill a budget by opening and
+settling requests in a loop. When a budget is spent, the observer emits
+nothing further for that event type; it never emits a reduced event. The run
+finalization step emits at most one `acpx.permission_unsettled` event per
+still-open ledger entry, and at most one `acpx.permission_observer_truncated`
+event for the whole run.
+
 ## Related instrumentation
 
 The sandbox duplex transport also writes one run-log event as one of its three
