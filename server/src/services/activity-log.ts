@@ -148,6 +148,32 @@ export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActi
   return readNonEmptyString(company?.defaultResponsibleUserId);
 }
 
+async function resolveKnownActivityRunId(db: Db, input: Pick<LogActivityInput, "companyId" | "runId">) {
+  const runId = readNonEmptyString(input.runId);
+  if (!runId) return null;
+  if (!isUuidLike(runId)) {
+    logger.warn(
+      { companyId: input.companyId, runId },
+      "activity log runId is not a valid heartbeat run id; recording without run attribution",
+    );
+    return null;
+  }
+  const known = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, runId)))
+    .limit(1)
+    .then((rows) => rows.length > 0);
+  if (!known) {
+    logger.warn(
+      { companyId: input.companyId, runId },
+      "activity log runId does not reference a known heartbeat run; recording without run attribution",
+    );
+    return null;
+  }
+  return runId;
+}
+
 export function publishActivity(publication: ActivityPublication) {
   publishLiveEvent({
     companyId: publication.companyId,
@@ -160,6 +186,7 @@ export function publishActivity(publication: ActivityPublication) {
 export async function persistActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = await redactActivityDetails(db, input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
+  const persistedRunId = await resolveKnownActivityRunId(db, input);
   const [activity] = await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -168,7 +195,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId: persistedRunId,
     responsibleUserId,
     details: redactedDetails,
   }).returning({ id: activityLog.id });
