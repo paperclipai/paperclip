@@ -434,6 +434,7 @@ function ConnectFlowPreview({
                       <OnboardingCardField
                         value={code}
                         onChange={setCode}
+                        masked
                         disabled={phase === "connecting"}
                         onSubmit={() => {
                           if (isValidBrowserCode(code.trim())) {
