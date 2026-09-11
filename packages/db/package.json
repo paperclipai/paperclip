@@ -14,6 +14,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./package.json": "./package.json",
     "./*": "./src/*.ts"
   },
   "publishConfig": {
@@ -23,6 +24,7 @@
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
       },
+      "./package.json": "./package.json",
       "./*": {
         "types": "./dist/*.d.ts",
         "import": "./dist/*.js"
