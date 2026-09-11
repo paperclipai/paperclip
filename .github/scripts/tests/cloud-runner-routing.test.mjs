@@ -8,6 +8,8 @@ const workflow = readFileSync(new URL("../../workflows/docker-cloud.yml", import
 // boolean operators have the same results in JS for these canonical contexts.
 const expression = workflow.match(/^    runs-on: \$\{\{ (.+) \}\}$/m)?.[1];
 assert.ok(expression, "cloud routing must remain an explicit job expression");
+const timeoutExpression = workflow.match(/^    timeout-minutes: \$\{\{ (.+) \}\}$/m)?.[1];
+assert.ok(timeoutExpression, "AWS jobs must finish before the Fleet instance lifetime");
 const fleet = "runs-on/fleet=paperclip-cloud-build-x64/env=public-ci";
 const base = { repository: "paperclipai/paperclip", repository_id: "1170821064", ref: "refs/heads/master", event_name: "push" };
 for (const { name, github = {}, enabled = "true", expected = "ubuntu-latest" } of [
@@ -26,6 +28,8 @@ for (const { name, github = {}, enabled = "true", expected = "ubuntu-latest" } o
   { name: "workflow completion event", github: { event_name: "workflow_run" } },
 ]) {
   test(`cloud runner routing: ${name}`, () => {
-    assert.equal(runInNewContext(expression, { github: { ...base, ...github }, vars: { AWS_CLOUD_BUILDS_ENABLED: enabled } }), expected);
+    const context = { github: { ...base, ...github }, vars: { AWS_CLOUD_BUILDS_ENABLED: enabled } };
+    assert.equal(runInNewContext(expression, context), expected);
+    assert.equal(runInNewContext(timeoutExpression, context), expected === fleet ? 40 : 60);
   });
 }

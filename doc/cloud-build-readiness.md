@@ -135,7 +135,9 @@ The cloud Fleet uses a separate runner group, `paperclip-cloud-build`, restricte
 to this repository and `.github/workflows/docker-cloud.yml@refs/heads/master`.
 Provision that group and Fleet before enabling the variable. The cloud runners
 need at least 64 GiB free for Docker and the workspace; the initial configuration
-uses 120 GiB disks with the existing 4-vCPU, 16-GiB machine size. Keep the registry
+uses 120 GiB disks with the existing 4-vCPU, 16-GiB machine size. AWS jobs have
+a 40-minute workflow timeout so they finish before the 45-minute instance
+lifetime; GitHub-hosted jobs retain their 60-minute timeout. Keep the registry
 cache and all pushed-image verification steps enabled.
 
 To roll back routing, set `AWS_CLOUD_BUILDS_ENABLED=false`, then rerun the cloud
