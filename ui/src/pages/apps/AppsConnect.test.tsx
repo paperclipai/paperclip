@@ -1187,6 +1187,39 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     }));
   });
 
+  it.each([false, true])("preserves personal Gmail access when changing capability (enrollment return: %s)", async (enrollmentReturn) => {
+    mockSearch.value = enrollmentReturn
+      ? "source=gmail&stage=setup&cloud_connector=enrolled"
+      : "source=gmail";
+    if (enrollmentReturn) {
+      window.sessionStorage.setItem("paperclip.connector-enrollment-access:gmail", JSON.stringify({
+        companyId: "company-1", grantKind: "user", installChoice: "all", agentIds: [],
+      }));
+    }
+    listGalleryMock.mockResolvedValue({ apps: [{
+      ...GMAIL, ownershipAvailability: { ...GMAIL.ownershipAvailability, platform_shared: true },
+    }] });
+    await render();
+    if (!enrollmentReturn) {
+      await act(async () => {
+        radioContaining("Just me")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await passAccessStep();
+    }
+    expect(radioContaining("Read & create drafts")?.getAttribute("aria-checked")).toBe("true");
+    await act(async () => {
+      radioContaining("Read only")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    await act(async () => {
+      buttonByText("Continue to sign in")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "gmail", connectionMethodKey: "paperclip-read", grantKind: "user",
+    }));
+  });
+
   it("never renders self-host enrollment when the connector identity is already active", async () => {
     mockSearch.value = "source=gmail&stage=setup";
     listGalleryMock.mockResolvedValueOnce({

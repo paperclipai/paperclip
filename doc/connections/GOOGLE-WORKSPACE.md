@@ -80,6 +80,14 @@ default organization grant, while still recording which signed-in Google
 principal completed consent so refresh and reconnect stay bound to that
 principal.
 
+Catalog discovery and connection creation use the same signed, instance-specific
+profile availability. Local enrollment files and Cloud-delivered environment
+identities follow this same path; neither enables managed methods globally in
+the static app definitions. Saved connections remain recognizable for OAuth
+callback, refresh, and revoke, while the broker enforces current profile access.
+Switching capability or authentication methods preserves the selected credential
+owner when the new method supports that owner.
+
 ## Broker profiles
 
 The Paperclip-managed method signs every broker request with one explicit

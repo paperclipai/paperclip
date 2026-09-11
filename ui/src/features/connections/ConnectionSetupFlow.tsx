@@ -2204,7 +2204,13 @@ export function ConnectionSetupFlow({
           methodKey={connectionMethodKey}
           onMethodChange={(nextMethod) => {
             setConnectionMethodKey(nextMethod?.key ?? "");
-            if (!reconnectGrantKind) {
+            // Capability/auth changes must not broaden the audience selected
+            // on Access (including choices restored after Cloud enrollment).
+            if (
+              !reconnectGrantKind
+              && nextMethod?.grantKinds
+              && !nextMethod.grantKinds.includes(grantKind)
+            ) {
               setGrantKind(defaultGrantKindFor(nextMethod, Boolean(requestedAgentId)));
             }
             setCredentials({});
