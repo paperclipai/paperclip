@@ -1,5 +1,5 @@
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
-import { remoteExecutionHasStopped } from "./remote-execution-termination.js";
+import { remoteExecutionHasStopped, remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
@@ -9920,17 +9920,21 @@ export function heartbeatService(
         "failed to release environment lease for heartbeat run",
       );
     }
+    await acknowledgeRemoteStop(input.runId, input.companyId);
+  }
+
+  async function acknowledgeRemoteStop(runId: string, companyId: string) {
     // The provider receipt arrives after adapter settlement. A remote ACP child
     // has no host PID, so only this target-aware boundary can acknowledge Stop.
-    const stopped = await getRun(input.runId);
+    const stopped = await getRun(runId);
     if (stopped?.runtimeMode === "native" &&
-        await remoteExecutionHasStopped(db, input.companyId, input.runId)) {
-      completeTerminatedRemoteNativeSessionCleanup({ companyId: input.companyId, runId: input.runId });
+        await remoteExecutionHasStopped(db, companyId, runId)) {
+      completeTerminatedRemoteNativeSessionCleanup({ companyId, runId });
     }
     if (stopped?.runtimeMode === "legacy" && stopped.status === "cancelled" &&
         parseObject(stopped.resultJson?.executionCancellation).state === "requested" &&
         await runUsedConversationAdapter(db, stopped) &&
-        await remoteExecutionHasStopped(db, input.companyId, input.runId)) {
+        await remoteExecutionHasStopped(db, companyId, runId)) {
       await db.update(heartbeatRuns).set({
         resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
           executionCancellation: { ...parseObject(stopped.resultJson?.executionCancellation),
@@ -9939,16 +9943,20 @@ export function heartbeatService(
           conversationContinuation: CONVERSATION_CONTINUATION_POLICY,
         })}::jsonb`,
         updatedAt: new Date(),
-      }).where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId),
+      }).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId),
         eq(heartbeatRuns.status, "cancelled")));
     }
   }
 
   async function resumeRemoteStopComments(run: typeof heartbeatRuns.$inferSelect) {
-    if (run.runtimeMode !== "native" || !isHeartbeatRunTerminalStatus(run.status) ||
+    if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id) ||
         !(await remoteExecutionHasStopped(db, run.companyId, run.id))) return;
     const issueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
     if (!issueId) return;
+    const legacyContinuation = run.runtimeMode === "legacy" && run.status === "cancelled" &&
+      hasConversationContinuationPolicy((await getRun(run.id))?.resultJson) &&
+      !(await getExecutionBlocker(db, run.companyId, issueId));
+    if (run.runtimeMode !== "native" && !legacyContinuation) return;
     const pending = await db.select().from(agentWakeupRequests).where(and(
       eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
       eq(agentWakeupRequests.status, "deferred_issue_execution"),
@@ -9959,7 +9967,17 @@ export function heartbeatService(
       const payload = parseObject(wake.payload);
       const context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
       const commentId = deriveCommentId(context, payload);
-      if (!await admitExplicitNativeContinuation({ db, companyId: run.companyId, issueId,
+      if (legacyContinuation) {
+        if (!commentId || !run.finishedAt || !wake.requestedByActorId ||
+            !["issue_commented", "issue_reopened_via_comment"].includes(wake.reason ?? "")) continue;
+        const [comment] = await db.select().from(issueComments).where(and(
+          eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId),
+          sql`${issueComments.id}::text = ${commentId}`, eq(issueComments.authorType, "user"),
+          eq(issueComments.authorUserId, wake.requestedByActorId), isNull(issueComments.deletedAt),
+          isNull(issueComments.createdByRunId), gt(issueComments.createdAt, run.finishedAt),
+        ));
+        if (!comment?.body.trim()) continue;
+      } else if (!await admitExplicitNativeContinuation({ db, companyId: run.companyId, issueId,
         agentId: run.agentId, actorType: wake.requestedByActorType, actorId: wake.requestedByActorId,
         reason: wake.reason, commentId, successorRunId: randomUUID(), dryRun: true })) continue;
       // Re-enter ordinary admission with the original user's authority. It
@@ -17780,15 +17798,16 @@ export function heartbeatService(
       try {
         if (useRecordedTeardown) {
           // Tear the sandbox down from the recorded provider config and the
-          // cleanup-authorized secret versions. The teardown returns no value
-          // and throws on failure, so the sweep releases the lease itself.
-          await environmentRuntime.retryPendingSandboxTeardown({
+          // cleanup-authorized secret versions. Preserve any provider receipt;
+          // a completed retry must grant the same evidence as initial cleanup.
+          const receipt = await environmentRuntime.retryPendingSandboxTeardown({
             environment,
             lease,
           });
           await environmentsSvc.releaseLease(lease.id, "expired", {
             cleanupStatus: "success",
             failureReason: "pending_cleanup_retry",
+            remoteExecutionTermination: remoteTerminationReceipt(lease, receipt),
           });
           destroyed += 1;
         } else if (environment) {
@@ -17824,6 +17843,15 @@ export function heartbeatService(
           },
           "pending_cleanup lease retry failed",
         );
+      }
+      if (lease.heartbeatRunId) {
+        // Delivery failure must not revert successful provider cleanup. A new
+        // message can still use the persisted receipt on its next admission.
+        await (async () => {
+          await acknowledgeRemoteStop(lease.heartbeatRunId!, lease.companyId);
+          const run = await getRun(lease.heartbeatRunId!);
+          if (run) await resumeRemoteStopComments(run);
+        })().catch(() => logger.warn({ leaseId: lease.id }, "could not reconsider messages after cleanup retry"));
       }
     }
 

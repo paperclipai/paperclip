@@ -10,7 +10,7 @@ import {
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "../__tests__/helpers/embedded-postgres.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
-import { heartbeatService } from "./heartbeat.js";
+import { heartbeatService, type HeartbeatEnvironmentRuntime } from "./heartbeat.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("explicit native conversation continuation", () => {
@@ -96,30 +96,55 @@ const support = await getEmbeddedPostgresTestSupport();
     },
   );
 
-  it("resumes a user message queued during remote cleanup only after the receipt arrives", async () => {
+  it.each([
+    { runtime: "native", retry: false }, { runtime: "native", retry: true },
+    { runtime: "legacy", retry: false }, { runtime: "legacy", retry: true },
+  ])("resumes a user message after confirmed cleanup: %j", async ({ runtime, retry }) => {
     const f = await seed();
+    if (runtime === "legacy") {
+      await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));
+      await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "cancelled", processPid: null,
+        resultJson: { executionCancellation: { state: "requested" } } }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId,
+        agentId: f.agentId, seq: 1, eventType: "adapter.invoke", payload: { adapterType: "claude_local" } });
+      await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
+        .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    }
     // Keep the successor queued so this test never starts an actual provider.
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     const [environment] = await db.insert(environments).values({ name: `pending-${f.sourceRunId}`, driver: "sandbox" }).returning();
     const identity = { id: randomUUID(), companyId: f.companyId, heartbeatRunId: f.sourceRunId,
       provider: "daytona", providerLeaseId: "pending-sandbox" };
     await db.insert(environmentLeases).values({ ...identity, environmentId: environment.id, status: "active", leasePolicy: "ephemeral" });
-    const heartbeat = heartbeatService(db);
+    const heartbeat = heartbeatService(db, retry ? { environmentRuntime: {
+      retryPendingSandboxTeardown: async () => ({ providerLeaseId: identity.providerLeaseId, state: "destroyed" }),
+    } as unknown as HeartbeatEnvironmentRuntime } : {});
     await heartbeat.wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
       requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, commentId: f.commentId },
       contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
     const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
     await heartbeat.resumeRemoteStopComments(source);
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
-    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
-      metadata: { remoteExecutionTermination: remoteTerminationReceipt(identity,
-        { providerLeaseId: identity.providerLeaseId, state: "stopped" }) } }).where(eq(environmentLeases.id, identity.id));
+    if (retry) {
+      await db.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed" })
+        .where(eq(environmentLeases.id, identity.id));
+      expect(await heartbeat.sweepPendingCleanupLeases()).toMatchObject({ destroyed: 1 });
+      const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, identity.id));
+      expect(lease.metadata?.remoteExecutionTermination).toMatchObject({ runId: f.sourceRunId, state: "destroyed" });
+    } else {
+      await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
+        metadata: { remoteExecutionTermination: remoteTerminationReceipt(identity,
+          { providerLeaseId: identity.providerLeaseId, state: "stopped" }) } }).where(eq(environmentLeases.id, identity.id));
+      await heartbeat.releaseEnvironmentLeasesForRun({ runId: source.id, companyId: source.companyId,
+        agentId: source.agentId, status: source.status });
+    }
     await heartbeat.resumeRemoteStopComments(source);
     await heartbeat.resumeRemoteStopComments(source);
     const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
     expect(runs).toHaveLength(1);
-    expect(runs[0].contextSnapshot).toMatchObject({ forceFreshSession: true, previousRunId: f.sourceRunId,
+    if (runtime === "native") expect(runs[0].contextSnapshot).toMatchObject({ forceFreshSession: true, previousRunId: f.sourceRunId,
       explicitUserContinuation: { commentId: f.commentId } });
+    else expect(runs[0].contextSnapshot).toMatchObject({ wakeCommentId: f.commentId });
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
   });
 
