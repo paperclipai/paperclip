@@ -1,3 +1,4 @@
+import { createdFromIssueCondition } from "./issue-creation-origin.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { Buffer } from "node:buffer";
@@ -1748,6 +1749,7 @@ export interface IssueFilters {
   executionWorkspaceId?: string;
   parentId?: string;
   descendantOf?: string;
+  createdFromIssueId?: string;
   labelId?: string;
   originKind?: string;
   originKindPrefix?: string;
@@ -6240,6 +6242,9 @@ async function blockedInboxIssueConditions(
   const contextUserId =
     unreadForUserId ?? touchedByUserId ?? inboxArchivedByUserId;
 
+  if (filters?.createdFromIssueId) {
+    conditions.push(createdFromIssueCondition(companyId, filters.createdFromIssueId));
+  }
   if (filters?.descendantOf) {
     conditions.push(sql<boolean>`
       ${issues.id} IN (
@@ -7928,6 +7933,9 @@ export function issueService(db: Db) {
             AND ${issueComments.body} ILIKE ${containsPattern} ESCAPE '\\'
         )
       `;
+      if (filters?.createdFromIssueId) {
+        conditions.push(createdFromIssueCondition(companyId, filters.createdFromIssueId));
+      }
       if (filters?.descendantOf) {
         conditions.push(sql<boolean>`
           ${issues.id} IN (
@@ -10154,6 +10162,7 @@ export function issueService(db: Db) {
 
         const values = {
           ...issueData,
+          originRunId: issueData.originRunId ?? actorRunId ?? null,
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",

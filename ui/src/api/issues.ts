@@ -96,6 +96,7 @@ export type IssueListFilters = {
   originKindPrefix?: string;
   originId?: string;
   descendantOf?: string;
+  createdFromIssueId?: string;
   includeRoutineExecutions?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
@@ -135,6 +136,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
     params.set("originKindPrefix", filters.originKindPrefix);
   if (filters?.originId) params.set("originId", filters.originId);
   if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
+  if (filters?.createdFromIssueId) params.set("createdFromIssueId", filters.createdFromIssueId);
   if (filters?.includeRoutineExecutions)
     params.set("includeRoutineExecutions", "true");
   if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
@@ -155,6 +157,16 @@ function issueListSearchParams(filters?: IssueListFilters) {
 }
 
 export const issuesApi = {
+  /** Fetch every page for bounded task-detail relations, not just the default first page. */
+  listAll: async (companyId: string, filters: Omit<IssueListFilters, "limit" | "offset">, options?: RequestOptions): Promise<Issue[]> => {
+    const pageSize = 500;
+    const tasks = new Map<string, Issue>();
+    for (let offset = 0; ; offset += pageSize) {
+      const page = await issuesApi.list(companyId, { ...filters, limit: pageSize, offset }, options);
+      for (const task of page) tasks.set(task.id, task);
+      if (page.length < pageSize) return [...tasks.values()];
+    }
+  },
   list: (
     companyId: string,
     filters?: IssueListFilters,

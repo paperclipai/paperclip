@@ -176,6 +176,11 @@ When a task originates from a cross-team request, track the **depth** as an inte
 
 #### Billing Codes
 
+Task detail keeps hierarchy separate from creation provenance: the Tasks tab shows
+all subtasks and, independently, work created from the current task grouped by
+project or No project. A created subtask may appear in both sections. Creation
+provenance follows the originating run equally for legacy and native runners.
+
 Tasks carry a **billing code** so that token spend during execution can be attributed upstream to the requesting task/agent. When Agent A asks Agent B to do work, the cost of B's work is tracked against A's request. This enables cost attribution across the org.
 
 ### Open Questions

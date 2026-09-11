@@ -7920,6 +7920,7 @@ export function issueRoutes(
       parentId: (req.query.parentId ?? req.query.parentIssueId) as
         string | undefined,
       descendantOf: req.query.descendantOf as string | undefined,
+      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
@@ -8143,6 +8144,7 @@ export function issueRoutes(
       parentId: (req.query.parentId ?? req.query.parentIssueId) as
         string | undefined,
       descendantOf: req.query.descendantOf as string | undefined,
+      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,

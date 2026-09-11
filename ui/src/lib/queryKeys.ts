@@ -328,6 +328,8 @@ export const queryKeys = {
       ] as const,
     listByParent: (companyId: string, parentId: string) =>
       ["issues", companyId, "parent", parentId] as const,
+    listCreatedFromIssue: (companyId: string, issueId: string) =>
+      ["issues", companyId, "created-from", issueId] as const,
     listByDescendantRoot: (companyId: string, rootIssueId: string) =>
       ["issues", companyId, "descendants", rootIssueId] as const,
     listByExecutionWorkspace: (
