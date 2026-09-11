@@ -16,7 +16,7 @@ import { taskStatusIconVar } from "../lib/status-colors";
 const STATUS_ICON_CLASS: Record<string, string> = {
   backlog: "lucide-circle-dashed",
   todo: "lucide-circle",
-  in_progress: "lucide-loader-circle",
+  in_progress: "lucide-task-progress-spinner",
   in_review: "lucide-circle-dot",
   done: "lucide-circle-check",
   blocked: "lucide-circle-minus",
@@ -69,6 +69,17 @@ describe("StatusGlyph", () => {
       const html = renderToStaticMarkup(<StatusGlyph status={status} />);
       expect(html.includes("motion-safe:animate-spin")).toBe(status === "in_progress");
     }
+  });
+
+  it("uses the same circle radius and stroke for the spinner as other task icons", () => {
+    for (const status of ["in_progress", "todo", "done", "blocked", "cancelled"]) {
+      const html = renderToStaticMarkup(<StatusGlyph status={status} />);
+      expect(html).toContain('<circle cx="12" cy="12" r="10"');
+      expect(html).toContain('stroke-width="2"');
+    }
+    const spinner = renderToStaticMarkup(<StatusGlyph status="in_progress" />);
+    expect(spinner).toContain('pathLength="100"');
+    expect(spinner).toContain('stroke-dasharray="80 20"');
   });
 
   it("gives todo the plain circle (not a compound circle icon)", () => {

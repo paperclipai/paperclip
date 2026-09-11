@@ -6,7 +6,7 @@ import {
   CircleDashed,
   CircleDot,
   CircleMinus,
-  LoaderCircle,
+  createLucideIcon,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../lib/utils";
@@ -18,7 +18,7 @@ import { taskStatusIconVar, taskStatusIconVarDefault } from "../lib/status-color
  * `viewBox="0 0 24 24"` so they scale proportionally at any size), so the whole
  * set reads as one consistent icon family:
  *
- *   backlog → circle-dashed · todo → circle · in_progress → animated loader-circle ·
+ *   backlog → circle-dashed · todo → circle · in_progress → animated open circle ·
  *   in_review → circle-dot · done → circle-check · blocked → circle-minus ·
  *   cancelled → ban · in_queue → circle-minus (blocked recoloured blue).
  *
@@ -44,11 +44,17 @@ export type StatusGlyphStatus =
   | "cancelled"
   | "in_queue";
 
+// LoaderCircle uses a 9-unit radius. Keep its open arc, but use the same
+// 10-unit circle and unscaled stroke as the other task glyphs.
+const TaskProgressSpinner = createLucideIcon("TaskProgressSpinner", [
+  ["circle", { cx: "12", cy: "12", r: "10", pathLength: "100", strokeDasharray: "80 20", key: "progress" }],
+]);
+
 /** Status → Lucide icon. `in_queue` borrows the blocked icon; its colour var resolves to blue. */
 const STATUS_ICON: Record<string, LucideIcon> = {
   backlog: CircleDashed,
   todo: Circle,
-  in_progress: LoaderCircle,
+  in_progress: TaskProgressSpinner,
   in_review: CircleDot,
   done: CircleCheck,
   blocked: CircleMinus,
