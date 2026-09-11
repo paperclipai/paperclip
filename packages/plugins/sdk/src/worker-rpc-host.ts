@@ -42,6 +42,8 @@ import { fileURLToPath } from "node:url";
 
 import type {
   AskUserQuestionsInteraction,
+  IssueCommentMetadata,
+  IssueCommentPresentation,
   PaperclipPluginManifestV1,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
@@ -912,7 +914,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           issueId: string,
           body: string,
           companyId: string,
-          options?: { authorAgentId?: string; actorUserId?: string },
+          options?: { authorAgentId?: string; actorUserId?: string; presentation?: IssueCommentPresentation | null; metadata?: IssueCommentMetadata | null },
         ) {
           return callHost("issues.createComment", {
             issueId,
@@ -920,6 +922,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             companyId,
             authorAgentId: options?.authorAgentId,
             actorUserId: options?.actorUserId,
+            presentation: options?.presentation,
+            metadata: options?.metadata,
           });
         },
 
