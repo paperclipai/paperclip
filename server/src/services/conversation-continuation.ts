@@ -19,6 +19,19 @@ export function hasConversationContinuationPolicy(result: Record<string, unknown
   return result?.conversationContinuation === CONVERSATION_CONTINUATION_POLICY;
 }
 
+function conversationRunPredicate() {
+  return or(
+    sql`${heartbeatRuns.resultJson}->>'conversationContinuation' = ${CONVERSATION_CONTINUATION_POLICY}`,
+    sql`exists (
+      select 1 from ${heartbeatRunEvents}
+      where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
+        and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id}
+        and ${heartbeatRunEvents.eventType} = 'adapter.invoke'
+        and ${inArray(sql`${heartbeatRunEvents.payload}->>'adapterType'`, [...CONVERSATION_ADAPTER_TYPES])}
+    )`,
+  );
+}
+
 /** Recovery must not infer the old adapter from the agent's mutable settings. */
 export async function runUsedConversationAdapter(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
   if (hasConversationContinuationPolicy(run.resultJson)) return true;
@@ -44,16 +57,7 @@ export function conversationRecoveryActionPredicate() {
         and coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueRecoveryActions.sourceIssueId}::text
         and ${heartbeatRuns.runtimeMode} = 'legacy'
         and ${inArray(heartbeatRuns.status, ['failed', 'timed_out', 'interrupted', 'cancelled'])}
-        and (
-          ${heartbeatRuns.resultJson}->>'conversationContinuation' = ${CONVERSATION_CONTINUATION_POLICY}
-          or exists (
-            select 1 from ${heartbeatRunEvents}
-            where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
-              and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id}
-              and ${heartbeatRunEvents.eventType} = 'adapter.invoke'
-              and ${inArray(sql`${heartbeatRunEvents.payload}->>'adapterType'`, [...CONVERSATION_ADAPTER_TYPES])}
-          )
-        )
+        and ${conversationRunPredicate()}
         and ${or(
           sql`${heartbeatRuns.resultJson}->>'conversationContinuation' = ${CONVERSATION_CONTINUATION_POLICY}`,
           eq(heartbeatRuns.status, "interrupted"),
@@ -74,7 +78,9 @@ function processMayBeAlive(pid: number): boolean {
   }
 }
 
-/** A terminal database row does not prove that its execution authority ended. */
+/** A terminal conversation row does not prove that its execution authority ended.
+ * Other adapters keep their existing bootstrap and ownership protocols.
+ */
 export async function getConversationOwnershipBlocker(db: Db, companyId: string, issueId: string) {
   const activeLease = sql`exists (select 1 from ${environmentLeases}
     where ${environmentLeases.companyId} = "heartbeat_runs"."company_id"
@@ -83,6 +89,7 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
   const candidates = await db.select({ run: heartbeatRuns, activeLease }).from(heartbeatRuns)
     .where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
+      conversationRunPredicate(),
       sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
       inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
       or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease),
