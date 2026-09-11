@@ -957,6 +957,57 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     expect(await countDeclarationsForCompany(scope.companyId)).toBe(0);
   });
 
+  it("rejects an inherited claim when a concurrent parent rotation commits while this create waits on the parent row lock", async () => {
+    const scope = await seedScope();
+    const parent = await seedParentAgent(scope, { version: 5 });
+
+    const lockDb = createDb(connectionString);
+    let signalLocked!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      signalLocked = resolve;
+    });
+    let releaseGate!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseGate = resolve;
+    });
+    // Simulate a credential rotation on the parent: it takes the row lock
+    // first, moves the bound version to 6, then holds the open transaction
+    // until the gate releases.
+    const rotationHeld = lockDb.transaction(async (tx) => {
+      await tx.execute(sql`SELECT id FROM agents WHERE id = ${parent.id} FOR UPDATE`);
+      await tx.execute(
+        sql`UPDATE agents SET adapter_config = jsonb_set(adapter_config, '{env,CLAUDE_CODE_OAUTH_TOKEN,version}', '6') WHERE id = ${parent.id}`,
+      );
+      signalLocked();
+      await gate;
+    });
+
+    await locked;
+    // The child's copied reference still names version 5, the version the
+    // route read before the rotation started. The create call must wait for
+    // the parent row lock, so it can only proceed once the rotation commits.
+    const createPromise = agentService(db)
+      .create(
+        scope.companyId,
+        createInput(scope, { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING, version: 5 } }),
+        { claudeLogin: { inheritedFromAgentId: parent.id } },
+      )
+      .then(() => "created")
+      .catch((error: Error) => error.message);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    releaseGate();
+    await rotationHeld;
+
+    // The create call reads the parent's committed post-rotation version, so
+    // it detects the mismatch against the child's stale copy and rejects the
+    // claim. Without the row lock, the create call could read the parent's
+    // pre-rotation version and bind the child to a reference the parent no
+    // longer holds.
+    expect(await createPromise).toBe(CLAUDE_OAUTH_CLAIM_REJECTED);
+    expect(await countAgents(scope.companyId)).toBe(1);
+    await lockDb.$client.end();
+  });
+
   // --- The atomic credential-claim writer (item 2) ---------------------------
 
   function claimScope(scope: Scope): SetupTokenSessionScope {

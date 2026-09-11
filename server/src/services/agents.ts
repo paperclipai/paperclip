@@ -576,9 +576,13 @@ export function agentService(db: Db) {
    * parent agent inside this transaction and permits the bind only when the
    * parent exists, is in the same company, is a `claude_local` agent, and its
    * current reference matches the child's copied reference exactly, including
-   * the version selector. The route derives the parent identifier from the
-   * authenticated agent actor, never from the request body, so the gate
-   * treats it as a claim to verify, not a trusted value.
+   * the version selector. The gate locks the parent row with `SELECT ...
+   * FOR UPDATE` before it reads the reference. The lock blocks a concurrent
+   * credential rotation on the same parent row until this transaction
+   * commits or rolls back, so the compare-and-bind check stays atomic with
+   * the parent's current state. The route derives the parent identifier
+   * from the authenticated agent actor, never from the request body, so the
+   * gate treats it as a claim to verify, not a trusted value.
    *
    * A controlled internal override skips the claim for a migration or an
    * administrator repair. The function creates the fixed user-secret definition
@@ -634,6 +638,7 @@ export function agentService(db: Db) {
           })
           .from(agents)
           .where(eq(agents.id, parentId))
+          .for("update")
           .then((rows) => rows[0] ?? null);
         const parentBinding = readClaudeOAuthBinding(parent?.adapterConfig ?? null);
         const childBinding = readClaudeOAuthBinding(input.childAdapterConfig ?? null);
