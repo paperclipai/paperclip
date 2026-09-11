@@ -6638,8 +6638,24 @@ registry.registerPath({
   path: "/api/agents/{id}/heartbeat/invoke",
   tags: ["agents"],
   summary: "Invoke agent heartbeat",
-  request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  description:
+    "Legacy manual invoke endpoint. Bind task work by supplying payload.issueId, payload.taskId, and payload.taskKey with the same issue UUID. An omitted body creates an intentionally unscoped run.",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: {
+      content: {
+        "application/json": { schema: wakeAgentSchema.omit({ failedRunId: true }) },
+      },
+      required: false,
+    },
+  },
+  responses: {
+    202: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
 });
 
 registry.registerPath({

@@ -5,6 +5,7 @@ import { registerAgentCommands } from "../commands/client/agent.js";
 const COMPANY_ID = "22222222-2222-4222-8222-222222222222";
 const AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const REVISION_ID = "33333333-3333-4333-8333-333333333333";
+const ISSUE_ID = "44444444-4444-4444-8444-444444444444";
 
 function createProgram(): Command {
   const program = new Command();
@@ -52,7 +53,7 @@ describe("agent lifecycle commands", () => {
     await run(["agent", "resume", AGENT_ID]);
     await run(["agent", "approve", AGENT_ID]);
     await run(["agent", "terminate", AGENT_ID]);
-    await run(["agent", "heartbeat:invoke", AGENT_ID]);
+    await run(["agent", "heartbeat:invoke", AGENT_ID, "--allow-unscoped"]);
     await run(["agent", "claude-login", AGENT_ID]);
     await run(["agent", "delete", AGENT_ID, "--yes"]);
 
@@ -68,6 +69,30 @@ describe("agent lifecycle commands", () => {
       ["POST", `http://localhost:3100/api/agents/${AGENT_ID}/claude-login`],
       ["DELETE", `http://localhost:3100/api/agents/${AGENT_ID}`],
     ]);
+  });
+
+  it("binds a manual heartbeat invoke to the assigned issue", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({
+      id: ISSUE_ID,
+      identifier: "PC-42",
+      assigneeAgentId: AGENT_ID,
+    })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await run(["agent", "heartbeat:invoke", AGENT_ID, "--issue-id", "PC-42"]);
+
+    expect(fetchMock.mock.calls.map((call) => [call[1]?.method ?? "GET", call[0]])).toEqual([
+      ["GET", "http://localhost:3100/api/issues/PC-42"],
+      ["POST", `http://localhost:3100/api/agents/${AGENT_ID}/heartbeat/invoke`],
+    ]);
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      reason: "manual_issue_wake",
+      payload: {
+        issueId: ISSUE_ID,
+        taskId: ISSUE_ID,
+        taskKey: ISSUE_ID,
+      },
+    });
   });
 
   it("wraps configuration, runtime, skills, and instructions endpoints", async () => {

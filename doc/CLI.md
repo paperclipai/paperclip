@@ -541,7 +541,8 @@ npx paperclipai agent pause <agent-id>
 npx paperclipai agent resume <agent-id>
 npx paperclipai agent approve <agent-id>
 npx paperclipai agent terminate <agent-id>
-npx paperclipai agent heartbeat:invoke <agent-id>
+npx paperclipai agent heartbeat:invoke <agent-id> --issue-id <issue-id-or-identifier>
+npx paperclipai agent heartbeat:invoke <agent-id> --allow-unscoped
 npx paperclipai agent claude-login <agent-id>
 npx paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>
 ```
