@@ -146,7 +146,7 @@ function flattenVisibleNodes(
   return flattened;
 }
 
-function checkboxState(node: FileTreeNode, checkedFiles: Set<string>) {
+function checkboxState(node: FileTreeNode, checkedFiles: Set<string>, includeDirectories: boolean) {
   if (node.kind === "file") {
     return {
       allChecked: checkedFiles.has(node.path),
@@ -154,7 +154,7 @@ function checkboxState(node: FileTreeNode, checkedFiles: Set<string>) {
     };
   }
 
-  const childFiles = collectAllPaths(node.children, "file");
+  const childFiles = includeDirectories ? collectAllPaths([node]) : collectAllPaths(node.children, "file");
   const childFilePaths = [...childFiles];
   const allChecked = childFilePaths.length > 0 && childFilePaths.every((p) => checkedFiles.has(p));
   const someChecked = childFilePaths.some((p) => checkedFiles.has(p));
@@ -250,6 +250,8 @@ export type FileTreeProps = {
   /** @deprecated Use fileTones for public surfaces. Kept for compatibility with host-only callers. */
   fileRowClassName?: (node: FileTreeNode, checked: boolean) => string | undefined;
   showCheckboxes?: boolean;
+  /** Include directories themselves, including empty ones, in selection state. */
+  includeDirectoriesInSelection?: boolean;
   /** Allow long file and directory names to wrap instead of forcing horizontal overflow. */
   wrapLabels?: boolean;
   loading?: boolean;
@@ -271,6 +273,7 @@ export function FileTree({
   renderFileExtra,
   fileRowClassName,
   showCheckboxes = true,
+  includeDirectoriesInSelection = false,
   wrapLabels = true,
   loading = false,
   error,
@@ -395,7 +398,7 @@ export function FileTree({
     <div aria-label={ariaLabel} role="tree">
       {visibleNodes.map(({ node, depth }, index) => {
         const expanded = node.kind === "dir" && expandedDirs.has(node.path);
-        const { allChecked, someChecked } = checkboxState(node, effectiveCheckedFiles);
+        const { allChecked, someChecked } = checkboxState(node, effectiveCheckedFiles, includeDirectoriesInSelection);
         const badge = fileBadges?.[node.path];
         const tone = fileTones?.[node.path] ?? "default";
         const extraClassName = node.kind === "file" ? fileRowClassName?.(node, allChecked) : undefined;
