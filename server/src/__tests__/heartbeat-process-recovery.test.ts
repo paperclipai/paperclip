@@ -650,7 +650,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   async function seedRunFixture(input?: {
     adapterType?: string;
     agentStatus?: "paused" | "idle" | "running";
-    runStatus?: "running" | "queued" | "failed";
+    runStatus?: "running" | "queued" | "failed" | "interrupted";
     processPid?: number | null;
     processGroupId?: number | null;
     processLossRetryCount?: number;
@@ -719,9 +719,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ...(input?.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
+      nextEventSeq: 2,
       startedAt: now,
       updatedAt: new Date("2026-03-19T00:00:00.000Z"),
     });
+
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId,
+      seq: 1, eventType: "adapter.invoke", payload: { adapterType: input?.adapterType ?? "codex_local" } });
 
     if (input?.includeIssue !== false) {
       await db.insert(issues).values({
@@ -1607,6 +1611,65 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     expect(run).toMatchObject({ status: "failed" });
     expect(recoveryRuns).toHaveLength(0);
+  });
+
+  it("does not relabel a lost process run when its agent changes to a conversation adapter", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({ adapterType: "process", processPid: 99999999 });
+    await db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, agentId));
+    await heartbeatService(db).reapOrphanedRuns();
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run.status).toBe("failed");
+    expect(run.resultJson?.conversationContinuation).toBeUndefined();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toHaveLength(0);
+  });
+
+  it.each([false, true])("waits for a live terminal predecessor before a new turn (historical hold: %s)", async withHold => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    const { runId, issueId, companyId } = await seedRunFixture({
+      agentStatus: "idle", runStatus: "interrupted", runErrorCode: "server_shutdown_interrupted", processPid: child.pid!,
+    });
+    await db.update(heartbeatRuns).set({ resultJson: { conversationContinuation: "continue_conversation_v1" } }).where(eq(heartbeatRuns.id, runId));
+    if (withHold) await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog", status: "active", ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation", fingerprint: runId,
+      evidence: { runId, automaticRecovery: { replay: "blocked" } }, nextAction: "Wait for the previous execution to stop.",
+    });
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId, cause: "execution_owner_active" });
+    // Scheduling itself has no execution authority. Actual queued admission
+    // must still block while the predecessor owns a process or lease.
+    const queuedId = randomUUID();
+    const previous = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]!;
+    await db.insert(heartbeatRuns).values({ id: queuedId, companyId, agentId: previous.agentId,
+      status: "queued", contextSnapshot: { issueId, wakeReason: "issue_commented" } });
+    const { createPostgresRunDispatchAdapter } = await import("../modules/run-dispatch/adapters/postgres.js");
+    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId, runId: queuedId,
+      expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+    const { settleUnrecoverableExecutions } = await import("../services/execution-recovery-resolution.js");
+    await settleUnrecoverableExecutions(db);
+    if (withHold) expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId)))[0].status).toBe("active");
+    expect(isPidAlive(child.pid!)).toBe(true);
+    child.kill("SIGTERM");
+    await waitForPidExit(child.pid!);
+    expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+  });
+
+  it("waits for a terminal predecessor's environment lease to be released", async () => {
+    const { companyId, issueId, runId } = await seedRunFixture({ agentStatus: "idle", runStatus: "interrupted" });
+    await db.update(heartbeatRuns).set({ resultJson: { conversationContinuation: "continue_conversation_v1" } }).where(eq(heartbeatRuns.id, runId));
+    const [lease] = await db.insert(environmentLeases).values({ companyId, issueId, heartbeatRunId: runId, status: "active" }).returning();
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId, cause: "execution_owner_active" });
+    // Scheduling itself has no execution authority. Actual queued admission
+    // must still block while the predecessor owns a process or lease.
+    const queuedId = randomUUID();
+    const previous = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]!;
+    await db.insert(heartbeatRuns).values({ id: queuedId, companyId, agentId: previous.agentId,
+      status: "queued", contextSnapshot: { issueId, wakeReason: "issue_commented" } });
+    const { createPostgresRunDispatchAdapter } = await import("../modules/run-dispatch/adapters/postgres.js");
+    expect(await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({ companyId, runId: queuedId,
+      expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+    await db.update(environmentLeases).set({ releasedAt: new Date(), status: "released" }).where(eq(environmentLeases.id, lease!.id));
+    expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
   });
 
   it("keeps an unsafe Stop blocked when recovery sees a deferred human comment", async () => {

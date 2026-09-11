@@ -775,13 +775,15 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
 
   it.each(["active", "resolved"])("allows a new message through a historical %s interruption hold", async status => {
     const { companyId, agentId } = await seedCompanyAndAgent();
-    await db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, agentId));
+    await db.update(agents).set({ adapterType: "process" }).where(eq(agents.id, agentId));
     const issueId = randomUUID(), previousRunId = randomUUID(), runId = randomUUID();
     await seedIssue({ companyId, issueId, status: "blocked", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values([
       { id: previousRunId, companyId, agentId, status: "interrupted", errorCode: "server_shutdown_interrupted", contextSnapshot: { issueId } },
       { id: runId, companyId, agentId, status: "queued", contextSnapshot: { issueId, wakeReason: "issue_commented" } },
     ]);
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId: previousRunId,
+      seq: 1, eventType: "adapter.invoke", payload: { adapterType: "codex_local" } });
     const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
       kind: "active_run_watchdog", ownerType: "board", cause: "legacy_execution_requires_reconciliation", status,
       evidence: { runId: previousRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
@@ -801,6 +803,27 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, previousRunId))).toHaveLength(0);
     // The upgrade does not silently resume historical blocked work.
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("blocked");
+  });
+
+  it.each(["process", "http", null])("keeps a historical %s hold after switching to a conversation adapter", async historicalAdapter => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    await db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, agentId));
+    const issueId = randomUUID(), previousRunId = randomUUID();
+    await seedIssue({ companyId, issueId, status: "blocked", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: previousRunId, companyId, agentId,
+      status: "interrupted", errorCode: "server_shutdown_interrupted", contextSnapshot: { issueId } });
+    if (historicalAdapter) await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId: previousRunId,
+      seq: 1, eventType: "adapter.invoke", payload: { adapterType: historicalAdapter } });
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "active_run_watchdog", ownerType: "board", cause: "legacy_execution_requires_reconciliation", status: "active",
+      evidence: { runId: previousRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+      fingerprint: previousRunId, nextAction: "Inspect previous execution.",
+    }).returning();
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ recoveryActionId: action!.id });
+    await settleUnrecoverableExecutions(db);
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ recoveryActionId: action!.id });
+    const [retained] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    expect(retained.evidence.automaticRecovery).toMatchObject({ replay: "blocked", actionOutcome: "unknown" });
   });
 
   it("links the stopped run's agent instead of its return owner, within the same company", async () => {

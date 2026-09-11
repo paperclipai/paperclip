@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { conversationRecoveryActionPredicate } from "./conversation-continuation.js";
+import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, not, or, sql } from "drizzle-orm";
 import {
   chatActions,
   environmentLeases,
@@ -316,24 +316,24 @@ export async function settleUnrecoverableExecutions(
     ),
   );
   await db.transaction(async tx => {
-    const folded = await tx.update(issueRecoveryActions).set({
-      status: "resolved",
-      outcome: "cancelled",
-      resolvedAt: now,
-      updatedAt: now,
-      nextAction: "Automatic attempts stopped. Send a new message to continue the conversation.",
-      resolutionNote: "Conversation continuation does not replay prior tool calls.",
-      wakePolicy: null,
-      monitorPolicy: null,
-      evidence: sql`case when ${issueRecoveryActions.evidence} ? 'automaticRecovery'
-        then jsonb_set(${issueRecoveryActions.evidence}, '{automaticRecovery,replay}', '"conversation_continuation"'::jsonb)
-        else ${issueRecoveryActions.evidence} end`,
-    }).where(and(
-      obsoleteConversationHold,
-      inArray(issueRecoveryActions.id, tx.select({ id: issueRecoveryActions.id })
-        .from(issueRecoveryActions).where(obsoleteConversationHold).limit(25).for("update", { skipLocked: true })),
-    )).returning();
-    for (const action of folded) {
+    const foldable = await tx.select().from(issueRecoveryActions).where(obsoleteConversationHold)
+      .limit(25).for("update", { skipLocked: true });
+    for (const candidate of foldable) {
+      if (await getConversationOwnershipBlocker(tx as unknown as Db, candidate.companyId, candidate.sourceIssueId)) continue;
+      const [action] = await tx.update(issueRecoveryActions).set({
+        status: "resolved",
+        outcome: "cancelled",
+        resolvedAt: now,
+        updatedAt: now,
+        nextAction: "Automatic attempts stopped. Send a new message to continue the conversation.",
+        resolutionNote: "Conversation continuation does not replay prior tool calls.",
+        wakePolicy: null,
+        monitorPolicy: null,
+        evidence: sql`case when ${issueRecoveryActions.evidence} ? 'automaticRecovery'
+          then jsonb_set(${issueRecoveryActions.evidence}, '{automaticRecovery,replay}', '"conversation_continuation"'::jsonb)
+          else ${issueRecoveryActions.evidence} end`,
+      }).where(and(obsoleteConversationHold, eq(issueRecoveryActions.id, candidate.id))).returning();
+      if (!action) continue;
       await persistActivity(tx as unknown as Db, {
         companyId: action.companyId,
         actorType: "system",
@@ -367,6 +367,7 @@ export async function settleUnrecoverableExecutions(
     )
     .where(
       and(
+        not(conversationRecoveryActionPredicate()!),
         inArray(issueRecoveryActions.status, ["active", "escalated"]),
         eq(issueRecoveryActions.kind, "active_run_watchdog"),
         inArray(issueRecoveryActions.cause, [

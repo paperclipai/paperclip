@@ -251,7 +251,8 @@ export async function buildExecutionContinuation(input: {
       ),
     );
   const lastTerminal = priorRuns.findLast((run) =>
-    ["succeeded", "failed", "timed_out", "interrupted", "cancelled"].includes(run.status),
+    ["succeeded", "failed", "timed_out", "interrupted", "cancelled"].includes(run.status) &&
+    !(run.status === "cancelled" && run.errorCode === "execution_reconciliation_required"),
   );
   const interruptedRunId = lastTerminal && lastTerminal.status !== "succeeded" &&
     (hasConversationContinuationPolicy(lastTerminal.result) ||

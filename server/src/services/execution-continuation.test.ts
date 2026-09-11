@@ -133,6 +133,21 @@ const support = await getEmbeddedPostgresTestSupport();
         summary: "Notion read completed.",
         exposeLowTrustRaw: false,
       });
+    it("cancelled admission must not hide the interrupted execution", async () => {
+      const rejectedId = randomUUID();
+      await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", createdAt: new Date("2026-09-08T10:00:00Z") }).where(eq(heartbeatRuns.id, runId));
+      await db.insert(heartbeatRuns).values({ id: rejectedId, companyId, agentId,
+        status: "cancelled", errorCode: "execution_reconciliation_required",
+        contextSnapshot: { issueId }, createdAt: new Date("2026-09-08T11:00:00Z") });
+      try {
+        const envelope = await build();
+        expect(envelope.interruptedRunId).toBe(runId);
+      } finally {
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, rejectedId));
+        await db.update(heartbeatRuns).set({ status: "failed", errorCode: null }).where(eq(heartbeatRuns.id, runId));
+      }
+    });
+
     it("preserves the latest user request and adds an interruption notice to fresh and resumed turns", async () => {
       await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted" }).where(eq(heartbeatRuns.id, runId));
       try {

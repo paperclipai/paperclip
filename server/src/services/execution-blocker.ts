@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, not, or, sql } from "drizzle-orm";
-import { conversationRecoveryActionPredicate } from "./conversation-continuation.js";
+import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
 import { heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { EXECUTION_RECONCILIATION_CAUSES, type ExecutionBlocker } from "@paperclipai/shared";
@@ -15,6 +15,8 @@ export function executionBlockerPredicate() {
 }
 
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string): Promise<ExecutionBlocker | null> {
+  const ownership = await getConversationOwnershipBlocker(db, companyId, issueId);
+  if (ownership) return { ...ownership, recoveryActionId: null };
   const [action] = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),
