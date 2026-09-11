@@ -26,6 +26,16 @@ async function run(args: string[]): Promise<void> {
   ], { from: "user" });
 }
 
+async function expectCommandFailure(args: string[], message: string): Promise<void> {
+  const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.spyOn(process, "exit").mockImplementation((code) => {
+    throw new Error(`process.exit:${code}`);
+  });
+
+  await expect(run(args)).rejects.toThrow("process.exit:1");
+  expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(message));
+}
+
 describe("agent lifecycle commands", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -93,6 +103,42 @@ describe("agent lifecycle commands", () => {
         taskKey: ISSUE_ID,
       },
     });
+  });
+
+  it.each([
+    {
+      args: ["agent", "heartbeat:invoke", AGENT_ID],
+      message: "Specify --issue-id for task work or --allow-unscoped for a generic heartbeat",
+    },
+    {
+      args: ["agent", "heartbeat:invoke", AGENT_ID, "--issue-id", "PC-42", "--allow-unscoped"],
+      message: "Use either --issue-id or --allow-unscoped, not both",
+    },
+  ])("rejects an invalid heartbeat scope choice", async ({ args, message }) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expectCommandFailure(args, message);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an issue assigned to another agent without posting a heartbeat", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse({
+      id: ISSUE_ID,
+      identifier: "PC-42",
+      assigneeAgentId: "55555555-5555-4555-8555-555555555555",
+    })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expectCommandFailure(
+      ["agent", "heartbeat:invoke", AGENT_ID, "--issue-id", "PC-42"],
+      `Issue PC-42 is not assigned to agent ${AGENT_ID}`,
+    );
+
+    expect(fetchMock.mock.calls.map((call) => [call[1]?.method ?? "GET", call[0]])).toEqual([
+      ["GET", "http://localhost:3100/api/issues/PC-42"],
+    ]);
   });
 
   it("wraps configuration, runtime, skills, and instructions endpoints", async () => {

@@ -6655,6 +6655,7 @@ registry.registerPath({
     401: r.unauthorized,
     403: r.forbidden,
     404: r.notFound,
+    409: r.conflict,
   },
 });
 
