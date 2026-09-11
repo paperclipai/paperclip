@@ -24,7 +24,7 @@ type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | 
 function CrumbIdentifier({ identifier }: { identifier?: string }) {
   if (!identifier) return null;
   return (
-    <span data-slot="task-title-identifier" className="shrink-0 font-mono text-(length:--text-nano) text-muted-foreground">
+    <span data-slot="task-title-identifier" className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
       {identifier}
     </span>
   );

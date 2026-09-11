@@ -209,7 +209,7 @@ export const AgentRunCard = memo(function AgentRunCard({
                 />
                 <span className="truncate">{taskTitle}</span>
               </span>
-              <span className="shrink-0 font-mono text-(length:--text-nano) text-muted-foreground">{issue?.identifier ?? run.issueId.slice(0, 8)}</span>
+              <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">{issue?.identifier ?? run.issueId.slice(0, 8)}</span>
             </span>
           </Link>
         ) : (
