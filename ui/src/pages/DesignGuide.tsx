@@ -1215,7 +1215,7 @@ export function DesignGuide() {
               />
             ))}
           </div>
-          <p className="text-xs text-muted-foreground">The dashboard and Live runs page use the same compact cards. In-progress task icons animate across the app. Open a run to view its status and transcript.</p>
+          <p className="text-xs text-muted-foreground">The dashboard and Live runs page use the same compact cards. In-progress task icons animate across the app, including between runs, to represent task workflow status. Live indicators report active execution. Open a run to view its status and transcript.</p>
         </SubSection>
         <SubSection title="Standard Card">
           <Card>

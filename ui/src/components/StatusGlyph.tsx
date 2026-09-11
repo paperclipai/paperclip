@@ -22,6 +22,10 @@ import { taskStatusIconVar, taskStatusIconVarDefault } from "../lib/status-color
  *   in_review → circle-dot · done → circle-check · blocked → circle-minus ·
  *   cancelled → ban · in_queue → circle-minus (blocked recoloured blue).
  *
+ * The in-progress animation represents task workflow status, independently of
+ * run execution. It remains between runs until the task status changes; live
+ * indicators and run details report whether an agent is currently executing.
+ *
  * Colour comes from the `--status-task-icon-*` CSS vars (AA-tuned, mode-aware;
  * see `index.css`). The glyph paints in `currentColor`, and the component
  * defaults `color` to the status' icon var — so it renders correctly
