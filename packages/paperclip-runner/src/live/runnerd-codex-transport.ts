@@ -1,3 +1,4 @@
+import { RunnerdTraceFrameIndex } from "./runnerd-trace-frame-index.js";
 import { codexExecutableReadOnlyRoots } from "../drivers/codex/codex-security-config.js";
 import { isCanonicalProviderEventType } from "../provider-events.js";
 import { execFileSync } from "node:child_process";
@@ -1509,34 +1510,8 @@ type PendingTraceRehydration = {
 
 type PendingDriverTraceInterpretation = CodexTraceInterpretation;
 
-function locateRunnerdTraceFrame(
-  tracePath: string,
-  sourceEventId: string,
-): { frameId: number | null; nativeChannelSettled: boolean } {
-  const lines = readFileSync(tracePath, "utf8").split("\n");
-  let frameId: number | null = null;
-  let nativeChannelSettled = false;
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    if (!lines[index]?.trim()) continue;
-    const entry = record(JSON.parse(lines[index]!));
-    if (entry.kind === "trace_status" && entry.debugChannel === "rust_native") {
-      nativeChannelSettled = true;
-    }
-    if (
-      entry.kind !== "interpretation" ||
-      !Array.isArray(entry.emittedEventIds)
-    ) {
-      continue;
-    }
-    if ((entry.emittedEventIds as unknown[]).includes(sourceEventId)) {
-      frameId = typeof entry.frameId === "number" ? entry.frameId : null;
-      break;
-    }
-  }
-  return { frameId, nativeChannelSettled };
-}
-
 function appendRunnerdRehydrationTrace(
+  index: RunnerdTraceFrameIndex,
   tracePath: string | undefined,
   sourceEventId: string,
   eventType: string,
@@ -1546,7 +1521,7 @@ function appendRunnerdRehydrationTrace(
   if (!tracePath) return "not_applicable";
   if (!existsSync(tracePath)) return "retry";
   try {
-    const { frameId, nativeChannelSettled } = locateRunnerdTraceFrame(
+    const { frameId, nativeChannelSettled } = index.locate(
       tracePath,
       sourceEventId,
     );
@@ -1598,6 +1573,7 @@ function appendRunnerdRehydrationTrace(
 }
 
 function appendCodexDriverInterpretationTrace(
+  index: RunnerdTraceFrameIndex,
   tracePath: string | undefined,
   input: PendingDriverTraceInterpretation,
   debugSequence: number,
@@ -1605,7 +1581,7 @@ function appendCodexDriverInterpretationTrace(
   if (!tracePath) return "not_applicable";
   if (!existsSync(tracePath)) return "retry";
   try {
-    const { frameId, nativeChannelSettled } = locateRunnerdTraceFrame(
+    const { frameId, nativeChannelSettled } = index.locate(
       tracePath,
       input.sourceEventId,
     );
@@ -3355,6 +3331,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #controlPlaneRelease: (() => Promise<void> | void) | null = null;
   #nextTraceDebugSequence = 1;
   #traceRehydrationSpoolOverflow = false;
+  readonly #traceFrameIndex = new RunnerdTraceFrameIndex();
   #pendingTraceRehydrations: PendingTraceRehydration[] = [];
   #pendingDriverTraceInterpretations: PendingDriverTraceInterpretation[] = [];
   readonly #bridgedRuntimeInputs = new Map<string, { durableTurnId: string }>();
@@ -3909,6 +3886,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const tracePath = this.options.environment?.PAPERCLIP_PROVIDER_TRACE_PATH;
     if (!tracePath) return;
     const traceResult = appendCodexDriverInterpretationTrace(
+      this.#traceFrameIndex,
       tracePath,
       input,
       this.#nextTraceDebugSequence,
@@ -4219,6 +4197,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       }
       this.#pendingTraceRehydrations = [];
       this.#pendingDriverTraceInterpretations = [];
+      this.#traceFrameIndex.clear();
     }
     if (this.#pump !== null) clearInterval(this.#pump);
     this.#pump = null;
@@ -6038,6 +6017,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           visibleNotificationCount: notifications.length,
         };
         const traceResult = appendRunnerdRehydrationTrace(
+          this.#traceFrameIndex,
           this.options.environment.PAPERCLIP_PROVIDER_TRACE_PATH,
           pending.sourceEventId,
           pending.eventType,
@@ -6188,6 +6168,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const retry: PendingTraceRehydration[] = [];
     for (const pending of this.#pendingTraceRehydrations) {
       const traceResult = appendRunnerdRehydrationTrace(
+        this.#traceFrameIndex,
         tracePath,
         pending.sourceEventId,
         pending.eventType,
@@ -6202,6 +6183,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const driverRetry: PendingDriverTraceInterpretation[] = [];
     for (const pending of this.#pendingDriverTraceInterpretations) {
       const traceResult = appendCodexDriverInterpretationTrace(
+        this.#traceFrameIndex,
         tracePath,
         pending,
         this.#nextTraceDebugSequence,

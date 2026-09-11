@@ -1,3 +1,4 @@
+import { createWorkspaceGitInspectionCache } from "./workspace-git-inspection-cache.js";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
@@ -1268,7 +1269,12 @@ type WorkspaceOverviewIssueRow = WorkspaceOverviewLinkedIssue & {
   executionWorkspaceId: string;
 };
 
+const inspectGitForDisplay = createWorkspaceGitInspectionCache(inspectGitCloseReadiness);
+
 export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServiceOptions = {}) {
+  const inspectDisplay = opts.inspectGitCloseReadiness
+    ? createWorkspaceGitInspectionCache(opts.inspectGitCloseReadiness)
+    : inspectGitForDisplay;
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
   const now = opts.now ?? (() => new Date());
@@ -1487,7 +1493,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
 
   async function hydrateWorkspace(row: ExecutionWorkspaceRow, runtimeServices: WorkspaceRuntimeService[] = []) {
     const workspace = toExecutionWorkspace(row, runtimeServices);
-    const { git } = await (opts.inspectGitCloseReadiness ?? inspectGitCloseReadiness)(workspace);
+    const { git } = await inspectDisplay(workspace);
     const assessment = await assessDelivery(row, git);
     return toExecutionWorkspace(row, runtimeServices, assessment.deliveryState);
   }

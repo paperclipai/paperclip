@@ -25,6 +25,7 @@ import {
   heartbeatService,
 } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
+import { recoveryService } from "../services/recovery/service.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -393,6 +394,93 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       { status: "skipped", reason: "issue_state_guard_mismatch" },
       { status: "skipped", reason: "issue_state_guard_mismatch" },
     ]);
+  });
+
+  it.each([
+    { runtimeMode: "native", status: "done", reassigned: false },
+    { runtimeMode: "legacy", status: "done", reassigned: false },
+    { runtimeMode: "native", status: "cancelled", reassigned: false },
+    { runtimeMode: "native", status: "backlog", reassigned: false },
+    { runtimeMode: "native", status: "in_review", reassigned: false },
+    { runtimeMode: "native", status: "blocked", reassigned: false },
+    { runtimeMode: "native", status: "in_progress", reassigned: true },
+  ] as const)("skips stale $runtimeMode productive recovery after status=$status reassigned=$reassigned commits under the enqueue lock", async ({ runtimeMode, status, reassigned }) => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Completion racing with productive recovery",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      runtimeMode,
+      status: "succeeded",
+      livenessState: "completed",
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      startedAt: new Date(),
+      finishedAt: new Date(),
+    });
+
+    // Let the real sweep select its in-progress snapshot, then hold the issue
+    // lock until the real enqueue transaction is waiting on the newer state.
+    const enqueueWakeup = vi.fn(async (...[targetAgentId, options]: Parameters<typeof heartbeat.wakeup>) => {
+      let pendingWake!: ReturnType<typeof heartbeat.wakeup>;
+      await db.transaction(async (tx) => {
+        await tx.update(issues).set({
+          status,
+          ...(reassigned ? { assigneeAgentId: null, assigneeUserId: "responsible-user" } : {}),
+        }).where(eq(issues.id, issueId));
+        const [{ pid }] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+        pendingWake = heartbeat.wakeup(targetAgentId, options);
+        try {
+          expect(await waitForCondition(async () => {
+            const [{ waiting }] = await db.execute<{ waiting: boolean }>(sql`
+              select exists (
+                select 1 from pg_stat_activity
+                where ${pid} = any(pg_blocking_pids(pid))
+              ) as waiting
+            `);
+            return waiting;
+          })).toBe(true);
+        } catch (error) {
+          // Observe a pending rejection even if the lock assertion fails.
+          void pendingWake.catch(() => {});
+          throw error;
+        }
+      });
+      return pendingWake;
+    });
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(enqueueWakeup).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ continuationRequeued: 0, escalated: 0, skipped: 1, issueIds: [] });
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)).toEqual([{ id: runId }]);
+    expect(await db.select().from(issueComments)).toHaveLength(0);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    const [wakeup] = await db.select().from(agentWakeupRequests);
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: "issue_state_guard_mismatch",
+      runId: null,
+      payload: {
+        heartbeatSkip: {
+          expectedStatuses: ["in_progress"],
+          actualStatus: status,
+          expectedAssigneeAgentId: agentId,
+          actualAssigneeAgentId: reassigned ? null : agentId,
+        },
+      },
+    });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issue).toMatchObject({ status, assigneeAgentId: reassigned ? null : agentId });
   });
 
   it("cancels a resolved connection-intent wake parked before queued-run claim", async () => {

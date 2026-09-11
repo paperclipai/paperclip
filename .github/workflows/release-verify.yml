@@ -58,30 +58,61 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Five-way server split, matching pr-trusted.yml. Three shards sat
-          # at 17-19 minutes against this job's 20-minute cap after the
-          # server suite grew on 2026-09-10, and every canary that evening
-          # died on the timeout instead of reporting a verdict.
-          - group: general-server
-            group_label: server (1/5)
+          # Split the long chat file by collected test locations, and balance
+          # the remaining server files across ten runners. Normal PR/local
+          # invocations retain their complete general-server group.
+          - group: general-server-without-chat
+            group_label: server (1/10)
             shard_index: 0
-            shard_count: 5
-          - group: general-server
-            group_label: server (2/5)
+            shard_count: 10
+          - group: general-server-without-chat
+            group_label: server (2/10)
             shard_index: 1
-            shard_count: 5
-          - group: general-server
-            group_label: server (3/5)
+            shard_count: 10
+          - group: general-server-without-chat
+            group_label: server (3/10)
             shard_index: 2
-            shard_count: 5
-          - group: general-server
-            group_label: server (4/5)
+            shard_count: 10
+          - group: general-server-without-chat
+            group_label: server (4/10)
             shard_index: 3
-            shard_count: 5
-          - group: general-server
-            group_label: server (5/5)
+            shard_count: 10
+          - group: general-server-without-chat
+            group_label: server (5/10)
             shard_index: 4
-            shard_count: 5
+            shard_count: 10
+          - group: general-server-without-chat
+            group_label: server (6/10)
+            shard_index: 5
+            shard_count: 10
+          - group: general-server-without-chat
+            group_label: server (7/10)
+            shard_index: 6
+            shard_count: 10
+          - group: general-server-without-chat
+            group_label: server (8/10)
+            shard_index: 7
+            shard_count: 10
+          - group: general-server-without-chat
+            group_label: server (9/10)
+            shard_index: 8
+            shard_count: 10
+          - group: general-server-without-chat
+            group_label: server (10/10)
+            shard_index: 9
+            shard_count: 10
+          - group: general-chat
+            group_label: chat (1/3)
+            shard_index: 0
+            shard_count: 3
+          - group: general-chat
+            group_label: chat (2/3)
+            shard_index: 1
+            shard_count: 3
+          - group: general-chat
+            group_label: chat (3/3)
+            shard_index: 2
+            shard_count: 3
           # Keep parity with pr.yml: workspaces-a is split with Vitest's
           # native --shard because the ui project dominates the lane.
           - group: general-workspaces-a
@@ -226,6 +257,30 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+
+      - name: Select the pinned Runner Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: |
+          set -euo pipefail
+          rustup show
+          toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+      - name: Cache Runner Rust dependencies
+        # Restore and save only within trusted master-push verification. GitHub
+        # isolates branch/PR caches from master; other callers compile afresh.
+        if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: packages/paperclip-runner/runner -> target
+          shared-key: release-runner-v1
+          # Rebuild workspace code and rerun every check. Cache only compiled
+          # dependencies; never restore installed executables from cargo/bin.
+          cache-workspace-crates: false
+          cache-bin: false
+          # The step guard also restricts restores. Save only after a successful
+          # master-push verification of that push's exact commit.
+          save-if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile

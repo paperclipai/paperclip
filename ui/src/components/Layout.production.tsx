@@ -248,7 +248,7 @@ export function Layout() {
         { devServer?: { enabled?: boolean } } | undefined;
       return data?.devServer?.enabled ? 2000 : false;
     },
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
   });
   const keyboardShortcutsEnabled =
     useQuery({
