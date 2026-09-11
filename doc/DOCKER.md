@@ -47,6 +47,12 @@ legacy `buildcache-cloud` fallback. This preserves reusable layers without
 letting concurrent builds overwrite one shared cache manifest. Retain recent
 cache tags if registry cleanup is configured; deleting them makes builds colder.
 
+Cloud CI skips SDK and cache cleanup when both the Docker data filesystem and
+the checkout filesystem have at least 64 GiB available. Below that conservative
+headroom threshold, or when the measurement fails, it retains the existing
+cleanup. The threshold selects the fast path; it is not a new minimum disk
+requirement for local builds or smaller runners.
+
 After the pushed image passes its Sentry and orphan-reaping checks, the workflow verifies its
 commit label and platform and adds `ghcr.io/paperclipai/paperclip:sha-<full-commit-sha>-cloud`.
 This address lets commit-based deployment tooling reuse the normal build.
