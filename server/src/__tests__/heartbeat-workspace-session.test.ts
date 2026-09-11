@@ -2270,6 +2270,38 @@ describe("effective run session config freshness", () => {
     }
   });
 
+  it("preserves a pre-upgrade conversation after metadata edits only with verified historical workspace evidence", async () => {
+    const fixture = JSON.parse(await fs.readFile(
+      new URL("./fixtures/pre-normalization-session-fingerprints.json", import.meta.url), "utf8",
+    ));
+    for (const prior of fixture.cases) {
+      const input = { ...fixture.baseInput, ...prior.overrides };
+      const next = await buildEffectiveRunSessionConfigMetadata({ ...input,
+        workspaceConfig: { ...input.workspaceConfig, projectConfigRevisionAt: "2026-06-03T00:00:00Z",
+          issueSettings: { mode: "shared_workspace" } },
+      });
+      const params = sessionParamsWithConfigMetadata(prior.metadata);
+      const decision = { hasTaskSession: true, configuredModel: "gpt-5.4-mini",
+        taskSessionParams: params, configMetadata: next };
+      expect(resolveTaskSessionConfigFreshness(decision).reset).toBe(true);
+      expect(resolveTaskSessionConfigFreshness({ ...decision, verifiedLegacyWorkspaceUnchanged: true }))
+        .toMatchObject({ reset: false, reasons: [], changedCategories: [] });
+      expect(resolveTaskSessionConfigFreshness({ ...decision, verifiedLegacyWorkspaceUnchanged: true,
+        taskSessionParams: { ...params, __paperclipWorkspaceNormalizationVersion: 1 } }).reset).toBe(true);
+      expect(resolveTaskSessionConfigFreshness({ ...decision, verifiedLegacyWorkspaceUnchanged: true,
+        wakeResetReason: "explicit operator reset" }).reset).toBe(true);
+      for (const change of [
+        { effectiveAdapterConfig: { ...input.effectiveAdapterConfig, model: "other-model" } },
+        { secretManifest: input.secretManifest.map((entry: Record<string, unknown>) => ({ ...entry, version: 8 })) },
+        { issueOverrides: { networkEgress: "restricted" } },
+      ]) {
+        const incompatible = await buildEffectiveRunSessionConfigMetadata({ ...input, ...change });
+        expect(resolveTaskSessionConfigFreshness({ ...decision, configMetadata: incompatible,
+          verifiedLegacyWorkspaceUnchanged: true }).reset).toBe(true);
+      }
+    }
+  });
+
   it("resets when effective adapter config changes after model/profile/env resolution", async () => {
     const base = await buildSessionConfigMetadata();
     const next = await buildSessionConfigMetadata({

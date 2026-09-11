@@ -87,6 +87,15 @@ workspace mode that startup subsequently pinned. It does not waive model, secret
 version, or workspace-policy changes. Subsequent session publication writes the
 normalized fingerprint through the existing persistence path.
 
+If project metadata changed before the first upgraded run, the original timestamp
+cannot be reconstructed from the old hash. The host can instead verify the exact
+execution-workspace fingerprint recorded by that session's last successful run.
+This requires the same company, task, agent, responsible user, conversation, and
+reused workspace, and matching fingerprints for every other session category.
+Missing or conflicting evidence still requests a fresh conversation while retaining
+working files. After normalization, the session is marked so this one-time
+compatibility path cannot mask later configuration changes.
+
 Legacy Codex and Claude session codecs retain their remote execution identity.
 Sandbox conversations bind to the physical provider sandbox and environment,
 so creating a new host lease record for another turn does not discard the

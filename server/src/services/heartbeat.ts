@@ -41,6 +41,7 @@ import { agentService } from "./agents.js";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import fs from "node:fs/promises";
 import { retainUnsavedWorkFolderLease, workFolderSandboxKey } from "./work-folder-retention.js";
+import { hasMatchingLegacySessionWorkspace } from "./legacy-session-workspace-compatibility.js";
 import { findUnboundLegacyTaskWorkspace, hasLegacySandboxWorkspace } from "./legacy-sandbox-workspace.js";
 import { recoverLegacySandboxSession } from "./legacy-sandbox-session.js";
 import { prepareSandboxWorkFolders } from "./sandbox-work-folders.js";
@@ -5634,7 +5635,9 @@ const SESSION_CONFIG_FINGERPRINT_VERSION_KEY =
 const SESSION_CONFIG_CATEGORIES_KEY = "__paperclipConfigCategories";
 const SESSION_CONFIG_CATEGORY_FINGERPRINTS_KEY =
   "__paperclipConfigCategoryFingerprints";
+const SESSION_WORKSPACE_NORMALIZATION_VERSION_KEY = "__paperclipWorkspaceNormalizationVersion";
 const PAPERCLIP_SESSION_METADATA_KEYS = new Set([
+  SESSION_WORKSPACE_NORMALIZATION_VERSION_KEY,
   SESSION_CONFIGURED_MODEL_KEY,
   SESSION_CONFIG_FINGERPRINT_KEY,
   SESSION_CONFIG_FINGERPRINT_VERSION_KEY,
@@ -6683,6 +6686,7 @@ function attachPaperclipSessionMetadataToSessionParams(
   const next = { ...(sessionParams ?? {}) };
   if (configuredModel) next[SESSION_CONFIGURED_MODEL_KEY] = configuredModel;
   if (configMetadata) {
+    next[SESSION_WORKSPACE_NORMALIZATION_VERSION_KEY] = 1;
     next[SESSION_CONFIG_FINGERPRINT_KEY] = configMetadata.fingerprint;
     next[SESSION_CONFIG_FINGERPRINT_VERSION_KEY] = configMetadata.version;
     next[SESSION_CONFIG_CATEGORIES_KEY] = configMetadata.categories;
@@ -6735,6 +6739,8 @@ export function resolveTaskSessionConfigFreshness(input: {
   configMetadata: EffectiveRunSessionConfigMetadata | null;
   wakeResetReason?: string | null;
   preserveLegacySessionWithoutConfigMetadata?: boolean;
+  /** Requires the same workspace fingerprint from this session's successful host run. */
+  verifiedLegacyWorkspaceUnchanged?: boolean;
 }): TaskSessionConfigFreshnessDecision {
   if (!input.hasTaskSession) {
     return {
@@ -6787,7 +6793,15 @@ export function resolveTaskSessionConfigFreshness(input: {
         previous: storedConfig.categoryFingerprints,
         next: input.configMetadata.categoryFingerprints,
       });
-      reasons.push(
+      // Old session hashes included a project revision timestamp whose original
+      // value was not retained. Its execution workspace hash did not. Accept the
+      // upgrade only with that independent exact contract proof, while every
+      // other session category (including credentials and permissions) matches.
+      const normalizedLegacyWorkspace = input.verifiedLegacyWorkspaceUnchanged === true
+        && input.taskSessionParams?.[SESSION_WORKSPACE_NORMALIZATION_VERSION_KEY] === undefined
+        && changedCategories.length === 1 && changedCategories[0] === "workspaceConfig";
+      if (normalizedLegacyWorkspace) changedCategories = [];
+      else reasons.push(
         `effective run configuration changed: ${describeEffectiveRunConfigCategories(changedCategories)}`,
       );
     }
@@ -20388,7 +20402,7 @@ export function heartbeatService(
       const configuredModel =
         readConfiguredModelFromAdapterConfig(runtimeConfig);
       const wakeSessionResetReason = describeSessionResetReason(context);
-      const sessionConfigFreshness = resolveTaskSessionConfigFreshness({
+      let sessionConfigFreshness = resolveTaskSessionConfigFreshness({
         hasTaskSession: taskSession != null,
         configuredModel,
         taskSessionParams:
@@ -20398,9 +20412,9 @@ export function heartbeatService(
         preserveLegacySessionWithoutConfigMetadata:
           acceptedPlanContinuationWake && !acceptedPlanWakeRoutingDecision,
       });
-      const resetTaskSession =
+      let resetTaskSession =
         shouldResetTaskSessionForWake(context) || sessionConfigFreshness.reset;
-      const sessionResetReason =
+      let sessionResetReason =
         sessionConfigFreshness.reasons.join("; ") || null;
       let taskSessionForRun = resetTaskSession ? null : taskSession;
       let previousSessionParams =
@@ -20736,6 +20750,38 @@ export function heartbeatService(
             }),
         },
       )));
+      if (resetTaskSession && sessionConfigFreshness.changedCategories.length === 1
+        && sessionConfigFreshness.changedCategories[0] === "workspaceConfig"
+        && !shouldResetTaskSessionForWake(context) && !wakeSessionResetReason
+        && !explicitResumeSessionParams && !explicitResumeSessionDisplayId
+        && reusedExecutionWorkspace && reusableExistingExecutionWorkspace
+        && workspaceConfigFreshness.action === "reuse" && taskSession?.lastRunId
+        && taskSession.sessionDisplayId && issueId && selectedEnvironmentForConfig?.driver === "sandbox") {
+        const storedSessionConfig = readConfigFingerprintFromSessionParams(taskSession.sessionParamsJson);
+        const previousRun = await db.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, taskSession.lastRunId), eq(heartbeatRuns.companyId, agent.companyId),
+          eq(heartbeatRuns.agentId, agent.id),
+        )).then(rows => rows[0] ?? null);
+        if (storedSessionConfig && hasMatchingLegacySessionWorkspace({
+          companyId: agent.companyId, agentId: agent.id, responsibleUserId: run.responsibleUserId ?? null,
+          taskId: issueId, workspaceId: reusableExistingExecutionWorkspace.id,
+          sessionDisplayId: taskSession.sessionDisplayId, sessionFingerprint: storedSessionConfig.fingerprint,
+          workspaceFingerprint: latestWorkspaceConfigMetadata.fingerprint,
+          fingerprintVersion: sessionConfigMetadata.version, previousRun,
+        })) {
+          sessionConfigFreshness = resolveTaskSessionConfigFreshness({
+            hasTaskSession: true, configuredModel, taskSessionParams: taskSession.sessionParamsJson,
+            configMetadata: sessionConfigMetadata, verifiedLegacyWorkspaceUnchanged: true,
+          });
+          resetTaskSession = sessionConfigFreshness.reset;
+          sessionResetReason = sessionConfigFreshness.reasons.join("; ") || null;
+          if (!resetTaskSession) {
+            taskSessionForRun = taskSession;
+            previousSessionParams = normalizeResumeParamsForAdapter(agent.adapterType,
+              stripPaperclipSessionMetadataFromSessionParams(sessionCodec.deserialize(taskSession.sessionParamsJson)));
+          }
+        }
+      }
       const resolvedProjectId =
         executionWorkspace.projectId ??
         issueRef?.projectId ??
