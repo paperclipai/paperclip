@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CloudflareDriverConfig } from "./types.js";
+import type { CloudflareBridgeError } from "./bridge-client.js";
 import { createCloudflareBridgeClient, resolveRequestTimeoutMs } from "./bridge-client.js";
 
 const baseConfig: CloudflareDriverConfig = {
@@ -88,5 +89,48 @@ describe("Cloudflare bridge client timeouts", () => {
     expect(onOutput).toHaveBeenCalledWith("stdout", "hello\n");
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(init.body))).toMatchObject({ streamOutput: true });
+  });
+
+  it("surfaces Cloudflare 1010 bot protection pages as actionable bridge errors", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      "<html><title>Access denied | Error code 1010</title><body>Cloudflare</body></html>",
+      {
+        status: 403,
+        headers: { "Content-Type": "text/html" },
+      },
+    )));
+    const client = createCloudflareBridgeClient({ config: baseConfig });
+
+    await expect(client.probe({
+      requestedCwd: "/workspace",
+      keepAlive: false,
+      sleepAfter: "10m",
+      normalizeId: true,
+      sessionStrategy: "named",
+      sessionId: "paperclip",
+      timeoutMs: 30_000,
+    })).rejects.toThrow(/Cloudflare 1010 bot protection/);
+  });
+
+  it("rejects malformed successful exec responses instead of treating them as command success", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ success: true, stdout: "looks ok\n" }),
+      {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      },
+    )));
+    const client = createCloudflareBridgeClient({ config: baseConfig });
+
+    await expect(client.execute({
+      providerLeaseId: "lease-1",
+      command: "pwd",
+      sessionStrategy: "named",
+      sessionId: "paperclip",
+    })).rejects.toMatchObject({
+      name: "CloudflareBridgeError",
+      status: 502,
+      code: "malformed_execute_response",
+    } satisfies Partial<CloudflareBridgeError>);
   });
 });
