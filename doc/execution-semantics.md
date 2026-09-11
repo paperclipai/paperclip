@@ -895,6 +895,16 @@ Native admission verifies local process identities for local runs. Remote runs
 instead require a provider termination receipt for every lease, with successful
 cleanup and no active ownership. This applies to both per-turn and warm native
 runners. A stop receipt retires only the settled cleanup owner for that exact company, run, provider, and sandbox resource, without changing its checkpoint or recorded action outcomes. Independent remote sandboxes have separate cleanup gates, including when one run owns multiple sandboxes. Successful pending-cleanup retries persist the same receipt and reconsider deferred user messages; a delivery failure never reverts successful provider cleanup. A failed checkpoint does not prevent destruction of a terminal run's isolated sandbox; busy ownership still prevents it.
+Older local Codex runs may have lost their process IDs before stop receipts were
+introduced. A saved post-stop user message may reconcile this legacy case from
+the exact retained session: the old controller must be gone, all reconnect
+credentials expired, the runner suspended, and the complete startup journal must
+identify every provider process in that run. Every recorded process and process
+group must be absent, and the retained files must remain unchanged. This path
+never launches the old runner or replays its commands. A newer launch record,
+incomplete inventory, active process, or unknown state keeps the hold. The queue
+keeps the server's wait explanation through normalization and optimistic updates.
+
 Missing receipts and failed cleanup retain the hold. Older providers that return
 no receipt remain supported but cannot authorize remote continuation. A terminal
 database status or a PID check on the wrong host is insufficient.

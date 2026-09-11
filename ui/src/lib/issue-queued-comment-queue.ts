@@ -54,6 +54,7 @@ export function normalizeIssueQueuedCommentQueue(
     .map((entry, position) => ({ ...entry, position }));
   const disposition = source?.steeringDisposition;
   const state = source?.state;
+  const wait = record(source?.executionWait);
 
   return {
     issueId:
@@ -79,6 +80,10 @@ export function normalizeIssueQueuedCommentQueue(
       )
         ? (disposition as IssueQueuedCommentSteeringDisposition)
         : "unsupported",
+    executionWait:
+      state === "deferred" && typeof wait?.reason === "string" &&
+      typeof wait.message === "string" && wait.reason.trim() && wait.message.trim()
+        ? { reason: wait.reason, message: wait.message } : null,
     entries,
   };
 }
@@ -144,6 +149,8 @@ export function mergePendingIssueQueuedComments(params: {
       (protocol === "paperclip_runner_v1" && targetRunId
         ? "temporarily_unavailable"
         : "unsupported"),
+    executionWait: params.authoritativeQueue?.state === "deferred"
+      ? params.authoritativeQueue.executionWait ?? null : null,
     entries,
   };
 }

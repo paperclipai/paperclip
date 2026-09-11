@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, isNull } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 
 export const PROCESS_START_REQUESTED = "native.process_start_requested";
@@ -57,4 +57,35 @@ export async function hasNativeLocalProcessStop(db: Db, companyId: string, runId
     .orderBy(desc(heartbeatRunEvents.seq))
     .limit(1);
   return event?.eventType === LOCAL_PROCESS_STOPPED;
+}
+
+/** Upgrade old cleared identities only from an exact, closed retained session.
+ * New-format launches must use their normal stop receipt, never this fallback.
+ */
+export async function reconcileLegacyNativeLocalStop(
+  db: Db, run: typeof heartbeatRuns.$inferSelect,
+  coordinator: typeof nativeRunFinalizations.$inferSelect | undefined,
+  dryRun: boolean,
+): Promise<boolean> {
+  if (!coordinator) return false;
+  const [newFormat] = await db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
+    eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+    isNull(heartbeatRunEvents.sourceEventId),
+    inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
+  )).limit(1);
+  if (newFormat) return false;
+  const leases = await db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+  ));
+  if (!leases.length || leases.some(lease => lease.provider !== "local" || !lease.releasedAt || lease.cleanupStatus === "failed")) return false;
+  const { verifyRetainedLocalProcessStop } = await import("./native-runtime/native-session-executor.js");
+  const proof = verifyRetainedLocalProcessStop(run, coordinator);
+  if (!proof) return false;
+  if (!dryRun) await appendHeartbeatRunEvent(db, {
+    companyId: run.companyId, runId: run.id, agentId: run.agentId,
+    eventType: LOCAL_PROCESS_STOPPED, stream: "system", level: "info",
+    message: "Verified the stopped local provider from its retained session before continuing the user message.",
+    payload: { ...proof, source: "retained_local_session_v1" },
+  });
+  return true;
 }

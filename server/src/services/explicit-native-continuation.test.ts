@@ -3,7 +3,7 @@ import { recordNativeLocalProcessStop, hasNativeLocalProcessStop, PROCESS_START_
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { beforeAll, afterAll, describe, it, expect } from "vitest";
+import { beforeAll, afterAll, describe, it, expect, vi } from "vitest";
 import {
   approvals, issueApprovals, issueThreadInteractions,
   agentWakeupRequests, agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions,
@@ -49,6 +49,33 @@ const support = await getEmbeddedPostgresTestSupport();
       agentId: f.agentId, status: "queued", contextSnapshot: { issueId: f.issueId, previousRunId: result.previousRunId, forceFreshSession: true } });
     return result;
   });
+  it("reconciles legacy stop evidence transactionally and never uses it for a newer launch", async () => {
+    const runtime = await import("./native-runtime/native-session-executor.js");
+    const verify = vi.spyOn(runtime, "verifyRetainedLocalProcessStop").mockReturnValue({
+      fingerprint: "verified-retained-snapshot", providerProcessIds: [999999998], controllerPid: 999999999,
+    });
+    try {
+      const f = await seed();
+      await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      const [environment] = await db.insert(environments).values({ name: "Local legacy", driver: "process" }).returning();
+      await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.sourceRunId,
+        environmentId: environment.id, provider: "local", status: "failed", leasePolicy: "ephemeral", releasedAt: new Date() });
+      expect(await admit(f, true)).toMatchObject({ previousRunId: f.sourceRunId });
+      expect(await hasNativeLocalProcessStop(db, f.companyId, f.sourceRunId)).toBe(false);
+      expect(await admit(f)).toMatchObject({ previousRunId: f.sourceRunId });
+      expect(await hasNativeLocalProcessStop(db, f.companyId, f.sourceRunId)).toBe(true);
+      expect(await admit(f)).toBeNull();
+
+      const next = await seed();
+      await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, next.sourceRunId));
+      await appendHeartbeatRunEvent(db, { companyId: next.companyId, runId: next.sourceRunId,
+        agentId: next.agentId, eventType: PROCESS_START_REQUESTED });
+      verify.mockClear();
+      expect(await admit(next)).toBeNull();
+      expect(verify).not.toHaveBeenCalled();
+    } finally { verify.mockRestore(); }
+  });
+
   it("preserves local stop proof after process metadata is cleared and invalidates it on another launch", async () => {
     const f = await seed();
     const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
