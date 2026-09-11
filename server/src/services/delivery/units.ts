@@ -256,10 +256,8 @@ export function deliveryUnitService(
   const { policy, queue, events, github } = deps;
 
   /**
-   * Real owner feedback: the durable intent row is recorded first (idempotent
-   * per key), then the injected heartbeat dispatcher queues an actual run.
-   * Without a dispatcher the row stays queued and the repair loop still
-   * escalates on the bound — a bare row is never mistaken for dispatch.
+   * Serialize each durable wake key through admission. A refused dispatch keeps
+   * its intent retryable; only a linked run counts as execution.
    */
   async function dispatchOwnerWake(input: {
     companyId: string;
@@ -269,70 +267,74 @@ export function deliveryUnitService(
     contextSnapshot?: Record<string, unknown>;
     idempotencyKey: string;
   }): Promise<{ intentId: string | null; dispatched: boolean }> {
-    const [existing] = await db
-      .select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, status: agentWakeupRequests.status })
-      .from(agentWakeupRequests)
-      .where(and(
-        eq(agentWakeupRequests.companyId, input.companyId),
-        eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
-      ))
-      .limit(1);
-    if (existing) return { intentId: existing.id, dispatched: existing.runId != null || existing.status === "coalesced" };
-    const [intent] = await db
-      .insert(agentWakeupRequests)
-      .values({
-        companyId: input.companyId,
-        agentId: input.agentId,
-        source: "automation",
-        triggerDetail: "system",
-        reason: input.reason,
-        payload: {
-          ...input.payload,
-          _paperclipWakeContext: {
-            ...((input.payload._paperclipWakeContext as Record<string, unknown> | undefined) ?? {}),
-            wakeReason: input.reason,
-            source: "delivery_controller",
+    return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${input.companyId}:${input.idempotencyKey}`}, 0))`);
+      const [existing] = await tx
+        .select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
+        ))
+        .orderBy(sql`${agentWakeupRequests.runId} is not null desc`, desc(agentWakeupRequests.createdAt))
+        .limit(1);
+      if (existing?.runId) return { intentId: existing.id, dispatched: true };
+      const [intent] = existing ? [existing] : await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: input.reason,
+          payload: {
+            ...input.payload,
+            _paperclipWakeContext: {
+              ...((input.payload._paperclipWakeContext as Record<string, unknown> | undefined) ?? {}),
+              wakeReason: input.reason,
+              source: "delivery_controller",
+            },
           },
-        },
-        requestedByActorType: "system",
-        requestedByActorId: "delivery-controller",
-        idempotencyKey: input.idempotencyKey,
-      })
-      .onConflictDoNothing()
-      .returning({ id: agentWakeupRequests.id });
-    const intentId = intent?.id ?? null;
-    if (!intentId || !deps.requestOwnerWake) return { intentId, dispatched: false };
-    try {
-      const run = await deps.requestOwnerWake(input.agentId, {
-        source: "automation",
-        triggerDetail: "system",
-        reason: input.reason,
-        payload: input.payload,
-        ...(input.contextSnapshot ? { contextSnapshot: input.contextSnapshot } : {}),
-        idempotencyKey: input.idempotencyKey,
-        requestedByActorType: "system",
-        requestedByActorId: "delivery-controller",
-      }) as { id?: string } | null;
-      await db
-        .update(agentWakeupRequests)
-        .set({
-          status: run?.id ? "coalesced" : "queued",
-          runId: run?.id ?? null,
-          error: run?.id ? null : "Heartbeat dispatcher queued no run; intent remains for the next sweep",
-          updatedAt: new Date(),
+          requestedByActorType: "system",
+          requestedByActorId: "delivery-controller",
+          idempotencyKey: input.idempotencyKey,
         })
-        .where(eq(agentWakeupRequests.id, intentId));
-      return { intentId, dispatched: Boolean(run?.id) };
-    } catch (error) {
-      await db
-        .update(agentWakeupRequests)
-        .set({
-          error: error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000),
-          updatedAt: new Date(),
-        })
-        .where(eq(agentWakeupRequests.id, intentId));
-      return { intentId, dispatched: false };
-    }
+        .onConflictDoNothing()
+        .returning({ id: agentWakeupRequests.id });
+      const intentId = intent?.id ?? null;
+      if (!intentId || !deps.requestOwnerWake) return { intentId, dispatched: false };
+      try {
+        const run = await deps.requestOwnerWake(input.agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: input.reason,
+          payload: input.payload,
+          ...(input.contextSnapshot ? { contextSnapshot: input.contextSnapshot } : {}),
+          idempotencyKey: input.idempotencyKey,
+          requestedByActorType: "system",
+          requestedByActorId: "delivery-controller",
+        }) as { id?: string } | null;
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: run?.id ? "coalesced" : "queued",
+            runId: run?.id ?? null,
+            error: run?.id ? null : "Heartbeat dispatcher queued no run; intent remains for the next sweep",
+            updatedAt: new Date(),
+          })
+          .where(eq(agentWakeupRequests.id, intentId));
+        return { intentId, dispatched: Boolean(run?.id) };
+      } catch (error) {
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            error: error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000),
+            updatedAt: new Date(),
+          })
+          .where(eq(agentWakeupRequests.id, intentId));
+        return { intentId, dispatched: false };
+      }
+    });
   }
 
   async function getUnit(companyId: string, unitId: string) {

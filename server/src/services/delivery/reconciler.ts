@@ -412,7 +412,7 @@ export function deliveryReconciler(
       .limit(1);
     if (!run) return "vanished";
     if (LIVE_RUN_STATUSES[run.status] === true) return "live";
-    if (run.status === "completed") return "completed";
+    if (run.status === "succeeded") return "completed";
     // Terminal without completing: only a live retry of that exact run keeps
     // the signal handled. Otherwise the execution vanished.
     const [retry] = await db
@@ -440,16 +440,23 @@ export function deliveryReconciler(
     generation: number;
   }) {
     const [attemptsRow] = await db
-      .select({ count: sql<number>`count(*)::int` })
+      .select({
+        used: sql<number>`count(*) filter (where ${deliveryRepairAttempts.status} = 'dispatched' or ${agentWakeupRequests.runId} is not null)::int`,
+        lastAttempt: sql<number>`coalesce(max(${deliveryRepairAttempts.attempt}), 0)::int`,
+      })
       .from(deliveryRepairAttempts)
+      .leftJoin(agentWakeupRequests, and(
+        eq(agentWakeupRequests.companyId, deliveryRepairAttempts.companyId),
+        eq(agentWakeupRequests.id, deliveryRepairAttempts.wakeRequestId),
+      ))
       .where(and(
         eq(deliveryRepairAttempts.companyId, input.companyId),
         eq(deliveryRepairAttempts.unitId, input.unit.id),
         eq(deliveryRepairAttempts.reasonCode, input.reasonCode),
         inArray(deliveryRepairAttempts.status, ["requested", "dispatched"]),
       ));
-    const attempt = (attemptsRow?.count ?? 0) + 1;
-    if (attempt > DELIVERY_MAX_REPAIR_ATTEMPTS) {
+    const attempt = (attemptsRow?.lastAttempt ?? 0) + 1;
+    if ((attemptsRow?.used ?? 0) >= DELIVERY_MAX_REPAIR_ATTEMPTS) {
       await db.insert(deliveryRepairAttempts).values({
         companyId: input.companyId,
         unitId: input.unit.id,
@@ -491,7 +498,7 @@ export function deliveryReconciler(
       return { attempted: false, attempt, exhausted: true };
     }
     const ownerAgentId = input.unit.ownerAgentId;
-    const idempotencyKey = `delivery_repair:${input.unit.id}:${input.reasonCode}:${attempt}`;
+    const idempotencyKey = `delivery_repair:${input.unit.id}:${input.reasonCode}:${attempt}:${input.generation}:${input.signal}`;
     let wakeRequestId: string | null = null;
     let dispatched = false;
     if (ownerAgentId) {
@@ -529,6 +536,22 @@ export function deliveryReconciler(
       wakeRequestId = wake.intentId;
       dispatched = wake.dispatched;
     }
+    // Admission refusal is not an executed repair. Keep the durable wake
+    // retryable under the same key, without spending the execution budget.
+    if (!dispatched) {
+      await events.append({
+        companyId: input.companyId,
+        unitId: input.unit.id,
+        issueId: input.unit.primaryIssueId,
+        type: "escalated",
+        message: !ownerAgentId
+          ? `No implementation owner is assigned for ${input.reasonCode}`
+          : `Owner wake for ${input.reasonCode} is pending admission`,
+        dedupeKey: `repair_pending:${input.reasonCode}:${input.generation}:${input.signal}:${attempt}`,
+        payload: { reasonCode: input.reasonCode, wakeRequestId, dispatched: false, candidateGeneration: input.generation },
+      });
+      return { attempted: false, attempt, exhausted: false };
+    }
     await db
       .insert(deliveryRepairAttempts)
       .values({
@@ -536,7 +559,7 @@ export function deliveryReconciler(
         unitId: input.unit.id,
         reasonCode: input.reasonCode,
         attempt,
-        status: dispatched ? "dispatched" : "requested",
+        status: "dispatched",
         signal: input.signal,
         candidateGeneration: input.generation,
         headSha: input.unit.headSha,
@@ -556,19 +579,6 @@ export function deliveryReconciler(
       dedupeKey: `repair_requested:${input.reasonCode}:${attempt}`,
       payload: { reasonCode: input.reasonCode, attempt, wakeRequestId, dispatched, candidateGeneration: input.generation },
     });
-    if (!ownerAgentId || !dispatched) {
-      await events.append({
-        companyId: input.companyId,
-        unitId: input.unit.id,
-        issueId: input.unit.primaryIssueId,
-        type: "escalated",
-        message: !ownerAgentId
-          ? `No implementation owner is assigned for ${input.reasonCode}`
-          : `Owner wake for ${input.reasonCode} is pending dispatch; operator attention required`,
-        dedupeKey: `escalated:${input.reasonCode}:${attempt}`,
-        payload: { reasonCode: input.reasonCode, dispatched },
-      });
-    }
     return { attempted: dispatched, attempt, exhausted: false };
   }
 
@@ -586,9 +596,9 @@ export function deliveryReconciler(
    * Dedupe is bound to the durable execution, not to the recorded string: when
    * the run that was supposed to handle the signal vanished (cancelled, failed
    * by process loss, never picked up) and has no live retry, the signal is
-   * unhandled again and a bounded re-dispatch follows. Retry creation stays
-   * idempotent because every attempt carries its own deterministic
-   * `(unit, reason, attempt)` key and the intent row is unique per key.
+   * unhandled again and a bounded re-dispatch follows. A durable wake key
+   * includes candidate generation and evidence, so a pending older request
+   * cannot receive a replacement candidate's repair.
    */
   async function requestRepair(input: DeliveryRepairRequest): Promise<DeliveryRepairOutcome> {
     if (!REPAIRABLE_REASON_CODES[input.reasonCode]) {

@@ -114,6 +114,8 @@ Contained process runners report pre-model admission failures with exit codes 96
 
 Writer-resource resolver failures use `execution_resource_resolver_failed`, with bounded redacted diagnostics in `resultJson.executionResourceResolverFailure`. No worker is dispatched without a valid receipt. These technical failures remain eligible for the configured recovery engineer; a resolver exit alone is not evidence of a missing credential or a human configuration decision. Missing issue project scope remains `configuration_incomplete` with `missingBindings: ["projectId"]`. Historical failures whose stderr was discarded cannot be diagnosed retroactively from their exit code.
 
+Delivery repair accounting charges the bounded repair budget only after a native run is admitted. A suppressed owner wake remains pending and retries through the same admission gates; repeated sweeps do not spend repair attempts. Historical `requested` rows remain auditable but do not consume execution budget unless their wake has a linked run. A successful native run uses status `succeeded` and keeps its repair signal handled; it is not a vanished execution. Verify these boundaries with `pnpm exec vitest run server/src/__tests__/delivery-lifecycle-boundary.test.ts`.
+
 ### Mobile-friendly preview (`pnpm dev:mobile`)
 
 The vite dev server serves an unbundled module graph. This is fast to reload on a local machine but too heavy for phones and tablets on slow links (airplane wifi, mobile data, distant tailnet peers). `pnpm dev:mobile` builds the UI once and serves the small production bundle on port `3101` via `vite preview`, proxying `/api` requests to the dev API on `3100`.

@@ -903,14 +903,56 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     let available = false;
     const pipeline = await governedPipeline({ canDispatch: () => available });
     const { companyId, unit } = pipeline;
-    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    for (let sweep = 0; sweep < 5; sweep += 1) {
+      await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    }
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toEqual([]);
+    expect((await pipeline.units.getUnit(companyId, unit.id))?.blocker?.reasonCode)
+      .not.toBe("repair_attempts_exhausted");
     available = true;
     await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
     await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
       .toMatchObject([{ agentId: unit.ownerAgentId, contextSnapshot: { issueId: pipeline.issue.id, reasonCode: "review_blocking_findings" } }]);
-    expect(await repairAttempts(companyId, unit.id)).toMatchObject([{ status: "requested" }, { status: "dispatched" }]);
+    expect(await repairAttempts(companyId, unit.id)).toMatchObject([{ attempt: 1, status: "dispatched" }]);
+  });
+
+  it("preserves historical refused requests without charging them as executed repairs", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, unit } = pipeline;
+    const refused = await db.insert(deliveryRepairAttempts).values([1, 2, 3].map((attempt) => ({
+      companyId, unitId: unit.id, reasonCode: "review_blocking_findings",
+      attempt, status: "requested", ownerAgentId: unit.ownerAgentId,
+      candidateGeneration: unit.candidateGeneration, headSha: HEAD,
+    }))).returning();
+    for (let round = 0; round < 4; round += 1) {
+      pipeline.provider.body = `P1: remaining defect ${round}`;
+      await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    }
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
+      .toHaveLength(3);
+    expect(await pipeline.units.getUnit(companyId, unit.id))
+      .toMatchObject({ blocker: { reasonCode: "repair_attempts_exhausted" } });
+    expect((await repairAttempts(companyId, unit.id)).filter((row) => row.status === "requested"))
+      .toEqual(refused);
+  });
+
+  it("admits one owner execution when concurrent callers retry a pending wake", async () => {
+    let available = false;
+    const pipeline = await governedPipeline({ canDispatch: () => available });
+    const { companyId, unit } = pipeline;
+    const wake = {
+      companyId, agentId: unit.ownerAgentId!, reason: "delivery_repair_requested",
+      payload: { issueId: pipeline.issue.id }, idempotencyKey: `delivery_repair:${unit.id}:pending`,
+    };
+    await pipeline.units.dispatchOwnerWake(wake);
+    available = true;
+    await Promise.all([
+      pipeline.units.dispatchOwnerWake(wake),
+      pipeline.units.dispatchOwnerWake(wake),
+    ]);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
+      .toMatchObject([{ agentId: unit.ownerAgentId, contextSnapshot: { issueId: pipeline.issue.id } }]);
   });
 
   it("exposes exhausted repairs instead of claiming a nonexistent owner continuation", async () => {
@@ -1047,7 +1089,7 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
 
     // A completed execution is a real repair outcome: the signal stays handled
     // even though the evidence has not changed.
-    await db.update(heartbeatRuns).set({ status: "completed" }).where(eq(heartbeatRuns.id, reDispatched!.id));
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, reDispatched!.id));
     await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
     expect(await runs()).toHaveLength(2);
   });
