@@ -53,7 +53,7 @@ it("dispatch retains raw trust before workspace and broker setup", () => {
     "utf8",
   );
   const start = heartbeat.indexOf(
-    "const retainedTrust = await resolveAndRetainRunTrustPreset",
+    "const retainedTrust = await ",
   );
   const end = heartbeat.indexOf(
     "const config = parseObject(agent.adapterConfig);",
@@ -61,6 +61,7 @@ it("dispatch retains raw trust before workspace and broker setup", () => {
   );
   const dispatch = heartbeat.slice(start, end);
   expect(start).toBeGreaterThan(0);
+  expect(dispatch).toContain("resolveAndRetainRunTrustPreset(db,");
   expect(dispatch).toContain(
     "executionWorkspacePolicy: projectContext.executionWorkspacePolicy",
   );
