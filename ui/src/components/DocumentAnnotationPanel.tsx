@@ -1,3 +1,4 @@
+import { AgentAvatar } from "./AgentAvatar";
 import { useMemo, useRef, useState, useEffect } from "react";
 import type {
   DocumentAnnotationComment,
@@ -23,7 +24,6 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, relativeTime } from "@/lib/utils";
 import type { DocumentAnnotationTarget } from "@/api/document-annotations";
 import { copyTextToClipboard } from "@/lib/clipboard";
-import { AgentIcon } from "./AgentIconPicker";
 import { deriveInitials } from "./Identity";
 import { MarkdownBody } from "./MarkdownBody";
 import type { PendingAnchor } from "./DocumentAnnotationLayer";
@@ -59,7 +59,7 @@ export interface AnnotationPanelProps {
   inline?: boolean;
   className?: string;
   /** Resolve `<authorAgentId>` to a display name. */
-  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
   /** Resolve `<authorUserId>` to a display name. */
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
 }
@@ -326,7 +326,7 @@ export function ThreadCard(props: {
   onCopyLink: () => void;
   pendingReply: boolean;
   pendingStatus: boolean;
-  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
 }) {
   const { thread } = props;
@@ -461,7 +461,7 @@ function CommentRow({
 }: {
   comment: DocumentAnnotationComment;
   focused: boolean;
-  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
 }) {
   const author = resolveAuthor(comment, { agentMap, userProfileMap });
@@ -476,18 +476,11 @@ function CommentRow({
     >
       <div className="mb-0.5 flex items-center justify-between gap-2 text-(length:--text-micro)">
         <span className="flex min-w-0 items-center gap-1.5">
+          {author.role === "agent" ? <AgentAvatar agent={author.agent} size={20} /> : (
           <Avatar size="xs" className="shrink-0">
-            {author.role === "agent" ? (
-              <AvatarFallback>
-                <AgentIcon icon={author.agentIcon} className="h-3 w-3" />
-              </AvatarFallback>
-            ) : (
-              <>
-                {author.imageUrl ? <AvatarImage src={author.imageUrl} alt={author.name} /> : null}
-                <AvatarFallback>{deriveInitials(author.name)}</AvatarFallback>
-              </>
-            )}
-          </Avatar>
+            {author.imageUrl ? <AvatarImage src={author.imageUrl} alt={author.name} /> : null}
+            <AvatarFallback>{deriveInitials(author.name)}</AvatarFallback>
+          </Avatar>)}
           <span className="truncate font-medium text-foreground">{author.name}</span>
           {author.role === "agent" ? (
             <span className="text-muted-foreground">· agent</span>
@@ -508,16 +501,17 @@ function isSubmitShortcut(event: React.KeyboardEvent<HTMLTextAreaElement>): bool
 function resolveAuthor(
   comment: DocumentAnnotationComment,
   maps: {
-    agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+    agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
     userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   },
-): { name: string; role: "board" | "agent"; agentIcon?: Agent["icon"]; imageUrl?: string | null } {
+): { name: string; role: "board" | "agent"; agentIcon?: Agent["icon"]; agent?: import("./AgentAvatar").AvatarAgent; imageUrl?: string | null } {
   if (comment.authorAgentId) {
     const agent = maps.agentMap?.get(comment.authorAgentId);
     return {
       name: agent?.name ?? comment.authorAgentId.slice(0, 8),
       role: "agent",
       agentIcon: agent?.icon,
+      agent: agent ?? { id: comment.authorAgentId },
     };
   }
   if (comment.authorUserId) {

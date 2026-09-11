@@ -114,6 +114,7 @@ import { adapterRoutes } from "./routes/adapters.js";
 import { managedAgentProfileRoutes } from "./routes/managed-agent-profiles.js";
 import { remoteAgentProfileRoutes } from "./routes/remote-agent-profiles.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
+import { injectCloudUiSnippet } from "./cloud-ui-snippet.js";
 import { readBrandedStaticIndexHtml } from "./static-index-html.js";
 import { staticUiCacheControl } from "./static-ui-cache.js";
 import { applyUiBranding } from "./ui-branding.js";
@@ -952,6 +953,10 @@ export async function createApp(
           immutable: true,
         }),
       );
+      // Serve root/index through the same runtime HTML transform as SPA routes.
+      app.get(["/", "/index.html"], (_req, res) => {
+        res.type("html").set("Cache-Control", "no-cache").send(readBrandedStaticIndexHtml(uiDist));
+      });
       // Non-hashed static files (favicon.ico, manifest, robots.txt, etc.):
       // short cache so operators who swap them out see the new version
       // reasonably fast, with must-revalidate overrides for index.html and
@@ -1060,7 +1065,7 @@ export async function createApp(
     viteHtmlRenderer = createCachedViteHtmlRenderer({
       vite,
       uiRoot,
-      brandHtml: applyUiBranding,
+      brandHtml: (html) => injectCloudUiSnippet(applyUiBranding(html)),
     });
     const renderViteHtml = viteHtmlRenderer;
 

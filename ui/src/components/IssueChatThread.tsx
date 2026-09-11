@@ -1,3 +1,4 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import type {
   ReasoningMessagePart,
@@ -145,7 +146,6 @@ import {
   type InlineEntityOption,
 } from "./InlineEntitySelector";
 import { IssueThreadInteractionCard } from "./IssueThreadInteractionCard";
-import { AgentIcon } from "./AgentIconPicker";
 import {
   AssigneeChip,
   ComposerHandoffPreviewRow,
@@ -1287,8 +1287,8 @@ function IssueChatChainOfThought({
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2.5">
             <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
-              {agentIcon ? (
-                <AgentIcon icon={agentIcon} className="h-4 w-4 shrink-0" />
+              {agentId ? (
+                <AgentAvatar agent={agentId ? agentMap?.get(agentId) ?? { id: agentId } : undefined} size={16} />
               ) : isActive ? (
                 <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
               ) : (
@@ -2417,17 +2417,7 @@ function IssueChatAssistantMessage({
     !isRunning &&
     (hasCommentText || deleted);
 
-  const agentAvatar = (
-    <Avatar size="sm" className="shrink-0">
-      {agentIcon ? (
-        <AvatarFallback>
-          <AgentIcon icon={agentIcon} className="h-3.5 w-3.5" />
-        </AvatarFallback>
-      ) : (
-        <AvatarFallback>{initialsForName(authorName)}</AvatarFallback>
-      )}
-    </Avatar>
-  );
+  const agentAvatar = <AgentAvatar agent={agentId ? agentMap?.get(agentId) ?? { id: agentId, name: authorName } : { name: authorName }} size={32} />;
 
   const messageActionBar = (
     <div className="mt-2 flex items-center gap-1">
@@ -2553,8 +2543,8 @@ function IssueChatAssistantMessage({
           {/* Icon + name together in a header ABOVE the bubble (PAP-95 rev 7). */}
           <div className="mb-1 flex items-center gap-1.5 px-1">
             <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
-              {agentIcon ? (
-                <AgentIcon icon={agentIcon} className="h-4 w-4" />
+              {agentId ? (
+                <AgentAvatar agent={agentId ? agentMap?.get(agentId) ?? { id: agentId } : undefined} size={16} />
               ) : (
                 <Avatar size="sm" className="size-5">
                   <AvatarFallback className="text-(length:--text-nano)">
@@ -2706,11 +2696,8 @@ function IssueChatAssistantMessage({
                   <div className="rounded-lg px-1 py-2">
                     <div className="flex min-w-0 items-center gap-2.5">
                       <span className="inline-flex items-center gap-2 text-sm font-medium text-foreground/80">
-                        {agentIcon ? (
-                          <AgentIcon
-                            icon={agentIcon}
-                            className="h-4 w-4 shrink-0"
-                          />
+                        {agentId ? (
+                          <AgentAvatar agent={agentId ? agentMap?.get(agentId) ?? { id: agentId } : undefined} size={16} />
                         ) : (
                           <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
                         )}
@@ -3080,15 +3067,11 @@ function ExpiredRequestConfirmationActivity({
         </div>
       ) : (
         <div className="flex items-start gap-2.5 py-1">
-          <Avatar size="sm" className="mt-0.5">
-            {actorIcon ? (
-              <AvatarFallback>
-                <AgentIcon icon={actorIcon} className="h-3.5 w-3.5" />
-              </AvatarFallback>
-            ) : (
-              <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
-            )}
-          </Avatar>
+          {actorAgentId ? (
+            <AgentAvatar agent={agentMap?.get(actorAgentId) ?? { id: actorAgentId, name: actorName }} size={32} />
+          ) : (
+            <Avatar size="sm" className="mt-0.5"><AvatarFallback>{initialsForName(actorName)}</AvatarFallback></Avatar>
+          )}
           {rowContent}
         </div>
       )}
@@ -3800,15 +3783,11 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
 
   if (custom.kind === "event" && actorName) {
     const isAgent = actorType === "agent";
-    const agentIcon =
-      isAgent && actorId ? agentMap?.get(actorId)?.icon : undefined;
-    const isCurrentUser =
-      actorType === "user" && !!currentUserId && actorId === currentUserId;
-    const rowIcon = agentIcon ? (
-      <AgentIcon icon={agentIcon} className="h-3 w-3" />
-    ) : (
-      <ClipboardList className="h-3 w-3" />
-    );
+    const agentIcon = isAgent && actorId ? agentMap?.get(actorId)?.icon : undefined;
+    const isCurrentUser = actorType === "user" && !!currentUserId && actorId === currentUserId;
+    const rowIcon = isAgent
+      ? <AgentAvatar agent={actorId ? agentMap?.get(actorId) ?? { id: actorId } : undefined} size={16} />
+      : <ClipboardList className="h-3 w-3" />;
     const handoffResolvers: HandoffChipResolvers = {
       agentMap,
       currentUserId,
@@ -3903,18 +3882,8 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
       ? (agentMap?.get(runAgentId)?.name ?? runAgentId.slice(0, 8))
       : null);
   const runAgentIcon = runAgentId ? agentMap?.get(runAgentId)?.icon : undefined;
-  if (
-    custom.kind === "run" &&
-    runId &&
-    runAgentId &&
-    displayedRunAgentName &&
-    runStatus
-  ) {
-    const rowIcon = runAgentIcon ? (
-      <AgentIcon icon={runAgentIcon} className="h-3 w-3" />
-    ) : (
-      <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50" />
-    );
+  if (custom.kind === "run" && runId && runAgentId && displayedRunAgentName && runStatus) {
+    const rowIcon = <AgentAvatar agent={agentMap?.get(runAgentId) ?? { id: runAgentId }} size={16} />;
 
     return (
       <IssueChatMetadataRow anchorId={anchorId} icon={rowIcon}>
@@ -5585,10 +5554,7 @@ const IssueChatComposer = forwardRef<
               return (
                 <>
                   {agent ? (
-                    <AgentIcon
-                      icon={agent.icon}
-                      className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                    />
+                    <AgentAvatar agent={agent} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                   ) : null}
                   <span className="truncate">{option.label}</span>
                 </>
@@ -5604,10 +5570,7 @@ const IssueChatComposer = forwardRef<
               return (
                 <>
                   {agent ? (
-                    <AgentIcon
-                      icon={agent.icon}
-                      className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-                    />
+                    <AgentAvatar agent={agent} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                   ) : null}
                   <span className="truncate">{option.label}</span>
                 </>

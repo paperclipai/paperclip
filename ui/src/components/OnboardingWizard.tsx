@@ -1,5 +1,7 @@
 import { storeProviderApiKey } from "../lib/provider-credential";
 import { SavedProviderKeySelect, useSavedProviderKeys } from "./onboarding/SavedProviderKeySelect";
+import { randomAgentAppearance, resolveAgentAppearance, agentAppearanceSchema } from "@paperclipai/shared";
+import { AgentCharacter } from "./AgentCharacter";
 import { useEffect, useState, useMemo, useRef } from "react";
 import type { ComponentType, CSSProperties } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -550,6 +552,7 @@ function OnboardingWizardInner({
   // on the customer's behalf that they then have to notice and undo. It is the
   // step's only question, and its CTA gates on it.
   const [agentName, setAgentName] = useState((saved?.agentName as string) ?? "");
+  const [agentAppearance, setAgentAppearance] = useState(() => agentAppearanceSchema.safeParse(saved?.agentAppearance).data ?? randomAgentAppearance());
   // Defaults to `general` rather than empty. The arc stopped asking for a role
   // — a customer naming their first agent is describing what it does, not
   // filing it — but the hire still needs one, and the guard below returns
@@ -764,6 +767,7 @@ function OnboardingWizardInner({
    * hand rather than the one before it.
    */
   function clearCompanyScopedState() {
+    setAgentAppearance(randomAgentAppearance());
     setCreatedCompanyPrefix(null);
     setCompanyName("");
     setCreatedCompanyGoalId(null);
@@ -867,7 +871,7 @@ function OnboardingWizardInner({
     if (!effectiveOnboardingOpen) return;
     const state = {
       step, companyName,
-      agentName, agentRole, adapterType, cwd, model, command, args, url,
+      agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
       // The mode, never the key: this blob is localStorage.
       credentialMode, credentialModeChoice,
       createdCompanyId, createdCompanyPrefix, createdAgentId,
@@ -876,7 +880,7 @@ function OnboardingWizardInner({
     onboardingDraftStorage.write(JSON.stringify(state));
   }, [
     effectiveOnboardingOpen, step, companyName,
-    agentName, agentRole, adapterType, cwd, model, command, args, url,
+    agentName, agentAppearance, agentRole, adapterType, cwd, model, command, args, url,
     credentialMode, credentialModeChoice,
     createdCompanyId, createdCompanyPrefix, createdAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
@@ -1200,6 +1204,21 @@ function OnboardingWizardInner({
     connectPhase === "unwindRow";
   const connectLinkVisible = connectPhase === "idle" || connectPhase === "unwindRow";
 
+  /**
+   * When "Connecting" started, and whether the login behind it has finished.
+   *
+   * Two facts because they now arrive at different times. The button says
+   * "Connecting" the moment a code is pasted, but the credential only exists
+   * once the server confirms it, a poll and a completion read later. The hire
+   * waits for both: the stored login, and two seconds of "Connecting" counted
+   * from the paste — so a fast server still shows the state, and a slow one
+   * does not have the hold added on top of its own wait.
+   */
+  const connectingSinceRef = useRef<number | null>(null);
+  const [connectCredentialStored, setConnectCredentialStored] = useState(false);
+  /** What the button was offering before a paste, for when the paste is refused. */
+  const phaseBeforeSubmitRef = useRef<ConnectPhase>("waiting");
+
   /** A sign-in is running and has not succeeded. */
   const connectStepLoggingIn =
     connectStepNeedsLogin && connectPhase !== "idle" && connectPhase !== "connecting";
@@ -1228,17 +1247,27 @@ function OnboardingWizardInner({
       return () => clearTimeout(t);
     }
     if (connectPhase === "connecting") {
+      // Not before the login is stored. "Connecting" starts at the paste now,
+      // ahead of the server confirming anything, so a hire from here would go
+      // out against a source with no credential to run on.
+      if (!connectCredentialStored) return;
       // No success state: the step advances. The hold is so "Connecting" is
       // legible as a state rather than a flicker on the way out — a step that
       // left the instant a paste landed would read as the paste having gone
-      // wrong.
+      // wrong. Counted from when "Connecting" appeared, so the time the server
+      // spent confirming counts toward it instead of being added to it.
       //
       // A beat rather than a bare timer because Back stays live through it. A
       // dropped handle hired two seconds after the customer had backed out,
       // landing them on Review having asked for the opposite; `handleGiveHeartbeat`
       // has no notion of the phase and could not refuse it. Leaving the phase —
       // Back, the step changing, unmount — now cancels the hire with it.
-      const t = setTimeout(() => void handleGiveHeartbeat(), CONNECTED_HOLD_MS);
+      const shownFor =
+        connectingSinceRef.current === null ? 0 : Date.now() - connectingSinceRef.current;
+      const t = setTimeout(
+        () => void handleGiveHeartbeat(),
+        Math.max(0, CONNECTED_HOLD_MS - shownFor),
+      );
       return () => clearTimeout(t);
     }
     if (connectPhase === "unwindCard") {
@@ -1260,7 +1289,7 @@ function OnboardingWizardInner({
       return () => clearTimeout(t);
     }
     return;
-  }, [step, connectPhase, credentialMode, connectStepNeedsLogin]);
+  }, [step, connectPhase, credentialMode, connectStepNeedsLogin, connectCredentialStored]);
 
   /**
    * The button's four faces, and which of them can be pressed.
@@ -1309,6 +1338,8 @@ function OnboardingWizardInner({
    */
   function unwindConnectStep() {
     setConnectAuthUrl(null);
+    connectingSinceRef.current = null;
+    setConnectCredentialStored(false);
     // Where the reverse starts depends on how far the sequence got. Backing out
     // during the collapse has no card to close and no room to give back.
     // With no card open, the row is the whole of the unwind.
@@ -1331,6 +1362,10 @@ function OnboardingWizardInner({
       setConnectPhase("waiting");
       return;
     }
+    // The hold owns the hire once "Connecting" is showing. That now starts at
+    // the paste, before the credential exists, so Cmd+Enter here would hire
+    // against a source with nothing to run on.
+    if (connectPhase === "connecting") return;
     if (connectStepLoggingIn) return;
     void handleGiveHeartbeat();
   }
@@ -1456,6 +1491,8 @@ function OnboardingWizardInner({
     setConnectPhase("idle");
     setConnectAuthUrl(null);
     setSourcePicked(false);
+    connectingSinceRef.current = null;
+    setConnectCredentialStored(false);
   }, [step]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
@@ -1515,6 +1552,7 @@ function OnboardingWizardInner({
     // Back to the mount defaults: an empty name (the step's only question, and
     // what its CTA gates on) and the neutral role every onboarding hire uses.
     setAgentName("");
+    setAgentAppearance(randomAgentAppearance());
     setAgentRole(DEFAULT_AGENT_ROLE);
     setAdapterType("claude_local");
     setModel("");
@@ -2050,6 +2088,7 @@ function OnboardingWizardInner({
       if (existing) {
         if (!stillTheSameCompany(createdCompanyId)) return;
         setCreatedAgentId(existing.id);
+        setAgentAppearance(resolveAgentAppearance(existing.appearance, existing.id));
         queryClient.invalidateQueries({
           queryKey: queryKeys.agents.list(createdCompanyId)
         });
@@ -2061,6 +2100,7 @@ function OnboardingWizardInner({
         // The name is optional; an agent that reaches here without one is
         // named for the job it was hired to do rather than left blank.
         name: hireName,
+        appearance: agentAppearance,
         role: agentRole,
         adapterType,
         adapterConfig: hireAdapterConfig,
@@ -2335,7 +2375,7 @@ function OnboardingWizardInner({
                 />
               )}
 
-              {/* The hero, above the heading: one PillGuy held in the same tree
+              {/* The hero, above the heading: one character held in the same tree
                   slot across steps 3–5, so React reuses the DOM node and moving
                   between steps never replays the entrance. It is dormant while
                   the agent is being specified and wakes on Review. */}
@@ -2368,14 +2408,7 @@ function OnboardingWizardInner({
                           to this box and travel out past its top-right
                           corner. */}
                       <div className="relative size-(--sz-72px)">
-                        <PillGuy
-                          state={step === 5 ? "alive" : "dormant"}
-                          className="size-full"
-                        />
-                        {/* Only while it is actually asleep. A still grey
-                            silhouette reads as a placeholder that failed to
-                            load rather than as something waiting its turn. */}
-                        {step < 5 && <SleepingZs />}
+                        <AgentCharacter appearance={agentAppearance} size={128} state={step === 5 ? "success" : adapterEnvLoading || loading || ["loading", "waiting", "connecting"].includes(connectPhase) ? "loading" : "sleepy"} muted={step < 5} className="size-full" />
                       </div>
                       <AgentPreview agentName={agentName} agentRole="" />
                     </motion.div>
@@ -2654,10 +2687,58 @@ function OnboardingWizardInner({
                           // The prompt arriving is what ends the waiting beat.
                           if (url) setConnectPhase((p) => (p === "loading" ? "ready" : p));
                         }}
+                        onCodeSubmitted={() => {
+                          // The button reacts to the paste, not to the server.
+                          // Waiting for the login to be stored left about a
+                          // second of a button still reading "Waiting for code"
+                          // after the code had already gone in.
+                          phaseBeforeSubmitRef.current = connectPhase;
+                          connectingSinceRef.current = Date.now();
+                          setConnectCredentialStored(false);
+                          setConnectPhase("connecting");
+                        }}
+                        onSubmitFailed={() => {
+                          // Only while the button still says "Connecting". The
+                          // panel stays mounted through Back's exit, so a failure
+                          // that landed after Back restored the button and
+                          // reopened the card the customer was leaving — without
+                          // the address Back had cleared, so its sign-in could
+                          // not even be pressed.
+                          if (connectPhase !== "connecting") return;
+                          // Refused, failed or timed out — the card says which.
+                          // The button goes back to what it was offering rather
+                          // than spinning on a login that is not coming.
+                          connectingSinceRef.current = null;
+                          setConnectCredentialStored(false);
+                          setConnectPhase(
+                            phaseBeforeSubmitRef.current === "ready" ? "ready" : "waiting",
+                          );
+                        }}
                         onConnected={() => {
+                          // Not into a card the customer has left. The panel is
+                          // still mounted through Back's exit, and a login that
+                          // finished there pulled the step back into "Connecting"
+                          // and on into a hire they had just backed away from.
+                          // The login is stored either way; what this refuses is
+                          // only the step moving forward after they chose to go.
+                          if (
+                            connectPhase !== "loading" &&
+                            connectPhase !== "ready" &&
+                            connectPhase !== "waiting" &&
+                            connectPhase !== "connecting"
+                          ) {
+                            return;
+                          }
                           // The hold before the step advances is the phase's own
                           // beat, above, so that backing out during it cancels
-                          // the hire.
+                          // the hire. It counts from the paste when there was
+                          // one, and from here for a login that finished without
+                          // one — a resumed session, or a code handed out rather
+                          // than pasted back.
+                          if (connectingSinceRef.current === null) {
+                            connectingSinceRef.current = Date.now();
+                          }
+                          setConnectCredentialStored(true);
                           setConnectPhase("connecting");
                         }}
                         onStored={() => {

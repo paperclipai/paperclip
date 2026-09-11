@@ -1,3 +1,4 @@
+import { AgentAvatar, type AvatarAgent } from "../AgentAvatar";
 import { useContext, useState, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
@@ -9,7 +10,6 @@ import {
   type GalleryMediaItem,
 } from "@/components/ImageGalleryModal";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { AgentIcon } from "@/components/AgentIconPicker";
 import { CommentAttributionChip } from "@/components/CommentAttributionChip";
 import {
   Attachment,
@@ -74,10 +74,12 @@ function initialsForName(name: string) {
 export function TaskChatAgentIdentity({
   agentName,
   agentIcon,
+  agent,
   onBehalfOfUserName,
 }: {
   agentName: string;
   agentIcon?: string | null;
+  agent?: AvatarAgent;
   onBehalfOfUserName?: string;
 }) {
   return (
@@ -85,19 +87,7 @@ export function TaskChatAgentIdentity({
       className="flex items-center gap-2 px-1"
       data-testid="task-chat-agent-identity"
     >
-      <Avatar
-        size="sm"
-        className="shrink-0"
-        data-testid="task-chat-agent-avatar"
-      >
-        {agentIcon ? (
-          <AvatarFallback>
-            <AgentIcon icon={agentIcon} className="h-3.5 w-3.5" />
-          </AvatarFallback>
-        ) : (
-          <AvatarFallback>{initialsForName(agentName)}</AvatarFallback>
-        )}
-      </Avatar>
+      <span data-testid="task-chat-agent-avatar"><AgentAvatar agent={agent} name={agentName} size={24} /></span>
       <span className="text-sm font-semibold text-foreground">{agentName}</span>
       {onBehalfOfUserName ? (
         <CommentAttributionChip
@@ -232,7 +222,7 @@ export function TaskChatBubble({
       {!isHuman && item.authorName && !hideAgentIdentity ? (
         <TaskChatAgentIdentity
           agentName={item.authorName}
-          agentIcon={item.agentIcon}
+          agentIcon={item.agentIcon} agent={item.agent}
           onBehalfOfUserName={item.onBehalfOfUserName}
         />
       ) : null}

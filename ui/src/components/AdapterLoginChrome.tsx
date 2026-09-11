@@ -360,7 +360,12 @@ export function OnboardingCardField({
   disabled?: boolean;
   label?: string;
   placeholder?: string;
-  /** A provider key is a credential; a one-time browser code is not. */
+  /**
+   * Dots instead of the value. The key card asks for it because a provider key
+   * is a credential that goes on living. The Claude card asks too: its code
+   * stays in the field after the paste so the customer can see something
+   * landed, and that is all they need to see of it.
+   */
   masked?: boolean;
   /**
    * Take focus when the card opens.

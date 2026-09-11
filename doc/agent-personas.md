@@ -34,7 +34,11 @@ can be removed and regenerates on demand. Independent replicas can render the
 same key safely; successful writes are complete objects. ETags hash PNG bytes.
 A small `.png.json` sidecar stores the content digest and length; it is published
 after the complete PNG. Warm requests stream stored PNG bytes without re-rendering
-or buffering the image in the API process. Responses are immutable for one year. Render/storage failures return 503 with
+or buffering the image in the API process. Responses are immutable for one year.
+Cold renders are limited per client IP (32 outstanding keys and 256 new keys
+per minute per process); excess misses return 429 with Retry-After and no-store.
+Warm cache hits and requests joining the same in-flight key bypass admission.
+The route uses Express trust-proxy configuration, never an untrusted forwarded header. Render/storage failures return 503 with
 Retry-After and no-store rather than caching a broken image.
 
 cap-v1 is frozen: change the version when changing palette values, poses,
@@ -65,7 +69,16 @@ the TS palette data; `--check` detects drift. This does not generate images.
 
 Storybook: **Agents / Personas**. Run with
 `PAPERCLIP_STORYBOOK_API_URL=http://localhost:<isolated-port> pnpm storybook`.
-Static Storybook hosting must proxy `/api/agent-avatars` to an instance.
+`pnpm build-storybook` automatically packages all finite avatar presets (17
+palettes plus muted gray, nine poses, eleven logical sizes, both densities).
+The build uses the same bounded Node worker pool, SVG renderer, and Sharp pipeline
+as the API. Storybook-only URL resolution points to relative PNG paths under the
+published build, including branch-prefixed deployments. Production Paperclip
+continues to use its on-demand API; no image generation runs during agent creation.
+The generated files are build output, never committed. A manifest records image
+hashes and pixel dimensions; deployment verification fetches every image and checks
+its content type, PNG signature, dimensions, and hash. Dev Storybook still uses the
+API proxy for cold-cache and regeneration testing.
 
 Focused checks:
 
@@ -81,11 +94,10 @@ Use fixed poses/times for screenshots and Linux for authoritative visual
 baselines. Verify cold and warm URLs, reduced motion, reconnect, and saved
 appearance after refresh alongside normal typecheck/test/build checks.
 
-Linux visual/performance checks (against the built Storybook with the API proxy):
+Linux visual/performance checks (against the self-contained built Storybook):
 
 ```sh
-PAPERCLIP_PERSONA_STORYBOOK_URL=http://localhost:<storybook-port> \
-  pnpm exec playwright test --config tests/storybook-visual/agent-personas.config.ts
+pnpm exec playwright test --config tests/storybook-visual/agent-personas.config.ts
 ```
 
 Use the Playwright 1.62.1 Noble image for authoritative Linux baselines. The suite

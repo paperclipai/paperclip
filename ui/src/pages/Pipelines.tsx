@@ -1,3 +1,4 @@
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { groupWarningsByStage, LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
@@ -84,7 +85,6 @@ import { instanceSettingsApi } from "../api/instanceSettings";
 import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { EmptyState } from "../components/EmptyState";
-import { AgentIcon } from "../components/AgentIconPicker";
 import { IssueChatThread } from "../components/IssueChatThread";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { PageSkeleton } from "../components/PageSkeleton";
@@ -1363,7 +1363,7 @@ function PipelineBoardColumn({
               className="inline-flex max-w-full items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-muted-foreground hover:text-foreground"
               title={`Edit ${stage.name} automation`}
             >
-              <AgentIcon icon={automationAgent.icon} className="h-3.5 w-3.5 shrink-0" />
+              <AgentAvatar agent={automationAgent} size={16} className="h-3.5 w-3.5 shrink-0"/>
               <span className="truncate">{automationAgent.name}</span>
             </Link>
           ) : null}

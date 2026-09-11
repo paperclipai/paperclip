@@ -74,6 +74,14 @@ export async function packageExists(name, sha, fetchImpl = fetch) {
   return true;
 }
 
+export async function planArtifacts(sha, { migrator = false, image = true, fetchImpl = fetch } = {}) {
+  versionFor(sha);
+  return {
+    image: image && !await imageExists(sha, fetchImpl),
+    packages: migrator && !(await packageExists("@paperclipai/shared", sha, fetchImpl) && await packageExists("@paperclipai/db", sha, fetchImpl)),
+  };
+}
+
 export async function imageExists(sha, fetchImpl = fetch) {
   versionFor(sha);
   const tokenRes = await fetchImpl("https://ghcr.io/token?service=ghcr.io&scope=repository:paperclipai/paperclip:pull", { signal: AbortSignal.timeout(30_000) });
@@ -178,12 +186,13 @@ export async function publishPreview(dir, sha, { fetchImpl = fetch, exec = execF
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [command, ...args] = process.argv.slice(2);
   try {
-    if (command === "plan") {
+    if (command === "plan" || command === "plan-migrator") {
       const [sha, requestId, migrator] = args;
       validateRequest(sha, requestId);
       if (process.env.GITHUB_REF !== "refs/heads/master") throw new Error("Preview workflow definitions must run from master.");
-      const image = !await imageExists(sha);
-      const packages = migrator === "true" && !(await packageExists("@paperclipai/shared", sha) && await packageExists("@paperclipai/db", sha));
+      const { image, packages } = await planArtifacts(sha, {
+        image: command === "plan", migrator: command === "plan-migrator" || migrator === "true",
+      });
       appendFileSync(process.env.GITHUB_OUTPUT, `image=${image}\npackages=${packages}\n`);
     } else if (command === "pack") packPreview(...args);
     else if (command === "publish") await publishPreview(...args);
@@ -195,6 +204,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       if (process.env.PREVIEW_MIGRATOR === "true" && !(await packageExists("@paperclipai/shared", sha) && await packageExists("@paperclipai/db", sha))) throw new Error("Preview packages are still missing.");
       mkdirSync("stack-deploy-result", { recursive: true });
       writeFileSync("stack-deploy-result/result.json", JSON.stringify({ version: 1, stage: "build", requestId, sha, status: "ready" }) + "\n");
-    } else throw new Error("Expected plan, pack, publish, publish-image, or result.");
+    } else throw new Error("Expected plan, plan-migrator, pack, publish, publish-image, or result.");
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

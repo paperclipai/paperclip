@@ -37,6 +37,7 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 }));
 
 const mockRunSecretRedactionRegistry = vi.hoisted(() => ({
+  redactForRuns: vi.fn(async (_companyId: string, values: unknown[]) => values),
   redactForRun: vi.fn(
     async (_companyId: string, _runId: string, value: unknown) => value,
   ),
@@ -615,6 +616,8 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(limit).toHaveBeenCalledWith(50);
     expect(res.body).toHaveLength(50);
+    expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalledTimes(1);
+    expect(mockRunSecretRedactionRegistry.redactForRun).not.toHaveBeenCalled();
     expect(mockHeartbeatService.buildRunOutputSilence).toHaveBeenCalledTimes(
       50,
     );
@@ -659,6 +662,8 @@ describe("agent live run routes", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(limit).toHaveBeenCalledWith(50);
     expect(res.body).toHaveLength(50);
+    expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalledTimes(1);
+    expect(mockRunSecretRedactionRegistry.redactForRun).not.toHaveBeenCalled();
   });
 
   it("does not pad with recent runs when no minCount is requested", async () => {
