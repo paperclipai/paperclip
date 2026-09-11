@@ -309,35 +309,7 @@ export interface InstalledSkillTarget {
 
 export interface MaterializedPaperclipSkillCopyResult {
   copiedFiles: number;
-}
-
-/**
- * A class of skill-source entry the admission gate in
- * `materializePaperclipSkillCopy` refuses to copy. Each class names a shape
- * that can hold a host secret or crosses a trust boundary on its own (a
- * symlink or a non-regular file).
- */
-export type PaperclipSkillAdmissionRejectionClass =
-  | "env_file"
-  | "credential_file"
-  | "private_key_file"
-  | "git_metadata"
-  | "symlink"
-  | "special_file";
-
-/**
- * The admission gate rejected one entry inside a skill source tree. The
- * message carries only the rejection class, never a source path or file
- * content, so a caller can log it directly.
- */
-export class PaperclipSkillAdmissionRejectedError extends Error {
-  readonly rejectionClass: PaperclipSkillAdmissionRejectionClass;
-
-  constructor(rejectionClass: PaperclipSkillAdmissionRejectionClass) {
-    super(`Paperclip skill admission gate rejected an entry: ${rejectionClass}`);
-    this.name = "PaperclipSkillAdmissionRejectedError";
-    this.rejectionClass = rejectionClass;
-  }
+  skippedSymlinks: string[];
 }
 
 interface PersistentSkillSnapshotOptions {
@@ -4271,55 +4243,6 @@ async function hashSkillDirectory(root: string): Promise<string> {
   return hash.digest("hex");
 }
 
-// Bumped from 1 to 2 when the admission gate (deny-list classification) was
-// added to `materializePaperclipSkillCopy`. A version-1 sentinel was written
-// by code that copied every entry with no classification, so it must not
-// satisfy a version-2 caller — treating it as a mismatch forces a fresh,
-// gated copy on the first run after an upgrade.
-const MATERIALIZED_SKILL_SENTINEL_VERSION = 2;
-
-const SKILL_ADMISSION_DENY_EXACT_NAMES = new Set([
-  ".npmrc",
-  ".netrc",
-  ".pgpass",
-  ".htpasswd",
-  "credentials",
-  "id_rsa",
-  "id_ecdsa",
-  "id_ed25519",
-  "id_dsa",
-]);
-
-const SKILL_ADMISSION_DENY_EXTENSIONS = new Set([
-  ".pem",
-  ".key",
-  ".p12",
-  ".pfx",
-  ".jks",
-  ".keystore",
-]);
-
-/**
- * Classify a skill-source directory entry by name. Returns the rejection
- * class the admission gate must reject it for, or `null` when the name is
- * admitted. Directory-only classes (`git_metadata`) apply only when
- * `isDirectory` is true; the caller decides symlink and special-file classes
- * from the `lstat` result before it calls this function.
- */
-function classifyPaperclipSkillEntryName(
-  name: string,
-  isDirectory: boolean,
-): PaperclipSkillAdmissionRejectionClass | null {
-  if (isDirectory) {
-    return name === ".git" ? "git_metadata" : null;
-  }
-  if (name === ".env" || name.startsWith(".env.")) return "env_file";
-  if (SKILL_ADMISSION_DENY_EXACT_NAMES.has(name)) return "credential_file";
-  const extension = path.extname(name).toLowerCase();
-  if (SKILL_ADMISSION_DENY_EXTENSIONS.has(extension)) return "private_key_file";
-  return null;
-}
-
 async function materializedSkillFingerprintMatches(
   targetRoot: string,
   sourceFingerprint: string,
@@ -4333,48 +4256,11 @@ async function materializedSkillFingerprintMatches(
     ) as unknown;
     const parsed = parseObject(raw);
     return (
-      parsed.version === MATERIALIZED_SKILL_SENTINEL_VERSION &&
-      parsed.sourceFingerprint === sourceFingerprint
+      parsed.version === 1 && parsed.sourceFingerprint === sourceFingerprint
     );
   } catch {
     return false;
   }
-}
-
-/**
- * A target holds a gated snapshot when it carries a current-version sentinel
- * with a fingerprint value, no matter which source it once matched. This
- * check does not compare against the current source, so it stays valid when
- * the source is absent or unreadable.
- */
-async function targetHoldsGatedSnapshot(targetRoot: string): Promise<boolean> {
-  try {
-    const raw = JSON.parse(
-      await fs.readFile(
-        path.join(targetRoot, MATERIALIZED_SKILL_SENTINEL),
-        "utf8",
-      ),
-    ) as unknown;
-    const parsed = parseObject(raw);
-    return (
-      parsed.version === MATERIALIZED_SKILL_SENTINEL_VERSION &&
-      typeof parsed.sourceFingerprint === "string"
-    );
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Remove `targetRoot` unless it already holds a gated snapshot. Call this on
- * an exit that does not publish a fresh snapshot but must not destroy a
- * working one: a good gated copy survives a transient fault, while a legacy
- * or unreadable directory — ungated content an older build could have
- * written — does not.
- */
-async function removeUngatedTarget(targetRoot: string): Promise<void> {
-  if (await targetHoldsGatedSnapshot(targetRoot)) return;
-  await fs.rm(targetRoot, { recursive: true, force: true }).catch(() => {});
 }
 
 async function acquireMaterializeLock(
@@ -4474,83 +4360,54 @@ export async function materializePaperclipSkillCopy(
     );
   }
 
-  let rootStat: Awaited<ReturnType<typeof fs.lstat>>;
-  try {
-    rootStat = await fs.lstat(sourceRoot);
-  } catch (err) {
-    // A missing source root is a lookup failure, not a source-root refusal,
-    // but it still does not publish a fresh snapshot: fail closed at the
-    // target unless it already holds a gated snapshot worth keeping. The
-    // self-containment check above reports a different problem — `targetRoot`
-    // can contain `sourceRoot` there — so it alone removes nothing.
-    await removeUngatedTarget(targetRoot);
-    throw err;
-  }
+  const rootStat = await fs.lstat(sourceRoot);
   if (rootStat.isSymbolicLink()) {
-    // Fail closed at the target, not only here: a refused source root must
-    // not leave a stale, ungated copy from an earlier run in place under
-    // `targetRoot`.
-    await fs.rm(targetRoot, { recursive: true, force: true }).catch(() => {});
     throw new Error(
       "Refusing to materialize a skill root that is itself a symlink.",
     );
   }
   if (!rootStat.isDirectory()) {
-    await fs.rm(targetRoot, { recursive: true, force: true }).catch(() => {});
     throw new Error("Paperclip skills must be directories.");
   }
 
   const result: MaterializedPaperclipSkillCopyResult = {
     copiedFiles: 0,
+    skippedSymlinks: [],
   };
 
   const lockDir = `${targetRoot}.lock`;
-  let releaseLock: () => Promise<void>;
-  try {
-    releaseLock = await acquireMaterializeLock(lockDir);
-  } catch (err) {
-    await removeUngatedTarget(targetRoot);
-    throw err;
-  }
+  const releaseLock = await acquireMaterializeLock(lockDir);
   const tempRoot = `${targetRoot}.tmp-${process.pid}-${randomUUID()}`;
 
-  // The admission gate classifies each entry in the same pass that copies
-  // it. A rejected entry throws immediately: the whole skill fails closed
-  // (the caller never sees a partially admitted skill), and the thrown
-  // error carries only the rejection class, never the source path.
   async function copyEntry(
     sourcePath: string,
     targetPath: string,
-    entryName: string,
+    relativePath: string,
   ): Promise<void> {
     const stat = await fs.lstat(sourcePath);
     if (stat.isSymbolicLink()) {
-      throw new PaperclipSkillAdmissionRejectedError("symlink");
+      result.skippedSymlinks.push(relativePath || ".");
+      return;
     }
 
     if (stat.isDirectory()) {
-      const rejectionClass = classifyPaperclipSkillEntryName(entryName, true);
-      if (rejectionClass) {
-        throw new PaperclipSkillAdmissionRejectedError(rejectionClass);
-      }
       await fs.mkdir(targetPath, { recursive: true });
       const entries = await fs.readdir(sourcePath, { withFileTypes: true });
       entries.sort((left, right) => left.name.localeCompare(right.name));
       for (const entry of entries) {
+        const childRelativePath = relativePath
+          ? `${relativePath}/${entry.name}`
+          : entry.name;
         await copyEntry(
           path.join(sourcePath, entry.name),
           path.join(targetPath, entry.name),
-          entry.name,
+          childRelativePath,
         );
       }
       return;
     }
 
     if (stat.isFile()) {
-      const rejectionClass = classifyPaperclipSkillEntryName(entryName, false);
-      if (rejectionClass) {
-        throw new PaperclipSkillAdmissionRejectedError(rejectionClass);
-      }
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
       await fs
         .copyFile(sourcePath, targetPath, fsConstants.COPYFILE_FICLONE)
@@ -4559,10 +4416,7 @@ export async function materializePaperclipSkillCopy(
         });
       await fs.chmod(targetPath, stat.mode).catch(() => {});
       result.copiedFiles += 1;
-      return;
     }
-
-    throw new PaperclipSkillAdmissionRejectedError("special_file");
   }
 
   try {
@@ -4571,14 +4425,15 @@ export async function materializePaperclipSkillCopy(
       await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)
     )
       return result;
-    await copyEntry(sourceRoot, tempRoot, path.basename(sourceRoot));
+    await copyEntry(sourceRoot, tempRoot, "");
     await fs.writeFile(
       path.join(tempRoot, MATERIALIZED_SKILL_SENTINEL),
       `${JSON.stringify(
         {
-          version: MATERIALIZED_SKILL_SENTINEL_VERSION,
+          version: 1,
           sourceFingerprint,
           copiedFiles: result.copiedFiles,
+          skippedSymlinks: result.skippedSymlinks,
         },
         null,
         2,
@@ -4592,59 +4447,10 @@ export async function materializePaperclipSkillCopy(
     await fs.rm(targetRoot, { recursive: true, force: true });
     await fs.rename(tempRoot, targetRoot);
     return result;
-  } catch (err) {
-    if (err instanceof PaperclipSkillAdmissionRejectedError) {
-      // Fail closed at the target, not only at the temporary root: a
-      // rejected entry must not leave a stale, ungated copy from an earlier
-      // run in place under `targetRoot`.
-      await fs.rm(targetRoot, { recursive: true, force: true }).catch(() => {});
-    } else {
-      // A hash failure, a transient copy error, or any other fault in this
-      // block does not publish a fresh snapshot, but it must not destroy a
-      // working one either: keep the target only when it already holds a
-      // gated snapshot.
-      await removeUngatedTarget(targetRoot);
-    }
-    throw err;
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
     await releaseLock();
   }
-}
-
-/**
- * Materialize every entry's skill into `targetDir` as an owned,
- * admission-gated copy — never a symlink. A remote adapter lane calls this to
- * build the directory it stages into a sandbox with `followSymlinks: false`.
- * An excluded skill logs its name and rejection class only; the run
- * continues without it.
- */
-export async function materializeSelectedPaperclipSkillsIntoDir(input: {
-  targetDir: string;
-  entries: Array<{ key: string; runtimeName: string; source: string }>;
-  label: string;
-  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
-}): Promise<string> {
-  await fs.mkdir(input.targetDir, { recursive: true });
-  for (const entry of input.entries) {
-    const target = path.join(input.targetDir, entry.runtimeName);
-    try {
-      await materializePaperclipSkillCopy(entry.source, target);
-    } catch (err) {
-      if (err instanceof PaperclipSkillAdmissionRejectedError) {
-        await input.onLog(
-          "stderr",
-          `[paperclip] Excluded ${input.label} skill "${entry.runtimeName}" (${err.rejectionClass}).\n`,
-        );
-        continue;
-      }
-      await input.onLog(
-        "stderr",
-        `[paperclip] Failed to materialize ${input.label} skill "${entry.runtimeName}": ${err instanceof Error ? err.message : String(err)}\n`,
-      );
-    }
-  }
-  return input.targetDir;
 }
 
 export async function removeMaintainerOnlySkillSymlinks(

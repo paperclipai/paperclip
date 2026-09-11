@@ -622,12 +622,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           onRuntimeProgress: ctx.onRuntimeProgress,
           assets: [
             {
-              // `prepareClaudePromptBundle` materializes an owned,
-              // admission-gated copy under `.claude/skills` (never a
-              // symlink), so the staged tarball must not carry `-h`.
               key: "skills",
               localDir: promptBundle.addDir,
-              followSymlinks: false,
+              followSymlinks: true,
             },
             {
               key: "mcp-config",

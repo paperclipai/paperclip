@@ -4,8 +4,7 @@ import path from "node:path";
 import { createHash, type Hash } from "node:crypto";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import {
-  materializePaperclipSkillCopy,
-  PaperclipSkillAdmissionRejectedError,
+  ensurePaperclipSkillSymlink,
   resolvePaperclipInstanceRootForAdapter,
   type PaperclipSkillEntry,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -147,22 +146,11 @@ export async function prepareClaudePromptBundle(input: {
   const skillsHome = path.join(rootDir, ".claude", "skills");
   await fs.mkdir(skillsHome, { recursive: true });
 
-  // Copied, never symlinked: this bundle can be staged into a sandbox on the
-  // remote lane (`execute.ts`'s `skills` asset), which crosses a
-  // host-to-sandbox trust boundary. A symlink here would leave that lane no
-  // owned snapshot to stage.
   for (const entry of skills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
-      await materializePaperclipSkillCopy(entry.source, target);
+      await ensurePaperclipSkillSymlink(entry.source, target);
     } catch (err) {
-      if (err instanceof PaperclipSkillAdmissionRejectedError) {
-        await onLog(
-          "stderr",
-          `[paperclip] Excluded Claude skill "${entry.runtimeName}" (${err.rejectionClass}).\n`,
-        );
-        continue;
-      }
       await onLog(
         "stderr",
         `[paperclip] Failed to materialize Claude skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,

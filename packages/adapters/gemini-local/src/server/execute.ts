@@ -40,7 +40,6 @@ import {
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
   isPaperclipSkillSourceMissing,
-  materializeSelectedPaperclipSkillsIntoDir,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
@@ -188,26 +187,20 @@ async function ensureGeminiSkillsInjected(
   }
 }
 
-// Builds a fresh, admission-gated copy of each desired skill (never a
-// symlink), because this directory is staged into the sandbox on the remote
-// lane below with `followSymlinks: false`.
 async function buildGeminiSkillsDir(
   config: Record<string, unknown>,
-  onLog: AdapterExecutionContext["onLog"],
 ): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-gemini-skills-"));
   const target = path.join(tmp, "skills");
+  await fs.mkdir(target, { recursive: true });
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredNames = new Set(resolveLegacyPaperclipDesiredSkillNames(config, availableEntries));
-  const desiredEntries = availableEntries.filter(
-    (entry) => desiredNames.has(entry.key) && !isPaperclipSkillSourceMissing(entry),
-  );
-  return materializeSelectedPaperclipSkillsIntoDir({
-    targetDir: target,
-    entries: desiredEntries,
-    label: "Gemini",
-    onLog,
-  });
+  for (const entry of availableEntries) {
+    if (!desiredNames.has(entry.key)) continue;
+    if (isPaperclipSkillSourceMissing(entry)) continue;
+    await fs.symlink(entry.source, path.join(target, entry.runtimeName));
+  }
+  return target;
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -366,7 +359,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   if (executionTargetIsRemote) {
     try {
-      localSkillsDir = await buildGeminiSkillsDir(config, onLog);
+      localSkillsDir = await buildGeminiSkillsDir(config);
       await onLog(
         "stdout",
         `[paperclip] Syncing workspace and Gemini runtime assets to ${describeAdapterExecutionTarget(executionTarget)}.\n`,
@@ -382,12 +375,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         onProgress: (line) => onLog("stdout", line),
         onRuntimeProgress: ctx.onRuntimeProgress,
         assets: [{
-          // `buildGeminiSkillsDir` materializes an owned, admission-gated
-          // copy (never a symlink), so the staged tarball must not carry
-          // `-h`.
           key: "skills",
           localDir: localSkillsDir,
-          followSymlinks: false,
+          followSymlinks: true,
         }],
       });
       restoreRemoteWorkspace = () =>
