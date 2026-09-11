@@ -20,12 +20,14 @@ import {
   materializePaperclipSkillCopy,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
+  removeMaintainerOnlySkillSymlinks,
   renderPaperclipWakePrompt,
   resolveLegacyPaperclipDesiredSkillNames,
   resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
   runningProcesses,
   runChildProcess,
+  writeManagedGeminiSkillsManifest,
   sanitizeSshRemoteEnv,
   signalRunningProcess,
   shapePaperclipWorkspaceEnvForExecution,
@@ -343,6 +345,140 @@ describe("materializePaperclipSkillCopy", () => {
       await expect(
         fs.readFile(path.join(target, "SKILL.md"), "utf8"),
       ).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("removeMaintainerOnlySkillSymlinks", () => {
+  it("prunes a stale managed directory the manifest names, and keeps an unmanaged directory", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      await fs.mkdir(skillsHome, { recursive: true });
+
+      // A skill this lane materialized as a plain directory (the shape an
+      // earlier build without the manifest could leave behind) and no
+      // longer selects.
+      const staleManagedDir = path.join(skillsHome, "old-skill");
+      await fs.mkdir(staleManagedDir, { recursive: true });
+      await fs.writeFile(
+        path.join(staleManagedDir, "SKILL.md"),
+        "# old\n",
+        "utf8",
+      );
+      await writeManagedGeminiSkillsManifest(skillsHome, ["old-skill"]);
+
+      // An entry the manifest never named: a skill the user put in their
+      // own Gemini skills home, not one Paperclip materialized.
+      const unmanagedDir = path.join(skillsHome, "users-own-skill");
+      await fs.mkdir(unmanagedDir, { recursive: true });
+      await fs.writeFile(
+        path.join(unmanagedDir, "SKILL.md"),
+        "# mine\n",
+        "utf8",
+      );
+
+      const removed = await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+      expect(removed).toEqual(["old-skill"]);
+      await expect(fs.stat(staleManagedDir)).rejects.toThrow();
+      await expect(
+        fs.readFile(path.join(unmanagedDir, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# mine\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("prunes a stale managed symlink the manifest names", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      const source = path.join(root, "source-skill");
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      const target = path.join(skillsHome, "linked-skill");
+      await fs.symlink(source, target);
+      await writeManagedGeminiSkillsManifest(skillsHome, ["linked-skill"]);
+
+      const removed = await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+      expect(removed).toEqual(["linked-skill"]);
+      await expect(fs.lstat(target)).rejects.toThrow();
+      // The link is gone, but the skill source it pointed to must survive —
+      // this lane only ever prunes its own target directory.
+      await expect(
+        fs.readFile(path.join(source, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a non-symlink entry the manifest never named, even when it is not selected", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      await fs.mkdir(skillsHome, { recursive: true });
+      const unmanagedDir = path.join(skillsHome, "users-own-skill");
+      await fs.mkdir(unmanagedDir, { recursive: true });
+      await fs.writeFile(
+        path.join(unmanagedDir, "SKILL.md"),
+        "# mine\n",
+        "utf8",
+      );
+      // No manifest is written at all: this skills home predates the
+      // manifest, or the entry was never Paperclip's to manage.
+
+      const removed = await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+      expect(removed).toEqual([]);
+      await expect(
+        fs.readFile(path.join(unmanagedDir, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# mine\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still removes a legacy maintainer-only symlink absent from any manifest", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      const maintainerSource = path.join(
+        root,
+        ".agents",
+        "skills",
+        "maintainer-skill",
+      );
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.mkdir(maintainerSource, { recursive: true });
+      await fs.writeFile(
+        path.join(maintainerSource, "SKILL.md"),
+        "# maintainer\n",
+        "utf8",
+      );
+
+      const target = path.join(skillsHome, "maintainer-skill");
+      await fs.symlink(maintainerSource, target);
+      // No manifest is written: this covers the pre-manifest legacy case.
+
+      const removed = await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+      expect(removed).toEqual(["maintainer-skill"]);
+      await expect(fs.lstat(target)).rejects.toThrow();
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

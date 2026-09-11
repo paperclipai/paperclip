@@ -174,6 +174,7 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
 const MATERIALIZED_SKILL_SENTINEL = ".paperclip-materialized-skill.json";
 const MATERIALIZED_SKILL_LOCK_OWNER = "owner.json";
 const MATERIALIZED_SKILL_LOCK_STALE_MS = 30_000;
+const MANAGED_GEMINI_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 
 function expandHomePrefix(value: string): string {
   if (value === "~") return os.homedir();
@@ -4453,11 +4454,63 @@ export async function materializePaperclipSkillCopy(
   }
 }
 
+/**
+ * Read the set of skill names the Gemini lane manages in `skillsHome`. A
+ * managed name is a name `writeManagedGeminiSkillsManifest` wrote after this
+ * lane materialized it. A missing or unreadable manifest yields an empty
+ * set, so a skills home from before this manifest existed manages nothing
+ * yet — the legacy symlink check in `removeMaintainerOnlySkillSymlinks`
+ * still covers that case.
+ */
+export async function readManagedGeminiSkillsManifest(
+  skillsHome: string,
+): Promise<Set<string>> {
+  try {
+    const raw = JSON.parse(
+      await fs.readFile(
+        path.join(skillsHome, MANAGED_GEMINI_SKILLS_MANIFEST),
+        "utf8",
+      ),
+    ) as unknown;
+    const parsed = parseObject(raw);
+    const names = Array.isArray(parsed.managedSkillNames)
+      ? parsed.managedSkillNames.filter(
+          (value): value is string =>
+            typeof value === "string" && value.trim().length > 0,
+        )
+      : [];
+    return new Set(names);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Record the skill names the Gemini lane just materialized into
+ * `skillsHome`. Call this after every materialize pass, so the manifest
+ * always names exactly the entries this lane owns. Only a name in this
+ * manifest is a valid prune target for `removeMaintainerOnlySkillSymlinks` —
+ * a name never written here is a skill the user or another tool put in
+ * their own Gemini skills home, and it must survive.
+ */
+export async function writeManagedGeminiSkillsManifest(
+  skillsHome: string,
+  skillNames: Iterable<string>,
+): Promise<void> {
+  const managedSkillNames = Array.from(new Set(skillNames)).sort();
+  await fs.writeFile(
+    path.join(skillsHome, MANAGED_GEMINI_SKILLS_MANIFEST),
+    `${JSON.stringify({ version: 1, managedSkillNames }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
 export async function removeMaintainerOnlySkillSymlinks(
   skillsHome: string,
   allowedSkillNames: Iterable<string>,
 ): Promise<string[]> {
   const allowed = new Set(Array.from(allowedSkillNames));
+  const managed = await readManagedGeminiSkillsManifest(skillsHome);
   try {
     const entries = await fs.readdir(skillsHome, { withFileTypes: true });
     const removed: string[] = [];
@@ -4465,6 +4518,20 @@ export async function removeMaintainerOnlySkillSymlinks(
       if (allowed.has(entry.name)) continue;
 
       const target = path.join(skillsHome, entry.name);
+
+      // A name in the manifest is a skill this lane owns. Prune it in full —
+      // a directory, a file, or a symlink to any source — because the lane
+      // itself wrote it and no longer selects it.
+      if (managed.has(entry.name)) {
+        await fs.rm(target, { recursive: true, force: true }).catch(() => {});
+        removed.push(entry.name);
+        continue;
+      }
+
+      // A name outside the manifest predates it, or belongs to the user.
+      // Only remove it when it is a symlink into a maintainer-only source —
+      // the narrow legacy case a skills home can carry from before this
+      // manifest existed. Every other unmanaged entry survives untouched.
       const existing = await fs.lstat(target).catch(() => null);
       if (!existing?.isSymbolicLink()) continue;
 

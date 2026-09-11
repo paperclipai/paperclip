@@ -68,6 +68,7 @@ import {
   selectPaperclipTaskMarkdown,
   resolveLegacyPaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
+  writeManagedGeminiSkillsManifest,
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
@@ -1313,7 +1314,7 @@ async function prepareGeminiSkillRuntime(input: {
   const allowedSkillNames = selectedSkills.map((entry) => entry.runtimeName);
   const removedSkills = await removeMaintainerOnlySkillSymlinks(skillsHome, allowedSkillNames);
   for (const skillName of removedSkills) {
-    await input.onLog("stdout", `[paperclip] Removed maintainer-only ACPX Gemini skill "${skillName}" from ${skillsHome}\n`);
+    await input.onLog("stdout", `[paperclip] Removed stale ACPX Gemini skill "${skillName}" from ${skillsHome}\n`);
   }
 
   for (const entry of selectedSkills) {
@@ -1341,6 +1342,7 @@ async function prepareGeminiSkillRuntime(input: {
       );
     }
   }
+  await writeManagedGeminiSkillsManifest(skillsHome, allowedSkillNames);
 
   return {
     identity: {

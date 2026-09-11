@@ -44,6 +44,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
+  writeManagedGeminiSkillsManifest,
   parseObject,
   renderTemplate,
   renderPaperclipWakePrompt,
@@ -164,7 +165,7 @@ async function ensureGeminiSkillsInjected(
   for (const skillName of removedSkills) {
     await onLog(
       "stderr",
-      `[paperclip] Removed maintainer-only Gemini skill "${skillName}" from ${skillsHome}\n`,
+      `[paperclip] Removed stale Gemini skill "${skillName}" from ${skillsHome}\n`,
     );
   }
 
@@ -185,6 +186,10 @@ async function ensureGeminiSkillsInjected(
       );
     }
   }
+  await writeManagedGeminiSkillsManifest(
+    skillsHome,
+    selectedEntries.map((entry) => entry.runtimeName),
+  );
 }
 
 async function buildGeminiSkillsDir(
