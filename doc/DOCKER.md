@@ -18,6 +18,14 @@ Build arguments:
 |-----|---------|---------|
 | `USER_UID` | `1000` | UID for the container `node` user (match your host UID to avoid permission issues on bind mounts) |
 | `USER_GID` | `1000` | GID for the container `node` group |
+| `CLI_TOOLS_CACHE_EPOCH` | empty | Refresh the CLI-install layer; CI supplies the current ISO week |
+| `PAPERCLIP_BUILD_VERSION` | empty | Runtime version when Git metadata is unavailable |
+| `PAPERCLIP_BUILD_COMMIT` | empty | Source commit written into the server build stamp and runtime environment |
+
+Changing the build version or commit preserves the CLI-install cache. The
+tool layer refreshes when its weekly epoch, base image, installation command,
+or earlier build inputs change. Local builds can set a new epoch explicitly
+to refresh tools without clearing the entire build cache.
 
 ```sh
 docker build -t paperclip-local \
