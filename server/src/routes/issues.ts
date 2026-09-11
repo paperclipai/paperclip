@@ -291,6 +291,7 @@ import {
 } from "../services/company-search-rate-limit.js";
 import {
   applyIssueExecutionPolicyTransition,
+  executionDecisionSnapshotMatches,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
   redactIssueMonitorExternalRef,
@@ -13458,6 +13459,16 @@ export function issueRoutes(
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            if (decision) {
+              const lockedExisting = await svc.getByIdForUpdate(id, tx);
+              if (!lockedExisting) return null;
+              if (!executionDecisionSnapshotMatches(existing, lockedExisting)) {
+                throw conflict(
+                  "Execution stage decision is stale. Refresh the issue and try again.",
+                  { code: "execution_stage_decision_stale", issueId: id },
+                );
+              }
+            }
             if (
               reviewPolicySensitiveMutationRequested &&
               !(await assertLockedReviewPolicyAllowsMutation(tx))

@@ -44,6 +44,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   upsertWatchdog: vi.fn(),
   deleteWatchdog: vi.fn(),
   unarchiveFromInbox: vi.fn(),
+  update: vi.fn(),
 }));
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -488,6 +489,7 @@ describe("IssueProperties", () => {
     mockIssuesApi.upsertWatchdog.mockResolvedValue({});
     mockIssuesApi.deleteWatchdog.mockResolvedValue({ ok: true });
     mockIssuesApi.unarchiveFromInbox.mockResolvedValue({ ok: true });
+    mockIssuesApi.update.mockReset();
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAccessApi.listUserDirectory.mockResolvedValue({
       users: [
@@ -3564,6 +3566,78 @@ describe("IssueProperties", () => {
         mode: "isolated_workspace",
         environmentId: null,
       },
+    });
+
+    act(() => root.unmount());
+  });
+
+  it("submits a pending human stage decision with its required comment in one update", async () => {
+    const targetIssue = createIssue({
+      id: "issue-approve",
+      identifier: "PAP-approve",
+      status: "in_review",
+      executionPolicy: createExecutionPolicy({
+        stages: [
+          {
+            id: "approval-stage",
+            type: "approval",
+            approvalsNeeded: 1,
+            participants: [{ id: "participant-approve", type: "user", agentId: null, userId: "user-1" }],
+          },
+        ],
+      }),
+      executionState: createExecutionState({
+        status: "pending",
+        currentStageId: "approval-stage",
+        currentStageIndex: 0,
+        currentStageType: "approval",
+        currentParticipant: { type: "user", agentId: null, userId: "user-1" },
+        returnAssignee: { type: "agent", agentId: "agent-2", userId: null },
+        lastDecisionOutcome: null,
+      }),
+    });
+    mockIssuesApi.update.mockResolvedValue({});
+
+    const root = renderProperties(container, {
+      issue: targetIssue,
+      childIssues: [],
+      onUpdate: vi.fn(),
+      inline: true,
+    });
+
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="stage-decision-actions"]')).not.toBeNull();
+    });
+
+    const approveButton = container.querySelector<HTMLButtonElement>(
+      '[data-testid="stage-decision-approve"]',
+    );
+    const textarea = container.querySelector<HTMLTextAreaElement>(
+      '[data-testid="stage-decision-comment"]',
+    );
+    expect(approveButton).not.toBeNull();
+    expect(textarea).not.toBeNull();
+    expect(approveButton!.disabled).toBe(true);
+    expect(approveButton!.title).toContain("Add a comment to approve");
+
+    await act(async () => {
+      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      nativeSetter.call(textarea!, "  Verified and approved.  ");
+      textarea!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(approveButton!.disabled).toBe(false);
+
+    await act(async () => {
+      approveButton!.click();
+    });
+    await flush();
+
+    expect(mockIssuesApi.update).toHaveBeenCalledWith("issue-approve", {
+      status: "done",
+      comment: "Verified and approved.",
+    });
+    await waitForAssertion(() => {
+      expect(container.querySelector('[data-testid="stage-decision-actions"]')).toBeNull();
     });
 
     act(() => root.unmount());
