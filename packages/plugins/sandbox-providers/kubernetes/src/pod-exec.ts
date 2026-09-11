@@ -34,24 +34,30 @@ export function shQuote(segment: string): string {
   return `'${segment.replace(/'/g, "'\\''")}'`;
 }
 
-// Wrap a command so the given env vars are exported before it runs. The Kubernetes
-// exec API has no env field, so the only way to give an exec'd process additional
-// env is to run it under a shell that exports the vars and then `exec`s the real
-// command. PATH is deliberately skipped (the caller's PATH is the orchestrator's,
-// not the sandbox image's, and overriding it would break command resolution), and
-// only valid shell identifiers are exported. Returns the original command unchanged
-// when there is nothing to apply.
+// Wrap a command so the given working directory and env vars apply before it runs.
+// The Kubernetes exec API has neither a `cwd` nor an `env` field, so the only way
+// to give an exec'd process either is to run it under a shell that `cd`s, exports
+// the vars, and then `exec`s the real command. The `cd` is chained with `&&` so a
+// missing directory fails the exec loudly instead of silently running the command
+// somewhere else. PATH is deliberately skipped (the caller's PATH is the
+// orchestrator's, not the sandbox image's, and overriding it would break command
+// resolution), and only valid shell identifiers are exported. Returns the original
+// command unchanged when there is nothing to apply.
 export function wrapCommandWithEnv(
   command: string[],
   env: Record<string, string> | undefined | null,
+  cwd?: string | null,
 ): string[] {
   const entries = Object.entries(env && typeof env === "object" ? env : {}).filter(
     ([key, value]) =>
       typeof value === "string" && key !== "PATH" && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key),
   );
-  if (entries.length === 0) return command;
+  const cdPrefix =
+    typeof cwd === "string" && cwd.trim().length > 0 ? `cd ${shQuote(cwd.trim())} && ` : "";
+  if (entries.length === 0 && cdPrefix === "") return command;
   const exports = entries.map(([k, v]) => `export ${k}=${shQuote(v)};`).join(" ");
-  return ["/bin/sh", "-c", `${exports} exec ${command.map(shQuote).join(" ")}`];
+  const body = `${exports}${exports ? " " : ""}exec ${command.map(shQuote).join(" ")}`;
+  return ["/bin/sh", "-c", `${cdPrefix}${body}`];
 }
 
 export async function execInPod(
