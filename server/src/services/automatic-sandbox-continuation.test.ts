@@ -8,6 +8,7 @@ import { prepareAutomaticSandboxContinuation } from "./automatic-sandbox-continu
 import { heartbeatService, type HeartbeatEnvironmentRuntime } from "./heartbeat.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
+import { CONVERSATION_CONTINUATION_POLICY } from "./conversation-continuation.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -76,6 +77,13 @@ const support = await getEmbeddedPostgresTestSupport();
     await restarted.sweepPendingCleanupLeases();
     await restarted.resumeInterruptedSandboxRuns();
     expect(await successors(f.run.id)).toHaveLength(1);
+  });
+  it("preserves ordinary transient retry scheduling while its cleanup is pending", async () => {
+    const f = await seed(false);
+    await db.update(heartbeatRuns).set({ errorCode: "rate_limit", resultJson: { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    const result = await heartbeatService(db).scheduleBoundedRetry(f.run.id);
+    expect(result.outcome).toBe("scheduled");
   });
   it("does not reclaim a historical reusable resource that can be resuming elsewhere", async () => {
     const f = await seed(false);

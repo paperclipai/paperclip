@@ -14839,7 +14839,8 @@ export function heartbeatService(
       };
     }
 
-    if (run.runtimeMode === "legacy" && await runHasUnconfirmedRemoteExecution(db, run.companyId, run.id)) {
+    if (run.runtimeMode === "legacy" && SANDBOX_INFRASTRUCTURE_ERRORS.includes(run.errorCode ?? "") &&
+        await runHasUnconfirmedRemoteExecution(db, run.companyId, run.id)) {
       return { outcome: "not_scheduled" as const, reason: "Waiting for confirmed sandbox termination",
         errorCode: "remote_execution_cleanup_pending" as const, issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     }
