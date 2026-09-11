@@ -24,7 +24,9 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import {
+  classifyNativeDeliveryHold,
   classifyNativeDeliveryWait,
+  getNativeDeliveryHold,
   getNativeDeliveryWait,
   listNativeDeliveryWaits,
 } from "../services/delivery/native-delivery-wait.js";
@@ -263,6 +265,28 @@ describeEmbeddedPostgres("native delivery wait", () => {
         kind: "wait",
         nextActor: "implementation_owner",
       });
+      waiting.blocker.reasonCode = "review_conversations_unresolved";
+      expect(classifyNativeDeliveryWait({ unit: waiting, policy })).toMatchObject({
+        kind: "wait",
+        nextActor: "implementation_owner",
+      });
+    });
+
+    it("keeps provider merge waits controller-owned with no owner repair", () => {
+      // A branch-protection / merge-queue refusal and the provider's
+      // unclassified merge rejection name conditions no code edit resolves:
+      // the controller re-reads the provider, and no repair wake is minted.
+      const waiting = { ...unit, status: "blocked", blocker: { reasonCode: "merge_queue_blocked" } };
+      expect(classifyNativeDeliveryWait({ unit: waiting, policy })).toEqual({
+        kind: "wait",
+        blocker: { reasonCode: "merge_queue_blocked", message: "merge_queue_blocked", owner: null, nextAction: null },
+        nextActor: "controller",
+      });
+      waiting.blocker.reasonCode = "merge_rejected";
+      expect(classifyNativeDeliveryWait({ unit: waiting, policy })).toMatchObject({
+        kind: "wait",
+        nextActor: "controller",
+      });
     });
 
     it.each([
@@ -292,6 +316,63 @@ describeEmbeddedPostgres("native delivery wait", () => {
     ])("never claims a wait for %s", (reason, input) => {
       expect(classifyNativeDeliveryWait(input)).toEqual({ kind: "none", reason });
     });
+  });
+
+  describe("classifyNativeDeliveryHold", () => {
+    it("surfaces an operator-held unit as an owned hold with its own blocker", () => {
+      const pausedAt = new Date("2026-09-11T07:24:29Z");
+      expect(classifyNativeDeliveryHold({
+        unit: { status: "blocked", pausedAt, blocker: { reasonCode: "operator_paused", message: "Held by operator", owner: null, nextAction: null } },
+        policy: { paused: false },
+      })).toEqual({
+        kind: "hold",
+        hold: "operator_pause",
+        blocker: { reasonCode: "operator_paused", message: "Held by operator", owner: null, nextAction: null },
+      });
+    });
+
+    it("surfaces a paused policy as a hold and keeps disabled or missing policy out of it", () => {
+      expect(classifyNativeDeliveryHold({ unit: { status: "in_review", pausedAt: null, blocker: null }, policy: { paused: true } }))
+        .toEqual({ kind: "hold", hold: "policy_paused", blocker: null });
+      expect(classifyNativeDeliveryHold({ unit: { status: "in_review", pausedAt: null, blocker: null }, policy: null }))
+        .toEqual({ kind: "none" });
+      expect(classifyNativeDeliveryHold({ unit: { status: "in_review", pausedAt: null, blocker: null }, policy: { paused: false } }))
+        .toEqual({ kind: "none" });
+      // The operator pause outranks the policy pause and precedes policy reads.
+      expect(classifyNativeDeliveryHold({
+        unit: { status: "in_review", pausedAt: new Date(), blocker: null },
+        policy: { paused: true },
+      })).toEqual({ kind: "hold", hold: "operator_pause", blocker: null });
+      // Terminal units are not holds.
+      expect(classifyNativeDeliveryHold({ unit: { status: "merged", pausedAt: new Date(), blocker: null }, policy: { paused: true } }))
+        .toEqual({ kind: "none" });
+    });
+  });
+
+  it("reads an operator-paused unit as an owned hold and nothing for a running wait", async () => {
+    const seeded = await seedCompany();
+    await seedPolicy(seeded);
+    const heldIssueId = await seedIssue(seeded, { title: "operator held" });
+    const waitingIssueId = await seedIssue(seeded, { title: "in review" });
+    await seedUnit(seeded, heldIssueId, {
+      status: "blocked",
+      blocker: { reasonCode: "operator_paused", message: "Post-canary hold", owner: null, nextAction: null },
+      pausedAt: new Date("2026-09-11T07:24:29Z"),
+    });
+    await seedUnit(seeded, waitingIssueId, { prNumber: 55, sourceBranch: "delivery/widget-2" });
+
+    const hold = await getNativeDeliveryHold(db, seeded.companyId, heldIssueId);
+    expect(hold).toMatchObject({
+      issueId: heldIssueId,
+      hold: "operator_pause",
+      unitStatus: "blocked",
+      candidateGeneration: 1,
+      blocker: { reasonCode: "operator_paused" },
+    });
+    // A live controller-owned wait is not a hold.
+    expect(await getNativeDeliveryHold(db, seeded.companyId, waitingIssueId)).toBeNull();
+    expect(await getNativeDeliveryHold(db, seeded.companyId, randomUUID())).toBeNull();
+    expect(await getNativeDeliveryHold(db, seeded.companyId, "")).toBeNull();
   });
 
   it("recognizes a persisted in-review unit as the issue's owned wait", async () => {

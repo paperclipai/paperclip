@@ -1112,6 +1112,61 @@ export function createGitHubDeliveryClient(
   }
 
   /**
+   * Whether the provider itself requires conversation resolution before
+   * merging into `branch`, read from the authoritative requirement sources:
+   * ruleset pull-request rules first, then legacy branch protection at
+   * `/branches/{branch}/protection` — the branch object itself does not carry
+   * the conversation flag.
+   *
+   * Three honest states. `required` when a readable source states it;
+   * `not_required` only when every source was readable and none states it; and
+   * `unknown` whenever a source was unreachable, forbidden, or unreadable.
+   * `unknown` is never collapsed into not-required: callers fail closed, so a
+   * merge readiness is never reported on a requirement the provider has not
+   * stated.
+   */
+  async function getConversationResolutionRequirement(
+    companyId: string,
+    connectionId: string | null,
+    host: string,
+    owner: string,
+    repo: string,
+    branch: string,
+  ): Promise<GitHubResult<{ state: "required" | "not_required" | "unknown" }>> {
+    let rulesDecided: "required" | "negative" | "unknown" = "unknown";
+    const rules = await request<unknown>(
+      companyId, connectionId, host, "GET",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/rules/branches/${encodeURIComponent(branch)}`,
+    );
+    if (rules.ok && Array.isArray(rules.value)) {
+      rulesDecided = "negative";
+      for (const entry of rules.value) {
+        const rule = record(entry);
+        if (str(rule?.rule_type) !== "pull_request") continue;
+        if (bool(record(rule?.parameters)?.required_review_thread_resolution) === true) {
+          return { ok: true, value: { state: "required" } };
+        }
+      }
+    }
+    let protectionDecided: "required" | "negative" | "unknown" = "unknown";
+    const protection = await request<Record<string, unknown>>(
+      companyId, connectionId, host, "GET",
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/branches/${encodeURIComponent(branch)}/protection`,
+    );
+    if (protection.ok) {
+      const conversationResolution = record(protection.value?.required_conversation_resolution);
+      if (bool(conversationResolution?.enabled) === true) {
+        return { ok: true, value: { state: "required" } };
+      }
+      protectionDecided = "negative";
+    }
+    return {
+      ok: true,
+      value: { state: rulesDecided === "negative" && protectionDecided === "negative" ? "not_required" : "unknown" },
+    };
+  }
+
+  /**
    * Ancestry check used to prove a merged revision is actually included in the
    * target branch. The call is `compare(base=head-candidate, head=target)`:
    * the candidate is included exactly when the target is ahead of it (or the
@@ -1171,6 +1226,7 @@ export function createGitHubDeliveryClient(
     getReviewComments,
     getReviewThreads,
     getCheckRuns,
+    getConversationResolutionRequirement,
     mergePullRequest,
     enqueuePullRequest,
     compareCommits,
@@ -1239,6 +1295,20 @@ export interface GitHubDeliveryClient {
     repo: string,
     ref: string,
   ): Promise<GitHubResult<GitHubCheckRun[]>>;
+  /**
+   * Whether the provider requires conversation resolution before merging into
+   * `branch`: `required` when a readable source states it, `not_required` only
+   * when every source was readable and none does, and `unknown` when any
+   * source was unreadable — callers fail closed on unknown.
+   */
+  getConversationResolutionRequirement(
+    companyId: string,
+    connectionId: string | null,
+    host: string,
+    owner: string,
+    repo: string,
+    branch: string,
+  ): Promise<GitHubResult<{ state: "required" | "not_required" | "unknown" }>>;
   mergePullRequest(
     companyId: string,
     connectionId: string | null,

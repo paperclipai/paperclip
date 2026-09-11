@@ -155,6 +155,17 @@ export type DeliveryEvidence = {
    * requirement; a review of any other revision is not evidence for this one.
    */
   nativeReview: DeliveryNativeReviewEvidence | null;
+  /**
+   * Unresolved GitHub review conversations when the provider itself requires
+   * conversation resolution before merging, per GitHub's own branch/ruleset
+   * record — including outdated threads: outdated is not resolved. `null`
+   * means the gate cannot be truthfully evaluated (the requirement is
+   * unreadable, or the requirement stands but the review-thread record could
+   * not be read completely), which blocks fail-closed. Undefined (absent)
+   * means the provider's readable sources state no such requirement, so this
+   * distinct gate does not apply; blocking findings stay governed separately.
+   */
+  unresolvedConversations?: number | null;
 };
 
 /** The review regime in force, with the legacy derivation for older records. */
@@ -253,6 +264,32 @@ export function evaluateDeliveryRequirements(input: {
       owner: null,
       nextAction: "Re-request review on the current head.",
     };
+  }
+  if (evidence.unresolvedConversations !== undefined) {
+    if (evidence.unresolvedConversations === null) {
+      return {
+        reasonCode: "provider_unknown",
+        message: "Required conversation resolution could not be verified: GitHub's review-thread record could not be read completely",
+        owner: null,
+        nextAction: "Reconcile again once GitHub's review threads can be read.",
+      };
+    }
+    // A distinct provider gate: GitHub refuses the merge until every review
+    // conversation is resolved — including outdated threads, because outdated
+    // is not resolved. It is reported as its own blocker so the next action
+    // names the provider requirement instead of a finding that no longer
+    // exists, and no automated path ever resolves a conversation on the
+    // owner's behalf.
+    if (evidence.unresolvedConversations > 0) {
+      return {
+        reasonCode: "review_conversations_unresolved",
+        message: evidence.unresolvedConversations === 1
+          ? "GitHub requires all review conversations resolved before merging; one conversation is unresolved"
+          : `GitHub requires all review conversations resolved before merging; ${evidence.unresolvedConversations} conversations are unresolved`,
+        owner: null,
+        nextAction: "Resolve the unresolved GitHub review conversations on the pull request (reply and resolve each thread); the controller never resolves threads on the owner's behalf.",
+      };
+    }
   }
   if (reviewPolicy === "github_approval") {
     const author = evidence.prAuthorLogin?.trim().toLowerCase() ?? null;

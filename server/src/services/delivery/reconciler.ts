@@ -23,7 +23,7 @@ import type { DeliveryEventService } from "./events.js";
 import type { DeliveryPolicyService, DeliveryRepositoryRow } from "./policy.js";
 import type { DeliveryQueueService } from "./queue.js";
 import type { DeliveryUnitService, DeliveryUnitRow } from "./units.js";
-import { deriveDeliveryPhase, readUnitMetadata } from "./units.js";
+import { deriveDeliveryPhase, isProviderWaitReason, readUnitMetadata } from "./units.js";
 import type { GitHubDeliveryClient } from "./github-client.js";
 import type { GreptileFinding, GreptileReviewService, GreptileReviewState } from "./greptile.js";
 import { GREPTILE_BLOCKING_SEVERITIES, providerVerdictRejects } from "./greptile.js";
@@ -95,6 +95,13 @@ export interface DeliveryReconciler {
   verifyMergedUnit(input: { companyId: string; unitId: string }): Promise<DeliveryReconcileOutcome>;
   /** Wakes the owner for a changed actionable evidence signal, bounded per signal. */
   requestRepair(input: DeliveryRepairRequest): Promise<DeliveryRepairOutcome>;
+  /**
+   * Controller-only projection for a unit that stopped being mergeable: issues
+   * still advertising the delivery-owned `ready_to_merge`/`merging` statuses
+   * return to `in_review`. Explicit board decisions are never downgraded, and
+   * `done` stays reachable only through a verified merge receipt.
+   */
+  downgradeBlockedIssueStatus(input: { companyId: string; unitId: string }): Promise<void>;
 }
 
 export type DeliveryIssueStatusWriter = (input: {
@@ -233,10 +240,11 @@ export function deliveryReconciler(
       .then((rows) => rows.map((row) => row.issueId));
   }
 
-  async function syncIssueStatus(
+  async function writeIssueStatuses(
     companyId: string,
     unit: DeliveryUnitRow,
     status: "in_review" | "ready_to_merge" | "merging" | "done",
+    reason: string,
   ) {
     const issueIds = await coveredIssueIds(companyId, unit.id);
     for (const issueId of issueIds) {
@@ -265,7 +273,7 @@ export function deliveryReconciler(
             controller: {
               controller: "delivery-controller",
               unitId: unit.id,
-              reason: `reconcile:${status}`,
+              reason,
             },
           });
         } catch (error) {
@@ -287,6 +295,29 @@ export function deliveryReconciler(
         }
       }
     }
+  }
+
+  async function syncIssueStatus(
+    companyId: string,
+    unit: DeliveryUnitRow,
+    status: "in_review" | "ready_to_merge" | "merging" | "done",
+  ) {
+    await writeIssueStatuses(companyId, unit, status, `reconcile:${status}`);
+  }
+
+  /**
+   * Controller-only downgrade for a unit that stopped being mergeable while its
+   * issues advertise a delivery-owned merge status. `ready_to_merge` must imply
+   * a mergeable unit: a blocked unit withdraws that claim, and its issues return
+   * to `in_review` — the delivery-owned waiting state. Only the two delivery
+   * statuses move, so an explicit board decision (blocked, todo, done,
+   * cancelled, in_progress) keeps its owner, and `done` is never written here:
+   * a verified merge receipt through the Done gate stays the only path to done.
+   */
+  async function downgradeBlockedIssueStatus(input: { companyId: string; unitId: string }): Promise<void> {
+    const unit = await units.getUnit(input.companyId, input.unitId);
+    if (!unit || unit.status !== "blocked") return;
+    await writeIssueStatuses(input.companyId, unit, "in_review", "reconcile:blocked");
   }
 
   async function holdQueue(companyId: string, unit: DeliveryUnitRow, reasonCode: string, message: string) {
@@ -694,6 +725,8 @@ export function deliveryReconciler(
     findings?: Array<Pick<typeof deliveryFindings.$inferSelect,
       "source" | "externalId" | "severity" | "state" | "title" | "body" | "filePath" | "line">>;
     reviewChanges?: string[];
+    /** GitHub thread ids the conversation-resolution gate counts, per reason. */
+    unresolvedThreadIds?: string[] | null;
     explicitNonce?: number | null;
   }) {
     return `v1:${hashEvidence({
@@ -704,6 +737,9 @@ export function deliveryReconciler(
       blockingFindings: input.reasonCode === "review_blocking_findings" ? input.blockingFindings : null,
       findings: input.reasonCode === "review_blocking_findings" ? input.findings ?? [] : null,
       reviewChanges: input.reasonCode === "review_blocking_findings" ? input.reviewChanges ?? [] : null,
+      unresolvedThreadIds: input.reasonCode === "review_conversations_unresolved"
+        ? input.unresolvedThreadIds ?? []
+        : null,
       checks: input.reasonCode === "checks_failing"
         ? input.checks?.map((check) => `${check.name}:${check.status}`).sort() ?? null
         : null,
@@ -716,14 +752,21 @@ export function deliveryReconciler(
    * change by waiting (an in-flight provider review, a missing required check,
    * a human approval gate, an unreadable provider) withdraws readiness but
    * never spends a repair attempt on the implementation owner.
+   *
+   * Provider merge states are excluded on purpose: `merge_queue_blocked` and
+   * `merge_queue_unsupported` are branch-protection / merge-queue conditions
+   * only the provider can resolve, and `merge_rejected` is the provider's own
+   * unclassified refusal. No repository edit satisfies them, so they are
+   * controller-owned waits — the next authoritative provider read decides —
+   * while a genuinely code-fixable merge failure keeps its named code
+   * (`conflict`, `head_stale`) and its bounded repair.
    */
   const REPAIRABLE_REASON_CODES: Record<string, true> = {
     review_blocking_findings: true,
+    review_conversations_unresolved: true,
     checks_failing: true,
     head_stale: true,
     conflict: true,
-    merge_queue_blocked: true,
-    merge_rejected: true,
     pr_closed_unmerged: true,
   };
 
@@ -1115,6 +1158,34 @@ export function deliveryReconciler(
       });
       return { unitId: unit.id, status: "cancelled", phase: "not_started", blocker: null, merged: false, changed: true };
     }
+
+    // Provider wait gate. A unit blocked on an external branch-protection /
+    // merge-queue state owns its next check durably: sweeps re-read the
+    // provider no earlier than the recorded instant instead of re-running the
+    // expensive merge/read path on every scheduler tick. The gate never claims
+    // the wait self-clears — it only defers the next authoritative read, and
+    // the read (not the marker) decides. A webhook, operator reconcile, or
+    // explicit retry carries a fresh provider fact and always re-reads.
+    if (input.trigger === "sweep" && unit.status === "blocked" && isProviderWaitReason(unit.blocker?.reasonCode ?? "")) {
+      const waitMarker = readUnitMetadata(unit.metadata).providerWait;
+      const nextCheckAt = waitMarker?.nextCheckAt ? new Date(waitMarker.nextCheckAt) : null;
+      if (
+        waitMarker?.reasonCode === unit.blocker?.reasonCode
+        && nextCheckAt != null
+        && !Number.isNaN(nextCheckAt.getTime())
+        && nextCheckAt.getTime() > Date.now()
+      ) {
+        return {
+          unitId: unit.id,
+          status: unit.status,
+          phase: deriveDeliveryPhase(unit),
+          blocker: unit.blocker ?? null,
+          merged: false,
+          changed: false,
+        };
+      }
+    }
+
     const repository = await units.loadRepository(input.companyId, unit.repositoryId);
     if (!repository) throw new Error("delivery_repository_not_found");
     const policyRow = await policy.getRowForIssueProject(input.companyId, unit.projectId);
@@ -1223,6 +1294,9 @@ export function deliveryReconciler(
         dedupeKey: `closed_unmerged:${pullRequest.number}`,
         url: pullRequest.url,
       });
+      // A closed unit is no longer mergeable: an issue still advertising
+      // ready_to_merge/merging returns to in_review under controller authority.
+      await syncIssueStatus(input.companyId, closed, "in_review");
       await requestRepair({
         companyId: input.companyId,
         unit: { ...closed, status: "closed_unmerged" },
@@ -1276,6 +1350,36 @@ export function deliveryReconciler(
     const reviews = await github.getReviews(
       input.companyId, connectionId, repository.host, repository.owner, repository.name, pullRequest.number,
     );
+    // GitHub's own review-thread record, read complete or failed. It feeds two
+    // distinct gates: Greptile correlation proves a finding's resolution
+    // through its exact thread (generation- and head-fenced), and the
+    // provider's required-conversation-resolution gate counts unresolved
+    // conversations — including outdated threads, because outdated is not
+    // resolved.
+    const reviewThreads = await github.getReviewThreads(
+      input.companyId, connectionId, repository.host, repository.owner, repository.name, pullRequest.number,
+    );
+    const unresolvedThreads = reviewThreads.ok
+      ? reviewThreads.value.filter((thread) => !thread.isResolved)
+      : null;
+    // The conversation gate applies only when the provider itself requires
+    // resolution; a requirement the provider has not stated is never imposed
+    // arbitrarily. An unreadable requirement is never collapsed into
+    // not-required: readiness fails closed as provider_unknown below.
+    let unresolvedConversations: number | null | undefined;
+    if (!reviewThreads.ok || unresolvedThreads!.length > 0) {
+      const requirement = await github.getConversationResolutionRequirement(
+        input.companyId, connectionId, repository.host, repository.owner, repository.name, unit.targetBranch,
+      );
+      if (requirement.ok && requirement.value.state === "required") {
+        unresolvedConversations = unresolvedThreads === null ? null : unresolvedThreads.length;
+      } else if (requirement.ok && requirement.value.state === "unknown") {
+        // The requirement cannot be read: truthfully reporting readiness with
+        // unresolved conversations is impossible, so the evidence is null and
+        // blocks fail-closed.
+        unresolvedConversations = null;
+      }
+    }
     const authorLogin = pullRequest.authorLogin ?? null;
 
     // Greptile is read through the scoped gateway and every finding is
@@ -1423,6 +1527,7 @@ export function deliveryReconciler(
       independentChangesRequested: (reviews.ok && reviews.value.status === "changes_requested")
         || providerVerdictRejects(greptileProviderVerdict),
       nativeReview,
+      unresolvedConversations,
     };
 
     // Evidence-change detection happens before the fence so the write and the
@@ -1441,7 +1546,7 @@ export function deliveryReconciler(
     // Display evidence is stamped with the generation and head it was read at,
     // and a failed authoritative read is recorded as such: the board must show
     // unknown, never a cached pass, until a fresh read succeeds.
-    const evidenceReadFailed = !checks.ok || !reviews.ok
+    const evidenceReadFailed = !checks.ok || !reviews.ok || !reviewThreads.ok
       || (policyRow.requireGreptile && !greptileEvidenceAvailable);
     const nextMetadata = {
       ...metadata,
@@ -1551,6 +1656,12 @@ export function deliveryReconciler(
             .sort() : [],
           checks: evidence.checks?.filter((check) =>
             policyRow.requiredChecks.includes(check.name) && !isCheckSuccessful(check.status)) ?? null,
+          // The conversation gate's evidence identity is the exact set of
+          // unresolved threads: a new conversation or a resolution re-arms the
+          // bounded repair, an unchanged set never spends an attempt.
+          unresolvedThreadIds: blockerValue.reasonCode === "review_conversations_unresolved"
+            ? unresolvedThreads?.map((thread) => thread.id) ?? []
+            : null,
           // An explicit operator/retry reconcile is a fresh request; a poll is
           // not.
           explicitNonce: input.trigger === "retry" || input.trigger === "operator" ? now.getTime() : null,
@@ -1611,6 +1722,10 @@ export function deliveryReconciler(
           nextAction: null,
           readyAt: acceptedUnit.readyAt ?? now,
           queueEnteredAt: acceptedUnit.queueEnteredAt ?? now,
+          // Fresh acceptance resolves any provider wait: the durable next-check
+          // marker for the refused admission is cleared with the state it
+          // described.
+          metadata: { ...readUnitMetadata(acceptedUnit.metadata), providerWait: undefined },
           lastEventAt: now,
           updatedAt: now,
         },
@@ -1703,5 +1818,5 @@ export function deliveryReconciler(
     return { reconciled, merged };
   }
 
-  return { reconcileUnit, reconcileIssue, reconcilePullRequest, reconcileCompany, verifyMergedUnit, requestRepair };
+  return { reconcileUnit, reconcileIssue, reconcilePullRequest, reconcileCompany, verifyMergedUnit, requestRepair, downgradeBlockedIssueStatus };
 }

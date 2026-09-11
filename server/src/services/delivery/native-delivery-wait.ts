@@ -45,6 +45,12 @@ const NATIVE_DELIVERY_WAIT_TERMINAL_UNIT_STATUSES: readonly DeliveryUnitStatus[]
  * Blocker reasons the delivery controller resolves by itself: the next
  * reconcile sweep retries the remote read, or the bounded owner-repair loop
  * already woke the implementation owner for this exact head.
+ *
+ * Provider merge states (`merge_queue_blocked`, `merge_queue_unsupported`,
+ * `merge_rejected`) are controller-owned waits with no owner repair: they are
+ * external branch-protection / merge-queue conditions the next authoritative
+ * provider read decides, so no code-repair wake exists for them and none may
+ * be manufactured here.
  */
 export const NATIVE_DELIVERY_WAIT_CONTROLLER_REASON_CODES: Record<string, true> = {
   checks_pending: true,
@@ -52,6 +58,7 @@ export const NATIVE_DELIVERY_WAIT_CONTROLLER_REASON_CODES: Record<string, true> 
   review_pending: true,
   review_approval_required: true,
   review_blocking_findings: true,
+  review_conversations_unresolved: true,
   review_head_stale: true,
   head_stale: true,
   conflict: true,
@@ -64,14 +71,18 @@ export const NATIVE_DELIVERY_WAIT_CONTROLLER_REASON_CODES: Record<string, true> 
   dependency_must_merge_after: true,
 };
 
-/** Reasons whose next action is the implementation owner's bounded repair wake. */
+/**
+ * Reasons whose next action is the implementation owner's bounded repair wake.
+ * Provider waits are excluded: a branch-protection or merge-queue refusal (and
+ * the provider's unclassified merge rejection) names a condition no code edit
+ * resolves, so the controller keeps the next check and re-reads the provider.
+ */
 const NATIVE_DELIVERY_WAIT_OWNER_REPAIR_REASON_CODES: Record<string, true> = {
   checks_failing: true,
   review_blocking_findings: true,
+  review_conversations_unresolved: true,
   head_stale: true,
   conflict: true,
-  merge_queue_blocked: true,
-  merge_rejected: true,
 };
 
 const NATIVE_DELIVERY_WAIT_QUERY_CHUNK_SIZE = 250;
@@ -112,6 +123,14 @@ export type NativeDeliveryWait = {
   since: Date;
   blocker: DeliveryBlocker | null;
   nextActor: NativeDeliveryWaitNextActor;
+  /**
+   * Durable next-check instant for a provider wait, or null when the wait has
+   * none. Sweeps defer their provider re-read until this instant; a webhook,
+   * operator reconcile, or explicit retry ignores it because each carries a
+   * fresh provider fact. Null never means the wait self-clears — it means no
+   * deferred re-check is recorded.
+   */
+  nextCheckAt: Date | null;
 };
 
 /** The persisted fields the classifier reads. Kept structural for tests. */
@@ -202,6 +221,7 @@ function toWait(input: {
 }): NativeDeliveryWait {
   const metadata = readUnitMetadata(input.unit.metadata);
   const remoteUpdatedAt = metadata.lastRemoteUpdatedAt ? new Date(metadata.lastRemoteUpdatedAt) : null;
+  const nextCheckAt = metadata.providerWait?.nextCheckAt ? new Date(metadata.providerWait.nextCheckAt) : null;
   return {
     issueId: input.issueId,
     unitId: input.unit.id,
@@ -222,6 +242,7 @@ function toWait(input: {
     since: input.unit.lastEventAt ?? remoteUpdatedAt ?? input.unit.updatedAt,
     blocker: input.claim.blocker,
     nextActor: input.claim.nextActor,
+    nextCheckAt: nextCheckAt != null && !Number.isNaN(nextCheckAt.getTime()) ? nextCheckAt : null,
   };
 }
 
@@ -336,4 +357,119 @@ export async function getNativeDeliveryWait(
   issueId: string,
 ): Promise<NativeDeliveryWait | null> {
   return (await listNativeDeliveryWaits(db, companyId, [issueId])).get(issueId) ?? null;
+}
+
+/**
+ * An operator/policy hold on a linked unit, surfaced as an owned delivery wait.
+ *
+ * A paused unit (or a paused policy) is a legitimate external gate the
+ * delivery controller must not override and no recovery engine may supersede:
+ * the operator decides when it lifts. Surfacing it read-only lets consumers
+ * treat the hold as the issue's owned next action instead of minting a second,
+ * wrong-flavoured wake — without claiming the paused unit into the
+ * controller-owned wait set above.
+ *
+ * Deliberately narrow: only the two paused states are holds. A missing,
+ * disabled, or repository-mismatched policy keeps its own skip reason and
+ * precedence, and a terminal unit is not a hold.
+ */
+export type NativeDeliveryHold = {
+  issueId: string;
+  unitId: string;
+  unitStatus: DeliveryUnitStatus;
+  candidateGeneration: number;
+  repositoryId: string;
+  prNumber: number | null;
+  prUrl: string | null;
+  ownerAgentId: string | null;
+  hold: "operator_pause" | "policy_paused";
+  /** The unit's own blocker (e.g. `operator_paused`), verbatim. */
+  blocker: DeliveryBlocker | null;
+  since: Date;
+};
+
+export type NativeDeliveryHoldClaim =
+  | { kind: "hold"; hold: "operator_pause" | "policy_paused"; blocker: DeliveryBlocker | null }
+  | { kind: "none" };
+
+/**
+ * Decides whether one persisted unit + its project policy is an operator hold.
+ * Pure: callers supply the persisted rows. The operator pause outranks the
+ * policy pause because it is the more specific decision.
+ */
+export function classifyNativeDeliveryHold(input: {
+  unit: { status: string; pausedAt: Date | null; blocker: unknown };
+  policy: { paused: boolean } | null;
+}): NativeDeliveryHoldClaim {
+  if (NATIVE_DELIVERY_WAIT_TERMINAL_UNIT_STATUSES.includes(input.unit.status as DeliveryUnitStatus)) {
+    return { kind: "none" };
+  }
+  if (input.unit.pausedAt != null) {
+    return { kind: "hold", hold: "operator_pause", blocker: readDeliveryBlocker(input.unit.blocker) };
+  }
+  if (input.policy?.paused) {
+    return { kind: "hold", hold: "policy_paused", blocker: null };
+  }
+  return { kind: "none" };
+}
+
+/** Single-issue read of the operator hold, sharing the classifier with tests. */
+export async function getNativeDeliveryHold(
+  db: Db,
+  companyId: string,
+  issueId: string,
+): Promise<NativeDeliveryHold | null> {
+  if (issueId.length === 0) return null;
+  const linkRows = await db
+    .select({ unitId: deliveryUnitIssues.unitId })
+    .from(deliveryUnitIssues)
+    .where(and(eq(deliveryUnitIssues.companyId, companyId), eq(deliveryUnitIssues.issueId, issueId)));
+  const unitIds = [...new Set(linkRows.map((row) => row.unitId).filter((unitId) => unitId.length > 0))];
+  if (unitIds.length === 0) return null;
+  const unitRows = await db
+    .select()
+    .from(deliveryUnits)
+    .where(and(
+      eq(deliveryUnits.companyId, companyId),
+      inArray(deliveryUnits.id, unitIds),
+      notInArray(deliveryUnits.status, [...NATIVE_DELIVERY_WAIT_TERMINAL_UNIT_STATUSES]),
+    ));
+  if (unitRows.length === 0) return null;
+  const projectIds = [...new Set(unitRows.flatMap((unit) => unit.projectId ? [unit.projectId] : []))];
+  const policyRows = projectIds.length === 0
+    ? []
+    : await db
+        .select()
+        .from(deliveryPolicies)
+        .where(and(
+          eq(deliveryPolicies.companyId, companyId),
+          inArray(deliveryPolicies.projectId, projectIds),
+        ));
+  const policyByProjectId = new Map(policyRows.map((policy) => [policy.projectId, policy]));
+  let best: NativeDeliveryHold | null = null;
+  for (const unit of unitRows) {
+    const policyRow = unit.projectId ? policyByProjectId.get(unit.projectId) ?? null : null;
+    const claim = classifyNativeDeliveryHold({
+      unit,
+      policy: policyRow ? { paused: policyRow.paused } : null,
+    });
+    if (claim.kind !== "hold") continue;
+    const metadata = readUnitMetadata(unit.metadata);
+    const remoteUpdatedAt = metadata.lastRemoteUpdatedAt ? new Date(metadata.lastRemoteUpdatedAt) : null;
+    const hold: NativeDeliveryHold = {
+      issueId,
+      unitId: unit.id,
+      unitStatus: unit.status,
+      candidateGeneration: unit.candidateGeneration,
+      repositoryId: unit.repositoryId,
+      prNumber: unit.prNumber,
+      prUrl: unit.prUrl,
+      ownerAgentId: unit.ownerAgentId,
+      hold: claim.hold,
+      blocker: claim.blocker,
+      since: unit.lastEventAt ?? remoteUpdatedAt ?? unit.updatedAt,
+    };
+    if (!best || best.since < hold.since) best = hold;
+  }
+  return best;
 }

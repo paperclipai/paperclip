@@ -218,6 +218,26 @@ describe("delivery requirements", () => {
       evidence: evidence({ checks: [] }),
     })).toMatchObject({ reasonCode: "checks_pending" });
   });
+
+  it("keeps the provider's conversation-resolution gate distinct from blocking findings", () => {
+    // No proven requirement: unresolved conversations never impose an
+    // arbitrary all-thread gate.
+    expect(requirements({ evidence: evidence({ unresolvedConversations: undefined }) })).toBeNull();
+    // Required and unresolved — including outdated threads, because outdated
+    // is not resolved — is its own blocker with the provider-owned next action.
+    expect(requirements({ evidence: evidence({ unresolvedConversations: 1 }) }))
+      .toMatchObject({ reasonCode: "review_conversations_unresolved" });
+    expect(requirements({ evidence: evidence({ unresolvedConversations: 3 }) }))
+      .toMatchObject({ reasonCode: "review_conversations_unresolved" });
+    expect(requirements({ evidence: evidence({ unresolvedConversations: 0 }) })).toBeNull();
+    // A required-but-unreadable review-thread record blocks fail-closed.
+    expect(requirements({ evidence: evidence({ unresolvedConversations: null }) }))
+      .toMatchObject({ reasonCode: "provider_unknown" });
+    // Blocking findings still win their own named gate with its own repair.
+    expect(requirements({
+      evidence: evidence({ blockingFindings: 1, unresolvedConversations: 2 }),
+    })).toMatchObject({ reasonCode: "review_blocking_findings" });
+  });
 });
 
 describe("acceptance transition", () => {
@@ -321,6 +341,13 @@ describe("delivery phase", () => {
     const blocked = unit({ status: "blocked", metadata: { blockedPhase: "ready_to_merge" } });
     expect(deriveDeliveryPhase(blocked)).toBe("ready_to_merge");
     expect(readUnitMetadata(blocked.metadata).blockedPhase).toBe("ready_to_merge");
+  });
+
+  it("never presents a blocked unit as ready to merge, even with retained acceptance", () => {
+    // A blocked unit is not mergeable no matter what acceptance or queue state
+    // is retained: the delivery-owned waiting phase is in_review.
+    expect(deriveDeliveryPhase(unit({ status: "blocked" }))).toBe("in_review");
+    expect(deriveDeliveryPhase(unit({ status: "blocked", metadata: {} }))).toBe("in_review");
   });
 
   it("reports not_started for an issue without a unit and done for a merged unit", () => {

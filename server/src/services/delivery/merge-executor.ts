@@ -4,7 +4,8 @@ import type { DeliveryBlocker } from "@paperclipai/shared";
 import type { DeliveryEventService } from "./events.js";
 import type { DeliveryPolicyService } from "./policy.js";
 import type { DeliveryQueueService } from "./queue.js";
-import type { DeliveryUnitService } from "./units.js";
+import { DELIVERY_PROVIDER_WAIT_NEXT_CHECK_MS, isProviderWaitReason, readUnitMetadata } from "./units.js";
+import type { DeliveryUnitRow, DeliveryUnitService } from "./units.js";
 import type { GitHubDeliveryClient } from "./github-client.js";
 import type { GreptileReviewService } from "./greptile.js";
 import { GREPTILE_BLOCKING_SEVERITIES, providerVerdictRejects } from "./greptile.js";
@@ -15,6 +16,7 @@ import { repositoryFullName, type DeliveryEvidence } from "./policy.js";
 
 export const DELIVERY_MERGE_LEASE_OWNER_PREFIX = "delivery-merge";
 export const DELIVERY_MAX_MERGE_ATTEMPTS = 5;
+
 export type DeliveryMergeOutcome = {
   unitId: string | null;
   leased: boolean;
@@ -78,18 +80,79 @@ export function deliveryMergeExecutor(
       && (entry.leaseExpiresAt == null || entry.leaseExpiresAt.getTime() > Date.now());
   }
 
+  /**
+   * Block a unit and, controller-only, project the block onto its issues: a
+   * unit that stopped being mergeable must not leave an issue advertising
+   * `ready_to_merge`/`merging`. Delivery-owned merge statuses downgrade to
+   * `in_review`; explicit board decisions are never touched.
+   */
+  async function ensureBlocked(
+    companyId: string,
+    unit: { id: string; candidateGeneration: number },
+    blockerValue: DeliveryBlocker,
+  ): Promise<boolean> {
+    const applied = await units.markBlocked({
+      companyId,
+      unitId: unit.id,
+      blocker: blockerValue,
+      nextAction: blockerValue.nextAction,
+      candidateGeneration: unit.candidateGeneration,
+    });
+    if (applied) {
+      await reconciler.downgradeBlockedIssueStatus({ companyId, unitId: unit.id });
+      return true;
+    }
+    // markBlocked is a same-reason no-op when the durable state already names
+    // this blocker. That is a standing block, not a fenced write miss: the
+    // blocker is verifiably applied, so the caller must not report
+    // `unit_not_open` for it.
+    const current = await units.getUnit(companyId, unit.id);
+    return current != null
+      && current.candidateGeneration === unit.candidateGeneration
+      && current.status === "blocked"
+      && current.blocker?.reasonCode === blockerValue.reasonCode;
+  }
+
+  /**
+   * Durable next-check ownership for a provider wait: the provider refused the
+   * merge or queue admission before any merge execution existed, so the wait is
+   * recorded against the exact candidate it refused and sweeps re-read the
+   * provider no earlier than the recorded check.
+   */
+  async function scheduleProviderWaitNextCheck(input: {
+    companyId: string;
+    unit: DeliveryUnitRow;
+    reasonCode: string;
+  }): Promise<void> {
+    const metadata = readUnitMetadata(input.unit.metadata);
+    await db
+      .update(deliveryUnits)
+      .set({
+        metadata: {
+          ...metadata,
+          providerWait: {
+            reasonCode: input.reasonCode,
+            nextCheckAt: new Date(Date.now() + DELIVERY_PROVIDER_WAIT_NEXT_CHECK_MS).toISOString(),
+          },
+        },
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(deliveryUnits.id, input.unit.id),
+        eq(deliveryUnits.candidateGeneration, input.unit.candidateGeneration),
+        // Terminal is permanent: a refusal read for an open candidate never
+        // restates a unit that has since merged or closed.
+        notInArray(deliveryUnits.status, ["merged", "cancelled", "closed_unmerged"]),
+      ));
+  }
+
   async function blockMerge(
     companyId: string,
     unit: { id: string; primaryIssueId: string; candidateGeneration: number },
     reasonCode: string,
     message: string,
   ) {
-    const applied = await units.markBlocked({
-      companyId,
-      unitId: unit.id,
-      blocker: blocker(reasonCode, message),
-      candidateGeneration: unit.candidateGeneration,
-    });
+    const applied = await ensureBlocked(companyId, unit, blocker(reasonCode, message));
     // A dropped blocker write (replaced candidate, or a unit that has since
     // gone terminal) must not touch the unit's queue entry either.
     if (!applied) {
@@ -162,24 +225,18 @@ export function deliveryMergeExecutor(
     const repository = await units.loadRepository(input.companyId, unit.repositoryId);
     const policyRow = await policy.getRowForIssueProject(input.companyId, unit.projectId);
     if (!repository || !policyRow) {
-      await units.markBlocked({
-        candidateGeneration: unit.candidateGeneration,
-        companyId: input.companyId,
-        unitId: unit.id,
-        blocker: blocker("policy_missing", "Delivery policy or repository is missing"),
-      });
+      await ensureBlocked(input.companyId, unit, blocker("policy_missing", "Delivery policy or repository is missing"));
       return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: "policy_missing" };
     }
     if (!policyRow.enabled || policyRow.paused) {
       return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: "policy_paused" };
     }
     if (unit.mergeAttemptCount >= DELIVERY_MAX_MERGE_ATTEMPTS) {
-      await units.markBlocked({
-        candidateGeneration: unit.candidateGeneration,
-        companyId: input.companyId,
-        unitId: unit.id,
-        blocker: blocker("repair_attempts_exhausted", "Merge attempts exhausted", "Escalate to the operator."),
-      });
+      await ensureBlocked(
+        input.companyId,
+        unit,
+        blocker("repair_attempts_exhausted", "Merge attempts exhausted", "Escalate to the operator."),
+      );
       await events.append({
         companyId: input.companyId,
         unitId: unit.id,
@@ -202,12 +259,7 @@ export function deliveryMergeExecutor(
     }
     const pullRequest = pr.value;
     if (!pullRequest) {
-      await units.markBlocked({
-        candidateGeneration: unit.candidateGeneration,
-        companyId: input.companyId,
-        unitId: unit.id,
-        blocker: blocker("candidate_required", "No open pull request to merge"),
-      });
+      await ensureBlocked(input.companyId, unit, blocker("candidate_required", "No open pull request to merge"));
       return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: "candidate_required" };
     }
     if (pullRequest.merged) {
@@ -237,12 +289,11 @@ export function deliveryMergeExecutor(
       return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: "pr_closed_unmerged" };
     }
     if (!unit.acceptedHeadSha || pullRequest.headSha !== unit.acceptedHeadSha) {
-      const applied = await units.markBlocked({
-        candidateGeneration: unit.candidateGeneration,
-        companyId: input.companyId,
-        unitId: unit.id,
-        blocker: blocker("head_stale", "The remote head no longer matches the accepted revision"),
-      });
+      const applied = await ensureBlocked(
+        input.companyId,
+        unit,
+        blocker("head_stale", "The remote head no longer matches the accepted revision"),
+      );
       if (applied) {
         await queue.setStatus({ companyId: input.companyId, unitId: unit.id, status: "blocked", lastErrorCode: "head_stale" });
       }
@@ -266,6 +317,28 @@ export function deliveryMergeExecutor(
     const reviews = await github.getReviews(
       input.companyId, connectionId, repository.host, repository.owner, repository.name, pullRequest.number,
     );
+    // The provider's required-conversation-resolution gate re-reads at merge
+    // time too: acceptance can predate a conversation opened after the last
+    // reconcile. Unresolved counts every unresolved thread — outdated is not
+    // resolved — and only when the provider itself requires resolution; an
+    // unreadable requirement or thread record is null evidence and blocks.
+    const reviewThreads = await github.getReviewThreads(
+      input.companyId, connectionId, repository.host, repository.owner, repository.name, pullRequest.number,
+    );
+    const unresolvedThreads = reviewThreads.ok
+      ? reviewThreads.value.filter((thread) => !thread.isResolved)
+      : null;
+    let unresolvedConversations: number | null | undefined;
+    if (!reviewThreads.ok || unresolvedThreads!.length > 0) {
+      const requirement = await github.getConversationResolutionRequirement(
+        input.companyId, connectionId, repository.host, repository.owner, repository.name, unit.targetBranch,
+      );
+      if (requirement.ok && requirement.value.state === "required") {
+        unresolvedConversations = unresolvedThreads === null ? null : unresolvedThreads.length;
+      } else if (requirement.ok && requirement.value.state === "unknown") {
+        unresolvedConversations = null;
+      }
+    }
     // A merge needs full fresh Greptile evidence too: when the policy requires
     // it, the read must succeed, the review must be completed, and its reviewed
     // head must be the exact accepted head. A partial read, an in-flight
@@ -368,6 +441,7 @@ export function deliveryMergeExecutor(
       independentChangesRequested: (reviews.ok && reviews.value.status === "changes_requested")
         || providerVerdictRejects(greptileProviderVerdict),
       nativeReview,
+      unresolvedConversations,
     };
     const decision = await policy.evaluateUnit({
       companyId: input.companyId,
@@ -378,13 +452,7 @@ export function deliveryMergeExecutor(
     });
     if (!decision.allowed) {
       const blockerValue = decision.blocker!;
-      const applied = await units.markBlocked({
-        candidateGeneration: unit.candidateGeneration,
-        companyId: input.companyId,
-        unitId: unit.id,
-        blocker: blockerValue,
-        nextAction: blockerValue.nextAction,
-      });
+      const applied = await ensureBlocked(input.companyId, unit, blockerValue);
       if (!applied) {
         return {
           unitId: unit.id,
@@ -458,16 +526,25 @@ export function deliveryMergeExecutor(
         pullRequestNodeId: pullRequest.nodeId,
         expectedHeadOid: unit.acceptedHeadSha,
       });
-      // A provider that refuses the exact-head binding rejected the request
-      // before any queue attempt existed, so it must not consume the bounded
-      // merge-attempt budget. Narrowed explicitly: a GitHubResult only carries
-      // an error code on its failure branch.
-      const bindingRefused = !enqueued.ok && enqueued.errorCode === "merge_queue_head_binding_unsupported";
+      // Map the enqueue outcome before any durable write: a provider that
+      // refuses the exact-head binding rejected the request before any queue
+      // attempt existed, and so did every other enqueue refusal — the mutation
+      // never created a queue entry, so no merge execution was consumed and the
+      // bounded merge-attempt budget must stay untouched. Narrowed explicitly:
+      // a GitHubResult only carries an error code on its failure branch.
+      const enqueueRefusal = enqueued.ok
+        ? null
+        : enqueued.errorCode === "merge_queue_head_binding_unsupported"
+          ? {
+            reasonCode: "merge_queue_unsupported",
+            message: "GitHub's merge queue does not accept an exact-head binding on this host, so the queue cannot be proven to merge the reviewed revision. Use the serialized merge mode for this repository.",
+          }
+          : mergeFailureReason(enqueued.status, enqueued.message);
       const recorded = await db
         .update(deliveryUnits)
         .set({
           status: enqueued.ok ? "merging" : undefined,
-          mergeAttemptCount: bindingRefused ? unit.mergeAttemptCount : unit.mergeAttemptCount + 1,
+          mergeAttemptCount: enqueued.ok ? unit.mergeAttemptCount + 1 : unit.mergeAttemptCount,
           mergeRequestedAt: now,
           lastEventAt: enqueued.ok ? now : undefined,
           updatedAt: now,
@@ -503,18 +580,9 @@ export function deliveryMergeExecutor(
         // closed with its own named reason: enqueueing unbound would let the
         // queue merge a revision no review evaluated. Branch protection is
         // never bypassed as a workaround.
-        const mapped = enqueued.errorCode === "merge_queue_head_binding_unsupported"
-          ? {
-            reasonCode: "merge_queue_unsupported",
-            message: "GitHub's merge queue does not accept an exact-head binding on this host, so the queue cannot be proven to merge the reviewed revision. Use the serialized merge mode for this repository.",
-          }
-          : mergeFailureReason(enqueued.status, enqueued.message);
-        const applied = await units.markBlocked({
-          candidateGeneration: unit.candidateGeneration,
-          companyId: input.companyId,
-          unitId: unit.id,
-          blocker: blocker(mapped.reasonCode, mapped.message),
-        });
+        const mapped = enqueueRefusal!;
+        const waitRefusal = isProviderWaitReason(mapped.reasonCode);
+        const applied = await ensureBlocked(input.companyId, unit, blocker(mapped.reasonCode, mapped.message));
         if (!applied) {
           return {
             unitId: unit.id,
@@ -529,6 +597,12 @@ export function deliveryMergeExecutor(
           companyId: input.companyId, unitId: unit.id, status: "blocked",
           lastErrorCode: mapped.reasonCode, lastError: mapped.message,
         });
+        if (waitRefusal) {
+          // A provider wait owns its next check: the sweep re-reads the
+          // provider instead of re-attempting the queue admission on every
+          // tick, and the issues return to in_review.
+          await scheduleProviderWaitNextCheck({ companyId: input.companyId, unit, reasonCode: mapped.reasonCode });
+        }
         await reconciler.requestRepair({
           companyId: input.companyId,
           unit,
@@ -566,10 +640,18 @@ export function deliveryMergeExecutor(
         commitTitle: `${unit.sourceBranch} (#${pullRequest.number})`,
       },
     );
+    // Map the merge outcome before any durable accounting: a provider wait
+    // (branch protection / merge queue requirements) refused the merge request
+    // before any merge executed, so it must not consume the bounded
+    // merge-attempt budget, while a real failed merge execution — conflict,
+    // stale head, or an unclassified refusal — stays bounded.
+    const mergedRefusal = merged.ok ? null : mergeFailureReason(merged.status, merged.message);
     const mergeRecorded = await db
       .update(deliveryUnits)
       .set({
-        mergeAttemptCount: unit.mergeAttemptCount + 1,
+        mergeAttemptCount: mergedRefusal != null && isProviderWaitReason(mergedRefusal.reasonCode)
+          ? unit.mergeAttemptCount
+          : unit.mergeAttemptCount + 1,
         mergeRequestedAt: now,
         updatedAt: now,
       })
@@ -597,13 +679,19 @@ export function deliveryMergeExecutor(
       return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: false, reasonCode: await fencedWriteMiss({ companyId: input.companyId, unitId: unit.id, generation: unit.candidateGeneration }) };
     }
     if (!merged.ok) {
-      const mapped = mergeFailureReason(merged.status, merged.message);
-      const applied = await units.markBlocked({
-        candidateGeneration: unit.candidateGeneration,
-        companyId: input.companyId,
-        unitId: unit.id,
-        blocker: blocker(mapped.reasonCode, mapped.message, "Repair and reconcile again."),
-      });
+      const mapped = mergedRefusal!;
+      const waitRefusal = isProviderWaitReason(mapped.reasonCode);
+      const applied = await ensureBlocked(
+        input.companyId,
+        unit,
+        blocker(
+          mapped.reasonCode,
+          mapped.message,
+          waitRefusal
+            ? "Reconcile again once the provider's branch protection and merge queue requirements are satisfied."
+            : "Repair and reconcile again.",
+        ),
+      );
       if (!applied) {
         return {
           unitId: unit.id,
@@ -631,6 +719,11 @@ export function deliveryMergeExecutor(
         url: pullRequest.url,
         payload: { reasonCode: mapped.reasonCode },
       });
+      if (waitRefusal) {
+        // A provider wait owns its next check: the sweep re-reads the provider
+        // instead of re-submitting the refused merge on every tick.
+        await scheduleProviderWaitNextCheck({ companyId: input.companyId, unit, reasonCode: mapped.reasonCode });
+      }
       await reconciler.requestRepair({
         companyId: input.companyId,
         unit,
@@ -642,12 +735,11 @@ export function deliveryMergeExecutor(
       return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: mapped.reasonCode };
     }
     if (!merged.value.merged) {
-      await units.markBlocked({
-        candidateGeneration: unit.candidateGeneration,
-        companyId: input.companyId,
-        unitId: unit.id,
-        blocker: blocker("merge_unknown", merged.value.message || "GitHub did not confirm the merge"),
-      });
+      await ensureBlocked(
+        input.companyId,
+        unit,
+        blocker("merge_unknown", merged.value.message || "GitHub did not confirm the merge"),
+      );
       return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: true, reasonCode: "merge_unknown" };
     }
     const merging = await db
@@ -742,13 +834,28 @@ export function deliveryMergeExecutor(
         break;
       }
       if (outcome.blocked) {
-        await queue.releaseLease({
-          companyId: input.companyId,
-          unitId: leased.unitId,
-          leaseOwner: sweepOwner,
-          leaseEpoch: leased.leaseEpoch,
-          reasonCode: outcome.reasonCode ?? "merge_blocked",
-        });
+        // A blocked unit must not keep a live merge position: a retained
+        // queued entry would advertise the next merge slot for a unit that
+        // cannot merge. The durable write is gated on the unit still being
+        // blocked — a unit re-admitted in the meantime keeps its queue place,
+        // and an operator pause keeps its own precedence untouched.
+        const current = await units.getUnit(input.companyId, leased.unitId);
+        if (current?.status === "blocked") {
+          await queue.setStatus({
+            companyId: input.companyId,
+            unitId: leased.unitId,
+            status: "blocked",
+            lastErrorCode: outcome.reasonCode ?? "merge_blocked",
+          });
+        } else {
+          await queue.releaseLease({
+            companyId: input.companyId,
+            unitId: leased.unitId,
+            leaseOwner: sweepOwner,
+            leaseEpoch: leased.leaseEpoch,
+            reasonCode: outcome.reasonCode ?? "merge_blocked",
+          });
+        }
         // Stop at the first blocked head so the next queued unit waits for this
         // repository+branch, preserving order.
         break;

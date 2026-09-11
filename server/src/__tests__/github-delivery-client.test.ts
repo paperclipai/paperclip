@@ -63,6 +63,19 @@ function greptileCheckRunRow(input: {
   };
 }
 
+/**
+ * URL-routed fetch mock for the conversation-requirement sources: an empty
+ * readable rules list, then the caller's protection response.
+ */
+function rulesThenProtectionFetch(protectionResponse: Response): typeof fetch {
+  return (async (input: RequestInfo | URL) => {
+    const url = String(input instanceof Request ? input.url : input);
+    if (url.includes("/rules/branches/")) return Response.json([]);
+    if (url.includes("/branches/main/protection")) return protectionResponse;
+    throw new Error(`unexpected requirement request: ${url}`);
+  }) as typeof fetch;
+}
+
 /** Governed Greptile MCP payloads in the provider's nested shape. */
 function greptileToolGateway(input: {
   review?: Record<string, unknown>;
@@ -656,6 +669,64 @@ describeEmbeddedPostgres("GitHub delivery connection credentials", () => {
         ],
       });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("proves the conversation-resolution requirement from the ruleset record alone", async () => {
+    const fixture = await createPersonalPatFixture();
+    const fetchMock = vi.fn<typeof fetch>(async (input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input);
+      if (url.includes("/rules/branches/main")) {
+        return Response.json([
+          { rule_type: "deletion" },
+          { rule_type: "pull_request", parameters: { required_review_thread_resolution: true, required_approving_review_count: 1 } },
+        ]);
+      }
+      throw new Error(`unexpected requirement request: ${url}`);
+    });
+    const client = createGitHubDeliveryClient(db, { fetch: fetchMock });
+
+    await expect(client.getConversationResolutionRequirement(
+      fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", "main",
+    )).resolves.toMatchObject({ ok: true, value: { state: "required" } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads legacy branch protection for the conversation requirement and proves absence only from readable sources", async () => {
+    const fixture = await createPersonalPatFixture();
+    const requiredClient = createGitHubDeliveryClient(db, {
+      fetch: rulesThenProtectionFetch(Response.json({ required_conversation_resolution: { enabled: true } })),
+    });
+    await expect(requiredClient.getConversationResolutionRequirement(
+      fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", "main",
+    )).resolves.toMatchObject({ ok: true, value: { state: "required" } });
+
+    // Both sources readable and neither requires resolution: a proven negative.
+    const absentClient = createGitHubDeliveryClient(db, {
+      fetch: rulesThenProtectionFetch(Response.json({ required_status_checks: { strict: true }, enabled: true })),
+    });
+    await expect(absentClient.getConversationResolutionRequirement(
+      fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", "main",
+    )).resolves.toMatchObject({ ok: true, value: { state: "not_required" } });
+  });
+
+  it("reports an unreadable conversation requirement as unknown, never as not-required", async () => {
+    const fixture = await createPersonalPatFixture();
+    // Forbidden legacy protection: rules alone cannot prove absence.
+    const forbiddenClient = createGitHubDeliveryClient(db, {
+      fetch: rulesThenProtectionFetch(Response.json({ message: "Must have admin rights" }, { status: 403 })),
+    });
+    await expect(forbiddenClient.getConversationResolutionRequirement(
+      fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", "main",
+    )).resolves.toMatchObject({ ok: true, value: { state: "unknown" } });
+    // Unreachable rules and unreadable protection: still unknown.
+    const unreachableClient = createGitHubDeliveryClient(db, {
+      fetch: vi.fn<typeof fetch>(async () => {
+        throw new TypeError("fetch failed");
+      }),
+    });
+    await expect(unreachableClient.getConversationResolutionRequirement(
+      fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", "main",
+    )).resolves.toMatchObject({ ok: true, value: { state: "unknown" } });
   });
 
   it("follows a review thread's own comment pages before it is complete", async () => {

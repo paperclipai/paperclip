@@ -111,9 +111,49 @@ export type DeliveryUnitMetadata = {
    * reviewer's model and the exact reviewed revision.
    */
   nativeReview?: DeliveryNativeReviewEvidence | null;
+  /**
+   * Durable next-check ownership for a provider wait: the unit is blocked on an
+   * external branch-protection / merge-queue state only the provider can
+   * resolve, so no merge execution was consumed and no code repair exists.
+   * Sweeps re-read the provider no earlier than `nextCheckAt`; a webhook,
+   * operator reconcile, or retry still re-reads immediately because each is a
+   * fresh provider fact. The marker never claims the wait self-clears — only
+   * the next authoritative provider read re-admits the unit.
+   */
+  providerWait?: {
+    /** The provider-wait reason code the marker was recorded for. */
+    reasonCode: string;
+    /** Earliest instant the controller re-reads the provider for this wait. */
+    nextCheckAt: string;
+  };
 };
 
 const TERMINAL_UNIT_STATUSES = ["merged", "cancelled", "closed_unmerged"] as const;
+
+/**
+ * Provider wait: an external branch-protection / merge-queue state only the
+ * provider itself can resolve. No repository change can satisfy it, so a
+ * refusal carrying one of these codes is not an executed code repair: it never
+ * spends the bounded merge-attempt budget and never wakes the implementation
+ * owner. The classification makes no self-clearing claim — a durable next-check
+ * marker only defers the next authoritative provider read, and that read
+ * decides.
+ */
+export const DELIVERY_PROVIDER_WAIT_REASON_CODES: Readonly<Record<string, true>> = {
+  merge_queue_blocked: true,
+  merge_queue_unsupported: true,
+};
+
+export function isProviderWaitReason(reasonCode: string): boolean {
+  return DELIVERY_PROVIDER_WAIT_REASON_CODES[reasonCode] === true;
+}
+
+/**
+ * How long a provider wait owns the next check before a sweep re-reads the
+ * provider. Webhooks, operator reconciles and explicit retries bypass the
+ * marker because each carries a fresh provider fact.
+ */
+export const DELIVERY_PROVIDER_WAIT_NEXT_CHECK_MS = 5 * 60_000;
 
 /**
  * Unit statuses that still describe a live candidate. The complement of
@@ -140,7 +180,12 @@ export function deriveDeliveryPhase(unit: DeliveryUnitRow | null): DeliveryPhase
     case "ready_to_merge":
       return "ready_to_merge";
     case "blocked":
-      return metadata.blockedPhase ?? (unit.acceptedHeadSha ? "ready_to_merge" : "in_review");
+      // A blocked unit is never mergeable, no matter what acceptance or queue
+      // state is retained: the delivery-owned waiting phase is in_review. The
+      // stamped blockedPhase keeps legacy rows coherent with the issue-side
+      // controller downgrade, and a retained queue entry never outranks the
+      // blocker here.
+      return metadata.blockedPhase ?? "in_review";
     case "cancelled":
     case "closed_unmerged":
       return unit.artifactReady ? "in_review" : "not_started";

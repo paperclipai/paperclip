@@ -35,12 +35,12 @@ import { createDeliveryDoneGate } from "../services/delivery/done-gate.js";
 import { deliveryPolicyService } from "../services/delivery/policy.js";
 import { deliveryQueueService } from "../services/delivery/queue.js";
 import { deliveryReconciliationService } from "../services/delivery/reconciliation.js";
-import { deliveryUnitService, type DeliveryActor, type DeliveryWakeEnqueue } from "../services/delivery/units.js";
+import { deliveryUnitService, readUnitMetadata, type DeliveryActor, type DeliveryWakeEnqueue } from "../services/delivery/units.js";
 import { deliveryService } from "../services/delivery/service.js";
 import { greptileReviewService } from "../services/delivery/greptile.js";
 import { getNativeDeliveryWait } from "../services/delivery/native-delivery-wait.js";
 import { recordObservedFindings } from "../services/delivery/findings.js";
-import { deliveryMergeExecutor } from "../services/delivery/merge-executor.js";
+import { deliveryMergeExecutor, DELIVERY_MAX_MERGE_ATTEMPTS } from "../services/delivery/merge-executor.js";
 import { deliveryReconciler } from "../services/delivery/reconciler.js";
 import type { GitHubCheckRun, GitHubDeliveryClient, GitHubReviewThread } from "../services/delivery/github-client.js";
 import { issueService } from "../services/issues.js";
@@ -68,6 +68,9 @@ function githubStub(overrides: Partial<GitHubDeliveryClient> = {}): GitHubDelive
     enqueuePullRequest: async () => failure,
     compareCommits: async () => failure,
     findOpenPullRequest: async () => failure,
+    // No ruleset or branch-protection requirement is proven by default: the
+    // conversation gate is off unless a test states the provider requirement.
+    getConversationResolutionRequirement: async () => ({ ok: true as const, value: { state: "not_required" as const } }),
     ...overrides,
   } as GitHubDeliveryClient;
 }
@@ -1058,6 +1061,438 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
       .toMatchObject([{ contextSnapshot: { issueId: pipeline.issue.id, reasonCode: "conflict" } }]);
     expect(pipeline.merges).toEqual([]);
+  });
+
+  it("treats a branch-protection merge refusal as a provider wait without spending the merge budget or an owner repair", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, unit } = pipeline;
+    pipeline.provider.addressed = true;
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "ready_to_merge" });
+    pipeline.github.mergePullRequest = async () => ({
+      ok: false as const,
+      status: 405,
+      errorCode: "github_rejected" as const,
+      message: "Branch protection or merge queue requirements are not satisfied",
+      retryAfterSeconds: null,
+    });
+    const lease = await pipeline.queue.leaseNext({
+      companyId, repositoryId: pipeline.repository.id, targetBranch: "main", leaseOwner: "queue-test",
+    });
+    expect(await pipeline.executor.attemptMerge({
+      companyId, unitId: unit.id, lease: { leaseOwner: "queue-test", leaseEpoch: lease!.leaseEpoch },
+    })).toMatchObject({ blocked: true, reasonCode: "merge_queue_blocked" });
+    // The refusal happened before any merge executed: the bounded merge-attempt
+    // budget is untouched and no implementation-owner wake exists.
+    const [blocked] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id));
+    expect(blocked).toMatchObject({
+      status: "blocked",
+      blocker: { reasonCode: "merge_queue_blocked" },
+      mergeAttemptCount: 0,
+      // Durable next-check ownership: sweeps defer their provider re-read.
+      metadata: { providerWait: { reasonCode: "merge_queue_blocked" } },
+    });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toEqual([]);
+    expect(pipeline.statusWrites).not.toContain("done");
+
+    // A repeated refusal stays budget-stable: a fresh authoritative re-read
+    // re-admits the accepted head, and the refused admission charges nothing.
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "webhook" }))
+      .toMatchObject({ status: "ready_to_merge" });
+    const repeatLease = await pipeline.queue.leaseNext({
+      companyId, repositoryId: pipeline.repository.id, targetBranch: "main", leaseOwner: "queue-test-2",
+    });
+    expect(await pipeline.executor.attemptMerge({
+      companyId, unitId: unit.id, lease: { leaseOwner: "queue-test-2", leaseEpoch: repeatLease!.leaseEpoch },
+    })).toMatchObject({ blocked: true, reasonCode: "merge_queue_blocked" });
+    const [repeated] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id));
+    expect(repeated).toMatchObject({ status: "blocked", mergeAttemptCount: 0 });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toEqual([]);
+    expect(await db.select().from(deliveryEvents).where(and(
+      eq(deliveryEvents.companyId, companyId),
+      eq(deliveryEvents.type, "escalated"),
+    ))).toEqual([]);
+  });
+
+  it("keeps a real failed merge execution bounded while its named code repair stays dispatchable", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, unit } = pipeline;
+    pipeline.provider.addressed = true;
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    const runs = async () => await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    pipeline.github.mergePullRequest = async () => ({
+      ok: false as const,
+      status: 409,
+      errorCode: "github_rejected" as const,
+      message: "The pull request conflicts with the target branch",
+      retryAfterSeconds: null,
+    });
+    for (let round = 1; round <= DELIVERY_MAX_MERGE_ATTEMPTS; round += 1) {
+      // A fresh authoritative read re-admits the accepted head between real
+      // failed merge executions.
+      await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "webhook" });
+      const lease = await pipeline.queue.leaseNext({
+        companyId, repositoryId: pipeline.repository.id, targetBranch: "main", leaseOwner: `queue-conflict-${round}`,
+      });
+      expect(await pipeline.executor.attemptMerge({
+        companyId, unitId: unit.id, lease: { leaseOwner: `queue-conflict-${round}`, leaseEpoch: lease!.leaseEpoch },
+      })).toMatchObject({ blocked: true, reasonCode: "conflict" });
+      expect((await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id)))[0]?.mergeAttemptCount).toBe(round);
+    }
+    // Every real failed merge execution consumed the merge budget, while the
+    // unchanged conflict evidence kept its single dispatched repair.
+    expect(await runs()).toHaveLength(1);
+    expect(await repairAttempts(companyId, unit.id)).toMatchObject([
+      { attempt: 1, status: "dispatched", reasonCode: "conflict" },
+    ]);
+    // One execution past the merge bound escalates to the operator instead of
+    // looping, and the conflict repair budget is never spent by the refusal.
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "webhook" });
+    const lease = await pipeline.queue.leaseNext({
+      companyId, repositoryId: pipeline.repository.id, targetBranch: "main", leaseOwner: "queue-conflict-final",
+    });
+    expect(await pipeline.executor.attemptMerge({
+      companyId, unitId: unit.id, lease: { leaseOwner: "queue-conflict-final", leaseEpoch: lease!.leaseEpoch },
+    })).toMatchObject({ blocked: true, reasonCode: "repair_attempts_exhausted" });
+    const [exhausted] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id));
+    expect(exhausted).toMatchObject({ status: "blocked", blocker: { reasonCode: "repair_attempts_exhausted" } });
+    expect(await runs()).toHaveLength(1);
+    expect(await db.select().from(deliveryEvents).where(and(
+      eq(deliveryEvents.companyId, companyId),
+      eq(deliveryEvents.type, "escalated"),
+    ))).toHaveLength(1);
+  });
+
+  it("defers sweep provider re-reads behind the durable next check and re-reads on fresh provider facts", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, unit } = pipeline;
+    pipeline.provider.addressed = true;
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    pipeline.github.mergePullRequest = async () => ({
+      ok: false as const,
+      status: 405,
+      errorCode: "github_rejected" as const,
+      message: "Branch protection or merge queue requirements are not satisfied",
+      retryAfterSeconds: null,
+    });
+    const firstLease = await pipeline.queue.leaseNext({
+      companyId, repositoryId: pipeline.repository.id, targetBranch: "main", leaseOwner: "wait-seed",
+    });
+    await pipeline.executor.attemptMerge({
+      companyId, unitId: unit.id, lease: { leaseOwner: "wait-seed", leaseEpoch: firstLease!.leaseEpoch },
+    });
+
+    let prReads = 0;
+    const countedPr = pipeline.github.getPullRequest;
+    pipeline.github.getPullRequest = async (...args: Parameters<typeof countedPr>) => {
+      prReads += 1;
+      return countedPr(...args);
+    };
+
+    // Within the wait's next-check window a sweep performs no provider reads.
+    const readsBefore = prReads;
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "blocked", blocker: { reasonCode: "merge_queue_blocked" }, changed: false });
+    expect(prReads).toBe(readsBefore);
+
+    // A webhook carries a fresh provider fact: it re-reads immediately and
+    // clears the marker by re-admitting the accepted head.
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "webhook" }))
+      .toMatchObject({ status: "ready_to_merge" });
+    expect(prReads).toBeGreaterThan(readsBefore);
+    const [readmitted] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id));
+    expect(readmitted?.metadata?.providerWait).toBeUndefined();
+
+    // The refusal renews the marker, and a manual reconcile also re-reads.
+    const secondLease = await pipeline.queue.leaseNext({
+      companyId, repositoryId: pipeline.repository.id, targetBranch: "main", leaseOwner: "wait-repeat",
+    });
+    await pipeline.executor.attemptMerge({
+      companyId, unitId: unit.id, lease: { leaseOwner: "wait-repeat", leaseEpoch: secondLease!.leaseEpoch },
+    });
+    const [waiting] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id));
+    expect(waiting).toMatchObject({
+      status: "blocked",
+      metadata: { providerWait: { reasonCode: "merge_queue_blocked" } },
+    });
+    const readsBeforeManual = prReads;
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "manual" }))
+      .toMatchObject({ status: "ready_to_merge" });
+    expect(prReads).toBeGreaterThan(readsBeforeManual);
+
+    // Backdating the marker re-opens the sweep's provider read, and a fresh
+    // sweep re-attempts the refused admission.
+    const [withMarker] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id));
+    await db.update(deliveryUnits).set({
+      status: "blocked",
+      metadata: {
+        ...readUnitMetadata(withMarker!.metadata),
+        providerWait: { reasonCode: "merge_queue_blocked", nextCheckAt: new Date(Date.now() - 1_000).toISOString() },
+      },
+    }).where(eq(deliveryUnits.id, unit.id));
+    const readsBeforeExpiry = prReads;
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "ready_to_merge" });
+    expect(prReads).toBeGreaterThan(readsBeforeExpiry);
+  });
+
+  it("enforces required conversation resolution before readiness without touching finding gates", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, unit, issue } = pipeline;
+    pipeline.provider.addressed = true;
+    pipeline.github.getConversationResolutionRequirement = async () => ({ ok: true as const, value: { state: "required" as const } });
+    pipeline.github.getReviewThreads = async () => ({
+      ok: true as const,
+      value: [
+        { id: "PRRT_open", isResolved: false, isOutdated: false, comments: [{ id: "c1", commitSha: HEAD }] },
+        { id: "PRRT_outdated", isResolved: false, isOutdated: true, comments: [{ id: "c2", commitSha: OTHER_HEAD }] },
+        { id: "PRRT_resolved", isResolved: true, isOutdated: false, comments: [{ id: "c3", commitSha: HEAD }] },
+      ],
+    });
+
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "blocked", blocker: { reasonCode: "review_conversations_unresolved" } });
+    const [blocked] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id));
+    expect(blocked).toMatchObject({ acceptedHeadSha: null, status: "blocked" });
+    // The gate is an implementation-owner repair with the provider-owned next
+    // action, and the controller never resolves threads itself.
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
+      .toMatchObject([{ contextSnapshot: { issueId: issue.id, reasonCode: "review_conversations_unresolved" } }]);
+    expect(await db.select().from(deliveryEvents).where(and(
+      eq(deliveryEvents.companyId, companyId),
+      eq(deliveryEvents.type, "repair_requested"),
+    ))).toHaveLength(1);
+    // An unchanged unresolved set never re-arms the bounded repair.
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+    // A new conversation is new actionable evidence and re-arms exactly once.
+    pipeline.github.getReviewThreads = async () => ({
+      ok: true as const,
+      value: [
+        { id: "PRRT_open", isResolved: false, isOutdated: false, comments: [{ id: "c1", commitSha: HEAD }] },
+        { id: "PRRT_new", isResolved: false, isOutdated: false, comments: [{ id: "c4", commitSha: HEAD }] },
+        { id: "PRRT_outdated", isResolved: false, isOutdated: true, comments: [{ id: "c2", commitSha: OTHER_HEAD }] },
+        { id: "PRRT_resolved", isResolved: true, isOutdated: false, comments: [{ id: "c3", commitSha: HEAD }] },
+      ],
+    });
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(2);
+    // The provider's own resolution record re-admits; no merge was attempted
+    // and no merge budget was spent on the gate.
+    pipeline.github.getReviewThreads = async () => ({
+      ok: true as const,
+      value: [
+        { id: "PRRT_open", isResolved: true, isOutdated: false, comments: [{ id: "c1", commitSha: HEAD }] },
+        { id: "PRRT_new", isResolved: true, isOutdated: true, comments: [{ id: "c4", commitSha: HEAD }] },
+      ],
+    });
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "ready_to_merge" });
+    expect(pipeline.merges).toEqual([]);
+    const [unitRow] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id));
+    expect(unitRow?.mergeAttemptCount ?? 0).toBe(0);
+  });
+
+  it("does not impose the conversation gate when the provider states none, and fails closed on an unreadable requirement", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, unit } = pipeline;
+    pipeline.provider.addressed = true;
+    pipeline.github.getReviewThreads = async () => ({
+      ok: true as const,
+      value: [{ id: "PRRT_open", isResolved: false, isOutdated: false, comments: [{ id: "c1", commitSha: HEAD }] }],
+    });
+    // Both requirement sources readable and neither requires resolution: the
+    // conversation gate is off and readiness follows the other evidence.
+    pipeline.github.getConversationResolutionRequirement = async () => ({ ok: true as const, value: { state: "not_required" as const } });
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "ready_to_merge" });
+    // A forbidden or unreachable requirement read is unknown, never
+    // not-required: readiness fails closed instead of reporting a ready merge
+    // the provider has not stated.
+    pipeline.github.getConversationResolutionRequirement = async () => ({ ok: true as const, value: { state: "unknown" as const } });
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "webhook" }))
+      .toMatchObject({ status: "blocked", blocker: { reasonCode: "provider_unknown" } });
+    const [unknownBlocked] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id));
+    expect(unknownBlocked?.acceptedHeadSha).toBeNull();
+    // A required-but-unreadable review-thread record blocks fail-closed too.
+    pipeline.github.getConversationResolutionRequirement = async () => ({ ok: true as const, value: { state: "required" as const } });
+    pipeline.github.getReviewThreads = async () => ({
+      ok: false as const, status: null, errorCode: "github_invalid_response", message: "thread record unreadable", retryAfterSeconds: null,
+    });
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "webhook" }))
+      .toMatchObject({ status: "blocked", blocker: { reasonCode: "provider_unknown" } });
+  });
+
+  it("keeps issue status, delivery phase, and queue position coherent across a provider refusal and re-admission", async () => {
+    const companyId = await seedCompany();
+    const projectId = await seedProject(companyId);
+    const repository = await seedRepository(companyId);
+    const issue = await seedIssue(companyId, projectId, "ready_to_merge");
+    await db.insert(deliveryPolicies).values({
+      companyId, projectId, repositoryId: repository.id, targetBranch: "main",
+      enabled: true, autoDeployDisposition: "authorized",
+      authorization: {
+        approvedByUserId: "user-1", approvedAt: "2026-09-01T00:00:00Z",
+        statement: "Coherent provider refusal regression", scope: "project",
+      },
+    });
+    const [unit] = await db.insert(deliveryUnits).values({
+      companyId, projectId, repositoryId: repository.id, primaryIssueId: issue.id,
+      targetBranch: "main", sourceBranch: "delivery/x", headSha: HEAD,
+      acceptedHeadSha: HEAD, prNumber: 7, status: "ready_to_merge",
+    }).returning();
+    await db.insert(deliveryUnitIssues).values({ companyId, unitId: unit!.id, issueId: issue.id, role: "primary" });
+    const github = githubStub({
+      getPullRequest: async () => openPr(HEAD),
+      getChecks: async () => ({ ok: true, value: [] }),
+      getReviews: async () => ({
+        ok: true,
+        value: {
+          status: "approved", headSha: HEAD, approvedHeadSha: HEAD,
+          approvals: [{ login: "independent-reviewer", commitSha: HEAD }],
+          blockingFindings: 0, reviews: [],
+        },
+      }),
+      mergePullRequest: async () => ({
+        ok: false as const,
+        status: 405,
+        errorCode: "github_rejected" as const,
+        message: "Branch protection or merge queue requirements are not satisfied",
+        retryAfterSeconds: null,
+      }),
+      compareCommits: async () => ({ ok: true as const, value: { status: "identical", aheadBy: 0, behindBy: 0, included: true } }),
+    });
+    const { queue, ...dependencies } = services(github);
+    const greptile = greptileReviewService(db, {
+      github,
+      toolGateway: { readConnectedTool: async () => { throw new Error("Unexpected Greptile read"); } },
+    });
+    const setIssueStatus = async (input: { companyId: string; issueId: string; status: string; controller: unknown }) => {
+      await issueService(db as unknown as Db).update(
+        input.issueId,
+        { status: input.status as "in_review" | "ready_to_merge" | "merging" | "done" },
+        db as unknown as Db,
+        undefined,
+        undefined,
+        { deliveryController: input.controller as never },
+      );
+    };
+    const deps = { ...dependencies, queue, github, greptile, setIssueStatus };
+    const reconciler = deliveryReconciler(db, deps);
+    const executor = deliveryMergeExecutor(db, { ...deps, reconciler });
+    await queue.enqueue({
+      companyId, repositoryId: repository.id, targetBranch: "main", unitId: unit!.id, priority: "medium",
+    });
+    await executor.sweepRepository({ companyId, repositoryId: repository.id, targetBranch: "main", leaseOwner: "sweep" });
+
+    // The refusal persists one coherent waiting projection: the issue row is
+    // back to in_review, the summary phase agrees, the blocker is real, and a
+    // blocked unit holds no live queue position.
+    const [issueRow] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(issueRow?.status).toBe("in_review");
+    const summary = await dependencies.units.buildSummary(companyId, issue.id);
+    expect(summary).toMatchObject({
+      phase: "in_review",
+      blocker: { reasonCode: "merge_queue_blocked" },
+      queuePosition: null,
+    });
+    expect(await queue.getEntry(companyId, unit!.id)).toMatchObject({
+      status: "blocked",
+      lastErrorCode: "merge_queue_blocked",
+    });
+
+    // Genuine re-admission on fresh provider facts restores every surface,
+    // including the merge the refusal had refused.
+    github.mergePullRequest = async (_company, _connection, _host, _owner, _repo, _number, mergeInput) => ({
+      ok: true as const,
+      value: { merged: true, sha: mergeInput.sha, message: "merged" },
+    });
+    expect(await reconciler.reconcileUnit({ companyId, unitId: unit!.id, trigger: "webhook" }))
+      .toMatchObject({ status: "ready_to_merge" });
+    const [readmitted] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(readmitted?.status).toBe("ready_to_merge");
+    expect((await dependencies.units.buildSummary(companyId, issue.id)).phase).toBe("ready_to_merge");
+    const outcomes = await executor.sweepRepository({ companyId, repositoryId: repository.id, targetBranch: "main", leaseOwner: "sweep-2" });
+    expect(outcomes.at(-1)).toMatchObject({ merged: true });
+    const [doneIssue] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(doneIssue?.status).toBe("done");
+  });
+
+  it("downgrades a stale ready status through the real controller write and preserves explicit board decisions", async () => {
+    const companyId = await seedCompany();
+    const projectId = await seedProject(companyId);
+    const repository = await seedRepository(companyId);
+    const issue = await seedIssue(companyId, projectId, "ready_to_merge");
+    const heldIssue = await seedIssue(companyId, projectId, "blocked");
+    await db.insert(deliveryPolicies).values({
+      companyId, projectId, repositoryId: repository.id, targetBranch: "main",
+      enabled: true, autoDeployDisposition: "authorized",
+      authorization: {
+        approvedByUserId: "user-1", approvedAt: "2026-09-01T00:00:00Z",
+        statement: "Isolated merge downgrade regression", scope: "project",
+      },
+    });
+    const [unit] = await db.insert(deliveryUnits).values({
+      companyId, projectId, repositoryId: repository.id, primaryIssueId: issue.id,
+      targetBranch: "main", sourceBranch: "delivery/x", headSha: HEAD,
+      acceptedHeadSha: HEAD, prNumber: 7, status: "ready_to_merge",
+    }).returning();
+    await db.insert(deliveryUnitIssues).values([
+      { companyId, unitId: unit!.id, issueId: issue.id, role: "primary" },
+      { companyId, unitId: unit!.id, issueId: heldIssue.id, role: "covered" },
+    ]);
+    const github = githubStub({
+      getPullRequest: async () => openPr(HEAD),
+      getChecks: async () => ({ ok: true, value: [] }),
+      getReviews: async () => ({
+        ok: true,
+        value: {
+          status: "approved", headSha: HEAD, approvedHeadSha: HEAD,
+          approvals: [{ login: "independent-reviewer", commitSha: HEAD }],
+          blockingFindings: 0, reviews: [],
+        },
+      }),
+      mergePullRequest: async () => ({
+        ok: false as const,
+        status: 405,
+        errorCode: "github_rejected" as const,
+        message: "Branch protection or merge queue requirements are not satisfied",
+        retryAfterSeconds: null,
+      }),
+    });
+    const { queue, ...dependencies } = services(github);
+    const greptile = greptileReviewService(db, {
+      github,
+      toolGateway: { readConnectedTool: async () => { throw new Error("Unexpected Greptile read"); } },
+    });
+    // The host's real writer: the Done gate sees a controller-only write.
+    const setIssueStatus = async (input: { companyId: string; issueId: string; status: string; controller: unknown }) => {
+      await issueService(db as unknown as Db).update(
+        input.issueId,
+        { status: input.status as "in_review" },
+        db as unknown as Db,
+        undefined,
+        undefined,
+        { deliveryController: input.controller as never },
+      );
+    };
+    const deps = { ...dependencies, queue, github, greptile, setIssueStatus };
+    const reconciler = deliveryReconciler(db, deps);
+    const executor = deliveryMergeExecutor(db, { ...deps, reconciler });
+    await queue.enqueue({
+      companyId, repositoryId: repository.id, targetBranch: "main", unitId: unit!.id, priority: "medium",
+    });
+    const lease = await queue.leaseNext({
+      companyId, repositoryId: repository.id, targetBranch: "main", leaseOwner: "downgrade-test",
+    });
+    expect(await executor.attemptMerge({
+      companyId, unitId: unit!.id, lease: { leaseOwner: "downgrade-test", leaseEpoch: lease!.leaseEpoch },
+    })).toMatchObject({ blocked: true, reasonCode: "merge_queue_blocked" });
+    const [downgraded] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(downgraded?.status).toBe("in_review");
+    // An explicit board decision is never downgraded by the controller.
+    const [preserved] = await db.select().from(issues).where(eq(issues.id, heldIssue.id));
+    expect(preserved?.status).toBe("blocked");
   });
 
   it("honors an explicit delivery retry while ordinary reconciliation stays deduplicated", async () => {
