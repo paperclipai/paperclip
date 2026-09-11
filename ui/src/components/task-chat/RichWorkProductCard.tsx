@@ -1,7 +1,11 @@
-import type { CSSProperties } from "react";
+import { useContext, useState, type CSSProperties } from "react";
+import { IssueGalleryContext } from "@/context/IssueGalleryContext";
+import { ImageGalleryModal } from "@/components/ImageGalleryModal";
+import { isImageContentType, isVideoLikeOutput } from "@/lib/issue-output";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import {
   ExternalLink,
+  Maximize2,
   File,
   FileText,
   Film,
@@ -123,10 +127,12 @@ export interface RichWorkProductCardProps {
 }
 
 export function RichWorkProductCard({ workProduct, href, variant = "card" }: RichWorkProductCardProps) {
+  const openIssueGallery = useContext(IssueGalleryContext);
+  const [galleryOpen, setGalleryOpen] = useState(false);
   const metadata = workProduct.metadata;
   const contentType = stringMeta(metadata, "contentType") ?? "";
-  const isImage = contentType.startsWith("image/");
-  const isVideo = contentType.startsWith("video/");
+  const isImage = isImageContentType(contentType);
+  const isVideo = isVideoLikeOutput(contentType, stringMeta(metadata, "originalFilename"));
   let Icon: LucideIcon = File;
   let meta: Array<string | null> = [];
   let action = "Open preview";
@@ -211,6 +217,13 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
     ? stringMeta(metadata, "openPath", "contentPath") ?? href
     : null;
 
+  const mediaPath = workProduct.type === "artifact" && (isImage || isVideo)
+    ? stringMeta(metadata, "contentPath", "openPath") ?? href
+    : null;
+  const openGallery = () => {
+    if (mediaPath && !openIssueGallery?.(mediaPath)) setGalleryOpen(true);
+  };
+
   return (
     <article
       className={cn(
@@ -237,12 +250,30 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       </div>
       <div className={cn("flex shrink-0 items-center", compact ? "gap-1.5" : "gap-2")}>
         {chip ? <Chip chip={chip} /> : null}
-        {href ? (
+        {mediaPath ? (
+          <button type="button" onClick={openGallery} aria-label={`${action}: ${workProduct.title}`} className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline">
+            {compact ? null : <span className="hidden @sm:inline">{action}</span>}<Maximize2 aria-hidden className="h-3 w-3" />
+          </button>
+        ) : href ? (
           <a href={href} aria-label={`${action}: ${workProduct.title}`} className="inline-flex items-center gap-1 text-xs font-medium text-foreground hover:underline" target={href.startsWith("http") ? "_blank" : undefined} rel={href.startsWith("http") ? "noreferrer" : undefined}>
             {compact ? null : <span className="hidden @sm:inline">{action}</span>}<ExternalLink aria-hidden className="h-3 w-3" />
           </a>
         ) : null}
       </div>
+      {galleryOpen && mediaPath ? (
+        <ImageGalleryModal
+          items={[{
+            id: workProduct.id,
+            contentPath: mediaPath,
+            downloadPath: stringMeta(metadata, "downloadPath") ?? undefined,
+            contentType,
+            originalFilename: stringMeta(metadata, "originalFilename") ?? workProduct.title,
+          }]}
+          initialIndex={0}
+          open
+          onOpenChange={setGalleryOpen}
+        />
+      ) : null}
     </article>
   );
 }

@@ -17,6 +17,7 @@ export function PropertyPicker({
   popoverAlign = "end",
   extra,
   stacked = false,
+  separateTrigger = false,
   children,
 }: {
   inline?: boolean;
@@ -30,6 +31,8 @@ export function PropertyPicker({
   extra?: ReactNode;
   /** Top-aligns the row and vertically stacks chip collections in the trigger. */
   stacked?: boolean;
+  /** Keep navigable relationship badges outside the picker button. */
+  separateTrigger?: boolean;
   children: ReactNode;
 }) {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
@@ -38,6 +41,43 @@ export function PropertyPicker({
     streamlinedUiEnabled && "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
     triggerClassName,
   );
+
+  if (separateTrigger) {
+    const trigger = (
+      <button
+        type="button"
+        className={cn(btnCn, "shrink-0")}
+        aria-label={`Edit ${label.toLowerCase()}`}
+        aria-expanded={open}
+        onClick={inline ? () => onOpenChange(!open) : undefined}
+      >
+        <ChevronDown className={cn("h-3 w-3 text-muted-foreground", open && "rotate-180")} aria-hidden />
+      </button>
+    );
+    return (
+      <div>
+        <PropertyRow label={label} wrap={stacked}>
+          <div className="flex min-w-0 max-w-full items-start gap-1.5">
+            {triggerContent}
+            {inline ? trigger : (
+              <Popover open={open} onOpenChange={onOpenChange}>
+                <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+                <PopoverContent className={cn("p-1", popoverClassName)} align={popoverAlign} collisionPadding={16}>
+                  {children}
+                </PopoverContent>
+              </Popover>
+            )}
+          </div>
+          {extra}
+        </PropertyRow>
+        {inline && open ? (
+          <div className={cn("rounded-md border border-border bg-popover p-1 mb-2", popoverClassName)}>
+            {children}
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   if (inline) {
     return (

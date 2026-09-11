@@ -104,8 +104,18 @@ export function scanModuleBoundaries({
           addViolation(violations, sourceLabel, "domain", specifier, "domain cannot import database packages");
         } else if (specifier.startsWith("node:")) {
           addViolation(violations, sourceLabel, "domain", specifier, "domain cannot import Node.js runtime modules");
-        } else if (targetSegments.includes("services") || targetSegments.includes("routes")) {
-          addViolation(violations, sourceLabel, "domain", specifier, "domain cannot import server services or routes");
+        } else if (
+          targetSegments.includes("services") ||
+          targetSegments.includes("routes") ||
+          targetSegments.includes("adapters")
+        ) {
+          addViolation(
+            violations,
+            sourceLabel,
+            "domain",
+            specifier,
+            "domain cannot import server services, routes, or adapters",
+          );
         } else if (targetLocation?.layer === "application" || targetLocation?.layer === "adapters") {
           addViolation(violations, sourceLabel, "domain", specifier, "domain cannot depend on outer module layers");
         }
@@ -114,8 +124,10 @@ export function scanModuleBoundaries({
       if (sourceLocation?.layer === "application") {
         if (isDatabasePackage(specifier)) {
           addViolation(violations, sourceLabel, "application", specifier, "application cannot import database packages");
-        } else if (targetLocation?.layer === "adapters") {
+        } else if (targetLocation?.layer === "adapters" || targetSegments.includes("adapters")) {
           addViolation(violations, sourceLabel, "application", specifier, "application cannot import concrete adapters");
+        } else if (targetSegments.includes("services") || targetSegments.includes("routes")) {
+          addViolation(violations, sourceLabel, "application", specifier, "application cannot import server services or routes");
         } else if (targetSegments.join("/") === "errors.js" || targetSegments.join("/") === "errors.ts") {
           addViolation(violations, sourceLabel, "application", specifier, "application cannot import HTTP error helpers");
         }

@@ -46,23 +46,23 @@ export function selectReusableOnboardingProject<T extends Pick<Project, "name" |
 
 export function buildOnboardingIssuePayload(input: {
   title: string;
-  description: string;
   assigneeAgentId: string;
   projectId: string;
   goalId: string | null;
 }) {
   const title = input.title.trim();
-  const description = input.description.trim();
 
   return {
     title,
-    ...(description ? { description } : {}),
+    // No client description: the server assembles the first task's brief from
+    // its own markdown and ignores any description sent here.
     assigneeAgentId: input.assigneeAgentId,
     projectId: input.projectId,
     ...(input.goalId ? { goalId: input.goalId } : {}),
     status: "todo" as const,
-    // Marks the single onboarding first task so the server seeds an agent
-    // greeting and the task-detail view suppresses the seeded-description bubble.
+    // Marks the single onboarding first task so the server assembles + stores
+    // the brief, seeds the agent greeting, and the task-detail view suppresses
+    // the seeded-description bubble.
     onboardingFirstTask: true,
   };
 }

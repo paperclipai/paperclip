@@ -113,3 +113,19 @@ The sandbox duplex transport also writes one run-log event as one of its three
 sinks. See the
 [Sandbox Duplex Transport Instrumentation](observability.md#sandbox-duplex-transport-instrumentation)
 section in the Observability contract.
+
+## Execution recovery
+
+Provider identity diagnostics remain in the local run log. They record the notification method, expected and received thread/turn identifiers, and the classification (root, verified descendant, stale, unrelated informational, or invalid authoritative). They omit the original provider payload and credentials. Repeated informational notices are bounded.
+
+Recovery lifecycle events retain the original structured failure code, retry attempt, next retry time, and predecessor/successor identifiers. Durable status delivery uses an idempotency marker; delivery grants no provider authority. Failed publication is retried without repeating provider work. These records are not first-party Telemetry.
+
+## Codex resume usage snapshot
+
+The native runner retains a bounded local `harness.diagnostic` event with code
+`codex_resume_usage_snapshot`. It identifies `thread/tokenUsage/updated` as
+`resume_usage_snapshot`, retains the reported thread and completed-turn IDs,
+and records cumulative usage counters. It does not include provider credentials
+or message content. The event establishes the accounting baseline; it is not a
+new billable usage receipt or a user-facing provider warning. Other provider
+identity checks remain in force.

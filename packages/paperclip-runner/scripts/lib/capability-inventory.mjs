@@ -96,7 +96,7 @@ function slug(value) {
 
 function classifySkillHeading(heading) {
   const value = heading.toLowerCase();
-  if (/(authentication|identity|scope|checkout|lock|retry|dedupe|budget|wake|inbox|pick work|status quick guide|error handling)/.test(value)) {
+  if (/(authentication|identity|scope|checkout|lock|retry|dedupe|budget|wake|inbox|pick work|status quick guide|error handling|server-verified external chat)/.test(value)) {
     return "control_plane_owned";
   }
   if (/(artifact|work product|comment|document|confirmation|question|approval follow-up|block|review|final disposition|issue lifecycle)/.test(value)) {
@@ -247,7 +247,7 @@ export async function buildMcpInventory(repoRoot) {
 
 export function validateInventories(inventories) {
   const errors = [];
-  const expectedCounts = { capabilities: 152, evaluations: 106, legacyMcpAliases: 42 };
+  const expectedCounts = { capabilities: 153, evaluations: 106, legacyMcpAliases: 42 };
   const normativeNames = ["capabilities", "evaluations"];
   const normativeRows = new Map();
   const globalNormativeIds = new Set();

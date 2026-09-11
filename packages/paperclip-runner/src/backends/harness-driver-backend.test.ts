@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { HarnessDriver, HarnessSession, PersistedHarnessSession } from "../contracts/harness-driver.js";
 import type { PrpEvent, PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
+import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
 
 const result: PrpStructuredRunResult = {
@@ -96,6 +97,32 @@ const driver: HarnessDriver = {
 };
 
 describe("HarnessDriverBackend", () => {
+  it("retains Codex accounting and startup state through a serialized native checkpoint", async () => {
+    const fields = { workingDirectory: "/workspace/selected", codexUsageBaseline: {
+      baseline: { inputTokens: 100, outputTokens: 20 },
+      latest: { inputTokens: 150, outputTokens: 35 },
+    } };
+    class RecoveryFieldsSession extends FakeHarnessSession {
+      override async snapshot(): Promise<PersistedHarnessSession> {
+        return { ...(await super.snapshot()), ...fields, semanticResult: undefined, activeTurnId: null };
+      }
+    }
+    const original = new HarnessDriverBackend({ ...driver, openSession: async () => new RecoveryFieldsSession() });
+    const session = await original.openSession({ identity: {
+      runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    }, workingDirectory: fields.workingDirectory });
+    const checkpoint = JSON.parse(JSON.stringify(await session.snapshot()));
+    expect(checkpoint).toMatchObject(fields);
+    const recover = vi.fn(async (_snapshot: PersistedHarnessSession) => ({ recovered: true, session: new RecoveryFieldsSession() }));
+    const restarted = new HarnessDriverBackend({ ...driver, recoverSession: recover });
+    const restored = await restarted.recoverSession(checkpoint, { signal: new AbortController().signal });
+    expect(restored.recovered).toBe(true);
+    expect(recover.mock.calls[0]![0]).toMatchObject(fields);
+    expect(await restored.session!.snapshot()).toMatchObject(fields);
+    checkpoint.codexUsageBaseline.latest.inputTokens = 999;
+    expect(recover.mock.calls[0]![0].codexUsageBaseline!.latest.inputTokens).toBe(150);
+  });
+
   it("rejects and closes a provider session without a durable provider identity", async () => {
     let closed = false;
     class MissingProviderIdentitySession extends FakeHarnessSession {
@@ -709,6 +736,129 @@ describe("HarnessDriverBackend", () => {
         resolution: { action: "accept_for_session" },
       },
     ]);
+  });
+
+  it.each(["typed", "typed-snapshot", "lookalike", "generic"] as const)(
+    "only a typed integrity fault forbids pending-input fallback: %s",
+    async (kind) => {
+      const typed = kind === "typed" || kind === "typed-snapshot";
+      const fault = typed
+        ? new NativeSessionProtocolIntegrityError(
+            "semantic_input_digest_mismatch",
+          )
+        : kind === "lookalike"
+          ? Object.assign(new Error("native_event_replay_conflict"), {
+              code: "native_event_replay_conflict",
+              reason: "semantic_input_digest_mismatch",
+            })
+          : new Error("provider transport lost");
+      class PendingInputSession extends FakeHarnessSession {
+        override async *events() {
+          yield prpEvent(1, "runtime_request.created", {
+            request: {
+              schema: "paperclip.runtime_request.v2",
+              requestKind: "runtime",
+              requestId: "input-1",
+              type: "input",
+              status: "pending",
+              turnId: "turn-1",
+              itemId: "input-1",
+              input: {
+                schema: "paperclip.question_set.v1",
+                questions: [
+                  {
+                    id: "color",
+                    prompt: "Which color?",
+                    required: true,
+                    answerMode: "text",
+                  },
+                ],
+              },
+            },
+          });
+          throw kind === "typed-snapshot"
+            ? new Error("ordinary stream failure")
+            : fault;
+        }
+        override async snapshot(): Promise<PersistedHarnessSession> {
+          if (kind === "typed-snapshot") throw fault;
+          return super.snapshot();
+        }
+      }
+      const session = await new HarnessDriverBackend({
+        ...driver,
+        openSession: async () => new PendingInputSession(),
+      }).openSession({
+        identity: {
+          runId: "run-1",
+          sessionId: "session-1",
+          companyId: "company-1",
+          issueId: "issue-1",
+          agentId: "agent-1",
+        },
+        workingDirectory: "/workspace",
+      });
+      const events: PrpEvent[] = [];
+      const consumed = (async () => {
+        for await (const event of session.events()) events.push(event);
+      })();
+      if (typed) {
+        await expect(consumed).rejects.toBe(fault);
+        expect(events.map((event) => event.eventType)).toEqual([
+          "runtime_request.created",
+        ]);
+        await expect(session.result()).rejects.toBe(fault);
+        await expect(session.snapshot()).rejects.toBe(fault);
+      } else {
+        await consumed;
+        expect(events.map((event) => event.eventType)).toEqual([
+          "runtime_request.created",
+          "runtime_request.expired",
+          "turn.interrupted",
+        ]);
+      }
+      await session.close({ reason: "fixture complete" });
+    },
+  );
+
+  it("never exposes an earlier terminal result after a later typed integrity fault", async () => {
+    const fault = new NativeSessionProtocolIntegrityError(
+      "semantic_input_digest_mismatch",
+    );
+    class TerminalThenIntegrityFailure extends FakeHarnessSession {
+      goal = vi.fn(async () => null);
+      steer = vi.fn(async () => ({ correlationId: "blocked-steer" }));
+      override async *events() {
+        yield* super.events();
+        throw fault;
+      }
+    }
+    const harness = new TerminalThenIntegrityFailure();
+    const session = await new HarnessDriverBackend({
+      ...driver,
+      openSession: async () => harness,
+    }).openSession({
+      identity: {
+        runId: "run-1",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+      workingDirectory: "/workspace",
+    });
+    const iterator = session.events()[Symbol.asyncIterator]();
+    await iterator.next();
+    await iterator.next();
+    await expect(iterator.next()).rejects.toBe(fault);
+    await expect(session.result()).rejects.toBe(fault);
+    await expect(session.snapshot()).rejects.toBe(fault);
+    await expect(Promise.resolve().then(() => session.goal!({ action: "get" }))).rejects.toBe(fault);
+    await expect(Promise.resolve().then(() => session.steer!({ turnId: "turn-1", message: { role: "user", text: "must not send" } }))).rejects.toBe(fault);
+    await expect(Promise.resolve().then(() => session.resolveRuntimeRequest!({ requestId: "request-1", turnId: "turn-1", resolution: { type: "input", answers: [] } as never }))).rejects.toBe(fault);
+    expect(harness.goal).not.toHaveBeenCalled();
+    expect(harness.steer).not.toHaveBeenCalled();
+    await session.close({ reason: "fixture complete" });
   });
 
   it("emits one non-replayable input expiration and terminal wait after provider loss", async () => {

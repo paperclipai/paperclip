@@ -21,6 +21,9 @@
         "tool.resolve",
         "session.read",
         "session.snapshot",
+        "session.goal.get",
+        "session.goal.set",
+        "session.goal.clear",
         "session.suspend",
         "session.close"
       ]
@@ -33,7 +36,8 @@
         "runtime.tool_called",
         "runtime.turn_terminal",
         "runtime.process",
-        "runtime.diagnostic"
+        "runtime.diagnostic",
+        "runtime.goal"
       ]
     },
     "request": {

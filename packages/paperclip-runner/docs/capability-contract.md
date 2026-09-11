@@ -8,9 +8,9 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 
 ## Baseline Counts
 
-- Skill/reference headings: 152
+- Skill/reference headings: 153
 - Eval cases: 106 across 16 groups
-- Total normative rows: 258
+- Total normative rows: 259
 - Legacy MCP aliases folded into normative rows: 42
 
 | Eval group | Cases |
@@ -44,31 +44,32 @@ The skill/reference inventory and eval cases are the only normative behavior sou
 | skill:skills/paperclip/SKILL.md:paperclip-skill:10 | optional_agent_tool | skills/paperclip/SKILL.md:10 |
 | skill:skills/paperclip/SKILL.md:terminology:14 | optional_agent_tool | skills/paperclip/SKILL.md:14 |
 | skill:skills/paperclip/SKILL.md:authentication:18 | control_plane_owned | skills/paperclip/SKILL.md:18 |
-| skill:skills/paperclip/SKILL.md:the-heartbeat-procedure:30 | optional_agent_tool | skills/paperclip/SKILL.md:30 |
-| skill:skills/paperclip/SKILL.md:generated-artifacts-and-work-products:101 | always_agent_tool | skills/paperclip/SKILL.md:101 |
-| skill:skills/paperclip/SKILL.md:status-quick-guide:148 | control_plane_owned | skills/paperclip/SKILL.md:148 |
-| skill:skills/paperclip/SKILL.md:monitors-and-watchers-say-only-what-you-actually-scheduled:158 | optional_agent_tool | skills/paperclip/SKILL.md:158 |
-| skill:skills/paperclip/SKILL.md:delegating-review-tasks:171 | always_agent_tool | skills/paperclip/SKILL.md:171 |
-| skill:skills/paperclip/SKILL.md:managing-a-user-s-inbox:182 | control_plane_owned | skills/paperclip/SKILL.md:182 |
-| skill:skills/paperclip/SKILL.md:issue-dependencies-blockers:190 | control_plane_owned | skills/paperclip/SKILL.md:190 |
-| skill:skills/paperclip/SKILL.md:requesting-board-approval:215 | optional_agent_tool | skills/paperclip/SKILL.md:215 |
-| skill:skills/paperclip/SKILL.md:issue-thread-interactions:236 | optional_agent_tool | skills/paperclip/SKILL.md:236 |
-| skill:skills/paperclip/SKILL.md:standalone-decisions:265 | optional_agent_tool | skills/paperclip/SKILL.md:265 |
-| skill:skills/paperclip/SKILL.md:mcp-tool-approval-gates:369 | optional_agent_tool | skills/paperclip/SKILL.md:369 |
-| skill:skills/paperclip/SKILL.md:niche-workflow-pointers:411 | optional_agent_tool | skills/paperclip/SKILL.md:411 |
-| skill:skills/paperclip/SKILL.md:cases:421 | optional_agent_tool | skills/paperclip/SKILL.md:421 |
-| skill:skills/paperclip/SKILL.md:company-skills-workflow:426 | optional_agent_tool | skills/paperclip/SKILL.md:426 |
-| skill:skills/paperclip/SKILL.md:routines:437 | optional_agent_tool | skills/paperclip/SKILL.md:437 |
-| skill:skills/paperclip/SKILL.md:issue-workspace-runtime-controls:448 | optional_agent_tool | skills/paperclip/SKILL.md:448 |
-| skill:skills/paperclip/SKILL.md:proposing-credentials-safely:455 | optional_agent_tool | skills/paperclip/SKILL.md:455 |
-| skill:skills/paperclip/SKILL.md:reading-granted-secrets:462 | optional_agent_tool | skills/paperclip/SKILL.md:462 |
-| skill:skills/paperclip/SKILL.md:critical-rules:488 | optional_agent_tool | skills/paperclip/SKILL.md:488 |
-| skill:skills/paperclip/SKILL.md:comment-style-required:512 | always_agent_tool | skills/paperclip/SKILL.md:512 |
-| skill:skills/paperclip/SKILL.md:update:544 | optional_agent_tool | skills/paperclip/SKILL.md:544 |
-| skill:skills/paperclip/SKILL.md:planning-required-when-planning-requested:554 | optional_agent_tool | skills/paperclip/SKILL.md:554 |
-| skill:skills/paperclip/SKILL.md:key-endpoints-hot-routes:587 | optional_agent_tool | skills/paperclip/SKILL.md:587 |
-| skill:skills/paperclip/SKILL.md:searching-issues:616 | optional_agent_tool | skills/paperclip/SKILL.md:616 |
-| skill:skills/paperclip/SKILL.md:full-reference:626 | optional_agent_tool | skills/paperclip/SKILL.md:626 |
+| skill:skills/paperclip/SKILL.md:server-verified-external-chat-turns:30 | control_plane_owned | skills/paperclip/SKILL.md:30 |
+| skill:skills/paperclip/SKILL.md:the-heartbeat-procedure:70 | optional_agent_tool | skills/paperclip/SKILL.md:70 |
+| skill:skills/paperclip/SKILL.md:generated-artifacts-and-work-products:142 | always_agent_tool | skills/paperclip/SKILL.md:142 |
+| skill:skills/paperclip/SKILL.md:status-quick-guide:190 | control_plane_owned | skills/paperclip/SKILL.md:190 |
+| skill:skills/paperclip/SKILL.md:monitors-and-watchers-say-only-what-you-actually-scheduled:200 | optional_agent_tool | skills/paperclip/SKILL.md:200 |
+| skill:skills/paperclip/SKILL.md:delegating-review-tasks:213 | always_agent_tool | skills/paperclip/SKILL.md:213 |
+| skill:skills/paperclip/SKILL.md:managing-a-user-s-inbox:224 | control_plane_owned | skills/paperclip/SKILL.md:224 |
+| skill:skills/paperclip/SKILL.md:issue-dependencies-blockers:232 | control_plane_owned | skills/paperclip/SKILL.md:232 |
+| skill:skills/paperclip/SKILL.md:requesting-board-approval:257 | optional_agent_tool | skills/paperclip/SKILL.md:257 |
+| skill:skills/paperclip/SKILL.md:issue-thread-interactions:278 | optional_agent_tool | skills/paperclip/SKILL.md:278 |
+| skill:skills/paperclip/SKILL.md:standalone-decisions:307 | optional_agent_tool | skills/paperclip/SKILL.md:307 |
+| skill:skills/paperclip/SKILL.md:mcp-tool-approval-gates:411 | optional_agent_tool | skills/paperclip/SKILL.md:411 |
+| skill:skills/paperclip/SKILL.md:niche-workflow-pointers:453 | optional_agent_tool | skills/paperclip/SKILL.md:453 |
+| skill:skills/paperclip/SKILL.md:cases:463 | optional_agent_tool | skills/paperclip/SKILL.md:463 |
+| skill:skills/paperclip/SKILL.md:company-skills-workflow:468 | optional_agent_tool | skills/paperclip/SKILL.md:468 |
+| skill:skills/paperclip/SKILL.md:routines:479 | optional_agent_tool | skills/paperclip/SKILL.md:479 |
+| skill:skills/paperclip/SKILL.md:issue-workspace-runtime-controls:490 | optional_agent_tool | skills/paperclip/SKILL.md:490 |
+| skill:skills/paperclip/SKILL.md:proposing-credentials-safely:497 | optional_agent_tool | skills/paperclip/SKILL.md:497 |
+| skill:skills/paperclip/SKILL.md:reading-granted-secrets:504 | optional_agent_tool | skills/paperclip/SKILL.md:504 |
+| skill:skills/paperclip/SKILL.md:critical-rules:530 | optional_agent_tool | skills/paperclip/SKILL.md:530 |
+| skill:skills/paperclip/SKILL.md:comment-style-required:554 | always_agent_tool | skills/paperclip/SKILL.md:554 |
+| skill:skills/paperclip/SKILL.md:update:586 | optional_agent_tool | skills/paperclip/SKILL.md:586 |
+| skill:skills/paperclip/SKILL.md:planning-required-when-planning-requested:596 | optional_agent_tool | skills/paperclip/SKILL.md:596 |
+| skill:skills/paperclip/SKILL.md:key-endpoints-hot-routes:629 | optional_agent_tool | skills/paperclip/SKILL.md:629 |
+| skill:skills/paperclip/SKILL.md:searching-issues:658 | optional_agent_tool | skills/paperclip/SKILL.md:658 |
+| skill:skills/paperclip/SKILL.md:full-reference:668 | optional_agent_tool | skills/paperclip/SKILL.md:668 |
 | skill:skills/paperclip/references/artifacts.md:generated-artifacts-and-work-products:1 | always_agent_tool | skills/paperclip/references/artifacts.md:1 |
 | skill:skills/paperclip/references/artifacts.md:workspace-only-file-references:15 | optional_agent_tool | skills/paperclip/references/artifacts.md:15 |
 | skill:skills/paperclip/references/cases.md:cases:1 | optional_agent_tool | skills/paperclip/references/cases.md:1 |

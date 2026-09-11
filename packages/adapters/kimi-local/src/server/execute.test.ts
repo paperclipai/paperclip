@@ -397,7 +397,7 @@ describe("kimi_local execute", () => {
     expect(prompt).toContain("./TOOLS.md");
   });
 
-  it("does not pass --skills-dir when no skills are desired", async () => {
+  it("loads the operational skill when no optional skills are configured", async () => {
     const root = await makeTempRoot();
     let seenArgs: string[] = [];
     runProcessMock.mockImplementation(async (_runId, _target, _command, args) => {
@@ -407,6 +407,7 @@ describe("kimi_local execute", () => {
 
     await execute(makeContext(root, { config: { cwd: root, model: "kimi-code/k3" } }));
 
-    expect(seenArgs).not.toContain("--skills-dir");
+    expect(seenArgs).toContain("--skills-dir");
+    expect(seenArgs[seenArgs.indexOf("--skills-dir") + 1]).toContain("paperclip-kimi-skills-");
   });
 });

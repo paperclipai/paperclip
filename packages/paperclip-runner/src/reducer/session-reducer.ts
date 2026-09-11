@@ -1,5 +1,6 @@
 import type {
   PrpCapabilities,
+  PrpCapabilitiesV2,
   PrpEvent,
   PrpFixture,
   PrpIdentity,
@@ -47,7 +48,7 @@ export interface SessionSnapshot {
   schema: "paperclip.prp.session-snapshot.v1";
   fixtureName: string;
   identity: PrpIdentity;
-  capabilities: PrpCapabilities;
+  capabilities: PrpCapabilities | PrpCapabilitiesV2;
   runPhase: string;
   sessionState: "not_started" | "running" | "closed" | "failed";
   turnState:
@@ -322,7 +323,7 @@ export function createSessionSnapshot(fixture: PrpFixture): SessionSnapshot {
 export function createSessionSnapshotFromMetadata(input: {
   fixtureName: string;
   identity: PrpIdentity;
-  capabilities: PrpCapabilities;
+  capabilities: PrpCapabilities | PrpCapabilitiesV2;
 }): SessionSnapshot {
   return {
     schema: "paperclip.prp.session-snapshot.v1",

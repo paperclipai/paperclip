@@ -551,14 +551,14 @@ describe("ACPX runtime host", () => {
     const fixture = await hostFixture();
     let selected = false;
     const setModel = vi.fn(async (model: string) => {
-      expect(model).toBe("sonnet");
+      expect(model).toBe("claude-sonnet-5");
       selected = true;
     });
     const runtime = runtimePort({
       getStatus: async () => ({
         models: {
-          currentModelId: selected ? "sonnet" : "default",
-          availableModelIds: ["default", "sonnet"],
+          currentModelId: selected ? "claude-sonnet-5" : "default",
+          availableModelIds: ["default", "claude-sonnet-5"],
         },
       }),
       setModel,

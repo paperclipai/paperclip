@@ -437,6 +437,7 @@ describe("TaskChatInteractionCard", () => {
         button.textContent?.includes("Only collapse hidden descendants"),
     );
     await act(async () => firstAnswer?.click());
+    expect(submit).not.toHaveBeenCalled();
 
     expect(container.textContent).toContain("2 of 2");
     expect(container.textContent).toContain(

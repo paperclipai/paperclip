@@ -181,10 +181,24 @@ export interface AdapterAuthSessionPrompt {
   code: string;
 }
 
+// The account-binding claim of a finished Codex login. `secretId` is the
+// opaque company secret that names the signed-in account's own Codex home.
+// `companyIdentityDiffers` is true when the company default home stayed on a
+// DIFFERENT account — the promotion never displaces another account's claim —
+// which is exactly when binding an agent to this secret is the only way the
+// login can take effect for it. The claim carries no account identifier and
+// no credential byte, and the server returns it only through an owner read of
+// an `authenticated` session.
+export interface CodexAccountBindingClaim {
+  secretId: string;
+  companyIdentityDiffers: boolean;
+}
+
 // The owner read of a login session. It adds the one-time prompt to the public
 // response. Only the owner principal that started the session reads this shape.
 export interface AdapterAuthSessionOwnerResponse extends AdapterAuthSessionResponse {
   prompt: AdapterAuthSessionPrompt | null;
+  codexAccountBinding?: CodexAccountBindingClaim | null;
 }
 
 // The request that starts a login session for one adapter in one environment.
