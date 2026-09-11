@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
   approvals, issueApprovals, issueThreadInteractions,
@@ -29,6 +30,7 @@ export async function admitExplicitNativeContinuation(input: {
   const { db, companyId, issueId, agentId, actorId, commentId } = input;
   if (input.actorType !== "user" || !actorId || !commentId ||
       !["issue_commented", "issue_reopened_via_comment"].includes(input.reason ?? "")) return null;
+  if (!z.string().guid().safeParse(commentId).success) return null;
   const [task] = await db.select().from(issues).where(and(
     eq(issues.companyId, companyId), eq(issues.id, issueId),
   ));

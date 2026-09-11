@@ -8,6 +8,7 @@ import {
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "../__tests__/helpers/embedded-postgres.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
+import { buildExecutionContinuation } from "./execution-continuation.js";
 import { heartbeatService } from "./heartbeat.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 const support = await getEmbeddedPostgresTestSupport();
@@ -59,6 +60,11 @@ const support = await getEmbeddedPostgresTestSupport();
         explicitUserContinuation: { previousRunId: f.sourceRunId, commentId: f.commentId } } });
     const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
     expect(action.evidence.explicitUserContinuation).toMatchObject({ runId: wake!.id });
+    const envelope = await buildExecutionContinuation({ db, companyId: f.companyId, issueId: f.issueId,
+      agentId: f.agentId, context: wake!.contextSnapshot!, summary: "Deployment completed.", exposeLowTrustRaw: false });
+    expect(envelope.interruptedRunId).toBe(f.sourceRunId);
+    expect(envelope.objective).toBe("What happened?");
+    expect(envelope.completedWork).toBe("Deployment completed.");
   });
 
   it.each(["pause", "dependency"])("keeps the existing %s gate on the actual user wake", async gate => {
@@ -99,7 +105,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(coordinator.attempt).toBe(3);
     expect(coordinator.failureDetail?.replacementDenied).toBe("explicit_user_continuation");
   });
-  it.each(["live_process", "missing_process", "lease", "coordinator", "successor", "agent_message", "old_comment", "wrong_author", "run_authored", "reassigned", "automatic", "approval", "question"])("keeps the hold for %s", async kind => {
+  it.each(["live_process", "missing_process", "lease", "coordinator", "successor", "agent_message", "old_comment", "wrong_author", "run_authored", "reassigned", "automatic", "approval", "question", "malformed_comment"])("keeps the hold for %s", async kind => {
     const f = await seed();
     if (kind === "live_process") await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.sourceRunId));
     if (kind === "missing_process") await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, f.sourceRunId));
@@ -118,6 +124,7 @@ const support = await getEmbeddedPostgresTestSupport();
       await db.insert(approvals).values({ id: approvalId, companyId: f.companyId, type: "hire_agent", status: "pending", payload: {} });
       await db.insert(issueApprovals).values({ companyId: f.companyId, issueId: f.issueId, approvalId });
     }
+    if (kind === "malformed_comment") f.commentId = "not-a-uuid";
     if (kind === "agent_message") f.actorType = "agent";
     if (kind === "automatic") f.reason = "issue_continuation_needed";
     if (kind === "wrong_author") f.actorId = "someone-else";

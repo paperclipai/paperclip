@@ -254,10 +254,11 @@ export async function buildExecutionContinuation(input: {
     ["succeeded", "failed", "timed_out", "interrupted", "cancelled"].includes(run.status) &&
     !(run.status === "cancelled" && run.errorCode === "execution_reconciliation_required"),
   );
-  const interruptedRunId = lastTerminal && lastTerminal.status !== "succeeded" &&
+  const explicitUserSource = string(object(input.context.explicitUserContinuation).previousRunId);
+  const interruptedRunId = explicitUserSource ?? (lastTerminal && lastTerminal.status !== "succeeded" &&
     (hasConversationContinuationPolicy(lastTerminal.result) ||
       lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
-    ? lastTerminal.id : undefined;
+    ? lastTerminal.id : undefined);
   return {
     ...(interruptedRunId ? { interruptedRunId } : {}),
     ...(resumeDelta ? { resumeDelta } : {}),
