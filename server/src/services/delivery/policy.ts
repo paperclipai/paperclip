@@ -13,10 +13,12 @@ import type {
   DeliveryBlocker,
   DeliveryMergeMethod,
   DeliveryMergeQueueMode,
+  DeliveryNativeReviewEvidence,
   DeliveryPolicy,
   DeliveryPolicyAuthorization,
   DeliveryAutoDeployDisposition,
   DeliveryCheck,
+  DeliveryReviewPolicy,
 } from "@paperclipai/shared";
 import { createGitHubDeliveryClient, type GitHubDeliveryClient } from "./github-client.js";
 
@@ -133,22 +135,55 @@ export type DeliveryEvidence = {
   approvals: Array<{ login: string; commitSha: string | null }> | null;
   prAuthorLogin: string | null;
   blockingFindings: number;
+  /**
+   * How many of `blockingFindings` are findings whose exact review thread is
+   * resolved on a revision this head does not carry. They are review-provenance
+   * waits, not code repairs, and they are never cleared by re-reading the same
+   * stale thread.
+   */
+  staleResolutionFindings: number;
+  /**
+   * A change request that stands on its own — the GitHub review record or the
+   * provider's explicit verdict — rather than one derived from the finding
+   * count. Stale resolutions never excuse it; a derived change request shares
+   * the fate of the findings it came from.
+   */
+  independentChangesRequested: boolean;
+  /**
+   * The verified native independent review of `headSha`, when the policy's
+   * review regime is a native agent review. Absence blocks the review
+   * requirement; a review of any other revision is not evidence for this one.
+   */
+  nativeReview: DeliveryNativeReviewEvidence | null;
 };
+
+/** The review regime in force, with the legacy derivation for older records. */
+export function effectiveReviewPolicy(input: {
+  reviewPolicy?: DeliveryReviewPolicy | null;
+  requireIndependentApproval: boolean;
+}): DeliveryReviewPolicy {
+  if (input.reviewPolicy) return input.reviewPolicy;
+  return input.requireIndependentApproval ? "github_approval" : "none";
+}
 
 /**
  * The acceptance rules, independent of policy storage.
  *
  * Fail-closed by construction: unreadable evidence blocks, a missing review
- * author blocks, and an independent approval only counts when a reviewer other
- * than the author approved the exact head under evaluation.
+ * author blocks, an independent approval only counts when a reviewer other
+ * than the author approved the exact head under evaluation, and a native review
+ * only counts for the exact revision it names.
  */
 export function evaluateDeliveryRequirements(input: {
   requireIndependentApproval: boolean;
+  /** Review regime selected by the standing authorization. */
+  reviewPolicy?: DeliveryReviewPolicy | null;
   requireGreptile: boolean;
   requiredChecks: string[];
   evidence: DeliveryEvidence;
 }): DeliveryBlocker | null {
   const { evidence } = input;
+  const reviewPolicy = effectiveReviewPolicy(input);
   if (evidence.checks === null) {
     return {
       reasonCode: "provider_unknown",
@@ -187,6 +222,23 @@ export function evaluateDeliveryRequirements(input: {
     }
   }
   if (evidence.blockingFindings > 0 || evidence.reviewStatus === "changes_requested") {
+    // A resolution on a revision this head does not carry is a review-provenance
+    // wait: the next step is a fresh review of the current head, never a code
+    // repair, and never a human waiver of the resolution. It is reported as its
+    // own blocker so the bounded repair loop does not spend attempts on it.
+    const onlyStaleResolutions = evidence.blockingFindings > 0
+      && evidence.staleResolutionFindings >= evidence.blockingFindings
+      && !evidence.independentChangesRequested;
+    if (onlyStaleResolutions) {
+      return {
+        reasonCode: "review_head_stale",
+        message: evidence.staleResolutionFindings === 1
+          ? "A review finding is resolved on a revision the current head does not carry"
+          : `${evidence.staleResolutionFindings} review findings are resolved on revisions the current head does not carry`,
+        owner: null,
+        nextAction: "Re-acquire review on the current head: request a fresh review of the current revision, or have the resolved thread re-anchored to it.",
+      };
+    }
     return {
       reasonCode: "review_blocking_findings",
       message: "Review has unresolved blocking findings",
@@ -202,7 +254,7 @@ export function evaluateDeliveryRequirements(input: {
       nextAction: "Re-request review on the current head.",
     };
   }
-  if (input.requireIndependentApproval) {
+  if (reviewPolicy === "github_approval") {
     const author = evidence.prAuthorLogin?.trim().toLowerCase() ?? null;
     if (!author) {
       return {
@@ -221,6 +273,36 @@ export function evaluateDeliveryRequirements(input: {
         message: "Independent approval required: no reviewer other than the author approved the current head",
         owner: null,
         nextAction: "Obtain an APPROVED GitHub review on the current commit from an authorized reviewer other than the pull request author. Internal candidate acceptance is not a GitHub approval.",
+      };
+    }
+  }
+  if (reviewPolicy === "native_agent_review") {
+    // "Agent review plus CI" needs both halves. Greptile is a review, not
+    // repository CI, so it cannot stand in for configured checks, and neither
+    // can any GitHub review status: without named checks there is no CI
+    // evidence for the head this regime is supposed to accept on.
+    if (input.requiredChecks.length === 0) {
+      return {
+        reasonCode: "checks_required",
+        message: "The agent-review regime requires repository CI, but no required checks are configured",
+        owner: null,
+        nextAction: "Configure the repository checks this delivery must pass on the current head, or select a different review regime.",
+      };
+    }
+    // The agent-review regime: a verified native independent review of the exact
+    // candidate revision replaces the GitHub account approval. The revision must
+    // be the head under evaluation — an approval of one revision never approves
+    // a later one — and absence or an unprovable pin blocks; a worker-declared
+    // readiness boolean is never review evidence.
+    const review = evidence.nativeReview;
+    if (!review || review.revision.toLowerCase() !== (evidence.headSha ?? "").toLowerCase()) {
+      return {
+        reasonCode: "review_approval_required",
+        message: review
+          ? `The native independent review is for ${review.revision.slice(0, 12)}, not the current head ${(evidence.headSha ?? "").slice(0, 12)}`
+          : "Native independent review required: no accepted review of the current head is recorded",
+        owner: null,
+        nextAction: "Request an independent code review of the current head and have the reviewer resolve the review interaction for this exact revision.",
       };
     }
   }
@@ -645,6 +727,7 @@ export function deliveryPolicyService(db: Db, deps: { github?: GitHubDeliveryCli
     }
     const requirementBlocker = evaluateDeliveryRequirements({
       requireIndependentApproval: row.requireIndependentApproval,
+      reviewPolicy: row.authorization.reviewPolicy ?? null,
       requireGreptile: row.requireGreptile,
       requiredChecks: row.requiredChecks,
       evidence: input.evidence,

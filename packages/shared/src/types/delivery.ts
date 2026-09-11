@@ -64,6 +64,48 @@ export const DELIVERY_AUTO_DEPLOY_DISPOSITIONS = [
 ] as const;
 export type DeliveryAutoDeployDisposition = (typeof DELIVERY_AUTO_DEPLOY_DISPOSITIONS)[number];
 
+/**
+ * How the standing delivery authorization requires an independent review of the
+ * accepted candidate revision.
+ *
+ * `github_approval` requires an APPROVED GitHub review of the exact head by a
+ * reviewer other than the pull request author. `native_agent_review` requires
+ * an accepted native code review whose stored review pin names the exact
+ * candidate revision and whose reviewer is independent of the implementation
+ * owner — the agent-review-plus-CI regime, where repository CI still has to
+ * pass and no GitHub account approval is required. `none` records that no
+ * independent review is required for this repository.
+ *
+ * The regime is always an explicit operator decision: an authorization record
+ * without one keeps the meaning it was granted with.
+ */
+export const DELIVERY_REVIEW_POLICIES = ["github_approval", "native_agent_review", "none"] as const;
+export type DeliveryReviewPolicy = (typeof DELIVERY_REVIEW_POLICIES)[number];
+
+/**
+ * Verified native independent review of one exact candidate revision.
+ *
+ * The revision is the review pin stored on the accepted review interaction, and
+ * it must equal the revision under evaluation: an approval of one revision
+ * never approves a later one.
+ *
+ * `workspaceKey` is the candidate workspace the reviewer pinned. It is
+ * provenance, not a delivery-side equality check: a revision is
+ * content-addressed, so a review of the same revision recorded from another
+ * covered issue's workspace on the same repository is a review of exactly the
+ * same code. The delivery gate therefore binds on the revision (and on the
+ * reviewer's independence), and reports the workspace so an operator can see
+ * where the review was taken.
+ */
+export type DeliveryNativeReviewEvidence = {
+  interactionId: string;
+  reviewerAgentId: string;
+  reviewerModel: string;
+  revision: string;
+  workspaceKey: string;
+  reviewedAt: string | null;
+};
+
 export const DELIVERY_DEPENDENCY_KINDS = ["needs_artifact", "must_merge_after"] as const;
 export type DeliveryDependencyKind = (typeof DELIVERY_DEPENDENCY_KINDS)[number];
 
@@ -119,6 +161,7 @@ export const DELIVERY_BLOCKER_REASON_CODES = [
   "dependency_cycle",
   "checks_failing",
   "checks_pending",
+  "checks_required",
   "review_pending",
   "review_approval_required",
   "review_blocking_findings",
@@ -127,6 +170,7 @@ export const DELIVERY_BLOCKER_REASON_CODES = [
   "base_stale",
   "conflict",
   "merge_queue_blocked",
+  "merge_queue_unsupported",
   "merge_unknown",
   "merge_rejected",
   "deployment_authority_missing",
@@ -187,6 +231,12 @@ export type DeliveryReview = {
    * current candidate's review.
    */
   candidateGeneration: number | null;
+  /**
+   * The verified native independent review of the presented head, when the
+   * policy's review regime is a native agent review. It names the reviewer, the
+   * reviewer's model and the exact reviewed revision.
+   */
+  nativeReview?: DeliveryNativeReviewEvidence | null;
 };
 
 export type DeliveryBlocker = {
@@ -247,6 +297,13 @@ export type DeliveryPolicyAuthorization = {
   approvedAt: string;
   statement: string;
   scope: "project" | "repository";
+  /**
+   * The review regime this authorization selected. Absent on records written
+   * before the regime existed: the standing meaning is then derived from
+   * `requireIndependentApproval`, so an existing authorization is never
+   * silently re-scoped by this addition.
+   */
+  reviewPolicy?: DeliveryReviewPolicy | null;
 };
 
 /**
@@ -361,6 +418,12 @@ export type DeliveryProvenance = {
   checks: DeliveryCheck[];
   reviewStatus: string;
   blockingFindings: number;
+  /**
+   * The verified native independent review of `acceptedHeadSha`, when the
+   * policy's review regime is a native agent review. It is evidence about that
+   * exact revision and never about a later one.
+   */
+  nativeReview?: DeliveryNativeReviewEvidence | null;
   verifiedAt: string;
 };
 

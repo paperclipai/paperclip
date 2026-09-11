@@ -596,6 +596,198 @@ describeEmbeddedPostgres("GitHub delivery connection credentials", () => {
       blockingFindings: 0,
       findings: [],
     });
+    // Comments, reviews, and one check-run page: a pull request with no
+    // findings has nothing a review thread could clear, so the thread record is
+    // not read at all.
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("reads review threads with GitHub's resolution record across pages", async () => {
+    const fixture = await createPersonalPatFixture();
+    const head = "a".repeat(40);
+    const threadRow = (input: { id: string; resolved: boolean; comments: string[] }) => ({
+      id: input.id,
+      isResolved: input.resolved,
+      isOutdated: false,
+      path: "dispatch.ts",
+      line: 30,
+      comments: {
+        totalCount: input.comments.length,
+        pageInfo: { hasNextPage: false, endCursor: null },
+        nodes: input.comments.map((id) => ({
+          id,
+          commit: { oid: head },
+          createdAt: "2026-09-10T10:00:00Z",
+          author: { login: "greptile-apps" },
+        })),
+      },
+    });
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("https://api.github.com/graphql");
+      const body = JSON.parse(String(init?.body)) as { variables: { cursor: string | null } };
+      return Response.json({
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: body.variables.cursor === null
+                ? {
+                  totalCount: 2,
+                  pageInfo: { hasNextPage: true, endCursor: "thread-page-2" },
+                  nodes: [threadRow({ id: "PRRT_first", resolved: true, comments: ["PRRC_first"] })],
+                }
+                : {
+                  totalCount: 2,
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                  nodes: [threadRow({ id: "PRRT_second", resolved: false, comments: ["PRRC_second"] })],
+                },
+            },
+          },
+        },
+      });
+    });
+    const client = createGitHubDeliveryClient(db, { fetch: fetchMock });
+
+    await expect(client.getReviewThreads(fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", 42))
+      .resolves.toMatchObject({
+        ok: true,
+        value: [
+          { id: "PRRT_first", isResolved: true, comments: [{ id: "PRRC_first", commitSha: head }] },
+          { id: "PRRT_second", isResolved: false, comments: [{ id: "PRRC_second", commitSha: head }] },
+        ],
+      });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("follows a review thread's own comment pages before it is complete", async () => {
+    const fixture = await createPersonalPatFixture();
+    const head = "a".repeat(40);
+    const commentRow = (id: string) => ({
+      id,
+      commit: { oid: head },
+      createdAt: "2026-09-10T10:00:00Z",
+      author: { login: "greptile-apps" },
+    });
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { variables: Record<string, unknown> };
+      if (body.variables.id === "PRRT_long") {
+        return Response.json({
+          data: {
+            node: {
+              comments: {
+                totalCount: 2,
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [commentRow("PRRC_second")],
+              },
+            },
+          },
+        });
+      }
+      return Response.json({
+        data: {
+          repository: {
+            pullRequest: {
+              reviewThreads: {
+                totalCount: 1,
+                pageInfo: { hasNextPage: false, endCursor: null },
+                nodes: [{
+                  id: "PRRT_long",
+                  isResolved: true,
+                  isOutdated: false,
+                  path: "dispatch.ts",
+                  line: 30,
+                  comments: {
+                    totalCount: 2,
+                    pageInfo: { hasNextPage: true, endCursor: "comment-page-2" },
+                    nodes: [commentRow("PRRC_first")],
+                  },
+                }],
+              },
+            },
+          },
+        },
+      });
+    });
+    const client = createGitHubDeliveryClient(db, { fetch: fetchMock });
+
+    await expect(client.getReviewThreads(fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", 42))
+      .resolves.toMatchObject({
+        ok: true,
+        value: [{
+          id: "PRRT_long",
+          isResolved: true,
+          comments: [{ id: "PRRC_first" }, { id: "PRRC_second" }],
+        }],
+      });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("follows the review-comment list to its own end before treating it as complete", async () => {
+    const fixture = await createPersonalPatFixture();
+    const head = "a".repeat(40);
+    const commentRow = (id: number) => ({
+      id,
+      node_id: `PRRC_${id}`,
+      commit_id: head,
+      user: { login: "greptile-apps[bot]" },
+      body: `P1: finding ${id}`,
+      path: "dispatch.ts",
+      line: 30,
+    });
+    // A first page that fills the requested size is not the end of the list: a
+    // finding identity beyond it would otherwise be silently absent.
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(Response.json(Array.from({ length: 100 }, (_unused, index) => commentRow(index + 1))))
+      .mockResolvedValueOnce(Response.json([commentRow(101)]));
+    const client = createGitHubDeliveryClient(db, { fetch: fetchMock });
+    const result = await client.getReviewComments(fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", 42);
+
+    expect(result.ok && result.value).toHaveLength(101);
+    expect(result.ok && result.value?.at(-1)).toMatchObject({ id: "PRRC_101", commitSha: head });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "https://api.github.com/repos/acme/widget/pulls/42/comments?per_page=100&page=1",
+      "https://api.github.com/repos/acme/widget/pulls/42/comments?per_page=100&page=2",
+    ]);
+  });
+
+  it("fails closed when the review-comment list is still full at the page bound", async () => {
+    const fixture = await createPersonalPatFixture();
+    const head = "a".repeat(40);
+    const fullPage = Array.from({ length: 100 }, (_unused, index) => ({
+      id: index + 1,
+      node_id: `PRRC_${index + 1}`,
+      commit_id: head,
+      body: "P1: finding",
+    }));
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => Response.json(fullPage));
+    const client = createGitHubDeliveryClient(db, { fetch: fetchMock });
+
+    // Every page is full and the bound runs out: the record is unreadable, not
+    // a complete list of the pages that happened to fit.
+    await expect(client.getReviewComments(fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", 42))
+      .resolves.toMatchObject({ ok: false, errorCode: "github_invalid_response" });
+  });
+
+  it("fails closed when the review-thread record is incomplete or unreadable", async () => {
+    const fixture = await createPersonalPatFixture();
+    // GitHub's own total is the completeness proof: an empty first page that
+    // claims two threads is a truncated record, never an empty pull request.
+    const truncated = vi.fn<typeof fetch>().mockResolvedValue(Response.json({
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: { totalCount: 2, pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+          },
+        },
+      },
+    }));
+    const client = createGitHubDeliveryClient(db, { fetch: truncated });
+    await expect(client.getReviewThreads(fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", 42))
+      .resolves.toMatchObject({ ok: false, errorCode: "github_invalid_response" });
+
+    // A GraphQL error is a failed read, not an empty thread list.
+    const rejected = vi.fn<typeof fetch>().mockResolvedValue(Response.json({ errors: [{ message: "Bad credentials" }] }));
+    const rejectedClient = createGitHubDeliveryClient(db, { fetch: rejected });
+    await expect(rejectedClient.getReviewThreads(fixture.company.id, fixture.connection.id, "github.com", "acme", "widget", 42))
+      .resolves.toMatchObject({ ok: false, errorCode: "github_unexpected_response" });
   });
 });

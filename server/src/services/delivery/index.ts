@@ -31,6 +31,8 @@ export {
   isMergeIncluded,
   type GitHubDeliveryClient,
   type GitHubReviewComment,
+  type GitHubReviewThread,
+  type GitHubReviewThreadComment,
   type GitHubCheckRun,
 } from "./github-client.js";
 export {
@@ -42,11 +44,13 @@ export {
   type GreptileReviewService,
   type GreptileReview,
   type GreptileFinding,
+  type GreptileFindingThread,
   type GreptileReadResult,
   type GreptileReadInput,
   type GreptileReviewState,
 } from "./greptile.js";
 export { recordObservedFindings } from "./findings.js";
+export { readNativeReviewEvidence } from "./native-review.js";
 export {
   deliveryReconciler,
   DELIVERY_MAX_REPAIR_ATTEMPTS,

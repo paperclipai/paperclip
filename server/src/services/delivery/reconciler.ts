@@ -14,6 +14,7 @@ import {
 import type {
   DeliveryBlocker,
   DeliveryCheck,
+  DeliveryNativeReviewEvidence,
   DeliveryProvenance,
   DeliverySummary,
 } from "@paperclipai/shared";
@@ -25,8 +26,9 @@ import type { DeliveryUnitService, DeliveryUnitRow } from "./units.js";
 import { deriveDeliveryPhase, readUnitMetadata } from "./units.js";
 import type { GitHubDeliveryClient } from "./github-client.js";
 import type { GreptileFinding, GreptileReviewService, GreptileReviewState } from "./greptile.js";
-import { GREPTILE_BLOCKING_SEVERITIES } from "./greptile.js";
+import { GREPTILE_BLOCKING_SEVERITIES, providerVerdictRejects } from "./greptile.js";
 import { recordObservedFindings } from "./findings.js";
+import { readNativeReviewEvidence } from "./native-review.js";
 import type { DeliveryControllerContext } from "./done-gate.js";
 import { isCheckSuccessful, repositoryFullName, type DeliveryEvidence } from "./policy.js";
 
@@ -753,6 +755,7 @@ export function deliveryReconciler(
     checks: DeliveryCheck[];
     reviewStatus: string;
     blockingFindings: number;
+    nativeReview: DeliveryNativeReviewEvidence | null;
   }) {
     const metadata = readUnitMetadata(input.unit.metadata);
     const provenance: DeliveryProvenance = {
@@ -770,6 +773,7 @@ export function deliveryReconciler(
       checks: input.checks,
       reviewStatus: input.reviewStatus,
       blockingFindings: input.blockingFindings,
+      nativeReview: input.nativeReview,
       verifiedAt: new Date().toISOString(),
     };
     const now = new Date();
@@ -1032,6 +1036,14 @@ export function deliveryReconciler(
       checks: freshChecks.value,
       reviewStatus: freshReviewStatus,
       blockingFindings: freshBlocking,
+      // The receipt states the native review of the exact accepted revision,
+      // read fresh like every other receipt fact.
+      nativeReview: await readNativeReviewEvidence(db, {
+        companyId: input.companyId,
+        issueIds: await coveredIssueIds(input.companyId, unit.id),
+        headSha: updated.acceptedHeadSha,
+        excludedReviewerAgentIds: [unit.ownerAgentId].filter((agentId): agentId is string => agentId != null),
+      }),
     });
     await queue.setStatus({ companyId: input.companyId, unitId: unit.id, status: "merged" });
     await events.append({
@@ -1260,9 +1272,11 @@ export function deliveryReconciler(
     let greptileEvidenceAvailable = !policyRow.requireGreptile;
     let greptileFindings: GreptileFinding[] = [];
     let greptileBlocking = 0;
+    let greptileStaleResolutions = 0;
     let greptileReviewedHead: string | null = null;
     let greptileReviewState: GreptileReviewState | null = null;
     let greptileReadVerdict: string | null = null;
+    let greptileProviderVerdict: string | null = null;
     let greptileGate: DeliveryBlocker | null = null;
     if (policyRow.greptileConnectionId) {
       const greptileRead = await greptile.read({
@@ -1285,7 +1299,9 @@ export function deliveryReconciler(
         greptileReviewState = greptileRead.reviewState;
         greptileReviewedHead = greptileRead.headSha;
         greptileBlocking = greptileRead.blockingFindings;
+        greptileStaleResolutions = greptileRead.staleResolutionFindings;
         greptileReadVerdict = greptileRead.status;
+        greptileProviderVerdict = greptileRead.providerVerdict;
         metadata.greptileFetchedAt = now.toISOString();
         metadata.greptileReviewState = greptileRead.reviewState;
         metadata.greptileReviewedHeadSha = greptileRead.headSha;
@@ -1367,6 +1383,14 @@ export function deliveryReconciler(
       && greptileReviewState === "completed"
       && greptileReviewedHead === pullRequest.headSha
       && greptileReadVerdict !== "changes_requested";
+    // A native independent review is read for the exact head on every sweep, so
+    // a review of an earlier revision never stands in for the current one.
+    const nativeReview = await readNativeReviewEvidence(db, {
+      companyId: input.companyId,
+      issueIds: await coveredIssueIds(input.companyId, unit.id),
+      headSha: pullRequest.headSha,
+      excludedReviewerAgentIds: [unit.ownerAgentId].filter((agentId): agentId is string => agentId != null),
+    });
     const evidence: DeliveryEvidence = {
       headSha: pullRequest.headSha,
       checks: checks.ok ? checks.value : null,
@@ -1379,6 +1403,13 @@ export function deliveryReconciler(
       approvals: reviews.ok ? reviews.value.approvals : null,
       prAuthorLogin: authorLogin,
       blockingFindings,
+      staleResolutionFindings: greptileStaleResolutions,
+      // An explicit rejection stands on its own: the GitHub review verdict or
+      // the provider's own verdict text. A `changes_requested` derived from the
+      // same findings that a stale resolution covers does not.
+      independentChangesRequested: (reviews.ok && reviews.value.status === "changes_requested")
+        || providerVerdictRejects(greptileProviderVerdict),
+      nativeReview,
     };
 
     // Evidence-change detection happens before the fence so the write and the
@@ -1414,6 +1445,7 @@ export function deliveryReconciler(
         : {}),
       blockingFindings,
       authorLogin,
+      nativeReview,
       lastRemoteUpdatedAt: pullRequest.updatedAt,
     };
     const refreshed = await writeUnitFenced({

@@ -6,6 +6,7 @@ import {
   DELIVERY_MERGE_METHODS,
   DELIVERY_MERGE_QUEUE_MODES,
   DELIVERY_RECONCILIATION_CLASSIFICATIONS,
+  DELIVERY_REVIEW_POLICIES,
 } from "../types/delivery.js";
 
 const shaSchema = z.string().trim().regex(/^[0-9a-f]{40}$/i, "Must be an exact 40-hex git revision");
@@ -105,6 +106,12 @@ const authorizationSchema = z.object({
   approvedAt: z.string().trim().min(1).max(64),
   statement: z.string().trim().min(1).max(2000),
   scope: z.enum(["project", "repository"]),
+  /**
+   * The review regime the operator authorizes. `native_agent_review` requires
+   * a verified native independent review of the exact candidate revision and
+   * passing repository checks instead of a GitHub account approval.
+   */
+  reviewPolicy: z.enum(DELIVERY_REVIEW_POLICIES).nullable().optional(),
 }).strict();
 
 /**

@@ -1,5 +1,5 @@
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
-import { deliveryFindings, deliveryUnits, type Db } from "@paperclipai/db";
+import { deliveryFindings, deliveryUnitIssues, deliveryUnits, type Db } from "@paperclipai/db";
 import type { DeliveryBlocker } from "@paperclipai/shared";
 import type { DeliveryEventService } from "./events.js";
 import type { DeliveryPolicyService } from "./policy.js";
@@ -7,8 +7,9 @@ import type { DeliveryQueueService } from "./queue.js";
 import type { DeliveryUnitService } from "./units.js";
 import type { GitHubDeliveryClient } from "./github-client.js";
 import type { GreptileReviewService } from "./greptile.js";
-import { GREPTILE_BLOCKING_SEVERITIES } from "./greptile.js";
+import { GREPTILE_BLOCKING_SEVERITIES, providerVerdictRejects } from "./greptile.js";
 import type { DeliveryReconciler, DeliveryIssueStatusWriter } from "./reconciler.js";
+import { readNativeReviewEvidence } from "./native-review.js";
 import type { DeliveryControllerContext } from "./done-gate.js";
 import { repositoryFullName, type DeliveryEvidence } from "./policy.js";
 
@@ -271,6 +272,8 @@ export function deliveryMergeExecutor(
     // review, or a stale review blocks the merge.
     let greptileAvailable = !policyRow.requireGreptile;
     let greptileBlocking = 0;
+    let greptileStaleResolutions = 0;
+    let greptileProviderVerdict: string | null = null;
     let greptileApproves = false;
     if (policyRow.greptileConnectionId) {
       const greptileRead = await greptile.read({
@@ -306,26 +309,47 @@ export function deliveryMergeExecutor(
         }
         greptileAvailable = true;
         greptileBlocking = greptileRead.blockingFindings;
+        greptileStaleResolutions = greptileRead.staleResolutionFindings;
+        greptileProviderVerdict = greptileRead.providerVerdict;
         greptileApproves = greptileRead.status !== "changes_requested";
       }
     }
+    // Blocking findings count for the candidate that reported them, exactly as
+    // they do in reconciliation: the current generation and the head under
+    // evaluation. An unresolved finding of a replaced candidate is history — it
+    // neither blocks nor explains the new one, and leaving it in this count
+    // would block a merge no reconciliation path can ever clear.
     const openBlockingFindings = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(deliveryFindings)
       .where(and(
         eq(deliveryFindings.companyId, input.companyId),
         eq(deliveryFindings.unitId, unit.id),
+        eq(deliveryFindings.candidateGeneration, unit.candidateGeneration),
+        eq(deliveryFindings.headSha, pullRequest.headSha),
         inArray(deliveryFindings.state, ["open", "disputed"]),
         inArray(deliveryFindings.severity, [...GREPTILE_BLOCKING_SEVERITIES]),
       ))
       .then((rows) => rows[0]?.count ?? 0);
     // Merge-time evidence follows the same exact-head contract as
     // reconciliation: a required Greptile review that names the accepted head
-    // and carries no blocking findings is the review verdict for that head.
+    // and carries no blocking findings is the review verdict for that head, and
+    // a native independent review only counts for the exact accepted revision.
     const greptileVerdict = policyRow.requireGreptile && greptileAvailable;
     const reviewStatus = greptileVerdict
       ? (greptileApproves ? "approved" : "changes_requested")
       : (reviews.ok ? reviews.value.status : null);
+    const unitIssueIds = await db
+      .select({ issueId: deliveryUnitIssues.issueId })
+      .from(deliveryUnitIssues)
+      .where(and(eq(deliveryUnitIssues.companyId, input.companyId), eq(deliveryUnitIssues.unitId, unit.id)))
+      .then((rows) => rows.map((row) => row.issueId));
+    const nativeReview = await readNativeReviewEvidence(db, {
+      companyId: input.companyId,
+      issueIds: unitIssueIds,
+      headSha: unit.acceptedHeadSha,
+      excludedReviewerAgentIds: [unit.ownerAgentId].filter((agentId): agentId is string => agentId != null),
+    });
     const evidence: DeliveryEvidence = {
       headSha: unit.acceptedHeadSha,
       checks: checks.ok ? checks.value : null,
@@ -340,6 +364,10 @@ export function deliveryMergeExecutor(
         openBlockingFindings,
         greptileBlocking,
       ),
+      staleResolutionFindings: greptileStaleResolutions,
+      independentChangesRequested: (reviews.ok && reviews.value.status === "changes_requested")
+        || providerVerdictRejects(greptileProviderVerdict),
+      nativeReview,
     };
     const decision = await policy.evaluateUnit({
       companyId: input.companyId,
@@ -407,17 +435,39 @@ export function deliveryMergeExecutor(
         return await blockMerge(input.companyId, unit, "provider_unknown",
           "Pull request node id is unavailable for the merge queue");
       }
+      // The queue entry is bound to the accepted revision, and the remote head
+      // is re-read immediately before the enqueue: a queue entry that could
+      // merge a head pushed after the evidence read would bypass the exact-head
+      // review the agent-review regime depends on.
+      const currentHead = await github.getPullRequest(
+        input.companyId, connectionId, repository.host, repository.owner, repository.name, pullRequest.number,
+      );
+      if (!currentHead.ok) {
+        return await blockMerge(input.companyId, unit, "provider_unknown", currentHead.message);
+      }
+      if (currentHead.value.headSha !== unit.acceptedHeadSha) {
+        return await blockMerge(
+          input.companyId, unit, "head_stale",
+          "The remote head moved before the merge queue could be bound to the accepted revision",
+        );
+      }
       const enqueued = await github.enqueuePullRequest({
         companyId: input.companyId,
         connectionId,
         host: repository.host,
         pullRequestNodeId: pullRequest.nodeId,
+        expectedHeadOid: unit.acceptedHeadSha,
       });
+      // A provider that refuses the exact-head binding rejected the request
+      // before any queue attempt existed, so it must not consume the bounded
+      // merge-attempt budget. Narrowed explicitly: a GitHubResult only carries
+      // an error code on its failure branch.
+      const bindingRefused = !enqueued.ok && enqueued.errorCode === "merge_queue_head_binding_unsupported";
       const recorded = await db
         .update(deliveryUnits)
         .set({
           status: enqueued.ok ? "merging" : undefined,
-          mergeAttemptCount: unit.mergeAttemptCount + 1,
+          mergeAttemptCount: bindingRefused ? unit.mergeAttemptCount : unit.mergeAttemptCount + 1,
           mergeRequestedAt: now,
           lastEventAt: enqueued.ok ? now : undefined,
           updatedAt: now,
@@ -431,16 +481,17 @@ export function deliveryMergeExecutor(
         ))
         .returning({ id: deliveryUnits.id });
       if (recorded.length === 0) {
-        // The candidate was replaced while the enqueue was in flight. The
-        // remote merge-queue entry is already a reality that no database fence
-        // can undo; state the ambiguity instead of attributing it to the new
-        // candidate.
+        // The candidate changed while enqueue was in flight. Record the remote
+        // result without attributing it to the replacement; a failed response
+        // is not proof that GitHub created no queue entry.
         await events.append({
           companyId: input.companyId,
           unitId: unit.id,
           issueId: unit.primaryIssueId,
           type: "merge_queued",
-          message: `Merge queue entry for the replaced revision ${unit.acceptedHeadSha.slice(0, 12)} was submitted; the new candidate is unaffected`,
+          message: enqueued.ok
+            ? `Merge queue entry for the replaced revision ${unit.acceptedHeadSha.slice(0, 12)} was submitted; the new candidate is unaffected`
+            : `Merge queue enqueue for the replaced revision ${unit.acceptedHeadSha.slice(0, 12)} was not confirmed (${enqueued.errorCode}); the new candidate is unaffected`,
           dedupeKey: `merge_queued_stale:${unit.acceptedHeadSha}`,
           url: pullRequest.url,
           payload: { reasonCode: "candidate_replaced" },
@@ -448,7 +499,16 @@ export function deliveryMergeExecutor(
         return { unitId: unit.id, leased: false, merged: false, queued: false, blocked: false, reasonCode: await fencedWriteMiss({ companyId: input.companyId, unitId: unit.id, generation: unit.candidateGeneration }) };
       }
       if (!enqueued.ok) {
-        const mapped = mergeFailureReason(enqueued.status, enqueued.message);
+        // A provider that cannot bind the entry to the accepted head fails
+        // closed with its own named reason: enqueueing unbound would let the
+        // queue merge a revision no review evaluated. Branch protection is
+        // never bypassed as a workaround.
+        const mapped = enqueued.errorCode === "merge_queue_head_binding_unsupported"
+          ? {
+            reasonCode: "merge_queue_unsupported",
+            message: "GitHub's merge queue does not accept an exact-head binding on this host, so the queue cannot be proven to merge the reviewed revision. Use the serialized merge mode for this repository.",
+          }
+          : mergeFailureReason(enqueued.status, enqueued.message);
         const applied = await units.markBlocked({
           candidateGeneration: unit.candidateGeneration,
           companyId: input.companyId,

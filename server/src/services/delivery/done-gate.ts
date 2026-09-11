@@ -11,6 +11,7 @@ import {
 } from "@paperclipai/db";
 import { conflict, unprocessable } from "../../errors.js";
 import type { DeliveryPhase } from "@paperclipai/shared";
+import { RECOVERY_ORIGIN_KINDS } from "../recovery/origins.js";
 import { parseGitHubRepositoryUrl } from "./policy.js";
 /**
  * Unforgeable code-delivery Done gate.
@@ -46,7 +47,7 @@ export type DeliveryGateResult =
 
 export type DeliveryGateIssue = typeof issues.$inferSelect;
 
-export type DeliveryClassifiableIssue = Pick<DeliveryGateIssue, "id" | "deliveryKind" | "projectId">;
+export type DeliveryClassifiableIssue = Pick<DeliveryGateIssue, "id" | "deliveryKind" | "projectId" | "originKind">;
 
 const OPEN_UNIT_STATUSES = ["submitted", "in_review", "ready_to_merge", "merging", "blocked"] as const;
 
@@ -76,6 +77,8 @@ export function createDeliveryDoneGate(db: Db): DeliveryDoneGate {
   async function classifyCodeDelivery(companyId: string, issue: DeliveryClassifiableIssue): Promise<boolean> {
     if (issue.deliveryKind === "code") return true;
     if (issue.deliveryKind === "non_code") return false;
+    // An explicit code artifact decides first: a task that carries a delivery
+    // unit or a pull-request work product is code delivery whatever its origin.
     const unit = await db
       .select({ id: deliveryUnitIssues.id })
       .from(deliveryUnitIssues)
@@ -92,6 +95,13 @@ export function createDeliveryDoneGate(db: Db): DeliveryDoneGate {
       ))
       .limit(1);
     if (pr.length > 0) return true;
+    // A productivity-review task assesses an agent's work: its deliverable is a
+    // review, and it has no code revision to merge. Only after the artifact
+    // checks above — a review task that did acquire a candidate or a pull
+    // request is still code delivery — does its origin exempt it from the
+    // merge-receipt gate, so a review-only task is not refused Done with a
+    // code-merge obligation it can never satisfy.
+    if (issue.originKind === RECOVERY_ORIGIN_KINDS.issueProductivityReview) return false;
     if (!issue.projectId) return false;
     const [policy] = await db
       .select({ enabled: deliveryPolicies.enabled, repositoryId: deliveryPolicies.repositoryId })
@@ -200,6 +210,9 @@ export function createDeliveryDoneGate(db: Db): DeliveryDoneGate {
         status: issues.status,
         deliveryKind: issues.deliveryKind,
         projectId: issues.projectId,
+        // Classification reads the origin: a review-only child must be
+        // recognised as such here exactly as it is for the issue itself.
+        originKind: issues.originKind,
       })
       .from(issues)
       .where(and(

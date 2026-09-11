@@ -26,13 +26,30 @@ const OPEN_FINDING_STATE = "open" as const;
  *    cleared by the provider's own flag or by a later read. A dispute is about
  *    the defect, not one revision: when the same finding reappears on a new
  *    candidate it is carried onto that candidate's row.
- * 2. A finding the provider reports as addressed is recorded
- *    `already_addressed` and never reopens while it stays flagged.
- * 3. Any other finding the provider still reports reopens, because it is
+ * 2. GitHub's own review-thread record is the host-side authority, but only for
+ *    the revision it belongs to. A finding whose exact thread GitHub resolved
+ *    on the observed head — or on a revision that head provably contains — is
+ *    recorded `already_addressed` and never reopens while that record stands,
+ *    including when the provider still reports the finding unaddressed.
+ * 3. A resolution on a revision the observed head does not carry clears
+ *    nothing: the finding stays open, the resolution is recorded as
+ *    provenance so an operator can see exactly which revision it belongs to,
+ *    and a later read of the same stale thread never promotes it to
+ *    current-head evidence. A thread that is unresolved, ambiguous, outdated
+ *    without resolution, or not returned at all is likewise not addressed:
+ *    a missing thread is a coverage gap, never resolution by omission.
+ * 4. Otherwise the provider's own `addressed` flag records
+ *    `already_addressed` while it stays set.
+ * 5. Any other finding the provider still reports reopens, because it is
  *    reported on the snapshot just read.
- * 4. An open finding that this snapshot no longer reports goes `stale` — it
+ * 6. An open finding that this snapshot no longer reports goes `stale` — it
  *    never silently clears, and dispositions are never erased by an empty
  *    snapshot.
+ *
+ * Every state is re-derived from the observation that describes it. A
+ * resolution therefore reads as resolved only for a head an observation proved
+ * it on: when the head moves and the new observation no longer carries the
+ * resolution, the finding blocks again instead of keeping stale evidence.
  *
  * The whole observation — fence check, upserts and the stale sweep — runs in
  * one transaction that takes the unit row lock first. Candidate replacement
@@ -79,7 +96,11 @@ export async function recordObservedFindings(
       // a later candidate creates its own row instead of overwriting the
       // earlier candidate's record.
       const [existing] = await tx
-        .select({ id: deliveryFindings.id, state: deliveryFindings.state })
+        .select({
+          id: deliveryFindings.id,
+          state: deliveryFindings.state,
+          dispositionActorType: deliveryFindings.dispositionActorType,
+        })
         .from(deliveryFindings)
         .where(and(
           eq(deliveryFindings.companyId, input.companyId),
@@ -89,10 +110,36 @@ export async function recordObservedFindings(
           eq(deliveryFindings.candidateGeneration, input.candidateGeneration),
         ))
         .limit(1);
-      const providerAddressed = finding.addressed === true;
-      const providerState: (typeof deliveryFindings.$inferSelect)["state"] = providerAddressed
-        ? "already_addressed"
-        : OPEN_FINDING_STATE;
+      // GitHub's own resolution record for the exact thread that carries this
+      // finding identity. It clears the finding only for the revision it
+      // belongs to: the head under this observation, or a revision that head
+      // provably contains. A resolution on a superseded or unprovable revision
+      // stays visible as provenance and clears nothing.
+      const hostResolution = finding.reviewThread?.resolved === true ? finding.reviewThread : null;
+      const clearedByHost = hostResolution !== null && hostResolution.currentHead;
+      const observedState: (typeof deliveryFindings.$inferSelect)["state"] =
+        clearedByHost || finding.addressed === true
+          ? "already_addressed"
+          : OPEN_FINDING_STATE;
+      // The recorded reason for a system-derived state, so an operator can see
+      // which revision a resolution belongs to and whether it applies here.
+      const resolutionFields = hostResolution === null
+        ? {}
+        : hostResolution.currentHead
+          ? {
+            disposition: "already_addressed" as const,
+            dispositionExplanation: `GitHub review thread ${hostResolution.id} is resolved on ${hostResolution.commitSha ?? input.headSha ?? "the reviewed revision"}`,
+            dispositionActorType: "system" as const,
+            dispositionActorId: "github-review-thread",
+            dispositionAt: now,
+          }
+          : {
+            disposition: null,
+            dispositionExplanation: `GitHub review thread ${hostResolution.id} is resolved on ${hostResolution.commitSha ?? "an unpublished revision"}, which the current head does not carry`,
+            dispositionActorType: "system" as const,
+            dispositionActorId: "github-review-thread",
+            dispositionAt: now,
+          };
       const values = {
         severity: finding.severity,
         title: finding.title,
@@ -110,14 +157,37 @@ export async function recordObservedFindings(
         // cleared by the provider's own flag or by a later read, so the
         // disposition is preserved verbatim while the finding keeps being
         // reported on this candidate.
-        const nextState = existing.state === "disputed" ? "disputed" : providerState;
-        await tx.update(deliveryFindings).set({ ...values, state: nextState }).where(eq(deliveryFindings.id, existing.id));
+        if (existing.state === "disputed") {
+          await tx.update(deliveryFindings).set({ ...values, state: "disputed" }).where(eq(deliveryFindings.id, existing.id));
+          continue;
+        }
+        // System-recorded provenance is re-derived with the state it explains:
+        // restated while the host still reports the resolution, and cleared
+        // when the observation no longer carries it, so a re-opened finding
+        // never keeps a resolved explanation.
+        await tx.update(deliveryFindings).set({
+          ...values,
+          state: observedState,
+          ...(hostResolution
+            ? resolutionFields
+            : existing.dispositionActorType === "system"
+              ? {
+                disposition: null,
+                dispositionExplanation: null,
+                dispositionActorType: null,
+                dispositionActorId: null,
+                dispositionAt: null,
+              }
+              : {}),
+        }).where(eq(deliveryFindings.id, existing.id));
         continue;
       }
       // A dispute is a recorded human decision about the defect, not about one
       // revision: when the same finding reappears on a new candidate, the
       // dispute is carried onto the new generation's row rather than silently
-      // reset to the provider's own state.
+      // reset to the provider's own state. Host resolution is recorded the same
+      // way it is on an existing row, so the new candidate's row states why it
+      // reads as addressed.
       const [priorDispute] = await tx
         .select({
           dispositionExplanation: deliveryFindings.dispositionExplanation,
@@ -143,7 +213,7 @@ export async function recordObservedFindings(
           source: "greptile",
           externalId: finding.externalId,
           ...values,
-          state: priorDispute ? "disputed" : providerState,
+          state: priorDispute ? "disputed" : observedState,
           ...(priorDispute
             ? {
               disposition: "disputed" as const,
@@ -152,7 +222,7 @@ export async function recordObservedFindings(
               dispositionActorId: priorDispute.dispositionActorId,
               dispositionAt: priorDispute.dispositionAt,
             }
-            : {}),
+            : resolutionFields),
           firstSeenAt: now,
         })
         .onConflictDoNothing();

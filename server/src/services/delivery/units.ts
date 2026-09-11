@@ -16,6 +16,7 @@ import type {
   DeliveryCheck,
   DeliveryDisposition,
   DeliveryFinding,
+  DeliveryNativeReviewEvidence,
   DeliveryPhase,
   DeliveryProvenance,
   DeliverySummary,
@@ -104,6 +105,12 @@ export type DeliveryUnitMetadata = {
    * repeated signal for unchanged evidence must not spend another attempt.
    */
   lastRepairSignal?: Record<string, string>;
+  /**
+   * Verified native independent review of the head under evaluation, when the
+   * policy's review regime is a native agent review. It names the reviewer, the
+   * reviewer's model and the exact reviewed revision.
+   */
+  nativeReview?: DeliveryNativeReviewEvidence | null;
 };
 
 const TERMINAL_UNIT_STATUSES = ["merged", "cancelled", "closed_unmerged"] as const;
@@ -511,6 +518,11 @@ export function deliveryUnitService(
         headSha: reviewCurrent ? reviewHeadSha : null,
         blockingFindings: Math.max(unresolvedFindings, reviewCurrent ? metadata.blockingFindings ?? 0 : 0),
         candidateGeneration: reviewCurrent ? unit.candidateGeneration : null,
+        // A native review is presented only for the head it names: it is
+        // evidence about one exact revision and never about a later one.
+        nativeReview: metadata.nativeReview && metadata.nativeReview.revision === reviewHeadSha
+          ? metadata.nativeReview
+          : null,
       },
       blocker,
       nextAction: unit.nextAction ?? blocker?.nextAction ?? defaultNextAction(phase),

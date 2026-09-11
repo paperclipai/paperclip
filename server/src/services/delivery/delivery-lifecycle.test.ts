@@ -87,6 +87,9 @@ function evidence(overrides: Partial<DeliveryEvidence> = {}): DeliveryEvidence {
     approvals: [{ login: "reviewer", commitSha: HEAD }],
     prAuthorLogin: "author",
     blockingFindings: 0,
+    staleResolutionFindings: 0,
+    independentChangesRequested: false,
+    nativeReview: null,
     ...overrides,
   };
 }

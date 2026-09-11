@@ -1,6 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import type { ToolGatewayService } from "../tool-gateway.js";
-import type { GitHubDeliveryClient } from "./github-client.js";
+import type { GitHubDeliveryClient, GitHubReviewThread } from "./github-client.js";
 
 /**
  * Scoped Greptile read.
@@ -27,6 +27,19 @@ import type { GitHubDeliveryClient } from "./github-client.js";
  * Every failure fails closed: an unreadable comments list, an unresolvable
  * blocking finding, an unknown provider review state, or an unprovable reviewed
  * head is a read failure — never a pass and never a fabricated revision.
+ *
+ * Clearing a finding is not the provider's call alone. GitHub's own review
+ * thread is the host-side authority, but only for the revision it belongs to: a
+ * thread the pull request resolved on the evaluated head — or on a revision
+ * that head provably contains — clears the finding it carries even while the
+ * provider still reports it; a resolution on a superseded or divergent revision
+ * clears nothing and is reported as a review-provenance wait, never silently
+ * promoted to current-head evidence by a later read. An unresolved thread never
+ * clears, and a finding whose identity GitHub did not return stays
+ * unresolved/unknown rather than being read as addressed by omission. The
+ * thread read is complete or it fails, so a resolution can never hide past a
+ * page bound and a truncated comment list can never lose the identity a finding
+ * correlates through.
  */
 
 export const GREPTILE_READ_TOOL_NAMES = [
@@ -75,18 +88,59 @@ export type GreptileFinding = {
   addressed: boolean | null;
   /** GitHub `commit_id` this finding was correlated to, when it resolved. */
   commitSha: string | null;
+  /**
+   * GitHub's own review-thread record carrying this finding identity, when
+   * GitHub returned it. `null` means GitHub did not publish the identity: the
+   * finding stays unresolved/unknown, because a thread that is not in the
+   * record is a coverage gap and never resolution evidence.
+   */
+  reviewThread: GreptileFindingThread | null;
+};
+
+/**
+ * GitHub's own resolution record for the thread that carries a finding.
+ *
+ * `resolved` is GitHub's own flag, but a resolution is only evidence for a
+ * revision when its provenance binds to that revision: `commitSha` is GitHub's
+ * own commit for the thread's newest comment, and `currentHead` says whether
+ * that revision is the head under evaluation (or is provably contained in it).
+ * A thread resolved on a revision the head does not carry is *not*
+ * current-head evidence — it clears nothing, and it never silently becomes
+ * current by being read again later. `outdated` only says the thread's diff
+ * moved, which is not resolution either.
+ */
+export type GreptileFindingThread = {
+  id: string;
+  resolved: boolean;
+  outdated: boolean;
+  commitSha: string | null;
+  currentHead: boolean;
 };
 
 export type GreptileReview = {
   ok: true;
   status: "approved" | "changes_requested" | "commented" | "none" | "pending";
   reviewState: GreptileReviewState;
+  /**
+   * The provider's own verdict text, when it published one. It is reported
+   * separately from `status` because `status` is derived from the finding set
+   * as well: an explicit provider rejection stands on its own, while a
+   * `changes_requested` derived from findings shares their fate.
+   */
+  providerVerdict: string | null;
   /** Verified reviewed revision; `null` only when no finding resolved a head. */
   headSha: string | null;
   score: number | null;
   findings: GreptileFinding[];
   /** Blocking findings that hold for `headSha`. */
   blockingFindings: number;
+  /**
+   * Blocking findings whose exact review thread is resolved on a revision this
+   * head does not carry. They are review-provenance waits — a fresh review of
+   * the head is the next step — never code repair, and never cleared by
+   * re-reading the same stale thread.
+   */
+  staleResolutionFindings: number;
   /** Findings the provider reports across the pull request. */
   providerFindings: number;
   raw: unknown;
@@ -278,6 +332,9 @@ function normalizeFinding(row: Record<string, unknown>): GreptileFinding | null 
     blocking: isProviderBlocking(row, severity),
     addressed: typeof row.addressed === "boolean" ? row.addressed : null,
     commitSha: null,
+    // Correlated later, against GitHub's own review-thread record; until then
+    // the finding has no resolution evidence at all.
+    reviewThread: null,
   };
 }
 
@@ -453,6 +510,21 @@ function providerStatusOf(payload: unknown): string | null {
   return raw ? raw.trim().toLowerCase() : null;
 }
 
+/**
+ * Whether a provider's own verdict text is a rejection.
+ *
+ * One definition, used by the review status and by both evidence assemblers, so
+ * an explicit provider rejection can never drift into being treated as
+ * harmless at one call site and blocking at another. A rejection here stands on
+ * its own; a `changes_requested` status derived from findings does not.
+ */
+export function providerVerdictRejects(verdict: string | null): boolean {
+  return verdict === "changes_requested"
+    || verdict === "failed"
+    || verdict === "failure"
+    || verdict === "error";
+}
+
 function statusOf(input: {
   reviewState: GreptileReviewState;
   blockingFindings: number;
@@ -460,12 +532,7 @@ function statusOf(input: {
   providerFindings: number;
 }): GreptileReview["status"] {
   if (input.blockingFindings > 0) return "changes_requested";
-  if (
-    input.providerStatus === "changes_requested"
-    || input.providerStatus === "failed"
-    || input.providerStatus === "failure"
-    || input.providerStatus === "error"
-  ) {
+  if (providerVerdictRejects(input.providerStatus)) {
     // An explicit provider rejection is a blocking verdict even when the
     // payload carries no per-finding severity.
     return "changes_requested";
@@ -552,7 +619,7 @@ export function greptileReviewService(
   db: Db,
   deps: {
     toolGateway: Pick<ToolGatewayService, "readConnectedTool">;
-    github: Pick<GitHubDeliveryClient, "getReviewComments" | "getReviews" | "getCheckRuns">;
+    github: Pick<GitHubDeliveryClient, "getReviewComments" | "getReviews" | "getCheckRuns" | "getReviewThreads" | "compareCommits">;
   },
 ): GreptileReviewService {
   async function read(input: GreptileReadInput): Promise<GreptileReadResult> {
@@ -615,14 +682,21 @@ export function greptileReviewService(
     }
 
     // Authoritative correlation: every governed finding identity must resolve
-    // to GitHub's own record of the commit that comment belongs to.
+    // to GitHub's own record of the commit that comment belongs to, and to the
+    // review thread that carries it. The thread record is required exactly when
+    // there is a finding identity it could clear — with no findings nothing can
+    // be resolved and the read would add no evidence — and when it is required
+    // an unreadable record is a failed read, never a partial one.
     const args = [
       input.companyId, input.correlation.connectionId, input.correlation.host,
       input.correlation.owner, input.correlation.repo, input.prNumber,
     ] as const;
-    const [githubComments, githubReviews] = await Promise.all([
+    const [githubComments, githubReviews, githubThreads] = await Promise.all([
       deps.github.getReviewComments(...args),
       deps.github.getReviews(...args),
+      findings.length > 0
+        ? deps.github.getReviewThreads(...args)
+        : Promise.resolve({ ok: true as const, value: [] as GitHubReviewThread[] }),
     ]);
     if (!githubComments.ok) {
       return {
@@ -638,6 +712,13 @@ export function greptileReviewService(
         message: `Greptile reviewed revision could not be read from GitHub: ${githubReviews.message}`,
       };
     }
+    if (!githubThreads.ok) {
+      return {
+        ok: false,
+        errorCode: "provider_unknown",
+        message: `Greptile findings could not be matched to GitHub's review threads: ${githubThreads.message}`,
+      };
+    }
     const commentsByIdentity = new Map<string, { commitSha: string | null; ambiguous: boolean }>();
     for (const comment of githubComments.value) {
       const existing = commentsByIdentity.get(comment.id);
@@ -647,6 +728,20 @@ export function greptileReviewService(
       }
       if (existing.commitSha !== comment.commitSha) existing.ambiguous = true;
     }
+    // A finding resolves through the exact comment identity GitHub published.
+    // An identity GitHub reported in more than one thread is ambiguous, so it
+    // proves nothing and the finding keeps its unresolved/unknown state.
+    const threadsByCommentId = new Map<string, { thread: GitHubReviewThread; ambiguous: boolean }>();
+    for (const thread of githubThreads.value) {
+      for (const comment of thread.comments) {
+        const existing = threadsByCommentId.get(comment.id);
+        if (!existing) {
+          threadsByCommentId.set(comment.id, { thread, ambiguous: false });
+          continue;
+        }
+        if (existing.thread.id !== thread.id) existing.ambiguous = true;
+      }
+    }
 
     const headCandidates = new Map<string, number>();
     for (const finding of findings) {
@@ -654,6 +749,52 @@ export function greptileReviewService(
       if (!correlated || correlated.ambiguous || !correlated.commitSha) continue;
       finding.commitSha = correlated.commitSha.toLowerCase();
       headCandidates.set(finding.commitSha, (headCandidates.get(finding.commitSha) ?? 0) + 1);
+    }
+    /**
+     * Whether a resolved thread's revision is the head under evaluation, or is
+     * provably contained in it (GitHub's own compare).
+     *
+     * A resolution clears a finding only for the revision it belongs to. The
+     * evaluated head, or a revision the head provably contains, is that
+     * revision. Anything else — a superseded or divergent revision, a comment
+     * with no published commit, an unreadable compare — is not current-head
+     * evidence: the finding keeps its unresolved state instead of being cleared
+     * by a resolution that was never about this revision. Ancestry is asked
+     * once per resolved revision and never inferred from the candidate head.
+     */
+    const evaluatedHead = input.correlation.headSha.toLowerCase();
+    const ancestry = new Map<string, boolean>();
+    const resolutionIsCurrentHead = async (resolutionCommitSha: string | null): Promise<boolean> => {
+      if (!resolutionCommitSha) return false;
+      const revision = resolutionCommitSha.toLowerCase();
+      if (revision === evaluatedHead) return true;
+      const cached = ancestry.get(revision);
+      if (cached !== undefined) return cached;
+      const compared = await deps.github.compareCommits(
+        input.companyId, input.correlation.connectionId, input.correlation.host,
+        input.correlation.owner, input.correlation.repo, revision, evaluatedHead,
+      );
+      const included = compared.ok && compared.value.included;
+      ancestry.set(revision, included);
+      return included;
+    };
+    for (const finding of findings) {
+      const correlated = threadsByCommentId.get(finding.externalId);
+      if (!correlated || correlated.ambiguous) {
+        finding.reviewThread = null;
+        continue;
+      }
+      const thread = correlated.thread;
+      // GitHub returns a thread's comments oldest first, so the last one is the
+      // newest revision the thread has actually been discussed on.
+      const resolutionCommitSha = thread.comments.at(-1)?.commitSha ?? null;
+      finding.reviewThread = {
+        id: thread.id,
+        resolved: thread.isResolved,
+        outdated: thread.isOutdated,
+        commitSha: resolutionCommitSha,
+        currentHead: thread.isResolved && await resolutionIsCurrentHead(resolutionCommitSha),
+      };
     }
 
     const reviews = githubReviews.value.reviews
@@ -684,21 +825,34 @@ export function greptileReviewService(
       };
     }
     // Unaddressed findings remain blocking across revisions until Greptile
-    // clears them. An old comment commit is not evidence that it was fixed.
-    const blockingFindings = findings.filter((finding) => finding.blocking).length;
+    // clears them or the pull request resolves the thread that carries them, on
+    // a revision this head carries. A resolution on a revision the head does
+    // not carry is not current-head evidence: it clears nothing, it is never
+    // silently promoted by being read again later, and it is reported
+    // separately so the controller can treat it as a review-provenance wait
+    // instead of code repair. An old comment commit is not evidence that a
+    // finding was fixed, and an unresolved or outdated thread clears nothing.
+    const clears = (finding: GreptileFinding) =>
+      finding.reviewThread?.resolved === true && finding.reviewThread.currentHead === true;
+    const blockingFindings = findings.filter((finding) => finding.blocking && !clears(finding)).length;
+    const staleResolutionFindings = findings.filter((finding) => finding.blocking && !clears(finding)
+      && finding.reviewThread?.resolved === true).length;
+    const providerVerdict = provider.verdict ?? providerStatusOf(reviewPayload);
     return {
       ok: true,
       status: statusOf({
         reviewState: provider.state,
         blockingFindings,
-        providerStatus: provider.verdict ?? providerStatusOf(reviewPayload),
+        providerStatus: providerVerdict,
         providerFindings: findings.length,
       }),
       reviewState: provider.state,
+      providerVerdict,
       headSha,
       score: provider.score,
       findings,
       blockingFindings,
+      staleResolutionFindings,
       providerFindings: findings.length,
       raw: { review: reviewPayload, comments: commentsPayload },
     };

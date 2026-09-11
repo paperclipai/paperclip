@@ -42,7 +42,7 @@ import { getNativeDeliveryWait } from "../services/delivery/native-delivery-wait
 import { recordObservedFindings } from "../services/delivery/findings.js";
 import { deliveryMergeExecutor } from "../services/delivery/merge-executor.js";
 import { deliveryReconciler } from "../services/delivery/reconciler.js";
-import type { GitHubCheckRun, GitHubDeliveryClient } from "../services/delivery/github-client.js";
+import type { GitHubCheckRun, GitHubDeliveryClient, GitHubReviewThread } from "../services/delivery/github-client.js";
 import { issueService } from "../services/issues.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -60,6 +60,9 @@ function githubStub(overrides: Partial<GitHubDeliveryClient> = {}): GitHubDelive
     getChecks: async () => failure,
     getReviews: async () => failure,
     getReviewComments: async () => failure,
+    // A pull request with no review threads: nothing is resolved and nothing is
+    // dismissed, so findings keep their provider-reported state.
+    getReviewThreads: async () => ({ ok: true, value: [] as GitHubReviewThread[] }),
     getCheckRuns: async () => failure,
     mergePullRequest: async () => failure,
     enqueuePullRequest: async () => failure,
@@ -276,7 +279,11 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     const { policy } = services(githubStub());
     const input = {
       companyId, projectId, targetBranch: "main", requireGreptile: false,
-      evidence: { headSha: HEAD, checks: [], reviewStatus: "approved", reviewHeadSha: HEAD, approvals: [], prAuthorLogin: "author", blockingFindings: 0 },
+      evidence: {
+        headSha: HEAD, checks: [], reviewStatus: "approved", reviewHeadSha: HEAD,
+        approvals: [], prAuthorLogin: "author", blockingFindings: 0,
+        staleResolutionFindings: 0, independentChangesRequested: false, nativeReview: null,
+      },
     };
     expect(await policy.evaluateUnit(input)).toMatchObject({ allowed: true });
     await db.update(deliveryPolicies).set({ autoDeployDisposition: "none" }).where(eq(deliveryPolicies.projectId, projectId));
@@ -760,6 +767,13 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
       reviewState?: "COMPLETED" | "IN_PROGRESS";
       revision?: string;
       failRead?: boolean;
+      threadsFailure?: boolean;
+      threads?: Array<{
+        id: string;
+        resolved: boolean;
+        outdated?: boolean;
+        comments?: Array<{ id: string; commitSha?: string }>;
+      }>;
       canDispatch?: () => boolean;
       reviews?: Array<{ login: string; state: string; commitSha: string; submittedAt: string }>;
       checkRuns?: GitHubCheckRun[];
@@ -818,6 +832,22 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
         },
       }),
       getReviewComments: async () => reviewComments([{ id: provider.findingId, commitSha: input.revision ?? HEAD }]),
+      // GitHub's own review-thread record. A finding only reads as resolved
+      // through a thread whose comment identity is exactly its own.
+      getReviewThreads: async () => input.threadsFailure
+        ? { ok: false, status: null, errorCode: "github_invalid_response", message: "thread record unreadable", retryAfterSeconds: null }
+        : {
+          ok: true,
+          value: (input.threads ?? []).map((thread) => ({
+            id: thread.id,
+            isResolved: thread.resolved,
+            isOutdated: thread.outdated ?? false,
+            comments: (thread.comments ?? []).map((comment) => ({
+              id: comment.id,
+              commitSha: comment.commitSha ?? HEAD,
+            })),
+          })),
+        },
       getCheckRuns: async () => ({ ok: true, value: input.checkRuns ?? [] }),
       mergePullRequest: async (_company, _connection, _host, _owner, _repo, _number, mergeInput) => {
         merges.push(mergeInput.sha);
@@ -1118,6 +1148,7 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
       findings: [{
         externalId: "scm-gen1", severity: "high", title: "P1: gen-1 defect", body: null,
         filePath: null, line: null, url: null, blocking: true, addressed: false, commitSha: HEAD,
+        reviewThread: null,
       }],
     });
     expect((await units.buildSummary(companyId, issue.id)).review.blockingFindings).toBe(1);
@@ -1178,6 +1209,7 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
       findings: [{
         externalId: "scm-late", severity: "high", title: "P1: late", body: null,
         filePath: null, line: null, url: null, blocking: true, addressed: false, commitSha: "d".repeat(40),
+        reviewThread: null,
       }],
     })).toEqual({ recorded: false });
     expect((await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, backToA.unitId!)))
@@ -1247,6 +1279,7 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
       blocking: !addressed,
       addressed,
       commitSha: HEAD,
+      reviewThread: null,
     };
   }
 
@@ -1286,14 +1319,20 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     const released = new Promise<void>((resolve) => {
       release = resolve;
     });
+    let markAcquired: () => void = () => {};
+    const acquired = new Promise<void>((resolve) => {
+      markAcquired = resolve;
+    });
     const held = db.transaction(async (tx) => {
       await tx
         .select({ id: deliveryUnits.id })
         .from(deliveryUnits)
         .where(eq(deliveryUnits.id, unitId))
         .for("update");
+      markAcquired();
       await released;
     });
+    await Promise.race([acquired, held]);
     return { release, held };
   }
 
@@ -1823,6 +1862,7 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     const finding = (externalId: string, addressed: boolean) => ({
       externalId, severity: "high", title: externalId, body: null,
       filePath: null, line: null, url: null, blocking: !addressed, addressed, commitSha: HEAD,
+      reviewThread: null,
     });
     await recordObservedFindings(db, {
       companyId, unitId: unit!.id, candidateGeneration: unit!.candidateGeneration, headSha: HEAD,
@@ -1835,6 +1875,227 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     // decision outranks the provider's own addressed flag.
     expect(stateOf("scm-fixed")).toBe("open");
     expect(stateOf("scm-disputed")).toBe("disputed");
+  });
+
+  it("clears a finding through its exact resolved GitHub thread and merges once", async () => {
+    const pipeline = await governedPipeline({
+      threads: [{ id: "PRRT_finding", resolved: false, comments: [{ id: "scm-1", commitSha: HEAD }] }],
+    });
+    const { companyId, unit } = pipeline;
+
+    // The exact thread is unresolved: the finding blocks and wakes the owner
+    // once for the current evidence.
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "blocked", blocker: { reasonCode: "review_blocking_findings" } });
+    expect(await repairAttempts(companyId, unit.id)).toHaveLength(1);
+    expect(await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, unit.id)))
+      .toMatchObject([{ externalId: "scm-1", state: "open", headSha: HEAD }]);
+
+    // The live incident: the provider still reports the finding unaddressed
+    // while GitHub records its exact thread as resolved. The host's own
+    // resolution record is the authority, so the finding stops blocking without
+    // spending another repair attempt.
+    pipeline.github.getReviewThreads = async () => ({
+      ok: true,
+      value: [{
+        id: "PRRT_finding",
+        isResolved: true,
+        isOutdated: false,
+        comments: [{ id: "scm-1", commitSha: HEAD }],
+      }],
+    });
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "ready_to_merge", merged: false });
+    expect(await repairAttempts(companyId, unit.id)).toHaveLength(1);
+    expect(await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, unit.id)))
+      .toMatchObject([{
+        externalId: "scm-1",
+        state: "already_addressed",
+        dispositionActorId: "github-review-thread",
+        dispositionExplanation: `GitHub review thread PRRT_finding is resolved on ${HEAD}`,
+      }]);
+    const [accepted] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id));
+    expect(accepted).toMatchObject({ acceptedHeadSha: HEAD, status: "ready_to_merge" });
+
+    // Re-observing the same resolved thread never reopens the finding.
+    await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
+    expect(await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, unit.id)))
+      .toMatchObject([{ state: "already_addressed" }]);
+    expect(await repairAttempts(companyId, unit.id)).toHaveLength(1);
+
+    // The merge and its receipt use the same exact-head contract, with no
+    // blocking finding left behind.
+    const leased = await pipeline.queue.leaseNext({
+      companyId, repositoryId: pipeline.repository.id, targetBranch: "main", leaseOwner: "sweep",
+    });
+    expect(await pipeline.executor.attemptMerge({
+      companyId, unitId: unit.id, lease: { leaseOwner: "sweep", leaseEpoch: leased!.leaseEpoch },
+    })).toMatchObject({ merged: true, blocked: false });
+    expect(pipeline.merges).toEqual([HEAD]);
+    const [mergedUnit] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id));
+    expect(mergedUnit).toMatchObject({ status: "merged", mergedSha: HEAD, acceptedHeadSha: HEAD });
+    // The verified merge closes the covered task, and only through the
+    // controller-owned status write.
+    expect(pipeline.statusWrites).toContain("done");
+    const [receipt] = await db.select().from(deliveryReceipts).where(eq(deliveryReceipts.unitId, unit.id));
+    expect(receipt?.provenance).toMatchObject({ acceptedHeadSha: HEAD, mergedSha: HEAD, blockingFindings: 0 });
+  });
+
+  it("keeps a finding unresolved when its thread is unresolved, missing, mismatched, or ambiguous", async () => {
+    const unresolved = await governedPipeline({
+      threads: [{ id: "PRRT_a", resolved: false, comments: [{ id: "scm-1", commitSha: HEAD }] }],
+    });
+    const missing = await governedPipeline();
+    const mismatched = await governedPipeline({
+      threads: [{ id: "PRRT_c", resolved: true, comments: [{ id: "scm-other", commitSha: HEAD }] }],
+    });
+    const ambiguous = await governedPipeline({
+      threads: [
+        { id: "PRRT_d", resolved: true, comments: [{ id: "scm-1", commitSha: HEAD }] },
+        { id: "PRRT_e", resolved: true, comments: [{ id: "scm-1", commitSha: HEAD }] },
+      ],
+    });
+
+    for (const pipeline of [unresolved, missing, mismatched, ambiguous]) {
+      expect(await pipeline.reconciler.reconcileUnit({
+        companyId: pipeline.companyId, unitId: pipeline.unit.id, trigger: "sweep",
+      })).toMatchObject({ status: "blocked", blocker: { reasonCode: "review_blocking_findings" } });
+      expect(await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, pipeline.unit.id)))
+        .toMatchObject([{ externalId: "scm-1", state: "open" }]);
+      const [blocked] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, pipeline.unit.id));
+      expect(blocked?.acceptedHeadSha).toBeNull();
+    }
+    expect([unresolved, missing, mismatched, ambiguous].flatMap((pipeline) => pipeline.merges)).toEqual([]);
+  });
+
+  it("invalidates a resolution that the newly observed head does not carry", async () => {
+    const pipeline = await governedPipeline({
+      threads: [{ id: "PRRT_head", resolved: true, comments: [{ id: "scm-1", commitSha: HEAD }] }],
+    });
+    const { companyId, unit } = pipeline;
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "ready_to_merge" });
+
+    // The head advances and GitHub reports the same thread unresolved: the
+    // resolution belonged to the earlier observation and never clears a
+    // revision it was not observed on.
+    pipeline.github.getPullRequest = async () => openPr(OTHER_HEAD);
+    pipeline.github.getReviewComments = async () => reviewComments([{ id: pipeline.provider.findingId, commitSha: OTHER_HEAD }]);
+    pipeline.github.getReviewThreads = async () => ({
+      ok: true,
+      value: [{
+        id: "PRRT_head",
+        isResolved: false,
+        isOutdated: true,
+        comments: [{ id: "scm-1", commitSha: OTHER_HEAD }],
+      }],
+    });
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "blocked" });
+    const findings = await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, unit.id));
+    expect(findings).toMatchObject([{ externalId: "scm-1", state: "open", headSha: OTHER_HEAD }]);
+    // The system-recorded reason is cleared with the state it explained.
+    expect(findings[0]).toMatchObject({ dispositionActorId: null, dispositionExplanation: null });
+    const [stale] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id));
+    expect(stale).toMatchObject({ acceptedHeadSha: null, headSha: OTHER_HEAD });
+    expect(pipeline.merges).toEqual([]);
+
+    // A resolution that belongs to the superseded head is provenance, not
+    // currency: it still clears nothing on the new head, the blocker names the
+    // current head, and the bounded repair loop mints no *new* code-repair
+    // attempt for a finding the reviewers already resolved somewhere else. The
+    // earlier phase's attempt for the genuinely unresolved finding stays as the
+    // legitimate history it is.
+    const attemptCounts = (rows: Array<{ reasonCode: string }>) =>
+      rows.filter((attempt) => attempt.reasonCode === "review_blocking_findings").length;
+    const beforeStale = await repairAttempts(companyId, unit.id);
+    pipeline.github.getReviewThreads = async () => ({
+      ok: true,
+      value: [{
+        id: "PRRT_head",
+        isResolved: true,
+        isOutdated: true,
+        comments: [{ id: "scm-1", commitSha: HEAD }],
+      }],
+    });
+    pipeline.github.compareCommits = async () => ({
+      ok: true,
+      value: { status: "behind", aheadBy: 0, behindBy: 1, included: false },
+    });
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "blocked", blocker: { reasonCode: "review_head_stale" } });
+    const staleRows = await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, unit.id));
+    expect(staleRows).toMatchObject([{ state: "open", headSha: OTHER_HEAD }]);
+    expect(staleRows[0]?.dispositionExplanation).toContain("does not carry");
+    const afterStale = await repairAttempts(companyId, unit.id);
+    expect(attemptCounts(afterStale)).toBe(attemptCounts(beforeStale));
+
+    // The same thread proven contained in the head (a revision the head
+    // carries) does clear it: the resolution is about this revision family.
+    pipeline.github.getReviews = async () => ({
+      ok: true,
+      value: {
+        status: "commented", headSha: OTHER_HEAD, approvedHeadSha: OTHER_HEAD,
+        approvals: [{ login: "independent-reviewer", commitSha: OTHER_HEAD }],
+        blockingFindings: 0, reviews: [],
+      },
+    });
+    pipeline.github.compareCommits = async () => ({
+      ok: true,
+      value: { status: "ahead", aheadBy: 1, behindBy: 0, included: true },
+    });
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "ready_to_merge" });
+    expect(await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, unit.id)))
+      .toMatchObject([{ state: "already_addressed", headSha: OTHER_HEAD }]);
+  });
+
+  it("fails closed when GitHub's review-thread record cannot be read", async () => {
+    const pipeline = await governedPipeline({ threadsFailure: true });
+    const { companyId, unit } = pipeline;
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "blocked", blocker: { reasonCode: "provider_unknown" } });
+    // An unreadable resolution record is an unavailable provider, not an
+    // actionable repair, and it never dismisses a finding by omission.
+    expect(await repairAttempts(companyId, unit.id)).toHaveLength(0);
+    expect(await db.select().from(deliveryFindings).where(eq(deliveryFindings.unitId, unit.id))).toEqual([]);
+    const [blocked] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unit.id));
+    expect(blocked?.acceptedHeadSha).toBeNull();
+  });
+
+  it("does not block a merge with unresolved findings that belong to another generation or head", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, unit } = pipeline;
+    pipeline.provider.addressed = true;
+    expect(await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" }))
+      .toMatchObject({ status: "ready_to_merge" });
+
+    // The candidate advances to generation 2 while the accepted revision stays
+    // the head, and the timeline keeps a previous candidate's dispute plus an
+    // unresolved finding recorded at an older head. Neither is evidence about
+    // this candidate, and counting them would block a merge that no
+    // reconciliation path can clear.
+    await db.update(deliveryUnits).set({ candidateGeneration: 2 }).where(eq(deliveryUnits.id, unit.id));
+    await db.insert(deliveryFindings).values([
+      {
+        companyId, unitId: unit.id, source: "greptile", externalId: "scm-old-candidate",
+        severity: "high", title: "Replaced candidate dispute", headSha: HEAD, candidateGeneration: 1,
+        state: "disputed", disposition: "disputed",
+      },
+      {
+        companyId, unitId: unit.id, source: "greptile", externalId: "scm-old-head",
+        severity: "high", title: "Older head finding", headSha: OTHER_HEAD, candidateGeneration: 2,
+        state: "open",
+      },
+    ]);
+
+    const leased = await pipeline.queue.leaseNext({
+      companyId, repositoryId: pipeline.repository.id, targetBranch: "main", leaseOwner: "sweep",
+    });
+    expect(await pipeline.executor.attemptMerge({
+      companyId, unitId: unit.id, lease: { leaseOwner: "sweep", leaseEpoch: leased!.leaseEpoch },
+    })).toMatchObject({ merged: true, blocked: false });
+    expect(pipeline.merges).toEqual([HEAD]);
   });
 });
 

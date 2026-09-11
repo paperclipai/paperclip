@@ -125,6 +125,35 @@ export type GitHubCheckRun = {
 };
 
 /**
+ * One comment inside an authoritative pull request review thread.
+ *
+ * `id` is GitHub's own node id — the same identity a governed provider read
+ * publishes for an inline finding — and `commitSha` is GitHub's `commit.oid`
+ * for that comment. Both are read, never inferred.
+ */
+export type GitHubReviewThreadComment = {
+  id: string;
+  commitSha: string | null;
+};
+
+/**
+ * An authoritative pull request review thread.
+ *
+ * `isResolved` is GitHub's own resolution record for the thread. It is the only
+ * host-side "this finding is addressed" authority: a provider's own `addressed`
+ * flag describes the provider's review, while the resolution is the decision
+ * the pull request recorded. `isOutdated` is *not* resolution — a thread whose
+ * diff line moved is still unresolved until someone resolves it.
+ */
+export type GitHubReviewThread = {
+  id: string;
+  isResolved: boolean;
+  isOutdated: boolean;
+  /** Every comment GitHub records in the thread, oldest first. */
+  comments: GitHubReviewThreadComment[];
+};
+
+/**
  * Whether a GitHub compare status proves inclusion. For
  * `compare(base=candidate, head=target)`, only `ahead` (target contains the
  * candidate plus newer commits) or `identical` proves the candidate landed in
@@ -190,8 +219,126 @@ const CHECK_RUNS_PAGE_SIZE = 100;
 /** Page bound for a complete check-run read; exhausting it is an unreadable record. */
 const MAX_CHECK_RUN_PAGES = 10;
 
+/** Array REST reads (reviews, review comments) are read at the maximum page size. */
+const ARRAY_PAGE_SIZE = 100;
+
+/** Page bound for a complete array read; exhausting it is an unreadable record. */
+const MAX_ARRAY_PAGES = 20;
+
+/** Review threads and their comments are read at the maximum page size. */
+const REVIEW_THREAD_PAGE_SIZE = 100;
+
+/**
+ * GitHub's own wording for a GraphQL input that does not accept the exact-head
+ * binding. The field is part of the documented `EnqueuePullRequestInput`; a
+ * host or API version that does not know it must fail closed rather than
+ * enqueue an unbound entry that could merge a head no review evaluated.
+ */
+const MERGE_QUEUE_HEAD_BINDING_UNSUPPORTED = /expectedHeadOid|EnqueuePullRequestInput|unknown argument/i;
+
+/** Page bounds for a complete thread read; exhausting one is an unreadable record. */
+const MAX_REVIEW_THREAD_PAGES = 10;
+const MAX_THREAD_COMMENT_PAGES = 10;
+
+/**
+ * The GraphQL shape a governed review-thread read needs: GitHub's own thread
+ * identity and resolution flag, plus each comment's node id and commit.
+ */
+const REVIEW_THREADS_QUERY = `query DeliveryReviewThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      reviewThreads(first: ${REVIEW_THREAD_PAGE_SIZE}, after: $cursor) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          isResolved
+          isOutdated
+          comments(first: ${REVIEW_THREAD_PAGE_SIZE}) {
+            totalCount
+            pageInfo { hasNextPage endCursor }
+            nodes { id commit { oid } }
+          }
+        }
+      }
+    }
+  }
+}`;
+
+/** Continuation shape for a thread whose comment list is longer than one page. */
+const REVIEW_THREAD_COMMENTS_QUERY = `query DeliveryReviewThreadComments($id: ID!, $cursor: String) {
+  node(id: $id) {
+    ... on PullRequestReviewThread {
+      comments(first: ${REVIEW_THREAD_PAGE_SIZE}, after: $cursor) {
+        totalCount
+        pageInfo { hasNextPage endCursor }
+        nodes { id commit { oid } }
+      }
+    }
+  }
+}`;
+
 function apiBase(host: string) {
   return gitHubApiBase(host);
+}
+
+/**
+ * A failed read of GitHub's review-thread record. One shared shape because
+ * every unreadable thread, comment or pagination page is the same fact: a
+ * partial list must never be read as a complete one.
+ */
+const REVIEW_THREAD_READ_FAILURE: GitHubFailure = {
+  ok: false,
+  status: null,
+  errorCode: "github_invalid_response",
+  message: "GitHub returned an unreadable review thread record",
+  retryAfterSeconds: null,
+};
+
+type PageConnection = {
+  rows: unknown[];
+  totalCount: number;
+  hasNextPage: boolean;
+  endCursor: string | null;
+};
+
+/**
+ * Read one page of a connection inside the review-thread query envelope.
+ *
+ * The root query answers with `data.repository.pullRequest.reviewThreads`, so
+ * the connection is read where GitHub actually puts it rather than assumed at
+ * the data root. A missing or reshaped envelope is unreadable, never empty.
+ */
+function readPullRequestConnection(data: unknown, key: string): PageConnection | null {
+  const pullRequest = record(record(record(data)?.repository)?.pullRequest);
+  return readPageConnection(pullRequest, key);
+}
+
+/**
+ * Read one page of a GraphQL connection.
+ *
+ * `totalCount`, `pageInfo.hasNextPage` and `endCursor` must all be present and
+ * mutually consistent: a connection whose metadata cannot be read is unreadable
+ * rather than empty, so no caller mistakes a broken page for a complete record.
+ */
+function readPageConnection(value: unknown, key: string): PageConnection | null {
+  const connection = record(record(value)?.[key]);
+  if (!connection || !Array.isArray(connection.nodes)) return null;
+  const totalCount = num(connection.totalCount);
+  if (totalCount === null || totalCount < 0 || connection.nodes.length > totalCount) return null;
+  const pageInfo = record(connection.pageInfo);
+  const hasNextPage = bool(pageInfo?.hasNextPage);
+  if (hasNextPage === null) return null;
+  const endCursor = str(pageInfo?.endCursor);
+  if (hasNextPage && !endCursor) return null;
+  return { rows: connection.nodes, totalCount, hasNextPage, endCursor };
+}
+
+function readThreadComment(value: unknown): GitHubReviewThreadComment | null {
+  const row = record(value);
+  const id = str(row?.id);
+  if (!row || !id) return null;
+  return { id, commitSha: str(record(row.commit)?.oid) };
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -358,6 +505,97 @@ export function createGitHubDeliveryClient(
     };
   }
 
+  /**
+   * One GraphQL request against the governed connection.
+   *
+   * GraphQL answers a rejected request with HTTP 200 plus an `errors` array, so
+   * a body is only usable when it carries neither an error nor a missing
+   * `data`. The credential is resolved per call and never cached.
+   */
+  async function graphqlRequest(
+    companyId: string,
+    connectionId: string | null,
+    host: string,
+    query: string,
+    variables: Record<string, unknown>,
+  ): Promise<GitHubResult<unknown>> {
+    const credential = await resolveCredential(companyId, connectionId, host);
+    if (!credential.ok) return credential;
+    let response: Response;
+    try {
+      response = await fetchImpl(`${apiBase(host)}/graphql`, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "user-agent": "paperclip-delivery-controller",
+          authorization: credential.value.authorization,
+        },
+        body: JSON.stringify({ query, variables }),
+        signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+      });
+    } catch {
+      return { ok: false, status: null, errorCode: "github_unreachable", message: "GitHub could not be reached", retryAfterSeconds: null };
+    }
+    const payload = record(await readJson(response));
+    if (!response.ok) {
+      const firstError = arrayOf(payload?.errors)[0];
+      return {
+        ok: false,
+        status: response.status,
+        errorCode: response.status === 401 ? "github_auth_required" : "github_unexpected_response",
+        message: str(record(firstError)?.message) ?? `GitHub returned HTTP ${response.status}`,
+        retryAfterSeconds: retryAfterSeconds(response),
+      };
+    }
+    const errors = arrayOf(payload?.errors);
+    if (errors.length > 0) {
+      return {
+        ok: false,
+        status: 200,
+        errorCode: "github_unexpected_response",
+        message: str(record(errors[0])?.message) ?? "GitHub rejected the GraphQL request",
+        retryAfterSeconds: null,
+      };
+    }
+    if (!payload || payload.data == null) {
+      return { ok: false, status: null, errorCode: "github_invalid_response", message: "GitHub returned a GraphQL response without data", retryAfterSeconds: null };
+    }
+    return { ok: true, value: payload.data };
+  }
+
+  /**
+   * Follow an array REST read to its own end.
+   *
+   * GitHub publishes no total for these collections, so the end signal is the
+   * short page: a page smaller than the requested size is the last one. A page
+   * bound exhausted while every page was full is an unreadable record, never a
+   * truncated list that a caller could read as complete evidence.
+   */
+  async function readAllPages<T>(
+    companyId: string,
+    connectionId: string | null,
+    host: string,
+    path: string,
+    parse: (payload: unknown) => T[] | null,
+  ): Promise<GitHubResult<T[]>> {
+    const rows: T[] = [];
+    for (let page = 1; page <= MAX_ARRAY_PAGES; page += 1) {
+      const result = await request<unknown>(
+        companyId, connectionId, host, "GET",
+        `${path}?per_page=${ARRAY_PAGE_SIZE}&page=${page}`,
+      );
+      if (!result.ok) return result;
+      const parsed = parse(result.value);
+      if (parsed === null) {
+        return { ok: false, status: null, errorCode: "github_invalid_response", message: "GitHub returned an unreadable list", retryAfterSeconds: null };
+      }
+      rows.push(...parsed);
+      if (parsed.length < ARRAY_PAGE_SIZE) return { ok: true, value: rows };
+    }
+    return { ok: false, status: null, errorCode: "github_invalid_response", message: "GitHub returned an incomplete list", retryAfterSeconds: null };
+  }
+
   async function getRepository(
     companyId: string,
     connectionId: string | null,
@@ -505,28 +743,33 @@ export function createGitHubDeliveryClient(
     repo: string,
     number: number,
   ): Promise<GitHubResult<GitHubReviewState>> {
-    const result = await request<unknown[]>(
-      companyId, connectionId, host, "GET",
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}/reviews?per_page=100`,
+    // A complete read: `summarizeReviews` decides from each reviewer's latest
+    // state, so a truncated list could drop the newest review — a still-standing
+    // change request, or the approval acceptance depends on.
+    const result = await readAllPages<GitHubReviewEntry>(
+      companyId, connectionId, host,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}/reviews`,
+      (payload) => Array.isArray(payload)
+        ? payload.flatMap((entry) => {
+          const row = record(entry);
+          const state = str(row?.state);
+          if (!state) return [];
+          return [{
+            state,
+            login: str(record(row?.user)?.login),
+            submittedAt: str(row?.submitted_at),
+            commitSha: str(row?.commit_id),
+          }];
+        })
+        : null,
     );
     if (!result.ok) return result;
-    const reviews = (Array.isArray(result.value) ? result.value : []).flatMap((entry) => {
-      const row = record(entry);
-      const state = str(row?.state);
-      if (!state) return [];
-      return [{
-        state,
-        login: str(record(row?.user)?.login),
-        submittedAt: str(row?.submitted_at),
-        commitSha: str(row?.commit_id),
-      }];
-    });
-    const summary = summarizeReviews(reviews);
+    const summary = summarizeReviews(result.value);
     return {
       ok: true,
       value: {
         ...summary,
-        reviews,
+        reviews: result.value,
       },
     };
   }
@@ -546,33 +789,152 @@ export function createGitHubDeliveryClient(
     repo: string,
     number: number,
   ): Promise<GitHubResult<GitHubReviewComment[]>> {
-    const result = await request<unknown>(
-      companyId, connectionId, host, "GET",
-      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}/comments?per_page=100`,
+    // A comment identity is the pivot a governed finding is correlated through,
+    // both for head provenance and for the review thread that carries it, so the
+    // read is complete or it fails: a truncated list would silently drop the
+    // identity a finding needs and read as an absent (never-resolved) comment.
+    const result = await readAllPages<GitHubReviewComment>(
+      companyId, connectionId, host,
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/pulls/${number}/comments`,
+      (payload) => {
+        if (!Array.isArray(payload)) return null;
+        const comments: GitHubReviewComment[] = [];
+        for (const entry of payload) {
+          const row = record(entry);
+          const id = num(row?.id);
+          if (!id) return null;
+          comments.push({
+            id: str(row?.node_id) ?? String(id),
+            login: str(record(row?.user)?.login),
+            commitSha: str(row?.commit_id),
+            path: str(row?.path),
+            line: num(row?.line) ?? num(row?.original_line),
+            body: str(row?.body),
+            url: str(row?.html_url),
+            createdAt: str(row?.created_at),
+          });
+        }
+        return comments;
+      },
     );
     if (!result.ok) return result;
-    if (!Array.isArray(result.value)) {
-      return { ok: false, status: null, errorCode: "github_invalid_response", message: "GitHub returned an unreadable review comment list", retryAfterSeconds: null };
-    }
-    const comments: GitHubReviewComment[] = [];
-    for (const entry of result.value) {
-      const row = record(entry);
-      const id = num(row?.id);
-      if (!id) {
-        return { ok: false, status: null, errorCode: "github_invalid_response", message: "GitHub returned a review comment without an id", retryAfterSeconds: null };
+    return { ok: true, value: result.value };
+  }
+
+  /**
+   * Authoritative pull request review threads, with GitHub's own resolution
+   * record for each thread.
+   *
+   * This is the host-side authority for "the reviewers consider this finding
+   * addressed": a resolved thread is resolved evidence, an unresolved thread is
+   * not, and a provider flag substitutes for neither. The read is complete or
+   * it fails — every thread page and every thread's comment pages are followed
+   * until GitHub's own totals are accounted for — because a resolution hidden
+   * past a page bound would read as an unresolved thread, and a truncated
+   * comment list would lose the identity a governed finding correlates through.
+   */
+  async function getReviewThreads(
+    companyId: string,
+    connectionId: string | null,
+    host: string,
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<GitHubResult<GitHubReviewThread[]>> {
+    const rawThreads: unknown[] = [];
+    let expectedCount: number | null = null;
+    let cursor: string | null = null;
+    let complete = false;
+    for (let page = 1; page <= MAX_REVIEW_THREAD_PAGES && !complete; page += 1) {
+      const result = await graphqlRequest(
+        companyId, connectionId, host, REVIEW_THREADS_QUERY,
+        { owner, repo, number, cursor },
+      );
+      if (!result.ok) return result;
+      const connection = readPullRequestConnection(result.value, "reviewThreads");
+      if (!connection) return REVIEW_THREAD_READ_FAILURE;
+      if (expectedCount === null) expectedCount = connection.totalCount;
+      else if (expectedCount !== connection.totalCount) return REVIEW_THREAD_READ_FAILURE;
+      rawThreads.push(...connection.rows);
+      if (rawThreads.length > expectedCount) return REVIEW_THREAD_READ_FAILURE;
+      if (!connection.hasNextPage) {
+        // GitHub's own total is the completeness proof: a shorter list is a
+        // truncated record, not a pull request with fewer threads.
+        if (rawThreads.length !== expectedCount) return REVIEW_THREAD_READ_FAILURE;
+        complete = true;
+        break;
       }
-      comments.push({
-        id: str(row?.node_id) ?? String(id),
-        login: str(record(row?.user)?.login),
-        commitSha: str(row?.commit_id),
-        path: str(row?.path),
-        line: num(row?.line) ?? num(row?.original_line),
-        body: str(row?.body),
-        url: str(row?.html_url),
-        createdAt: str(row?.created_at),
+      cursor = connection.endCursor;
+    }
+    if (!complete) return REVIEW_THREAD_READ_FAILURE;
+
+    const threads: GitHubReviewThread[] = [];
+    const seenThreadIds = new Set<string>();
+    for (const raw of rawThreads) {
+      const row = record(raw);
+      const id = str(row?.id);
+      const isResolved = bool(row?.isResolved);
+      const isOutdated = bool(row?.isOutdated);
+      if (!row || !id || isResolved === null || isOutdated === null || seenThreadIds.has(id)) {
+        return REVIEW_THREAD_READ_FAILURE;
+      }
+      seenThreadIds.add(id);
+      const comments = await readThreadComments(companyId, connectionId, host, id, row.comments);
+      if (!comments.ok) return comments;
+      threads.push({
+        id,
+        isResolved,
+        isOutdated,
+        comments: comments.value,
       });
     }
-    return { ok: true, value: comments };
+    return { ok: true, value: threads };
+  }
+
+  /**
+   * Every comment of one review thread.
+   *
+   * The thread's first comment page arrives with the thread list; a longer
+   * thread is continued through `node(id:)` until GitHub's own comment total is
+   * accounted for. An unreadable or unfinished comment list is a failed read:
+   * a comment hidden past the page bound could be the exact identity a governed
+   * finding resolves through.
+   */
+  async function readThreadComments(
+    companyId: string,
+    connectionId: string | null,
+    host: string,
+    threadId: string,
+    firstPage: unknown,
+  ): Promise<GitHubResult<GitHubReviewThreadComment[]>> {
+    const comments: GitHubReviewThreadComment[] = [];
+    const seenCommentIds = new Set<string>();
+    let expectedCount: number | null = null;
+    let pendingPage: unknown = firstPage;
+    for (let page = 1; page <= MAX_THREAD_COMMENT_PAGES; page += 1) {
+      const connection = readPageConnection({ comments: pendingPage }, "comments");
+      if (!connection) return REVIEW_THREAD_READ_FAILURE;
+      if (expectedCount === null) expectedCount = connection.totalCount;
+      else if (expectedCount !== connection.totalCount) return REVIEW_THREAD_READ_FAILURE;
+      for (const node of connection.rows) {
+        const comment = readThreadComment(node);
+        if (!comment || seenCommentIds.has(comment.id)) return REVIEW_THREAD_READ_FAILURE;
+        seenCommentIds.add(comment.id);
+        comments.push(comment);
+      }
+      if (comments.length > expectedCount) return REVIEW_THREAD_READ_FAILURE;
+      if (!connection.hasNextPage) {
+        if (comments.length !== expectedCount) return REVIEW_THREAD_READ_FAILURE;
+        return { ok: true, value: comments };
+      }
+      const next = await graphqlRequest(
+        companyId, connectionId, host, REVIEW_THREAD_COMMENTS_QUERY,
+        { id: threadId, cursor: connection.endCursor },
+      );
+      if (!next.ok) return next;
+      pendingPage = record(record(next.value)?.node)?.comments;
+    }
+    return REVIEW_THREAD_READ_FAILURE;
   }
 
   /**
@@ -680,12 +1042,20 @@ export function createGitHubDeliveryClient(
   /**
    * GraphQL escape hatch for the native merge queue. Only `enqueuePullRequest`
    * is ever issued; no mutation may bypass branch protection.
+   *
+   * The entry is bound to the exact revision acceptance evaluated
+   * (`expectedHeadOid`), so a head pushed after the evidence read cannot be
+   * merged under that evidence. A host or API version that rejects the binding
+   * fails closed with a distinct error code instead of enqueueing an unbound
+   * entry: the queue would otherwise merge whatever the branch points at.
    */
   async function enqueuePullRequest(input: {
     companyId: string;
     connectionId: string | null;
     host: string;
     pullRequestNodeId: string;
+    /** Exact revision the queue entry may merge. */
+    expectedHeadOid: string;
   }): Promise<GitHubResult<{ enqueued: boolean; position: number | null }>> {
     const credential = await resolveCredential(input.companyId, input.connectionId, input.host);
     if (!credential.ok) return credential;
@@ -700,12 +1070,12 @@ export function createGitHubDeliveryClient(
           authorization: credential.value.authorization,
         },
         body: JSON.stringify({
-          query: `mutation EnqueuePullRequest($id: ID!) {
-            enqueuePullRequest(input: { pullRequestId: $id }) {
+          query: `mutation EnqueuePullRequest($id: ID!, $oid: GitObjectID!) {
+            enqueuePullRequest(input: { pullRequestId: $id, expectedHeadOid: $oid }) {
               mergeQueueEntry { position }
             }
           }`,
-          variables: { id: input.pullRequestNodeId },
+          variables: { id: input.pullRequestNodeId, oid: input.expectedHeadOid },
         }),
         signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
       });
@@ -726,6 +1096,15 @@ export function createGitHubDeliveryClient(
     const errors = arrayOf(payload?.errors);
     if (errors.length > 0) {
       const message = str(record(errors[0])?.message) ?? "GitHub rejected the merge-queue request";
+      if (MERGE_QUEUE_HEAD_BINDING_UNSUPPORTED.test(message)) {
+        return {
+          ok: false,
+          status: 200,
+          errorCode: "merge_queue_head_binding_unsupported",
+          message: "GitHub's merge queue does not accept an exact-head binding on this host",
+          retryAfterSeconds: null,
+        };
+      }
       return { ok: false, status: 200, errorCode: "github_rejected", message, retryAfterSeconds: null };
     }
     const entry = record(record(record(payload?.data)?.enqueuePullRequest)?.mergeQueueEntry);
@@ -790,6 +1169,7 @@ export function createGitHubDeliveryClient(
     getChecks,
     getReviews,
     getReviewComments,
+    getReviewThreads,
     getCheckRuns,
     mergePullRequest,
     enqueuePullRequest,
@@ -839,6 +1219,18 @@ export interface GitHubDeliveryClient {
     repo: string,
     number: number,
   ): Promise<GitHubResult<GitHubReviewComment[]>>;
+  /**
+   * Authoritative review threads with GitHub's own resolution record. The read
+   * is complete or it fails; absence of a thread is never resolution evidence.
+   */
+  getReviewThreads(
+    companyId: string,
+    connectionId: string | null,
+    host: string,
+    owner: string,
+    repo: string,
+    number: number,
+  ): Promise<GitHubResult<GitHubReviewThread[]>>;
   getCheckRuns(
     companyId: string,
     connectionId: string | null,
@@ -861,6 +1253,8 @@ export interface GitHubDeliveryClient {
     connectionId: string | null;
     host: string;
     pullRequestNodeId: string;
+    /** Exact revision the queue entry may merge; an unbound entry is refused. */
+    expectedHeadOid: string;
   }): Promise<GitHubResult<{ enqueued: boolean; position: number | null }>>;
   compareCommits(
     companyId: string,
