@@ -488,6 +488,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     composerAccessory,
     footer,
     showComposer = true,
+    composerPause,
     composerDisabledReason,
     emptyMessage = "No messages yet.",
     companyId,
@@ -2382,7 +2383,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const renderQueuedAction = useCallback(
     (item: TaskChatMessageItem) => {
       const runId = item.queueTargetRunId;
-      if (item.optimistic !== "queued" || !runId || !onInterruptQueued)
+      if (composerPause || item.optimistic !== "queued" || !runId || !onInterruptQueued)
         return null;
 
       const isInterrupting = interruptingQueuedRunId === runId;
@@ -2398,7 +2399,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         </Button>
       );
     },
-    [interruptingQueuedRunId, onInterruptQueued],
+    [composerPause, interruptingQueuedRunId, onInterruptQueued],
   );
 
   const reopenToolReview = useCallback((interactionId: string) => {
@@ -2452,6 +2453,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       tailRunId,
       reopenToolReview,
     ],
+  );
+
+  const renderBrief = useCallback(
+    () => issueBrief ? <TaskChatDescriptionBubble brief={issueBrief} /> : null,
+    [issueBrief],
   );
 
   const assignedAgentForNotice = useMemo(() => {
@@ -2707,11 +2713,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                     attachments={attachments}
                     header={threadHeaderWithBlockers}
                     renderInteraction={renderInteraction}
-                    renderBrief={
-                      issueBrief
-                        ? () => <TaskChatDescriptionBubble brief={issueBrief} />
-                        : undefined
-                    }
+                    renderBrief={renderBrief}
                     renderMessageActions={renderMessageActions}
                     renderQueuedAction={renderQueuedAction}
                     onTryAgainNoLiveExecutionPath={
@@ -2869,7 +2871,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   className="relative isolate flex flex-col"
                   data-testid="task-chat-composer-stack"
                 >
-                  {queuedMessageQueue ? (
+                  {queuedMessageQueue && !composerPause ? (
                     <TaskChatQueuedMessages
                       queue={queuedMessageQueue}
                       onEdit={beginQueuedEdit}
@@ -2936,6 +2938,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       queuedEdit={queuedEdit}
                       onSaveQueuedEdit={saveQueuedEdit}
                       onCancelQueuedEdit={() => setQueuedEdit(null)}
+                      pause={composerPause}
                       takeover={composerTakeover}
                       runnerGoalCapability={runnerGoal.data?.capability ?? null}
                       onRunnerGoalCommand={runnerGoal.executeComposerCommand}

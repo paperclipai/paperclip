@@ -16,6 +16,14 @@ The distribution's default behavior disables edge caching and rewrites directory
 URLs to `index.html`. Stable branch indexes send `no-cache`; unique build objects
 send `immutable`. No invalidations or CloudFront write permissions are needed.
 
+Each publication updates a readable bookmark, such as
+`https://d1p6rlowie26tp.cloudfront.net/storybook/branches/master/`, after the
+immutable build upload completes. It also updates the previous hashed branch
+entry for compatibility. The run summary and Markdown artifact link the bookmark.
+Branch names use one escaped path segment, preserving case and separating slashes
+from hyphens; see [the branch publishing guide](DEVELOPING.md#publish-a-branch-storybook)
+for the encoding. No additional AWS permissions or distribution changes are needed.
+
 ## GitHub configuration
 
 Create environment `storybook-deploy` with required reviewers set to the

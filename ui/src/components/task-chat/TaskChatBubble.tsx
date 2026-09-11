@@ -1,4 +1,4 @@
-import { useContext, useState, type ReactNode } from "react";
+import { useCallback, useContext, useState, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { cn } from "@/lib/utils";
@@ -156,9 +156,11 @@ export function TaskChatBubble({
   // Task attachments share the page gallery; standalone images retain the bubble viewer.
   const openIssueGallery = useContext(IssueGalleryContext);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
-  const openImage = (src: string) => {
+  // Keep MarkdownBody's memo boundary intact when only the live tail changes.
+  // A fresh callback here reparses every historical response on every update.
+  const openImage = useCallback((src: string) => {
     if (!openIssueGallery?.(src)) setLightboxSrc(src);
-  };
+  }, [openIssueGallery]);
   if (item.interstitial) {
     // Interstitial updates are ephemeral (PAP-361): while streaming the text
     // lives on the live parent row's line (TaskChatStatusItem.selfTalk), and

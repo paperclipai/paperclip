@@ -6347,6 +6347,23 @@ export function issueRoutes(
     return false;
   }
 
+  async function assertBoardCommentNotPaused(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+  ) {
+    // Agents may still finish reporting an interrupted run. New operator
+    // messages must not enter the paused-conversation triage wake path.
+    if (req.actor.type !== "board") return true;
+    const hold = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
+    if (!hold) return true;
+    res.status(409).json({
+      error: "Task is paused. Resume it before sending a message.",
+      details: { issueId: issue.id, holdId: hold.holdId, rootIssueId: hold.rootIssueId },
+    });
+    return false;
+  }
+
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
@@ -12598,6 +12615,7 @@ export function issueRoutes(
         { allowVisibleIssueWrite: true },
       );
       if (!issueMutationAccess) return;
+      if (req.body.comment && !(await assertBoardCommentNotPaused(req, res, existing))) return;
       const issueMutationAuthorizationReason =
         req.actor.type === "agent"
           ? issueWriteAuthorizationReason(
@@ -16930,6 +16948,7 @@ export function issueRoutes(
         issue,
       );
       if (!commentAccessDecision) return;
+      if (!(await assertBoardCommentNotPaused(req, res, issue))) return;
       const commentAuthorizationReason = issueWriteAuthorizationReason(
         req,
         commentAccessDecision,

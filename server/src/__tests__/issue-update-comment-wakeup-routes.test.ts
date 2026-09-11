@@ -20,6 +20,8 @@ const mockIssueService = vi.hoisted(() => ({
   listReviewAttention: vi.fn(),
 }));
 
+const mockPauseGate = vi.hoisted(() => vi.fn(async (): Promise<Record<string, unknown> | null> => null));
+
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
   reportRunActivity: vi.fn(async () => undefined),
@@ -110,6 +112,7 @@ vi.mock("../services/index.js", () => ({
     getActiveForIssue: vi.fn(async () => null),
     listActiveForIssues: vi.fn(async () => new Map()),
   }),
+  issueTreeControlService: () => ({ getActivePauseHoldGate: mockPauseGate }),
   issueService: () => mockIssueService,
   issueThreadInteractionService: () => mockIssueThreadInteractionService,
   logActivity: vi.fn(async () => undefined),
@@ -185,7 +188,8 @@ function registerModuleMocks() {
       getActiveForIssue: vi.fn(async () => null),
       listActiveForIssues: vi.fn(async () => new Map()),
     }),
-    issueService: () => mockIssueService,
+    issueTreeControlService: () => ({ getActivePauseHoldGate: mockPauseGate }),
+  issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
     logActivity: vi.fn(async () => undefined),
     projectService: () => ({}),
@@ -253,6 +257,7 @@ describe("issue update comment wakeups", () => {
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockPauseGate.mockResolvedValue(null);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
@@ -260,6 +265,23 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.listReviewAttention.mockResolvedValue(new Map());
+  });
+
+  it.each(["post", "patch"] as const)("rejects %s board messages under an inherited pause before any mutation", async (method) => {
+    const existing = makeIssue();
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockPauseGate.mockResolvedValue({ holdId: "hold-1", rootIssueId: "parent-1" });
+    const app = await createApp();
+    const res = method === "post"
+      ? await request(app).post(`/api/issues/${existing.id}/comments`).send({ body: "go", reopen: true, interrupt: true })
+      : await request(app).patch(`/api/issues/${existing.id}`).send({ comment: "go", assigneeAgentId: ASSIGNEE_AGENT_ID, status: "todo" });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Task is paused. Resume it before sending a message.");
+    expect(res.body.details.rootIssueId).toBe("parent-1");
+    expect(mockPauseGate).toHaveBeenCalledWith(existing.companyId, existing.id);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("includes the new comment in assignment wakes from issue updates", async () => {

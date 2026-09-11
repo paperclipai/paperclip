@@ -1,3 +1,4 @@
+import { TaskChatPausedTakeover, type TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 // @vitest-environment jsdom
 
 import { RichWorkProductCard } from "../components/task-chat/RichWorkProductCard";
@@ -345,6 +346,7 @@ vi.mock("../components/IssueChatThread", () => ({
       label: string;
       onSelect: (runId: string) => Promise<void> | void;
     }[];
+    composerPause?: TaskComposerPause | null;
     footer?: ReactNode;
   }) => {
     mockIssueChatThreadRender(props);
@@ -368,6 +370,7 @@ vi.mock("../components/IssueChatThread", () => ({
             {action.label}
           </button>
         ))}
+        {props.composerPause ? <TaskChatPausedTakeover {...props.composerPause} /> : null}
         {props.footer}
       </div>
     );
@@ -396,6 +399,7 @@ vi.mock("../components/TaskChatThread", () => ({
       label: string;
       onSelect: (runId: string) => Promise<void> | void;
     }[];
+    composerPause?: TaskComposerPause | null;
     footer?: ReactNode;
   }) => {
     mockIssueChatThreadRender(props);
@@ -436,6 +440,7 @@ vi.mock("../components/TaskChatThread", () => ({
             {action.label}
           </button>
         ))}
+        {props.composerPause ? <TaskChatPausedTakeover {...props.composerPause} /> : null}
         {props.footer}
       </div>
     );
@@ -4315,12 +4320,8 @@ describe("IssueDetail", () => {
         expect(container.textContent).toContain("Subtree is paused.");
       });
 
-      const pauseBannerTitle = Array.from(
-        container.querySelectorAll("span"),
-      ).find((element) => element.textContent?.trim() === "Subtree is paused.");
-      expect(pauseBannerTitle?.closest(".rounded-md")?.classList).toContain(
-        "mt-3",
-      );
+      expect(container.querySelector('[data-testid="paused-composer-takeover"]')).toBeTruthy();
+      expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].composerPause.scope).toBe("subtree");
       const taskChatShell = container.querySelector<HTMLElement>(
         "[data-task-chat-shell]",
       );
@@ -5178,7 +5179,7 @@ describe("IssueDetail", () => {
     });
 
     const resumeButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Resume work",
+      (button) => button.textContent?.trim() === "Resume task",
     );
     expect(resumeButton).toBeTruthy();
 

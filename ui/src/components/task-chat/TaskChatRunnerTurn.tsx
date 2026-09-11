@@ -292,13 +292,11 @@ function RunnerActivityMarker({ item }: { item: TaskChatMarkerItem }) {
 
 function RunnerTurnStatus({
   status,
-  execution,
   startedAtMs,
   finishedAtMs,
   continuedAfterSteering = false,
 }: {
   status: string;
-  execution?: ExecutionProjection | null;
   startedAtMs: number | null;
   finishedAtMs?: number | null;
   continuedAfterSteering?: boolean;
@@ -315,9 +313,8 @@ function RunnerTurnStatus({
   const elapsed = formatCompactDuration(elapsedMs);
 
   const failed = terminalStatusFailed(status);
-  const reconnecting = execution?.phase === "reconnecting" || execution?.phase === "retry_scheduled";
-  const label = reconnecting ? "Reconnecting…" : (terminal ? (failed ? "Stopped" : "Worked") : "Working");
-  const semanticLabel = reconnecting ? label : terminal
+  const label = terminal ? (failed ? "Stopped" : "Worked") : "Working";
+  const semanticLabel = terminal
     ? elapsed
       ? `${label} ${failed ? "after" : "for"} ${elapsed}`
       : label
@@ -431,7 +428,6 @@ export function TaskChatRunnerTurn({
   agentIcon,
   items,
   status,
-  execution,
   startedAtMs,
   finishedAtMs,
   activityUnavailable = false,
@@ -530,7 +526,6 @@ export function TaskChatRunnerTurn({
         ) : null}
         <RunnerTurnStatus
           status={status}
-          execution={execution}
           startedAtMs={startedAtMs}
           finishedAtMs={finishedAtMs}
           continuedAfterSteering={continuedAfterSteering}
@@ -609,7 +604,7 @@ export function TaskChatRunnerTurn({
           />
         </div>
       ) : null}
-      {!final && (!execution || execution.phase === "working") ? <RunnerCurrentActivityTail items={currentActivityItems} status={status} /> : null}
+      {!final ? <RunnerCurrentActivityTail items={currentActivityItems} status={status} /> : null}
     </div>
   );
 }

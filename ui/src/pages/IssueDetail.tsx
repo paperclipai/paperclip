@@ -1,3 +1,4 @@
+import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 import { TaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
 import {
   memo,
@@ -207,7 +208,6 @@ import {
 import { TaskSidePanel } from "../components/task-side-panel";
 import { SidePanelToggleButton } from "../components/side-panel";
 import {
-  TaskPauseNotice,
   TaskTreeControlDialog,
   TaskTreeControlMenuItems,
 } from "../components/TaskTreeControls";
@@ -1252,6 +1252,7 @@ type IssueDetailChatTabProps = {
   currentAssigneeValue: string;
   suggestedAssigneeValue: string;
   mentions: MentionOption[];
+  composerPause?: TaskComposerPause | null;
   composerDisabledReason: string | null;
   composerHint: string | null;
   queuedCommentReason: "hold" | "active_run" | "other";
@@ -1373,6 +1374,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   currentAssigneeValue,
   suggestedAssigneeValue,
   mentions,
+  composerPause,
   composerDisabledReason,
   composerHint,
   queuedCommentReason,
@@ -1460,8 +1462,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   });
   const resolvedActiveRun = useMemo(
     () =>
-      resolveIssueActiveRun({ status: issueStatus, executionRunId }, activeRun),
-    [activeRun, executionRunId, issueStatus],
+      resolveIssueActiveRun({ status: issueStatus, executionRunId }, activeRun, liveRuns),
+    [activeRun, executionRunId, issueStatus, liveRuns],
   );
   const assigneeUsesPaperclipRunner = Boolean(
     issueAssigneeAgentId &&
@@ -2383,6 +2385,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             currentAssigneeValue={currentAssigneeValue}
             suggestedAssigneeValue={suggestedAssigneeValue}
             mentions={mentions}
+            composerPause={composerPause}
             composerDisabledReason={composerDisabledReason}
             composerHint={composerHint}
             onVote={onVote}
@@ -3369,10 +3372,10 @@ export function IssueDetail() {
     staleTime: 0,
     retry: false,
   });
-  const { data: treeControlState } = useQuery({
+  const { data: treeControlState, isPending: treeControlStatePending, error: treeControlStateError } = useQuery({
     queryKey: ["issues", "tree-control-state", issueId ?? "pending"],
     queryFn: () => issuesApi.getTreeControlState(issueId!),
-    enabled: !!issueId && canManageTreeControl,
+    enabled: !!issueId,
     retry: false,
   });
   const { data: activeRootPauseHolds = [] } = useQuery({
@@ -4462,6 +4465,7 @@ export function IssueDetail() {
       });
     },
     onSettled: (_result, _error, variables) => {
+      if (_error) void queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state"] });
       invalidateIssueThreadLazily();
       // Binding happens when the comment saves, after the upload's earlier
       // refetch. Refresh even after an unknown response: the write may exist.
@@ -4849,6 +4853,7 @@ export function IssueDetail() {
       });
     },
     onSettled: (_result, _error, variables) => {
+      if (_error) void queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state"] });
       invalidateIssueThreadLazily();
       if (variables.attachmentIds?.length) {
         for (const ref of issueCacheRefs) {
@@ -6684,15 +6689,10 @@ export function IssueDetail() {
   const previewAffectedIssueCount = treePreviewAffectedIssues.length;
   const previewAffectedAgentCount =
     treeControlPreview?.totals.affectedAgents ?? 0;
-  const pausedComposerHint = activePauseHold
-    ? issue.assigneeAgentId
-      ? `Sending this comment will wake ${agentMap.get(issue.assigneeAgentId)?.name ?? "the assignee"} for triage while the subtree remains paused.`
-      : "Assign an agent to wake them for triage while the subtree remains paused."
-    : null;
   const reopenComposerHint = closedIsolatedWorkspaceReopenPending
     ? "This issue's isolated workspace was archived. Your next comment or resume reopens it and rebuilds the worktree."
     : null;
-  const composerHint = pausedComposerHint ?? reopenComposerHint;
+  const composerHint = activePauseHold ? null : reopenComposerHint;
   const queuedCommentReason: "hold" | "active_run" | "other" = activePauseHold
     ? "hold"
     : "active_run";
@@ -7333,49 +7333,6 @@ export function IssueDetail() {
               This task is hidden
             </div>
           )}
-          {activePauseHold && (
-            <TaskPauseNotice
-              scope={
-                activePauseHold.isRoot && childIssues.length === 0
-                  ? "leaf"
-                  : "subtree"
-              }
-              className={cn(
-                shellSectionClass,
-                taskChatShellEnabled &&
-                  !issue.hiddenAt &&
-                  (isMobile ? "mt-4" : "mt-3"),
-              )}
-              pending={executeTreeControl.isPending}
-              onResume={
-                activePauseHold.isRoot &&
-                (canShowSubtreeControls || canResumeLeafWork)
-                  ? () => {
-                      executeTreeControl.reset();
-                      setTreeControlMode("resume");
-                      setTreeControlWakeAgentsOnResume(
-                        isAgentOwnedNonTerminalIssue || canShowSubtreeControls,
-                      );
-                      setTreeControlOpen(true);
-                    }
-                  : undefined
-              }
-              resumeLink={
-                !activePauseHold.isRoot ? (
-                  <Button asChild variant="ghost" size="sm">
-                    <Link
-                      to={createIssueDetailPath(
-                        activePauseHoldRoot?.identifier ??
-                          activePauseHold.rootIssueId,
-                      )}
-                    >
-                      Resume subtree
-                    </Link>
-                  </Button>
-                ) : undefined
-              }
-            />
-          )}
           {treeControlWakeWarning ? (
             <p
               role="alert"
@@ -7816,7 +7773,18 @@ export function IssueDetail() {
                   currentAssigneeValue={actualAssigneeValue}
                   suggestedAssigneeValue={suggestedAssigneeValue}
                   mentions={mentionOptions}
-                  composerDisabledReason={null}
+                  composerPause={activePauseHold ? {
+                    scope: activePauseHold.isRoot && childIssues.length === 0 ? "leaf" : "subtree",
+                    pending: executeTreeControl.isPending && executeTreeControl.variables?.mode === "resume",
+                    onResume: activePauseHold.isRoot && canManageTreeControl ? () => {
+                      executeTreeControl.reset();
+                      setTreeControlMode("resume");
+                      setTreeControlWakeAgentsOnResume(isAgentOwnedNonTerminalIssue || canShowSubtreeControls);
+                      setTreeControlOpen(true);
+                    } : undefined,
+                    resumeHref: !activePauseHold.isRoot ? createIssueDetailPath(activePauseHoldRoot?.identifier ?? activePauseHold.rootIssueId) : undefined,
+                  } : null}
+                  composerDisabledReason={treeControlStatePending ? "Checking task status…" : treeControlStateError ? "Couldn’t check whether this task is paused. Refresh to try again." : null}
                   composerHint={composerHint}
                   queuedCommentReason={queuedCommentReason}
                   onVote={handleCommentVote}

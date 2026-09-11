@@ -2,7 +2,7 @@ import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKe
 import { RepositoryEditor } from "@/components/RepositoryEditor";
 import { TaskChatMarker } from "@/components/task-chat/TaskChatMarker";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
-import { TaskPauseNotice, TaskTreeControlDialog, TaskTreeControlMenuItems } from "@/components/TaskTreeControls";
+import { TaskTreeControlDialog, TaskTreeControlMenuItems } from "@/components/TaskTreeControls";
 import { useState } from "react";
 import { ServicesList } from "./apps/app-detail/ServicesPanel";
 import { ComposioProvenanceChip } from "./apps/ComposioProvenanceChip";
@@ -463,9 +463,8 @@ function TaskExecutionControlsExample() {
         onCancel={() => setDialogMode("cancel")} onRestore={() => setDialogMode("restore")} />
     </div>
     <p className="text-sm text-muted-foreground">{running ? "Running: type to switch Stop to Send." : "Paused: resume from the menu."}</p>
-    {!running ? <TaskPauseNotice scope="subtree" onResume={() => setDialogMode("resume")} /> : null}
     {!running ? <TaskChatMarker item={{ id: "design-cancelled", kind: "marker", variant: "interrupted", tone: "neutral", label: "Run cancelled", detail: "The run was cancelled before returning an answer.", collapsible: true }} /> : null}
-    <TaskChatComposer onAdd={async () => {}} workMode="standard" stopScope="subtree" onStop={running ? async () => setRunning(false) : undefined} />
+    <TaskChatComposer pause={!running ? { scope: "subtree", onResume: () => setDialogMode("resume") } : null} onAdd={async () => {}} workMode="standard" stopScope="subtree" onStop={running ? async () => setRunning(false) : undefined} />
     <TaskTreeControlDialog open={dialogMode !== null} onOpenChange={(open) => { if (!open) setDialogMode(null); }}
       mode={dialogMode ?? "cancel"} scope="subtree" affectedCount={3} affectedAgentCount={2} loading={false} pending={false} valid
       wakeAgents={wake} onWakeAgentsChange={setWake} onRetry={() => {}}
@@ -2174,8 +2173,8 @@ export function DesignGuide() {
       <Section title="Execution recovery">
         <p className="text-sm text-muted-foreground">
           Recovery runs in the background. Task lists keep their ordinary status without
-          execution badges. The transcript may briefly say Reconnecting, then resumes its
-          normal presentation. Recovery decisions and attempts belong in the run log;
+          execution badges. Active transcript headers keep saying Working during automatic
+          recovery. Recovery decisions and attempts belong in the run log;
           there is no execution status card or reconciliation form.
         </p>
       </Section>

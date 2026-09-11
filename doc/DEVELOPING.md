@@ -137,9 +137,16 @@ branch updates its stable URL only after all files for the new build are uploade
 Previous build links keep working. The branch entry preserves Storybook query
 parameters and fragments when redirecting to the completed build.
 
-URLs use `storybook/branches/<readable-branch>-<hash>/index.html`. The hash preserves
-the distinction between branch names such as `feature/foo`, `feature-foo`, and
-`Feature/foo`. Build files live under that branch's `builds/<run-id>-<attempt>/`.
+Bookmark URLs use `storybook/branches/<branch>/`, for example
+`https://d1p6rlowie26tp.cloudfront.net/storybook/branches/master/`.
+Copy the **stable branch URL** from the run summary when saving a bookmark;
+opening it redirects to the latest published build. Branch names preserve case.
+Characters other than letters, digits, `_`, and `-` use `~HH` UTF-8 escapes, so
+`feature/foo` becomes `feature~2Ffoo` and stays distinct from `feature-foo`.
+Names ending in a hyphen and 16 lowercase hex digits escape that hyphen to
+reserve the existing build directories. Very long names use a hash suffix.
+Existing hashed branch URLs keep updating and remain valid. Build files remain
+under `storybook/branches/<readable-branch>-<hash>/builds/<run-id>-<attempt>/`.
 `deployment.json` in each build records its branch, source commit and URLs.
 Builds run independently; publication is serialized per branch. Retained builds
 are not automatically deleted and will accumulate until an operator prunes them.

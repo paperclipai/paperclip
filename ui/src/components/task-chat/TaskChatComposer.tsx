@@ -72,6 +72,8 @@ import type { RunnerGoalCapability } from "@paperclipai/shared";
 import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 
+import { TaskChatPausedTakeover, type TaskComposerPause } from "./TaskChatPausedTakeover";
+
 /** Structurally identical to IssueChatThread's module-private CommentReassignment. */
 export interface CommentReassignment {
   assigneeAgentId: string | null;
@@ -134,6 +136,7 @@ interface TaskChatComposerProps {
   queuedEdit?: { commentId: string; body: string; stale?: boolean } | null;
   onSaveQueuedEdit?: (commentId: string, body: string) => Promise<void>;
   onCancelQueuedEdit?: () => void;
+  pause?: TaskComposerPause | null;
   takeover?: TaskChatComposerTakeover | null;
   pendingTakeover?: {
     count: number;
@@ -400,6 +403,7 @@ export function TaskChatComposer({
   queuedEdit = null,
   onSaveQueuedEdit,
   onCancelQueuedEdit,
+  pause = null,
   takeover = null,
   pendingTakeover = null,
   runnerGoalCapability = null,
@@ -759,7 +763,7 @@ export function TaskChatComposer({
    * the paste when it carries no images the plugin should handle.
    */
   function handlePasteCapture(evt: ReactClipboardEvent<HTMLDivElement>) {
-    if (!canAcceptFiles) return;
+    if (pause || !canAcceptFiles) return;
     const files = Array.from(evt.clipboardData?.files ?? []);
     if (files.length === 0) return;
     const nonImages = files.filter((file) => !file.type.startsWith("image/"));
@@ -804,6 +808,7 @@ export function TaskChatComposer({
   }, [queuedEdit, takeoverVisible]);
 
   async function submit() {
+    if (pause || disabled) return;
     const retained =
       draftKey && !queuedEdit ? loadDraftSubmission(draftKey) : null;
     if (retained && !submitting) {
@@ -1058,6 +1063,10 @@ export function TaskChatComposer({
       Skip
     </Button>
   ) : null;
+
+  if (pause) {
+    return <TaskChatPausedTakeover {...pause} hasDraft={Boolean(body.trim() || attachments.length)} />;
+  }
 
   return (
     <div

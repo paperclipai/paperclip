@@ -3368,6 +3368,279 @@ describe("ACPX engine remote managed-home seam (PR 2: per-adapter home seed)", (
   });
 });
 
+describe("ACPX engine Claude skill bundle staging (remote ACP lane)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function setupRemoteSandbox() {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    const executionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "fake-plugin",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+    };
+    return { root, stateDir, localCwd, remoteCwd, executionTarget };
+  }
+
+  // A stand-in for the real Claude seam (`claude-local/server/acp.ts`): stage
+  // the bundle the engine hands it, at the same asset key and
+  // `followSymlinks` value the real seam uses. This isolates the ENGINE's own
+  // contract — computing and threading `skillsBundleDir`, then rewriting the
+  // prompt/identity once staging resolves — from the real seam, which has its
+  // own test in `claude-local/server/acp.test.ts`.
+  function stagingClaudeSeam(): AcpxEngineExecutorOptions["prepareRemoteManagedHome"] {
+    return async (input) => {
+      const stagedRuntime = await input.stage(
+        input.skillsBundleDir
+          ? [{ key: "skills", localDir: input.skillsBundleDir, followSymlinks: false }]
+          : [],
+      );
+      return { stagedRuntime };
+    };
+  }
+
+  it("rewrites the prompt and skill identity onto the in-sandbox skill root once the bundle is staged", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const skill = await createSkill(path.join(localCwd, "skills"), "review");
+
+    const { meta, result } = await runExecutor(
+      {
+        agent: "claude",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        paperclipRuntimeSkills: [skill],
+        paperclipSkillSync: { desiredSkills: [skill.key] },
+      },
+      { authToken: "real-run-jwt", executionTarget, prepareRemoteManagedHome: stagingClaudeSeam() },
+    );
+
+    const hostBundleDir = await onlyChildDir(path.join(stateDir, "runtime-skills", "claude"));
+    const hostSkillsHome = path.join(hostBundleDir, ".claude", "skills");
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    expect(prompt).toMatch(/Skill root: (\S+)/);
+    expect(prompt).not.toContain(hostSkillsHome);
+
+    const inSandboxSkillsRoot = prompt.match(/Skill root: (\S+)/)![1]!;
+    expect(inSandboxSkillsRoot).not.toBe(hostSkillsHome);
+    await expect(
+      fs.readFile(path.join(inSandboxSkillsRoot, skill.runtimeName, "SKILL.md"), "utf8"),
+    ).resolves.toContain("# review");
+
+    const skillsIdentity = result.sessionParams?.skills as { skillRoot?: string } | undefined;
+    expect(skillsIdentity?.skillRoot).toBe(inSandboxSkillsRoot);
+  });
+
+  it("keeps the session fingerprint stable across two different in-sandbox skill roots", async () => {
+    // Same session (same execution target, same config) both times, so the
+    // fingerprint's other 16 fields cannot explain a difference — only the
+    // seam's reported in-sandbox skill path varies, by direct override.
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const skill = await createSkill(path.join(localCwd, "skills"), "review");
+    const baseConfig = {
+      agent: "claude",
+      agentCommand: "node ./fake-acp.js",
+      stateDir,
+      cwd: localCwd,
+      paperclipRuntimeSkills: [skill],
+      paperclipSkillSync: { desiredSkills: [skill.key] },
+    };
+    const seamWithOverriddenSkillsDir = (
+      overridePath: string,
+    ): AcpxEngineExecutorOptions["prepareRemoteManagedHome"] =>
+      async (input) => {
+        const stagedRuntime = await input.stage(
+          input.skillsBundleDir
+            ? [{ key: "skills", localDir: input.skillsBundleDir, followSymlinks: false }]
+            : [],
+        );
+        stagedRuntime.assetDirs.skills = overridePath;
+        return { stagedRuntime };
+      };
+
+    const runA = await runExecutor(baseConfig, {
+      authToken: "real-run-jwt",
+      executionTarget,
+      prepareRemoteManagedHome: seamWithOverriddenSkillsDir("/sandbox/path-a/skills"),
+    });
+    const runB = await runExecutor(baseConfig, {
+      authToken: "real-run-jwt",
+      executionTarget,
+      prepareRemoteManagedHome: seamWithOverriddenSkillsDir("/sandbox/path-b/skills"),
+    });
+
+    expect(String(runA.meta[0]?.prompt ?? "")).toContain("Skill root: /sandbox/path-a/skills");
+    expect(String(runB.meta[0]?.prompt ?? "")).toContain("Skill root: /sandbox/path-b/skills");
+    // The session fingerprint, which only ever saw the host-independent skill
+    // identity, stays the same across the two different in-sandbox paths.
+    expect(runA.result.sessionParams?.configFingerprint).toBe(runB.result.sessionParams?.configFingerprint);
+  });
+
+  it("stages no skills asset and leaves the prompt untouched when no skill is selected", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+
+    const { meta } = await runExecutor(
+      {
+        agent: "claude",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        paperclipRuntimeSkills: [],
+        paperclipSkillSync: { desiredSkills: [] },
+      },
+      { authToken: "real-run-jwt", executionTarget, prepareRemoteManagedHome: stagingClaudeSeam() },
+    );
+
+    const stageArgs = vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0];
+    expect((stageArgs.assets ?? []).some((asset) => asset.key === "skills")).toBe(false);
+    expect(String(meta[0]?.prompt ?? "")).not.toContain("Skill root:");
+  });
+
+  it("drops a skill that fails to materialize from the prompt, the identity, and the staged bundle", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const skillsRoot = path.join(localCwd, "skills");
+    const review = await createSkill(skillsRoot, "review");
+
+    // A skill whose source is a symlink. `materializePaperclipSkillCopy`
+    // refuses a symlinked skill root, so this skill's copy fails while its
+    // source still exists (it does not hit the separate missing-source
+    // filter).
+    const linkedTarget = path.join(skillsRoot, "broken-target");
+    await fs.mkdir(linkedTarget, { recursive: true });
+    await fs.writeFile(path.join(linkedTarget, "SKILL.md"), "# broken\n", "utf8");
+    const brokenSource = path.join(skillsRoot, "broken");
+    await fs.symlink(linkedTarget, brokenSource, "dir");
+    const broken = {
+      key: "paperclipai/test/broken",
+      runtimeName: "broken",
+      source: brokenSource,
+      required: false,
+    };
+
+    const { meta, result } = await runExecutor(
+      {
+        agent: "claude",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        paperclipRuntimeSkills: [review, broken],
+        paperclipSkillSync: { desiredSkills: [review.key, broken.key] },
+      },
+      { authToken: "real-run-jwt", executionTarget, prepareRemoteManagedHome: stagingClaudeSeam() },
+    );
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    expect(prompt).toContain("Selected skills: review");
+    expect(prompt).not.toContain("broken");
+
+    const skillsIdentity = result.sessionParams?.skills as { selectedSkills?: string[] } | undefined;
+    expect(skillsIdentity?.selectedSkills).toEqual(["review"]);
+
+    const hostBundleDir = await onlyChildDir(path.join(stateDir, "runtime-skills", "claude"));
+    const hostSkillsHome = path.join(hostBundleDir, ".claude", "skills");
+    await expect(pathExists(path.join(hostSkillsHome, "broken"))).resolves.toBe(false);
+  });
+
+  it("stages no skills asset when every selected skill fails to materialize", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const skillsRoot = path.join(localCwd, "skills");
+    const linkedTarget = path.join(skillsRoot, "broken-target");
+    await fs.mkdir(linkedTarget, { recursive: true });
+    await fs.writeFile(path.join(linkedTarget, "SKILL.md"), "# broken\n", "utf8");
+    const brokenSource = path.join(skillsRoot, "broken");
+    await fs.symlink(linkedTarget, brokenSource, "dir");
+    const broken = {
+      key: "paperclipai/test/broken",
+      runtimeName: "broken",
+      source: brokenSource,
+      required: false,
+    };
+
+    const { meta } = await runExecutor(
+      {
+        agent: "claude",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        paperclipRuntimeSkills: [broken],
+        paperclipSkillSync: { desiredSkills: [broken.key] },
+      },
+      { authToken: "real-run-jwt", executionTarget, prepareRemoteManagedHome: stagingClaudeSeam() },
+    );
+
+    const stageArgs = vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0];
+    expect((stageArgs.assets ?? []).some((asset) => asset.key === "skills")).toBe(false);
+    expect(String(meta[0]?.prompt ?? "")).not.toContain("Skill root:");
+  });
+
+  it("drops a skill whose staged copy has no usable SKILL.md from the prompt, the identity, and the staged bundle", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const skillsRoot = path.join(localCwd, "skills");
+    const review = await createSkill(skillsRoot, "review");
+
+    // A skill root that is a real directory (so the copy itself does not
+    // throw), but whose `SKILL.md` is a symlink. `materializePaperclipSkillCopy`
+    // skips a symlinked file entry instead of copying it, so the staged
+    // directory ends up with no `SKILL.md`.
+    const linkedSkillMdTarget = path.join(skillsRoot, "linked-skill-md-target.md");
+    await fs.writeFile(linkedSkillMdTarget, "# linked\n", "utf8");
+    const symlinkedSkillMdSource = path.join(skillsRoot, "symlinked-skill-md");
+    await fs.mkdir(symlinkedSkillMdSource, { recursive: true });
+    await fs.symlink(linkedSkillMdTarget, path.join(symlinkedSkillMdSource, "SKILL.md"), "file");
+    const symlinkedSkillMd = {
+      key: "paperclipai/test/symlinked-skill-md",
+      runtimeName: "symlinked-skill-md",
+      source: symlinkedSkillMdSource,
+      required: false,
+    };
+
+    // A skill root that is a real directory with no `SKILL.md` at all.
+    const noSkillMdSource = path.join(skillsRoot, "no-skill-md");
+    await fs.mkdir(noSkillMdSource, { recursive: true });
+    await fs.writeFile(path.join(noSkillMdSource, "notes.md"), "# notes\n", "utf8");
+    const noSkillMd = {
+      key: "paperclipai/test/no-skill-md",
+      runtimeName: "no-skill-md",
+      source: noSkillMdSource,
+      required: false,
+    };
+
+    const { meta, result } = await runExecutor(
+      {
+        agent: "claude",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        paperclipRuntimeSkills: [review, symlinkedSkillMd, noSkillMd],
+        paperclipSkillSync: { desiredSkills: [review.key, symlinkedSkillMd.key, noSkillMd.key] },
+      },
+      { authToken: "real-run-jwt", executionTarget, prepareRemoteManagedHome: stagingClaudeSeam() },
+    );
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    expect(prompt).toContain("Selected skills: review");
+    expect(prompt).not.toContain("symlinked-skill-md");
+    expect(prompt).not.toContain("no-skill-md");
+
+    const skillsIdentity = result.sessionParams?.skills as { selectedSkills?: string[] } | undefined;
+    expect(skillsIdentity?.selectedSkills).toEqual(["review"]);
+
+    const hostBundleDir = await onlyChildDir(path.join(stateDir, "runtime-skills", "claude"));
+    const hostSkillsHome = path.join(hostBundleDir, ".claude", "skills");
+    await expect(pathExists(path.join(hostSkillsHome, "symlinked-skill-md"))).resolves.toBe(false);
+    await expect(pathExists(path.join(hostSkillsHome, "no-skill-md"))).resolves.toBe(false);
+  });
+});
+
 describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / reuse on compatible resume)", () => {
   beforeEach(() => {
     vi.clearAllMocks();

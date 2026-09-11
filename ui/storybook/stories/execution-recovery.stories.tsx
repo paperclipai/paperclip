@@ -81,11 +81,15 @@ const state = (overrides: Partial<ExecutionProjection>) => ({
   args: { execution: { ...base, ...overrides } },
 });
 export const Working: Story = state({});
-export const Reconnecting: Story = state({
-  phase: "reconnecting",
-  label: "Reconnecting",
-  attempt: 2,
-});
+export const Reconnecting: Story = {
+  ...state({ phase: "reconnecting", label: "Reconnecting", attempt: 2 }),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByTestId("task-chat-turn-status-header")).toHaveTextContent("Working");
+    await expect(canvas.getByTestId("task-chat-current-activity-label")).toHaveTextContent("Thinking");
+    await expect(canvas.queryByText(/Reconnecting/)).not.toBeInTheDocument();
+  },
+};
 export const RetryScheduled: Story = state({
   phase: "retry_scheduled",
   label: "Retry scheduled",
@@ -262,8 +266,8 @@ export const NativeChatStatusLabels: Story = {
         Native-runner chat status labels
       </h2>
       <p className="text-sm text-muted-foreground">
-        The existing transcript header stays quiet. Only an intermediate
-        reconnection briefly changes its text.
+        Active transcript headers keep saying Working during automatic recovery.
+        Current activity remains visible while the run continues.
       </p>
       {labelExamples.map((execution) => (
         <section key={execution.phase} className="rounded-lg border p-3">
@@ -286,8 +290,8 @@ export const LegacyChatStatusLabels: Story = {
     <div className="space-y-4">
       <h2 className="text-lg font-semibold">Legacy chat status labels</h2>
       <p className="text-sm text-muted-foreground">
-        Normal transcript presentation, with a brief neutral reconnection
-        indicator and no recovery panel.
+        Active transcripts keep the Working indicator and elapsed timer during
+        automatic recovery, with no recovery panel.
       </p>
       {labelExamples.map((execution) => (
         <section key={execution.phase} className="rounded-lg border p-3">
@@ -350,8 +354,8 @@ function DashboardLabelExamples() {
       <div className="space-y-4">
         <h2 className="text-lg font-semibold">Dashboard agent-card labels</h2>
         <p className="text-sm text-muted-foreground">
-          The existing dashboard layout stays unchanged. Reconnection is a brief
-          update to the existing line, with no additional card or controls.
+          Active agents say Working during automatic recovery, with no additional
+          card or controls.
         </p>
         <ActiveAgentsPanel
           companyId="company-storybook"

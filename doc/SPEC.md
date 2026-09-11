@@ -543,3 +543,10 @@ Things Paperclip explicitly does **not** do:
 7. **Atomic ownership.** Single assignee per task. Atomic checkout prevents conflicts.
 8. **Progressive deployment.** Trivial to start local, straightforward to scale to hosted.
 9. **Extensible core.** Clean boundaries so plugins can add capabilities (Adapters, knowledge base, revenue tracking) without modifying core.
+
+### Paused task messages
+
+A paused task takes over the composer with an amber notice and a Resume action.
+Operators must release the effective task or ancestor pause before sending a new
+message. The draft stays intact. This applies to both task interfaces and to
+board comment API requests; an agent may still report interrupted work.

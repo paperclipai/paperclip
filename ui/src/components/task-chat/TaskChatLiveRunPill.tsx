@@ -45,7 +45,6 @@ export function toolCountSummaryFromEntries(entries: readonly TranscriptEntry[])
  */
 export function TaskChatLiveRunPill({
   status,
-  execution,
   startedAtMs,
   finishedAtMs,
   toolSummary,
@@ -58,7 +57,7 @@ export function TaskChatLiveRunPill({
   finishedAtMs?: number | null;
   toolSummary: string | null;
 }) {
-  const active = !isTerminalRunStatus(status) && (!execution || execution.phase === "working");
+  const active = !isTerminalRunStatus(status);
   // One shared page-wide ticker drives the live elapsed readout, matching the
   // default view's `useLiveElapsed`.
   useSecondTick(active && startedAtMs != null);
@@ -68,9 +67,8 @@ export function TaskChatLiveRunPill({
   const elapsed = elapsedMs != null
     ? formatDurationWords(elapsedMs)
     : null;
-  const reconnecting = execution?.phase === "reconnecting" || execution?.phase === "retry_scheduled";
   const failed = ["failed", "timed_out", "cancelled", "interrupted"].includes(status);
-  const verb = reconnecting ? "Reconnecting…" : (!isTerminalRunStatus(status) ? "Working" : failed ? "Stopped" : "Worked");
+  const verb = active ? "Working" : failed ? "Stopped" : "Worked";
   const suffix = elapsed ? `for ${elapsed}` : null;
 
   return (
@@ -83,7 +81,7 @@ export function TaskChatLiveRunPill({
           <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
         ) : (
           <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-            <span className={cn("h-1.5 w-1.5 rounded-full", (reconnecting || failed || !isTerminalRunStatus(status)) ? "bg-muted-foreground/40" : "bg-emerald-500/70")} />
+            <span className={cn("h-1.5 w-1.5 rounded-full", (failed || active) ? "bg-muted-foreground/40" : "bg-emerald-500/70")} />
           </span>
         )}
         {active ? <span className={cn("shimmer-text")}>{verb}</span> : verb}

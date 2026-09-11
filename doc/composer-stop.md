@@ -41,8 +41,9 @@ handle does not authorize a signal or replay. Unknown actions remain
 blocked, and task detail shows the reason even after recovery bookkeeping resolves.
 A run-level Stop leaves the task unpaused; a subsequent comment can continue the
 same session with the earlier queued messages. Composer Stop still creates a
-pause hold. Human comments can receive a response within the existing paused
-conversation scope; task execution requires Resume. Neither path permits a fresh-session fallback
+pause hold. New board messages require Resume first. Both comment creation and
+updates that include a comment return `409` while an effective task or ancestor
+pause hold is active. Interrupted agents may still report their results. Neither path permits a fresh-session fallback
 when the interrupted checkpoint cannot be restored.
 
 The credential-free ACP regression journey uses an actual ACP child process:
@@ -65,7 +66,7 @@ and scratch environment. The same conversation must not reuse the stopped run's
 credential. A regression test checks distinct run IDs and token hashes across the
 restart without logging the credentials themselves.
 
-On 2026-09-09, all three ACP browser journeys passed. A manual browser walk-through
+Historical behavior, superseded by the composer takeover: on 2026-09-09, all three ACP browser journeys passed. A manual browser walk-through
 also queued a request, used composer Stop, sent “go” while paused, and selected
 Resume work. The pause stayed in place during the conversation reply. Resume
 restored the same provider session, answered the pending request once, and moved
@@ -89,8 +90,11 @@ The visible task/subtree does not produce duplicate state toasts. Its live
 notifications are suppressed while foregrounded, including descendant runs;
 unrelated and background work retains notifications. Tree-control results use
 inline state, and failures stay in the composer, page, or confirmation dialog.
-The pause row contains only “Subtree is paused.” (or “Task is paused.”) and
-Resume. Expected cancellation uses a muted gray disclosure with optional details.
+The amber composer takeover contains “Subtree is paused.” (or “Task is paused.”),
+a short instruction to resume before sending, and Resume. It replaces input
+controls in both task interfaces, cannot be dismissed, and preserves text and
+attachment drafts. An inherited hold links to the ancestor task. Pending resume
+keeps the takeover visible; failed resume leaves the task paused. Expected cancellation uses a muted gray disclosure with optional details.
 This is recorded as a product rule in `DESIGN.md`.
 
 The follow-up passed 213 focused tests, both isolated runner E2E journeys
@@ -203,3 +207,6 @@ The broad run was stopped after more than 30 minutes in its serial server lane
 once these failures were independently reproduced. Later full-suite groups
 did not run. The full UI suite and the feature's server route suite were run
 separately as described above.
+
+The `Tasks / Composer / Paused task takeover` stories use the production composer
+and cover task/subtree holds, saved drafts, resume progress/failure, and light/mobile layouts.
