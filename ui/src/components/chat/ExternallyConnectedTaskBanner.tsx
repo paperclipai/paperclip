@@ -37,6 +37,7 @@ const providerNames: Record<ChatProvider, string> = {
   discord: "Discord",
   "microsoft-teams": "Microsoft Teams",
   telegram: "Telegram",
+  agentmail: "AgentMail",
 };
 
 type PublicationFeedback = {
@@ -128,7 +129,7 @@ type ConnectedTaskProps = {
 
 export function ExternallyConnectedTaskBanner(props: ConnectedTaskProps) {
   const { binding } = useIssueChatBinding(props.companyId, props.issueId);
-  if (!binding) return null;
+  if (!binding || binding.provider === "agentmail") return null;
   return (
     <ConnectedTaskComposer
       key={boardSendDraftKey(

@@ -1356,6 +1356,10 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/api/companies/co-1/approvals" },
       { method: "GET", path: "/api/companies/co-1/routines" },
       { method: "GET", path: "/api/companies/co-1/skills" },
+      { method: "GET", path: "/api/companies/co-1/email/inboxes" },
+      { method: "GET", path: "/api/companies/co-1/email/tasks/issue-1" },
+      { method: "GET", path: "/api/companies/co-1/email/deliveries/send-1" },
+      { method: "POST", path: "/api/companies/co-1/email/send" },
       // Hire skill (paperclip-create-agent): discovery + submit + issue linking
       { method: "GET", path: "/llms/agent-configuration.txt" },
       { method: "GET", path: "/llms/agent-configuration/claude_local.txt" },
@@ -1413,6 +1417,13 @@ describe("sandbox callback bridge", () => {
     }
 
     const denied: Array<{ method: string; path: string }> = [
+      { method: "POST", path: "/api/companies/co-1/email/inboxes" },
+      { method: "POST", path: "/api/companies/co-1/email/connections" },
+      { method: "POST", path: "/api/companies/co-1/email/inspect" },
+      { method: "POST", path: "/api/companies/co-1/email/deliveries/send-1/resolve" },
+      { method: "POST", path: "/api/email/inboxes/inbox-1/reconnect" },
+      { method: "POST", path: "/api/email/inboxes/inbox-1/control" },
+      { method: "DELETE", path: "/api/companies/co-1/email/tasks/issue-1" },
       { method: "DELETE", path: "/api/secrets" },
       // Pin the runtime-services regex to start/stop/restart only — anything
       // else (delete, reset, wipe, etc.) must stay denied even if the API

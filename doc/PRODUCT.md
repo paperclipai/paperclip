@@ -150,7 +150,7 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
    Work is not done until the user can see the result: file, document, preview link, screenshot, plan, or PR.
 
 6. **Execution visibility without log worship**
-   Active runs, recovery issues, productivity review states, blockers, and work products should be first-class surfaces. Raw transcripts are available when needed, but they are not the primary product surface.
+   Active runs, recovery issues, blockers, and work products should be first-class surfaces. Raw transcripts are available when needed, but they are not the primary product surface.
 
 7. **Local-first, cloud-ready**
    The mental model should not change between local solo use and shared/private or public/cloud deployment.
