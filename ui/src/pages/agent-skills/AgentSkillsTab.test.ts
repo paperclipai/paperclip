@@ -44,7 +44,7 @@ it("removes a connector from editable library rows when its automatic assignment
   document.body.append(container);
   const root = createRoot(container);
   try {
-    flushSync(() => root.render(createElement(QueryClientProvider, { client }, createElement(TooltipProvider, {}, createElement(AgentSkillsTab, { agent, companyId: agent.companyId })))));
+    flushSync(() => root.render(createElement(QueryClientProvider, { client }, createElement(TooltipProvider, { children: createElement(AgentSkillsTab, { agent, companyId: agent.companyId }) }))));
     expect(container.querySelector(`[data-skill="${key}"][data-variant="available"]`)).not.toBeNull();
     client.setQueryData(queryKeys.agents.skills(agent.id), { ...snapshot, desiredSkills: [key], entries: [{ key, runtimeName: "agentmail", desired: true, managed: true, readOnly: true, state: "configured" }] });
     await vi.waitFor(() => {
