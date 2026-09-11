@@ -71,9 +71,21 @@ for (const { unfinishedWrite, pause } of [{ unfinishedWrite: false, pause: false
         await page.getByRole("button", { name: "Send", exact: true }).click();
       }
       if (unfinishedWrite) {
-        await expect(page.getByText("Couldn't start", { exact: false })).toBeVisible();
+        await expect(page.getByText("Work cannot start.", { exact: false })).toBeVisible();
+        await expect(editor).toHaveText("");
+        // Repeated user wakes preserve input without manufacturing attempts.
+        for (const message of ["go again", "still waiting"]) {
+          await editor.fill(message);
+          const response = page.waitForResponse((candidate) =>
+            candidate.request().method() === "POST" && candidate.url().endsWith(`/api/issues/${issue.id}/comments`));
+          await page.getByRole("button", { name: "Send", exact: true }).click();
+          expect((await response).ok()).toBe(true);
+          await expect(editor).toHaveText("");
+        }
         expect((await json(await request.get(`/api/issues/${issue.id}`))).executionBlocker).toBeTruthy();
         await page.waitForTimeout(1000);
+        await expect(page.getByText("Couldn't start", { exact: false })).toHaveCount(0);
+        expect(await json(await request.get(`/api/issues/${issue.id}/runs`))).toHaveLength(1);
         expect(await readFile(path.join(root, "writes"), "utf8")).toBe(writesAtStop);
         expect((await readFile(path.join(root, "prompts"), "utf8")).trim().split("\n")).toHaveLength(1);
       } else {
