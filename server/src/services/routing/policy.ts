@@ -349,8 +349,8 @@ export function decideRoute(input: RoutePolicyInput): RouteOutcome {
   const workerRole: AttemptRole = isRescue ? "rescuer" : "worker";
   const designatedWorkerId = input.override?.workerProfileId ?? (isRescue ? rule.rescueProfileId : rule.workerProfileId);
   const designatedWorker = designatedWorkerId ? index.byId[designatedWorkerId] : undefined;
+  const blockedForBudget = designatedWorker !== undefined && blocked.includes(designatedWorker.id);
   if (!isEligible(designatedWorker, workerRole, blocked)) {
-    const blockedForBudget = designatedWorker && blocked.includes(designatedWorker.id);
     if (blockedForBudget) pushUnique(reasonCodes, "budget-limited");
     return refusal(
       isRescue ? "escalation-required" : blockedForBudget ? "budget-limited" : "no-capable-worker",
@@ -371,7 +371,7 @@ export function decideRoute(input: RoutePolicyInput): RouteOutcome {
     blocked,
     excludeWorkerAgents,
   );
-  if (!workerProfile || (isRescue && previousWorker && workerProfile.providerFamily === previousWorker.providerFamily)) {
+  if (!workerProfile) {
     return refusal(isRescue ? "escalation-required" : "no-capable-worker", facts, facts.taskClass, effectiveTaskClass, reasonCodes, {
       escalationReason,
       bounds,

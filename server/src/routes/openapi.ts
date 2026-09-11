@@ -269,6 +269,17 @@ import {
   COMPANY_IMPORT_TRANSFERS_API_PATH,
   companyImportTransferDeclarationSchema,
 } from "@paperclipai/shared/company-import-transfer";
+import {
+  createExecutionProfileSchema,
+  escalateRouteSchema,
+  overrideRouteSchema,
+  releaseRouteClaimSchema,
+  rescueRouteSchema,
+  routeIssueSchema,
+  routeRuleDefaultsBindingsSchema,
+  updateExecutionProfileSchema,
+  upsertRouteRuleSchema,
+} from "@paperclipai/shared";
 
 type JsonSchema = Record<string, unknown>;
 type OpenApiResponse = Record<string, unknown>;
@@ -4483,6 +4494,243 @@ registerCurrentRoute({
     409: r.conflict,
     429: r.tooManyRequests,
   },
+});
+
+// --- task-attempt routing -----------------------------------------------------
+
+const routingParticipantSchema = z.object({
+  profileId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  providerFamily: z.string(),
+  model: z.string(),
+  effort: z.string(),
+}).strict();
+
+const executionProfileSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  name: z.string(),
+  providerFamily: z.string(),
+  agentId: z.string().uuid(),
+  model: z.string(),
+  effort: z.string(),
+  roleCapabilities: z.array(z.string()),
+  enabled: z.boolean(),
+  maxConcurrentAttempts: z.number().int(),
+  version: z.number().int(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
+const routeRuleSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  taskClass: z.string(),
+  workerProfileId: z.string().uuid().nullable(),
+  advisorProfileId: z.string().uuid().nullable(),
+  advisorMode: z.string(),
+  reviewerProfileId: z.string().uuid().nullable(),
+  reviewerFallbackProfileId: z.string().uuid().nullable(),
+  reviewRequirement: z.string(),
+  reviewerFallbackPolicy: z.string(),
+  rescueProfileId: z.string().uuid().nullable(),
+  maxAttempts: z.number().int(),
+  maxWallClockMinutes: z.number().int(),
+  maxCostCents: z.number().int().nullable(),
+  version: z.number().int(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
+const routeDecisionSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  issueId: z.string().uuid(),
+  revision: z.number().int(),
+  supersedesDecisionId: z.string().uuid().nullable(),
+  revisionKind: z.string(),
+  policyVersion: z.string(),
+  taskClass: z.string(),
+  effectiveTaskClass: z.string(),
+  facts: z.record(z.string(), z.unknown()).nullable(),
+  state: z.string(),
+  worker: routingParticipantSchema.nullable(),
+  advisor: routingParticipantSchema.nullable(),
+  advisorMode: z.string(),
+  reviewer: routingParticipantSchema.nullable(),
+  reviewerFallback: routingParticipantSchema.nullable(),
+  rescue: routingParticipantSchema.nullable(),
+  requireCrossFamilyReview: z.boolean(),
+  maxAttempts: z.number().int(),
+  maxWallClockMinutes: z.number().int(),
+  maxCostCents: z.number().int().nullable(),
+  reasonCodes: z.array(z.string()),
+  escalationReason: z.string().nullable(),
+  note: z.string().nullable(),
+  createdByType: z.string(),
+  createdByUserId: z.string().nullable(),
+  createdByAgentId: z.string().uuid().nullable(),
+  createdAt: z.string().datetime(),
+}).strict();
+
+const routePoolClaimSchema = z.object({
+  id: z.string().uuid(),
+  companyId: z.string().uuid(),
+  profileId: z.string().uuid(),
+  decisionId: z.string().uuid(),
+  issueId: z.string().uuid(),
+  role: z.string(),
+  runId: z.string().uuid().nullable(),
+  claimedAt: z.string().datetime(),
+  releasedAt: z.string().datetime().nullable(),
+  releaseReason: z.string().nullable(),
+}).strict();
+
+const issueRoutingSchema = z.object({
+  issueId: z.string().uuid(),
+  current: routeDecisionSchema.nullable(),
+  history: z.array(routeDecisionSchema),
+  activeClaims: z.array(routePoolClaimSchema),
+  reviewIssueId: z.string().uuid().nullable(),
+  advisorRoundsUsed: z.number().int(),
+}).strict();
+
+const routeDispatchResultSchema = z.object({
+  dispatched: z.boolean(),
+  decision: routeDecisionSchema,
+  claim: routePoolClaimSchema.optional(),
+  runId: z.string().uuid().optional(),
+  reason: z.string().optional(),
+}).strict();
+
+const routeReviewRequestResultSchema = z.object({
+  state: z.enum(["requested", "not-required", "reviewer-unavailable"]),
+  reviewIssueId: z.string().uuid().optional(),
+  reviewer: routingParticipantSchema.optional(),
+  created: z.boolean().optional(),
+  decision: routeDecisionSchema.optional(),
+  blocked: z.boolean().optional(),
+}).strict();
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/execution-profiles",
+  tags: ["routing"],
+  summary: "List execution profiles (model-bound executor identities)",
+  responses: { 200: r.ok(z.array(executionProfileSchema)), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/execution-profiles",
+  tags: ["routing"],
+  summary: "Create an execution profile (board only)",
+  body: createExecutionProfileSchema,
+  responses: { 201: r.ok(executionProfileSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/execution-profiles/{profileId}",
+  tags: ["routing"],
+  summary: "Update an execution profile with expected-version fencing (board only)",
+  body: updateExecutionProfileSchema,
+  responses: { 200: r.ok(executionProfileSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/route-rules",
+  tags: ["routing"],
+  summary: "List route rules per task class",
+  responses: { 200: r.ok(z.array(routeRuleSchema)), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/companies/{companyId}/route-rules",
+  tags: ["routing"],
+  summary: "Create or update the route rule for one task class (board only)",
+  body: upsertRouteRuleSchema,
+  responses: { 200: r.ok(routeRuleSchema), 201: r.ok(routeRuleSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/route-rules/defaults",
+  tags: ["routing"],
+  summary: "Seed missing route rules from explicit profile bindings (board only)",
+  body: routeRuleDefaultsBindingsSchema,
+  responses: { 200: r.ok(z.object({ rules: z.array(routeRuleSchema), unresolvedTaskClasses: z.array(z.string()) }).strict()), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/issues/{issueId}/routing",
+  tags: ["routing"],
+  summary: "Read an issue's current route decision, history, and active claims",
+  responses: { 200: r.ok(issueRoutingSchema), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/routing/route",
+  tags: ["routing"],
+  summary: "Route an issue from validated task facts (idempotent while routed)",
+  body: routeIssueSchema,
+  responses: { 200: r.ok(routeDecisionSchema), 201: r.ok(routeDecisionSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/routing/dispatch",
+  tags: ["routing"],
+  summary: "Claim a pool slot and dispatch the routed worker (board only)",
+  responses: { 200: r.ok(routeDispatchResultSchema), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/routing/escalate",
+  tags: ["routing"],
+  summary: "Record a typed escalation; creates a rescue or escalation-required revision (board only)",
+  body: escalateRouteSchema,
+  responses: { 201: r.ok(routeDecisionSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/routing/rescue",
+  tags: ["routing"],
+  summary: "Escalate and dispatch the opposite-family rescuer (board only)",
+  body: rescueRouteSchema,
+  responses: { 201: r.ok(z.object({ decision: routeDecisionSchema, dispatch: routeDispatchResultSchema.nullable() }).strict()), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/routing/override",
+  tags: ["routing"],
+  summary: "Expected-revision fenced manual reroute; invariant violations are rejected (board only)",
+  body: overrideRouteSchema,
+  responses: { 201: r.ok(routeDecisionSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/routing/review-request",
+  tags: ["routing"],
+  summary: "Create the independent cross-family review task for the current decision",
+  responses: { 200: r.ok(routeReviewRequestResultSchema), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{issueId}/routing/release-claim",
+  tags: ["routing"],
+  summary: "Release an active pool claim for a role (board only)",
+  body: releaseRouteClaimSchema,
+  responses: { 200: r.ok(routePoolClaimSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registerCurrentRoute({

@@ -45,6 +45,7 @@ import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
 import { deliveryRoutes } from "./routes/delivery.js";
 import { companyCoordinationRoutes } from "./routes/company-coordination.js";
+import { routingRoutes } from "./routes/routing.js";
 import { deliveryService } from "./services/delivery/index.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
@@ -615,6 +616,9 @@ export async function createApp(
   // same heartbeat service instance; every active-run/dependency/budget guard
   // inside enqueueWakeup stays in force.
   api.use(companyCoordinationRoutes(db, { heartbeat: connectionIntentHeartbeat }));
+  // Task-attempt routing dispatches selected workers and reviewers through the
+  // same scheduler seam, carrying the immutable decision id in run context.
+  api.use(routingRoutes(db, { enqueueWakeup: connectionIntentHeartbeat.wakeup }));
   // Real owner feedback: delivery repair and artifact wakes queue actual
   // heartbeat runs through the scheduler instead of bare wakeup rows.
   delivery.setWakeDispatcher((agentId, opts) => connectionIntentHeartbeat.wakeup(agentId, opts));
