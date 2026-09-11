@@ -120,6 +120,18 @@ jobs:
           echo "Disk before cleanup:"
           df -h
 
+          # A measured hosted cloud build started with 86 GB available.
+          # Keep ample headroom for BuildKit and image verification, but
+          # avoid minutes deleting SDKs when neither filesystem needs space.
+          minimum_free_kib=$((64 * 1024 * 1024))
+          if docker_root="$(docker info --format '{{.DockerRootDir}}')" \
+            && available_kib="$(df -Pk "$docker_root" "$GITHUB_WORKSPACE" | awk 'NR > 1 { rows++; if ($4 !~ /^[0-9]+$/) invalid = 1; if (min == "" || $4 < min) min = $4 } END { if (invalid || rows != 2) exit 1; print min }')" \
+            && [[ "$available_kib" =~ ^[0-9]+$ ]] \
+            && (( available_kib >= minimum_free_kib )); then
+            echo "At least 64 GiB is available for Docker and the workspace; skipping cleanup."
+            exit 0
+          fi
+
           pnpm store prune || true
           sudo apt-get clean || true
           sudo rm -rf \
