@@ -14,6 +14,27 @@ function readWorkflow(name) {
   return readFileSync(path.join(repoRoot, ".github/workflows", name), "utf8");
 }
 
+test("chaos verification isolates callers that verify the same source commit", () => {
+  const chaosWorkflow = readWorkflow("runner-chaos-evals.yml");
+  const group = chaosWorkflow.match(/^  group: (.+)$/m)?.[1];
+  assert.ok(group, "chaos verification must define its concurrency group");
+
+  // GitHub supplies the top-level caller's workflow name to reusable calls.
+  const resolveGroup = (caller, ref) => group
+    .replaceAll("${{ github.workflow }}", readWorkflow(caller).match(/^name: (.+)$/m)[1])
+    .replaceAll("${{ inputs.ref || github.ref }}", ref)
+    .toLowerCase();
+  const sha = "a".repeat(40);
+  const callers = ["cloud-readiness.yml", "release.yml", "runner-chaos-evals.yml"];
+  const groups = callers.map((caller) => resolveGroup(caller, sha));
+  assert.equal(new Set(groups).size, callers.length,
+    "Cloud readiness, Release, and standalone evals must not cancel each other");
+  assert.ok(groups.every((value) => !value.includes("${{")), "resolve every group input");
+  assert.notEqual(resolveGroup("cloud-readiness.yml", sha),
+    resolveGroup("cloud-readiness.yml", "b".repeat(40)), "different sources remain independent");
+  assert.match(chaosWorkflow, /cancel-in-progress: true/);
+});
+
 test("release workflow delegates stable and canary verification to the reusable workflow", () => {
   const releaseWorkflow = readWorkflow("release.yml");
 
@@ -206,28 +227,16 @@ test("release verify workflow covers the same split test surface as stable PR ve
   assert.match(buildJob, /persist-credentials: false/);
   assert.doesNotMatch(buildJob, /cache: pnpm/);
 
-  for (const group of [
-    "general-server",
-    "general-workspaces-a",
-    "general-workspaces-b",
-  ]) {
+  for (const group of ["general-server-without-chat", "general-chat", "general-workspaces-a", "general-workspaces-b"]) {
     assert.match(verifyWorkflow, new RegExp(`group: ${group}`));
   }
-
-  for (const shardIndex of [0, 1, 2]) {
-    assert.match(
-      verifyWorkflow,
-      new RegExp(
-        `group: general-server[\\s\\S]*?shard_index: ${shardIndex}[\\s\\S]*?shard_count: 3`,
-      ),
-    );
+  for (const [group, count] of [["general-server-without-chat", 5], ["general-chat", 3]]) {
+    const rows = [...verifyWorkflow.matchAll(new RegExp(`group: ${group}\\n\\s+group_label: [^\\n]+\\n\\s+shard_index: (\\d+)\\n\\s+shard_count: (\\d+)`, "g"))];
+    assert.deepEqual(rows.map((row) => [Number(row[1]), Number(row[2])]),
+      Array.from({ length: count }, (_, index) => [index, count]));
   }
-
   for (const shardIndex of [0, 1, 2, 3, 4]) {
-    assert.match(
-      verifyWorkflow,
-      new RegExp(`shard_index: ${shardIndex}[\\s\\S]*?shard_count: 5`),
-    );
+    assert.match(verifyWorkflow, new RegExp(`shard_index: ${shardIndex}[\\s\\S]*?shard_count: 5`));
   }
 
   // workspaces-a splits with Vitest native --shard in pr.yml; release

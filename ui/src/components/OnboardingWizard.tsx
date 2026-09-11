@@ -1200,6 +1200,21 @@ function OnboardingWizardInner({
     connectPhase === "unwindRow";
   const connectLinkVisible = connectPhase === "idle" || connectPhase === "unwindRow";
 
+  /**
+   * When "Connecting" started, and whether the login behind it has finished.
+   *
+   * Two facts because they now arrive at different times. The button says
+   * "Connecting" the moment a code is pasted, but the credential only exists
+   * once the server confirms it, a poll and a completion read later. The hire
+   * waits for both: the stored login, and two seconds of "Connecting" counted
+   * from the paste — so a fast server still shows the state, and a slow one
+   * does not have the hold added on top of its own wait.
+   */
+  const connectingSinceRef = useRef<number | null>(null);
+  const [connectCredentialStored, setConnectCredentialStored] = useState(false);
+  /** What the button was offering before a paste, for when the paste is refused. */
+  const phaseBeforeSubmitRef = useRef<ConnectPhase>("waiting");
+
   /** A sign-in is running and has not succeeded. */
   const connectStepLoggingIn =
     connectStepNeedsLogin && connectPhase !== "idle" && connectPhase !== "connecting";
@@ -1228,17 +1243,27 @@ function OnboardingWizardInner({
       return () => clearTimeout(t);
     }
     if (connectPhase === "connecting") {
+      // Not before the login is stored. "Connecting" starts at the paste now,
+      // ahead of the server confirming anything, so a hire from here would go
+      // out against a source with no credential to run on.
+      if (!connectCredentialStored) return;
       // No success state: the step advances. The hold is so "Connecting" is
       // legible as a state rather than a flicker on the way out — a step that
       // left the instant a paste landed would read as the paste having gone
-      // wrong.
+      // wrong. Counted from when "Connecting" appeared, so the time the server
+      // spent confirming counts toward it instead of being added to it.
       //
       // A beat rather than a bare timer because Back stays live through it. A
       // dropped handle hired two seconds after the customer had backed out,
       // landing them on Review having asked for the opposite; `handleGiveHeartbeat`
       // has no notion of the phase and could not refuse it. Leaving the phase —
       // Back, the step changing, unmount — now cancels the hire with it.
-      const t = setTimeout(() => void handleGiveHeartbeat(), CONNECTED_HOLD_MS);
+      const shownFor =
+        connectingSinceRef.current === null ? 0 : Date.now() - connectingSinceRef.current;
+      const t = setTimeout(
+        () => void handleGiveHeartbeat(),
+        Math.max(0, CONNECTED_HOLD_MS - shownFor),
+      );
       return () => clearTimeout(t);
     }
     if (connectPhase === "unwindCard") {
@@ -1260,7 +1285,7 @@ function OnboardingWizardInner({
       return () => clearTimeout(t);
     }
     return;
-  }, [step, connectPhase, credentialMode, connectStepNeedsLogin]);
+  }, [step, connectPhase, credentialMode, connectStepNeedsLogin, connectCredentialStored]);
 
   /**
    * The button's four faces, and which of them can be pressed.
@@ -1309,6 +1334,8 @@ function OnboardingWizardInner({
    */
   function unwindConnectStep() {
     setConnectAuthUrl(null);
+    connectingSinceRef.current = null;
+    setConnectCredentialStored(false);
     // Where the reverse starts depends on how far the sequence got. Backing out
     // during the collapse has no card to close and no room to give back.
     // With no card open, the row is the whole of the unwind.
@@ -1331,6 +1358,10 @@ function OnboardingWizardInner({
       setConnectPhase("waiting");
       return;
     }
+    // The hold owns the hire once "Connecting" is showing. That now starts at
+    // the paste, before the credential exists, so Cmd+Enter here would hire
+    // against a source with nothing to run on.
+    if (connectPhase === "connecting") return;
     if (connectStepLoggingIn) return;
     void handleGiveHeartbeat();
   }
@@ -1456,6 +1487,8 @@ function OnboardingWizardInner({
     setConnectPhase("idle");
     setConnectAuthUrl(null);
     setSourcePicked(false);
+    connectingSinceRef.current = null;
+    setConnectCredentialStored(false);
   }, [step]);
 
   const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
@@ -2654,10 +2687,58 @@ function OnboardingWizardInner({
                           // The prompt arriving is what ends the waiting beat.
                           if (url) setConnectPhase((p) => (p === "loading" ? "ready" : p));
                         }}
+                        onCodeSubmitted={() => {
+                          // The button reacts to the paste, not to the server.
+                          // Waiting for the login to be stored left about a
+                          // second of a button still reading "Waiting for code"
+                          // after the code had already gone in.
+                          phaseBeforeSubmitRef.current = connectPhase;
+                          connectingSinceRef.current = Date.now();
+                          setConnectCredentialStored(false);
+                          setConnectPhase("connecting");
+                        }}
+                        onSubmitFailed={() => {
+                          // Only while the button still says "Connecting". The
+                          // panel stays mounted through Back's exit, so a failure
+                          // that landed after Back restored the button and
+                          // reopened the card the customer was leaving — without
+                          // the address Back had cleared, so its sign-in could
+                          // not even be pressed.
+                          if (connectPhase !== "connecting") return;
+                          // Refused, failed or timed out — the card says which.
+                          // The button goes back to what it was offering rather
+                          // than spinning on a login that is not coming.
+                          connectingSinceRef.current = null;
+                          setConnectCredentialStored(false);
+                          setConnectPhase(
+                            phaseBeforeSubmitRef.current === "ready" ? "ready" : "waiting",
+                          );
+                        }}
                         onConnected={() => {
+                          // Not into a card the customer has left. The panel is
+                          // still mounted through Back's exit, and a login that
+                          // finished there pulled the step back into "Connecting"
+                          // and on into a hire they had just backed away from.
+                          // The login is stored either way; what this refuses is
+                          // only the step moving forward after they chose to go.
+                          if (
+                            connectPhase !== "loading" &&
+                            connectPhase !== "ready" &&
+                            connectPhase !== "waiting" &&
+                            connectPhase !== "connecting"
+                          ) {
+                            return;
+                          }
                           // The hold before the step advances is the phase's own
                           // beat, above, so that backing out during it cancels
-                          // the hire.
+                          // the hire. It counts from the paste when there was
+                          // one, and from here for a login that finished without
+                          // one — a resumed session, or a code handed out rather
+                          // than pasted back.
+                          if (connectingSinceRef.current === null) {
+                            connectingSinceRef.current = Date.now();
+                          }
+                          setConnectCredentialStored(true);
                           setConnectPhase("connecting");
                         }}
                         onStored={() => {

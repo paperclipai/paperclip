@@ -1363,3 +1363,35 @@ Networking behavior for this smoke script:
 ### GitHub identity for shared agents
 
 See [execution GitHub identity](execution-github-identity.md) for the operation-time credential contract, continuation rules, runtime rollout, and acceptance-test requirements.
+
+
+### Investigating polling load
+
+The company heartbeat-run and live-run lists load secret registries in one
+company-scoped query per response. Registry reads project only
+`paperclipSecretRedactions` from the run context. They do not load the full
+prompt/context JSON. Decrypted values live only for that request and each run
+uses its own registry.
+
+Hidden browser tabs suspend the company live-events connection and transcript
+log reads. Returning to a visible tab refreshes active queries once and resumes
+transcript reads from their retained offsets. A queued live-event invalidation
+that flushes after the tab hides marks data stale without starting a refetch.
+The developer-server health poll also stops in hidden tabs.
+
+Workspace detail responses share concurrent Git inspections and reuse their
+results for up to five seconds after completion. The cache holds at most 256
+entries. Close-readiness checks, the terminal-workspace reaper, and the final
+cleanup validation still inspect Git afresh. A display result never authorizes
+worktree removal.
+
+The connection-health sweep selects only due IDs in SQL before applying its
+limit. Legacy `paperclip_plugin` placeholder connections are excluded: their
+tools run in plugin workers and do not have remote MCP endpoints. These rows
+remain available; the sweep does not disable or delete plugin connections.
+
+When investigating an overloaded instance, distinguish request amplification
+from stored configuration problems. Verify connection transport and endpoint
+fields before disabling a connection. Verify workspace ownership, active runs,
+Git state, and runtime-service readiness before closing a workspace. A missing
+URL or old workspace timestamp alone does not prove that a row is disposable.

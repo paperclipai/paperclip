@@ -2261,6 +2261,15 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   // why the `onboarding` chrome draws no success state of its own — the screen
   // it would appear on is already gone.
   onConnected?: () => void;
+  // The pasted code went to the server. Fires as the submit starts rather than
+  // when the login finishes, so a caller can show the work the moment the
+  // customer has done their part: the round trip to `onConnected` is a poll
+  // and a completion read, long enough to read as nothing having happened.
+  onCodeSubmitted?: () => void;
+  // A submitted code did not become a stored login — the submit was refused,
+  // the completion failed, or the session failed or ran out of time. The pair
+  // of `onCodeSubmitted`, so a caller that showed work can stop showing it.
+  onSubmitFailed?: () => void;
   chrome?: AdapterLoginChrome;
   /**
    * The address the customer has to open, once the server has produced one.
@@ -2268,9 +2277,9 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
    * The one fact about a running login that the step needs outside the card:
    * its own button is what sends the customer there, and a prompt arriving is
    * what moves the step from waiting to ready. Everything else it needs the
-   * panel already does — the paste submits itself, success is reported through
-   * `onConnected`, and the customer's own Cancel press is reported through
-   * `onCancel` — so this stays a single value rather than a whole session
+   * panel already does — the paste submits itself, and the submit and how it
+   * ended are reported through `onCodeSubmitted`, `onSubmitFailed` and
+   * `onConnected` — so this stays a single value rather than a whole session
    * handed upward.
    */
   onPromptReady?: (authorizationUrl: string | null) => void;
@@ -2804,6 +2813,8 @@ function SubmittedBrowserCodeLoginPanel({
   onApplyStored,
   autoStart,
   onConnected,
+  onCodeSubmitted,
+  onSubmitFailed,
   chrome = "panel",
   onPromptReady,
 }: AdapterLoginPanelProps) {
@@ -2827,6 +2838,10 @@ function SubmittedBrowserCodeLoginPanel({
   // True after the client wall-clock cap passes for the active login. The panel
   // stops both polls and shows the timed-out state.
   const [timedOut, setTimedOut] = useState(false);
+  // A code has gone to the server and has not yet come back as a stored login
+  // or a failure. The field is locked for that stretch: the step's button is
+  // saying "Connecting" above it, and a second paste would submit again.
+  const [codeSubmitted, setCodeSubmitted] = useState(false);
   // True after the status poll returns 404. The server removes the row and the
   // in-memory session at once on any non-stored terminal state, so a status 404
   // means the login failed and the server cleaned up. The panel stops both
@@ -2855,6 +2870,7 @@ function SubmittedBrowserCodeLoginPanel({
     setCompletionFailed(false);
     setTimedOut(false);
     setStatusGone(false);
+    setCodeSubmitted(false);
     completionStartedRef.current = false;
   };
 
@@ -3171,11 +3187,26 @@ function SubmittedBrowserCodeLoginPanel({
     Boolean(authorizationUrl) &&
     !isCompleting &&
     isValidBrowserCode(trimmedCode) &&
-    !submitCode.isPending;
+    !submitCode.isPending &&
+    !codeSubmitted;
+
+  const onCodeSubmittedRef = useRef(onCodeSubmitted);
+  onCodeSubmittedRef.current = onCodeSubmitted;
+  const onSubmitFailedRef = useRef(onSubmitFailed);
+  onSubmitFailedRef.current = onSubmitFailed;
 
   const handleSubmit = () => {
     if (!canSubmit) return;
+    // A new attempt supersedes the last attempt's error, and has to: the
+    // failure report below watches for an error after a submit, and one left
+    // over from before it would end this attempt the moment it began.
+    setStartError(null);
     submitCode.mutate(trimmedCode);
+    // Reported now, not when the login finishes. A stored login is a poll and a
+    // completion read away, long enough that a button still offering "Waiting
+    // for code" after the paste read as the paste not having registered.
+    setCodeSubmitted(true);
+    onCodeSubmittedRef.current?.();
     // Onboarding keeps the code on screen; the panel still clears it.
     //
     // Clearing emptied the input in the same frame the paste landed, so on the
@@ -3272,6 +3303,18 @@ function SubmittedBrowserCodeLoginPanel({
     onConnectedRef.current?.();
   }, [isStored]);
 
+  // The other end of `onCodeSubmitted`. Any of these after a submit means the
+  // code is not going to become a stored login, and a caller still showing
+  // "Connecting" would otherwise spin for good. Once per submit; the field
+  // unlocks with it. Not reset on success: the field stays locked through the
+  // hold that follows, rather than reopening under a button saying Connecting.
+  useEffect(() => {
+    if (!codeSubmitted) return;
+    if (!startError && !isFailure && !timedOut) return;
+    setCodeSubmitted(false);
+    onSubmitFailedRef.current?.();
+  }, [codeSubmitted, startError, isFailure, timedOut]);
+
   const onPromptReadyRef = useRef(onPromptReady);
   onPromptReadyRef.current = onPromptReady;
   useEffect(() => {
@@ -3324,7 +3367,11 @@ function SubmittedBrowserCodeLoginPanel({
             onPaste={() => {
               pastedRef.current = true;
             }}
-            disabled={submitCode.isPending || isCompleting}
+            // Dots, not the code. It stays in the field after the paste so the
+            // customer can see something landed, and that is all they need to
+            // see of it.
+            masked
+            disabled={submitCode.isPending || isCompleting || codeSubmitted}
           />
         )}
       </OnboardingLoginCard>

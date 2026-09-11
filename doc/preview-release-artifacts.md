@@ -43,6 +43,31 @@ version 1, request ID, SHA, stage `build`, and status `ready`. It expires after
 
 ## Publishing configuration and isolation
 
+### Migrator publication on merge
+
+The `Cloud artifacts` workflow starts a `cloud-migrator` dispatch of `release.yml`
+for every push to `master`. This dispatch builds and publishes only the exact-source
+`@paperclipai/shared` and `@paperclipai/db` preview packages. It starts independently
+of the full npm release and does not wait for the Docker image. The normal Docker
+workflow supplies the image separately.
+
+The run title is `Cloud migrator <FULL_SHA>`. A successful `Cloud artifacts`
+dispatch job only confirms that GitHub accepted the request. Inspect the matching
+`release.yml` run to confirm publication completed. This path does not produce a
+`stack-deploy-result` or certify source-test success or deployment readiness.
+Cloud must still verify all deployment prerequisites.
+
+To retry one commit, dispatch `release.yml` on `master` with `channel=cloud-migrator`,
+the full SHA as `source_ref`, a new UUID v4 as `request_id`, and `dry_run=false`.
+`preview_migrator` is not required for this channel. Existing packages are verified
+and reused. Preview and migrator-only runs use separate workflow concurrency
+groups. Only their package publication jobs share a group for the same SHA, so
+they cannot publish the same version concurrently and the migrator does not wait
+for a preview's image build. Different SHAs publish in separate groups; the full
+release keeps its existing group.
+
+### Publisher identity
+
 Configure npm trusted publishing for **both packages** with repository
 `paperclipai/paperclip`, workflow `release.yml`, and environment `npm-canary`.
 The image publisher uses the same environment, whose deployment branch policy

@@ -92,6 +92,7 @@ import {
   type AcpSessionStore,
 } from "acpx/runtime";
 import {
+  ACPX_DUPLEX_LOSS_CANCEL_DEADLINE_MS,
   ACPX_HANDSHAKE_TIMEOUT_MS,
   ACPX_HANDSHAKE_TRANSPORT_POLL_MS,
   DEFAULT_ACP_ENGINE_AGENT,
@@ -342,6 +343,14 @@ export interface AcpxRemoteManagedHomeResult {
 export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
   now?: () => number;
+  /**
+   * The bound on how long the fail-fast seam waits for a cooperative
+   * `turn.cancel()` after a latched terminal sandbox duplex-channel loss,
+   * before it ends the turn without the agent's help. Defaults to
+   * {@link ACPX_DUPLEX_LOSS_CANCEL_DEADLINE_MS}. Tests inject a small value
+   * to drive the deadline without real time.
+   */
+  duplexLossCancelDeadlineMs?: number;
   warmHandles?: Map<string, RuntimeCacheEntry>;
   /**
    * Per-session staged-runtime cache for the remote runner-backed lane (PR 3).
@@ -3704,6 +3713,7 @@ function openTurnSpan(
 export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const createRuntime = deps.createRuntime ?? createAcpRuntime;
   const now = deps.now ?? (() => Date.now());
+  const duplexLossCancelDeadlineMs = deps.duplexLossCancelDeadlineMs ?? ACPX_DUPLEX_LOSS_CANCEL_DEADLINE_MS;
   const warmHandles = deps.warmHandles ?? defaultWarmHandles;
   const stagedRuntimes = deps.stagedRuntimes ?? defaultStagedRuntimes;
   const stagingLocks = deps.stagingLocks ?? defaultStagingLocks;
@@ -3800,6 +3810,24 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let releaseStagingLease: (() => void) | null = null;
     let stopTimer: ReturnType<typeof setTimeout> | undefined;
     let removeStopListener: (() => void) | undefined;
+    // Unregisters the sandbox duplex bridge's loss listener (below, in
+    // `stepTurnStart`). Set only on a sandbox target whose bridge exposes
+    // `onLoss`; stays undefined everywhere else, so the cleanup call is a
+    // no-op there.
+    let removeLossListener: (() => void) | undefined;
+    // Bounds the wait after a latched terminal duplex loss so a silent agent
+    // cannot hold the run open on the cooperative `turn.cancel()` request
+    // alone. `stepTurnStart` arms `lossDeadlineTimer` the moment a loss
+    // latches; it stays undefined everywhere else, so the cleanup call below
+    // is a no-op there. `stepEventRelay` races the turn against
+    // `lossDeadline` and, once it fires, ends the event drain and hands
+    // `turnFinalize` a host-built terminal instead of the agent's.
+    let lossDeadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    let lossDeadlineTripped = false;
+    let resolveLossDeadline: (() => void) | undefined;
+    const lossDeadline = new Promise<void>((resolve) => {
+      resolveLossDeadline = resolve;
+    });
     let forcedStop = false;
     let runtimeStopConfirmed = false;
     let safeInterruptedSession = false;
@@ -4606,6 +4634,36 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           signal,
         });
         activeTurn = turn;
+        // A latched sandbox duplex-channel loss otherwise has no way to reach
+        // this turn: the bridge only exposes a pull read, and the engine
+        // pulls it at the terminal-finalization boundary, which runs only
+        // after the turn already returned a terminal result. A channel that
+        // dies mid-turn then leaves the turn with no terminal result to
+        // return, so it waits for the wall-clock adapter execution timeout
+        // instead of failing fast. Cancel the turn the moment a terminal loss
+        // latches — whether it latches from here on, or already latched
+        // before this turn started — so the turn returns a terminal result
+        // right away. `turnFinalize` reads the same latch and builds the
+        // failure from the typed loss reason alone.
+        const bridge = prepared.paperclipBridge;
+        if (bridge?.onLoss) {
+          const cancelForLoss = (reason: DuplexLossReason) => {
+            void turn.cancel({ reason: `paperclip sandbox duplex channel lost (${reason})` }).catch(() => {});
+            // `cancel()` only asks the agent to end the turn; it does not end
+            // the turn by itself. Start the fail-fast deadline the moment the
+            // loss latches, so the run does not wait past this bound for an
+            // agent that stopped answering.
+            if (!lossDeadlineTimer && !lossDeadlineTripped) {
+              lossDeadlineTimer = setTimeout(() => {
+                lossDeadlineTripped = true;
+                resolveLossDeadline?.();
+              }, duplexLossCancelDeadlineMs);
+            }
+          };
+          removeLossListener = bridge.onLoss(cancelForLoss);
+          const alreadyLatched = bridge.readRunDisposition?.();
+          if (alreadyLatched?.failed) cancelForLoss(alreadyLatched.lossReason ?? "other");
+        }
         // ACP can resolve the turn before its provider exits. Keep the Stop
         // deadline armed through settlement, including provider cleanup.
         const armStopDeadline = () => {
@@ -4631,40 +4689,74 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           },
         };
       };
+      // The host-built terminal `stepEventRelay` hands to `turnFinalize` once
+      // the fail-fast deadline fires with no agent-supplied terminal. Its
+      // `status` mirrors the shape a real cooperative cancel already
+      // produces, so `turnFinalize` needs no change: it reads the latched
+      // loss disposition, not this `stopReason`, to build the reported
+      // failure and its message.
+      const LOSS_DEADLINE_TERMINAL: AcpRuntimeTurnResult = {
+        status: "cancelled",
+        stopReason: "paperclip_duplex_loss_deadline",
+      };
       const stepEventRelay = async (): Promise<AcpRuntimeTurnResult> => {
         const turn = activeTurn as AcpRuntimeTurn;
         const toolTitles = new Map<string, string>();
-        for await (const event of turn.events) {
-          // ACPX currently flattens client-side filesystem/terminal receipts
-          // into status text. They cannot establish complete action outcomes.
-          if (event.type === "status" && /^(fs|terminal)\//.test(event.text)) incompleteToolInventory = true;
-          if (event.type === "tool_call") {
-            if (!event.toolCallId) incompleteToolInventory = true;
-            else {
-              const previous = interruptionTools.get(event.toolCallId);
-              interruptionTools.set(event.toolCallId, {
-                kind: event.kind ?? previous?.kind,
-                status: event.status ?? previous?.status,
-              });
+        const drainEvents = (async (): Promise<void> => {
+          for await (const event of turn.events) {
+            // ACPX currently flattens client-side filesystem/terminal receipts
+            // into status text. They cannot establish complete action outcomes.
+            if (event.type === "status" && /^(fs|terminal)\//.test(event.text)) incompleteToolInventory = true;
+            if (event.type === "tool_call") {
+              if (!event.toolCallId) incompleteToolInventory = true;
+              else {
+                const previous = interruptionTools.get(event.toolCallId);
+                interruptionTools.set(event.toolCallId, {
+                  kind: event.kind ?? previous?.kind,
+                  status: event.status ?? previous?.status,
+                });
+              }
             }
+            if (event.type === "text_delta" && event.stream !== "thought") {
+              currentOutputChunk.push(event.text);
+            } else if (event.type === "tool_call" && event.tag !== "tool_call_update") {
+              // ACP makes tool-call status optional. The normalized event tag is
+              // the reliable boundary between an initial call and its updates,
+              // so a statusless initial call must still end the preceding output
+              // segment while updates must not create extra boundaries.
+              flushOutputSegment();
+            }
+            if (event.type === "status" && event.tag === "usage_update") {
+              eventBreakdown = event.breakdown ?? eventBreakdown;
+              eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
+            }
+            await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
           }
-          if (event.type === "text_delta" && event.stream !== "thought") {
-            currentOutputChunk.push(event.text);
-          } else if (event.type === "tool_call" && event.tag !== "tool_call_update") {
-            // ACP makes tool-call status optional. The normalized event tag is
-            // the reliable boundary between an initial call and its updates,
-            // so a statusless initial call must still end the preceding output
-            // segment while updates must not create extra boundaries.
-            flushOutputSegment();
-          }
-          if (event.type === "status" && event.tag === "usage_update") {
-            eventBreakdown = event.breakdown ?? eventBreakdown;
-            eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
-          }
-          await emitRuntimeEvent(ctx, event, toolTitles, prepared.coalescePlaceholderToolUpdates);
+        })();
+        // A latched loss already asked the agent to cancel (above, in
+        // `cancelForLoss`); that request settles neither `turn.events` nor
+        // `turn.result` by itself. Race the event drain against the fail-fast
+        // deadline so a silent agent cannot hold this wait open.
+        const eventsEnded = await Promise.race([
+          drainEvents.then(() => true as const),
+          lossDeadline.then(() => false as const),
+        ]);
+        if (!eventsEnded) {
+          // The deadline won: stop waiting on the agent. `closeStream` ends
+          // the event drain locally, with no agent cooperation required. Await
+          // both the close call and the drain it unblocks before this step
+          // returns, so no late runtime event can still mutate shared state
+          // (output segments, tool inventory) after finalization reads it.
+          await turn.closeStream({ reason: "paperclip duplex loss cancel deadline" }).catch(() => {});
+          await drainEvents.catch(() => {});
+          flushOutputSegment();
+          return LOSS_DEADLINE_TERMINAL;
         }
         flushOutputSegment();
-        return await turn.result;
+        // `turn.result` settles only when the agent's provider process
+        // returns or rejects; a latched loss that armed the deadline after
+        // the event drain already ended must still bound this wait.
+        return await Promise.race([turn.result, lossDeadline.then(() => LOSS_DEADLINE_TERMINAL)]);
       };
       const stepTurnFinalize = async (
         input: TurnFinalizeInput<AcpRuntimeTurnResult>,
@@ -4673,33 +4765,23 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         const terminal = input.terminal;
         const timedOut = input.timedOut;
         // Read the sandbox duplex control-channel disposition at the ACP
-        // terminal-finalization boundary, before the bridge teardown. A control
-        // channel that died mid-turn latches a failure with a typed loss reason;
-        // a healthy channel or a normal-teardown loss reports a success. Only a
-        // nominally completed, non-timed-out terminal is success-eligible, so the
-        // seam reads the disposition only there. For that success-eligible
-        // terminal the seam marks the host-observed orderly completion, so a later
-        // teardown loss cannot flip the run to a failure. The file bridge path
-        // never sets these methods, so the optional calls no-op there.
+        // terminal-finalization boundary, before the bridge teardown, on every
+        // terminal outcome. A control channel that died before this point
+        // latches a failure with a typed loss reason; a healthy channel or a
+        // normal-teardown loss reports a success. The read and the mark of the
+        // host-observed orderly completion happen atomically in one broker
+        // step, with no `await` between them, so a teardown loss cannot slip
+        // in between. This stops a later teardown `channel_exit` from latching
+        // a false loss. The mark no-ops once a loss already latched, so a real
+        // mid-turn loss still fails the run — including a loss that arrived
+        // through the in-flight-turn cancel this seam issues, which surfaces
+        // here as a `cancelled` (not `completed`) terminal, not just through a
+        // nominally completed terminal. The file bridge path never sets this
+        // method, so the optional call no-ops there.
         let duplexLossReason: DuplexLossReason | null = null;
-        if (terminal.status === "completed" && !timedOut) {
-          // Success-eligible terminal. Atomically read the disposition and mark
-          // the orderly completion in one broker step. No `await` separates the
-          // read from the mark, so a teardown loss cannot slip in between them. A
-          // latched loss fails the run closed; a healthy channel marks its
-          // orderly completion, so a later teardown loss stays a normal teardown.
-          const disposition = prepared.paperclipBridge?.settleRunDisposition?.() ?? null;
-          if (disposition?.failed) {
-            duplexLossReason = disposition.lossReason ?? "other";
-          }
-        } else {
-          // Non-success-eligible terminal (failed, cancelled, or timed out). A
-          // deliberate host teardown follows, so mark the orderly completion now.
-          // This stops the teardown `channel_exit` from latching `lossSeq`, from
-          // emitting a false loss event, and from incrementing the loss counters.
-          // The mark no-ops once a loss latched, so a real mid-run loss still
-          // fails the run.
-          prepared.paperclipBridge?.markOrderlyCompletion?.();
+        const disposition = prepared.paperclipBridge?.settleRunDisposition?.() ?? null;
+        if (disposition?.failed) {
+          duplexLossReason = disposition.lossReason ?? "other";
         }
         // A terminal that reports "completed" but whose duplex control channel
         // died before the completion is not a success. The seam fails it closed.
@@ -4778,12 +4860,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           signal: timedOut ? "SIGTERM" : null,
           timedOut,
           errorMessage,
-          errorCode: terminal.status === "failed"
-            ? "acpx_turn_failed"
-            : timedOut
-              ? "acpx_timeout"
-              : channelLost
-                ? DUPLEX_CHANNEL_LOST_ERROR_CODE
+          errorCode: timedOut
+            ? "acpx_timeout"
+            : channelLost
+              ? DUPLEX_CHANNEL_LOST_ERROR_CODE
+              : terminal.status === "failed"
+                ? "acpx_turn_failed"
                 : null,
           sessionId: sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
           sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
@@ -4831,16 +4913,6 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             resources: emptyConsumed,
           };
         }
-        if (terminal.status === "failed") {
-          return {
-            kind: "failed",
-            cause: {
-              kind: "turn_failed",
-              error: terminal.error instanceof Error ? terminal.error : new Error(String(terminal.error)),
-            },
-            resources: emptyConsumed,
-          };
-        }
         if (terminal.status === "cancelled") {
           return {
             kind: "cancelled",
@@ -4848,16 +4920,28 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             resources: emptyConsumed,
           };
         }
-        // A completed terminal whose duplex control channel died mid-turn returns
-        // a failed completion, so the coordinator settles for a failure and the
-        // reuse decision forbids a save. The message carries only the typed loss
-        // reason, so no raw provider text rides the cause.
+        // A duplex control-channel loss outranks a provider-reported failure or
+        // completion: the loss reason explains why the provider terminal reads
+        // the way it does, not the other way round. This also covers a
+        // "completed" terminal whose channel died mid-turn. The message carries
+        // only the typed loss reason, so no raw provider text rides the cause,
+        // even when the provider terminal itself reports `failed`.
         if (channelLost) {
           return {
             kind: "failed",
             cause: {
               kind: "turn_failed",
               error: new Error(channelLostMessage ?? "The sandbox duplex control channel was lost."),
+            },
+            resources: emptyConsumed,
+          };
+        }
+        if (terminal.status === "failed") {
+          return {
+            kind: "failed",
+            cause: {
+              kind: "turn_failed",
+              error: terminal.error instanceof Error ? terminal.error : new Error(String(terminal.error)),
             },
             resources: emptyConsumed,
           };
@@ -5195,6 +5279,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     } finally {
       clearTimeout(stopTimer);
       removeStopListener?.();
+      removeLossListener?.();
+      clearTimeout(lossDeadlineTimer);
       // End the run root span exactly once, on every return and on a throw.
       runRootSpan.end(runFailed);
       // Release the per-session staging lease as the run's final act, AFTER the
