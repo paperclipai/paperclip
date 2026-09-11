@@ -9,6 +9,7 @@ import {
   createDb,
   documents,
   documentRevisions,
+  financeEvents,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
@@ -44,6 +45,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(financeEvents);
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
     await db.delete(issueReadStates);
@@ -153,6 +155,35 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+  });
+
+  it("detaches finance events instead of deleting them when the agent is removed", async () => {
+    const { agentId, companyId, runId } = await seedFixture();
+    const financeEventId = randomUUID();
+
+    await db.insert(financeEvents).values({
+      id: financeEventId,
+      companyId,
+      agentId,
+      heartbeatRunId: runId,
+      eventKind: "provisioned_capacity_charge",
+      direction: "debit",
+      biller: "phantom",
+      amountCents: 1,
+      occurredAt: new Date(),
+    });
+
+    const removed = await agentService(db).remove(agentId);
+
+    expect(removed?.id).toBe(agentId);
+    await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);
+    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toHaveLength(0);
+
+    const [financeEvent] = await db.select().from(financeEvents).where(eq(financeEvents.id, financeEventId));
+    expect(financeEvent).toBeDefined();
+    expect(financeEvent.agentId).toBeNull();
+    expect(financeEvent.heartbeatRunId).toBeNull();
+    expect(financeEvent.amountCents).toBe(1);
   });
 
   it("removes issue read states and activity rows before deleting the company", async () => {
