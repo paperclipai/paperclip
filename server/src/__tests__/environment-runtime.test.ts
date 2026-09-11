@@ -6218,7 +6218,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       isRunning: vi.fn((id: string) => id === pluginId),
       call: vi.fn(async (_pluginId: string, method: string) => {
         if (method === "environmentDestroyLease") {
-          return undefined;
+          return { providerLeaseId: reusableLease.providerLeaseId, state: "destroyed" };
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
@@ -6245,6 +6245,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       status: "expired",
       failureReason: "environment_deleted",
       cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1",
+        leaseId: reusableLease.id, runId, providerLeaseId: reusableLease.providerLeaseId, state: "destroyed" } },
     });
   });
 

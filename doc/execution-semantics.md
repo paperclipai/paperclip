@@ -831,7 +831,7 @@ Shutdown, process loss, and provider failure use the existing durable failure re
 
 Real gates still apply: company and task ownership, active provider ownership, budget limits, agent availability, dependencies, pending approval/review paths, and explicit pause holds. Native runner reattachment and finalization retain their existing ownership protocol. Process, HTTP, and gateway adapters retain their recovery rules because invoking those adapters can itself repeat an external action rather than start a conversation turn.
 
-An operator Stop still waits for local provider termination. Stop alone never promotes deferred comments or starts an automatic continuation. Once stopped, the next explicit wake adopts pending comment IDs in order through the existing queue. A compatible saved ACP session can resume, and an unavailable or incompatible session can start fresh with the full task context. Run credentials and scratch paths remain scoped to the new run. A subtree pause requires Resume; a message does not bypass it.
+An operator Stop waits for provider termination. Remote sandbox providers may return a stopped/deleted receipt after their control-plane operation completes. Paperclip binds that receipt to the company, run, and exact lease; successful file cleanup, a terminal run row, or an in-sandbox shutdown event is not sufficient. Legacy conversational runs receive their cancellation acknowledgement after all remote leases have confirmed termination. Stop alone never creates a continuation. A native user message queued during remote cleanup is reconsidered when the provider confirms termination; it still passes normal admission and adopts pending comment IDs in order. Once stopped, the next explicit wake uses the same queue. A compatible saved ACP session can resume, and an unavailable or incompatible session can start fresh with the full task context. Run credentials and scratch paths remain scoped to the new run. A subtree pause requires Resume; a message does not bypass it.
 
 Historical legacy interruption holds for conversational adapters no longer block new messages or Resume. Classification uses the run’s saved adapter invocation or continuation policy, never the agent’s current adapter settings. Missing historical adapter evidence retains the hold. A terminal row with a live predecessor process or unreleased environment lease still blocks actual admission and Resume. Retry scheduling can happen before cleanup, but grants no execution authority. Recovery folds their obsolete no-replay bookkeeping without changing task ownership, status, or automatically waking old work. The audit trail remains readable. Native integrity and ownership holds, and non-conversational adapter holds, remain enforced.
 
@@ -878,9 +878,13 @@ request, task history, completed work, and the interruption notice. It receives
 no instruction to repeat old tool calls. Later messages cannot reset the old
 incident's retry budget or create another automatic replacement for it.
 
-The initial native admission path verifies local process identities. Missing
-process identity or remote ownership without a target-aware stop proof remains a
-hold; a terminal database status or a PID check on the wrong host is insufficient.
+Native admission verifies local process identities for local runs. Remote runs
+instead require a provider termination receipt for every lease, with successful
+cleanup and no active ownership. This applies to both per-turn and warm native
+runners. A stop receipt retires only that run's settled cleanup owner, without changing its checkpoint or recorded action outcomes. Independent remote sandboxes have separate cleanup gates. A failed checkpoint does not prevent destruction of a terminal run's isolated sandbox; busy ownership still prevents it.
+Missing receipts and failed cleanup retain the hold. Older providers that return
+no receipt remain supported but cannot authorize remote continuation. A terminal
+database status or a PID check on the wrong host is insufficient.
 No historical task is automatically awakened by this change.
 
 ### Explicit Recovery Action

@@ -125,6 +125,28 @@ export function completeRetainedNativeSessionCleanup(
   return matches.length;
 }
 
+/** Control-plane-only cleanup boundary after the environment provider confirmed
+ * termination of every remote lease for this exact run. This retires process
+ * ownership, not checkpoints, action outcomes, or authorization to run again.
+ * An in-flight close must settle first: it must never reach a reused sandbox.
+ */
+export function completeTerminatedRemoteNativeSessionCleanup(binding: {
+  companyId: string;
+  runId: string;
+}): boolean {
+  const matches = [...quarantinedSessionCleanups].filter(({ session }) => {
+    const identity = session.identity();
+    return identity.companyId === binding.companyId && identity.runId === binding.runId;
+  });
+  if (matches.some(entry => entry.attempt || entry.recovery)) return false;
+  for (const entry of matches) {
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = null;
+    quarantinedSessionCleanups.delete(entry);
+  }
+  return true;
+}
+
 export interface NativeSessionGoalControl {
   requestId: string;
   action: "create" | "edit" | "replace" | "pause" | "resume" | "clear";
@@ -138,6 +160,9 @@ export interface ExecuteNativeSessionOptions {
   controlPlane: ControlPlanePort;
   runnerInstanceId: string;
   controlPlaneInstanceId: string;
+  /** Trusted provider resource identity: independent remote sandboxes must not
+   * inherit each other's process-cleanup gates. Omit for local backends. */
+  remoteCleanupScope?: string;
   timeoutMs?: number;
   /** Abort admission while waiting for prior cleanup in the same domain. */
   signal?: AbortSignal;
@@ -1739,6 +1764,7 @@ export async function executeNativeSession(
     input.binding.companyId,
     descriptor.kind,
     descriptor.name,
+    ...(options.remoteCleanupScope ? [options.remoteCleanupScope] : []),
   ]);
   await retryQuarantinedSessionCleanups(cleanupDomain, options.signal);
   if ("runtimeContext" in input) {

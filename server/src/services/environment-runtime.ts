@@ -1,3 +1,4 @@
+import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -3005,6 +3006,7 @@ function createSandboxEnvironmentDriver(
     const providerKey = readString(metadata.provider);
 
     let cleanupStatus: "success" | "failed" = "success";
+    let termination: ReturnType<typeof remoteTerminationReceipt>;
     if (
       pluginId &&
       providerKey &&
@@ -3017,7 +3019,7 @@ function createSandboxEnvironmentDriver(
           lease: input.lease,
           provider: providerKey,
         });
-        await runLeaseReleaseWithRunParent(input.lease.id, () =>
+        const receipt = await runLeaseReleaseWithRunParent(input.lease.id, () =>
           pluginWorkerManager.call(pluginId, "environmentReleaseLease", {
             driverKey: providerKey,
             companyId: input.lease.companyId,
@@ -3028,6 +3030,7 @@ function createSandboxEnvironmentDriver(
             leaseMetadata: metadata,
           }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig))),
         );
+        termination = remoteTerminationReceipt(input.lease, receipt);
       } catch {
         cleanupStatus = "failed";
       }
@@ -3056,6 +3059,7 @@ function createSandboxEnvironmentDriver(
     return await environmentsSvc.releaseLease(input.lease.id, releaseStatus, {
       failureReason,
       cleanupStatus,
+      ...(cleanupStatus === "success" && termination ? { remoteExecutionTermination: termination } : {}),
     });
   }
 
@@ -3065,6 +3069,7 @@ function createSandboxEnvironmentDriver(
     failureReason: string;
   }): Promise<EnvironmentLease | null> {
     let cleanupStatus: "success" | "failed" = "success";
+    let termination: ReturnType<typeof remoteTerminationReceipt>;
     const metadata = input.lease.metadata ?? {};
 
     try {
@@ -3084,7 +3089,7 @@ function createSandboxEnvironmentDriver(
             lease: input.lease,
             provider: providerKey,
           });
-          await runLeaseReleaseWithRunParent(input.lease.id, () =>
+          const receipt = await runLeaseReleaseWithRunParent(input.lease.id, () =>
             pluginWorkerManager.call(pluginId, "environmentDestroyLease", {
               driverKey: providerKey,
               companyId: input.lease.companyId,
@@ -3095,6 +3100,7 @@ function createSandboxEnvironmentDriver(
               leaseMetadata: metadata,
             }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig))),
           );
+          termination = remoteTerminationReceipt(input.lease, receipt);
         }
       } else {
         const metadataConfig = sandboxConfigFromLeaseMetadata(input.lease);
@@ -3124,6 +3130,7 @@ function createSandboxEnvironmentDriver(
       {
         failureReason: input.failureReason,
         cleanupStatus,
+        ...(cleanupStatus === "success" && termination ? { remoteExecutionTermination: termination } : {}),
       },
     );
   }
