@@ -444,7 +444,7 @@ export async function runChatFlow(input: {
           .getByText("Plan mode", { exact: true })
           .click();
         await turn(
-          `Let's plan a two-sentence garden club welcome note. Write a plan in the plan panel, with the required phrase ${draftMarker}, and present it for approval. When I approve the final revision, create a suitable repository-free project and an assigned task for yourself, copy the plan into that task, and have it save the note in its output document and finish. Do not create the project or task before approval.`,
+          `Let's plan a two-sentence garden club welcome note. The finished welcome note itself must contain the exact phrase ${draftMarker}. Write a plan in the plan panel that includes this requirement, and present it for approval. When I approve the final revision, create a suitable repository-free project and an assigned task for yourself, copy the plan into that task, and have it save the note in its output document and finish. Do not create the project or task before approval.`,
           1,
         );
         const draft = await api.get<Plan>(
@@ -490,7 +490,7 @@ export async function runChatFlow(input: {
           .locator('[contenteditable="true"],textarea')
           .first()
           .fill(
-            `Revise the plan: replace ${draftMarker} with ${marker}. The execution task should save the welcome note in its output document. Present this revised plan for approval; wait for that approval before handing it off as agreed.`,
+            `Revise the plan: the finished welcome note itself must contain the exact phrase ${marker} instead of ${draftMarker}. Include that requirement in the revised plan. The execution task should save that welcome note in its output document. Present this revised plan for approval; wait for that approval before handing it off as agreed.`,
           );
         await reviseButton.click();
         await idle(2);
@@ -610,16 +610,18 @@ export async function runChatFlow(input: {
               "https://github.com/octocat/Spoon-Knife",
             ].sort(),
           );
-          await expect(
-            page
-              .getByRole("article")
-              .getByRole("link", { name: "octocat/Hello-World" }),
-          ).toBeVisible();
-          await expect(
-            page
-              .getByRole("article")
-              .getByRole("link", { name: "octocat/Spoon-Knife" }),
-          ).toBeVisible();
+          const projectCard = page.getByRole("article", {
+            name: /Project created:/,
+          });
+          // Repository labels may be customized; verify the actual destinations.
+          for (const repositoryUrl of [
+            "https://github.com/octocat/Hello-World",
+            "https://github.com/octocat/Spoon-Knife",
+          ]) {
+            await expect(
+              projectCard.locator(`a[href="${repositoryUrl}"]`),
+            ).toBeVisible();
+          }
         } else
           expect(projects[0]!.workspaces.filter((w) => w.repoUrl)).toHaveLength(
             0,

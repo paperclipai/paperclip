@@ -707,7 +707,10 @@ function issueWriteAuthorizationReason(
 function readPlanConfirmationTargetForIssue(payload: unknown, issueId: string) {
   const target = readObject(readObject(payload).target);
   if (target.type !== "issue_document" || target.key !== "plan") return null;
-  if (readNonEmptyString(target.issueId) !== issueId) return null;
+  // The interaction contract makes issueId optional; null/omitted means the
+  // issue containing this interaction, just as target snapshot validation does.
+  const targetIssueId = target.issueId == null ? issueId : readNonEmptyString(target.issueId);
+  if (targetIssueId !== issueId) return null;
   return {
     issueId,
     documentId: readNonEmptyString(target.documentId),
