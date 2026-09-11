@@ -34,6 +34,8 @@ import {
 import { issueService } from "../services/issues.js";
 import { documentService } from "../services/documents.js";
 import { getTaskPlanContext } from "../services/task-plan-context.js";
+import { terminalizeLegacyExecution, LEGACY_RECOVERY_CAUSE } from "../services/legacy-execution-recovery.js";
+import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
@@ -775,6 +777,49 @@ const support = await getEmbeddedPostgresTestSupport();
           .toEqual([ordinary.id]);
       }
       expect((await issueService(db).getDependencyReadiness(chat.id)).blockerIssueIds).toEqual([blocker.id]);
+    });
+
+    it.each([
+      { name: "reset idle chat", generation: 1, sourceGeneration: 0, waiting: true, ordinary: false, superseded: true },
+      { name: "reset active chat", generation: 1, sourceGeneration: 0, waiting: false, ordinary: false, superseded: true },
+      { name: "newer reply in the same session", generation: 1, sourceGeneration: 1, waiting: true, ordinary: false, superseded: true },
+      { name: "current unanswered chat turn", generation: 1, sourceGeneration: 1, waiting: false, ordinary: false, superseded: false },
+      { name: "unprepared failure without a session generation", generation: 1, sourceGeneration: undefined, waiting: true, ordinary: false, superseded: false },
+      { name: "ordinary review task", generation: 0, sourceGeneration: 0, waiting: true, ordinary: true, superseded: false },
+    ])("guards delayed cancelled-run recovery for $name", async (scenario) => {
+      const task = scenario.ordinary
+        ? await issueService(db).create(companyId, { title: "Ordinary review", status: "in_review", assigneeAgentId: agentId })
+        : await create();
+      const status = scenario.waiting ? "in_review" : "in_progress";
+      await db.update(issues).set({
+        status,
+        ...(scenario.ordinary ? {} : {
+          conversationSessionGeneration: scenario.generation,
+          conversationState: scenario.waiting ? "waiting" : "active",
+        }),
+      }).where(eq(issues.id, task.id));
+      const run = await runFor(task.id, randomUUID(), {
+        conversationSessionGeneration: scenario.sourceGeneration,
+      });
+      await terminalizeLegacyExecution({ db, run, status: "cancelled", patch: { finishedAt: new Date() } });
+      let actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, task.id));
+      expect(actions).toHaveLength(scenario.superseded ? 0 : 1);
+      // Also exercise an action queued before /new or the newer reply settled.
+      if (!actions.length) {
+        actions = await db.insert(issueRecoveryActions).values({
+          companyId, sourceIssueId: task.id, kind: "active_run_watchdog",
+          ownerType: "board", returnOwnerAgentId: agentId,
+          cause: LEGACY_RECOVERY_CAUSE, fingerprint: `legacy-execution:${run.id}`,
+          evidence: { runId: run.id }, nextAction: "Reconcile stopped work",
+        }).returning();
+      }
+      await settleUnrecoverableExecutions(db);
+      const [after] = await db.select().from(issues).where(eq(issues.id, task.id));
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, actions[0]!.id));
+      expect(after.status).toBe(scenario.superseded ? status : "blocked");
+      expect(action).toMatchObject({ status: "resolved", outcome: scenario.superseded ? "cancelled" : "blocked" });
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("cancelled");
+      if (!scenario.ordinary) expect(after.conversationSessionGeneration).toBe(scenario.generation);
     });
 
     it("only parks answered turns and preserves idle across recovery classification", async () => {

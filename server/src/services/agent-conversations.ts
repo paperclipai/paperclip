@@ -38,6 +38,26 @@ export function isWaitingConversation(
     issue.status === "in_review"
   );
 }
+
+/** Recovery for an older turn must not replace a reset or an answered chat. */
+export function isSupersededConversationRun(
+  issue: ConversationIdentity & {
+    conversationSessionGeneration?: number;
+    executionRunId?: string | null;
+  },
+  run: { id: string; contextSnapshot: Record<string, unknown> | null },
+): boolean {
+  if (!isConversation(issue)) return false;
+  const generation = run.contextSnapshot?.conversationSessionGeneration;
+  return (
+    (typeof generation === "number" &&
+      typeof issue.conversationSessionGeneration === "number" &&
+      generation !== issue.conversationSessionGeneration) ||
+    (typeof generation === "number" &&
+      isWaitingConversation(issue) &&
+      issue.executionRunId !== run.id)
+  );
+}
 /** Execution tasks may link to a conversation, but never drive its turns.
  * Apply before enqueue, including while a reply is still running: waiting until
  * finalization is too late to prevent a deferred dependency follow-up.
