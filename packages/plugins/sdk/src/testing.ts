@@ -73,6 +73,12 @@ import type {
   PluginPerformActionActorContext,
   PluginPerformActionContext,
 } from "./protocol.js";
+import type { WorkerHostCallContext, WorkerToHostMethodName } from "./protocol.js";
+import {
+  requestedCompanyScope,
+  requireInvocationCompanyScope,
+  resolveRequiredCompanyId,
+} from "./host-client-factory.js";
 
 export interface TestHarnessOptions {
   /** Plugin manifest used to seed capability checks and metadata. */
@@ -81,6 +87,18 @@ export interface TestHarnessOptions {
   capabilities?: PluginCapability[];
   /** Initial config returned by `ctx.config.get(companyId)`. */
   config?: Record<string, unknown>;
+  /**
+   * Companies this plugin may act on from proactive (no-invocation) `ctx` calls
+   * — in production, exactly the companies the plugin is configured for.
+   *
+   * The host seeds the same set on the worker handle (`proactiveCompanyScopes`
+   * in `plugin-worker-manager.ts`) and refreshes it from `registry.listConfigs`
+   * on every config change, so a proactive loop can reach a configured company
+   * without a host-issued invocation. Leave it empty and every company-scoped
+   * `ctx` call outside an invocation is refused, which is what the host does for
+   * an unconfigured company.
+   */
+  proactiveCompanyScopes?: string[];
 }
 
 export interface TestHarnessLogEntry {
@@ -125,7 +143,21 @@ export interface TestHarness {
   setConfig(config: Record<string, unknown>): void;
   /** Dispatch a host or plugin event to registered handlers. */
   emit(eventType: PluginEventType | `plugin.${string}`, payload: unknown, base?: Partial<PluginEvent>): Promise<void>;
-  /** Execute a previously-registered scheduled job handler. */
+  /**
+   * Execute a previously-registered scheduled job handler.
+   *
+   * A job run carries **no** company scope, so every company-scoped `ctx` call
+   * inside the handler is refused. That is not a harness limitation: both
+   * dispatch paths in `plugin-job-scheduler.ts` call `runJob` with `{ job }`
+   * and no company, `deriveInvocationScope` has no `runJob` branch, and the
+   * host therefore refuses those calls in production too.
+   *
+   * Passing a `companyId` here throws rather than minting a scope the scheduler
+   * cannot mint — a harness that authorized one would be exactly the kind of
+   * over-permissive fake this enforcement exists to remove. To test a handler
+   * for the day the host does dispatch jobs per company, wrap the body in
+   * `withCompanyScope`.
+   */
   runJob(jobKey: string, partial?: Partial<PluginJobContext>): Promise<void>;
   /** Invoke a `ctx.data.register(...)` handler by key. */
   getData<T = unknown>(key: string, params?: Record<string, unknown>): Promise<T>;
@@ -137,6 +169,24 @@ export interface TestHarness {
   ): Promise<T>;
   /** Execute a registered tool handler via `ctx.tools.execute(...)`. */
   executeTool<T = ToolResult>(name: string, params: unknown, runCtx?: Partial<ToolRunContext>): Promise<T>;
+  /**
+   * Run `fn` with `companyId` as the active invocation company scope, for tests
+   * that drive `ctx` directly instead of through `emit`/`runJob`/`getData`/
+   * `performAction`/`executeTool`.
+   *
+   * Two cases need it: arranging or asserting host state straight off `ctx`, and
+   * calling a plugin lifecycle hook the harness does not wrap (`onApiRequest`,
+   * `onWebhook`), where the host mints the scope from the bridge call's own
+   * `companyId` before dispatching.
+   *
+   * This is not a bypass: the scope behaves exactly like one the host minted, so
+   * a call inside it that asks for a *different* company is still refused. Use
+   * it to state which company the test is acting as. If a call only passes once
+   * it is wrapped, and the plugin has no way to be inside that company's
+   * invocation in production, that is a finding about the plugin, not a reason
+   * to widen the wrapper.
+   */
+  withCompanyScope<T>(companyId: string | null, fn: () => Promise<T>): Promise<T>;
   /** Read raw in-memory state for assertions. */
   getState(input: ScopeKey): unknown;
   /** Simulate a streaming event arriving for an active session. */
@@ -440,6 +490,14 @@ function normalizeScope(input: ScopeKey): Required<Pick<ScopeKey, "scopeKind" | 
   };
 }
 
+/**
+ * The scope fields `worker-rpc-host.ts` puts on the wire for a `state.*` or
+ * `entities.*` call, so the harness gates on the same params the host sees.
+ */
+function scopeParams(input: { scopeKind: string; scopeId?: string }): { scopeKind: string; scopeId?: string } {
+  return { scopeKind: input.scopeKind, scopeId: input.scopeId };
+}
+
 function stateMapKey(input: ScopeKey): string {
   const normalized = normalizeScope(input);
   return `${normalized.scopeKind}|${normalized.scopeId ?? ""}|${normalized.namespace}|${normalized.stateKey}`;
@@ -456,11 +514,6 @@ function allowsEvent(filter: EventFilter | undefined, event: PluginEvent): boole
 function requireCapability(manifest: PaperclipPluginManifestV1, allowed: Set<PluginCapability>, capability: PluginCapability) {
   if (allowed.has(capability)) return;
   throw new Error(`Plugin '${manifest.id}' is missing required capability '${capability}' in test harness`);
-}
-
-function requireCompanyId(companyId?: string): string {
-  if (!companyId) throw new Error("companyId is required for this operation");
-  return companyId;
 }
 
 function isInCompany<T extends { companyId: string | null | undefined }>(
@@ -480,6 +533,88 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const manifest = options.manifest;
   const capabilitySet = new Set(options.capabilities ?? manifest.capabilities);
   let currentConfig = { ...(options.config ?? {}) };
+
+  // ---------------------------------------------------------------------
+  // Invocation company scope
+  //
+  // The host only lets a plugin touch company data on behalf of a company it
+  // minted a scope for. A fake `ctx` that answers every company-scoped call
+  // unconditionally does not merely fail to test that gate, it deletes the
+  // gate from the model under test: the plugin goes green on its whole suite
+  // and is refused by the real host on its first company-scoped call.
+  //
+  // The two branches below mirror `plugin-worker-manager.ts`
+  // `contextForWorkerMessage` exactly:
+  //
+  //   1. Inside a host-issued invocation (an event, job, action or tool run)
+  //      the call must name that invocation's company, or no company at all.
+  //   2. Outside one, the call is proactive. The host admits it only when it
+  //      names a company the plugin is *configured* for
+  //      (`proactiveCompanyScopes`, refreshed from `registry.listConfigs`), so
+  //      the harness admits exactly that set and nothing else.
+  //
+  // Whether a call is company-scoped at all is not decided here — it is read
+  // off the JSON-RPC params by `requestedCompanyScope`, the same function the
+  // real gate uses, so the two cannot drift.
+  // ---------------------------------------------------------------------
+  const proactiveCompanyScopes = new Set(options.proactiveCompanyScopes ?? []);
+  let invocationCompanyId: string | null = null;
+
+  function hostCallContext(method: WorkerToHostMethodName, params: unknown): WorkerHostCallContext {
+    if (invocationCompanyId) return { invocationScope: { companyId: invocationCompanyId } };
+    const requested = requestedCompanyScope(method, params);
+    if (requested.kind === "single" && proactiveCompanyScopes.has(requested.companyId)) {
+      return { invocationScope: { companyId: requested.companyId } };
+    }
+    return {};
+  }
+
+  /**
+   * Gate a fake `ctx` call the way the host gates the RPC it maps to. Pass the
+   * worker→host method name and the params the production client would send
+   * for it (`worker-rpc-host.ts`), so the check sees what the host would see.
+   */
+  function requireCompanyScope(method: WorkerToHostMethodName, params: unknown): void {
+    requireInvocationCompanyScope(manifest.id, method, params, hostCallContext(method, params));
+  }
+
+  /**
+   * Gate a call that cannot run without a company at all (`config.get`,
+   * `secrets.resolve`), and return the company it resolves to — from the
+   * params when given, otherwise from the active invocation.
+   */
+  function requireResolvedCompanyId(method: WorkerToHostMethodName, params: unknown): string {
+    return resolveRequiredCompanyId(manifest.id, method, params, hostCallContext(method, params));
+  }
+
+  /**
+   * Gate a call that takes a required `companyId` argument, then return it.
+   * Replaces the harness's old presence-only check — the argument being present
+   * was never the question the host asks.
+   */
+  function requireCompanyId(method: WorkerToHostMethodName, companyId?: string): string {
+    requireCompanyScope(method, { companyId });
+    if (!companyId) throw new Error("companyId is required for this operation");
+    return companyId;
+  }
+
+  async function withInvocationScope<T>(
+    companyId: string | null | undefined,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const previous = invocationCompanyId;
+    // A null scope is a real state, not "inherit": an instance-scoped job runs
+    // with no company, and nested calls inside it must be refused rather than
+    // borrow an outer scope.
+    invocationCompanyId = typeof companyId === "string" && companyId.trim().length > 0
+      ? companyId.trim()
+      : null;
+    try {
+      return await fn();
+    } finally {
+      invocationCompanyId = previous;
+    }
+  }
 
   const logs: TestHarnessLogEntry[] = [];
   const activity: TestHarness["activity"] = [];
@@ -739,7 +874,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const ctx: PluginContext = {
     manifest,
     config: {
-      async get() {
+      async get(companyId?: string) {
+        // The fake used to ignore the argument entirely, so it answered a call
+        // the host refuses outright when no company resolves.
+        requireResolvedCompanyId("config.get", companyId ? { companyId } : {});
         return { ...currentConfig };
       },
     },
@@ -749,6 +887,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async configure(input) {
         requireCapability(manifest, capabilitySet, "local.folders");
+        requireCompanyScope("localFolders.configure", { companyId: input.companyId });
         const status = {
           folderKey: input.folderKey,
           configured: true,
@@ -770,10 +909,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async status(companyId, folderKey) {
         requireCapability(manifest, capabilitySet, "local.folders");
+        requireCompanyScope("localFolders.status", { companyId });
         return localFolderStatuses.get(localFolderKey(companyId, folderKey)) ?? notConfiguredLocalFolderStatus(folderKey);
       },
       async list(companyId, folderKey, options) {
         requireCapability(manifest, capabilitySet, "local.folders");
+        requireCompanyScope("localFolders.list", { companyId });
         const status = localFolderStatuses.get(localFolderKey(companyId, folderKey));
         if (!status?.configured) throw new Error("Local folder is not configured");
         const prefix = normalizeLocalFolderRelativePath(options?.relativePath ?? "");
@@ -818,6 +959,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async readText(companyId, folderKey, relativePath) {
         requireCapability(manifest, capabilitySet, "local.folders");
+        requireCompanyScope("localFolders.readText", { companyId });
         const normalizedPath = normalizeLocalFolderRelativePath(relativePath);
         const contents = localFolderFiles.get(localFolderFileKey(companyId, folderKey, normalizedPath));
         if (contents === undefined) throw new Error(`Local folder file not found: ${relativePath}`);
@@ -825,6 +967,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async writeTextAtomic(companyId, folderKey, relativePath, contents) {
         requireCapability(manifest, capabilitySet, "local.folders");
+        requireCompanyScope("localFolders.writeTextAtomic", { companyId });
         const status = localFolderStatuses.get(localFolderKey(companyId, folderKey)) ?? {
           folderKey,
           configured: true,
@@ -850,6 +993,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async deleteFile(companyId, folderKey, relativePath) {
         requireCapability(manifest, capabilitySet, "local.folders");
+        requireCompanyScope("localFolders.deleteFile", { companyId });
         const status = localFolderStatuses.get(localFolderKey(companyId, folderKey)) ?? notConfiguredLocalFolderStatus(folderKey);
         if (status.configured && (status.access !== "readWrite" || !status.writable)) {
           throw new Error("Local folder is not configured for writes");
@@ -876,6 +1020,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async emit(name, companyId, payload) {
         requireCapability(manifest, capabilitySet, "events.emit");
+        requireCompanyScope("events.emit", { companyId });
         await harness.emit(`plugin.${manifest.id}.${name}`, payload, { companyId });
       },
     },
@@ -910,33 +1055,46 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     secrets: {
-      async resolve(secretRef) {
+      async resolve(secretRef, options) {
         requireCapability(manifest, capabilitySet, "secrets.read-ref");
+        // The fake used to drop `options` entirely, so a cross-company secret
+        // read the host refuses resolved cleanly here.
+        requireResolvedCompanyId(
+          "secrets.resolve",
+          options?.companyId ? { companyId: options.companyId } : {},
+        );
         return `resolved:${secretRef}`;
       },
     },
     activity: {
       async log(entry) {
         requireCapability(manifest, capabilitySet, "activity.log.write");
+        requireCompanyScope("activity.log", { companyId: entry.companyId });
         activity.push(entry);
       },
     },
     state: {
       async get(input) {
         requireCapability(manifest, capabilitySet, "plugin.state.read");
+        // State carries its company as `scopeKind: "company"` + `scopeId`, not
+        // a `companyId` field; `requestedCompanyScope` reads both shapes.
+        requireCompanyScope("state.get", scopeParams(input));
         return state.has(stateMapKey(input)) ? state.get(stateMapKey(input)) : null;
       },
       async set(input, value) {
         requireCapability(manifest, capabilitySet, "plugin.state.write");
+        requireCompanyScope("state.set", scopeParams(input));
         state.set(stateMapKey(input), value);
       },
       async delete(input) {
         requireCapability(manifest, capabilitySet, "plugin.state.write");
+        requireCompanyScope("state.delete", scopeParams(input));
         state.delete(stateMapKey(input));
       },
     },
     entities: {
       async upsert(input: PluginEntityUpsert) {
+        requireCompanyScope("entities.upsert", scopeParams(input));
         const externalKey = input.externalId
           ? `${input.entityType}|${input.scopeKind}|${input.scopeId ?? ""}|${input.externalId}`
           : null;
@@ -978,6 +1136,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         return record;
       },
       async list(query) {
+        requireCompanyScope("entities.list", { scopeKind: query.scopeKind, scopeId: query.scopeId });
         let out = [...entities.values()];
         if (query.entityType) out = out.filter((r) => r.entityType === query.entityType);
         if (query.scopeKind) out = out.filter((r) => r.scopeKind === query.scopeKind);
@@ -991,7 +1150,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     projects: {
       async list(input) {
         requireCapability(manifest, capabilitySet, "projects.read");
-        const companyId = requireCompanyId(input?.companyId);
+        const companyId = requireCompanyId("projects.list", input?.companyId);
         let out = [...projects.values()];
         out = out.filter((project) => project.companyId === companyId);
         if (input?.offset) out = out.slice(input.offset);
@@ -1000,22 +1159,26 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async get(projectId, companyId) {
         requireCapability(manifest, capabilitySet, "projects.read");
+        requireCompanyScope("projects.get", { companyId });
         const project = projects.get(projectId);
         return isInCompany(project, companyId) ? project : null;
       },
       async listWorkspaces(projectId, companyId) {
         requireCapability(manifest, capabilitySet, "project.workspaces.read");
+        requireCompanyScope("projects.listWorkspaces", { companyId });
         if (!isInCompany(projects.get(projectId), companyId)) return [];
         return projectWorkspaces.get(projectId) ?? [];
       },
       async getPrimaryWorkspace(projectId, companyId) {
         requireCapability(manifest, capabilitySet, "project.workspaces.read");
+        requireCompanyScope("projects.getPrimaryWorkspace", { companyId });
         if (!isInCompany(projects.get(projectId), companyId)) return null;
         const workspaces = projectWorkspaces.get(projectId) ?? [];
         return workspaces.find((workspace) => workspace.isPrimary) ?? null;
       },
       async getWorkspaceForIssue(issueId, companyId) {
         requireCapability(manifest, capabilitySet, "project.workspaces.read");
+        requireCompanyScope("projects.getWorkspaceForIssue", { companyId });
         const issue = issues.get(issueId);
         if (!isInCompany(issue, companyId)) return null;
         const projectId = (issue as unknown as Record<string, unknown>)?.projectId as string | undefined;
@@ -1027,6 +1190,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       managed: {
         async get(projectKey, companyId) {
           requireCapability(manifest, capabilitySet, "projects.managed");
+          requireCompanyScope("projects.managed.get", { companyId });
           const declaration = manifest.projects?.find((project) => project.projectKey === projectKey);
           if (!declaration) {
             return {
@@ -1133,9 +1297,11 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           };
         },
         async reconcile(projectKey, companyId) {
+          requireCompanyScope("projects.managed.reconcile", { companyId });
           return this.get(projectKey, companyId);
         },
         async reset(projectKey, companyId) {
+          requireCompanyScope("projects.managed.reset", { companyId });
           const resolved = await this.get(projectKey, companyId);
           return { ...resolved, status: resolved.project ? "reset" : resolved.status };
         },
@@ -1144,6 +1310,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     executionWorkspaces: {
       async get(workspaceId, companyId) {
         requireCapability(manifest, capabilitySet, "execution.workspaces.read");
+        requireCompanyScope("executionWorkspaces.get", { companyId });
         const workspace = executionWorkspaces.get(workspaceId);
         return workspace?.companyId === companyId ? workspace : null;
       },
@@ -1152,6 +1319,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       managed: {
         async get(routineKey, companyId) {
           requireCapability(manifest, capabilitySet, "routines.managed");
+          requireCompanyScope("routines.managed.get", { companyId });
           const declaration = manifest.routines?.find((routine) => routine.routineKey === routineKey);
           if (!declaration) {
             return {
@@ -1197,6 +1365,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           } satisfies PluginManagedRoutineResolution;
         },
         async reconcile(routineKey, companyId, overrides) {
+          requireCompanyScope("routines.managed.reconcile", { companyId });
           const existing = await this.get(routineKey, companyId);
           if (existing.routine) return existing;
           const declaration = manifest.routines?.find((routine) => routine.routineKey === routineKey);
@@ -1299,10 +1468,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           } satisfies PluginManagedRoutineResolution;
         },
         async reset(routineKey, companyId, overrides) {
+          requireCompanyScope("routines.managed.reset", { companyId });
           const resolved = await this.reconcile(routineKey, companyId, overrides);
           return { ...resolved, status: resolved.routine ? "reset" : resolved.status } satisfies PluginManagedRoutineResolution;
         },
         async update(routineKey, companyId, patch) {
+          requireCompanyScope("routines.managed.update", { companyId });
           const resolved = await this.get(routineKey, companyId);
           if (!resolved.routine) throw new Error(`Managed routine not found: ${routineKey}`);
           const next = {
@@ -1314,6 +1485,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           return next;
         },
         async run(routineKey, companyId) {
+          requireCompanyScope("routines.managed.run", { companyId });
           const resolved = await this.get(routineKey, companyId);
           if (!resolved.routine) throw new Error(`Managed routine not found: ${routineKey}`);
           const now = new Date();
@@ -1350,6 +1522,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       managed: {
         async get(skillKey, companyId) {
           requireCapability(manifest, capabilitySet, "skills.managed");
+          requireCompanyScope("skills.managed.get", { companyId });
           const declaration = manifest.skills?.find((skill) => skill.skillKey === skillKey);
           if (!declaration) {
             return {
@@ -1395,6 +1568,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           } satisfies PluginManagedSkillResolution;
         },
         async reconcile(skillKey, companyId) {
+          requireCompanyScope("skills.managed.reconcile", { companyId });
           const existing = await this.get(skillKey, companyId);
           if (existing.skill) return existing;
           const declaration = manifest.skills?.find((skill) => skill.skillKey === skillKey);
@@ -1466,6 +1640,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async reset(skillKey, companyId) {
           requireCapability(manifest, capabilitySet, "skills.managed");
+          requireCompanyScope("skills.managed.reset", { companyId });
           const existing = await this.get(skillKey, companyId);
           const declaration = manifest.skills?.find((skill) => skill.skillKey === skillKey);
           if (!declaration) return existing;
@@ -1552,13 +1727,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async get(companyId) {
         requireCapability(manifest, capabilitySet, "companies.read");
+        requireCompanyScope("companies.get", { companyId });
         return companies.get(companyId) ?? null;
       },
     },
     issues: {
       async list(input) {
         requireCapability(manifest, capabilitySet, "issues.read");
-        const companyId = requireCompanyId(input?.companyId);
+        const companyId = requireCompanyId("issues.list", input?.companyId);
         let out = [...issues.values()];
         out = out.filter((issue) => issue.companyId === companyId);
         if (input?.projectId) out = out.filter((issue) => issue.projectId === input.projectId);
@@ -1581,11 +1757,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async get(issueId, companyId) {
         requireCapability(manifest, capabilitySet, "issues.read");
+        requireCompanyScope("issues.get", { companyId });
         const issue = issues.get(issueId);
         return isInCompany(issue, companyId) ? issue : null;
       },
       async create(input) {
         requireCapability(manifest, capabilitySet, "issues.create");
+        requireCompanyScope("issues.create", { companyId: input.companyId });
         const now = new Date();
         const originKind = normalizePluginOriginKind(
           input.surfaceVisibility === "plugin_operation" && !input.originKind
@@ -1638,6 +1816,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async update(issueId, patch, companyId) {
         requireCapability(manifest, capabilitySet, "issues.update");
+        requireCompanyScope("issues.update", { companyId });
         const record = issues.get(issueId);
         if (!isInCompany(record, companyId)) throw new Error(`Issue not found: ${issueId}`);
         const { blockedByIssueIds: nextBlockedByIssueIds, ...issuePatch } = patch;
@@ -1657,6 +1836,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async assertCheckoutOwner(input) {
         requireCapability(manifest, capabilitySet, "issues.checkout");
+        requireCompanyScope("issues.assertCheckoutOwner", { companyId: input.companyId });
         const record = issues.get(input.issueId);
         if (!isInCompany(record, input.companyId)) throw new Error(`Issue not found: ${input.issueId}`);
         if (
@@ -1676,6 +1856,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async requestWakeup(issueId, companyId) {
         requireCapability(manifest, capabilitySet, "issues.wakeup");
+        requireCompanyScope("issues.requestWakeup", { companyId });
         const record = issues.get(issueId);
         if (!isInCompany(record, companyId)) throw new Error(`Issue not found: ${issueId}`);
         if (!record.assigneeAgentId) throw new Error("Issue has no assigned agent to wake");
@@ -1688,6 +1869,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async requestWakeups(issueIds, companyId) {
         requireCapability(manifest, capabilitySet, "issues.wakeup");
+        requireCompanyScope("issues.requestWakeups", { companyId });
         const results = [];
         for (const issueId of issueIds) {
           const record = issues.get(issueId);
@@ -1704,6 +1886,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async listComments(issueId, companyId) {
         requireCapability(manifest, capabilitySet, "issue.comments.read");
+        requireCompanyScope("issues.listComments", { companyId });
         if (!isInCompany(issues.get(issueId), companyId)) return [];
         return (issueComments.get(issueId) ?? []).map((comment) =>
           comment.deletedAt ? { ...comment, body: "", presentation: null, metadata: null } : comment
@@ -1711,6 +1894,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async createComment(issueId, body, companyId, options) {
         requireCapability(manifest, capabilitySet, "issue.comments.create");
+        requireCompanyScope("issues.createComment", { companyId });
         if (options?.actorUserId) {
           requireCapability(manifest, capabilitySet, "issue.comments.create_human_attributed");
         }
@@ -1743,6 +1927,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async createInteraction(issueId, interaction, companyId, options) {
         requireCapability(manifest, capabilitySet, "issue.interactions.create");
+        requireCompanyScope("issues.createInteraction", { companyId });
         const parentIssue = issues.get(issueId);
         if (!isInCompany(parentIssue, companyId)) {
           throw new Error(`Issue not found: ${issueId}`);
@@ -1790,11 +1975,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async listInteractions(issueId, companyId) {
         requireCapability(manifest, capabilitySet, "issue.interactions.read");
+        requireCompanyScope("issues.listInteractions", { companyId });
         if (!isInCompany(issues.get(issueId), companyId)) return [];
         return issueInteractions.get(issueId) ?? [];
       },
       async respondInteraction(issueId, interactionId, input, companyId) {
         requireCapability(manifest, capabilitySet, "issue.interactions.respond");
+        requireCompanyScope("issues.respondInteraction", { companyId });
         const parentIssue = issues.get(issueId);
         if (!isInCompany(parentIssue, companyId)) {
           throw new Error(`Issue not found: ${issueId}`);
@@ -1825,11 +2012,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async listAttachments(issueId, companyId) {
         requireCapability(manifest, capabilitySet, "issue.attachments.read");
+        requireCompanyScope("issues.listAttachments", { companyId });
         if (!isInCompany(issues.get(issueId), companyId)) return [];
         return issueAttachments.get(issueId) ?? [];
       },
       async getAttachmentContent(attachmentId, companyId, options) {
         requireCapability(manifest, capabilitySet, "issue.attachments.read");
+        requireCompanyScope("issues.getAttachmentContent", { companyId });
         const attachment = [...issueAttachments.values()]
           .flat()
           .find((entry) => entry.id === attachmentId);
@@ -1851,6 +2040,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       documents: {
         async list(issueId, companyId) {
           requireCapability(manifest, capabilitySet, "issue.documents.read");
+          requireCompanyScope("issues.documents.list", { companyId });
           if (!isInCompany(issues.get(issueId), companyId)) return [];
           return [...issueDocuments.values()]
             .filter((document) => document.issueId === issueId && document.companyId === companyId)
@@ -1858,11 +2048,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async get(issueId, key, companyId) {
           requireCapability(manifest, capabilitySet, "issue.documents.read");
+          requireCompanyScope("issues.documents.get", { companyId });
           if (!isInCompany(issues.get(issueId), companyId)) return null;
           return issueDocuments.get(`${issueId}|${key}`) ?? null;
         },
         async upsert(input) {
           requireCapability(manifest, capabilitySet, "issue.documents.write");
+          requireCompanyScope("issues.documents.upsert", { companyId: input.companyId });
           const parentIssue = issues.get(input.issueId);
           if (!isInCompany(parentIssue, input.companyId)) {
             throw new Error(`Issue not found: ${input.issueId}`);
@@ -1894,6 +2086,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async delete(issueId, _key, companyId) {
           requireCapability(manifest, capabilitySet, "issue.documents.write");
+          requireCompanyScope("issues.documents.delete", { companyId });
           const parentIssue = issues.get(issueId);
           if (!isInCompany(parentIssue, companyId)) {
             throw new Error(`Issue not found: ${issueId}`);
@@ -1904,17 +2097,20 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       relations: {
         async get(issueId, companyId) {
           requireCapability(manifest, capabilitySet, "issue.relations.read");
+          requireCompanyScope("issues.relations.get", { companyId });
           if (!isInCompany(issues.get(issueId), companyId)) throw new Error(`Issue not found: ${issueId}`);
           return issueRelationSummary(issueId);
         },
         async setBlockedBy(issueId, nextBlockedByIssueIds, companyId) {
           requireCapability(manifest, capabilitySet, "issue.relations.write");
+          requireCompanyScope("issues.relations.setBlockedBy", { companyId });
           if (!isInCompany(issues.get(issueId), companyId)) throw new Error(`Issue not found: ${issueId}`);
           blockedByIssueIds.set(issueId, [...new Set(nextBlockedByIssueIds)]);
           return issueRelationSummary(issueId);
         },
         async addBlockers(issueId, blockerIssueIds, companyId) {
           requireCapability(manifest, capabilitySet, "issue.relations.write");
+          requireCompanyScope("issues.relations.addBlockers", { companyId });
           if (!isInCompany(issues.get(issueId), companyId)) throw new Error(`Issue not found: ${issueId}`);
           const next = new Set(blockedByIssueIds.get(issueId) ?? []);
           for (const blockerIssueId of blockerIssueIds) next.add(blockerIssueId);
@@ -1923,6 +2119,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async removeBlockers(issueId, blockerIssueIds, companyId) {
           requireCapability(manifest, capabilitySet, "issue.relations.write");
+          requireCompanyScope("issues.relations.removeBlockers", { companyId });
           if (!isInCompany(issues.get(issueId), companyId)) throw new Error(`Issue not found: ${issueId}`);
           const removals = new Set(blockerIssueIds);
           blockedByIssueIds.set(
@@ -1934,6 +2131,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async getSubtree(issueId, companyId, options) {
         requireCapability(manifest, capabilitySet, "issue.subtree.read");
+        requireCompanyScope("issues.getSubtree", { companyId });
         const root = issues.get(issueId);
         if (!isInCompany(root, companyId)) throw new Error(`Issue not found: ${issueId}`);
         const includeRoot = options?.includeRoot !== false;
@@ -1965,6 +2163,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       summaries: {
         async getOrchestration(input) {
           requireCapability(manifest, capabilitySet, "issues.orchestration.read");
+          requireCompanyScope("issues.summaries.getOrchestration", { companyId: input.companyId });
           const root = issues.get(input.issueId);
           if (!isInCompany(root, input.companyId)) throw new Error(`Issue not found: ${input.issueId}`);
           const subtreeIssueIds = [root.id];
@@ -2002,6 +2201,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     approvals: {
       async list(input) {
         requireCapability(manifest, capabilitySet, "approvals.read");
+        requireCompanyScope("approvals.list", { companyId: input.companyId });
         return [...approvals.values()].filter(
           (approval) =>
             approval.companyId === input.companyId
@@ -2010,12 +2210,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async get(approvalId, companyId) {
         requireCapability(manifest, capabilitySet, "approvals.read");
+        requireCompanyScope("approvals.get", { companyId });
         const approval = approvals.get(approvalId);
         if (!approval || approval.companyId !== companyId) return null;
         return approval;
       },
       async decide(approvalId, input, companyId) {
         requireCapability(manifest, capabilitySet, "approvals.respond");
+        requireCompanyScope("approvals.decide", { companyId });
         const approval = approvals.get(approvalId);
         if (!approval || approval.companyId !== companyId) {
           throw new Error(`Approval not found: ${approvalId}`);
@@ -2043,7 +2245,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     agents: {
       async list(input) {
         requireCapability(manifest, capabilitySet, "agents.read");
-        const companyId = requireCompanyId(input?.companyId);
+        const companyId = requireCompanyId("agents.list", input?.companyId);
         let out = [...agents.values()];
         out = out.filter((agent) => agent.companyId === companyId);
         if (input?.status) out = out.filter((agent) => agent.status === input.status);
@@ -2053,12 +2255,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async get(agentId, companyId) {
         requireCapability(manifest, capabilitySet, "agents.read");
+        requireCompanyScope("agents.get", { companyId });
         const agent = agents.get(agentId);
         return isInCompany(agent, companyId) ? agent : null;
       },
       async pause(agentId, companyId) {
         requireCapability(manifest, capabilitySet, "agents.pause");
-        const cid = requireCompanyId(companyId);
+        const cid = requireCompanyId("agents.pause", companyId);
         const agent = agents.get(agentId);
         if (!isInCompany(agent, cid)) throw new Error(`Agent not found: ${agentId}`);
         if (agent!.status === "terminated") throw new Error("Cannot pause terminated agent");
@@ -2068,7 +2271,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async resume(agentId, companyId) {
         requireCapability(manifest, capabilitySet, "agents.resume");
-        const cid = requireCompanyId(companyId);
+        const cid = requireCompanyId("agents.resume", companyId);
         const agent = agents.get(agentId);
         if (!isInCompany(agent, cid)) throw new Error(`Agent not found: ${agentId}`);
         if (agent!.status === "terminated") throw new Error("Cannot resume terminated agent");
@@ -2079,7 +2282,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async invoke(agentId, companyId, opts) {
         requireCapability(manifest, capabilitySet, "agents.invoke");
-        const cid = requireCompanyId(companyId);
+        const cid = requireCompanyId("agents.invoke", companyId);
         const agent = agents.get(agentId);
         if (!isInCompany(agent, cid)) throw new Error(`Agent not found: ${agentId}`);
         if (
@@ -2094,7 +2297,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       managed: {
         async get(agentKey, companyId) {
           requireCapability(manifest, capabilitySet, "agents.managed");
-          const cid = requireCompanyId(companyId);
+          const cid = requireCompanyId("agents.managed.get", companyId);
           managedAgentDeclaration(agentKey);
           const agent = [...agents.values()].find((candidate) =>
             candidate.companyId === cid &&
@@ -2105,7 +2308,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async reconcile(agentKey, companyId) {
           requireCapability(manifest, capabilitySet, "agents.managed");
-          const cid = requireCompanyId(companyId);
+          const cid = requireCompanyId("agents.managed.reconcile", companyId);
           const declaration = managedAgentDeclaration(agentKey);
           const existingAgent = [...agents.values()].find((candidate) =>
             candidate.companyId === cid &&
@@ -2147,7 +2350,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async reset(agentKey, companyId) {
           requireCapability(manifest, capabilitySet, "agents.managed");
-          const cid = requireCompanyId(companyId);
+          const cid = requireCompanyId("agents.managed.reset", companyId);
           const declaration = managedAgentDeclaration(agentKey);
           let agent = [...agents.values()].find((candidate) =>
             candidate.companyId === cid &&
@@ -2212,7 +2415,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       sessions: {
         async create(agentId, companyId, opts) {
           requireCapability(manifest, capabilitySet, "agent.sessions.create");
-          const cid = requireCompanyId(companyId);
+          const cid = requireCompanyId("agents.sessions.create", companyId);
           const agent = agents.get(agentId);
           if (!isInCompany(agent, cid)) throw new Error(`Agent not found: ${agentId}`);
           const session: AgentSession = {
@@ -2227,13 +2430,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async list(agentId, companyId) {
           requireCapability(manifest, capabilitySet, "agent.sessions.list");
-          const cid = requireCompanyId(companyId);
+          const cid = requireCompanyId("agents.sessions.list", companyId);
           return [...sessions.values()].filter(
             (s) => s.agentId === agentId && s.companyId === cid && s.status === "active",
           );
         },
         async sendMessage(sessionId, companyId, opts) {
           requireCapability(manifest, capabilitySet, "agent.sessions.send");
+          requireCompanyScope("agents.sessions.sendMessage", { companyId });
           const session = sessions.get(sessionId);
           if (!session || session.status !== "active") throw new Error(`Session not found or closed: ${sessionId}`);
           if (session.companyId !== companyId) throw new Error(`Session not found: ${sessionId}`);
@@ -2244,6 +2448,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async close(sessionId, companyId) {
           requireCapability(manifest, capabilitySet, "agent.sessions.close");
+          requireCompanyScope("agents.sessions.close", { companyId });
           const session = sessions.get(sessionId);
           if (!session) throw new Error(`Session not found: ${sessionId}`);
           if (session.companyId !== companyId) throw new Error(`Session not found: ${sessionId}`);
@@ -2255,7 +2460,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     goals: {
       async list(input) {
         requireCapability(manifest, capabilitySet, "goals.read");
-        const companyId = requireCompanyId(input?.companyId);
+        const companyId = requireCompanyId("goals.list", input?.companyId);
         let out = [...goals.values()];
         out = out.filter((goal) => goal.companyId === companyId);
         if (input?.level) out = out.filter((goal) => goal.level === input.level);
@@ -2266,11 +2471,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async get(goalId, companyId) {
         requireCapability(manifest, capabilitySet, "goals.read");
+        requireCompanyScope("goals.get", { companyId });
         const goal = goals.get(goalId);
         return isInCompany(goal, companyId) ? goal : null;
       },
       async create(input) {
         requireCapability(manifest, capabilitySet, "goals.create");
+        requireCompanyScope("goals.create", { companyId: input.companyId });
         const now = new Date();
         const record: Goal = {
           id: randomUUID(),
@@ -2289,6 +2496,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async update(goalId, patch, companyId) {
         requireCapability(manifest, capabilitySet, "goals.update");
+        requireCompanyScope("goals.update", { companyId });
         const record = goals.get(goalId);
         if (!isInCompany(record, companyId)) throw new Error(`Goal not found: ${goalId}`);
         const updated: Goal = {
@@ -2304,7 +2512,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       members: {
         async list(input) {
           requireCapability(manifest, capabilitySet, "access.members.read");
-          const cid = requireCompanyId(input.companyId);
+          const cid = requireCompanyId("access.members.list", input.companyId);
           const includeArchived = input.includeArchived === true;
           return [...accessMembers.values()]
             .filter((member) => member.companyId === cid)
@@ -2316,7 +2524,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async get(memberId, companyId) {
           requireCapability(manifest, capabilitySet, "access.members.read");
-          const cid = requireCompanyId(companyId);
+          const cid = requireCompanyId("access.members.get", companyId);
           const member = accessMembers.get(memberId);
           if (!member || member.companyId !== cid) return null;
           return {
@@ -2326,7 +2534,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async update(memberId, patch, companyId) {
           requireCapability(manifest, capabilitySet, "access.members.write");
-          const cid = requireCompanyId(companyId);
+          const cid = requireCompanyId("access.members.update", companyId);
           const member = accessMembers.get(memberId);
           if (!member || member.companyId !== cid) {
             throw new Error(`Membership not found: ${memberId}`);
@@ -2347,17 +2555,17 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       invites: {
         async list(input) {
           requireCapability(manifest, capabilitySet, "access.invites.read");
-          requireCompanyId(input.companyId);
+          requireCompanyId("access.invites.list", input.companyId);
           return { invites: [], nextOffset: null };
         },
         async create(input) {
           requireCapability(manifest, capabilitySet, "access.invites.write");
-          requireCompanyId(input.companyId);
+          requireCompanyId("access.invites.create", input.companyId);
           throw new Error("Invite creation is not implemented in the plugin test harness");
         },
         async revoke(inviteId, companyId) {
           requireCapability(manifest, capabilitySet, "access.invites.write");
-          requireCompanyId(companyId);
+          requireCompanyId("access.invites.revoke", companyId);
           throw new Error(`Invite not found: ${inviteId}`);
         },
       },
@@ -2366,7 +2574,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       grants: {
         async list(input) {
           requireCapability(manifest, capabilitySet, "authorization.grants.read");
-          const cid = requireCompanyId(input.companyId);
+          const cid = requireCompanyId("authorization.grants.list", input.companyId);
           if (input.principalType && input.principalId) {
             return getPrincipalGrants(cid, input.principalType, input.principalId);
           }
@@ -2383,14 +2591,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async set(input) {
           requireCapability(manifest, capabilitySet, "authorization.grants.write");
-          const cid = requireCompanyId(input.companyId);
+          const cid = requireCompanyId("authorization.grants.set", input.companyId);
           return setPrincipalGrants(cid, input.principalType, input.principalId, input.grants);
         },
       },
       policies: {
         async summary(companyId) {
           requireCapability(manifest, capabilitySet, "authorization.policies.read");
-          const cid = requireCompanyId(companyId);
+          const cid = requireCompanyId("authorization.policies.summary", companyId);
           const members = [...accessMembers.values()].filter((member) => member.companyId === cid);
           let grantCount = 0;
           for (const [key, grants] of principalGrants.entries()) {
@@ -2407,12 +2615,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async get(input) {
           requireCapability(manifest, capabilitySet, "authorization.policies.read");
-          requireCompanyId(input.companyId);
+          requireCompanyId("authorization.policies.get", input.companyId);
           return null;
         },
         async update(input) {
           requireCapability(manifest, capabilitySet, "authorization.policies.write");
-          const cid = requireCompanyId(input.companyId);
+          const cid = requireCompanyId("authorization.policies.update", input.companyId);
           return {
             companyId: cid,
             resourceType: input.resourceType,
@@ -2423,7 +2631,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async previewAssignment(input) {
           requireCapability(manifest, capabilitySet, "authorization.policies.read");
-          requireCompanyId(input.companyId);
+          requireCompanyId("authorization.policies.previewAssignment", input.companyId);
           return {
             allowed: true,
             action: "issue.assign",
@@ -2433,7 +2641,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         },
         async explainAssignment(input) {
           requireCapability(manifest, capabilitySet, "authorization.policies.read");
-          requireCompanyId(input.companyId);
+          requireCompanyId("authorization.policies.explainAssignment", input.companyId);
           return {
             allowed: true,
             action: "issue.assign",
@@ -2445,7 +2653,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       audit: {
         async search(input) {
           requireCapability(manifest, capabilitySet, "authorization.audit.read");
-          requireCompanyId(input.companyId);
+          requireCompanyId("authorization.audit.search", input.companyId);
           return [];
         },
       },
@@ -2590,30 +2798,53 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         payload,
       };
 
-      for (const handler of events) {
-        const exactMatch = handler.name === event.eventType;
-        const wildcardPluginAll = handler.name === "plugin.*" && String(event.eventType).startsWith("plugin.");
-        const wildcardPluginOne = String(handler.name).endsWith(".*")
-          && String(event.eventType).startsWith(String(handler.name).slice(0, -1));
-        if (!exactMatch && !wildcardPluginAll && !wildcardPluginOne) continue;
-        if (!allowsEvent(handler.filter, event)) continue;
-        await handler.fn(event);
-      }
+      // The host derives an event delivery's invocation scope from
+      // `params.event.companyId` (`deriveInvocationScope`), so the harness does
+      // the same: everything the handler does runs as that company.
+      await withInvocationScope(event.companyId, async () => {
+        for (const handler of events) {
+          const exactMatch = handler.name === event.eventType;
+          const wildcardPluginAll = handler.name === "plugin.*" && String(event.eventType).startsWith("plugin.");
+          const wildcardPluginOne = String(handler.name).endsWith(".*")
+            && String(event.eventType).startsWith(String(handler.name).slice(0, -1));
+          if (!exactMatch && !wildcardPluginAll && !wildcardPluginOne) continue;
+          if (!allowsEvent(handler.filter, event)) continue;
+          await handler.fn(event);
+        }
+      });
     },
     async runJob(jobKey, partial = {}) {
       const handler = jobs.get(jobKey);
       if (!handler) throw new Error(`No job handler registered for '${jobKey}'`);
-      await handler({
-        jobKey,
-        runId: partial.runId ?? randomUUID(),
-        trigger: partial.trigger ?? "manual",
-        scheduledAt: partial.scheduledAt ?? new Date().toISOString(),
+      // A job run gets no company scope, because the scheduler dispatches
+      // `runJob` with `{ job }` and no company (`plugin-job-scheduler.ts`), and
+      // `deriveInvocationScope` has no `runJob` branch. Refuse to fake one:
+      // authorizing a scope the host cannot mint is the over-permissive fake
+      // this enforcement exists to remove.
+      if (stringOrNull((partial as { companyId?: unknown }).companyId)) {
+        throw new Error(
+          "runJob() cannot take a companyId: the host dispatches scheduled jobs with no company scope, "
+          + "so a company-scoped ctx call inside a job handler is refused in production. "
+          + "Wrap the handler body in harness.withCompanyScope(companyId, ...) to test the scoped path.",
+        );
+      }
+      await withInvocationScope(null, async () => {
+        await handler({
+          jobKey,
+          runId: partial.runId ?? randomUUID(),
+          trigger: partial.trigger ?? "manual",
+          scheduledAt: partial.scheduledAt ?? new Date().toISOString(),
+        });
       });
     },
     async getData<T = unknown>(key: string, params: Record<string, unknown> = {}) {
       const handler = dataHandlers.get(key);
       if (!handler) throw new Error(`No data handler registered for '${key}'`);
-      return await handler(params) as T;
+      // A bridge read is company-scoped through `GetDataParams.companyId`, which
+      // the host authorizes and `handleGetData` merges over the UI's params — so
+      // by the time a data handler sees `params.companyId`, it is the host's.
+      return await withInvocationScope(stringOrNull(params.companyId), async () =>
+        await handler(params) as T);
     },
     async performAction<T = unknown>(
       key: string,
@@ -2623,7 +2854,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       const handler = actionHandlers.get(key);
       if (!handler) throw new Error(`No action handler registered for '${key}'`);
       const context = actionContextFor(params, options);
-      return await handler(paramsWithHostCompanyScope(params, context, options), context) as T;
+      // `deriveInvocationScope` reads a performAction's company off
+      // `params.actorContext.companyId`, which is what `actionContextFor` models.
+      return await withInvocationScope(context.companyId, async () =>
+        await handler(paramsWithHostCompanyScope(params, context, options), context) as T);
     },
     async executeTool<T = ToolResult>(name: string, params: unknown, runCtx: Partial<ToolRunContext> = {}) {
       const handler = toolHandlers.get(name);
@@ -2634,7 +2868,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         companyId: runCtx.companyId ?? "company-test",
         projectId: runCtx.projectId ?? "project-test",
       };
-      return await handler(params, ctxToPass) as T;
+      // `deriveInvocationScope` reads a tool run's company off
+      // `params.runContext.companyId`.
+      return await withInvocationScope(ctxToPass.companyId, async () =>
+        await handler(params, ctxToPass) as T);
+    },
+    async withCompanyScope<T>(companyId: string | null, fn: () => Promise<T>): Promise<T> {
+      return await withInvocationScope(companyId, fn);
     },
     getState(input) {
       return state.get(stateMapKey(input));
