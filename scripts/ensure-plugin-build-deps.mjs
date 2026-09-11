@@ -21,6 +21,7 @@ const buildTargets = [
     completion: path.join(rootDir, "packages/shared/dist/.paperclip-build-complete"),
     sourceDir: path.join(rootDir, "packages/shared/src"),
     tsconfig: path.join(rootDir, "packages/shared/tsconfig.json"),
+    dependencies: [],
   },
   {
     name: "@paperclipai/plugin-sdk",
@@ -28,6 +29,7 @@ const buildTargets = [
     completion: path.join(rootDir, "packages/plugins/sdk/dist/.paperclip-build-complete"),
     sourceDir: path.join(rootDir, "packages/plugins/sdk/src"),
     tsconfig: path.join(rootDir, "packages/plugins/sdk/tsconfig.json"),
+    dependencies: [0],
   },
 ];
 
@@ -57,9 +59,16 @@ function directoryFingerprint(directory, exclude) {
 function sourceFingerprint(target) {
   const hash = createHash("sha256");
   hash.update(directoryFingerprint(target.sourceDir));
-  for (const config of [target.tsconfig, path.join(rootDir, "tsconfig.base.json")]) {
+  for (const config of [
+    target.tsconfig,
+    path.join(path.dirname(target.tsconfig), "package.json"),
+    path.join(rootDir, "tsconfig.json"),
+    path.join(rootDir, "tsconfig.base.json"),
+    path.join(rootDir, "node_modules/typescript/package.json"),
+  ]) {
     if (fs.existsSync(config)) hash.update(fs.readFileSync(config));
   }
+  for (const dependency of target.dependencies) hash.update(sourceFingerprint(buildTargets[dependency]));
   return hash.digest("hex");
 }
 

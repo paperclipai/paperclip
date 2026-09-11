@@ -222,3 +222,17 @@ test("reuses identical direct output regardless of its timestamps", async (t) =>
   assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8"), builds);
   assert.doesNotMatch(retry.output, /Building/);
 });
+
+test("shared source changes invalidate both shared and dependent SDK output", async (t) => {
+  const f = fixture(t);
+  assert.equal((await f.launch().done).code, 0);
+  const source = path.join(f.root, "packages/shared/src/index.ts");
+  const oldTime = fs.statSync(source).mtime;
+  fs.appendFileSync(source, "export const changed = true;\n");
+  fs.utimesSync(source, oldTime, oldTime);
+  const retry = await f.launch().done;
+  assert.equal(retry.code, 0, retry.output);
+  assert.match(retry.output, /Building @paperclipai\/shared/);
+  assert.match(retry.output, /Building @paperclipai\/plugin-sdk/);
+  assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8").trim().split("\n").length, 4);
+});
