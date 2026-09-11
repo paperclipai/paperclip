@@ -295,13 +295,17 @@ const support = await getEmbeddedPostgresTestSupport();
   it.each([
     { runtime: "native", retry: false }, { runtime: "native", retry: true },
     { runtime: "legacy", retry: false }, { runtime: "legacy", retry: true },
+    { runtime: "legacy_startup", retry: false }, { runtime: "legacy_startup", retry: true },
   ])("resumes a user message after confirmed cleanup: %j", async ({ runtime, retry }) => {
     const f = await seed();
-    if (runtime === "legacy") {
+    if (runtime.startsWith("legacy")) {
       await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));
       await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "cancelled", processPid: null,
         resultJson: { executionCancellation: { state: "requested" } } }).where(eq(heartbeatRuns.id, f.sourceRunId));
-      await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId,
+      if (runtime === "legacy_startup") {
+        await db.update(heartbeatRuns).set({ status: "failed", resultJson: null, errorCode: "process_lost" })
+          .where(eq(heartbeatRuns.id, f.sourceRunId));
+      } else await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: f.sourceRunId,
         agentId: f.agentId, seq: 1, eventType: "adapter.invoke", payload: { adapterType: "claude_local" } });
       await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
         .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
@@ -338,7 +342,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await heartbeat.resumeRemoteStopComments(source);
     const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
     expect(runs).toHaveLength(1);
-    if (runtime === "native") expect(runs[0].contextSnapshot).toMatchObject({ forceFreshSession: true, previousRunId: f.sourceRunId,
+    if (runtime !== "legacy") expect(runs[0].contextSnapshot).toMatchObject({ forceFreshSession: true, previousRunId: f.sourceRunId,
       explicitUserContinuation: { commentId: f.commentId } });
     else expect(runs[0].contextSnapshot).toMatchObject({ wakeCommentId: f.commentId });
     expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();

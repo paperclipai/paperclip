@@ -154,6 +154,11 @@ New comments received during an execution hold retain their individual deferred 
 
 The conversation groups repeated empty pre-start reconciliation cancellations into a neutral waiting notice. Started runs, actual startup failures, and run history remain inspectable. No historical run records are deleted.
 
+The legacy remote ACP process-session relay runs on the control-plane host. Its
+launch command uses the host's absolute Node executable even when the adapter's
+launch environment is sanitized for a remote sandbox; the sandbox PATH remains
+owned by the sandbox image.
+
 ### Pre-dispatch configuration validation
 
 Pre-dispatch configuration validation is a distinct gate that runs after ownership and checkout are resolved but before the control plane actually dispatches a run.
@@ -966,8 +971,3 @@ For a board operator, the intended meaning is:
 - blockers explain waiting
 
 That is the execution contract Paperclip should present to operators.
-
-The legacy remote ACP process-session relay runs on the control-plane host. Its
-launch command uses the host's absolute Node executable even when the adapter's
-launch environment is sanitized for a remote sandbox; the sandbox PATH remains
-owned by the sandbox image.
