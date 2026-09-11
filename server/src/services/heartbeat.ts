@@ -21773,6 +21773,8 @@ export function heartbeatService(
               );
             const resolved = resolveHeartbeatRunResponse({
               resultJson: persistedResultJson,
+              conversationTurnFinished: isConversation(issueContext) &&
+                persistedResultJson?.finalizationReasonCode === "conversation_turn_finished",
               existingComment: existingRunComment,
               finalAgentMessage,
             });

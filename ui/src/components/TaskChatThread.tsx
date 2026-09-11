@@ -1,5 +1,5 @@
 import type { ActivityEvent } from "@paperclipai/shared";
-import { projectCreatedItems } from "./task-chat/project-created-items";
+import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
 import { TaskChatScrollReady } from "@/components/task-chat/scroll-navigation";
@@ -538,6 +538,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     resumeAssigneePending = false,
   } = props;
   const queryClient = useQueryClient();
+  const createdProjectItems = useProjectCreatedItems(props.creationActivity ?? [], companyId);
   const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
     string | null
   >(null);
@@ -1253,14 +1254,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         },
       });
     }
-    for (const item of projectCreatedItems(props.creationActivity ?? [])) {
+    for (const item of createdProjectItems) {
       entries.push({ id: item.id, item, ms: toMs(item.timestamp), order: 2 });
     }
     return entries.sort(
       (a, b) => a.ms - b.ms || a.order - b.order || a.id.localeCompare(b.id),
     );
   }, [
-    props.creationActivity,
+    createdProjectItems,
     comments,
     projectedComments,
     commentItems,
