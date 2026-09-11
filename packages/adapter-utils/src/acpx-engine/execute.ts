@@ -1101,16 +1101,27 @@ async function prepareClaudeSkillRuntime(input: {
   const skillsHome = path.join(bundleRoot, ".claude", "skills");
   await fs.mkdir(skillsHome, { recursive: true });
 
-  // A failed materialization must drop the skill from every advertised list
-  // below. Otherwise the prompt and the session identity still name a skill
-  // whose directory is not in `skillsHome`, and the agent's read of its
-  // `SKILL.md` fails with a missing-file error — the same symptom this
-  // bundle exists to fix.
+  // A failed materialization, or a materialized copy with no usable
+  // `SKILL.md`, must drop the skill from every advertised list below.
+  // Otherwise the prompt and the session identity still name a skill whose
+  // `SKILL.md` is not in `skillsHome` — either the whole copy failed, or the
+  // copy skipped a symlinked `SKILL.md` — and the agent's read of that file
+  // fails with a missing-file error, the same symptom this bundle exists to
+  // fix.
   const materializedNames: string[] = [];
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
       const result = await materializePaperclipSkillCopy(entry.source, target);
+      const skillMdStat = await fs.stat(path.join(target, "SKILL.md")).catch(() => null);
+      if (!skillMdStat?.isFile()) {
+        await fs.rm(target, { recursive: true, force: true });
+        await input.onLog(
+          "stderr",
+          `[paperclip] Skipped ACPX Claude skill "${entry.key}": the staged copy at ${target} has no usable SKILL.md.\n`,
+        );
+        continue;
+      }
       materializedNames.push(entry.runtimeName);
       if (result.skippedSymlinks.length > 0) {
         await input.onLog(
