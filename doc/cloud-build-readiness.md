@@ -145,3 +145,14 @@ workflow. Changing the variable does not migrate an already assigned job.
 Check the Actions job's runner name and runner group to verify placement. Record
 queue time, image verification completion, and `Cloud deployable v1` separately;
 source verification and the migrator still run on GitHub-hosted runners.
+
+
+### Typecheck Rust dependency cache
+
+Source verification's typecheck job builds the native Runner binary through the
+server's `prepare:runner-vendor` command. It restores and saves compiled Rust
+dependencies only for canonical master pushes that verify the event's exact SHA.
+The `release-typecheck-v1` cache is separate from Runner verification because
+those jobs compile different profiles. The pinned toolchain is selected before
+cache lookup. Workspace crates and installed cargo binaries are excluded, and
+all typechecks still execute. A missing or invalidated cache triggers compilation.
