@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { execFileSync, spawnSync } from "node:child_process";
-import { previewManifest, assertMetadata, validateRequest, versionFor, tarManifest, packageExists, imageExists, publishPreview, publishImage } from "./preview-artifacts.mjs";
+import { previewManifest, assertMetadata, validateRequest, versionFor, tarManifest, packageExists, imageExists, publishPreview, publishImage, planArtifacts } from "./preview-artifacts.mjs";
 
 const sha = "a".repeat(40);
 const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -22,6 +22,35 @@ test("preview request requires immutable SHA and correlation UUID", () => {
   validateRequest(sha, id);
   for (const ref of ["master", "origin/master", "a".repeat(7), "$(unsafe)", "A".repeat(40)]) assert.throws(() => versionFor(ref));
   assert.throws(() => validateRequest(sha, "not-a-request"));
+});
+
+test("migrator-only planning never waits for GHCR and reuses complete exact-source packages", async () => {
+  for (const available of [[], ["@paperclipai/shared"], ["@paperclipai/shared", "@paperclipai/db"]]) {
+    const calls = [];
+    const result = await planArtifacts(sha, { image: false, migrator: true, fetchImpl: async (url) => {
+      assert.equal(new URL(url).hostname, "registry.npmjs.org");
+      const name = decodeURIComponent(new URL(url).pathname.split("/")[1]);
+      calls.push(name);
+      return available.includes(name) ? json({ ...manifest(name), dist: { integrity: "test-integrity", tarball: "https://registry.npmjs.org/package.tgz" } }) : json({}, 404);
+    } });
+    assert.deepEqual(result, { image: false, packages: available.length !== 2 });
+    assert.ok(calls.includes("@paperclipai/shared"));
+    if (available.length) assert.ok(calls.includes("@paperclipai/db"));
+  }
+});
+
+test("migrator-only planning rejects registry outages and mismatched source identity", async () => {
+  for (const response of [json({}, 403), json({}, 503), json({ ...manifest("@paperclipai/shared"), gitHead: "b".repeat(40) })]) {
+    await assert.rejects(planArtifacts(sha, { image: false, migrator: true, fetchImpl: async () => response }));
+  }
+});
+
+test("ordinary preview planning still requests a missing image without publishing unsolicited packages", async () => {
+  const result = await planArtifacts(sha, { fetchImpl: async (url) => {
+    assert.equal(new URL(url).hostname, "ghcr.io");
+    return url.includes("/token?") ? json({ token: "test-pull-token" }) : json({}, 404);
+  } });
+  assert.deepEqual(result, { image: true, packages: false });
 });
 
 test("preview manifests carry exact source, isolated versions and shared dependency", () => {
@@ -84,6 +113,24 @@ test("preview workflow separates branch compilation from trusted publishing", ()
   assert.match(publisher, /github.ref == 'refs\/heads\/master'/);
   assert.doesNotMatch(workflow.split("  verify_canary:")[0], /uses: [^\n]+@v\d/);
   assert.match(workflow, /Stack deploy \{0\} build/);
+});
+
+test("merge dispatch uses the existing publisher outside full-release concurrency without claiming image readiness", () => {
+  const dispatcher = readFileSync(new URL("../.github/workflows/cloud-artifacts.yml", import.meta.url), "utf8");
+  const release = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+  assert.match(dispatcher, /branches: \[master\]/);
+  assert.match(dispatcher, /github.ref == 'refs\/heads\/master'/);
+  assert.match(dispatcher, /SOURCE_SHA: \$\{\{ github.sha \}\}/);
+  assert.match(dispatcher, /gh workflow run release.yml .*--ref master/);
+  assert.match(dispatcher, /--field channel=cloud-migrator/);
+  assert.doesNotMatch(dispatcher, /actions\/checkout|id-token: write|packages: write|secrets\./);
+  assert.match(release, /\(inputs.channel == 'preview' \|\| inputs.channel == 'cloud-migrator'\) && format\('\{0\}-\{1\}', inputs.channel, inputs.source_ref\)/);
+  const publisher = release.split("  publish_preview:")[1].split("  image_preview:")[0];
+  assert.match(publisher, /group: preview-package-publish-\$\{\{ inputs.source_ref \}\}/);
+  assert.match(publisher, /cancel-in-progress: false/);
+  assert.match(release, /PLAN_COMMAND: \$\{\{ inputs.channel == 'cloud-migrator' && 'plan-migrator' \|\| 'plan' \}\}/);
+  const result = release.split("  result_preview:")[1].split("  verify_canary:")[0];
+  assert.match(result, /always\(\) && inputs.channel == 'preview'/);
 });
 
 
