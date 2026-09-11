@@ -38,10 +38,7 @@ describe("runner E2E Daytona image contract", () => {
       "COPY packages/paperclip-runner ./packages/paperclip-runner",
     );
     expect(dockerfile).toContain(
-      "COPY packages/paperclip-eval-kernel/src ./packages/paperclip-eval-kernel/src",
-    );
-    expect(dockerfile).toContain(
-      "COPY packages/paperclip-runner/src ./packages/paperclip-runner/src",
+      "COPY packages ./packages",
     );
     expect(dockerfile).toContain(
       "/opt/paperclip-runner/provider-pack/provider-pack.json",
@@ -137,20 +134,21 @@ describe("runner E2E Daytona image contract", () => {
       workflow.indexOf(`--format '{{json .Image}}'`),
     );
     const providerInstall = dockerfile.indexOf(
-      "RUN pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'",
+      "pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'",
     );
     const runnerSourceCopy = dockerfile.indexOf(
-      "COPY packages/paperclip-runner/src ./packages/paperclip-runner/src",
+      "COPY packages ./packages",
     );
     const providerRevisionArg = dockerfile.indexOf(
       "ARG PAPERCLIP_RUNNER_SOURCE_REVISION",
     );
-    const cliInstall = dockerfile.indexOf("RUN npm install -g");
+    const cliInstall = dockerfile.indexOf("npm install -g");
     const finalMetadataArgs = dockerfile.lastIndexOf(
       "ARG PAPERCLIP_RUNNER_CONTENT_ID",
     );
     expect(providerInstall).toBeGreaterThan(0);
-    expect(providerInstall).toBeLessThan(runnerSourceCopy);
+    expect(runnerSourceCopy).toBeGreaterThan(0);
+    expect(runnerSourceCopy).toBeLessThan(providerInstall);
     expect(providerInstall).toBeLessThan(providerRevisionArg);
     expect(cliInstall).toBeGreaterThan(0);
     expect(cliInstall).toBeLessThan(finalMetadataArgs);

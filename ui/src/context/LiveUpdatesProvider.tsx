@@ -16,14 +16,17 @@ import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import type { CompanyUserDirectoryResponse } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
+import type { CompanyListResult } from "../api/companies-query";
+import { healthApi } from "../api/health";
 import { useCompany } from "./CompanyContext";
 import type { ToastInput } from "./ToastContext";
 import { useToastActions } from "./ToastContext";
 import { upsertIssueCommentInPages } from "../lib/optimistic-issue-comments";
 import { clearIssueExecutionRun, removeLiveRunById } from "../lib/optimistic-issue-runs";
 import { queryKeys } from "../lib/queryKeys";
-import { toCompanyRelativePath } from "../lib/company-routes";
+import { extractCompanyPrefixFromPath, toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
+import { agentRouteRef } from "../lib/utils";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
 
 const TOAST_COOLDOWN_WINDOW_MS = 10_000;
@@ -247,9 +250,23 @@ function resolveVisibleIssueRouteContext(
 
   const relativePath = toCompanyRelativePath(pathname);
   const segments = relativePath.split("/").filter(Boolean);
-  if (segments[0] !== "issues" || !segments[1]) return null;
+  if (!["issues", "chats"].includes(segments[0]) || !segments[1]) return null;
 
-  const issueRef = decodeURIComponent(segments[1]);
+  let issueRef = decodeURIComponent(segments[1]);
+  if (segments[0] === "chats") {
+    const session = queryClient.getQueryData<Awaited<ReturnType<typeof authApi.getSession>>>(queryKeys.auth.session);
+    const userId = session?.user?.id ?? session?.session?.userId ?? null;
+    const companyPrefix = extractCompanyPrefixFromPath(pathname);
+    const company = queryClient.getQueryData<CompanyListResult>(queryKeys.companies.list(userId))
+      ?.companies.find(item => item.issuePrefix.toUpperCase() === companyPrefix?.toUpperCase());
+    if (!company) return null;
+    const agent = queryClient.getQueryData<Agent[]>(queryKeys.agents.list(company.id))
+      ?.find(item => item.id === issueRef || agentRouteRef(item) === issueRef);
+    if (!agent) return null;
+    const conversation = queryClient.getQueryData<Issue | null>(queryKeys.agentChats.detail(company.id, userId, agent.id));
+    if (!conversation) return null;
+    issueRef = conversation.id;
+  }
   const issue = queryClient.getQueryData<Issue>(queryKeys.issues.detail(issueRef)) ?? null;
   const issueRefs = new Set<string>([issueRef]);
   if (issue?.id) issueRefs.add(issue.id);
@@ -393,6 +410,12 @@ function invalidateVisibleIssueRunQueries(
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.runs(issueRef) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.liveRuns(issueRef) });
     queryClient.invalidateQueries({ queryKey: queryKeys.issues.activeRun(issueRef) });
+    if (status && TERMINAL_RUN_STATUSES.has(status)) {
+      // A final comment can race the last in-flight history fetch. Reconcile
+      // persisted messages after the turn settles.
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueRef) });
+      queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state", issueRef] });
+    }
   }
   return true;
 }
@@ -1043,8 +1066,12 @@ function invalidateActivityQueries(
             : undefined;
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(ref), ...invalidationOptions });
         queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(ref), ...invalidationOptions });
-        if (action === "issue.comment_added") {
+        if (action === "issue.comment_added" || action === "issue.conversation_session_started") {
           queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(ref), ...invalidationOptions });
+        }
+        if (action === "issue.conversation_session_started") {
+          queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state", ref] });
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
         }
         if (action && ISSUE_DOCUMENT_ACTIVITY_ACTIONS.has(action)) {
           const documentKey = readString(details?.key);
@@ -1099,6 +1126,8 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "project") {
+    const sourceIssueId = readString((payload.details as Record<string, unknown> | undefined)?.sourceIssueId);
+    if (sourceIssueId) queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(sourceIssueId) });
     queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(companyId) });
     if (entityId) queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(entityId) });
     return;
@@ -1363,12 +1392,17 @@ export const __liveUpdatesTestUtils = {
   invalidateVisibleIssueRunQueries,
   readRunLiveStatusPatchFromPayload,
   resolveLiveCompanyId,
+  canUseLiveSession,
   shouldDeferIssueRefetchForVisibleAgentActivity,
   shouldDeferVisibleIssueCommentActivity,
   shouldSuppressActivityToastForVisibleIssue,
   shouldSuppressRunStatusToastForVisibleIssue,
   shouldSuppressAgentStatusToastForVisibleIssue,
 };
+
+function canUseLiveSession(sessionStatus: string, hasSession: boolean, deploymentMode?: string) {
+  return sessionStatus === "success" && (hasSession || deploymentMode === "local_trusted");
+}
 
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const { selectedCompanyId, selectedCompany } = useCompany();
@@ -1382,10 +1416,11 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     queryFn: () => authApi.getSession(),
     retry: false,
   });
+  const { data: health } = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const socketAuthKey = session?.session?.id ?? currentUserId ?? "signed_out";
   const liveCompanyId = resolveLiveCompanyId(selectedCompanyId, selectedCompany?.id ?? null);
-  const canConnectSocket = sessionStatus === "success" && session !== null && liveCompanyId !== null;
+  const canConnectSocket = canUseLiveSession(sessionStatus, session != null, health?.deploymentMode) && liveCompanyId !== null;
   const currentActorRef = useRef<{ userId: string | null; agentId: string | null }>({
     userId: currentUserId,
     agentId: null,

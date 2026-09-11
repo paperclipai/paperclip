@@ -72,7 +72,7 @@ pnpm test:e2e:runner -- --suite daytona-warm-continuity
 pnpm test:e2e:runner -- --all
 ```
 
-The catalog contains four suites. `core-compatibility` (**Core Runner
+The catalog contains five suites. `core-compatibility` (**Core Runner
 Compatibility**) is seven major runner profiles × local/Daytona × three
 workflows: 42 cells. Its cases are:
 
@@ -120,7 +120,44 @@ runner instance, PID, and process-start identity. Each turn is bounded to ten
 minutes, the cell to thirty minutes, and cleanup explicitly deletes the
 sandbox rather than waiting for Daytona's idle timeout.
 
-The complete catalog is 68 cells (45 local and 23 Daytona) and 120 expected
+`agent-chat` (**Persistent Agent Chat**) adds six workflows on `legacy-codex`,
+`legacy-claude`, `runner-codex`, and `runner-acpx-claude`: **24 local cells**.
+They cover continuity across server restart, fresh context after `/new`,
+Stop/reset/resume, draft/revise/approve/plan handoff, clarification with existing
+project reuse, and a new project with two repository URLs. Each cell opens the
+production chat surface and resolves the backing issue through the chat API.
+The source conversation must settle to `in_review` / `waiting`; handed-off
+execution tasks must finish with their initial Plan and output documents.
+Reset runs are retained separately from the 68 expected provider turns in this
+suite. Cancelled turns and execution-task runs remain included in billing and
+cleanup. The production chat directive is injected normally; fixtures do not
+replace it with completion instructions. Daytona is excluded.
+
+```bash
+# Run these after deterministic checks, with the required provider keys set.
+pnpm test:e2e:runner -- --id agent-chat.legacy-codex.local.continuity-restart
+pnpm test:e2e:runner -- --id agent-chat.legacy-claude.local.continuity-restart
+pnpm test:e2e:runner -- --suite agent-chat
+```
+
+The regular browser suite has deterministic process providers in
+`tests/e2e/fixtures/agent-chat.mjs`. It exercises the real queue, APIs, database,
+MCP project tools, and shared task UI without provider billing. Only upstream
+GitHub discovery is simulated, scoped to a fixture-only credential; repository
+permissions and mutations remain real. Run it with:
+
+```bash
+pnpm --filter @paperclipai/ui build
+pnpm test:e2e tests/e2e/agent-chat.spec.ts
+# Against a dedicated authenticated test instance configured per that suite:
+pnpm test:e2e:multiuser-authenticated --grep 'agent chats'
+```
+
+Both suites save and restore experimental settings. Browser E2E always starts a
+throwaway instance; never point the authenticated suite at the running demo.
+Missing provider credentials fail paid preflight and are not passing coverage.
+
+The complete catalog is 92 cells (69 local and 23 Daytona) and 188 expected
 paid agent turns. Follow-up steps remain ordered within their cell; all other
 cells are independent. Narrow selectors are strongly recommended while
 developing fixtures.
@@ -369,7 +406,7 @@ Set `RUNNER_E2E_AWS_ENABLED=true` to route paid cells to the repository-scoped
 ephemeral AWS RunsOn fleet selected by
 `runs-on/fleet=paperclip-public-pr-x64/env=public-ci`. Any other value uses the
 proven GitHub-hosted `ubuntu-latest` target. Set `RUNNER_E2E_MAX_PARALLEL` to an
-integer from 1–100 on AWS (default 100); use at least 68 to run the current
+integer from 1–100 on AWS (default 100); use at least 92 to run the current
 complete catalog in one wave. The fallback runner retains its 1–57 limit and
 default of 32. Multi-turn steps are sequential inside their cell while
 independent cells overlap. Artifacts and merged HTML/JUnit/normalized reports

@@ -1,3 +1,4 @@
+import { projectToolRoutes } from "./routes/project-tools.js";
 import { toolActionDeliveryService } from "./services/tool-action-delivery.js";
 import express, { Router, type Request as ExpressRequest } from "express";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
@@ -518,6 +519,7 @@ export async function createApp(
     }),
   );
   api.use(assetRoutes(db, opts.storageService));
+  api.use(projectToolRoutes(db));
   api.use(projectRoutes(db));
   api.use(caseRoutes(db, opts.storageService));
   api.use(issueTreeControlRoutes(db));

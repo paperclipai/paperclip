@@ -108,6 +108,7 @@ interface TaskChatComposerProps {
   /** Mentionable entities for the editor's @-autocomplete. */
   mentions?: MentionOption[];
   enableReassign?: boolean;
+  conversationMode?: boolean;
   reassignOptions?: InlineEntityOption[];
   agentMap?: ReadonlyMap<string, { icon?: string | null }>;
   userProfileMap?: ReadonlyMap<
@@ -363,6 +364,7 @@ export function TaskChatComposer({
   onImageUpload,
   mentions,
   enableReassign = false,
+  conversationMode = false,
   reassignOptions,
   agentMap,
   userProfileMap,
@@ -677,6 +679,10 @@ export function TaskChatComposer({
     const goalCommand = queuedEdit
       ? ({ matched: false } as const)
       : parseRunnerGoalCommand(submittedBody);
+    if (goalCommand.matched && conversationMode) {
+      setActionError("Create a separate task for work that needs an ongoing execution goal.");
+      return;
+    }
     if (goalCommand.matched) {
       if ("error" in goalCommand) {
         setActionError(goalCommand.error);
@@ -967,7 +973,11 @@ export function TaskChatComposer({
               }
               readOnly={disabled}
               mentions={mentions}
-              actionCommands={[goalCommandOption]}
+              actionCommands={conversationMode ? [{
+                id: "action:new", kind: "action", command: "new", name: "New session",
+                description: "Start fresh context here, preserving conversation history.", aliases: ["new"],
+                disabled,
+              }] : [goalCommandOption]}
               onSubmit={() => void submit()}
               imageUploadHandler={
                 canAcceptFiles ? uploadInlineImage : undefined

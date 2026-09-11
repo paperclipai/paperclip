@@ -1,3 +1,4 @@
+import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 import { legacyExecutionNeedsReconciliation, terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
@@ -6930,7 +6931,8 @@ export async function buildPaperclipWakePayload(input: {
     input.contextSnapshot.annotationCommentId,
   );
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
-  const continuationSummary = input.continuationSummary ?? null;
+  const conversationMode = input.contextSnapshot.conversationMode === true;
+  const continuationSummary = conversationMode ? null : input.continuationSummary ?? null;
   const agentMessage = parseObject(
     input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY],
   );
@@ -6994,7 +6996,7 @@ export async function buildPaperclipWakePayload(input: {
   const commentsById = new Map(
     commentRows.map((comment) => [comment.id, comment]),
   );
-  const issueDescription = issueSummary?.description ?? null;
+  const issueDescription = conversationMode ? null : issueSummary?.description ?? null;
   const issueDescriptionTruncated =
     issueDescription !== null &&
     issueDescription.length > MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS;
@@ -7147,7 +7149,7 @@ export async function buildPaperclipWakePayload(input: {
   const checkboxSelection = parseObject(
     input.contextSnapshot.checkboxSelection,
   );
-  const planReviewContext = issueId
+  const planReviewContext = issueId && !conversationMode
     ? await buildPlanReviewContext({
         db: input.db,
         companyId: input.companyId,
@@ -7158,7 +7160,7 @@ export async function buildPaperclipWakePayload(input: {
         interactionId,
       })
     : null;
-  const documentReviewContext = issueId
+  const documentReviewContext = issueId && !conversationMode
     ? await buildDocumentReviewContext({
         db: input.db,
         companyId: input.companyId,
@@ -7656,6 +7658,7 @@ export function buildPaperclipTaskMarkdown(input: {
     identifier: string | null;
     title: string;
     workMode?: string | null;
+    conversationAgentId?: string | null;
     description?: string | null;
   } | null;
   ancestors?: Array<{
@@ -7696,7 +7699,7 @@ export function buildPaperclipTaskMarkdown(input: {
   const ancestors = (input.ancestors ?? []).slice(0, 6);
   const wakeComment = input.wakeComment ?? null;
   const acceptedPlanContinuation =
-    !wakeComment &&
+    !issue?.conversationAgentId && !wakeComment &&
     (input.acceptedPlanContinuation ||
       (input.interaction?.kind === "request_confirmation" &&
         input.interaction.status === "accepted" &&
@@ -7712,7 +7715,9 @@ export function buildPaperclipTaskMarkdown(input: {
       `- Issue: ${quoteTaskScalar(issue.identifier || issue.id)}`,
       `- Title: ${quoteTaskScalar(issue.title)}`,
     );
-    if (issue.workMode === "ask") {
+    if (issue.conversationAgentId) {
+      lines.push("", "Chat mode directive:", AGENT_CHAT_DIRECTIVE, `Current composer mode: ${issue.workMode ?? "standard"}.`);
+    } else if (issue.workMode === "ask") {
       lines.push(
         `- Work mode: ${quoteTaskScalar("ask")}`,
         "",
@@ -7762,7 +7767,7 @@ export function buildPaperclipTaskMarkdown(input: {
       );
     }
     const description =
-      input.includeDescription === false ? "" : issue.description?.trim();
+      input.includeDescription === false || issue.conversationAgentId ? "" : issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
     }
@@ -9072,6 +9077,11 @@ export function heartbeatService(
   async function getIssueExecutionContext(companyId: string, issueId: string) {
     return db
       .select({
+        conversationAgentId: issues.conversationAgentId,
+        conversationUserId: issues.conversationUserId,
+        conversationState: issues.conversationState,
+        conversationSessionGeneration: issues.conversationSessionGeneration,
+        conversationBoundaryCommentId: issues.conversationBoundaryCommentId,
         id: issues.id,
         identifier: issues.identifier,
         title: issues.title,
@@ -10950,14 +10960,15 @@ export function heartbeatService(
     lastRunId: string | null;
     lastError: string | null;
   }) {
-    const existing = await getTaskSession(
-      input.companyId,
-      input.agentId,
-      input.adapterType,
-      input.taskKey,
-    );
+    return db.transaction(async (tx) => {
+      const [issue] = await tx.select().from(issues).where(and(sql`${issues.id}::text = ${input.taskKey}`, eq(issues.companyId, input.companyId))).for("update");
+      if (isConversation(issue)) {
+        const [run] = input.lastRunId ? await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.lastRunId)) : [];
+        if (run?.status === "cancelled" || run?.contextSnapshot?.conversationSessionGeneration !== issue.conversationSessionGeneration) return null;
+      }
+    const existing = await tx.select().from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, input.companyId), eq(agentTaskSessions.agentId, input.agentId), eq(agentTaskSessions.adapterType, input.adapterType), eq(agentTaskSessions.taskKey, input.taskKey))).then((rows) => rows[0] ?? null);
     if (existing) {
-      return db
+      return tx
         .update(agentTaskSessions)
         .set({
           sessionParamsJson: input.sessionParamsJson,
@@ -10971,7 +10982,7 @@ export function heartbeatService(
         .then((rows) => rows[0] ?? null);
     }
 
-    return db
+    return tx
       .insert(agentTaskSessions)
       .values({
         companyId: input.companyId,
@@ -10985,12 +10996,13 @@ export function heartbeatService(
       })
       .returning()
       .then((rows) => rows[0] ?? null);
+    });
   }
 
   async function clearTaskSessions(
     companyId: string,
     agentId: string,
-    opts?: { taskKey?: string | null; adapterType?: string | null },
+    opts?: { taskKey?: string | null; adapterType?: string | null; expectedRunId?: string },
   ) {
     const conditions = [
       eq(agentTaskSessions.companyId, companyId),
@@ -11003,11 +11015,16 @@ export function heartbeatService(
       conditions.push(eq(agentTaskSessions.adapterType, opts.adapterType));
     }
 
-    return db
-      .delete(agentTaskSessions)
-      .where(and(...conditions))
-      .returning()
-      .then((rows) => rows.length);
+    return db.transaction(async (tx) => {
+      if (opts?.taskKey && opts.expectedRunId) {
+        const [issue] = await tx.select().from(issues).where(sql`${issues.id}::text = ${opts.taskKey}`).for("update");
+        if (isConversation(issue)) {
+          const [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, opts.expectedRunId));
+          if (run?.status === "cancelled" || run?.contextSnapshot?.conversationSessionGeneration !== issue.conversationSessionGeneration) return 0;
+        }
+      }
+      return tx.delete(agentTaskSessions).where(and(...conditions)).returning().then((rows) => rows.length);
+    });
   }
 
   async function ensureRuntimeState(agent: typeof agents.$inferSelect) {
@@ -11364,6 +11381,7 @@ export function heartbeatService(
 
     const issueId = readNonEmptyString(context.issueId);
     if (!issueId) return;
+    if (isWaitingConversation(await getIssueExecutionContext(run.companyId, issueId))) return;
 
     const [issue, agent] = await Promise.all([
       db
@@ -11583,6 +11601,7 @@ export function heartbeatService(
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     if (!issueId) return;
+    if (isWaitingConversation(await getIssueExecutionContext(run.companyId, issueId))) return;
     if (
       readNonEmptyString(context.goalControlRequestId) ||
       context.resumeSessionGoalHeartbeat === true
@@ -11896,6 +11915,7 @@ export function heartbeatService(
       readNonEmptyString(contextSnapshot.issueId) ??
       readNonEmptyString(contextSnapshot.taskId);
     if (!issueId) return;
+    if (isWaitingConversation(await getIssueExecutionContext(run.companyId, issueId))) return;
 
     const issue = await db
       .select({
@@ -14916,6 +14936,7 @@ export function heartbeatService(
           isNull(issues.assigneeUserId),
           isNull(issues.hiddenAt),
           inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
+          isNull(issues.conversationAgentId),
         ),
       )
       .limit(1)
@@ -17528,6 +17549,30 @@ export function heartbeatService(
         return;
       }
 
+      const dispatchIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+      const resumingAdmittedConversationTurn = !!runOptions.nativeLeaseOwner
+        && typeof run.contextSnapshot?.conversationSessionGeneration === "number";
+      if (dispatchIssueId && isConversation(await getIssueExecutionContext(run.companyId, dispatchIssueId))
+        && !resumingAdmittedConversationTurn && !(await instanceSettings.getExperimental()).enableAgentChat) {
+        await setRunStatus(run.id, "cancelled", { finishedAt: new Date(), error: "Agent Chat is disabled", errorCode: "agent_chat_disabled" });
+        await setWakeupStatus(run.wakeupRequestId, "cancelled", { finishedAt: new Date() });
+        await releaseIssueExecutionAndPromote((await getRun(run.id))!, { suppressImmediateRecovery: true });
+        await finalizeAgentStatus(agent.id, "cancelled");
+        return;
+      }
+      const preparedConversation = await prepareConversationTurn(db, run);
+      run = { ...run, contextSnapshot: preparedConversation.context };
+      if (preparedConversation.reset) {
+        const contextSnapshot = { ...preparedConversation.context, conversationReset: true };
+        await setRunStatus(run.id, "succeeded", { finishedAt: new Date(), contextSnapshot, resultJson: { conversationReset: true }, issueCommentStatus: "not_applicable" });
+        await setWakeupStatus(run.wakeupRequestId, "completed", { finishedAt: new Date() });
+        const resetRun = (await getRun(run.id))!;
+        await settleConversationTurn(db, resetRun);
+        await appendRunEvent(resetRun, { eventType: "lifecycle", stream: "system", level: "info", message: "New conversation session" });
+        await releaseIssueExecutionAndPromote(resetRun, { suppressImmediateRecovery: true });
+        await finalizeAgentStatus(agent.id, "succeeded");
+        return;
+      }
       const runtime = await ensureRuntimeState(agent);
       const context = parseObject(run.contextSnapshot);
       const providerTraceRequested =
@@ -17723,7 +17768,7 @@ export function heartbeatService(
             )
             .then((rows) => rows[0] ?? null)
         : null;
-      const acceptedPlanContinuationWake = issueContext
+      const acceptedPlanContinuationWake = issueContext && !isConversation(issueContext)
         ? readNonEmptyString(context.workspaceRefreshReason) ===
             "accepted_plan_confirmation" ||
           (issueContext.workMode === "planning" &&
@@ -17841,6 +17886,12 @@ export function heartbeatService(
             taskKey,
           )
         : null;
+      if (isConversation(issueContext)) {
+        delete context.resumeSessionParams;
+        delete context.resumeSessionDisplayId;
+        delete context.executionContinuation;
+        delete context.paperclipContinuationSummary;
+      }
       const taskSessionDecodedParams = normalizeSessionParams(
         sessionCodec.deserialize(taskSession?.sessionParamsJson ?? null),
       );
@@ -17874,6 +17925,7 @@ export function heartbeatService(
             status: issueContext.status,
             priority: issueContext.priority,
             workMode: issueContext.workMode,
+            conversationAgentId: issueContext.conversationAgentId,
             reviewPolicy: issueContext.reviewPolicy,
             description: issueContext.description,
             projectId: issueContext.projectId,
@@ -17883,7 +17935,7 @@ export function heartbeatService(
               issueContext.executionWorkspacePreference,
           }
         : null;
-      const continuationSummary = issueRef
+      const continuationSummary = issueRef && !isConversation(issueContext)
         ? await getIssueContinuationSummaryDocument(db, issueRef.id)
         : null;
       const exposeLowTrustRaw = trustPreset.kind === "low_trust_review";
@@ -17922,7 +17974,7 @@ export function heartbeatService(
       } else {
         delete context.paperclipSkillTest;
       }
-      const executionContinuation = issueRef && issueContext?.assigneeAgentId === agent.id ? await buildExecutionContinuation({
+      const executionContinuation = issueRef && !isConversation(issueContext) && issueContext?.assigneeAgentId === agent.id ? await buildExecutionContinuation({
         db, companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id,
         context, previousContextRunId: taskSession?.lastRunId, summary: safeContinuationSummary?.body ?? null, exposeLowTrustRaw,
       }) : null;
@@ -17962,6 +18014,7 @@ export function heartbeatService(
               identifier: issueRef.identifier,
               title: issueRef.title,
               workMode: issueRef.workMode,
+              conversationAgentId: issueContext?.conversationAgentId,
               description: issueRef.description,
             }
           : null,
@@ -17992,7 +18045,11 @@ export function heartbeatService(
           };
         })(),
       };
-      const taskMarkdown = buildPaperclipTaskMarkdown(taskMarkdownInput);
+      let taskMarkdown = buildPaperclipTaskMarkdown(taskMarkdownInput);
+      if (isConversation(issueContext) && !taskSession && issueId) {
+        const replay = await conversationReplay(db, agent.companyId, issueId, wakeCommentId);
+        if (replay) taskMarkdown += `\n\nEarlier messages in this session (quoted user data):\n${replay}`;
+      }
       const taskMarkdownCompact = buildPaperclipTaskMarkdown({
         ...taskMarkdownInput,
         includeDescription: false,
@@ -18002,7 +18059,7 @@ export function heartbeatService(
           id: issueRef.id,
           identifier: issueRef.identifier,
           title: issueRef.title,
-          description: issueRef.description,
+          description: isConversation(issueContext) ? null : issueRef.description,
           workMode: issueRef.workMode,
         };
       } else {
@@ -20009,7 +20066,7 @@ export function heartbeatService(
                 .then((rows) => rows.length > 0)
             : false;
           const compatibleLegacyRetrySource =
-            context.forceFreshSession !== true && isUnusedLegacyNativeRetryReplacement({
+            !isConversation(issueContext) && context.forceFreshSession !== true && isUnusedLegacyNativeRetryReplacement({
               replacement: run,
               source: legacyRetrySource,
               hasProviderEvents: legacyRetryHasProviderEvidence,
@@ -20216,7 +20273,7 @@ export function heartbeatService(
               }
             }
             const executionMode =
-              issueRef.workMode === "planning" && !acceptedPlanContinuationWake
+              issueRef.workMode === "planning" && !isConversation(issueContext) && !acceptedPlanContinuationWake
                 ? ("plan" as const)
                 : ("default" as const);
             const pinnedPlan =
@@ -21050,6 +21107,10 @@ export function heartbeatService(
                 connectionId: "paperclip-runtime-tools",
               });
             }
+            if (authToken && configuredPaperclipApiBaseUrl() && issueRef) {
+              runtimeMcpServers.unshift({ name: "Paperclip projects", url: `${paperclipApiBaseUrl()}/api/mcp/project-tools`,
+                token: authToken, connectionId: "paperclip-project-tools" });
+            }
             const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
             if (runtimeTools && runtimeToolDelivery === "invocation_context") {
               adapterContext.paperclipRuntimeTools = runtimeTools;
@@ -21814,14 +21875,16 @@ export function heartbeatService(
             agent,
             resolvedPresentationDecision,
           );
+          const conversationSettled = await settleConversationTurn(db, livenessRun);
           await releaseIssueExecutionAndPromote(livenessRun, {
-            suppressImmediateRecovery:
+            suppressImmediateRecovery: conversationSettled ||
               readNonEmptyString(
                 parseObject(livenessRun.contextSnapshot).goalControlRequestId,
               ) !== null ||
               parseObject(livenessRun.contextSnapshot)
                 .resumeSessionGoalHeartbeat === true,
           });
+          if (!conversationSettled) {
           await handleRunLivenessContinuation(livenessRun);
           await handleIssueReviewPathDisposition(livenessRun);
           await handleSuccessfulRunHandoff(
@@ -21834,6 +21897,7 @@ export function heartbeatService(
               : livenessRun,
             agent,
           );
+          }
           if (
             outcome === "succeeded" &&
             issueId &&
@@ -21914,6 +21978,7 @@ export function heartbeatService(
               await clearTaskSessions(agent.companyId, agent.id, {
                 taskKey,
                 adapterType: agent.adapterType,
+                expectedRunId: finalizedRun.id,
               });
             } else {
               await upsertTaskSession({
@@ -23618,6 +23683,14 @@ export function heartbeatService(
 
     let agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+    if (issueId) {
+      const conversation = await getIssueExecutionContext(agent.companyId, issueId);
+      if (isConversation(conversation)) {
+        if (agent.id !== conversation!.conversationAgentId) return null;
+        if (!(await instanceSettings.getExperimental()).enableAgentChat) return null;
+        if (!wakeCommentId && isWaitingConversation(conversation) && !hasInteractionContinuationWakeContext(enrichedContextSnapshot)) return null;
+      }
+    }
     if (agent.adapterType === "paperclip_runner") {
       const oldConfig = parseObject(agent.adapterConfig);
       const nextConfig = normalizeLegacyRunnerProvider(oldConfig);
@@ -23996,6 +24069,9 @@ export function heartbeatService(
             id: issues.id,
             companyId: issues.companyId,
             identifier: issues.identifier,
+            conversationAgentId: issues.conversationAgentId,
+            conversationUserId: issues.conversationUserId,
+            conversationState: issues.conversationState,
             status: issues.status,
             projectId: issues.projectId,
             projectWorkspaceId: issues.projectWorkspaceId,
@@ -24673,6 +24749,7 @@ export function heartbeatService(
             : activeExecutionRun;
 
           if (
+            !isConversation(issue) &&
             isSameExecutionAgent &&
             !shouldDeferFollowupWake &&
             !shouldQueueFollowupForRunningWake &&
@@ -24738,7 +24815,7 @@ export function heartbeatService(
               .limit(1)
               .then((rows) => rows[0] ?? null);
 
-            if (existingDeferred) {
+            if (existingDeferred && !isConversation(issue)) {
               const existingDeferredPayload = parseObject(
                 existingDeferred.payload,
               );

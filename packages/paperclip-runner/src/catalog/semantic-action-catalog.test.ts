@@ -23,7 +23,7 @@ describe("semantic action catalog", () => {
       (action) => action.operationId,
     );
 
-    expect(operationIds).toHaveLength(29);
+    expect(operationIds).toHaveLength(32);
     expect(new Set(operationIds).size).toBe(operationIds.length);
     expect(operationIds).not.toContain("generic_api_request");
     expect(Object.isFrozen(PAPERCLIP_SEMANTIC_ACTION_CATALOG)).toBe(true);

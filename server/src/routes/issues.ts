@@ -1,3 +1,4 @@
+import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { validateExecutionReconciliation, markExecutionReconciliation } from "../services/execution-recovery-resolution.js";
@@ -3766,6 +3767,8 @@ export function issueRoutes(
 
   async function assertInReviewReviewPath(input: {
     existing: {
+      conversationAgentId?: string | null;
+      conversationUserId?: string | null;
       id: string;
       companyId: string;
       status: string;
@@ -3783,6 +3786,9 @@ export function issueRoutes(
     const nextStatus = typeof input.updateFields.status === "string"
       ? input.updateFields.status
       : input.existing.status;
+    // Conversations wait for the next message; successful run finalization owns
+    // the waiting state. They do not need an execution-task review assignment.
+    if (isConversation(input.existing) && !input.reviewInteractionId) return null;
     if (input.existing.status === "in_review" || nextStatus !== "in_review") return null;
     if (input.actorType !== "agent" && !input.reviewInteractionId) return null;
 
@@ -5659,7 +5665,7 @@ export function issueRoutes(
 
   async function buildQueuedCommentQueue(input: {
     executor: IssueQueueDb;
-    issue: { id: string; companyId: string; assigneeAgentId: string | null };
+    issue: { id: string; companyId: string; assigneeAgentId: string | null; conversationAgentId?: string | null };
     activeRun: Awaited<ReturnType<typeof resolveActiveIssueRun>>;
     actor: ReturnType<typeof getActorInfo>;
     queueState?: IssueQueueState | null;
@@ -5700,6 +5706,7 @@ export function issueRoutes(
     if (protocol === "paperclip_runner_v1" && (!steeringRun || comments.length === 0)) {
       steeringDisposition = "temporarily_unavailable";
     }
+    if (input.issue.conversationAgentId) steeringDisposition = "unsupported";
     return {
       issueId: input.issue.id,
       queueId: wake?.id ?? null,
@@ -10264,6 +10271,9 @@ export function issueRoutes(
       onBehalfOfUserId: _requestedOnBehalfOfUserId,
       ...updateFields
     } = req.body;
+    if (existing.conversationAgentId && req.actor.type === "board" && commentBody) {
+      throw unprocessable("Send conversation messages through the comments endpoint with a clientRequestId");
+    }
     if (deferWakeForGoal === true && (
       !normalizedAssigneeAgentId ||
       Object.keys(req.body).some((key) => !["assigneeAgentId", "assigneeUserId", "deferWakeForGoal"].includes(key))
@@ -12331,6 +12341,7 @@ export function issueRoutes(
       const commentId = req.params.commentId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
+      if (issue.conversationAgentId) throw conflict("Conversation messages are processed in order at turn boundaries");
       const actor = getActorInfo(req);
       const steeringIdentity = await reserveSteeredIdentity(db, {
         companyId: issue.companyId, runId: req.body.targetRunId, issueId: issue.id, messageId: commentId,
@@ -13656,10 +13667,53 @@ export function issueRoutes(
     res.json(bundle);
   });
 
+  // Resolving an unused chat is read-only. POST is used only by first send/upload.
+  for (const method of ["get", "post"] as const) {
+    router[method]("/companies/:companyId/chats/:agentRef", async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Board user access required");
+      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
+      const resolved = await agentsSvc.resolveByReference(companyId, req.params.agentRef as string);
+      if (resolved.ambiguous) throw conflict("Agent reference is ambiguous");
+      if (!resolved.agent) throw notFound("Agent not found");
+      const agent = resolved.agent;
+      const existing = await svc.getConversation(companyId, agent.id, req.actor.userId);
+      if (existing && !(await assertIssueReadAllowed(req, res, existing))) return;
+      if (existing || method === "get") { res.json(existing); return; }
+      const issue = await svc.create(companyId, {
+        title: `Chat with ${agent.name}`, assigneeAgentId: agent.id,
+        conversationAgentId: agent.id, conversationUserId: req.actor.userId,
+        conversationState: "waiting", status: "in_review", createdByUserId: req.actor.userId,
+      });
+      await logActivity(db, { companyId, actorType: "user", actorId: req.actor.userId,
+        action: "issue.conversation_opened", entityType: "issue", entityId: issue.id,
+        details: { agentId: agent.id } });
+      res.json(issue);
+    });
+  }
+
   router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
+    if (issue.conversationAgentId && req.actor.type === "board") {
+      if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
+      if (!req.actor.userId) throw forbidden("Board user access required");
+      if (!req.body.clientRequestId) throw unprocessable("Chat messages require a clientRequestId for safe retries");
+      if (!(await assertAgentIssueCommentAllowed(req, res, issue))) return;
+      const actor = getActorInfo(req);
+      const comment = await svc.addComment(issue.id, req.body.body, { userId: req.actor.userId }, {
+        clientRequestId: req.body.clientRequestId, authorType: "user",
+      });
+      await logActivity(db, { companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+        action: "issue.comment_added", entityType: "issue", entityId: issue.id,
+        details: { commentId: comment.id, identifier: issue.identifier } });
+      await issueReferencesSvc.syncComment(comment.id);
+      await deliverConversationComments(db, issue, heartbeat.wakeup);
+      res.status(201).json(comment);
+      return;
+    }
     if (req.actor.type === "agent" && req.body.onBehalfOfUserId != null) {
       await auditAgentIssueCommentAttributionSpoof({
         db,
@@ -14572,6 +14626,9 @@ export function issueRoutes(
     if (issue.companyId !== companyId) {
       res.status(422).json({ error: "Issue does not belong to company" });
       return;
+    }
+    if (issue.conversationAgentId && req.actor.type === "board" && !(await instanceSettings.getExperimental()).enableAgentChat) {
+      throw notFound("Agent Chat is disabled");
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue))) return;

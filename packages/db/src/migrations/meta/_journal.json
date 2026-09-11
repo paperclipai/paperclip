@@ -1884,6 +1884,20 @@
       "when": 1788973120697,
       "tag": "0270_harsh_queen_noir",
       "breakpoints": true
+    },
+    {
+      "idx": 271,
+      "version": "7",
+      "when": 1789074294113,
+      "tag": "0271_round_pete_wisdom",
+      "breakpoints": true
+    },
+    {
+      "idx": 272,
+      "version": "7",
+      "when": 1789075988240,
+      "tag": "0272_agent_chat_state_guard",
+      "breakpoints": true
     }
   ]
 }

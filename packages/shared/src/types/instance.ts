@@ -64,6 +64,7 @@ export interface InstanceExperimentalSettings {
   enableApps: boolean;
   enablePipelines: boolean;
   enableCases: boolean;
+  enableAgentChat: boolean;
   enableConferenceRoomChat: boolean;
   enableClassicTaskInterface: boolean;
   enableIssuePlanDecompositions: boolean;

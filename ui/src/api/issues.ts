@@ -339,11 +339,12 @@ export const issuesApi = {
       allowSharing?: boolean;
     },
   ) => api.post<FeedbackVote>(`/issues/${id}/feedback-votes`, data),
-  addComment: (id: string, body: string, reopen?: boolean, interrupt?: boolean) =>
+  addComment: (id: string, body: string, reopen?: boolean, interrupt?: boolean, clientRequestId?: string) =>
     api.post<IssueComment>(
       `/issues/${id}/comments`,
       {
         body,
+        ...(clientRequestId ? { clientRequestId } : {}),
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
       },

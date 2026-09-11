@@ -1,4 +1,8 @@
 export const queryKeys = {
+  agentChats: {
+    detail: (companyId: string | null, userId: string | null, agentId: string | undefined) =>
+      ["agent-chat", companyId, userId, agentId] as const,
+  },
   companies: {
     /**
      * Prefix for everything company-shaped. Matches the list, details and stats

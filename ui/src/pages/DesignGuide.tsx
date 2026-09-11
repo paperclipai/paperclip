@@ -1,3 +1,4 @@
+import { TaskChatProjectCreatedCard } from "@/components/task-chat/TaskChatProjectCreatedCard";
 import { RepositoryEditor } from "@/components/RepositoryEditor";
 import { TaskChatMarker } from "@/components/task-chat/TaskChatMarker";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
@@ -463,6 +464,7 @@ function TaskExecutionControlsExample() {
     </div>
     <p className="text-sm text-muted-foreground">{running ? "Running: type to switch Stop to Send." : "Paused: resume from the menu."}</p>
     {!running ? <TaskPauseNotice scope="subtree" onResume={() => setDialogMode("resume")} /> : null}
+    <TaskChatProjectCreatedCard item={{ id: "design-project", kind: "project_created", projectId: "example-project", name: "Onboarding improvements", description: "Help new teams reach their first useful result.", timestamp: "2026-09-11T00:00:00Z", repositories: [{ id: "1", name: "paperclipai/paperclip", url: "https://github.com/paperclipai/paperclip" }] }} />
     {!running ? <TaskChatMarker item={{ id: "design-cancelled", kind: "marker", variant: "interrupted", tone: "neutral", label: "Run cancelled", detail: "The run was cancelled before returning an answer.", collapsible: true }} /> : null}
     <TaskChatComposer onAdd={async () => {}} workMode="standard" stopScope="subtree" onStop={running ? async () => setRunning(false) : undefined} />
     <TaskTreeControlDialog open={dialogMode !== null} onOpenChange={(open) => { if (!open) setDialogMode(null); }}
@@ -1623,6 +1625,11 @@ export function DesignGuide() {
       {/* ============================================================ */}
       <Section title="Navigation Patterns">
         <SubSection title="Sidebar nav items">
+          <p className="text-sm text-muted-foreground">
+            Layout accepts sidebarSections to compose additional SidebarSection groups inside the shared sidebar.
+            Use SidebarNavItem for each row, with sibling action buttons for starring or menus.
+            Starred agent conversations precede recent conversations without a divider. Stars appear on hover or keyboard focus. Task breadcrumbs support leading identity and trailing actions beside the label, including single-item task headers; see the Agent chat Storybook.
+          </p>
           <Card className="block w-60 p-3 space-y-0.5">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
               <LayoutDashboard className="h-4 w-4" />

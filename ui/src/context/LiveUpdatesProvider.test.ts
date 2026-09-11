@@ -11,10 +11,40 @@ vi.mock("../api/issues", () => ({
 }));
 
 import { describe, expect, it, vi } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
 import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it("connects trusted local boards without admitting signed-out authenticated users", () => {
+    const canConnect = __liveUpdatesTestUtils.canUseLiveSession;
+    expect(canConnect("success", false, "local_trusted")).toBe(true);
+    expect(canConnect("success", false, "authenticated")).toBe(false);
+    expect(canConnect("success", false, undefined)).toBe(false);
+    expect(canConnect("pending", false, "local_trusted")).toBe(false);
+    expect(canConnect("success", true, "authenticated")).toBe(true);
+  });
+  it("uses the current person's canonical chat for live updates and refreshes reset boundaries", () => {
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    client.setQueryData(queryKeys.companies.list("user-1"), { companies: [{ id: "company-1", issuePrefix: "PAP" }], unauthorized: false });
+    client.setQueryData(queryKeys.agents.list("company-1"), [{ id: "agent-1", name: "Coder", urlKey: "coder" }]);
+    const chat = { id: "chat-1", companyId: "company-1", identifier: "PAP-1", assigneeAgentId: "agent-1" };
+    client.setQueryData(queryKeys.agentChats.detail("company-1", "user-1", "agent-1"), chat);
+    client.setQueryData(queryKeys.agentChats.detail("company-1", "user-2", "agent-1"), { ...chat, id: "other-chat" });
+    client.setQueryData(queryKeys.issues.detail("chat-1"), chat);
+    expect(__liveUpdatesTestUtils.shouldSuppressRunStatusToastForVisibleIssue(client, "/PAP/chats/agent-1", { issueId: "chat-1", runId: "run-1" }, { isForegrounded: true })).toBe(true);
+    expect(__liveUpdatesTestUtils.shouldSuppressRunStatusToastForVisibleIssue(client, "/PAP/chats/agent-1", { issueId: "other-chat", runId: "run-2" }, { isForegrounded: true })).toBe(false);
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", { entityType: "issue", entityId: "chat-1", action: "issue.conversation_session_started", actorType: "system" }, { userId: "user-1", agentId: null }, { pathname: "/PAP/chats/agent-1", isForegrounded: true });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.comments("chat-1") });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["issues", "tree-control-state", "chat-1"] });
+    invalidate.mockClear();
+    __liveUpdatesTestUtils.invalidateVisibleIssueRunQueries(client, "/PAP/chats/agent-1", { agentId: "agent-1", runId: "run-1", status: "succeeded" }, { isForegrounded: true });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.comments("chat-1") });
+    client.clear();
+  });
+
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
     const queryClient = {

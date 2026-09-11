@@ -1,3 +1,8 @@
+import { acknowledgeChatMessage, chatMessageRequestId } from "@/lib/chat-message-request";
+import { agentChatDraft } from "@/lib/agent-chat-draft";
+import { Settings as ChatSettings } from "lucide-react";
+import { agentDetailHref } from "./agent-detail-navigation";
+import { deriveInitials } from "@/components/Identity";
 import { TaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
 import {
   memo,
@@ -931,14 +936,14 @@ function IssueChatSkeleton() {
   );
 }
 
-function useTaskDetailInterfaceMode() {
+function useTaskDetailInterfaceMode(conversationMode = false) {
   const {
     enabled: classicTaskInterfacePreferenceEnabled,
     loaded: classicTaskInterfaceLoaded,
   } = useClassicTaskInterfaceEnabled();
   const { enabled: streamlinedUiEnabled, loaded: streamlinedUiLoaded } =
     useStreamlinedUiEnabled();
-  const classicTaskInterfaceEnabled = classicTaskInterfacePreferenceEnabled;
+  const classicTaskInterfaceEnabled = classicTaskInterfacePreferenceEnabled && !conversationMode;
   const taskChatShellEnabled = !classicTaskInterfaceEnabled;
 
   return {
@@ -1252,6 +1257,7 @@ type IssueDetailChatTabProps = {
   currentAssigneeValue: string;
   suggestedAssigneeValue: string;
   mentions: MentionOption[];
+  conversationMode?: boolean;
   composerDisabledReason: string | null;
   composerHint: string | null;
   queuedCommentReason: "hold" | "active_run" | "other";
@@ -1371,6 +1377,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   currentAssigneeValue,
   suggestedAssigneeValue,
   mentions,
+  conversationMode,
   composerDisabledReason,
   composerHint,
   queuedCommentReason,
@@ -1407,7 +1414,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   // Preserve master's Classic Task Interface seam: Streamlined UI changes the
   // TaskChatThread presentation but never swaps it for IssueChatThread.
   const { classicTaskInterfaceEnabled, streamlinedTaskDetailEnabled } =
-    useTaskDetailInterfaceMode();
+    useTaskDetailInterfaceMode(!!conversationMode);
   const ThreadComponent = classicTaskInterfaceEnabled
     ? IssueChatThread
     : TaskChatThread;
@@ -1418,11 +1425,13 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const { data: activity, isPending: activityPending, isError: activityError, refetch: refetchActivity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
+    enabled: !!issueId,
     placeholderData: keepPreviousDataForSameQueryTail<ActivityEvent[]>(issueId),
   });
   const { data: liveRuns, isFetched: liveRunsFetched, isError: liveRunsError, refetch: refetchLiveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
+    enabled: !!issueId,
     refetchInterval: 1000,
     placeholderData:
       keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId),
@@ -1498,6 +1507,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const { data: linkedRuns, isPending: linkedRunsPending, isError: linkedRunsError, refetch: refetchLinkedRuns } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
+    enabled: !!issueId,
     refetchInterval:
       hasLiveRuns || issueStatus === "in_progress" ? 1000 : false,
     placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
@@ -2243,7 +2253,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         <TaskChatScrollNavigation.Provider value={{ key: scrollLocation.key, restore: scrollNavigationType === "POP", hash: scrollLocation.hash }}>
         <ThreadComponent
           key={issueId}
-          initialHistoryPending={initialHistoryPending || commentsInitialLoading || activityPending || linkedRunsPending || !runtimeSelectionKnown}
+          {...(!classicTaskInterfaceEnabled ? { creationActivity: resolvedActivity } : {})}
+          initialHistoryPending={!!issueId && (initialHistoryPending || commentsInitialLoading || activityPending || linkedRunsPending || !runtimeSelectionKnown)}
           initialHistoryError={initialHistoryError || activityError || linkedRunsError || liveRunsError || (activeRunQueryEnabled && activeRunError)}
           onRetryInitialHistory={() => {
             onRetryInitialHistory?.();
@@ -2316,7 +2327,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           userLabelMap={userLabelMap}
           userProfileMap={userProfileMap}
           draftKey={draftKey}
-          enableReassign
+          conversationMode={conversationMode}
+          enableReassign={!conversationMode}
           reassignOptions={reassignOptions}
           currentAssigneeValue={currentAssigneeValue}
           suggestedAssigneeValue={suggestedAssigneeValue}
@@ -2753,8 +2765,17 @@ function IssueDetailActivityTab({
   );
 }
 
-export function IssueDetail() {
-  const { issueId } = useParams<{ issueId: string }>();
+export function IssueDetail() { return <TaskDetailSurface />; }
+
+/** One controller and surface for both task URLs and agent conversations. */
+export function TaskDetailSurface({ conversation }: { conversation?: {
+  agent: Agent; issue: Issue | null; ensureIssue: () => Promise<Issue>;
+} }) {
+  const { issueId: routeIssueId } = useParams<{ issueId: string }>();
+  const issueId = conversation ? conversation.issue?.id : routeIssueId;
+  const [draftWorkMode, setDraftWorkMode] = useState<IssueWorkMode>("standard");
+  const draftIssue = useMemo(() => conversation ? agentChatDraft(conversation.agent, draftWorkMode) : undefined, [conversation?.agent, draftWorkMode]);
+  const messageRequestIds = useRef(new Map<string, string>());
   const { selectedCompanyId } = useCompany();
   // Classic Task Interface remains the sole task-chat-vs-pre-chat switch from
   // master. Streamlined UI only layers the new task-detail presentation onto
@@ -2765,7 +2786,7 @@ export function IssueDetail() {
     streamlinedTaskDetailEnabled,
     streamlinedUiEnabled,
     loaded: taskInterfaceSettingsLoaded,
-  } = useTaskDetailInterfaceMode();
+  } = useTaskDetailInterfaceMode(!!conversation);
   // Chat-style: the page wrapper spans the full center pane so the thread's
   // scroll viewport (and its scrollbar) reaches the properties-pane border;
   // every non-thread section re-centers itself at the 60rem shell cap instead.
@@ -2865,7 +2886,7 @@ export function IssueDetail() {
   );
 
   const {
-    data: issue,
+    data: loadedIssue,
     isLoading,
     error,
   } = useQuery({
@@ -2879,8 +2900,15 @@ export function IssueDetail() {
     }),
     enabled: !!issueId,
   });
+  const issue = loadedIssue ?? conversation?.issue ?? draftIssue;
+  const resolveWritableIssueId = async () => {
+    if (!conversation) return issueId!;
+    const resolved = await conversation.ensureIssue();
+    if (!conversation.issue && draftWorkMode !== resolved.workMode) await issuesApi.update(resolved.id, { workMode: draftWorkMode });
+    return resolved.id;
+  };
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
-  const externalObjectsState = useIssueExternalObjects(issue?.id ?? null);
+  const externalObjectsState = useIssueExternalObjects(conversation && !conversation.issue ? null : issue?.id ?? null);
   // A closed isolated workspace no longer blocks the composer. The server reopens
   // the workspace when the next comment or resume arrives, so the composer stays
   // enabled and a hint tells the user what happens.
@@ -3065,7 +3093,7 @@ export function IssueDetail() {
         descendantOf: issue!.id,
         includeBlockedBy: true,
       }),
-    enabled: !!resolvedCompanyId && !!issue?.id,
+    enabled: !!resolvedCompanyId && !!issue?.id && !issue.id.startsWith("chat:"),
     placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(
       issue?.id ?? "pending",
     ),
@@ -4192,7 +4220,16 @@ export function IssueDetail() {
       body: string;
       reopen?: boolean;
       interrupt?: boolean;
-    }) => issuesApi.addComment(issueId!, body, reopen, interrupt),
+    }) => {
+      const chatScope = issue?.conversationAgentId ? `${issue.companyId}:${currentUserId}:${issue.conversationAgentId}` : null;
+      const requestId = chatScope ? chatMessageRequestId(chatScope, body) : messageRequestIds.current.get(body) ?? crypto.randomUUID();
+      messageRequestIds.current.set(body, requestId);
+      return resolveWritableIssueId().then(id => issuesApi.addComment(id, body, reopen, interrupt, requestId)).then(comment => {
+        messageRequestIds.current.delete(body);
+        if (chatScope) acknowledgeChatMessage(chatScope, requestId);
+        return comment;
+      });
+    },
     onMutate: async ({ body, reopen, interrupt }) => {
       // Start cache cancellation immediately but do not put it in front of the
       // optimistic echo. The new-runner startup placeholder must paint in the
@@ -4257,7 +4294,7 @@ export function IssueDetail() {
           ),
         );
         try {
-          await issuesApi.cancelComment(issueId!, comment.id);
+          await issuesApi.cancelComment(comment.issueId, comment.id);
           invalidateIssueDetail();
           invalidateIssueThreadLazily();
           invalidateIssueCollections();
@@ -4280,14 +4317,14 @@ export function IssueDetail() {
           return next;
         });
         void queryClient.invalidateQueries({
-          queryKey: queryKeys.issues.queuedComments(issueId!),
+          queryKey: queryKeys.issues.queuedComments(issueId ?? comment.issueId),
         });
       }
       if (context?.optimisticCommentId) {
         commentRenderKeys.current.set(comment.id, context.optimisticCommentId);
       }
       queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
-        queryKeys.issues.comments(issueId!),
+        queryKeys.issues.comments(issueId ?? comment.issueId),
         (current) =>
           current
             ? {
@@ -4334,7 +4371,8 @@ export function IssueDetail() {
         tone: "error",
       });
     },
-    onSettled: (_result, _error, variables) => {
+    onSettled: (result, _error, variables) => {
+      if (result && !issueId) void queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(result.issueId) });
       invalidateIssueThreadLazily();
       if (variables.interrupt) {
         invalidateIssueRunState();
@@ -5001,14 +5039,15 @@ export function IssueDetail() {
   const uploadAttachment = useMutation({
     mutationFn: async (file: File) => {
       if (!selectedCompanyId) throw new Error("No organization selected");
-      return issuesApi.uploadAttachment(selectedCompanyId, issueId!, file);
+      return issuesApi.uploadAttachment(selectedCompanyId, await resolveWritableIssueId(), file);
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       setAttachmentError(null);
       queryClient.invalidateQueries({
-        queryKey: queryKeys.issues.attachments(issueId!),
+        queryKey: queryKeys.issues.attachments(issueId ?? result.issueId),
       });
       invalidateIssueDetail();
+      if (!issueId) void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(result.issueId) });
     },
     onError: (err) => {
       setAttachmentError(err instanceof Error ? err.message : "Upload failed");
@@ -5024,18 +5063,19 @@ export function IssueDetail() {
       const body = await file.text();
       const inferredTitle = titleizeFilename(baseName);
       const nextTitle = existing?.title ?? inferredTitle ?? null;
-      return issuesApi.upsertDocument(issueId!, key, {
+      return issuesApi.upsertDocument(await resolveWritableIssueId(), key, {
         title: key === "plan" ? null : nextTitle,
         format: "markdown",
         body,
         baseRevisionId: existing?.latestRevisionId ?? null,
       });
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       setAttachmentError(null);
       invalidateIssueDetail();
+      if (!issueId) void queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(result.issueId) });
       queryClient.invalidateQueries({
-        queryKey: queryKeys.issues.documents(issueId!),
+        queryKey: queryKeys.issues.documents(issueId ?? result.issueId),
       });
     },
     onError: (err) => {
@@ -5130,7 +5170,18 @@ export function IssueDetail() {
     },
   });
 
+  const conversationAgent = conversation?.agent ?? agents?.find(agent => agent.id === issue?.conversationAgentId);
   useEffect(() => {
+    if (conversationAgent) {
+      setBreadcrumbs([{
+        label: conversationAgent.name,
+        leading: <Avatar className="size-6 shrink-0"><AvatarFallback>{deriveInitials(conversationAgent.name)}</AvatarFallback></Avatar>,
+        leadingKey: `agent:${conversationAgent.id}`,
+        trailing: <Button variant="ghost" size="icon-xs" asChild aria-label={`Configure ${conversationAgent.name}`}><Link to={agentDetailHref(conversationAgent.id, "runtime")}><ChatSettings /></Link></Button>,
+        trailingKey: `configure:${conversationAgent.id}`,
+      }]);
+      return;
+    }
     setBreadcrumbs([
       sourceBreadcrumb,
       {
@@ -5143,6 +5194,7 @@ export function IssueDetail() {
       },
     ]);
   }, [
+    conversationAgent,
     breadcrumbTitle,
     breadcrumbIdentifier,
     hasLiveRuns,
@@ -5228,8 +5280,9 @@ export function IssueDetail() {
     if (main) main.scrollTop = 0;
   }, [issueId, navigationType]);
 
-  // Redirect to identifier-based URL if navigated via UUID
+  // Redirect task URLs to their identifier; agent chat URLs stay agent-addressed.
   useEffect(() => {
+    if (conversation) return;
     const nextState = resolvedIssueDetailState ?? location.state;
     if (issue?.identifier && issueId !== issue.identifier) {
       rememberIssueDetailLocationState(
@@ -5252,6 +5305,7 @@ export function IssueDetail() {
       });
     }
   }, [
+    conversation,
     issue,
     issueId,
     navigate,
@@ -5261,7 +5315,7 @@ export function IssueDetail() {
   ]);
 
   useEffect(() => {
-    if (!issue?.id) return;
+    if (!issueId || !issue?.id) return;
     if (lastMarkedReadIssueIdRef.current === issue.id) return;
     lastMarkedReadIssueIdRef.current = issue.id;
     markIssueRead.mutate(issue.id);
@@ -5356,7 +5410,7 @@ export function IssueDetail() {
   );
 
   useLayoutEffect(() => {
-    if (!panelIssue || suppressPanelUntilPlan) {
+    if (!panelIssue || suppressPanelUntilPlan || (conversation && !conversation.issue)) {
       closePanel();
       return;
     }
@@ -6583,7 +6637,7 @@ export function IssueDetail() {
     />
   );
 
-  const issueHeaderBlock = (
+  const issueHeaderBlock = issue.conversationAgentId ? null : (
     <div
       data-testid="issue-detail-header"
       className={cn(
@@ -7091,7 +7145,7 @@ export function IssueDetail() {
   ) : undefined;
 
   return (
-    <FileViewerProvider issueId={issue.id} enabled={fileViewerEnabled}>
+    <FileViewerProvider issueId={conversation && !conversation.issue ? "" : issue.id} enabled={fileViewerEnabled}>
       <IssueGalleryContext.Provider value={openIssueGallery}>
       <div
         data-task-chat-shell={taskChatShellEnabled ? "" : undefined}
@@ -7416,7 +7470,7 @@ export function IssueDetail() {
                   // Suppress the seeded-description bubble for the onboarding first
                   // task: its description is agent instructions, not something the
                   // user typed. The user lands on a seeded agent greeting instead.
-                  taskChatShellEnabled &&
+                  taskChatShellEnabled && !issue.conversationAgentId &&
                   issue.originKind !== ONBOARDING_FIRST_TASK_ORIGIN_KIND
                     ? {
                         description: issue.description ?? "",
@@ -7446,7 +7500,7 @@ export function IssueDetail() {
                       }
                     : undefined
                 }
-                issueId={issue.id}
+                issueId={conversation && !conversation.issue ? "" : issue.id}
                 companyId={issue.companyId}
                 projectId={issue.projectId ?? null}
                 issueStatus={issue.status}
@@ -7528,12 +7582,13 @@ export function IssueDetail() {
                 currentUserId={currentUserId}
                 userLabelMap={userLabelMap}
                 userProfileMap={userProfileMap}
-                draftKey={`paperclip:issue-comment-draft:${issue.id}`}
+                draftKey={conversationAgent ? `paperclip:agent-chat-draft:${issue.companyId}:${currentUserId}:${conversationAgent.id}` : `paperclip:issue-comment-draft:${issue.id}`}
                 reassignOptions={commentReassignOptions}
                 currentAssigneeValue={actualAssigneeValue}
                 suggestedAssigneeValue={suggestedAssigneeValue}
                 mentions={mentionOptions}
-                composerDisabledReason={null}
+                conversationMode={!!issue.conversationAgentId}
+                composerDisabledReason={issue.conversationAgentId && !instanceExperimentalSettings?.enableAgentChat ? "Agent Chat is disabled in Experimental settings." : null}
                 composerHint={composerHint}
                 queuedCommentReason={queuedCommentReason}
                 onVote={handleCommentVote}
@@ -7567,6 +7622,7 @@ export function IssueDetail() {
                   const currentMode: IssueWorkMode =
                     issue.workMode ?? "standard";
                   if (currentMode === nextMode) return;
+                  if (conversation && !conversation.issue) { setDraftWorkMode(nextMode); return; }
                   return updateIssue
                     .mutateAsync({ workMode: nextMode })
                     .then(() => undefined);

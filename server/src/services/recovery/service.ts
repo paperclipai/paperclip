@@ -1,3 +1,5 @@
+import { instanceSettingsService } from "../instance-settings.js";
+import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
 import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -2977,6 +2979,20 @@ export function recoveryService(
     }
 
     for (const issue of candidates) {
+      if (issue.conversationAgentId) {
+        const lastRun = await getLatestIssueRun(issue.companyId, issue.id);
+        if (lastRun?.status === "succeeded") {
+          if (await settleConversationTurn(db, (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, lastRun.id)))[0]!)) {
+            const [current] = await db.select().from(issues).where(eq(issues.id, issue.id));
+            if (current) Object.assign(issue, current);
+          }
+        }
+        if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) { result.skipped += 1; continue; }
+        {
+          await deliverConversationComments(db, issue, deps.enqueueWakeup);
+        }
+      }
+      if (isWaitingConversation(issue)) { result.skipped += 1; continue; }
       const executionState = issue.status === "in_review"
         ? parseIssueExecutionState(issue.executionState)
         : null;

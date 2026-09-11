@@ -534,6 +534,7 @@ function requireBlockedStatusForUnblockDescriptor(
 }
 
 const createIssueDuplicateGuardSchema = {
+  initialPlan: z.string().min(1).max(200000).optional().nullable(),
   idempotencyKey: z.string().trim().min(1).max(255).optional().nullable(),
   allowDuplicate: z.boolean()
     .describe("Bypasses recent-title duplicate detection; idempotency keys always replay their original issue")
@@ -732,6 +733,7 @@ export const issueCommentMetadataSchema = z.object({
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 
 export const addIssueCommentSchema = z.object({
+  clientRequestId: z.string().uuid().optional(),
   body: multilineTextSchema.pipe(z.string().min(1)),
   onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
   authorType: issueCommentAuthorTypeSchema.optional(),

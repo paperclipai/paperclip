@@ -1,11 +1,12 @@
 import { EXECUTION_RECONCILIATION_CAUSES } from "@paperclipai/shared";
-import { and, asc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
   agents,
   heartbeatRuns,
   issueRecoveryActions,
+  issueComments,
   issues,
 } from "@paperclipai/db";
 import { ISSUE_DISPOSITION_REPAIR_RETRY_REASON } from "@paperclipai/shared";
@@ -870,12 +871,29 @@ export function createPostgresRunDispatchAdapter(
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) return { issueId: null, decision: { stale: false as const } };
+    // A verified /new is a context-only command, not a replay of uncertain
+    // execution. Let it reach the ordered reset handler. After the boundary,
+    // old recovery records remain auditable but cannot restart the old turn.
+    const [conversation] = await tx.select().from(issues).where(and(
+      eq(issues.id, issueId), eq(issues.companyId, run.companyId),
+    ));
+    const commentId = deriveCommentId(contextSnapshot);
+    const [comment] = commentId ? await tx.select().from(issueComments).where(and(
+      eq(issueComments.id, commentId), eq(issueComments.issueId, issueId),
+      eq(issueComments.companyId, run.companyId),
+    )) : [];
+    const resetCommand = !!(conversation?.conversationAgentId && comment?.authorUserId
+      && !comment.deletedAt && comment.body.trim() === "/new");
+    const [boundary] = conversation?.conversationBoundaryCommentId
+      ? await tx.select().from(issueComments).where(eq(issueComments.id, conversation.conversationBoundaryCommentId)) : [];
     const [recovery] = await tx.select({ id: issueRecoveryActions.id, nextAction: issueRecoveryActions.nextAction })
       .from(issueRecoveryActions).where(and(
         eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
         or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
           sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
         inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
+        resetCommand ? sql`false` : boundary
+          ? gt(issueRecoveryActions.createdAt, boundary.createdAt) : undefined,
       )).limit(1);
     if (recovery) return { issueId, decision: { stale: true as const,
       errorCode: "execution_reconciliation_required" as const, reason: recovery.nextAction,

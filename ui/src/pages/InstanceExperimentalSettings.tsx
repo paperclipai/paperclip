@@ -311,6 +311,18 @@ export function InstanceExperimentalSettings() {
           ariaLabel="Toggle cases experimental setting"
         />
 
+        <ExperimentalToggleCard
+          title="Agent Chat"
+          description="Talk to each agent in one ongoing conversation. Clarify goals and create tasks for execution."
+          footnote="Turning this off preserves conversations and lets active runs finish, but prevents new messages."
+          checked={experimentalQuery.data?.enableAgentChat ?? false}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableAgentChat: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableAgentChat"
+          managed={managedKeys.enableAgentChat}
+          ariaLabel="Toggle agent chat experimental setting"
+        />
+
         {SHOW_CONFERENCE_ROOM_EXPERIMENTAL_SETTING ? (
           <ExperimentalToggleCard
             title="Conference Room Chat"
