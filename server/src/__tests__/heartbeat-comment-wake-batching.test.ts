@@ -3211,7 +3211,16 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(runs[1]?.contextSnapshot).toMatchObject({
         retryReason: "missing_issue_comment",
       });
-      expect(runs[1]?.contextSnapshot).not.toHaveProperty("modelProfile");
+      for (const key of [
+        "modelProfile",
+        "paperclipModelProfile",
+        "recoveryIntent",
+        "allowDeliverableWork",
+        "allowDocumentUpdates",
+        "resumeRequiresNormalModel",
+      ]) {
+        expect(runs[1]?.contextSnapshot).not.toHaveProperty(key);
+      }
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
@@ -3416,9 +3425,19 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           ),
         );
       expect(missingCommentRetries).toHaveLength(1);
-      expect(missingCommentRetries[0]?.payload).not.toHaveProperty(
-        "modelProfile",
-      );
+        expect(missingCommentRetries[0]?.payload).toMatchObject({
+          retryReason: "missing_issue_comment",
+        });
+        for (const key of [
+          "modelProfile",
+          "paperclipModelProfile",
+          "recoveryIntent",
+          "allowDeliverableWork",
+          "allowDocumentUpdates",
+          "resumeRequiresNormalModel",
+        ]) {
+          expect(missingCommentRetries[0]?.payload).not.toHaveProperty(key);
+        }
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();
