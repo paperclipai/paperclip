@@ -1,5 +1,5 @@
 {
-  "id": "5a688526-e6bb-45a7-a316-5be2211f23a1",
+  "id": "cad9198b-f814-4ed9-b364-e8677eab5c23",
   "prevId": "092c7808-7c68-4c95-82b9-07bc2244fbb8",
   "version": "7",
   "dialect": "postgresql",
@@ -6204,6 +6204,20 @@
           "primaryKey": false,
           "notNull": true
         },
+        "publication_mode": {
+          "name": "publication_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'automatic'"
+        },
+        "external_execution_policy": {
+          "name": "external_execution_policy",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'restricted'"
+        },
         "assigned_agent_id": {
           "name": "assigned_agent_id",
           "type": "uuid",
@@ -6432,6 +6446,22 @@
           "method": "btree",
           "with": {}
         },
+        "chat_endpoints_agentmail_inbox_uq": {
+          "name": "chat_endpoints_agentmail_inbox_uq",
+          "columns": [
+            {
+              "expression": "bot_external_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"chat_endpoints\".\"provider\" = 'agentmail' and \"chat_endpoints\".\"status\" != 'archived' and \"chat_endpoints\".\"bot_external_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "chat_endpoints_connection_uq": {
           "name": "chat_endpoints_connection_uq",
           "columns": [
@@ -6619,9 +6649,21 @@
       },
       "policies": {},
       "checkConstraints": {
+        "chat_endpoints_publication_mode_check": {
+          "name": "chat_endpoints_publication_mode_check",
+          "value": "\"chat_endpoints\".\"publication_mode\" in ('automatic', 'explicit')"
+        },
+        "chat_endpoints_execution_policy_check": {
+          "name": "chat_endpoints_execution_policy_check",
+          "value": "\"chat_endpoints\".\"external_execution_policy\" in ('restricted', 'agent')"
+        },
+        "chat_endpoints_email_policy_check": {
+          "name": "chat_endpoints_email_policy_check",
+          "value": "\"chat_endpoints\".\"provider\" <> 'agentmail' or (\"chat_endpoints\".\"publication_mode\" = 'explicit' and \"chat_endpoints\".\"external_execution_policy\" = 'agent')"
+        },
         "chat_endpoints_provider_check": {
           "name": "chat_endpoints_provider_check",
-          "value": "\"chat_endpoints\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram')"
+          "value": "\"chat_endpoints\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail')"
         },
         "chat_endpoints_status_check": {
           "name": "chat_endpoints_status_check",
@@ -6806,7 +6848,7 @@
       "checkConstraints": {
         "chat_external_principals_provider_check": {
           "name": "chat_external_principals_provider_check",
-          "value": "\"chat_external_principals\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram')"
+          "value": "\"chat_external_principals\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail')"
         },
         "chat_external_principals_kind_check": {
           "name": "chat_external_principals_kind_check",
@@ -17056,6 +17098,383 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.email_endpoints": {
+      "name": "email_endpoints",
+      "schema": "",
+      "columns": {
+        "endpoint_id": {
+          "name": "endpoint_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "receive_mode": {
+          "name": "receive_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "webhook_id": {
+          "name": "webhook_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "owned_api_key_id": {
+          "name": "owned_api_key_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "activation_at": {
+          "name": "activation_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_checkpoint": {
+          "name": "sync_checkpoint",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_sync_at": {
+          "name": "last_sync_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "email_endpoints_company_id_endpoint_id_chat_endpoints_company_id_id_fk": {
+          "name": "email_endpoints_company_id_endpoint_id_chat_endpoints_company_id_id_fk",
+          "tableFrom": "email_endpoints",
+          "tableTo": "chat_endpoints",
+          "columnsFrom": [
+            "company_id",
+            "endpoint_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "email_endpoints_receive_mode_check": {
+          "name": "email_endpoints_receive_mode_check",
+          "value": "\"email_endpoints\".\"receive_mode\" in ('websocket', 'webhook')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.email_messages": {
+      "name": "email_messages",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "endpoint_id": {
+          "name": "endpoint_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "envelope": {
+          "name": "envelope",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "text": {
+          "name": "text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "full_text": {
+          "name": "full_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "direction": {
+          "name": "direction",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "automatic": {
+          "name": "automatic",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "attachment_ids": {
+          "name": "attachment_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "timestamp": {
+          "name": "timestamp",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "email_messages_provider_uq": {
+          "name": "email_messages_provider_uq",
+          "columns": [
+            {
+              "expression": "endpoint_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "email_messages_conversation_idx": {
+          "name": "email_messages_conversation_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "conversation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "timestamp",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "email_messages_company_id_endpoint_id_chat_endpoints_company_id_id_fk": {
+          "name": "email_messages_company_id_endpoint_id_chat_endpoints_company_id_id_fk",
+          "tableFrom": "email_messages",
+          "tableTo": "chat_endpoints",
+          "columnsFrom": [
+            "company_id",
+            "endpoint_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "email_messages_company_id_conversation_id_chat_conversations_company_id_id_fk": {
+          "name": "email_messages_company_id_conversation_id_chat_conversations_company_id_id_fk",
+          "tableFrom": "email_messages",
+          "tableTo": "chat_conversations",
+          "columnsFrom": [
+            "company_id",
+            "conversation_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "email_messages_direction_check": {
+          "name": "email_messages_direction_check",
+          "value": "\"email_messages\".\"direction\" in ('inbound', 'outbound')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.email_sends": {
+      "name": "email_sends",
+      "schema": "",
+      "columns": {
+        "publication_id": {
+          "name": "publication_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "endpoint_id": {
+          "name": "endpoint_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request": {
+          "name": "request",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor": {
+          "name": "actor",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "digest": {
+          "name": "digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "first_attempt_at": {
+          "name": "first_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "email_sends_pending_idx": {
+          "name": "email_sends_pending_idx",
+          "columns": [
+            {
+              "expression": "endpoint_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outcome",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"email_sends\".\"outcome\" in ('queued', 'uncertain')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "email_sends_company_id_endpoint_id_chat_endpoints_company_id_id_fk": {
+          "name": "email_sends_company_id_endpoint_id_chat_endpoints_company_id_id_fk",
+          "tableFrom": "email_sends",
+          "tableTo": "chat_endpoints",
+          "columnsFrom": [
+            "company_id",
+            "endpoint_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "email_sends_company_id_publication_id_chat_publications_company_id_id_fk": {
+          "name": "email_sends_company_id_publication_id_chat_publications_company_id_id_fk",
+          "tableFrom": "email_sends",
+          "tableTo": "chat_publications",
+          "columnsFrom": [
+            "company_id",
+            "publication_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "email_sends_outcome_check": {
+          "name": "email_sends_outcome_check",
+          "value": "\"email_sends\".\"outcome\" in ('queued', 'sent', 'delivered', 'failed', 'uncertain')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.environment_custom_image_setup_sessions": {
@@ -41629,7 +42048,7 @@
         },
         "tool_connections_channel_transport_check": {
           "name": "tool_connections_channel_transport_check",
-          "value": "(\n      (\"tool_connections\".\"connection_purpose\" = 'tool' and \"tool_connections\".\"transport\" <> 'chat_sdk')\n      or\n      (\"tool_connections\".\"connection_purpose\" = 'channel' and \"tool_connections\".\"transport\" = 'chat_sdk')\n    )"
+          "value": "(\n      (\"tool_connections\".\"connection_purpose\" = 'tool' and \"tool_connections\".\"transport\" <> 'chat_sdk')\n      or\n      (\"tool_connections\".\"connection_purpose\" = 'channel' and (\"tool_connections\".\"transport\" = 'chat_sdk' or (\"tool_connections\".\"transport\" = 'rest_api' and \"tool_connections\".\"config\"->>'provider' = 'agentmail')))\n    )"
         },
         "tool_connections_auth_kind_check": {
           "name": "tool_connections_auth_kind_check",
@@ -46897,655 +47316,6 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.task_repository_bindings": {
-      "name": "task_repository_bindings",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "repo_url": {
-          "name": "repo_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "repo_ref": {
-          "name": "repo_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "setup_complete": {
-          "name": "setup_complete",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "retired_at": {
-          "name": "retired_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "checkpoint_key": {
-          "name": "checkpoint_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "checkpoint_sha256": {
-          "name": "checkpoint_sha256",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "checkpoint_at": {
-          "name": "checkpoint_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "task_repository_bindings_company_id_companies_id_fk": {
-          "name": "task_repository_bindings_company_id_companies_id_fk",
-          "tableFrom": "task_repository_bindings",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "task_repository_bindings_task_id_issues_id_fk": {
-          "name": "task_repository_bindings_task_id_issues_id_fk",
-          "tableFrom": "task_repository_bindings",
-          "tableTo": "issues",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "task_repository_bindings_workspace_uq": {
-          "name": "task_repository_bindings_workspace_uq",
-          "nullsNotDistinct": false,
-          "columns": [
-            "company_id",
-            "task_id",
-            "workspace_id"
-          ]
-        },
-        "task_repository_bindings_name_uq": {
-          "name": "task_repository_bindings_name_uq",
-          "nullsNotDistinct": false,
-          "columns": [
-            "company_id",
-            "task_id",
-            "name"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.work_file_operations": {
-      "name": "work_file_operations",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "folder_id": {
-          "name": "folder_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "operation_id": {
-          "name": "operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "fingerprint": {
-          "name": "fingerprint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "work_file_operations_company_id_folder_id_work_folders_company_id_id_fk": {
-          "name": "work_file_operations_company_id_folder_id_work_folders_company_id_id_fk",
-          "tableFrom": "work_file_operations",
-          "tableTo": "work_folders",
-          "columnsFrom": [
-            "company_id",
-            "folder_id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "work_file_operations_receipt_uq": {
-          "name": "work_file_operations_receipt_uq",
-          "nullsNotDistinct": false,
-          "columns": [
-            "folder_id",
-            "operation_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.work_files": {
-      "name": "work_files",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "folder_id": {
-          "name": "folder_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "path": {
-          "name": "path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'file'"
-        },
-        "object_key": {
-          "name": "object_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "byte_size": {
-          "name": "byte_size",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "sha256": {
-          "name": "sha256",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "content_type": {
-          "name": "content_type",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'application/octet-stream'"
-        },
-        "executable": {
-          "name": "executable",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "deleted_at": {
-          "name": "deleted_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "work_files_folder_path_uq": {
-          "name": "work_files_folder_path_uq",
-          "columns": [
-            {
-              "expression": "folder_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "path",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"work_files\".\"deleted_at\" is null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "work_files_company_folder_idx": {
-          "name": "work_files_company_folder_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "folder_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "work_files_company_id_folder_id_work_folders_company_id_id_fk": {
-          "name": "work_files_company_id_folder_id_work_folders_company_id_id_fk",
-          "tableFrom": "work_files",
-          "tableTo": "work_folders",
-          "columnsFrom": [
-            "company_id",
-            "folder_id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.work_folder_objects": {
-      "name": "work_folder_objects",
-      "schema": "",
-      "columns": {
-        "object_key": {
-          "name": "object_key",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "folder_id": {
-          "name": "folder_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "repository_binding_id": {
-          "name": "repository_binding_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "delete_after": {
-          "name": "delete_after",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "work_folder_objects_cleanup_idx": {
-          "name": "work_folder_objects_cleanup_idx",
-          "columns": [
-            {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "delete_after",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.work_folder_runs": {
-      "name": "work_folder_runs",
-      "schema": "",
-      "columns": {
-        "run_id": {
-          "name": "run_id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "manifest": {
-          "name": "manifest",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "baselines": {
-          "name": "baselines",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "pending_operations": {
-          "name": "pending_operations",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "state": {
-          "name": "state",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'starting'"
-        },
-        "last_saved_at": {
-          "name": "last_saved_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "refresh_requested": {
-          "name": "refresh_requested",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "work_folder_runs_company_idx": {
-          "name": "work_folder_runs_company_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "work_folder_runs_run_id_heartbeat_runs_id_fk": {
-          "name": "work_folder_runs_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "work_folder_runs",
-          "tableTo": "heartbeat_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "work_folder_runs_company_id_companies_id_fk": {
-          "name": "work_folder_runs_company_id_companies_id_fk",
-          "tableFrom": "work_folder_runs",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.work_folders": {
-      "name": "work_folders",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "scope": {
-          "name": "scope",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "owner_id": {
-          "name": "owner_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "imported_at": {
-          "name": "imported_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "work_folders_company_id_companies_id_fk": {
-          "name": "work_folders_company_id_companies_id_fk",
-          "tableFrom": "work_folders",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "work_folders_owner_uq": {
-          "name": "work_folders_owner_uq",
-          "nullsNotDistinct": false,
-          "columns": [
-            "company_id",
-            "scope",
-            "owner_id"
-          ]
-        },
-        "work_folders_company_id_uq": {
-          "name": "work_folders_company_id_uq",
-          "nullsNotDistinct": false,
-          "columns": [
-            "company_id",
-            "id"
-          ]
-        }
-      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

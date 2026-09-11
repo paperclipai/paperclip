@@ -42,6 +42,100 @@ const identity: DurableRecoveryIdentity = {
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
 
+function renewalRequest(client: AuthenticatedClient, expiresAt: number): Record<string, unknown> {
+  return {
+    protocol: "paperclip.runner", version: client.welcome.version,
+    kind: "lease_renew", ...identity,
+    connectionId: client.welcome.connectionId,
+    connectionLeaseId: client.welcome.connectionLeaseId,
+    payload: {
+      connectionLeaseExpiresAtUnixMs: expiresAt,
+      connectionLeaseRevocationEpoch: (client.welcome.payload as Record<string, unknown>).connectionLeaseRevocationEpoch,
+    },
+  };
+}
+
+it("renews one authenticated connection for three weeks without replacing its authority", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-lease-renewal-"));
+  let now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  const ttl = 6 * 60 * 60 * 1_000;
+  const core = new DurablePrpControlPlane({
+    stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest,
+    connectionLeaseTtlMs: ttl,
+  });
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    let expiry = Number((client.welcome.payload as Record<string, unknown>).connectionLeaseExpiresAtUnixMs);
+    const leaseId = client.welcome.connectionLeaseId;
+    for (let hour = 0; hour < 21 * 24; hour += 3) {
+      now += ttl / 2;
+      const request = renewalRequest(client, expiry);
+      sendSecure(client, request);
+      const reply = (await receiveSecure(client))!;
+      expect(reply.kind).toBe("lease_renewed");
+      expect(reply.connectionLeaseId).toBe(leaseId);
+      expect(reply.connectionId).toBe(client.welcome.connectionId);
+      const next = Number((reply.payload as Record<string, unknown>).connectionLeaseExpiresAtUnixMs);
+      expect(next).toBe(now + ttl);
+      // A lost reply can be retried without another authority extension.
+      now += 1;
+      sendSecure(client, request);
+      expect((await receiveSecure(client))!.payload).toEqual(reply.payload);
+      expiry = next;
+    }
+    expect(core.store.state.connectionCount).toBe(1);
+    expect(Object.keys(core.store.state.leases)).toHaveLength(1);
+    expect(core.store.state.commands).toEqual([]);
+    client.socket.destroy();
+    await core.stop();
+    const restored = new DurablePrpControlPlane({
+      stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest,
+      connectionLeaseTtlMs: ttl,
+    });
+    try {
+      await restored.start();
+      const resumed = (await authenticate(restored, client.leaseToken!))!;
+      expect(resumed.welcome.connectionLeaseId).toBe(leaseId);
+      expect((resumed.welcome.payload as Record<string, unknown>).connectionLeaseExpiresAtUnixMs).toBe(expiry);
+      resumed.socket.destroy();
+    } finally { await restored.stop(); }
+  } finally {
+    clock.mockRestore();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each(["expired", "revoked", "wrong-run", "wrong-connection", "wrong-epoch", "future-expiry"])(
+  "cannot renew a lease with %s authority",
+  async (fault) => {
+    const root = mkdtempSync(resolve(tmpdir(), "runner-lease-denial-"));
+    const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+    let clock: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await core.start();
+      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      const expiry = Number((client.welcome.payload as Record<string, unknown>).connectionLeaseExpiresAtUnixMs);
+      const request = renewalRequest(client, expiry);
+      if (fault === "expired") clock = vi.spyOn(Date, "now").mockReturnValue(expiry);
+      if (fault === "revoked") Object.values(core.store.state.leases)[0]!.revokedAt = new Date().toISOString();
+      if (fault === "wrong-run") request.runId = "different-run";
+      if (fault === "wrong-connection") request.connectionId = "different-connection";
+      if (fault === "wrong-epoch") (request.payload as Record<string, unknown>).connectionLeaseRevocationEpoch = 999;
+      if (fault === "future-expiry") (request.payload as Record<string, unknown>).connectionLeaseExpiresAtUnixMs = expiry + 1;
+      sendSecure(client, request);
+      expect(await receiveSecure(client)).toBeNull();
+      expect(Object.values(core.store.state.leases)[0]!.expiresAtUnixMs).toBe(expiry);
+    } finally {
+      clock?.mockRestore();
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
 it("persists the initial warm attachment seed idempotently and rejects replacement", () => {
   const root = mkdtempSync(
     resolve(tmpdir(), "runner-initial-attachment-seed-test-"),

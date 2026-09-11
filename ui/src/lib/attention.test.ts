@@ -185,6 +185,9 @@ describe("attentionIsNewToday", () => {
 });
 
 describe("sourceMeta + severityStyle", () => {
+  it("uses a generic task label for persisted legacy productivity decisions", () => {
+    expect(sourceMeta("productivity_review").label).toBe("Task");
+  });
   it("labels every catalog source kind", () => {
     const kinds: AttentionSourceKind[] = [
       "approval",

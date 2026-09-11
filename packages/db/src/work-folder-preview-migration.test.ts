@@ -1,11 +1,12 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import postgres from "postgres";
+import { applyPendingMigrations, inspectMigrations } from "./client.js";
 import { describe, expect, it } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "./test-embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
-const migration = readFileSync(new URL("./migrations/0272_naive_the_watchers.sql", import.meta.url), "utf8");
+const migration = readFileSync(new URL("./migrations/0273_sandbox_work_folders.sql", import.meta.url), "utf8");
 
 (support.supported ? describe : describe.skip)("work folder preview migration", () => {
   it("preserves cached content, trash, and unpushed repository checkpoints on replay", async () => {
@@ -46,4 +47,43 @@ const migration = readFileSync(new URL("./migrations/0272_naive_the_watchers.sql
       await database.cleanup();
     }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+  it("applies an earlier mainline migration after a renamed preview without losing files", async () => {
+    const database = await startEmbeddedPostgresTestDatabase("work-folder-renumber-");
+    const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
+    try {
+      const company = randomUUID(), task = randomUUID(), folder = randomUUID();
+      await sql`INSERT INTO companies (id, name, issue_prefix) VALUES (${company}, 'Preview upgrade', 'PVU')`;
+      await sql`INSERT INTO issues (id, company_id, title) VALUES (${task}, ${company}, 'Existing task')`;
+      await sql`INSERT INTO work_folders (id, company_id, scope, owner_id) VALUES (${folder}, ${company}, 'task', ${task})`;
+      await sql`INSERT INTO work_files (company_id, folder_id, path, object_key, executable)
+        VALUES (${company}, ${folder}, 'saved.sh', 'preview/saved', true)`;
+      await sql`INSERT INTO task_repository_bindings (company_id, task_id, workspace_id, name, checkpoint_key)
+        VALUES (${company}, ${task}, ${randomUUID()}, 'repo', 'preview/unpushed')`;
+      const mainline = readFileSync(new URL("./migrations/0272_light_kate_bishop.sql", import.meta.url), "utf8");
+      const mainlineHash = createHash("sha256").update(mainline).digest("hex");
+      const previewHash = createHash("sha256").update(migration).digest("hex");
+      // Model a preview that already recorded its work-folder migration with a
+      // timestamp newer than the subsequently merged mainline migration.
+      await sql`DROP TABLE email_sends, email_messages, email_endpoints`;
+      await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${mainlineHash}`;
+      await sql`UPDATE drizzle.__drizzle_migrations SET created_at = 1789153813732 WHERE hash = ${previewHash}`;
+      const before = await inspectMigrations(database.connectionString);
+      expect(before.status).toBe("needsMigrations");
+      await applyPendingMigrations(database.connectionString);
+      await applyPendingMigrations(database.connectionString);
+      expect((await inspectMigrations(database.connectionString)).status).toBe("upToDate");
+      expect(await sql`SELECT to_regclass('public.email_messages') AS table_name`)
+        .toMatchObject([{ table_name: "email_messages" }]);
+      expect(await sql`SELECT path, object_key, executable FROM work_files WHERE folder_id = ${folder}`)
+        .toMatchObject([{ path: "saved.sh", object_key: "preview/saved", executable: true }]);
+      expect(await sql`SELECT checkpoint_key FROM task_repository_bindings WHERE task_id = ${task}`)
+        .toMatchObject([{ checkpoint_key: "preview/unpushed" }]);
+      expect(await sql`SELECT hash FROM drizzle.__drizzle_migrations WHERE hash = ${mainlineHash}`).toHaveLength(1);
+      expect(await sql`SELECT hash FROM drizzle.__drizzle_migrations WHERE hash = ${previewHash}`).toHaveLength(1);
+    } finally {
+      await sql.end();
+      await database.cleanup();
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
 });

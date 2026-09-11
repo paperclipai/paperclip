@@ -76,11 +76,15 @@ env:
 
 jobs:
   plan_preview:
+    # Only the current master commit can use AWS. A preview or older source
+    # falls back to GitHub-hosted runners, including raced merge dispatches.
     name: Check preview artifacts
     if: github.ref == 'refs/heads/master' && github.event_name == 'workflow_dispatch' && (inputs.channel == 'preview' || inputs.channel == 'cloud-migrator') && !inputs.dry_run
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event_name == 'workflow_dispatch' && inputs.channel == 'cloud-migrator' && github.sha != '' && inputs.source_ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     permissions:
       contents: read
+    # Preserve the previous hosted default; only AWS needs the Fleet limit.
+    timeout-minutes: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event_name == 'workflow_dispatch' && inputs.channel == 'cloud-migrator' && github.sha != '' && inputs.source_ref == github.sha && 10 || 360 }}
     outputs:
       image: ${{ steps.plan.outputs.image }}
       packages: ${{ steps.plan.outputs.packages }}
@@ -104,7 +108,7 @@ jobs:
     name: Build preview migrator
     needs: plan_preview
     if: needs.plan_preview.outputs.packages == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.event_name == 'workflow_dispatch' && inputs.channel == 'cloud-migrator' && github.sha != '' && inputs.source_ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -141,6 +145,7 @@ jobs:
           retention-days: 7
 
   publish_preview:
+    # npm trusted publishing supports GitHub-hosted runners only.
     name: Publish preview migrator
     needs: [plan_preview, package_preview]
     if: github.ref == 'refs/heads/master' && needs.plan_preview.outputs.packages == 'true' && needs.package_preview.result == 'success'

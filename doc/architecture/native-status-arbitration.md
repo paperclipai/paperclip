@@ -220,6 +220,19 @@ Examples:
 - a materialization failure records the failed phase and next retry time rather
   than silently dropping the side effect.
 
+## Policy upgrades
+
+The policy version on an assessment is audit metadata. New runs use the current
+rules. A version change alone does not reassess an old run, change task status,
+or ask a person to review completion. New evidence and explicit status changes
+still use the existing reconciliation paths.
+
+Reconciliation also withdraws pending review cards created solely by the old
+policy-version check. It restores the previous status only if that exact decision
+and status version are still current and no other review gate is pending. A later
+user or agent decision takes precedence. The old assessments and decisions remain
+in the audit history; cleanup does not accept or reject the agent's work.
+
 ## Diagnosing an unexpected status
 
 Start with the terminal heartbeat run and inspect:

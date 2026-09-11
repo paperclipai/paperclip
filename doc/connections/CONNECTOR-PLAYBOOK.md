@@ -42,6 +42,7 @@ for the P1/P2/P3 boundary and the D7 standing rule.
 - [Secret storage and lifecycle](#secret-storage-and-lifecycle)
 - [Current access defaults](#current-default-access-policy)
 - [Golden-path agent tutorial](#golden-path-agent-tutorial)
+- [Connection UX and user journeys](#connection-ux-and-user-journeys)
 - [AppDefinition field reference](#appdefinition-field-reference)
 - [Troubleshooting](#troubleshooting-and-failure-classification)
 - [Definition of done](#definition-of-done)
@@ -425,6 +426,122 @@ connection work or enforce a real tenant boundary. Follow these rules:
   label is not enforcement. The provider, gateway, wrapper, or managed header/
   query projection must enforce the boundary.
 
+#### Connector-provided skills and tools
+
+Connectors may contribute bundled skills with optional native tools. Keep provider-specific
+instructions out of the universal Paperclip skill and provider-specific tools
+out of the universal runner catalog. Use the trusted connector contribution
+registry in `server/src/services/connector-runtime.ts`; AgentMail is the first
+consumer. This registry describes bundled server implementations, not executable
+code or skill URLs supplied by a credential or external message.
+
+For each contribution, declare its connector key, bundled skill, namespaced tool
+definitions, resource-assignment resolver, and execution handler. Use names such
+as `agentmail_send` rather than extending core tools with provider-specific
+branches. Existing MCP connectors continue to use their normal MCP tool catalog;
+they do not need a duplicate native wrapper just to supply a skill.
+
+**Resolve eligibility from current assignments and access.** An AgentMail account
+credential alone does not give an agent email capabilities. An active inbox
+assigned to that agent does, provided both the inbox connection and saved
+credential access remain authorized and the experimental chat-connector flag is
+on. Other connectors must define an equally concrete assignment rule. Keep every
+lookup company-scoped. Revoked grants, disabled connections, removed assignments,
+and experimental gates must remove the contribution. Fail closed on lookup errors.
+
+**Install skills transparently through the existing runtime skill path.** Merge
+system-managed contributions with the agent's chosen skills for each run, without
+writing them into its saved skill preferences. Deduplicate multiple resources
+from the same connector into one skill. Include only authorized resource context,
+never provider secrets; treat resource values as data. Supply the short skill
+description for discovery and keep detailed instructions in the skill. The same
+resolved set must reach local CLI adapters, sandbox adapters, and native runners.
+Adapters with isolated skill delivery receive the bundle. Adapters that install
+into shared user directories receive the same assigned skill in the run prompt,
+including resumed turns, without writing connector files into that directory.
+Manual skill-sync operations must also exclude automatic connector bundles.
+The agent Skills page should identify automatic contributions and explain that
+assignment controls them; they are not independently enabled/disabled there.
+
+**Bind tools to the same resolved skill assignment.** Native sessions advertise
+only contributions present in their pinned runtime skill bundle. Include skill
+content, resource assignments, and tool revisions in session compatibility so a
+changed assignment cannot reuse stale declarations. Revalidate live assignment,
+company/task/run authority, and configured action policy on every execution.
+Removing a tool from discovery alone is not revocation enforcement. Retained
+provider sessions and previously issued calls must fail after access is revoked.
+
+**Avoid shared runtime contamination.** Do not install assignment-specific skills
+into a company-wide or user-wide runtime home. Use immutable skill bundles and
+scoped runtime directories. Codex CLI connector runs use a separate home per
+agent and connector-skill revision, seeded from the selected model credential
+home. Disconnecting returns to a runtime without those skills; another agent must
+never inherit them. Preserve explicit model identity and normal session recovery.
+
+Required tests cover no assignment, credential access without a resource,
+authorized assignment, multiple resources with one skill, cross-company access,
+revocation during a retained run, disabled flags/connections, and reassignment.
+Verify skill installation and removal in both CLI/sandbox and native execution,
+including tool discovery, runtime cache changes, and absence of provider secrets.
+Exercise an actual connector operation through the contributed tool, not just
+its declaration. Record which runtime paths were tested live versus deterministically.
+
+#### Connection UX and user journeys
+
+Design the whole journey, from finding the app to doing useful work with an
+agent. A successful credential exchange is only one step. Describe who the
+user is, where they start, what they want to accomplish, and where they will
+see the result. Walk through first use, returning use, and recovery from a
+failed action. For messaging connections, cover both agent-initiated work and
+incoming messages that start or continue work.
+
+**Separate connecting from assigning an agent a resource.** First configure
+who can use the connection and authenticate with the provider. If the feature
+also assigns a resource to a specific agent, offer a second wizard from the
+connection's Permissions view after the connection is saved. Give its entry
+point a prominent, concrete action name. For example, AgentMail uses “Give an
+agent an email address,” followed by Agent → Email address → Review. Reuse the
+saved credential; do not ask for the API key again. Use the existing numbered
+step pattern, sensible defaults, Back and Cancel, and a clear completion state.
+Do not add a second wizard when there is no separate assignment to configure.
+
+Let the operator search eligible company agents, including agents not yet on
+the connection's allowed list. When assigning a resource also grants connection
+access, make that consequence clear and persist the grant through the existing
+access machinery. Respect the operator's authority to grant access, and show
+the selected agent's avatar and name.
+
+**Use the minimum text needed to make the next action clear.** Prefer familiar
+controls and precise labels over explanatory paragraphs. Remove repeated
+headings, redundant access summaries, implementation details, and reassurance
+that does not help the user decide or act. Keep necessary warnings, meaningful
+consequences, and actionable errors. Put optional expert settings under a
+collapsed Advanced disclosure. Link to provider-owned administration, such as
+AgentMail allowlists, rather than rebuilding it in Paperclip.
+
+**Keep ongoing interactions in Paperclip tasks.** Connections are where users
+set up access and configuration; tasks are where they work with agents. Design
+what happens after setup: how an agent invokes the connection, where incoming
+work lands, how follow-ups stay associated with that work, and how users see
+success or recover from failure. Avoid introducing a separate mailbox or
+provider dashboard as the primary interaction surface.
+
+Use rich cards in the task feed when they make external activity easier to
+understand. An email card, for example, can show the sender, recipients, body,
+attachments, and delivery state. Keep external activity distinguishable from
+internal discussion; a task comment or agent progress update must not imply
+that an external action occurred. Reuse existing task-feed components and
+preserve one visible record per external event.
+
+**Make interactive Storybooks for setup and actual use.** Include the catalog
+card, access and credential steps, any agent-resource wizard, and the task
+journeys after setup. Provide a clickable walkthrough plus focused stories for
+important steps, loading, errors, and recovery. Use realistic fixtures and
+clearly label simulated actions. Reuse production components as implementation
+lands, and replace obsolete stories so the examples describe the current
+experience. Storybooks support design review and deterministic interaction
+tests; they do not replace a real-provider browser test.
+
 ### Phase 4: Add official branding before exposing the app
 
 Every store-visible provider needs an official local mark. A letter tile is
@@ -689,7 +806,11 @@ At minimum, add or update tests in these layers:
   declared.
 - Finish setup resumes the exact draft using `resumeConnectionId`.
 - Optional customer OAuth details stay folded when automatic OAuth exists.
-- Setup success leads to the connection's Test page.
+- Setup success leads to the connection's Test page, or to Permissions when a
+  separate agent-resource assignment is the next step. Follow the
+  [connection UX guidance](#connection-ux-and-user-journeys).
+- Interactive Storybooks cover setup and ongoing task interactions, including
+  relevant failure states; the walkthrough matches the implemented journey.
 - Missing images fall back at runtime, while manifest acceptance still fails
   missing branding.
 
@@ -1212,6 +1333,11 @@ connection actually enables it.
 ### Step 7: Select The Wizard Path
 
 The wizard path comes from auth mode and transport:
+
+These paths describe authentication and provisioning. Apply the
+[connection UX guidance](#connection-ux-and-user-journeys) to the user-facing
+sequence: choose access before authentication, then configure any per-agent
+resource through a separate wizard on the saved connection.
 
 | Auth mode | Operator path | Stored result |
 | --- | --- | --- |
