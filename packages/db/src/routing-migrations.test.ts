@@ -116,12 +116,16 @@ describeEmbeddedPostgres("task attempt routing migration", () => {
           )
         `).rejects.toThrow(/route_decisions_revision_check/);
 
-        // Decisions are immutable in intent; the row has no updated_at column.
-        const columns = await sql<{ column_name: string }[]>`
-          SELECT column_name FROM information_schema.columns
-          WHERE table_name = 'route_decisions' AND column_name = 'updated_at'
-        `;
-        expect(columns).toEqual([]);
+        // Revision numbers are unique per issue: a duplicate revision can never overwrite history.
+        await expect(sql`
+          INSERT INTO "route_decisions" (
+            "id", "company_id", "issue_id", "revision", "revision_kind", "policy_version", "task_class", "effective_task_class", "state",
+            "max_attempts", "max_wall_clock_minutes", "created_by_type"
+          ) VALUES (
+            ${randomUUID()}, ${companyA}, ${issueA}, 1, 'initial', 'routing-policy/v1', 'feature_standard', 'feature_standard', 'classification-required',
+            2, 180, 'system'
+          )
+        `).rejects.toThrow(/route_decisions_company_issue_revision_uq/);
 
         await sql`
           INSERT INTO "route_pool_claims" ("company_id", "profile_id", "decision_id", "issue_id", "role")

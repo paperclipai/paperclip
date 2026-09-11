@@ -131,9 +131,12 @@ export const overrideRouteSchema = z.object({
   "An override must change at least one routing field",
 );
 
+export const ROUTE_CLAIM_RELEASE_REASONS = ["operator_release", "attempt_abandoned", "run_lost", "capacity_rebalance"] as const;
+export type RouteClaimReleaseReason = (typeof ROUTE_CLAIM_RELEASE_REASONS)[number];
+
 export const releaseRouteClaimSchema = z.object({
   role: attemptRoleSchema,
-  reason: z.string().trim().min(1).max(200),
+  reason: z.enum(ROUTE_CLAIM_RELEASE_REASONS),
 }).strict();
 
 export type TaskFactsInput = z.infer<typeof taskFactsSchema>;

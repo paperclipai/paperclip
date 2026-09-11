@@ -43,6 +43,8 @@ describeEmbeddedPostgres("task attempt routing routes", () => {
   const wakes: WakeCall[] = [];
   let rejectWakes = false;
   let supersedeDuringAdmission = false;
+  /** Mirrors a wake parked on a durable carrier: the run is bound via bindRun but enqueue returns null. */
+  let parkWakes = false;
 
   /** Fake scheduler seam: mirrors enqueueWakeup's admission contract — bindWake and bindRun run inside the admission transaction. */
   const enqueueWakeup: RoutingWakeup = async (agentId, opts) => {
@@ -69,7 +71,7 @@ describeEmbeddedPostgres("task attempt routing routes", () => {
         await tx.insert(routeDecisions).values({ ...rest, revision: current.revision + 1, supersedesDecisionId: current.id, revisionKind: "override", note: "concurrent" });
       }
       await opts.bindWake?.(tx);
-      return run;
+      return parkWakes ? null : run;
     });
   };
   beforeAll(async () => {
@@ -81,6 +83,7 @@ describeEmbeddedPostgres("task attempt routing routes", () => {
     wakes.length = 0;
     rejectWakes = false;
     supersedeDuringAdmission = false;
+    parkWakes = false;
     await db.delete(routePoolClaims);
     await db.delete(routeDecisions);
     await db.delete(routeRules);
@@ -198,7 +201,7 @@ describeEmbeddedPostgres("task attempt routing routes", () => {
       expect(ok.body.enabled).toBe(false);
 
       const foreignPatch = await request(app(memberBoardActor(otherCompany))).patch(`/api/execution-profiles/${a.profiles.astra}`).send({ expectedVersion: 2, enabled: true });
-      expect(foreignPatch.status).toBe(403);
+      expect(foreignPatch.status).toBe(404);
     });
 
     it("rejects same-family or self reviewers on rule writes and seeds the matrix from explicit bindings", async () => {
@@ -257,7 +260,7 @@ describeEmbeddedPostgres("task attempt routing routes", () => {
       expect(JSON.stringify(audit[0]!.details)).not.toContain("adapterConfig");
 
       const foreign = await request(app(memberBoardActor(randomUUID()))).get(`/api/issues/${issueId}/routing`);
-      expect(foreign.status).toBe(403);
+      expect(foreign.status).toBe(404);
     });
 
     it("persists typed refusals for invalid facts instead of a cheap default", async () => {
@@ -284,7 +287,7 @@ describeEmbeddedPostgres("task attempt routing routes", () => {
       expect(denied.status).toBe(403);
 
       const res = await board.post(`/api/issues/${issueId}/routing/dispatch`);
-      expect(res.status).toBe(200);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(res.body.dispatched).toBe(true);
       expect(wakes).toHaveLength(1);
       expect(wakes[0]!.agentId).toBe(a.agents.fable51Agent);
@@ -375,6 +378,125 @@ describeEmbeddedPostgres("task attempt routing routes", () => {
       maxAttempts: 2, maxWallClockMinutes: 120, createdByType: "system",
     } as const;
   }
+
+  describe("review gate, authority floors, and lifecycle edges", () => {
+    it("installs the native cross-family review stage on dispatch and never names the worker as participant", async () => {
+      const a = await seedCompany();
+      await seedDefaults(a.companyId, a.bindings);
+      const issueId = await seedIssue(a.companyId);
+      const board = request(app(boardActor(a.companyId)));
+      const routed = (await board.post(`/api/issues/${issueId}/routing/route`).send({ facts: featureFacts })).body;
+      await board.post(`/api/issues/${issueId}/routing/dispatch`);
+      const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+      const policy = issue.executionPolicy as { stages: Array<{ id: string; type: string; participants: Array<{ agentId: string | null }> }> };
+      expect(policy.stages).toHaveLength(1);
+      expect(policy.stages[0]!.id).toBe(routed.id);
+      expect(policy.stages[0]!.type).toBe("review");
+      const participantAgents = policy.stages[0]!.participants.map((participant) => participant.agentId);
+      expect(participantAgents).toEqual([a.agents.astraAgent, a.agents.solAgent]);
+      expect(participantAgents).not.toContain(a.agents.fable51Agent);
+    });
+
+    it("leaves an operator-authored execution policy untouched and records why", async () => {
+      const a = await seedCompany();
+      await seedDefaults(a.companyId, a.bindings);
+      const operatorStage = randomUUID();
+      const issueId = await seedIssue(a.companyId, {
+        executionPolicy: { mode: "normal", commentRequired: true, stages: [{ id: operatorStage, type: "approval", approvalsNeeded: 1, participants: [{ id: randomUUID(), type: "user", userId: "board-user" }] }] },
+      });
+      const board = request(app(boardActor(a.companyId)));
+      await board.post(`/api/issues/${issueId}/routing/route`).send({ facts: featureFacts });
+      await board.post(`/api/issues/${issueId}/routing/dispatch`);
+      const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+      expect((issue.executionPolicy as { stages: Array<{ id: string }> }).stages.map((stage) => stage.id)).toEqual([operatorStage]);
+      const audit = await db.select().from(activityLog).where(and(eq(activityLog.companyId, a.companyId), eq(activityLog.action, "route_review.gate_preexisting")));
+      expect(audit).toHaveLength(1);
+    });
+
+    it("refuses an agent re-route that lowers an established risk floor", async () => {
+      const a = await seedCompany();
+      await seedDefaults(a.companyId, a.bindings);
+      const issueId = await seedIssue(a.companyId);
+      await db.update(agents).set({ status: "paused", pauseReason: "manual" }).where(eq(agents.id, a.agents.astraAgent));
+      const board = request(app(boardActor(a.companyId)));
+      const refused = await board.post(`/api/issues/${issueId}/routing/route`).send({ facts: { ...featureFacts, taskClass: "migration", riskFlags: ["persistence"] } });
+      expect(refused.body.state).toBe("reviewer-unavailable");
+      const parked = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+      expect(parked.status).toBe("blocked");
+      await db.update(issues).set({ status: "todo", unblockDescriptor: null }).where(eq(issues.id, issueId));
+      await db.update(agents).set({ status: "idle", pauseReason: null }).where(eq(agents.id, a.agents.astraAgent));
+      const agent = request(app(agentActor(a.companyId, a.agents.fable5Agent)));
+      const downgrade = await agent.post(`/api/issues/${issueId}/routing/route`).send({ facts: { ...featureFacts, taskClass: "bug_fast", consequential: false } });
+      expect(downgrade.status).toBe(403);
+      expect(downgrade.body.details.code).toBe("route_downgrade_requires_board");
+      const sameFloor = await agent.post(`/api/issues/${issueId}/routing/route`).send({ facts: { ...featureFacts, taskClass: "migration", riskFlags: ["persistence"] } });
+      expect(sameFloor.status).toBe(201);
+      expect(sameFloor.body.state).toBe("routed");
+      expect(sameFloor.body.revisionKind).toBe("fallback");
+    });
+
+    it("keeps the current worker on a reviewer-only override and rejects a prior-author reviewer", async () => {
+      const a = await seedCompany();
+      await seedDefaults(a.companyId, a.bindings);
+      const issueId = await seedIssue(a.companyId);
+      const board = request(app(boardActor(a.companyId)));
+      await board.post(`/api/issues/${issueId}/routing/route`).send({ facts: featureFacts });
+      // Rule changes after routing must not move the worker through a reviewer-only override.
+      await board.put(`/api/companies/${a.companyId}/route-rules`).send({
+        taskClass: "feature_standard", workerProfileId: a.profiles.fable5, advisorProfileId: null, advisorMode: "none",
+        reviewerProfileId: a.profiles.astra, reviewerFallbackProfileId: a.profiles.sol, reviewRequirement: "always", reviewerFallbackPolicy: "fallback",
+        rescueProfileId: a.profiles.astra, maxAttempts: 2, maxWallClockMinutes: 120, maxCostCents: null,
+      });
+      const override = await board.post(`/api/issues/${issueId}/routing/override`).send({ expectedRevision: 1, reviewerProfileId: a.profiles.sol, note: "prefer sol" });
+      expect(override.status).toBe(201);
+      expect(override.body.worker.profileId).toBe(a.profiles.fable51);
+      expect(override.body.reviewer.profileId).toBe(a.profiles.sol);
+    });
+
+    it("records a fallback revision before the fallback reviewer reviews", async () => {
+      const a = await seedCompany();
+      await seedDefaults(a.companyId, a.bindings);
+      const issueId = await seedIssue(a.companyId, { status: "in_review", assigneeAgentId: a.agents.fable51Agent });
+      const board = request(app(boardActor(a.companyId)));
+      const routed = (await board.post(`/api/issues/${issueId}/routing/route`).send({ facts: featureFacts })).body;
+      expect(routed.reviewer.profileId).toBe(a.profiles.astra);
+      await db.update(agents).set({ adapterConfig: { model: "gpt-5.5" } }).where(eq(agents.id, a.agents.astraAgent));
+      const res = await board.post(`/api/issues/${issueId}/routing/review-request`);
+      expect(res.body.state).toBe("requested");
+      expect(res.body.reviewer.profileId).toBe(a.profiles.sol);
+      const routing = (await board.get(`/api/issues/${issueId}/routing`)).body;
+      expect(routing.current.revision).toBe(2);
+      expect(routing.current.revisionKind).toBe("fallback");
+      expect(routing.current.reviewer.profileId).toBe(a.profiles.sol);
+      expect(routing.current.reasonCodes).toContain("provider-unavailable");
+      const review = await db.select().from(issues).where(eq(issues.id, res.body.reviewIssueId)).then((rows) => rows[0]!);
+      expect(review.originId).toBe(routing.current.id);
+    });
+
+    it("requires the backing agent to declare its model so the routed model is verifiable", async () => {
+      const a = await seedCompany();
+      const modelless = randomUUID();
+      await db.insert(agents).values({ id: modelless, companyId: a.companyId, name: "Modelless", role: "engineer", status: "idle", adapterType: "process", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+      const res = await request(app(boardActor(a.companyId))).post(`/api/companies/${a.companyId}/execution-profiles`).send({ name: "modelless", providerFamily: "openai", agentId: modelless, model: "gpt-6-astra", effort: "low", roleCapabilities: ["worker"] });
+      expect(res.status).toBe(422);
+      expect(res.body.details.code).toBe("agent_model_unresolved");
+    });
+
+    it("keeps the slot when the scheduler parks a bound run instead of rejecting the wake", async () => {
+      const a = await seedCompany();
+      await seedDefaults(a.companyId, a.bindings);
+      const issueId = await seedIssue(a.companyId);
+      const board = request(app(boardActor(a.companyId)));
+      await board.post(`/api/issues/${issueId}/routing/route`).send({ facts: featureFacts });
+      parkWakes = true;
+      const res = await board.post(`/api/issues/${issueId}/routing/dispatch`);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ dispatched: false, reason: "parked" });
+      const active = await db.select().from(routePoolClaims).where(isNull(routePoolClaims.releasedAt));
+      expect(active).toHaveLength(1);
+      expect(active[0]!.runId).toBe(res.body.runId);
+    });
+  });
 
   describe("override, rescue, and review", () => {
     it("fences overrides by expected revision, rejects invariant violations, and retains lineage", async () => {

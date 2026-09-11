@@ -15,6 +15,7 @@ import {
   type AttemptRole,
   type CreateExecutionProfileInput,
   type ExecutionProfile,
+  type IssueExecutionPolicy,
   type IssueRouting,
   type OverrideRouteInput,
   type ProviderFamily,
@@ -30,16 +31,18 @@ import {
   type UpdateExecutionProfileInput,
   type UpsertRouteRuleInput,
 } from "@paperclipai/shared";
-import { HttpError, conflict, notFound, unprocessable } from "../../errors.js";
+import { HttpError, conflict, forbidden, notFound, unprocessable } from "../../errors.js";
 import { logActivity } from "../activity-log.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { budgetService } from "../budgets.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { normalizeIssueExecutionPolicy } from "../issue-execution-policy.js";
 import { issueService } from "../issues.js";
 import { redactSensitiveText } from "../../redaction.js";
 import {
   decideRoute,
   reviewerFamilyAllowed,
+  validateAuthoritySeparation,
   type PolicyProfile,
   type RouteOutcome,
   type RouteOverrideRequest,
@@ -50,6 +53,16 @@ export const ROUTE_DECISION_RUN_EVENT_TYPE = "route.decision";
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out"] as const;
 const LIVE_RUN_STATUSES = ["queued", "running"] as const;
 
+/** Higher means more authority required; agents may never route below an established rank. */
+const TASK_CLASS_RISK_RANK: Record<TaskClass, number> = {
+  mechanical: 0,
+  bug_fast: 1,
+  feature_standard: 2,
+  bug_invariant: 3,
+  feature_critical: 4,
+  migration: 4,
+  security_recovery: 5,
+};
 export type RoutingActor = {
   actorType: "agent" | "user" | "system";
   actorId: string;
@@ -104,12 +117,14 @@ type IssueRow = typeof issues.$inferSelect;
 
 export type DispatchResult =
   | { dispatched: true; decision: RouteDecision; claim: RoutePoolClaim; runId: string }
-  | { dispatched: false; decision: RouteDecision; reason: "wake_rejected" };
+  | { dispatched: false; decision: RouteDecision; reason: "wake_rejected" }
+  | { dispatched: false; decision: RouteDecision; reason: "parked"; runId: string };
 
 export type ReviewRequestResult =
   | { state: "requested"; reviewIssueId: string; reviewer: RouteDecisionParticipant; created: boolean }
   | { state: "not-required"; decision: RouteDecision }
-  | { state: "reviewer-unavailable"; decision: RouteDecision; blocked: boolean };
+  | { state: "reviewer-unavailable"; decision: RouteDecision; blocked: boolean }
+  | { state: "reviewer-capacity-exhausted"; decision: RouteDecision; reviewer: RouteDecisionParticipant };
 
 function toProfile(row: ProfileRow): ExecutionProfile {
   return {
@@ -237,6 +252,9 @@ function participantColumns<P extends ParticipantPrefix>(prefix: P, participant:
  * transaction handle is used — an outer-db query here would deadlock.
  */
 async function fenceRouteAdmission(tx: RoutingWakeBindingTx, decision: RouteDecision, claimId: string | null) {
+  // Lock the source issue so a concurrent revision writer cannot interleave
+  // between this read and the admission commit.
+  await tx.execute(sql`select 1 from ${issues} where ${issues.id} = ${decision.issueId} for update`);
   const latest = await tx
     .select({ revision: routeDecisions.revision })
     .from(routeDecisions)
@@ -268,6 +286,28 @@ async function bindClaimToRun(tx: RoutingWakeBindingTx, claimId: string, runId: 
     .update(routePoolClaims)
     .set({ runId })
     .where(and(eq(routePoolClaims.id, claimId), isNull(routePoolClaims.releasedAt)));
+}
+
+/** Re-expresses a persisted decision as a policy outcome so a typed revision can carry a bounded change. */
+function outcomeFromDecision(decision: RouteDecision, changes: Partial<RouteOutcome>): RouteOutcome {
+  return {
+    policyVersion: decision.policyVersion,
+    state: decision.state,
+    taskClass: decision.taskClass,
+    effectiveTaskClass: decision.effectiveTaskClass,
+    facts: decision.facts,
+    worker: decision.worker,
+    advisor: decision.advisor,
+    advisorMode: decision.advisorMode,
+    reviewer: decision.reviewer,
+    reviewerFallback: decision.reviewerFallback,
+    rescue: decision.rescue,
+    requireCrossFamilyReview: decision.requireCrossFamilyReview,
+    bounds: { maxAttempts: decision.maxAttempts, maxWallClockMinutes: decision.maxWallClockMinutes, maxCostCents: decision.maxCostCents },
+    reasonCodes: decision.reasonCodes,
+    escalationReason: decision.escalationReason,
+    ...changes,
+  };
 }
 
 /** Public detail summary: ids, families, models and reason codes only — never config or errors. */
@@ -339,7 +379,13 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
 
   function assertProfileModelMatchesAgent(agent: typeof agents.$inferSelect, model: string) {
     const configured = configuredAgentModel(agent);
-    if (configured && configured !== model) {
+    if (!configured) {
+      throw unprocessable("Execution profile agent must declare its model in adapterConfig.model so the routed model can be verified", {
+        code: "agent_model_unresolved",
+        agentId: agent.id,
+      });
+    }
+    if (configured !== model) {
       throw unprocessable("Execution profile model must match the agent's configured model", {
         code: "execution_profile_model_mismatch",
         configuredModel: configured,
@@ -640,9 +686,10 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
   }
 
   /**
-   * Appends a decision revision under the issue row lock. The lock serializes
-   * every revision writer; the unique (company, issue, revision) index is the
-   * final backstop. `expectedRevision` fences overrides.
+   * Appends a decision revision under the issue row lock. `expectedRevision`
+   * is the revision the policy was evaluated against; a different current
+   * revision means the evaluation is stale and the append is refused. The
+   * unique (company, issue, revision) index is the final backstop.
    */
   async function appendDecision(input: {
     issue: IssueRow;
@@ -650,9 +697,15 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
     revisionKind: RouteDecision["revisionKind"];
     actor: RoutingActor;
     note: string | null;
-    expectedRevision?: number | null;
+    expectedRevision: number;
   }): Promise<{ decision: RouteDecision; previous: RouteDecision | null }> {
     const { issue, outcome, actor } = input;
+    if (outcome.state === "routed") {
+      const problems = validateAuthoritySeparation(outcome);
+      if (problems.length > 0) {
+        throw unprocessable(`Route decision violates authority separation: ${problems.join("; ")}`, { code: "authority-separation", problems });
+      }
+    }
     return db.transaction(async (tx) => {
       await tx.execute(sql`select 1 from ${issues} where ${issues.id} = ${issue.id} for update`);
       const current = await tx
@@ -662,7 +715,7 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
         .orderBy(desc(routeDecisions.revision))
         .limit(1)
         .then((rows) => rows[0] ?? null);
-      if (input.expectedRevision != null && (current?.revision ?? 0) !== input.expectedRevision) {
+      if ((current?.revision ?? 0) !== input.expectedRevision) {
         throw conflict("Route decision revision conflict", {
           code: "route_revision_conflict",
           currentRevision: current?.revision ?? 0,
@@ -776,14 +829,32 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
       revisionKind,
       previous: current ? { revisionKind: current.revisionKind, effectiveTaskClass: current.effectiveTaskClass, facts: current.facts, worker: current.worker, requireCrossFamilyReview: current.requireCrossFamilyReview } : null,
     });
-    const { decision } = await appendDecision({ issue, outcome, revisionKind, actor, note: null });
+    // An agent may reclassify a refused route, but it can never lower the risk
+    // floor a previous decision established; that is a board decision.
+    if (current && actor.actorType === "agent") {
+      const downgraded =
+        TASK_CLASS_RISK_RANK[outcome.effectiveTaskClass] < TASK_CLASS_RISK_RANK[current.effectiveTaskClass] ||
+        (current.requireCrossFamilyReview && !outcome.requireCrossFamilyReview);
+      if (downgraded) {
+        throw forbidden("Lowering an established route risk class requires a board override", {
+          code: "route_downgrade_requires_board",
+          currentTaskClass: current.effectiveTaskClass,
+          requestedTaskClass: outcome.effectiveTaskClass,
+        });
+      }
+    }
+    const { decision } = await appendDecision({ issue, outcome, revisionKind, actor, note: null, expectedRevision: current?.revision ?? 0 });
+    let blocked = false;
+    if (decision.state === "reviewer-unavailable" || decision.state === "reviewer-family-conflict" || decision.state === "escalation-required") {
+      blocked = await blockForBoard(issue, `Route decision is ${decision.state}: configure an opposite-family reviewer or capable worker, then route again`, actor);
+    }
     await recordActivity(actor, {
       companyId: issue.companyId,
       action: "route_decision.created",
       entityType: "route_decision",
       entityId: decision.id,
       issueId: issue.id,
-      details: decisionAuditDetails(decision),
+      details: { ...decisionAuditDetails(decision), blockedForBoard: blocked },
     });
     return { decision, created: true };
   }
@@ -916,19 +987,33 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
     const workerAgent = await assertNoModelDrift(decision.worker);
     const role: AttemptRole = decision.revisionKind === "rescue" ? "rescuer" : "worker";
     const claim = await claimSlot({ companyId: issue.companyId, profileId: decision.worker.profileId, decisionId: decision.id, issueId: issue.id, role });
+    let run: typeof heartbeatRuns.$inferSelect | null;
     try {
+      const patch: Parameters<typeof issuesSvc.update>[1] = {
+        actorAgentId: actor.actorType === "agent" ? actor.agentId : null,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      };
       if (issue.assigneeAgentId !== workerAgent.id || issue.assigneeUserId) {
-        await issuesSvc.update(issue.id, {
-          assigneeAgentId: workerAgent.id,
-          assigneeUserId: null,
-          ...(issue.status === "backlog" ? { status: "todo" } : {}),
-          actorAgentId: actor.actorType === "agent" ? actor.agentId : null,
-          actorUserId: actor.actorType === "user" ? actor.actorId : null,
-        });
-      } else if (issue.status === "backlog") {
-        await issuesSvc.update(issue.id, { status: "todo", actorUserId: actor.actorType === "user" ? actor.actorId : null });
+        patch.assigneeAgentId = workerAgent.id;
+        patch.assigneeUserId = null;
       }
-      const run = await enqueueWakeup(workerAgent.id, {
+      if (issue.status === "backlog") patch.status = "todo";
+      const gate = reviewGatePolicy(issue, decision, (await listDecisionRows(issue.companyId, issue.id)).map((row) => row.id));
+      if (gate.policy) patch.executionPolicy = { ...gate.policy };
+      if (Object.keys(patch).length > 2) {
+        await issuesSvc.update(issue.id, patch);
+      }
+      if (gate.preexisting) {
+        await recordActivity(actor, {
+          companyId: issue.companyId,
+          action: "route_review.gate_preexisting",
+          entityType: "route_decision",
+          entityId: decision.id,
+          issueId: issue.id,
+          details: { ...decisionAuditDetails(decision), reason: "issue already carries an operator execution policy; routing did not replace it" },
+        });
+      }
+      run = await enqueueWakeup(workerAgent.id, {
         source: "assignment",
         triggerDetail: "system",
         reason: "route_dispatch",
@@ -943,6 +1028,8 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
           executionProfileId: decision.worker.profileId,
           routeRole: role,
           routeTaskClass: decision.effectiveTaskClass,
+          routeMaxAttempts: decision.maxAttempts,
+          routeMaxWallClockMinutes: decision.maxWallClockMinutes,
         },
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
@@ -951,33 +1038,78 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
         bindWake: (tx) => fenceRouteAdmission(tx, decision, claim.id),
         bindRun: (run, tx) => bindClaimToRun(tx, claim.id, run.id),
       });
-      if (!run) {
-        await releaseClaim(claim.id, "wake_rejected");
-        await recordActivity(actor, {
-          companyId: issue.companyId,
-          action: "route_attempt.wake_rejected",
-          entityType: "route_decision",
-          entityId: decision.id,
-          issueId: issue.id,
-          details: { role, profileId: decision.worker.profileId, agentId: workerAgent.id },
-        });
-        return { dispatched: false, decision, reason: "wake_rejected" };
-      }
-      await db.update(routePoolClaims).set({ runId: run.id }).where(eq(routePoolClaims.id, claim.id));
-      await appendRouteRunEvent(run, decision, role);
-      await recordActivity(actor, {
-        companyId: issue.companyId,
-        action: "route_attempt.dispatched",
-        entityType: "route_decision",
-        entityId: decision.id,
-        issueId: issue.id,
-        details: { ...decisionAuditDetails(decision), role, claimId: claim.id, runId: run.id },
-      });
-      return { dispatched: true, decision, claim: { ...claim, runId: run.id }, runId: run.id };
     } catch (error) {
       await releaseClaim(claim.id, "dispatch_failed");
       throw error;
     }
+    if (!run) {
+      // The seam returns null for a refused wake AND for a wake parked on a
+      // durable carrier. bindRun links the claim to any bound run inside the
+      // admission transaction, so a linked claim means executable intent
+      // survived and the slot stays held.
+      const bound = await db.select({ runId: routePoolClaims.runId }).from(routePoolClaims).where(eq(routePoolClaims.id, claim.id)).then((rows) => rows[0]?.runId ?? null);
+      if (bound) {
+        await recordActivity(actor, {
+          companyId: issue.companyId,
+          action: "route_attempt.parked",
+          entityType: "route_decision",
+          entityId: decision.id,
+          issueId: issue.id,
+          details: { ...decisionAuditDetails(decision), role, claimId: claim.id, runId: bound },
+        });
+        return { dispatched: false, decision, reason: "parked", runId: bound };
+      }
+      await releaseClaim(claim.id, "wake_rejected");
+      await recordActivity(actor, {
+        companyId: issue.companyId,
+        action: "route_attempt.wake_rejected",
+        entityType: "route_decision",
+        entityId: decision.id,
+        issueId: issue.id,
+        details: { role, profileId: decision.worker.profileId, agentId: workerAgent.id },
+      });
+      return { dispatched: false, decision, reason: "wake_rejected" };
+    }
+    // The run is admitted and durably bound; audit failures must not release it.
+    await db.update(routePoolClaims).set({ runId: run.id }).where(and(eq(routePoolClaims.id, claim.id), isNull(routePoolClaims.runId)));
+    await appendRouteRunEvent(run, decision, role);
+    await recordActivity(actor, {
+      companyId: issue.companyId,
+      action: "route_attempt.dispatched",
+      entityType: "route_decision",
+      entityId: decision.id,
+      issueId: issue.id,
+      details: { ...decisionAuditDetails(decision), role, claimId: claim.id, runId: run.id },
+    });
+    return { dispatched: true, decision, claim: { ...claim, runId: run.id }, runId: run.id };
+  }
+
+  /**
+   * The required cross-family review is enforced by the existing execution
+   * policy: a review stage whose only participants are the routed reviewer
+   * (and its opposite-family fallback). The worker is the returnAssignee and
+   * can never be selected as the stage participant, and `done`/`in_review`
+   * cannot complete until that participant records a decision. An operator
+   * policy that routing did not install is left untouched.
+   */
+  function reviewGatePolicy(issue: IssueRow, decision: RouteDecision, decisionIds: readonly string[]): { policy: IssueExecutionPolicy | null; preexisting: boolean } {
+    if (!decision.requireCrossFamilyReview || !decision.reviewer) return { policy: null, preexisting: false };
+    const existing = normalizeIssueExecutionPolicy(issue.executionPolicy);
+    // Routing-owned stages carry one of this issue's decision ids as their stage id.
+    const routingOwned = !existing || existing.stages.every((stage) => decisionIds.includes(stage.id));
+    if (!routingOwned) return { policy: null, preexisting: true };
+    const participants = [decision.reviewer, decision.reviewerFallback]
+      .filter((participant): participant is RouteDecisionParticipant => participant !== null)
+      .map((participant) => ({ id: participant.profileId, type: "agent" as const, agentId: participant.agentId, userId: null }));
+    const policy = normalizeIssueExecutionPolicy({
+      mode: existing?.mode ?? "normal",
+      commentRequired: true,
+      stages: [{ id: decision.id, type: "review", approvalsNeeded: 1, participants }],
+      ...(existing?.monitor ? { monitor: existing.monitor } : {}),
+      ...(existing?.reviewPreset ? { reviewPreset: existing.reviewPreset } : {}),
+      ...(existing?.authorizationPolicy ? { authorizationPolicy: existing.authorizationPolicy } : {}),
+    });
+    return { policy, preexisting: false };
   }
 
   async function blockForBoard(issue: IssueRow, action: string, actor: RoutingActor): Promise<boolean> {
@@ -1015,7 +1147,7 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
       previous: { revisionKind: current.revisionKind, effectiveTaskClass: current.effectiveTaskClass, facts: current.facts, worker: current.worker, requireCrossFamilyReview: current.requireCrossFamilyReview },
     });
     const revisionKind = outcome.state === "routed" ? "rescue" : "escalation";
-    const { decision } = await appendDecision({ issue, outcome, revisionKind, actor, note: note ?? null });
+    const { decision } = await appendDecision({ issue, outcome, revisionKind, actor, note: note ?? null, expectedRevision: current.revision });
     let blocked = false;
     if (decision.state !== "routed") {
       blocked = await blockForBoard(issue, `Route escalation (${reason}) needs a human decision: rescue is exhausted or no valid rescuer/reviewer exists`, actor);
@@ -1040,8 +1172,10 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
     if (current.revision !== input.expectedRevision) {
       throw conflict("Route decision revision conflict", { code: "route_revision_conflict", currentRevision: current.revision, expectedRevision: input.expectedRevision });
     }
+    // A reviewer- or advisor-only override keeps the current worker; every prior
+    // author stays excluded from review and advice.
     const overrideRequest: RouteOverrideRequest = {
-      workerProfileId: input.workerProfileId,
+      workerProfileId: input.workerProfileId ?? current.worker?.profileId,
       reviewerProfileId: input.reviewerProfileId,
       advisorProfileId: input.advisorProfileId,
       requireCrossFamilyReview: input.requireCrossFamilyReview,
@@ -1053,7 +1187,7 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
       profiles: context.profiles,
       activeClaimsByProfile: context.activeClaimsByProfile,
       blockedProfileIds: context.blocked,
-      priorWorkerAgentIds: priorWorkerAgentIds(history).filter((agentId) => agentId !== (input.workerProfileId ? undefined : current.worker?.agentId)),
+      priorWorkerAgentIds: priorWorkerAgentIds(history),
       revisionKind: "override",
       previous: { revisionKind: current.revisionKind, effectiveTaskClass: current.effectiveTaskClass, facts: current.facts, worker: current.worker, requireCrossFamilyReview: current.requireCrossFamilyReview },
       override: overrideRequest,
@@ -1084,6 +1218,10 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
       .then((rows) => rows[0] ?? null);
     if (!profile || !profile.enabled || !profile.roleCapabilities.includes("reviewer")) return false;
     const agent = await db.select().from(agents).where(eq(agents.id, candidate.agentId)).then((rows) => rows[0] ?? null);
+    if (!agent) return false;
+    // A reviewer whose configured model drifted from the snapshot is not the reviewer the decision named.
+    const configured = configuredAgentModel(agent);
+    if (!configured || configured !== candidate.model) return false;
     if (!(await evaluateAgentInvokabilityFromDb(db, agent)).invokable) return false;
     if (await budgets.getInvocationBlock(companyId, candidate.agentId, { issueId: issue.id, projectId: issue.projectId })) return false;
     return true;
@@ -1132,77 +1270,106 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
       });
       return { state: "reviewer-unavailable", decision, blocked };
     }
-    const enqueueWakeup = deps.enqueueWakeup;
-    const created = await issuesSvc.createChild(issue.id, {
-      title: `Review: ${issue.title}`.slice(0, 240),
-      description: [
-        `Independent ${reviewer.providerFamily} review of ${issue.identifier ?? issue.id} (${issue.id}).`,
-        "",
-        `Route decision: ${decision.id} (revision ${decision.revision}, ${decision.effectiveTaskClass}).`,
-        `Worker family: ${decision.worker.providerFamily}. Reviewer family: ${reviewer.providerFamily}.`,
-        "",
-        "Review the implementation attempt read-only. Post your findings and verdict as comments on THIS review task and mark it done.",
-        "Do not comment on, edit, or change the status of the parent task. Adverse findings are routed to the parent owner as correction work when this review completes.",
-        "Your verdict is evidence for the parent owner and the delivery gates; it does not approve delivery by itself.",
-      ].join("\n"),
-      status: "todo",
-      priority: issue.priority,
-      projectId: issue.projectId,
-      assigneeAgentId: reviewer.agentId,
-      assigneeUserId: null,
-      reviewPolicy: "not_creator",
-      originKind: ROUTE_REVIEW_ORIGIN_KIND,
-      originId: decision.id,
-      originFingerprint: `review:${decision.id}`,
-      idempotencyKey: `route-review:${decision.id}`,
-      blockParentUntilDone: true,
-      executionWorkspaceInheritanceMode: "strategy_only",
-      actorAgentId: actor.actorType === "agent" ? actor.agentId : null,
-      actorUserId: actor.actorType === "user" ? actor.actorId : null,
-    });
-    const reviewIssue = created.issue;
-    let claim: RoutePoolClaim | null = null;
-    try {
-      claim = await claimSlot({ companyId: issue.companyId, profileId: reviewer.profileId, decisionId: decision.id, issueId: issue.id, role: "reviewer" });
-    } catch (error) {
-      if (!(error instanceof HttpError && error.status === 409)) throw error;
-    }
-    if (enqueueWakeup) {
-      const run = await enqueueWakeup(reviewer.agentId, {
-        source: "assignment",
-        triggerDetail: "system",
-        reason: "route_review_requested",
-        payload: { issueId: reviewIssue.id, routeDecisionId: decision.id, routeRole: "reviewer", reviewedIssueId: issue.id },
-        contextSnapshot: {
-          issueId: reviewIssue.id,
-          taskId: reviewIssue.id,
-          source: "routing.review",
-          routeDecisionId: decision.id,
-          routeRevision: decision.revision,
-          routePolicyVersion: decision.policyVersion,
-          executionProfileId: reviewer.profileId,
-          routeRole: "reviewer",
-          reviewedIssueId: issue.id,
-        },
-        requestedByActorType: actor.actorType,
-        requestedByActorId: actor.actorId,
-        idempotencyKey: `route-review:${decision.id}:${reviewIssue.id}`,
-        issueStateGuard: { statuses: ["todo", "in_progress"], assigneeAgentId: reviewer.agentId },
-        bindWake: (tx) => fenceRouteAdmission(tx, decision, claim?.id ?? null),
-        bindRun: claim ? (run, tx) => bindClaimToRun(tx, claim.id, run.id) : null,
+    // Executing the fallback is a typed revision, never a silent substitution:
+    // the durable decision must name the reviewer that actually reviews.
+    let effective = decision;
+    if (reviewer.profileId !== decision.reviewer?.profileId) {
+      const outcome = outcomeFromDecision(decision, { reviewer, reviewerFallback: null, reasonCodes: [...decision.reasonCodes, "provider-unavailable"] });
+      effective = (await appendDecision({ issue, outcome, revisionKind: "fallback", actor, note: null, expectedRevision: decision.revision })).decision;
+      await recordActivity(actor, {
+        companyId: issue.companyId,
+        action: "route_decision.fallback",
+        entityType: "route_decision",
+        entityId: effective.id,
+        issueId: issue.id,
+        details: { ...decisionAuditDetails(effective), replacedReviewerProfileId: decision.reviewer?.profileId ?? null },
       });
-      if (run && claim) {
-        await db.update(routePoolClaims).set({ runId: run.id }).where(eq(routePoolClaims.id, claim.id));
-        await appendRouteRunEvent(run, decision, "reviewer");
+    }
+    // Capacity is claimed before any work is created; a reviewer without a slot is not enqueued.
+    let claim: RoutePoolClaim;
+    try {
+      claim = await claimSlot({ companyId: issue.companyId, profileId: reviewer.profileId, decisionId: effective.id, issueId: issue.id, role: "reviewer" });
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 409) {
+        return { state: "reviewer-capacity-exhausted", decision: effective, reviewer };
       }
+      throw error;
+    }
+    let reviewIssue: IssueRow;
+    let run: typeof heartbeatRuns.$inferSelect | null = null;
+    try {
+      const created = await issuesSvc.createChild(issue.id, {
+        title: `Review: ${issue.title}`.slice(0, 240),
+        description: [
+          `Independent ${reviewer.providerFamily} review of ${issue.identifier ?? issue.id} (${issue.id}).`,
+          "",
+          `Route decision: ${effective.id} (revision ${effective.revision}, ${effective.effectiveTaskClass}).`,
+          `Worker family: ${effective.worker?.providerFamily ?? "unknown"}. Reviewer family: ${reviewer.providerFamily}.`,
+          "",
+          "Review the implementation attempt read-only. Post your findings and verdict as comments on THIS review task and mark it done.",
+          "Do not comment on, edit, or change the status of the parent task. Adverse findings are routed to the parent owner as correction work when this review completes.",
+          "Your verdict is evidence for the parent owner and the delivery gates; it does not approve delivery by itself.",
+        ].join("\n"),
+        status: "todo",
+        priority: issue.priority,
+        projectId: issue.projectId,
+        assigneeAgentId: reviewer.agentId,
+        assigneeUserId: null,
+        reviewPolicy: "not_creator",
+        originKind: ROUTE_REVIEW_ORIGIN_KIND,
+        originId: effective.id,
+        originFingerprint: `review:${effective.id}`,
+        idempotencyKey: `route-review:${effective.id}`,
+        blockParentUntilDone: true,
+        executionWorkspaceInheritanceMode: "strategy_only",
+        actorAgentId: actor.actorType === "agent" ? actor.agentId : null,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      reviewIssue = created.issue;
+      const enqueueWakeup = deps.enqueueWakeup;
+      if (enqueueWakeup) {
+        run = await enqueueWakeup(reviewer.agentId, {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "route_review_requested",
+          payload: { issueId: reviewIssue.id, routeDecisionId: effective.id, routeRole: "reviewer", reviewedIssueId: issue.id },
+          contextSnapshot: {
+            issueId: reviewIssue.id,
+            taskId: reviewIssue.id,
+            source: "routing.review",
+            routeDecisionId: effective.id,
+            routeRevision: effective.revision,
+            routePolicyVersion: effective.policyVersion,
+            executionProfileId: reviewer.profileId,
+            routeRole: "reviewer",
+            reviewedIssueId: issue.id,
+          },
+          requestedByActorType: actor.actorType,
+          requestedByActorId: actor.actorId,
+          idempotencyKey: `route-review:${effective.id}:${reviewIssue.id}`,
+          issueStateGuard: { statuses: ["todo", "in_progress"], assigneeAgentId: reviewer.agentId },
+          bindWake: (tx) => fenceRouteAdmission(tx, effective, claim.id),
+          bindRun: (boundRun, tx) => bindClaimToRun(tx, claim.id, boundRun.id),
+        });
+      }
+    } catch (error) {
+      await releaseClaim(claim.id, "dispatch_failed");
+      throw error;
+    }
+    if (run) {
+      await db.update(routePoolClaims).set({ runId: run.id }).where(and(eq(routePoolClaims.id, claim.id), isNull(routePoolClaims.runId)));
+      await appendRouteRunEvent(run, effective, "reviewer");
+    } else {
+      const bound = await db.select({ runId: routePoolClaims.runId }).from(routePoolClaims).where(eq(routePoolClaims.id, claim.id)).then((rows) => rows[0]?.runId ?? null);
+      if (!bound) await releaseClaim(claim.id, "wake_rejected");
     }
     await recordActivity(actor, {
       companyId: issue.companyId,
       action: "route_review.requested",
       entityType: "route_decision",
-      entityId: decision.id,
+      entityId: effective.id,
       issueId: issue.id,
-      details: { ...decisionAuditDetails(decision), reviewIssueId: reviewIssue.id, reviewerProfileId: reviewer.profileId, reviewerProviderFamily: reviewer.providerFamily, usedFallback: reviewer.profileId !== decision.reviewer?.profileId },
+      details: { ...decisionAuditDetails(effective), reviewIssueId: reviewIssue.id, reviewerProfileId: reviewer.profileId, reviewerProviderFamily: reviewer.providerFamily, usedFallback: effective.id !== decision.id },
     });
     return { state: "requested", reviewIssueId: reviewIssue.id, reviewer, created: true };
   }

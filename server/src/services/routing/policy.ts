@@ -379,13 +379,17 @@ export function decideRoute(input: RoutePolicyInput): RouteOutcome {
   }
   const worker = toParticipant(workerProfile);
 
-  // Advisor: bounded, read-only, never the worker itself.
+  // Advisor: bounded, read-only, never the worker and never a prior author of this issue.
   let advisorMode: RouteAdvisorMode = rule.advisorMode;
   let advisor: RouteDecisionParticipant | null = null;
   const advisorProfileId = input.override?.advisorProfileId === undefined ? rule.advisorProfileId : input.override.advisorProfileId;
   if (advisorMode !== "none" && advisorProfileId) {
     const profile = index.byId[advisorProfileId];
-    if (isEligible(profile, "advisor", blocked) && profile.agentId !== worker.agentId) {
+    if (
+      isEligible(profile, "advisor", blocked) &&
+      profile.agentId !== worker.agentId &&
+      !input.priorWorkerAgentIds.includes(profile.agentId)
+    ) {
       advisor = toParticipant(profile);
     }
   }
@@ -432,6 +436,15 @@ export function decideRoute(input: RoutePolicyInput): RouteOutcome {
     }
     reviewer = selection.reviewer;
     reviewerFallback = selection.fallback;
+    // One agent never holds two authority roles on the same attempt.
+    if (advisor && advisor.agentId === reviewer.agentId) {
+      if (advisorMode === "required") {
+        pushUnique(reasonCodes, "provider-unavailable");
+        return refusal("escalation-required", facts, facts.taskClass, effectiveTaskClass, reasonCodes, { escalationReason, bounds });
+      }
+      advisor = null;
+      advisorMode = "none";
+    }
   }
 
   const rescueProfile = rule.rescueProfileId ? index.byId[rule.rescueProfileId] : undefined;

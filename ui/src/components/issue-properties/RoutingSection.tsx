@@ -148,7 +148,13 @@ export function RoutingSection({
     onSuccess: async (result) => {
       setActionError(null);
       // HTTP 200 does not mean dispatched; refusals carry their reason in the body.
-      setActionNotice(result.dispatched ? null : `Dispatch refused: ${result.reason}`);
+      setActionNotice(
+        result.dispatched
+          ? null
+          : result.reason === "parked"
+            ? "Dispatch parked: the scheduler bound the run to a durable carrier; the slot stays held."
+            : `Dispatch refused: ${result.reason}`,
+      );
       await invalidate();
     },
     onError: (error) => setActionError(describeRoutingActionError(error)),
@@ -160,6 +166,8 @@ export function RoutingSection({
       setActionError(null);
       if (result.state === "reviewer-unavailable") {
         setActionNotice(`Review request blocked: reviewer-unavailable`);
+      } else if (result.state === "reviewer-capacity-exhausted") {
+        setActionNotice(`Review request deferred: reviewer-capacity-exhausted`);
       } else if (result.state === "not-required") {
         setActionNotice("Review not required for this route.");
       } else {
@@ -182,7 +190,7 @@ export function RoutingSection({
           }`,
         );
       } else if (result.dispatch && !result.dispatch.dispatched) {
-        setActionNotice(`Dispatch refused: ${result.dispatch.reason}`);
+        setActionNotice(result.dispatch.reason === "parked" ? "Rescue parked on a durable carrier; the slot stays held." : `Dispatch refused: ${result.dispatch.reason}`);
       } else if (!result.dispatch && result.decision.state !== "routed") {
         // The rescue escalation itself refused; the state row shows the exact state.
         setActionNotice(`Rescue not dispatched: ${result.decision.state}`);

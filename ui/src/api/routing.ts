@@ -26,12 +26,14 @@ import { api } from "./client";
  */
 export type RouteDispatchResult =
   | { dispatched: true; decision: RouteDecision; claim: RoutePoolClaim; runId: string }
-  | { dispatched: false; decision: RouteDecision; reason: "wake_rejected" };
+  | { dispatched: false; decision: RouteDecision; reason: "wake_rejected" }
+  | { dispatched: false; decision: RouteDecision; reason: "parked"; runId: string };
 
 export type RouteReviewRequestResult =
   | { state: "requested"; reviewIssueId: string; reviewer: RouteDecisionParticipant; created: boolean }
   | { state: "not-required"; decision: RouteDecision }
-  | { state: "reviewer-unavailable"; decision: RouteDecision; blocked: boolean };
+  | { state: "reviewer-unavailable"; decision: RouteDecision; blocked: boolean }
+  | { state: "reviewer-capacity-exhausted"; decision: RouteDecision; reviewer: RouteDecisionParticipant };
 
 /**
  * Rescue records its escalation revision even when the follow-up dispatch is

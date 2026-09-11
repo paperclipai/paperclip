@@ -16,7 +16,7 @@ import { HttpError, forbidden, notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { issueService } from "../services/issues.js";
 import { routingService, type RoutingActor, type RoutingWakeup } from "../services/routing/service.js";
-import { assertBoardOrAgent, assertBoardOrgAccess, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoardOrAgent, assertBoardOrgAccess, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 
 function routingActor(req: Request): RoutingActor {
   const actor = getActorInfo(req);
@@ -54,7 +54,8 @@ export function routingRoutes(db: Db, opts: { enqueueWakeup?: RoutingWakeup | nu
 
   async function issueCompany(req: Request, issueId: string) {
     const issue = await issuesSvc.getById(issueId);
-    if (!issue) throw notFound("Issue not found");
+    // Existence and cross-tenant both answer 404 so ids cannot be enumerated.
+    if (!issue || !hasCompanyAccess(req, issue.companyId)) throw notFound("Issue not found");
     assertBoardOrAgent(req);
     assertCompanyAccess(req, issue.companyId);
     assertStandardAgentScope(req);
@@ -84,7 +85,7 @@ export function routingRoutes(db: Db, opts: { enqueueWakeup?: RoutingWakeup | nu
 
   router.patch("/execution-profiles/:profileId", validate(updateExecutionProfileSchema), async (req, res) => {
     const profile = await svc.getProfile(req.params.profileId as string);
-    if (!profile) throw notFound("Execution profile not found");
+    if (!profile || !hasCompanyAccess(req, profile.companyId)) throw notFound("Execution profile not found");
     assertBoardCompany(req, profile.companyId);
     res.json(await svc.updateProfile(profile.companyId, profile.id, req.body, routingActor(req)));
   });

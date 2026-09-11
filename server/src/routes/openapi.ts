@@ -4604,7 +4604,7 @@ const routeDispatchResultSchema = z.object({
 }).strict();
 
 const routeReviewRequestResultSchema = z.object({
-  state: z.enum(["requested", "not-required", "reviewer-unavailable"]),
+  state: z.enum(["requested", "not-required", "reviewer-unavailable", "reviewer-capacity-exhausted"]),
   reviewIssueId: z.string().uuid().optional(),
   reviewer: routingParticipantSchema.optional(),
   created: z.boolean().optional(),
