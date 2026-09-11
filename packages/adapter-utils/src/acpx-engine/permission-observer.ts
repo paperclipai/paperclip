@@ -18,16 +18,20 @@ const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 // input. Each run gets its own budget: every counter below lives inside the
 // observer closure, not at module scope.
 //
-// The ledger, the "observed" count, and the "settled or unsettled" count each
-// get a separate budget of 256, instead of one shared budget of 512. A shared
-// budget lets an agent that sends 512 requests spend the whole budget on
-// "observed" events, so the observer would then emit no "unsettled" event at
-// finalization — the one signal this observer exists to produce. Two budgets
-// keep that signal reachable no matter how the agent spends the "observed"
-// side.
+// The ledger, the "observed" count, the "settled" count, and the "unsettled"
+// count each get a separate budget of 256, instead of one shared budget. A
+// diagnostic event class must never share a budget with an event class that
+// the agent drives. "acpx.permission_settled" fires once for each tool call
+// the agent completes, so a normal long run can spend a shared budget before
+// the run ends. "acpx.permission_unsettled" is the one signal this observer
+// exists to produce: it tells an operator that a handoff stalled. A shared
+// budget would let a normal run silence that signal at the exact time it
+// matters most. Four separate budgets keep each event class reachable no
+// matter how the agent spends the others.
 const MAX_LEDGER_ENTRIES = 256;
 const MAX_OBSERVED_EVENTS = 256;
-const MAX_TERMINAL_EVENTS = 256;
+const MAX_SETTLED_EVENTS = 256;
+const MAX_UNSETTLED_EVENTS = 256;
 
 export const PERMISSION_OBSERVER_METHODS = ["session/request_permission"] as const;
 export type PermissionObserverMethod = (typeof PERMISSION_OBSERVER_METHODS)[number] | "unknown";
@@ -179,10 +183,13 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
   // events, not the live ledger size, so an agent cannot reset a counter by
   // opening and settling requests in a loop (the churn case).
   let observedEventCount = 0;
-  let terminalEventCount = 0;
+  let settledEventCount = 0;
+  let unsettledEventCount = 0;
   let suppressedLedgerEntries = 0;
   let suppressedObservedEvents = 0;
-  let suppressedTerminalEvents = 0;
+  let suppressedSettledEvents = 0;
+  let suppressedUnsettledEvents = 0;
+  let hasFinalized = false;
 
   const ledgerKey = (sessionId: string, toolCallId: string) => sessionId + "\u0000" + toolCallId;
 
@@ -255,12 +262,12 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
       entry.lastStage = stage;
       const outcome = mapPermissionObserverOutcome(event?.status);
       if (outcome === "unknown") return;
-      // Delete the entry (freeing the ledger memory) even when the terminal
+      // Delete the entry (freeing the ledger memory) even when the settled
       // budget below is spent: the ledger must not hold a settled entry just
       // because the observer could not log its settlement.
       ledger.delete(key);
-      if (terminalEventCount < MAX_TERMINAL_EVENTS) {
-        terminalEventCount += 1;
+      if (settledEventCount < MAX_SETTLED_EVENTS) {
+        settledEventCount += 1;
         options.emitLog({
           type: "acpx.permission_settled",
           sessionId: entry.sessionId,
@@ -269,7 +276,7 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
           ageMs: boundedAgeMs(now() - entry.openedAtMs),
         });
       } else {
-        suppressedTerminalEvents += 1;
+        suppressedSettledEvents += 1;
       }
     } catch {
       // Diagnostic only; never let a logging failure surface into the event
@@ -278,11 +285,17 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
   };
 
   const finalizeRun: AcpPermissionObserver["finalizeRun"] = async () => {
+    // The engine's settle step can call finalizeRun more than one time for
+    // the same run. Only the first call may drain the ledger and emit the
+    // summary event; every later call is a no-op.
+    if (hasFinalized) return;
+    hasFinalized = true;
+
     const openEntries = [...ledger.values()];
     ledger.clear();
     for (const entry of openEntries) {
-      if (terminalEventCount < MAX_TERMINAL_EVENTS) {
-        terminalEventCount += 1;
+      if (unsettledEventCount < MAX_UNSETTLED_EVENTS) {
+        unsettledEventCount += 1;
         options.emitLog({
           type: "acpx.permission_unsettled",
           sessionId: entry.sessionId,
@@ -291,19 +304,25 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
           ageMs: boundedAgeMs(now() - entry.openedAtMs),
         });
       } else {
-        suppressedTerminalEvents += 1;
+        suppressedUnsettledEvents += 1;
       }
     }
     // Emit one summary event for the whole run, and only when the observer
-    // suppressed something. It carries only the three counters: no session
-    // identifier, no tool-call identifier, and no other agent-controlled
-    // value.
-    if (suppressedLedgerEntries > 0 || suppressedObservedEvents > 0 || suppressedTerminalEvents > 0) {
+    // suppressed something. It carries only the four counters and the type
+    // field: no session identifier, no tool-call identifier, and no other
+    // agent-controlled value.
+    if (
+      suppressedLedgerEntries > 0 ||
+      suppressedObservedEvents > 0 ||
+      suppressedSettledEvents > 0 ||
+      suppressedUnsettledEvents > 0
+    ) {
       options.emitLog({
         type: "acpx.permission_observer_truncated",
         suppressedLedgerEntries,
         suppressedObservedEvents,
-        suppressedTerminalEvents,
+        suppressedSettledEvents,
+        suppressedUnsettledEvents,
       });
     }
   };
