@@ -133,10 +133,18 @@ export async function dismissObsoleteNativePolicyReviews(db: Db, runIds?: string
         });
         publications.push(publication);
       });
-      for (const publication of publications) publishActivity(publication);
     } catch (err) {
       logger.warn({ err, interactionId: interaction.id, issueId: decision.issueId },
         "Failed to withdraw obsolete native policy review; will retry on the next pass");
+      continue;
+    }
+    for (const publication of publications) {
+      try {
+        publishActivity(publication);
+      } catch (err) {
+        logger.warn({ err, interactionId: interaction.id, issueId: decision.issueId },
+          "Obsolete native policy review cleanup committed; live activity publication failed, history is preserved");
+      }
     }
   }
 }

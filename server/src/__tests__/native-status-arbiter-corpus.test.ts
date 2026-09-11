@@ -63,6 +63,7 @@ import {
   reconcileNativeFinalizations,
   resolveNativeReconciliationStatus,
 } from "../services/native-runtime/native-finalization-reconciler.js";
+import * as activityLog from "../services/activity-log.js";
 import { dismissObsoleteNativePolicyReviews } from "../services/native-runtime/obsolete-policy-reviews.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -2126,6 +2127,26 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     for (const seeded of [first, second]) {
       const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
       expect(issue!.status).toBe("in_progress");
+    }
+  });
+
+  it("keeps committed cleanup and continues publication after a live event fails", async () => {
+    const first = await seedPolicyReview();
+    const second = await seedPolicyReview();
+    const publish = vi.spyOn(activityLog, "publishActivity").mockImplementationOnce(() => {
+      throw new Error("injected live publication failure");
+    });
+    try {
+      await dismissObsoleteNativePolicyReviews(db, [first.runId, second.runId]);
+      expect(publish.mock.calls.length).toBeGreaterThan(1);
+      for (const seeded of [first, second]) {
+        const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+        const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, seeded.interaction.id));
+        expect(issue!.status).toBe("in_progress");
+        expect(interaction!.status).toBe("cancelled");
+      }
+    } finally {
+      publish.mockRestore();
     }
   });
 
