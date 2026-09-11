@@ -87,6 +87,8 @@ describe("CompanySettingsNav", () => {
     expect(getCompanySettingsTab("/company/settings/instance/experimental")).toBe("instance-experimental");
     expect(getCompanySettingsTab("/PAP/company/settings/instance/plugins/example")).toBe("instance-plugins");
     expect(getCompanySettingsTab("/company/settings/instance/adapters")).toBe("instance-adapters");
+    expect(getCompanySettingsTab("/company/settings/instance/routing")).toBe("instance-routing");
+    expect(getCompanySettingsTab("/PAP/company/settings/instance/routing")).toBe("instance-routing");
   });
 
   function renderNav(
@@ -127,6 +129,7 @@ describe("CompanySettingsNav", () => {
           { value: "secrets", label: "Secrets" },
           { value: "instance-profile", label: "Profile" },
           { value: "instance-environments", label: "Environments" },
+          { value: "instance-routing", label: "Routing" },
           { value: "instance-access", label: "Access" },
           { value: "instance-experimental", label: "Experimental" },
           { value: "instance-plugins", label: "Plugins" },
@@ -168,6 +171,7 @@ describe("CompanySettingsNav", () => {
       "secrets",
       "instance-profile",
       "instance-environments",
+      "instance-routing",
       "instance-access",
       "instance-experimental",
       "instance-adapters",

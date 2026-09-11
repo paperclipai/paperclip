@@ -3,7 +3,7 @@
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter } from "@/lib/router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client";
 import { RoutingSection } from "./RoutingSection";
@@ -103,6 +103,22 @@ const DECISION = {
   createdAt: new Date("2026-09-10T00:00:00.000Z"),
 };
 
+const PROFILE = {
+  id: "33333333-3333-4333-8333-333333333333",
+  companyId: "company-1",
+  name: "Astra reviewer",
+  providerFamily: "openai",
+  agentId: "44444444-4444-4444-8444-444444444444",
+  model: "gpt-astra",
+  effort: "high",
+  roleCapabilities: ["reviewer"],
+  enabled: true,
+  maxConcurrentAttempts: 1,
+  version: 1,
+  createdAt: new Date("2026-09-01T00:00:00.000Z"),
+  updatedAt: new Date("2026-09-01T00:00:00.000Z"),
+};
+
 const ROUTING = {
   issueId: "issue-1",
   current: DECISION,
@@ -119,7 +135,7 @@ describe("RoutingSection", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     mockRoutingApi.getIssueRouting.mockResolvedValue(ROUTING);
-    mockRoutingApi.listProfiles.mockResolvedValue([]);
+    mockRoutingApi.listProfiles.mockResolvedValue([PROFILE]);
   });
 
   afterEach(() => {
@@ -147,9 +163,72 @@ describe("RoutingSection", () => {
     });
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("reviewer-unavailable");
+      // Assert the current State row specifically, not just anywhere in the
+      // section (the history list also contains the state string).
+      const stateLabel = container.querySelector("[data-property-label='State']");
+      expect(stateLabel).toBeTruthy();
+      const stateRow = stateLabel!.closest("[data-property-row]");
+      expect(stateRow?.textContent).toContain("reviewer-unavailable");
       expect(container.textContent).toContain("feature_critical");
       expect(container.textContent).toContain("routing-policy/v1");
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("surfaces an HTTP-200 dispatch refusal (wake_rejected) verbatim", async () => {
+    mockRoutingApi.dispatch.mockResolvedValue({
+      dispatched: false,
+      decision: DECISION,
+      reason: "wake_rejected",
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    await act(async () => {
+      root.render(render(queryClient));
+    });
+    await waitForAssertion(() =>
+      expect(container.querySelector("[data-property-label='State']")).toBeTruthy());
+
+    await act(async () => {
+      click(findAction(container, "Dispatch"));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockRoutingApi.dispatch).toHaveBeenCalledWith("issue-1");
+      const status = container.querySelector("[role='status']");
+      expect(status?.textContent).toContain("wake_rejected");
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("surfaces an HTTP-200 review refusal (reviewer-unavailable) verbatim", async () => {
+    mockRoutingApi.requestReview.mockResolvedValue({
+      state: "reviewer-unavailable",
+      decision: DECISION,
+      blocked: true,
+    });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    await act(async () => {
+      root.render(render(queryClient));
+    });
+    await waitForAssertion(() => expect(findAction(container, "Request review")).toBeTruthy());
+
+    await act(async () => {
+      click(findAction(container, "Request review"));
+    });
+
+    await waitForAssertion(() => {
+      const status = container.querySelector("[role='status']");
+      expect(status?.textContent).toContain("reviewer-unavailable");
     });
 
     await act(async () => {
@@ -177,6 +256,16 @@ describe("RoutingSection", () => {
     });
     await flushReact();
 
+    // A valid override must change at least one routing field; pick a reviewer.
+    const reviewerSelect = container.querySelector<HTMLSelectElement>(
+      "select[aria-label='Override reviewer profile']",
+    );
+    expect(reviewerSelect).toBeTruthy();
+    await act(async () => {
+      reviewerSelect!.value = PROFILE.id;
+      reviewerSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
     const noteInput = container.querySelector<HTMLInputElement>("input[aria-label='Override note']");
     expect(noteInput).toBeTruthy();
     await act(async () => {
@@ -193,7 +282,11 @@ describe("RoutingSection", () => {
     await waitForAssertion(() => {
       expect(mockRoutingApi.override).toHaveBeenCalledWith(
         "issue-1",
-        expect.objectContaining({ expectedRevision: 4, note: "swap reviewer" }),
+        expect.objectContaining({
+          expectedRevision: 4,
+          reviewerProfileId: PROFILE.id,
+          note: "swap reviewer",
+        }),
       );
       expect(container.textContent).toContain(
         "Route changed to revision 7; reload before retrying.",

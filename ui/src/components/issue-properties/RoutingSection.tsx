@@ -33,6 +33,9 @@ export function describeRoutingActionError(error: unknown): string {
     if (error.status === 409 && details?.code === "route_revision_conflict") {
       return `Route changed to revision ${details.currentRevision}; reload before retrying.`;
     }
+    if (error.status === 409 && details?.code === "route_decision_superseded") {
+      return "Route decision superseded during dispatch (route_decision_superseded); reload before retrying.";
+    }
     if (error.status === 422 && details?.code) return details.code;
     return error.message;
   }
@@ -40,7 +43,7 @@ export function describeRoutingActionError(error: unknown): string {
 }
 
 const selectClass =
-  "rounded-md border border-border bg-transparent px-2 py-1 text-xs outline-none";
+  "max-w-full min-w-0 rounded-md border border-border bg-transparent px-2 py-1 text-xs outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)";
 
 function ParticipantRow({
   label,
@@ -95,6 +98,14 @@ export function RoutingSection({
 
   const [panel, setPanel] = useState<PanelKind>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  /**
+   * Revision snapshot captured when the override panel opens. An override must
+   * assert the revision the operator was looking at, not whatever a background
+   * refetch delivered since — a stale token correctly 409s instead of silently
+   * overriding a route the operator never saw.
+   */
+  const [overrideExpectedRevision, setOverrideExpectedRevision] = useState<number | null>(null);
   const [facts, setFacts] = useState<TaskFactsInput>(EMPTY_FACTS);
   const [escalationReason, setEscalationReason] = useState<RouteEscalationReason>(
     ROUTE_ESCALATION_REASONS[0],
@@ -113,18 +124,81 @@ export function RoutingSection({
   const profileById = (id: string): ExecutionProfile | undefined =>
     profiles.find((profile) => profile.id === id);
 
+  // A dispatch/review outcome can park or unpark the parent issue, so the
+  // issue detail refreshes alongside the routing snapshot.
   const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: queryKeys.routing.issue(issueId) });
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.routing.issue(issueId) }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId) }),
+    ]);
 
   const runAction = useMutation({
     mutationFn: (action: () => Promise<unknown>) => action(),
     onSuccess: async () => {
       setActionError(null);
+      setActionNotice(null);
       setPanel(null);
       await invalidate();
     },
     onError: (error) => setActionError(describeRoutingActionError(error)),
   });
+
+  const dispatchMutation = useMutation({
+    mutationFn: () => routingApi.dispatch(issueId),
+    onSuccess: async (result) => {
+      setActionError(null);
+      // HTTP 200 does not mean dispatched; refusals carry their reason in the body.
+      setActionNotice(result.dispatched ? null : `Dispatch refused: ${result.reason}`);
+      await invalidate();
+    },
+    onError: (error) => setActionError(describeRoutingActionError(error)),
+  });
+
+  const reviewMutation = useMutation({
+    mutationFn: () => routingApi.requestReview(issueId),
+    onSuccess: async (result) => {
+      setActionError(null);
+      if (result.state === "reviewer-unavailable") {
+        setActionNotice(`Review request blocked: reviewer-unavailable`);
+      } else if (result.state === "not-required") {
+        setActionNotice("Review not required for this route.");
+      } else {
+        setActionNotice(null);
+      }
+      await invalidate();
+    },
+    onError: (error) => setActionError(describeRoutingActionError(error)),
+  });
+
+  const rescueMutation = useMutation({
+    mutationFn: () => routingApi.rescue(issueId, { reason: rescueReason }),
+    onSuccess: async (result) => {
+      setActionError(null);
+      if (result.dispatchError) {
+        // The rescue revision WAS recorded; only its dispatch was refused.
+        setActionNotice(
+          `Rescue recorded as revision ${result.decision.revision}; dispatch refused: ${
+            result.dispatchError.code ?? result.dispatchError.message
+          }`,
+        );
+      } else if (result.dispatch && !result.dispatch.dispatched) {
+        setActionNotice(`Dispatch refused: ${result.dispatch.reason}`);
+      } else if (!result.dispatch && result.decision.state !== "routed") {
+        // The rescue escalation itself refused; the state row shows the exact state.
+        setActionNotice(`Rescue not dispatched: ${result.decision.state}`);
+      } else {
+        setActionNotice(null);
+      }
+      setPanel(null);
+      await invalidate();
+    },
+    onError: (error) => setActionError(describeRoutingActionError(error)),
+  });
+
+  const actionPending =
+    runAction.isPending || dispatchMutation.isPending || reviewMutation.isPending || rescueMutation.isPending;
+  const routingLoaded = routingQuery.isSuccess;
+  const profilesLoaded = profilesQuery.isSuccess;
 
   const toggleListValue = <T,>(values: T[], value: T): T[] =>
     values.includes(value) ? values.filter((v) => v !== value) : [...values, value];
@@ -140,8 +214,21 @@ export function RoutingSection({
   return (
     <PropertySection title="Routing" streamlined={streamlined}>
       {routingQuery.error ? (
-        <div role="alert" className="py-1 text-xs text-destructive">
-          {describeRoutingActionError(routingQuery.error)}
+        <div role="alert" className="flex items-center gap-2 py-1 text-xs text-destructive">
+          <span className="min-w-0">Failed to load routing: {describeRoutingActionError(routingQuery.error)}</span>
+          <Button size="sm" variant="outline" onClick={() => routingQuery.refetch()}>
+            Retry
+          </Button>
+        </div>
+      ) : null}
+      {profilesQuery.error ? (
+        <div role="alert" className="flex items-center gap-2 py-1 text-xs text-destructive">
+          <span className="min-w-0">
+            Failed to load execution profiles: {describeRoutingActionError(profilesQuery.error)}
+          </span>
+          <Button size="sm" variant="outline" onClick={() => profilesQuery.refetch()}>
+            Retry
+          </Button>
         </div>
       ) : null}
 
@@ -185,11 +272,11 @@ export function RoutingSection({
             </PropertyRow>
           ) : null}
         </>
-      ) : (
+      ) : routingLoaded ? (
         <PropertyRow label="State">
           <span className="text-xs text-muted-foreground">Not routed</span>
         </PropertyRow>
-      )}
+      ) : null}
 
       {routing?.activeClaims.length ? (
         <PropertyRow label="Claims" wrap>
@@ -240,34 +327,65 @@ export function RoutingSection({
       {actionError ? (
         <div role="alert" className="py-1 text-xs text-destructive">{actionError}</div>
       ) : null}
+      {actionNotice ? (
+        <div role="status" className="py-1 text-xs text-muted-foreground">{actionNotice}</div>
+      ) : null}
 
       <div className="flex flex-wrap gap-1.5 py-1">
-        <Button size="sm" variant="outline" onClick={() => setPanel(panel === "route" ? null : "route")}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!routingLoaded}
+          onClick={() => setPanel(panel === "route" ? null : "route")}
+        >
           Route
         </Button>
         <Button
           size="sm"
           variant="outline"
-          disabled={runAction.isPending}
-          onClick={() => runAction.mutate(() => routingApi.dispatch(issueId))}
+          disabled={actionPending || !routingLoaded}
+          onClick={() => dispatchMutation.mutate()}
         >
           Dispatch
         </Button>
         <Button
           size="sm"
           variant="outline"
-          disabled={runAction.isPending}
-          onClick={() => runAction.mutate(() => routingApi.requestReview(issueId))}
+          disabled={actionPending || !routingLoaded}
+          onClick={() => reviewMutation.mutate()}
         >
           Request review
         </Button>
-        <Button size="sm" variant="outline" onClick={() => setPanel(panel === "escalate" ? null : "escalate")}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!routingLoaded}
+          onClick={() => setPanel(panel === "escalate" ? null : "escalate")}
+        >
           Escalate
         </Button>
-        <Button size="sm" variant="outline" onClick={() => setPanel(panel === "rescue" ? null : "rescue")}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!routingLoaded}
+          onClick={() => setPanel(panel === "rescue" ? null : "rescue")}
+        >
           Rescue
         </Button>
-        <Button size="sm" variant="outline" onClick={() => setPanel(panel === "override" ? null : "override")}>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={!routingLoaded || !profilesLoaded || !current}
+          onClick={() => {
+            if (panel === "override") {
+              setPanel(null);
+              setOverrideExpectedRevision(null);
+            } else {
+              setPanel("override");
+              setOverrideExpectedRevision(current ? current.revision : null);
+            }
+          }}
+        >
           Override
         </Button>
       </div>
@@ -350,8 +468,8 @@ export function RoutingSection({
       ) : null}
 
       {panel === "escalate" || panel === "rescue" ? (
-        <div className="flex items-end gap-2 rounded-md border border-border p-2">
-          <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+        <div className="flex min-w-0 flex-wrap items-end gap-2 rounded-md border border-border p-2">
+          <label className="flex min-w-0 max-w-full flex-col gap-1 text-xs text-muted-foreground">
             Reason
             <select
               aria-label={`${panel} reason`}
@@ -370,13 +488,15 @@ export function RoutingSection({
           </label>
           <Button
             size="sm"
-            disabled={runAction.isPending}
-            onClick={() =>
-              runAction.mutate(() =>
-                panel === "escalate"
-                  ? routingApi.escalate(issueId, { reason: escalationReason })
-                  : routingApi.rescue(issueId, { reason: rescueReason }),
-              )}
+            className="shrink-0"
+            disabled={actionPending}
+            onClick={() => {
+              if (panel === "escalate") {
+                runAction.mutate(() => routingApi.escalate(issueId, { reason: escalationReason }));
+              } else {
+                rescueMutation.mutate();
+              }
+            }}
           >
             {panel === "escalate" ? "Escalate route" : "Rescue route"}
           </Button>
@@ -416,11 +536,16 @@ export function RoutingSection({
           </label>
           <Button
             size="sm"
-            disabled={runAction.isPending || !current || override.note.trim().length === 0}
+            disabled={
+              actionPending ||
+              !profilesLoaded ||
+              overrideExpectedRevision === null ||
+              override.note.trim().length === 0
+            }
             onClick={() =>
               runAction.mutate(() =>
                 routingApi.override(issueId, {
-                  expectedRevision: current!.revision,
+                  expectedRevision: overrideExpectedRevision!,
                   ...(override.workerProfileId ? { workerProfileId: override.workerProfileId } : {}),
                   ...(override.reviewerProfileId ? { reviewerProfileId: override.reviewerProfileId } : {}),
                   ...(override.advisorProfileId ? { advisorProfileId: override.advisorProfileId } : {}),

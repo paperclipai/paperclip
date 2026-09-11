@@ -43,10 +43,12 @@ export function describeRoutingError(error: unknown): string {
   return error instanceof Error ? error.message : "Request failed";
 }
 
+const focusRingClass =
+  "outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3)";
 const selectClass =
-  "rounded-md border border-border bg-transparent px-2 py-1 text-sm outline-none";
+  `rounded-md border border-border bg-transparent px-2 py-1 text-sm ${focusRingClass}`;
 const inputClass =
-  "rounded-md border border-border bg-transparent px-2 py-1 text-sm outline-none";
+  `rounded-md border border-border bg-transparent px-2 py-1 text-sm ${focusRingClass}`;
 const numberClass = `${inputClass} w-20`;
 
 interface ProfileFormState {
@@ -177,6 +179,12 @@ function ProfileForm({
 }
 
 interface RuleDraft {
+  /**
+   * Concurrency token frozen when the draft was seeded. The save must assert
+   * the version the operator edited against, not whatever a background refetch
+   * delivered since — a stale token 409s instead of silently overwriting.
+   */
+  expectedVersion: number | null;
   workerProfileId: string;
   advisorProfileId: string;
   advisorMode: RouteAdvisorMode;
@@ -191,6 +199,7 @@ interface RuleDraft {
 }
 
 const EMPTY_RULE_DRAFT: RuleDraft = {
+  expectedVersion: null,
   workerProfileId: "",
   advisorProfileId: "",
   advisorMode: "none",
@@ -206,6 +215,7 @@ const EMPTY_RULE_DRAFT: RuleDraft = {
 
 function draftFromRule(rule: RouteRule): RuleDraft {
   return {
+    expectedVersion: rule.version,
     workerProfileId: rule.workerProfileId ?? "",
     advisorProfileId: rule.advisorProfileId ?? "",
     advisorMode: rule.advisorMode,
@@ -220,10 +230,10 @@ function draftFromRule(rule: RouteRule): RuleDraft {
   };
 }
 
-function draftToInput(taskClass: TaskClass, draft: RuleDraft, existing: RouteRule | undefined): UpsertRouteRuleInput {
+function draftToInput(taskClass: TaskClass, draft: RuleDraft): UpsertRouteRuleInput {
   return {
     taskClass,
-    expectedVersion: existing?.version ?? null,
+    expectedVersion: draft.expectedVersion,
     workerProfileId: draft.workerProfileId || null,
     advisorProfileId: draft.advisorProfileId || null,
     advisorMode: draft.advisorMode,
@@ -296,6 +306,11 @@ export function CompanyRouting() {
 
   const profiles = useMemo(() => profilesQuery.data ?? [], [profilesQuery.data]);
   const rules = useMemo(() => rulesQuery.data ?? [], [rulesQuery.data]);
+  // A failed read must never masquerade as an empty configuration: tables and
+  // mutations stay gated until the backing queries actually succeeded.
+  const profilesLoaded = profilesQuery.isSuccess;
+  const rulesLoaded = rulesQuery.isSuccess;
+  const agentsLoaded = agentsQuery.isSuccess;
   const agents = useMemo(
     () => (agentsQuery.data ?? []).map((agent) => ({ id: agent.id, name: agent.name })),
     [agentsQuery.data],
@@ -313,6 +328,8 @@ export function CompanyRouting() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [editingProfileId, setEditingProfileId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<ProfileFormState>(EMPTY_PROFILE_FORM);
+  /** Version snapshot frozen when the edit form opened; see RuleDraft.expectedVersion. */
+  const [editExpectedVersion, setEditExpectedVersion] = useState<number | null>(null);
   const [profileError, setProfileError] = useState<string | null>(null);
 
   const createProfileMutation = useMutation({
@@ -335,9 +352,13 @@ export function CompanyRouting() {
   });
 
   const updateProfileMutation = useMutation({
-    mutationFn: ({ profile, patch }: { profile: ExecutionProfile; patch: Record<string, unknown> }) =>
-      routingApi.updateProfile(profile.id, {
-        expectedVersion: profile.version,
+    mutationFn: ({
+      profileId,
+      expectedVersion,
+      patch,
+    }: { profileId: string; expectedVersion: number; patch: Record<string, unknown> }) =>
+      routingApi.updateProfile(profileId, {
+        expectedVersion,
         ...patch,
       // The endpoint's patch shape is a strict zod object; the cast keeps the
       // heterogeneous inline-toggle/edit call sites on one mutation.
@@ -345,6 +366,7 @@ export function CompanyRouting() {
     onSuccess: async () => {
       setProfileError(null);
       setEditingProfileId(null);
+      setEditExpectedVersion(null);
       await invalidateProfiles();
     },
     onError: (error) => setProfileError(describeRoutingError(error)),
@@ -352,23 +374,24 @@ export function CompanyRouting() {
 
   // --- rules ----------------------------------------------------------------
 
+  // Drafts exist only once the operator starts editing a rule; until then the
+  // row renders the fetched rule directly. The draft freezes `expectedVersion`
+  // at edit start so a refetch cannot swap the concurrency token underneath an
+  // in-progress edit (that path must 409, not silently overwrite).
   const [ruleDrafts, setRuleDrafts] = useState<Partial<Record<TaskClass, RuleDraft>>>({});
   const [ruleErrors, setRuleErrors] = useState<Partial<Record<TaskClass, string>>>({});
-
-  useEffect(() => {
-    setRuleDrafts((previous) => {
-      const next = { ...previous };
-      for (const rule of rules) {
-        if (!next[rule.taskClass]) next[rule.taskClass] = draftFromRule(rule);
-      }
+  const clearRuleDraft = (taskClass: TaskClass) =>
+    setRuleDrafts((prev) => {
+      const next = { ...prev };
+      delete next[taskClass];
       return next;
     });
-  }, [rules]);
 
   const upsertRuleMutation = useMutation({
     mutationFn: (input: UpsertRouteRuleInput) => routingApi.upsertRule(companyId!, input),
     onSuccess: async (_rule, input) => {
       setRuleErrors((prev) => ({ ...prev, [input.taskClass]: undefined }));
+      clearRuleDraft(input.taskClass);
       await invalidateRules();
     },
     onError: (error, input) => {
@@ -424,9 +447,22 @@ export function CompanyRouting() {
         {profileError ? (
           <div role="alert" className="text-xs text-destructive">{profileError}</div>
         ) : null}
+        {profilesQuery.error ? (
+          <div role="alert" className="flex items-center gap-2 text-xs text-destructive">
+            <span>Failed to load execution profiles: {describeRoutingError(profilesQuery.error)}</span>
+            <Button size="sm" variant="outline" onClick={() => profilesQuery.refetch()}>Retry</Button>
+          </div>
+        ) : null}
+        {agentsQuery.error ? (
+          <div role="alert" className="flex items-center gap-2 text-xs text-destructive">
+            <span>Failed to load agents: {describeRoutingError(agentsQuery.error)}</span>
+            <Button size="sm" variant="outline" onClick={() => agentsQuery.refetch()}>Retry</Button>
+          </div>
+        ) : null}
         {profilesQuery.isLoading ? (
           <div className="text-sm text-muted-foreground">Loading profiles...</div>
-        ) : (
+        ) : !profilesLoaded ? null : (
+          <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead>
               <tr className="text-xs text-muted-foreground">
@@ -455,10 +491,11 @@ export function CompanyRouting() {
                       <div className="mt-2 flex items-center gap-2">
                         <Button
                           size="sm"
-                          disabled={updateProfileMutation.isPending}
+                          disabled={updateProfileMutation.isPending || editExpectedVersion === null}
                           onClick={() =>
                             updateProfileMutation.mutate({
-                              profile,
+                              profileId: profile.id,
+                              expectedVersion: editExpectedVersion!,
                               patch: {
                                 name: editForm.name,
                                 providerFamily: editForm.providerFamily,
@@ -472,7 +509,14 @@ export function CompanyRouting() {
                         >
                           Save profile
                         </Button>
-                        <Button size="sm" variant="ghost" onClick={() => setEditingProfileId(null)}>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setEditingProfileId(null);
+                            setEditExpectedVersion(null);
+                          }}
+                        >
                           Cancel
                         </Button>
                       </div>
@@ -495,7 +539,11 @@ export function CompanyRouting() {
                           variant="outline"
                           disabled={updateProfileMutation.isPending}
                           onClick={() =>
-                            updateProfileMutation.mutate({ profile, patch: { enabled: !profile.enabled } })}
+                            updateProfileMutation.mutate({
+                              profileId: profile.id,
+                              expectedVersion: profile.version,
+                              patch: { enabled: !profile.enabled },
+                            })}
                         >
                           {profile.enabled ? "Disable" : "Enable"}
                         </Button>
@@ -504,6 +552,7 @@ export function CompanyRouting() {
                           variant="ghost"
                           onClick={() => {
                             setEditingProfileId(profile.id);
+                            setEditExpectedVersion(profile.version);
                             setEditForm({
                               name: profile.name,
                               providerFamily: profile.providerFamily,
@@ -529,6 +578,7 @@ export function CompanyRouting() {
               ) : null}
             </tbody>
           </table>
+          </div>
         )}
         <div className="rounded-md border border-border p-3">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -541,7 +591,7 @@ export function CompanyRouting() {
           <Button
             className="mt-2"
             size="sm"
-            disabled={createProfileMutation.isPending}
+            disabled={createProfileMutation.isPending || !profilesLoaded || !agentsLoaded}
             onClick={() => createProfileMutation.mutate()}
           >
             Create profile
@@ -551,9 +601,15 @@ export function CompanyRouting() {
 
       <section className="space-y-3" aria-label="Route rules">
         <h2 className="text-sm font-semibold">Route rules</h2>
+        {rulesQuery.error ? (
+          <div role="alert" className="flex items-center gap-2 text-xs text-destructive">
+            <span>Failed to load route rules: {describeRoutingError(rulesQuery.error)}</span>
+            <Button size="sm" variant="outline" onClick={() => rulesQuery.refetch()}>Retry</Button>
+          </div>
+        ) : null}
         {rulesQuery.isLoading ? (
           <div className="text-sm text-muted-foreground">Loading rules...</div>
-        ) : (
+        ) : !rulesLoaded ? null : (
           <div className="space-y-2">
             {TASK_CLASSES.map((taskClass) => {
               const existing = rules.find((rule) => rule.taskClass === taskClass);
@@ -565,13 +621,20 @@ export function CompanyRouting() {
                 <div key={taskClass} className="rounded-md border border-border p-3" data-task-class={taskClass}>
                   <div className="mb-2 flex items-center justify-between">
                     <span className="text-sm font-medium">{taskClass}</span>
-                    <Button
-                      size="sm"
-                      disabled={upsertRuleMutation.isPending}
-                      onClick={() => upsertRuleMutation.mutate(draftToInput(taskClass, draft, existing))}
-                    >
-                      Save rule
-                    </Button>
+                    <div className="flex items-center gap-1.5">
+                      {ruleDrafts[taskClass] ? (
+                        <Button size="sm" variant="ghost" onClick={() => clearRuleDraft(taskClass)}>
+                          Reset
+                        </Button>
+                      ) : null}
+                      <Button
+                        size="sm"
+                        disabled={upsertRuleMutation.isPending || !rulesLoaded || !profilesLoaded}
+                        onClick={() => upsertRuleMutation.mutate(draftToInput(taskClass, draft))}
+                      >
+                        Save rule
+                      </Button>
+                    </div>
                   </div>
                   {error ? (
                     <div role="alert" className="mb-2 text-xs text-destructive">{error}</div>
@@ -749,7 +812,7 @@ export function CompanyRouting() {
         ) : null}
         <Button
           size="sm"
-          disabled={applyDefaultsMutation.isPending}
+          disabled={applyDefaultsMutation.isPending || !profilesLoaded || !rulesLoaded}
           onClick={() => applyDefaultsMutation.mutate()}
         >
           Apply default matrix

@@ -101,6 +101,26 @@ const PROFILE = {
   updatedAt: new Date("2026-09-01T00:00:00.000Z"),
 };
 
+const RULE_V1 = {
+  id: "55555555-5555-4555-8555-555555555555",
+  companyId: "company-1",
+  taskClass: "feature_standard",
+  workerProfileId: PROFILE.id,
+  advisorProfileId: null,
+  advisorMode: "none",
+  reviewerProfileId: null,
+  reviewerFallbackProfileId: null,
+  reviewRequirement: "always",
+  reviewerFallbackPolicy: "fallback",
+  rescueProfileId: null,
+  maxAttempts: 3,
+  maxWallClockMinutes: 120,
+  maxCostCents: null,
+  version: 1,
+  createdAt: new Date("2026-09-01T00:00:00.000Z"),
+  updatedAt: new Date("2026-09-01T00:00:00.000Z"),
+};
+
 describe("CompanyRouting", () => {
   let container: HTMLDivElement;
 
@@ -153,6 +173,65 @@ describe("CompanyRouting", () => {
       expect(mockRoutingApi.upsertRule).toHaveBeenCalled();
       const alert = featureRow!.querySelector("[role='alert']");
       expect(alert?.textContent).toBe("reviewer-family-conflict");
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("keeps the draft's original expectedVersion after a refetch delivers a newer rule version", async () => {
+    mockRoutingApi.listRules.mockResolvedValue([RULE_V1]);
+    mockRoutingApi.upsertRule.mockRejectedValue(
+      new ApiError("Version conflict", 409, {
+        error: "Version conflict",
+        details: { code: "version_conflict" },
+      }),
+    );
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    await act(async () => {
+      root.render(render(queryClient));
+    });
+    await waitForAssertion(() => {
+      const input = container.querySelector<HTMLInputElement>(
+        "input[aria-label='feature_standard max attempts']",
+      );
+      expect(input?.value).toBe("3");
+    });
+
+    // Start editing: this seeds the draft and freezes expectedVersion at 1.
+    const attemptsInput = container.querySelector<HTMLInputElement>(
+      "input[aria-label='feature_standard max attempts']",
+    )!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      setter.call(attemptsInput, "5");
+      attemptsInput.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    // A background refetch now delivers version 2; the in-progress draft must
+    // NOT adopt it silently.
+    mockRoutingApi.listRules.mockResolvedValue([{ ...RULE_V1, version: 2, maxAttempts: 4 }]);
+    await act(async () => {
+      await queryClient.invalidateQueries();
+    });
+    await flushReact();
+
+    const featureRow = container.querySelector("[data-task-class='feature_standard']");
+    await act(async () => {
+      click(findAction(featureRow!, "Save rule"));
+    });
+
+    await waitForAssertion(() => {
+      expect(mockRoutingApi.upsertRule).toHaveBeenCalledWith(
+        "company-1",
+        expect.objectContaining({ taskClass: "feature_standard", expectedVersion: 1, maxAttempts: 5 }),
+      );
+      expect(featureRow!.textContent).toContain(
+        "Version conflict: this record changed since you loaded it. Reload and retry.",
+      );
     });
 
     await act(async () => {
