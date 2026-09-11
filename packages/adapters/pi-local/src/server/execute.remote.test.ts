@@ -190,11 +190,20 @@ describe("pi remote execution", () => {
       expect.anything(),
     );
     const call = runChildProcess.mock.calls[0] as unknown as
-      | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
+      | [string, string, string[], { env: Record<string, string>; stdin?: string; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
     expect(call?.[2]).toContain("--session");
     expect(call?.[2]).toContain("--skill");
+    expect(call?.[2]).toContain("-p");
     expect(call?.[2]).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/pi/skills`);
+    expect(typeof call?.[3].stdin).toBe("string");
+    expect((call?.[3].stdin ?? "").length).toBeGreaterThan(0);
+    expect(call?.[2]?.at(-1)).not.toBe(call?.[3].stdin);
+    const systemPromptFlag = call?.[2].indexOf("--append-system-prompt") ?? -1;
+    expect(systemPromptFlag).toBeGreaterThanOrEqual(0);
+    const systemPromptArg = systemPromptFlag >= 0 ? call?.[2][systemPromptFlag + 1] : "";
+    expect(systemPromptArg).toContain("You are agent");
+    expect(systemPromptArg).not.toContain("paperclip-pi-prompt-");
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
     expect(JSON.parse(call?.[3].env.PAPERCLIP_WORKSPACES_JSON ?? "[]")).toEqual([
       {
