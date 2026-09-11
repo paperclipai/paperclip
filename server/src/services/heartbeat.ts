@@ -658,6 +658,7 @@ const NATIVE_OWNERSHIP_UNVERIFIED_MESSAGE =
   "Native execution ownership could not be verified; automatic recovery is blocked";
 // The reaper sweeps at most this many pending_cleanup leases per tick.
 const PENDING_CLEANUP_SWEEP_PAGE_SIZE = 20;
+const pendingCleanupAttemptsInFlight = new Set<string>();
 // Escalate and slow cleanup after this many attempts; never abandon a live lease.
 const PENDING_CLEANUP_SWEEP_ATTEMPT_CAP = 5;
 // The reaper stores its retry state under these keys in the lease metadata.
@@ -18311,7 +18312,8 @@ export function heartbeatService(
   // sweep. The backoff equals the reaper staleness threshold, so a lease waits
   // for that period between attempts. The sweep reads and writes the attempt
   // count in the lease metadata. It warns once when a lease reaches the attempt
-  // cap and then stops the retries for that lease.
+  // threshold, then continues with slower retries. Live attempts renew their
+  // cleanup claim; after controller loss, exact-resource destruction may repeat.
   async function sweepPendingCleanupLeases(opts?: {
     backoffMs?: number;
     /** One cleanup attempt per explicit user Retry, for this failed run only.
@@ -18369,6 +18371,7 @@ export function heartbeatService(
     let destroyed = 0;
     let capped = 0;
     for (const row of rows) {
+      if (pendingCleanupAttemptsInFlight.has(row.id)) continue;
       const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
       const attempts = readPendingCleanupRetryAttempts(metadata);
 
@@ -18432,13 +18435,28 @@ export function heartbeatService(
       const claimed = await claimPendingCleanupRetryAttempt(row.id, attempts,
         opts?.explicitRetry ? { previousId: metadata.pendingCleanupManualAttemptId } : undefined);
       if (!claimed) continue;
+      pendingCleanupAttemptsInFlight.add(row.id);
+      lease.metadata = { ...lease.metadata, pendingCleanupAttemptId: claimed };
+      let renewing = false;
+      const renewal = setInterval(() => {
+        if (renewing) return;
+        renewing = true;
+        void db.update(environmentLeases).set({
+          metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, '{pendingCleanupRetryAfterMs}', to_jsonb(${Date.now() + 15 * 60_000}::bigint))`,
+        }).where(and(eq(environmentLeases.id, row.id), eq(environmentLeases.status, "pending_cleanup"),
+          sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${claimed}`,
+          sql`${environmentLeases.metadata}->>'pendingCleanupInFlight' = 'true'`))
+          .catch(() => logger.warn({ leaseId: row.id }, "cleanup ownership renewal failed"))
+          .finally(() => { renewing = false; });
+      }, 30_000);
+      renewal.unref();
+
+      try {
       if (opts?.explicitRetry) await logActivity(db, {
         companyId: row.companyId, actorType: "user", actorId: opts.explicitRetry.actorId,
         action: "environment_lease.cleanup_retried", entityType: "environment_lease", entityId: row.id,
         runId: opts.explicitRetry.runId, details: { attempt: attempts + 1, reason: opts.explicitRetry.reason ?? "retry_failed_run" },
       });
-
-      try {
         if (useRecordedTeardown) {
           // Tear the sandbox down from the recorded provider config and the
           // cleanup-authorized secret versions. Preserve any provider receipt;
@@ -18447,12 +18465,13 @@ export function heartbeatService(
             environment,
             lease,
           });
-          await environmentsSvc.releaseLease(lease.id, "expired", {
+          const released = await environmentsSvc.releaseLease(lease.id, "expired", {
+            expectedPendingCleanupAttemptId: claimed,
             cleanupStatus: "success",
             failureReason: "pending_cleanup_retry",
             remoteExecutionTermination: remoteTerminationReceipt(lease, receipt),
           });
-          destroyed += 1;
+          if (released) destroyed += 1;
         } else if (environment) {
           const result = await environmentRuntime.destroyRunLease({
             environment,
@@ -18471,6 +18490,7 @@ export function heartbeatService(
         // recorded-data teardown path.
         if (useRecordedTeardown) {
           await environmentsSvc.releaseLease(lease.id, "pending_cleanup", {
+            expectedPendingCleanupAttemptId: claimed,
             cleanupStatus: "failed",
             failureReason: "pending_cleanup_retry",
           });
@@ -18486,6 +18506,9 @@ export function heartbeatService(
           },
           "pending_cleanup lease retry failed",
         );
+      } finally {
+        clearInterval(renewal);
+        pendingCleanupAttemptsInFlight.delete(row.id);
       }
       if (attempts + 1 >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP) {
         capped += 1;
