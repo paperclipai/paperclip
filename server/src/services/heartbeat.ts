@@ -14557,6 +14557,10 @@ export function heartbeatService(
     const restartSuspendedRunIds: string[] = [];
 
     for (const { run, agent } of activeRuns) {
+      // Shutdown owns only this boot's legacy executions. Expired foreign
+      // owners belong to the reaper, not another container's drain.
+      if (run.runtimeMode === "legacy" && run.controllerBootId &&
+          run.controllerBootId !== legacyControllerBootId) continue;
       if (isNativeRunnerOwnershipHeld(run)) continue;
       if (
         run.runtimeMode === "native" &&

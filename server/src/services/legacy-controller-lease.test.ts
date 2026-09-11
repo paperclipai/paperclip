@@ -43,6 +43,15 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(saved.status).toBe("running");
     expect(saved.errorCode).toBeNull();
   });
+  it.each([false, true])("shutdown preserves a foreign controller (expired: %s)", async expired => {
+    const run = await seed();
+    await db.update(heartbeatRuns).set({ controllerBootId: randomUUID() }).where(eq(heartbeatRuns.id, run.id));
+    if (expired) await expire(run.id);
+    const result = await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM", new Date(), [run.id]);
+    expect(result.interruptedRunIds).toEqual([]);
+    const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+    expect(saved.status).toBe("running");
+  });
   it("a current controller renews and records the dispatch boundary", async () => {
     const run = await seed();
     expect(await renewLegacyControllerLease(db, run, "dispatching")).toBe(true);
