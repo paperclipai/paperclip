@@ -9660,7 +9660,6 @@ export function issueService(db: Db) {
       ).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
       }
       if (data.assigneeAgentId && data.assigneeUserId) {
@@ -10517,7 +10516,6 @@ export function issueService(db: Db) {
       ).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
       }
 
