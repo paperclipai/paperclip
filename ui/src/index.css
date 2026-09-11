@@ -1834,8 +1834,10 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 .paperclip-markdown {
   --tw-prose-pre-bg: var(--muted);
   --tw-prose-pre-code: var(--foreground);
+  --tw-prose-code: var(--foreground);
   --tw-prose-invert-pre-bg: var(--muted);
   --tw-prose-invert-pre-code: var(--foreground);
+  --tw-prose-invert-code: var(--foreground);
 }
 
 .paperclip-markdown pre {
@@ -2921,4 +2923,20 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 
 .task-chat-loading-shell .animate-pulse {
   animation: none;
+}
+
+/* The runner keeps one fixed-height activity row between commentary updates. */
+@keyframes runner-activity-roll-in {
+  from { transform: translateY(100%); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+@keyframes runner-activity-roll-out {
+  from { transform: translateY(0); opacity: 1; }
+  to { transform: translateY(-100%); opacity: 0; }
+}
+.runner-activity-roll-in { animation: runner-activity-roll-in var(--motion-line-scroll) var(--motion-ease-standard) both; }
+.runner-activity-roll-out { animation: runner-activity-roll-out var(--motion-line-scroll) var(--motion-ease-standard) both; }
+@media (prefers-reduced-motion: reduce) {
+  .runner-activity-roll-in { animation: none; }
+  .runner-activity-roll-out { display: none; }
 }

@@ -1,3 +1,5 @@
+import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
+import { remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { connectionIntentService } from "./connection-intents.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
@@ -504,7 +506,6 @@ import {
   REVIEW_PATH_RECOVERY_INSTRUCTION,
   reviewPathConsumedRefFromRun,
 } from "./recovery/review-path-recovery.js";
-import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
@@ -9731,7 +9732,6 @@ export function heartbeatService(
     return interaction.id;
   }
 
-  const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
@@ -9877,7 +9877,19 @@ export function heartbeatService(
         );
         return { closed: 0, busy: 0, failed: 1 };
       });
-      if (closeResult.busy > 0 || closeResult.failed > 0) {
+      // A failed remote checkpoint cannot veto destruction of the isolated
+      // sandbox after the run stopped. Provider destruction supplies the exit
+      // proof; it does not turn the interrupted checkpoint into a success.
+      const remoteLeases = closeResult.failed > 0 && leaseOwnerRun &&
+          ["cancelled", "failed", "timed_out", "interrupted"].includes(leaseOwnerRun.status)
+        ? await db.select({ provider: environmentLeases.provider }).from(environmentLeases).where(and(
+            eq(environmentLeases.companyId, input.companyId),
+            eq(environmentLeases.heartbeatRunId, input.runId),
+          ))
+        : [];
+      const canDestroyRemote = remoteLeases.length > 0 &&
+        remoteLeases.every(lease => lease.provider && lease.provider !== "local");
+      if (closeResult.busy > 0 || (closeResult.failed > 0 && !canDestroyRemote)) {
         logger.warn(
           { runId: input.runId, warmNativeSessions: closeResult },
           "deferred environment lease destruction until warm native sessions close",
@@ -9911,6 +9923,76 @@ export function heartbeatService(
         },
         "failed to release environment lease for heartbeat run",
       );
+    }
+    await acknowledgeRemoteStop(input.runId, input.companyId);
+  }
+
+  async function acknowledgeRemoteStop(runId: string, companyId: string) {
+    // The provider receipt arrives after adapter settlement. A remote ACP child
+    // has no host PID, so only this target-aware boundary can acknowledge Stop.
+    const stopped = await getRun(runId);
+    if (stopped?.runtimeMode === "native") {
+      const scopes = await stoppedRemoteCleanupScopes(db, companyId, runId);
+      for (const remoteCleanupScope of scopes ?? []) {
+        completeTerminatedRemoteNativeSessionCleanup({ companyId, runId, remoteCleanupScope });
+      }
+    }
+    if (stopped?.runtimeMode === "legacy" && stopped.status === "cancelled" &&
+        parseObject(stopped.resultJson?.executionCancellation).state === "requested" &&
+        await runUsedConversationAdapter(db, stopped) &&
+        await remoteExecutionHasStopped(db, companyId, runId)) {
+      await db.update(heartbeatRuns).set({
+        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
+          executionCancellation: { ...parseObject(stopped.resultJson?.executionCancellation),
+            state: "acknowledged", acknowledgedAt: new Date().toISOString(),
+            proof: "provider_termination_receipt" },
+          conversationContinuation: CONVERSATION_CONTINUATION_POLICY,
+        })}::jsonb`,
+        updatedAt: new Date(),
+      }).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "cancelled")));
+    }
+  }
+
+  async function resumeRemoteStopComments(run: typeof heartbeatRuns.$inferSelect) {
+    if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id) ||
+        !(await remoteExecutionHasStopped(db, run.companyId, run.id))) return;
+    const issueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
+    if (!issueId) return;
+    const legacyContinuation = run.runtimeMode === "legacy" && run.status === "cancelled" &&
+      hasConversationContinuationPolicy((await getRun(run.id))?.resultJson) &&
+      !(await getExecutionBlocker(db, run.companyId, issueId));
+    if (run.runtimeMode !== "native" && !legacyContinuation) return;
+    const pending = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
+      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      eq(agentWakeupRequests.requestedByActorType, "user"),
+      sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+    )).orderBy(asc(agentWakeupRequests.requestedAt));
+    for (const wake of pending) {
+      const payload = parseObject(wake.payload);
+      const context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+      const commentId = deriveCommentId(context, payload);
+      if (legacyContinuation) {
+        if (!commentId || !run.finishedAt || !wake.requestedByActorId ||
+            !["issue_commented", "issue_reopened_via_comment"].includes(wake.reason ?? "")) continue;
+        const [comment] = await db.select().from(issueComments).where(and(
+          eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId),
+          sql`${issueComments.id}::text = ${commentId}`, eq(issueComments.authorType, "user"),
+          eq(issueComments.authorUserId, wake.requestedByActorId), isNull(issueComments.deletedAt),
+          isNull(issueComments.createdByRunId), gt(issueComments.createdAt, run.finishedAt),
+        ));
+        if (!comment?.body.trim()) continue;
+      } else if (!await admitExplicitNativeContinuation({ db, companyId: run.companyId, issueId,
+        agentId: run.agentId, actorType: wake.requestedByActorType, actorId: wake.requestedByActorId,
+        reason: wake.reason, commentId, successorRunId: randomUUID(), dryRun: true })) continue;
+      // Re-enter ordinary admission with the original user's authority. It
+      // atomically adopts the deferred comments and still applies every gate.
+      await enqueueWakeup(run.agentId, { source: wake.source as WakeupOptions["source"], triggerDetail: (wake.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
+        reason: wake.reason, payload, contextSnapshot: context,
+        requestedByActorType: "user", requestedByActorId: wake.requestedByActorId,
+        idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` });
+      break;
     }
   }
 
@@ -12517,29 +12599,6 @@ export function heartbeatService(
             projectId: issue.projectId,
           })
         : null;
-    if (issue) {
-      const productivityHold =
-        await productivityReviews.isProductivityReviewContinuationHoldActive({
-          companyId: issue.companyId,
-          issueId: issue.id,
-          agentId: run.agentId,
-        });
-      if (productivityHold.held) {
-        await setRunStatus(run.id, run.status, {
-          livenessReason: `${run.livenessReason ?? "Run ended without concrete progress"}; continuation held by productivity review ${productivityHold.reviewIdentifier ?? productivityHold.reviewIssueId}`,
-        });
-        await productivityReviews.recordContinuationHold({
-          companyId: issue.companyId,
-          issueId: issue.id,
-          runId: run.id,
-          agentId: run.agentId,
-          reviewIssueId: productivityHold.reviewIssueId,
-          trigger: productivityHold.trigger,
-          reason: productivityHold.reason,
-        });
-        return;
-      }
-    }
 
     const nextAttempt = readContinuationAttempt(run.continuationAttempt) + 1;
     const idempotencyKey = issue
@@ -17722,15 +17781,16 @@ export function heartbeatService(
       try {
         if (useRecordedTeardown) {
           // Tear the sandbox down from the recorded provider config and the
-          // cleanup-authorized secret versions. The teardown returns no value
-          // and throws on failure, so the sweep releases the lease itself.
-          await environmentRuntime.retryPendingSandboxTeardown({
+          // cleanup-authorized secret versions. Preserve any provider receipt;
+          // a completed retry must grant the same evidence as initial cleanup.
+          const receipt = await environmentRuntime.retryPendingSandboxTeardown({
             environment,
             lease,
           });
           await environmentsSvc.releaseLease(lease.id, "expired", {
             cleanupStatus: "success",
             failureReason: "pending_cleanup_retry",
+            remoteExecutionTermination: remoteTerminationReceipt(lease, receipt),
           });
           destroyed += 1;
         } else if (environment) {
@@ -17766,6 +17826,15 @@ export function heartbeatService(
           },
           "pending_cleanup lease retry failed",
         );
+      }
+      if (lease.heartbeatRunId) {
+        // Delivery failure must not revert successful provider cleanup. A new
+        // message can still use the persisted receipt on its next admission.
+        await (async () => {
+          await acknowledgeRemoteStop(lease.heartbeatRunId!, lease.companyId);
+          const run = await getRun(lease.heartbeatRunId!);
+          if (run) await resumeRemoteStopComments(run);
+        })().catch(() => logger.warn({ leaseId: lease.id }, "could not reconsider messages after cleanup retry"));
       }
     }
 
@@ -18623,16 +18692,6 @@ export function heartbeatService(
     companyId?: string;
   }) {
     return recovery.scanSilentActiveRuns({
-      ...opts,
-      issueCreatedAtGte: await getWorktreeExecutionCutoff(),
-    });
-  }
-
-  async function reconcileProductivityReviews(opts?: {
-    now?: Date;
-    companyId?: string;
-  }) {
-    return productivityReviews.reconcileProductivityReviews({
       ...opts,
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
     });
@@ -24765,6 +24824,9 @@ export function heartbeatService(
         !nativeWorkspaceFinalizeScheduled &&
         !shutdownInProgress
       ) {
+        if (latestRun) await resumeRemoteStopComments(latestRun).catch(err => {
+          logger.warn({ err, runId: run.id }, "failed to resume user messages after remote Stop");
+        });
         await startNextQueuedRunForAgent(run.agentId);
       }
     }
@@ -27969,14 +28031,13 @@ export function heartbeatService(
     terminalizeRunOnLeaseRelease,
 
     releaseEnvironmentLeasesForRun,
+    resumeRemoteStopComments,
 
     sweepStaleIssueLocks,
 
     reconcileResolvedDependencyWakes,
 
     scanSilentActiveRuns,
-
-    reconcileProductivityReviews,
 
     reconcileTaskWatchdogs,
 

@@ -27,6 +27,7 @@ import {
 } from "./contracts/runtime-context.js";
 import {
   executeNativeSession,
+  completeTerminatedRemoteNativeSessionCleanup,
   type ExecuteNativeSessionOptions,
 } from "./native-session-runtime.js";
 
@@ -3856,6 +3857,59 @@ describe("executeNativeSession recovery", () => {
       }
     },
   );
+
+  it("retires only the terminated remote resource, including two sandboxes for one run", async () => {
+    const scopedIdentity = { ...identity, companyId: "remote-stop-company", runId: "remote-stop-run" };
+    const binding = { ...scopedIdentity, remoteCleanupScope: "first-sandbox" };
+    const scopedInput = { ...input, binding: { ...input.binding, companyId: scopedIdentity.companyId, runId: scopedIdentity.runId } };
+    const failure = new NativeSessionCloseUnrecoverableError();
+    const capabilities = { resume: true, typedEvents: true, steering: false, interruption: false, structuredResult: true };
+    const session: NativeSession = {
+      identity: () => scopedIdentity,
+      capabilities: async () => capabilities,
+      async *events() { throw new Error("cancelled remote transport"); },
+      startTurn: async () => ({ turnId: "remote-turn" }),
+      result: async () => null,
+      close: vi.fn(async () => { throw failure; }),
+    };
+    const backend: NativeSessionBackend = {
+      descriptor: async () => ({ kind: "remote", name: "remote-stop-test", version: "1", capabilities }),
+      openSession: vi.fn(async () => session),
+    };
+    const controlPlane: ControlPlanePort = {
+      openRun: async () => {}, checkpointSession: async () => {},
+      appendEvent: async () => ({ cursor: 0, highestContiguousSourceSeq: 0, disposition: "committed" }),
+      replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }),
+      completeRun: vi.fn(async () => {}),
+    };
+    const options = { input: scopedInput, backend, controlPlane, runnerInstanceId: "remote-runner",
+      controlPlaneInstanceId: "control", requireSessionCloseBeforeReturn: true,
+      remoteCleanupScope: binding.remoteCleanupScope };
+    await expect(executeNativeSession(options)).rejects.toBe(failure);
+    expect(completeTerminatedRemoteNativeSessionCleanup({ ...binding, runId: "other-run" })).toBe(true);
+    expect(completeTerminatedRemoteNativeSessionCleanup({ ...binding, companyId: "other-company" })).toBe(true);
+    await expect(executeNativeSession(options)).rejects.toBeInstanceOf(NativeSessionCleanupQuarantinedError);
+    expect(backend.openSession).toHaveBeenCalledOnce();
+    // A separate sandbox can start without inheriting this process quarantine.
+    const independent = { ...scopedIdentity, sessionId: "other-sandbox-session" };
+    const independentSession = { ...session, identity: () => independent };
+    const independentBackend = { ...backend, openSession: vi.fn(async () => independentSession) };
+    await expect(executeNativeSession({ ...options, remoteCleanupScope: "other-sandbox",
+      input: { ...scopedInput, binding: { ...scopedInput.binding, runId: independent.runId } },
+      backend: independentBackend })).rejects.toBe(failure);
+    expect(independentBackend.openSession).toHaveBeenCalledOnce();
+    expect(completeTerminatedRemoteNativeSessionCleanup(binding)).toBe(true);
+    // Same company/run, different sandbox: its quarantine must remain intact.
+    await expect(executeNativeSession({ ...options, remoteCleanupScope: "other-sandbox",
+      backend: independentBackend })).rejects.toBeInstanceOf(NativeSessionCleanupQuarantinedError);
+    expect(independentBackend.openSession).toHaveBeenCalledOnce();
+    // Reopening is now possible; the old failure/result was never rewritten.
+    await expect(executeNativeSession(options)).rejects.toBe(failure);
+    expect(backend.openSession).toHaveBeenCalledTimes(2);
+    expect(controlPlane.completeRun).not.toHaveBeenCalled();
+    completeTerminatedRemoteNativeSessionCleanup(binding);
+    completeTerminatedRemoteNativeSessionCleanup({ ...binding, remoteCleanupScope: "other-sandbox" });
+  });
 
   it("propagates an exhausted required backend checkpoint close", async () => {
     vi.useFakeTimers();

@@ -274,7 +274,6 @@
     "server/src/__tests__/plugin-worker-manager.test.ts": 2669,
     "server/src/__tests__/private-hostname-guard.test.ts": 300,
     "server/src/__tests__/private-json-etag.test.ts": 271,
-    "server/src/__tests__/productivity-review-service.test.ts": 11098,
     "server/src/__tests__/project-icon-persistence.test.ts": 3936,
     "server/src/__tests__/project-list-metrics.test.ts": 1198,
     "server/src/__tests__/project-shortname-resolution.test.ts": 1196,

@@ -1,4 +1,5 @@
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
+import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import {
   boundedExecutionCleanup,
   EXECUTION_CONTROL_DEADLINE_MS,
@@ -7612,6 +7613,14 @@ async function executePaperclipNativeSessionWithinScope(
             trace,
           })
         : null;
+    const remoteCleanupLease = input.runnerExecutionTarget?.kind === "remote" &&
+        input.runnerExecutionTarget.transport === "sandbox" && input.runnerExecutionTarget.leaseId
+      ? await input.db.select({ provider: environmentLeases.provider, providerLeaseId: environmentLeases.providerLeaseId })
+          .from(environmentLeases).where(and(
+            eq(environmentLeases.companyId, input.execution.binding.companyId),
+            eq(environmentLeases.id, input.runnerExecutionTarget.leaseId),
+          )).then(rows => rows[0])
+      : null;
     nativeSessionExecuteStartedAtMs = Date.now();
     native = await trace.measure(
       "native.session.execute",
@@ -7624,6 +7633,7 @@ async function executePaperclipNativeSessionWithinScope(
         const result = await trace.run(runnerSessionStartupScope, () =>
           executeNativeSession({
             input: runnerExecution,
+            remoteCleanupScope: remoteCleanupLease ? remoteLeaseCleanupScope(remoteCleanupLease) : undefined,
             backend:
               input.backend ??
               runnerdBackend ??

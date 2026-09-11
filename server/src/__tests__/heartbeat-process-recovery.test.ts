@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
+import { issueService } from "../services/issues.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -10139,19 +10140,47 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBeNull();
   });
 
-  it("classifies actionable plan-only recovery and enqueues one liveness continuation", async () => {
-    mockAdapterExecute.mockResolvedValueOnce({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      errorMessage: null,
-      summary: "I will inspect the repo next and then implement the fix.",
-      provider: "test",
-      model: "test-model",
-    });
-    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+  it.each([false, true])("enqueues one bounded plan-only continuation with legacy productivity review present: %s", async (withLegacyReview) => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "failed",
+    });
+    const legacyReviewId = randomUUID();
+    if (withLegacyReview) {
+      await db.insert(issues).values({
+        id: legacyReviewId,
+        companyId,
+        title: "Historical productivity review",
+        description: "Keep this review and its existing ownership unchanged.",
+        status: "todo",
+        assigneeUserId: "responsible-user",
+        parentId: issueId,
+        originKind: "issue_productivity_review",
+        originId: issueId,
+        originFingerprint: `productivity-review:${issueId}`,
+      });
+    }
+    const legacyReviewBefore = withLegacyReview
+      ? await db.select().from(issues).where(eq(issues.id, legacyReviewId))
+      : [];
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      if (withLegacyReview) {
+        // These pre-dispatch cancellations used to satisfy both the no-comment
+        // and churn thresholds and suppress an otherwise valid continuation.
+        await db.insert(heartbeatRuns).values(Array.from({ length: 10 }, (_, index) => ({
+          id: randomUUID(), companyId, agentId,
+          invocationSource: "automation", triggerDetail: "system", status: "cancelled",
+          errorCode: "execution_reconciliation_required",
+          contextSnapshot: { issueId, taskId: issueId },
+          createdAt: new Date(Date.now() - (index + 1) * 60_000),
+          finishedAt: new Date(),
+        })));
+      }
+      return {
+        exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "I will inspect the repo next and then implement the fix.",
+        provider: "test", model: "test-model",
+      };
     });
     const heartbeat = heartbeatService(db);
 
@@ -10189,6 +10218,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
     expect(sourceRun?.id).not.toBe(runId);
     expect(sourceRun?.livenessState).toBe("plan_only");
+    if (withLegacyReview) {
+      expect(await db.select().from(issues).where(eq(issues.id, legacyReviewId))).toEqual(legacyReviewBefore);
+      const source = (await issueService(db).list(companyId)).find((issue) => issue.id === issueId);
+      expect(source).toBeDefined();
+      expect(source).not.toHaveProperty("productivityReview");
+    }
   });
 
   it("treats a plan document update as progress and does not enqueue liveness continuation", async () => {

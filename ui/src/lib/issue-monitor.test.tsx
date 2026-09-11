@@ -140,6 +140,35 @@ describe("deriveMonitorState", () => {
     expect(deriveMonitorState(issue("2026-07-17T19:59:00.000Z"), now).state).toBe("overdue");
   });
 
+  it.each(["queued", "running", "cancelled"] as const)("ignores a %s retry's historical start time", (status) => {
+    const issue = {
+      status: "in_progress",
+      scheduledRetry: {
+        status,
+        scheduledRetryAt: "2026-07-17T19:58:00.000Z",
+        scheduledRetryAttempt: 1,
+      },
+    };
+
+    expect(deriveMonitorState(issue, now)).toMatchObject({ state: "none", nextCheckAt: null });
+    // A separate, explicitly scheduled monitor must still be visible.
+    expect(deriveMonitorState({ ...issue, monitorNextCheckAt: "2026-07-17T20:05:00.000Z" }, now))
+      .toMatchObject({ state: "scheduled", source: "monitor" });
+  });
+
+  it("keeps overdue warnings for retries that have not been promoted", () => {
+    expect(deriveMonitorState({
+      scheduledRetry: { status: "scheduled_retry", scheduledRetryAt: "2026-07-17T19:58:00.000Z" },
+    }, now)).toMatchObject({ state: "overdue", source: "scheduled-retry" });
+  });
+
+  it.each(["done", "cancelled"])("ignores stale monitor and retry schedules on %s tasks", (status) => {
+    const scheduledRetry = { status: "scheduled_retry" as const, scheduledRetryAt: "2026-07-17T19:58:00.000Z" };
+    expect(deriveMonitorState({ status, scheduledRetry }, now)).toMatchObject({ state: "none", nextCheckAt: null });
+    expect(deriveMonitorState({ status, monitorNextCheckAt: scheduledRetry.scheduledRetryAt }, now))
+      .toMatchObject({ state: "none", nextCheckAt: null });
+  });
+
   it("derives cleared, none, and scheduled retry states", () => {
     expect(
       deriveMonitorState({ executionState: { monitor: { status: "cleared", attemptCount: 2 } } }, now),

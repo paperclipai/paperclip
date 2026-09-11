@@ -3013,9 +3013,6 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.blockedInboxAttention !== undefined
       ? { blockedInboxAttention: issue.blockedInboxAttention }
       : {}),
-    ...(issue.productivityReview
-      ? { productivityReview: issue.productivityReview }
-      : {}),
     ...(issue.scheduledRetry ? { scheduledRetry: issue.scheduledRetry } : {}),
     ...(issue.liveDescendantCount !== undefined
       ? { liveDescendantCount: issue.liveDescendantCount }
@@ -8381,7 +8378,6 @@ export function issueRoutes(
       relations,
       blockerAttention,
       reviewAttention,
-      productivityReview,
       scheduledRetry,
       attachments,
       continuationSummary,
@@ -8398,9 +8394,6 @@ export function issueRoutes(
         .then((map) => map.get(issue.id) ?? null),
       svc
         .listReviewAttention(issue.companyId, [issue])
-        .then((map) => map.get(issue.id) ?? null),
-      svc
-        .listProductivityReviews(issue.companyId, [issue.id])
         .then((map) => map.get(issue.id) ?? null),
       svc.getCurrentScheduledRetry(issue.id),
       svc.listAttachments(issue.id),
@@ -8465,7 +8458,6 @@ export function issueRoutes(
         workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),
         ...(reviewAttention ? { reviewAttention } : {}),
-        productivityReview,
         scheduledRetry,
         activeRecoveryAction: revalidatedActiveRecoveryAction,
         priority: issue.priority,
@@ -8708,7 +8700,6 @@ export function issueRoutes(
       relations,
       blockerAttention,
       reviewAttention,
-      productivityReview,
       referenceSummary,
       successfulRunHandoffStates,
       scheduledRetry,
@@ -8727,9 +8718,6 @@ export function issueRoutes(
         .then((map) => map.get(issue.id) ?? null),
       svc
         .listReviewAttention(issue.companyId, [issue])
-        .then((map) => map.get(issue.id) ?? null),
-      svc
-        .listProductivityReviews(issue.companyId, [issue.id])
         .then((map) => map.get(issue.id) ?? null),
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
@@ -8774,7 +8762,6 @@ export function issueRoutes(
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),
       ...(reviewAttention ? { reviewAttention } : {}),
-      productivityReview,
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       executionBlocker: await getExecutionBlocker(db, issue.companyId, issue.id),
       scheduledRetry,
