@@ -66,6 +66,15 @@ describe("activity formatting", () => {
     expect(formatIssueActivityAction("issue.monitor_recovery_issue_created")).toBe("created a monitor recovery issue");
   });
 
+  it("labels each queued-comment queue mutation", () => {
+    expect(formatActivityVerb("issue.queued_comment_edited")).toBe("edited a queued comment on");
+    expect(formatActivityVerb("issue.queued_comments_reordered")).toBe("reordered queued comments on");
+    expect(formatActivityVerb("issue.queued_comment_discarded")).toBe("discarded a queued comment on");
+    expect(formatIssueActivityAction("issue.queued_comment_edited")).toBe("edited a queued comment");
+    expect(formatIssueActivityAction("issue.queued_comments_reordered")).toBe("reordered queued comments");
+    expect(formatIssueActivityAction("issue.queued_comment_discarded")).toBe("discarded a queued comment");
+  });
+
   // PAP-16506 P4: agents can now resolve an interaction, including a review of
   // their own work, so an outcome has to read as an outcome in the timeline
   // instead of leaking the raw action id.

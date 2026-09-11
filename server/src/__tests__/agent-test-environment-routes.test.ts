@@ -189,6 +189,56 @@ describe("agent test-environment route", () => {
     await unregisterTestAdapter("external_test");
   });
 
+  it.each(["CURSOR_API_KEY", "KIMI_MODEL_API_KEY", "ZAI_API_KEY", "KIMI_API_KEY", "MINIMAX_API_KEY"])("accepts %s as a probe-only credential", async (key) => {
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ testCredentials: { [key]: "probe-only-key" } });
+    expect(res.status).toBe(200);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence.mock.calls[0]?.[1]).toEqual({});
+    expect(testEnvironmentSpy.mock.calls[0]?.[0].config.env).toEqual({ [key]: "probe-only-key" });
+  });
+
+  it("maps the Hermes gateway probe key without passing it to persistence", async () => {
+    const { registerServerAdapter, getServerAdapter, unregisterServerAdapter } = await import("../adapters/index.js");
+    const previous = getServerAdapter("hermes_gateway");
+    unregisterServerAdapter("hermes_gateway");
+    registerServerAdapter({ ...externalAdapter, type: "hermes_gateway" });
+    try {
+      const app = await createApp();
+      const res = await request(app)
+        .post("/api/companies/company-1/adapters/hermes_gateway/test-environment")
+        .send({ adapterConfig: { apiBaseUrl: "https://hermes.example.com" }, testCredentials: { API_SERVER_KEY: "gateway-probe-key" } });
+      expect(res.status).toBe(200);
+      expect(mockSecretService.normalizeAdapterConfigForPersistence.mock.calls[0]?.[1]).toEqual({ apiBaseUrl: "https://hermes.example.com" });
+      expect(testEnvironmentSpy.mock.calls[0]?.[0].config.apiKey).toBe("gateway-probe-key");
+      expect(JSON.stringify(res.body)).not.toContain("gateway-probe-key");
+    } finally {
+      unregisterServerAdapter("hermes_gateway");
+      if (previous) registerServerAdapter(previous);
+    }
+  });
+
+  it("passes one-shot provider credentials only to the probe, never persistence normalization", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ adapterConfig: { env: { KEEP: "value" } }, testCredentials: { OPENROUTER_API_KEY: "probe-only-key" } });
+    expect(res.status).toBe(200);
+    expect(mockSecretService.normalizeAdapterConfigForPersistence.mock.calls[0]?.[1]).toEqual({ env: { KEEP: "value" } });
+    expect(testEnvironmentSpy.mock.calls[0]?.[0].config.env).toEqual({ KEEP: "value", OPENROUTER_API_KEY: "probe-only-key" });
+    expect(JSON.stringify(res.body)).not.toContain("probe-only-key");
+  });
+
+  it("rejects non-provider variables in one-shot credentials", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .post("/api/companies/company-1/adapters/external_test/test-environment")
+      .send({ testCredentials: { NODE_OPTIONS: "--require unsafe" } });
+    expect(res.status).toBe(400);
+    expect(testEnvironmentSpy).not.toHaveBeenCalled();
+  });
+
   it("does not fall back to a host probe when a requested environment cannot produce an execution target", async () => {
     const app = await createApp();
 

@@ -13,6 +13,7 @@ export { getConfigSchema } from "./config-schema.js";
 export {
   reconcileManagedCodexHome,
   isManagedCodexHomePath,
+  resolveManagedCodexHomeDir,
   evaluateCodexCredentialReadiness,
   type ReconcileManagedCodexHomeInput,
   type ReconcileManagedCodexHomeResult,
@@ -47,6 +48,8 @@ export {
   withAccountHomeSecretMutationLock,
   assertAccountHomeCacheDirStillValid,
   resolveCodexAuthCacheDir,
+  isCodexAuthCachePath,
+  readSubscriptionAccountId,
 } from "./codex-auth-cache.js";
 export { parseCodexJsonl, isCodexHarnessCrash, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
 export {

@@ -144,7 +144,7 @@ function renderBody(
 
 function button(label: string) {
   return Array.from(document.body.querySelectorAll("button")).find(
-    (candidate) => candidate.textContent?.trim() === label,
+    (candidate) => candidate.textContent?.trim() === label || (label === "Connect / Use existing" && candidate.textContent?.trim() === "Connect"),
   ) as HTMLButtonElement | undefined;
 }
 
@@ -175,7 +175,7 @@ afterEach(async () => {
 
 describe("ConnectionIntentInteractionBody states and audience", () => {
   it.each([
-    [pendingConnectionIntentInteraction, "Connect / Use existing"],
+    [pendingConnectionIntentInteraction, "Connect"],
     [
       {
         ...pendingConnectionIntentInteraction,
@@ -184,7 +184,7 @@ describe("ConnectionIntentInteractionBody states and audience", () => {
           phase: "authorizing",
         },
       },
-      "Authorizing…",
+      "Continue setup",
     ],
     [retryConnectionIntentInteraction, "Try again"],
     [connectedConnectionIntentInteraction, "Notion connected"],

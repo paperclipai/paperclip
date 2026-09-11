@@ -488,6 +488,12 @@ export function isPaperclipCloudConnectorStrategy(value: unknown): boolean {
 }
 
 let capabilityCache: { key: string; expiresAt: number; profiles: PaperclipCloudConnectorProfileId[] } | null = null;
+let capabilityCacheGeneration = 0;
+
+export function invalidatePaperclipCloudConnectorCapabilities(): void {
+  capabilityCacheGeneration += 1;
+  capabilityCache = null;
+}
 
 export async function paperclipCloudConnectorCapabilitiesFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -506,9 +512,12 @@ export async function paperclipCloudConnectorCapabilitiesFromEnv(
   if (!config) return [];
   const key = `${config.baseUrl}|${config.instanceId}|${config.environment}`;
   if (capabilityCache?.key === key && capabilityCache.expiresAt > Date.now()) return capabilityCache.profiles;
+  const generation = capabilityCacheGeneration;
   const connector = createPaperclipCloudConnector({ config });
   const profiles = await connector.getCapabilities();
-  capabilityCache = { key, expiresAt: Date.now() + 60_000, profiles };
+  if (generation === capabilityCacheGeneration) {
+    capabilityCache = { key, expiresAt: Date.now() + 60_000, profiles };
+  }
   return profiles;
 }
 

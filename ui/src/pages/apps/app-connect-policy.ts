@@ -5,7 +5,19 @@ import {
   getAvailableConnectionMethods,
   getAppStoreDefinition,
   getConnectableAppDefinition,
+  type AppDefinition,
 } from "@paperclipai/shared";
+
+export function appSupportsToolCatalogSetup(entry: AppDefinition | null | undefined): boolean {
+  return Boolean(
+    entry && appSupportsCatalogSetup({
+      ...entry,
+      methods: entry.methods.filter(
+        (method) => (method.purpose ?? "tool") === "tool" && method.transport !== "chat_sdk",
+      ),
+    }),
+  );
+}
 
 export const MCP_DIRECT_OAUTH_CONNECT_SLUGS = APP_STORE_DEFINITIONS
   .filter((app) => getAvailableConnectionMethods(app).some((method) =>
@@ -41,7 +53,10 @@ export function resolveAppsConnectRouteKey(input: {
   return input.serviceSlug ?? input.appKey ?? input.sourceSlug ?? undefined;
 }
 
-export function canEnterAppsConnect(searchParams: URLSearchParams): boolean {
+export function canEnterAppsConnect(
+  searchParams: URLSearchParams,
+  { chatConnectorsEnabled = false }: { chatConnectorsEnabled?: boolean } = {},
+): boolean {
   if (searchParams.get("byo") === "1") {
     // The old BYO discovery page has moved to the Connectors list. Keep only
     // exact custom-connection reconnects using this legacy query contract.
@@ -53,9 +68,14 @@ export function canEnterAppsConnect(searchParams: URLSearchParams): boolean {
   }
   const source = searchParams.get("source") ?? "";
   const entry = getAppStoreDefinition(source);
+  if (
+    !chatConnectorsEnabled &&
+    entry?.methods.some((method) => method.transport === "chat_sdk") &&
+    !entry.methods.some((method) => (method.purpose ?? "tool") === "tool" && method.transport !== "chat_sdk")
+  ) return false;
   // A retained connection may belong to a provider hidden from fresh catalog
   // setup. Admit only known providers here; the setup flow then proves the
   // exact reconnect target is visible to the selected company before rendering.
   if (getConnectableAppDefinition(source) && searchParams.get("reconnect")?.trim()) return true;
-  return appSupportsCatalogSetup(entry);
+  return chatConnectorsEnabled ? appSupportsCatalogSetup(entry) : appSupportsToolCatalogSetup(entry);
 }

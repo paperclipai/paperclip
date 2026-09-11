@@ -24,6 +24,17 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     const sql = postgres(database.connectionString, { max: 1 });
     cleanups.push(async () => sql.end());
 
+    // The fixture starts at the latest schema. Rewind the later chat FK before
+    // exercising migration 0182's composite connection key; never CASCADE away
+    // unknown dependencies or change the production constraint for this test.
+    const [chatForeignKey] = await sql<{ definition: string }[]>`
+      SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+      WHERE conrelid = 'chat_endpoints'::regclass
+        AND conname = 'chat_endpoints_company_connection_fk'
+    `;
+    expect(chatForeignKey?.definition).toBeTruthy();
+    await sql`ALTER TABLE "chat_endpoints" DROP CONSTRAINT "chat_endpoints_company_connection_fk"`;
+
     await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${await migrationHash()}`;
     await sql`DROP TABLE IF EXISTS "connection_grant_delegations"`;
     await sql`DROP TABLE IF EXISTS "connection_grant_members"`;
@@ -49,6 +60,9 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
     `;
 
     await applyPendingMigrations(database.connectionString);
+    await sql.unsafe(
+      `ALTER TABLE "chat_endpoints" ADD CONSTRAINT "chat_endpoints_company_connection_fk" ${chatForeignKey!.definition}`,
+    );
 
     const [connection] = await sql<{ uid: string; ownership: string; transport: string; auth_kind: string }[]>`
       SELECT "uid", "ownership", "transport", "auth_kind" FROM "tool_connections" WHERE "id" = ${connectionId}
@@ -73,6 +87,7 @@ describeEmbeddedPostgres("connections v3 schema core migration", () => {
       VALUES (${companyId}, ${connectionId}, 'user', 'user-1', true)
     `).rejects.toMatchObject({ code: "23514" });
 
+    await sql`ALTER TABLE "chat_endpoints" DROP CONSTRAINT "chat_endpoints_company_connection_fk"`;
     await sql`DROP TABLE IF EXISTS "connection_grant_members"`;
     await sql`DROP TABLE "connection_grants"`;
     await sql`DROP INDEX "tool_connections_company_uid_uq"`;

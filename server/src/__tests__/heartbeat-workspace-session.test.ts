@@ -17,7 +17,6 @@ import {
   buildEffectiveRunWorkspaceConfigMetadata,
   buildWorkspaceConfigFreshnessOperation,
   deriveTaskKeyWithHeartbeatFallback,
-  extractWakeCommentIds,
   formatRuntimeWorkspaceWarningLog,
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
@@ -2790,7 +2789,7 @@ describe("deriveTaskKeyWithHeartbeatFallback", () => {
 });
 
 describe("comment wake batching", () => {
-  it("preserves ordered wake comment ids when coalescing queued follow-up wakes", () => {
+  it("updates the latest comment when coalescing queued follow-up wakes", () => {
     const merged = mergeCoalescedContextSnapshot(
       {
         issueId: "issue-1",
@@ -2808,7 +2807,7 @@ describe("comment wake batching", () => {
       },
     );
 
-    expect(extractWakeCommentIds(merged)).toEqual(["comment-1", "comment-2"]);
+    expect(merged.wakeCommentIds).toEqual(["comment-1", "comment-2"]);
     expect(merged.commentId).toBe("comment-2");
     expect(merged.wakeCommentId).toBe("comment-2");
     expect(merged.paperclipWake).toBeUndefined();

@@ -7,6 +7,7 @@ import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
 } from "@paperclipai/adapter-utils";
 import type { AdapterLoginCapability } from "@paperclipai/adapter-utils";
+import { runAdapterExecutionTargetShellCommand } from "@paperclipai/adapter-utils/execution-target";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -403,16 +404,37 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       };
     }
     if (profile.provider === "acpx") {
-      return {
-        adapterType: "paperclip_runner",
-        status: "pass" as const,
-        testedAt: new Date().toISOString(),
-        checks: [{
-          code: "acpx_profile_qualified",
-          level: "info" as const,
-          message: `ACPX ${profile.acpxAgent} is pinned to the qualified ${profile.model} profile; process readiness is verified by runnerd before the first turn.`,
-        }],
-      };
+      try {
+        if (profile.acpxAgent !== "claude") throw new Error("Select Codex to use the native Codex runner.");
+        const target = context.executionTarget;
+        if (target?.kind === "remote") {
+          const probe = await runAdapterExecutionTargetShellCommand(
+            `acpx-platform-${crypto.randomUUID()}`, target, "uname -s && uname -m",
+            { cwd: target.remoteCwd, env: {}, timeoutSec: 15 },
+          );
+          if (probe.timedOut || probe.exitCode !== 0) throw new Error("Could not verify the remote ACPX runner platform.");
+          const [os, arch] = probe.stdout.trim().split(/\s+/);
+          if (!((os === "Linux" && arch === "x86_64") || (os === "Darwin" && ["arm64", "x86_64"].includes(arch ?? "")))) {
+            throw new Error("ACPX Claude requires Linux x64 or macOS ARM64/x64.");
+          }
+          return {
+            adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
+            checks: [{ code: "acpx_remote_runtime_unverified", level: "warn" as const,
+              message: "The remote platform is supported. Runtime package integrity and readiness must still be verified by the remote runner before launch." }],
+          };
+        }
+        const { probeAcpxClaudeInstallation } = await import("@paperclipai/paperclip-runner/live");
+        await probeAcpxClaudeInstallation(profile.model);
+        return {
+          adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date().toISOString(),
+          checks: [{ code: "acpx_runtime_ready", level: "info" as const, message: "ACPX Claude runtime is installed and verified. Model access is checked when Claude runs." }],
+        };
+      } catch (error) {
+        return {
+          adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(),
+          checks: [{ code: "acpx_runtime_unavailable", level: "error" as const, message: error instanceof Error ? error.message : "ACPX Claude runtime could not be verified." }],
+        };
+      }
     }
     if (profile.provider === "claude_managed") {
       return {
@@ -503,7 +525,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           { value: "aws_agentcore", label: "AWS AgentCore" },
           { value: "acpx", label: "ACPX" },
         ],
-        hint: "Select a local provider, company-qualified managed provider, or qualified Claude/Codex ACPX profile.",
+        hint: "Select a local provider, company-qualified managed provider, or ACPX Claude.",
       },
       {
         key: "codexPermissionMode",
@@ -557,7 +579,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         type: "text" as const,
         default: "",
         placeholder: DEFAULT_OPENCODE_RUNNER_MODEL,
-        hint: "OpenCode uses provider/model form. ACPX models are pinned by the selected qualified agent profile.",
+        hint: "OpenCode uses provider/model form. ACPX Claude accepts Claude model IDs, including custom IDs.",
         meta: { visibleWhen: { key: "provider", value: "opencode" } },
       },
       {

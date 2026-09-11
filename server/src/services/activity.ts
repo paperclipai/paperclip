@@ -1,3 +1,4 @@
+import { executionProjectionsForRuns } from "./execution-projection.js";
 import { and, asc, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -485,6 +486,7 @@ export function activityService(db: Db) {
         }
       }
 
+      const executionByRunId = await executionProjectionsForRuns(db, companyId, runIds);
       return runs.map((run) => {
         const leaseRow = leaseByRunId.get(run.runId);
         const leaseMetadata = leaseRow?.lease.metadata ?? null;
@@ -496,6 +498,7 @@ export function activityService(db: Db) {
               : null;
         return {
           ...run,
+          execution: executionByRunId.get(run.runId) ?? null,
           environment: leaseRow
             ? {
                 id: leaseRow.environment.id,

@@ -87,7 +87,7 @@ export function HintIcon({ text }: { text: string }) {
   );
 }
 
-export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+export function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode; configSection?: import("../adapters/types").AdapterConfigSection }) {
   return (
     <div>
       <div className="flex items-center gap-1.5 mb-1">
@@ -200,6 +200,8 @@ export function CollapsibleSection({
   return (
     <div className={cn(bordered && "border-t border-border")}>
       <button
+        type="button"
+        aria-expanded={open}
         className="flex items-center gap-2 w-full px-4 py-2 text-xs font-medium text-muted-foreground hover:bg-accent/30 transition-colors"
         onClick={onToggle}
       >

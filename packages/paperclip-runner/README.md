@@ -41,6 +41,16 @@ route/service authorities; it does not copy those rules into this package.
 
 ## Quick start
 
+Native provider debug-trace correlation uses an incremental index owned by its transport. Pending
+event lookups read only newly appended bytes, with a 1 MiB read budget per lookup;
+they retry until the observed suffix is indexed. Partial records remain pending,
+and trace replacement or truncation invalidates the index. Closing a transport
+clears its index. Other active transports cannot evict its progress. Records over
+64 KiB are skipped by the correlation index without buffering or parsing their
+full contents; the original trace file retains them. Do not restore a full
+synchronous trace scan for each pending event: it blocks event delivery and can
+leave the board showing an active run after the provider turn has already ended.
+
 The package also builds `paperclip-runner-acpx-sidecar`. This bounded v2
 stdin/stdout bridge admits the pinned Claude and Codex ACPX profiles. It
 validates the exact model, session identity, tool catalog, structured input,
@@ -218,8 +228,8 @@ pnpm --filter @paperclipai/paperclip-runner test:runner-workflow-evals
 pnpm --filter @paperclipai/paperclip-runner report:runner-chaos-evals
 ```
 
-`report:runner-live-evals` is a paid, provider-backed command. Native Codex and
-the ACPX Codex profile require `OPENAI_API_KEY`; ACPX Claude requires
+`report:runner-live-evals` is a paid, provider-backed command. Native Codex
+requires `OPENAI_API_KEY`; ACPX Claude requires
 `ANTHROPIC_API_KEY`; OpenCode candidates require `OPENROUTER_API_KEY`. The live
 matrix admits no Pi profile and does not persist credential values. Set
 `PAPERCLIP_EVAL_MAX_CAMPAIGN_COST_USD` to a positive finite number to bound

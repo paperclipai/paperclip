@@ -55,6 +55,8 @@ export const MOTION_TOKENS: MotionTokenDef[] = [
   { name: "--motion-approval-pulse", group: "States", kind: "time", min: 0, max: 3000, step: 20 },
   { name: "--motion-plan-entry-stagger", group: "States", kind: "time", min: 0, max: 300, step: 5 },
   { name: "--motion-plan-check", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
+  { name: "--motion-question-confirm", group: "States", kind: "time", min: 0, max: 1000, step: 10 },
+  { name: "--motion-question-page-enter", group: "States", kind: "time", min: 0, max: 1000, step: 10 },
   { name: "--motion-count-tween", group: "States", kind: "time", min: 0, max: 1500, step: 10 },
   { name: "--motion-streaming-cursor-blink", group: "States", kind: "time", min: 0, max: 3000, step: 20 },
   { name: "--motion-turn-fold", group: "States", kind: "time", min: 0, max: 1500, step: 10 },

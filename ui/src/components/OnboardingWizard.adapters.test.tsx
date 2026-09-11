@@ -96,7 +96,6 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
 }));
 // Animation / canvas-ish children that add nothing to the logic under test.
 vi.mock("./AsciiArtAnimation", () => ({ AsciiArtAnimation: () => null }));
-vi.mock("./FrontDoor", () => ({ FrontDoor: () => null }));
 vi.mock("./AgentCapsule", () => ({ AgentCapsule: () => null }));
 
 import { queryKeys } from "../lib/queryKeys";

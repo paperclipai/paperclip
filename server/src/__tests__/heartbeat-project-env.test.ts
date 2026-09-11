@@ -194,6 +194,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
       environmentId: "environment-1",
       environmentEnv: {
         PAPERCLIP_API_KEY: "environment-api-key",
+        PAPERCLIP_RUNNER_NETWORK_ACCESS: "enabled",
         PAPERCLIP_CLOUD_PROVIDER_TOKEN_ENV: "environment-cloud",
         ENV_ONLY: "environment-only",
       },
@@ -250,6 +251,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
       ROUTINE_ONLY: "routine-only",
     });
     expect(JSON.stringify(result.resolvedConfig.env)).not.toContain("PAPERCLIP_API_KEY");
+    expect(JSON.stringify(result.resolvedConfig.env)).not.toContain("PAPERCLIP_RUNNER_NETWORK_ACCESS");
   });
 
   it("skips project env resolution when the project has no bindings", async () => {

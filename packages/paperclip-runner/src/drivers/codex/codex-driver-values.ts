@@ -231,7 +231,8 @@ export function differingJsonPaths(
 function finishToolSpec(): Record<string, unknown> {
   return {
     name: CODEX_COMPLETION_TOOL_NAME,
-    description: "Return the one semantic completion result for this task.",
+    description:
+      "Return the one semantic completion result for this task, including an explicit response_wake yield when waiting for the next response.",
     inputSchema: CODEX_RESULT_PROVIDER_INPUT_SCHEMA,
   };
 }

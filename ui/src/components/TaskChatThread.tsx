@@ -1,3 +1,6 @@
+import { requiresExecutionReconciliation } from "@paperclipai/shared";
+import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
+import { TaskChatScrollReady } from "@/components/task-chat/scroll-navigation";
 import {
   useCallback,
   useEffect,
@@ -32,6 +35,7 @@ import {
   embedPlanDocumentAtWriteBoundary,
   omitProgressRepeatedByResponseAcrossSegments,
   paperclipRunnerFinalResponse,
+  paperclipRunnerAcceptedResponseWake,
   paperclipRunnerTimelineItems,
   prependIssueBrief,
   settledRunChildren,
@@ -78,11 +82,16 @@ import {
   taskChatContentKey,
 } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import {
+  RunnerGoalWidget,
+  useRunnerGoalControl,
+} from "@/components/task-chat/RunnerGoalWidget";
 import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMessages";
-import { useWindowAutoFollow } from "@/components/task-chat/useWindowAutoFollow";
+import { TaskChatWindowScroll } from "@/components/task-chat/useWindowAutoFollow";
 import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
@@ -100,6 +109,9 @@ import {
   workProductHref,
 } from "@/lib/issue-artifacts";
 import { heartbeatsApi, type RuntimeRequestResolution } from "@/api/heartbeats";
+import { issuesApi } from "@/api/issues";
+import { queryKeys } from "@/lib/queryKeys";
+import { useQueryClient } from "@tanstack/react-query";
 import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
 
 function toMs(value: Date | string | null | undefined): number {
@@ -381,7 +393,11 @@ function resolvedWithoutUserFacingResponse(value: unknown): boolean {
   );
 }
 
-export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread>;
+export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread> & {
+  initialHistoryPending?: boolean;
+  initialHistoryError?: boolean;
+  onRetryInitialHistory?: () => void;
+};
 
 type PendingComposerInput =
   | {
@@ -448,6 +464,9 @@ function durableInputLabel(
 export function TaskChatThread(props: TaskChatThreadProps) {
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const {
+    initialHistoryPending = false,
+    initialHistoryError = false,
+    onRetryInitialHistory,
     comments,
     interactions,
     documents = [],
@@ -460,11 +479,16 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     userProfileMap,
     currentUserId,
     onAdd,
+    onReviewConversation,
+    onCancelRun,
+    stopPending,
+    stopScope,
     issueWorkMode = "standard",
     onWorkModeChange,
     composerAccessory,
     footer,
     showComposer = true,
+    composerPause,
     composerDisabledReason,
     emptyMessage = "No messages yet.",
     companyId,
@@ -511,6 +535,39 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onResumeAssignee,
     resumeAssigneePending = false,
   } = props;
+  const queryClient = useQueryClient();
+  const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
+    string | null
+  >(null);
+  const effectiveGoalAgentId =
+    pendingComposerAssignee === null
+      ? issueAssigneeAgentId
+      : pendingComposerAssignee.startsWith("agent:")
+        ? pendingComposerAssignee.slice("agent:".length) || null
+        : null;
+  const runnerGoal = useRunnerGoalControl(issueId, effectiveGoalAgentId);
+
+  useEffect(() => {
+    setPendingComposerAssignee(null);
+  }, [currentAssigneeValue, issueId]);
+
+  const reassignForRunnerGoal = useCallback(
+    async (reassignment: {
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    }) => {
+      if (!issueId)
+        throw new Error("The task is not available for reassignment.");
+      await issuesApi.update(issueId, {
+        ...reassignment,
+        deferWakeForGoal: true,
+      });
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.issues.detail(issueId),
+      });
+    },
+    [issueId, queryClient],
+  );
 
   const queuedMessageQueue =
     queuedCommentQueue && queuedCommentQueue.entries.length > 0
@@ -777,6 +834,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const {
     transcriptByRun: logTranscriptByRun,
     isInitialHydrating: logsAreInitiallyHydrating,
+    hydratedRunIds: hydratedLogRunIds,
+    errorsByRun: logErrorsByRun,
+    retry: retryLogs,
   } = useLiveRunTranscripts({
     // Native events are authoritative, but the persisted/live log remains a
     // compatibility source when an upgraded server has no event history or
@@ -787,19 +847,40 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const {
     transcriptByRun: nativeTranscriptByRun,
     errorsByRun: nativeTranscriptErrorsByRun,
+    isInitialHydrating: nativeEventsAreInitiallyHydrating,
+    hydratedRunIds: hydratedNativeRunIds,
+    retry: retryNativeEvents,
   } = useNativeRunTranscripts(nativeRuns);
+  const fallbackByRunRef = useRef(
+    new Map<string, NonNullable<ReturnType<typeof logTranscriptByRun.get>>>(),
+  );
   const transcriptByRun = useMemo(() => {
     const next = new Map(logTranscriptByRun);
     for (const run of nativeRuns) {
-      const logTranscript = logTranscriptByRun.get(run.id) ?? [];
       const nativeTranscript = nativeTranscriptByRun.get(run.id) ?? [];
-      const nativeEventsUnavailable = nativeTranscriptErrorsByRun.has(run.id);
+      const logTranscript = logTranscriptByRun.get(run.id) ?? [];
+      if (nativeTranscriptErrorsByRun.has(run.id) && logTranscript.length > 0) {
+        fallbackByRunRef.current.set(run.id, logTranscript);
+      }
+      const fallback = fallbackByRunRef.current.get(run.id);
+      const lastTimestamp = (entries: typeof nativeTranscript) =>
+        entries.reduce((latest, entry) => Math.max(latest, toMs(entry.ts)), 0);
+      // Keep a newer fallback visible through native transport recovery. An
+      // empty successful poll must not rewind a response the reader just saw.
       if (
-        nativeTranscript.length > 0 &&
-        (!nativeEventsUnavailable || logTranscript.length === 0)
+        fallback &&
+        (nativeTranscriptErrorsByRun.has(run.id) ||
+          lastTimestamp(nativeTranscript) < lastTimestamp(fallback))
       ) {
+        next.set(run.id, fallback);
+      } else if (nativeTranscript.length > 0) {
+        fallbackByRunRef.current.delete(run.id);
         next.set(run.id, nativeTranscript);
       }
+    }
+    for (const id of fallbackByRunRef.current.keys()) {
+      if (!nativeRuns.some((run) => run.id === id))
+        fallbackByRunRef.current.delete(id);
     }
     return next;
   }, [
@@ -920,7 +1001,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     return map;
   }, [comments]);
 
-  const { data: planDocument } = useIssuePlanDocument(issueId);
+  const {
+    data: planDocument,
+    isLoading: planLoading,
+    isError: planError,
+    refetch: retryPlan,
+  } = useIssuePlanDocument(issueId);
 
   // A native-runner Plan is part of the turn that wrote its current revision.
   // Legacy adapters do not expose the semantic write_document boundary needed
@@ -1269,15 +1355,17 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // heavy assembly memo doesn't recompute on every parent render.
   const hasBrief = Boolean(issueBrief);
 
-  const { items, settledRunIds } = useMemo<{
+  const { items, settledRunIds, settledReplyRunIds } = useMemo<{
     items: TaskChatItem[];
     settledRunIds: Set<string>;
+    settledReplyRunIds: Set<string>;
   }>(() => {
     // Runs whose settled turn made it into the assembled thread — the live tail
     // hands off to this as its "the settled turn has rendered" signal (PAP-462
     // B4), so the transcript stays mounted through the settle gap without ever
     // double-rendering beside its own settled turn.
     const settledRunIds = new Set<string>();
+    const settledReplyRunIds = new Set<string>();
     const entriesWithFailures = [...orderedEntries];
     // Settled turns for every terminal run whose transcript we have. Provider
     // commentary, grouped activity (including reasoning summaries), and
@@ -1292,14 +1380,78 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // Raw summary inputs per turn id, so back-to-back same-agent runs can
     // coalesce into one "Worked" row in the final pass (PAP-362).
     const turnMergeMetaById = new Map<string, SettledTurnMergeMeta>();
+    let previousExecutionWaitKey: string | null = null;
     for (const source of runs) {
       if (!isTerminalRunStatus(source.status)) continue;
       if (liveRun && source.id === liveRun.id) continue;
       const entries = transcriptByRun.get(source.id) ?? [];
       const meta = linkedRunMetaById.get(source.id);
+      // A queued continuation can become unnecessary while another turn finishes
+      // the task. Keep that cancellation in the run log, not the conversation.
+      // Apply this before native stop markers are assembled as well.
+      if (
+        source.status === "cancelled" &&
+        entries.length === 0 &&
+        (meta?.errorCode === "issue_not_in_progress" ||
+          (meta?.errorCode === "issue_terminal_status" && !meta.startedAt))
+      ) {
+        settledRunIds.add(source.id);
+        continue;
+      }
+      // Historical pre-admission cancellations describe a wait, not failed
+      // work. Collapse repeated observations of that hold, retaining real
+      // execution and any transcript/comment content between wait episodes.
+      const executionWait =
+        source.status === "cancelled" &&
+        !meta?.startedAt &&
+        meta?.errorCode === "execution_reconciliation_required" &&
+        entries.length === 0 &&
+        !lastCommentIdByRun.has(source.id);
+      if (executionWait) {
+        const wait = meta?.resultJson?.executionWait;
+        const waitKey = wait && typeof wait === "object" && "recoveryActionId" in wait
+          ? String(wait.recoveryActionId)
+          : "execution_reconciliation_required";
+        settledRunIds.add(source.id);
+        if (previousExecutionWaitKey !== waitKey) {
+          const id = `${source.id}:execution-wait`;
+          entriesWithFailures.push({
+            ms: toMs(meta?.finishedAt ?? meta?.createdAt),
+            order: 3,
+            id,
+            item: {
+              id, kind: "marker", variant: "interrupted", tone: "neutral",
+              label: "Waiting to resume",
+              detail: "The previous execution needs to be checked before work can continue. See the task’s execution hold for the next action. Individual checks remain in the run history.",
+            },
+          });
+        }
+        previousExecutionWaitKey = waitKey;
+        continue;
+      }
+      previousExecutionWaitKey = null;
       const acceptedSummary = acceptedSemanticResultSummary(meta?.resultJson);
+      const parsedSource = transcriptToTaskChatItems(entries, {
+        runId: source.id,
+        agentName: meta?.agentName,
+        running: false,
+      });
+      const sourceHasPendingAttention = (interactions ?? []).some(
+        (interaction) =>
+          interaction.sourceRunId === source.id &&
+          interaction.status === "pending",
+      );
+      const sourceAcceptedResponseWake =
+        source.status === "succeeded" &&
+        !sourceHasPendingAttention &&
+        paperclipRunnerAcceptedResponseWake(parsedSource, source.id);
       const sourceYielded =
-        acceptedSemanticResultDisposition(meta?.resultJson) === "yielded";
+        (acceptedSemanticResultDisposition(meta?.resultJson) === "yielded" ||
+          entries.some(
+            (entry) =>
+              entry.kind === "run_result" && entry.disposition === "yielded",
+          )) &&
+        !sourceAcceptedResponseWake;
       const sourceIsPaperclipRunner = isNativePaperclipRunnerRun(source);
       const decidedCommentId = presentationDecisionCommentId(meta?.resultJson);
       const progressCommentIds = semanticProgressCommentIds(meta?.resultJson);
@@ -1354,13 +1506,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? "native_runner_timed_out"
             : "native_runner_process_exited");
         const label =
-          source.status === "cancelled"
-            ? "Run cancelled"
-            : source.status === "interrupted"
-              ? "Run interrupted"
-              : source.status === "timed_out"
-                ? "Run timed out"
-                : "Run failed";
+          code === "native_provider_usage_limit" && source.status === "failed"
+            ? "Usage limit reached"
+            : source.status === "cancelled"
+              ? "Run cancelled"
+              : source.status === "interrupted"
+                ? "Run interrupted"
+                : source.status === "timed_out"
+                  ? "Run timed out"
+                  : "Run failed";
         const responseBoundary = sourceHasNativeResponse
           ? "after returning a final response"
           : "before returning an answer";
@@ -1369,11 +1523,16 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? `The run was cancelled ${responseBoundary}.`
             : source.status === "interrupted"
               ? `The run was interrupted ${responseBoundary}.`
-              : code === "provider_frame_too_large"
-                ? "Provider output exceeded the safe limit."
-                : source.status === "timed_out"
-                  ? `The runner timed out ${responseBoundary} (${code}).`
-                  : `The runner stopped ${responseBoundary} (${code}).`;
+              : code === "native_provider_model_rejected"
+                ? "The provider rejected the selected model. Check the model ID and your account's access, save the agent configuration, then retry. View the run for the provider's full error."
+                : code === "native_provider_usage_limit" &&
+                    source.status === "failed"
+                  ? "The model provider has reached its current usage limit. Try again after the limit resets."
+                  : code === "provider_frame_too_large"
+                    ? "Provider output exceeded the safe limit."
+                    : source.status === "timed_out"
+                      ? `The runner timed out ${responseBoundary} (${code}).`
+                      : `The runner stopped ${responseBoundary} (${code}).`;
         const id = `${source.id}:failure`;
         const runAgent = meta?.agentId
           ? agentMap?.get(meta.agentId)
@@ -1388,6 +1547,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             id,
             kind: "marker",
             variant: "interrupted",
+            tone: source.status === "cancelled" ? "neutral" : "error",
             label,
             detail,
             collapsible: true,
@@ -1449,9 +1609,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             startMs: startedAtMs > 0 ? startedAtMs : Number.POSITIVE_INFINITY,
           });
           settledRunIds.add(source.id);
+          settledReplyRunIds.add(source.id);
         } else if (
           !sourceIsPaperclipRunner &&
-          (source.status === "failed" || source.status === "timed_out")
+          (source.status === "failed" || source.status === "timed_out" || source.status === "cancelled")
         ) {
           settledRunIds.add(source.id);
           const code = meta?.errorCode ?? "native_runner_process_exited";
@@ -1459,7 +1620,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? "Retry scheduled automatically."
             : "You can retry this message now.";
           const detail =
-            code === "provider_frame_too_large"
+            source.status === "cancelled"
+              ? code === "execution_reconciliation_required"
+                ? "The previous execution must be checked before this task can continue. Your message is preserved. View the stopped run for details."
+                : "Execution was stopped before returning an answer."
+              : code === "provider_frame_too_large"
               ? `Provider output exceeded the safe limit. ${retryDetail}`
               : `The runner stopped before returning an answer (${code}). ${retryDetail}`;
           const id = `${source.id}:failure`;
@@ -1471,7 +1636,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               id,
               kind: "marker",
               variant: "interrupted",
-              label: "Run failed",
+              label: source.status === "cancelled" ? (meta?.startedAt ? "Stopped" : "Couldn't start") : "Run failed",
+              tone: source.status === "cancelled" ? "neutral" : "error",
               detail,
             },
           });
@@ -1557,18 +1723,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       const sourceResponseText =
         sourceIsPaperclipRunner && !sourceYielded
           ? (sourcePresentationText ??
-            paperclipRunnerFinalResponse(
-              transcriptToTaskChatItems(entries, {
-                runId: source.id,
-                agentName: meta?.agentName,
-                running: false,
-              }),
-              {
-                runId: source.id,
-                agentName: meta?.agentName,
-                fallbackSummary: acceptedSummary,
-              },
-            )?.text)
+            paperclipRunnerFinalResponse(parsedSource, {
+              runId: source.id,
+              agentName: meta?.agentName,
+              fallbackSummary: acceptedSummary,
+            })?.text)
           : undefined;
       const timelineItemsBySegment = sourceIsPaperclipRunner
         ? omitProgressRepeatedByResponseAcrossSegments(
@@ -1590,14 +1749,23 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           sourceIsPaperclipRunner &&
           !sourceYielded &&
           !sourceHasPresentationComment
-            ? paperclipRunnerFinalResponse(parsed, {
-                runId: source.id,
-                agentName: meta?.agentName,
-                fallbackSummary:
-                  segmentIndex === lastPopulatedSegmentIndex
-                    ? acceptedSummary
-                    : undefined,
-              })
+            ? sourceAcceptedResponseWake
+              ? // A steering anchor may split acceptance from its terminal.
+                // Keep the whole-run proof and render its answer exactly once.
+                segmentIndex === lastPopulatedSegmentIndex
+                ? paperclipRunnerFinalResponse(parsedSource, {
+                    runId: source.id,
+                    agentName: meta?.agentName,
+                  })
+                : undefined
+              : paperclipRunnerFinalResponse(parsed, {
+                  runId: source.id,
+                  agentName: meta?.agentName,
+                  fallbackSummary:
+                    segmentIndex === lastPopulatedSegmentIndex
+                      ? acceptedSummary
+                      : undefined,
+                })
             : undefined;
         const children = settledRunChildren(
           timelineItemsBySegment[segmentIndex] ?? [],
@@ -1605,6 +1773,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         if (children.length === 0 && !finalResponse && !sourceIsPaperclipRunner)
           continue;
         settledRunIds.add(source.id);
+        if (finalResponse) settledReplyRunIds.add(source.id);
         const segmented = timelineAnchors.length > 0;
         const turnId = segmented
           ? `${source.id}:turn:${segmentIndex}`
@@ -1784,6 +1953,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         hasBrief,
       ),
       settledRunIds,
+      settledReplyRunIds,
     };
   }, [
     orderedEntries,
@@ -1831,7 +2001,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     settlingRun != null &&
     (settlingIsPaperclipRunner
       ? settledRunIds.has(settlingRun.id) &&
-        (settlingHasComment || settlingHasDurableInteraction)
+        (settlingHasComment ||
+          settlingHasDurableInteraction ||
+          // A projected terminal answer can already own the response while
+          // the canonical comment request is still in flight. Do not show a
+          // second activity tail just because that fetch is slower.
+          settledReplyRunIds.has(settlingRun.id))
       : settlingHasComment || settledRunIds.has(settlingRun.id));
   useEffect(() => {
     if (!settlingRun) return;
@@ -2081,6 +2256,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       .filter(
         (interaction) =>
           interaction.status === "pending" &&
+          interaction.kind !== "connection_intent" &&
           !shouldHideInteractionCard(interaction),
       )
       .sort((left, right) => toMs(right.createdAt) - toMs(left.createdAt));
@@ -2240,7 +2416,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const renderQueuedAction = useCallback(
     (item: TaskChatMessageItem) => {
       const runId = item.queueTargetRunId;
-      if (item.optimistic !== "queued" || !runId || !onInterruptQueued)
+      if (composerPause || item.optimistic !== "queued" || !runId || !onInterruptQueued)
         return null;
 
       const isInterrupting = interruptingQueuedRunId === runId;
@@ -2256,13 +2432,19 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         </Button>
       );
     },
-    [interruptingQueuedRunId, onInterruptQueued],
+    [composerPause, interruptingQueuedRunId, onInterruptQueued],
   );
+
+  const reopenToolReview = useCallback((interactionId: string) => {
+    setSelectedPendingKey(`interaction:${interactionId}`);
+    setTakeoverMode("open");
+  }, []);
 
   const renderInteraction = useCallback(
     (item: TaskChatInteractionItem) => (
       <TaskChatInteractionCard
         item={item}
+        onReviewRequest={reopenToolReview}
         planDocument={planDocument}
         showPlanPreview={
           !threadOwnsPlanPreview(
@@ -2302,7 +2484,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       planDocumentSourceRunId,
       settledRunIds,
       tailRunId,
+      reopenToolReview,
     ],
+  );
+
+  const renderBrief = useCallback(
+    () => issueBrief ? <TaskChatDescriptionBubble brief={issueBrief} /> : null,
+    [issueBrief],
   );
 
   const assignedAgentForNotice = useMemo(() => {
@@ -2349,6 +2537,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       ? {
           id: selectedPendingInput.key,
           label: selectedPendingInput.label,
+          hideLabel:
+            selectedPendingInput.kind === "durable" &&
+            selectedPendingInput.interaction.kind === "request_confirmation" &&
+            Boolean(selectedPendingInput.interaction.payload.toolAction),
           pendingCount: pendingComposerInputs.length,
           content: takeoverContent,
           onDismiss: () => setTakeoverMode("normal"),
@@ -2370,6 +2562,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               : runtimeRequestReplacesComposerSkip(selectedPendingInput.item),
         }
       : null;
+  const expansionState = useRef(new Map<string, boolean>());
   const autoFollowContentKey = `${threadContentKey}:${composerTakeover?.id ?? "composer"}`;
 
   // Mobile (PAP-360): the app shell scrolls the DOCUMENT (Layout's main is
@@ -2379,249 +2572,428 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // and track auto-follow against window scroll. Both paths include takeover
   // state so opening or closing composer input preserves bottom pinning.
   const { isMobile } = useSidebar();
-  useWindowAutoFollow(isMobile ? autoFollowContentKey : 0, isMobile);
+  const initialCommentWindow = useRef<{
+    oldestAt: number;
+    ids: Set<string>;
+  } | null>(null);
+  if (!initialCommentWindow.current && comments.length > 0) {
+    initialCommentWindow.current = {
+      oldestAt: Math.min(...comments.map((comment) => toMs(comment.createdAt))),
+      ids: new Set(comments.map((comment) => comment.id)),
+    };
+  }
+  const initialCommentRunIds = new Set(
+    comments
+      .filter((comment) => initialCommentWindow.current?.ids.has(comment.id))
+      .flatMap((comment) => [
+        comment.runId,
+        comment.createdByRunId,
+        comment.derivedCreatedByRunId,
+      ]),
+  );
+  const initialRuns = runs.filter((run) => {
+    if (
+      !initialCommentWindow.current ||
+      !isTerminalRunStatus(run.status) ||
+      initialCommentRunIds.has(run.id)
+    )
+      return true;
+    const metadata = linkedRunMetaById.get(run.id);
+    return (
+      !metadata ||
+      toMs(metadata.finishedAt ?? metadata.startedAt ?? metadata.createdAt) >=
+        initialCommentWindow.current.oldestAt
+    );
+  });
+  const historyPending =
+    initialHistoryPending ||
+    planLoading ||
+    initialRuns.some((run) => {
+      if (
+        run.runtimeMode === "native" &&
+        (hydratedNativeRunIds
+          ? !hydratedNativeRunIds.has(run.id)
+          : nativeEventsAreInitiallyHydrating)
+      )
+        return true;
+      if (
+        run.runtimeMode === "native" &&
+        (nativeTranscriptByRun.get(run.id)?.length ?? 0) > 0
+      )
+        return false;
+      return run.status !== "queued" && hydratedLogRunIds
+        ? !hydratedLogRunIds.has(run.id)
+        : logsAreInitiallyHydrating;
+    });
+  const historyError =
+    initialHistoryError ||
+    planError ||
+    runs.some((run) =>
+      run.runtimeMode === "native"
+        ? nativeTranscriptErrorsByRun.has(run.id) &&
+          (logTranscriptByRun.get(run.id)?.length ?? 0) === 0
+        : Boolean(logErrorsByRun?.has(run.id)),
+    );
+  const [revealedIssue, setRevealedIssue] = useState<string | null | undefined>(
+    () => (historyPending ? undefined : issueId),
+  );
+  const historyRevealed = revealedIssue === issueId;
+  // Mount and measure the real thread while concealed, then reveal in one
+  // commit. A frame also lets ancestor navigation scroll restoration finish.
+  // Readiness is latched per issue: refetches never hide existing conversation.
+  useEffect(() => {
+    if (historyRevealed || historyPending) return;
+    const frame = requestAnimationFrame(() => setRevealedIssue(issueId));
+    return () => cancelAnimationFrame(frame);
+  }, [historyPending, historyRevealed, issueId]);
+  const retryHistory = () => {
+    onRetryInitialHistory?.();
+    retryLogs?.();
+    retryNativeEvents?.();
+    void retryPlan();
+  };
 
   return (
-    <TaskChatPresentationProvider
-      mode={streamlinedUiEnabled ? "streamlined" : "production"}
-    >
-      <div
-        className={cn(
-          "flex flex-col",
-          !isMobile && "min-h-0 flex-1",
-        )}
-        data-testid="task-chat-thread"
-      >
-        <div className={cn("flex flex-col", !isMobile && "min-h-0 flex-1")}>
-          {items.length === 0 && !tailRunId ? (
+    <TaskChatExpansionState.Provider value={expansionState.current}>
+      <TaskChatScrollReady.Provider value={!historyPending}>
+        <TaskChatWindowScroll
+          contentKey={isMobile ? autoFollowContentKey : 0}
+          enabled={isMobile && historyRevealed}
+        />
+        <TaskChatPresentationProvider
+          mode={streamlinedUiEnabled ? "streamlined" : "production"}
+        >
+          <div
+            className={cn("flex flex-col", !isMobile && "min-h-0 flex-1")}
+            data-testid="task-chat-thread"
+          >
             <div
-              className={
-                isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"
-              }
+              className={cn(
+                "relative flex flex-col",
+                !isMobile && "min-h-0 flex-1",
+              )}
+              aria-busy={!historyRevealed}
             >
-              {threadHeaderWithBlockers ? (
+              {historyError ? (
                 <div
-                  className={cn(
-                    "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-6 px-4",
-                    isMobile ? "pt-4" : "pt-3",
-                    streamlinedUiEnabled && "md:px-0",
-                  )}
-                  data-testid="task-chat-thread-header"
+                  role="status"
+                  className="absolute inset-x-0 top-0 z-20 mx-auto flex w-full max-w-(--tc-shell-max-w) items-center gap-2 border border-border bg-background px-4 py-2 text-sm text-muted-foreground"
                 >
-                  {threadHeaderWithBlockers}
+                  Some task history could not be loaded.
+                  <Button variant="ghost" size="sm" onClick={retryHistory}>
+                    Retry
+                  </Button>
                 </div>
               ) : null}
-              <div className="px-3 py-10 text-center text-sm text-muted-foreground">
-                {emptyMessage}
-              </div>
-              {bottomBlockerLinks ? (
+              {!historyRevealed ? (
                 <div
-                  className={cn(
-                    "mx-auto w-full max-w-(--tc-shell-max-w) px-4 pb-4",
-                    streamlinedUiEnabled && "md:px-0",
-                  )}
+                  className="absolute inset-0 z-10 overflow-hidden bg-background"
+                  data-testid="task-chat-history-loading"
+                  role="status"
+                  aria-label="Loading conversation"
                 >
-                  {bottomBlockerLinks}
+                  <div className="mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-4 px-4 py-3">
+                    {threadHeader}
+                    <Skeleton className="h-16 w-3/4 animate-none" />
+                    <Skeleton className="h-24 w-4/5 self-end animate-none" />
+                    <Skeleton className="h-16 w-3/4 animate-none" />
+                  </div>
                 </div>
               ) : null}
-            </div>
-          ) : (
-            <TaskChatThreadView
-              items={items}
-              attachments={attachments}
-              header={threadHeaderWithBlockers}
-              renderInteraction={renderInteraction}
-              renderBrief={
-                issueBrief
-                  ? () => <TaskChatDescriptionBubble brief={issueBrief} />
-                  : undefined
-              }
-              renderMessageActions={renderMessageActions}
-              renderQueuedAction={renderQueuedAction}
-              onTryAgainNoLiveExecutionPath={
-                issueStatus === "blocked"
-                  ? onTryAgainNoLiveExecutionPath
-                  : undefined
-              }
-              tryAgainNoLiveExecutionPathPending={
-                tryAgainNoLiveExecutionPathPending
-              }
-              onRetryFailedRun={onRetryFailedRun}
-              retryFailedRunId={retryFailedRunId}
-              tail={
-                tailRunId || optimisticRunnerStartup || bottomBlockerLinks ? (
-                  <>
-                    {tailRunId || optimisticRunnerStartup ? (
-                      <div data-testid="task-chat-live-transcript">
-                        {paperclipRunnerTail || optimisticRunnerStartup ? (
-                          <TaskChatRunnerTurn
-                            runId={tailRunId}
-                            agentName={visibleTailAgentName}
-                            agentIcon={visibleTailAgentIcon}
-                            items={tailItems}
-                            status={
-                              optimisticRunnerStartup ? "queued" : tailStatus
-                            }
-                            startedAtMs={tailStartedAtMs}
-                            finishedAtMs={tailFinishedAtMs}
-                            activityUnavailable={tailActivityUnavailable}
-                            suppressFinal={suppressPaperclipRunnerTailFinal}
-                            continuedAfterSteering={
-                              paperclipRunnerTail &&
-                              tailTimelineAnchors.length > 0
-                            }
-                            onRuntimeRequestDecision={
-                              handleRuntimeRequestDecision
-                            }
-                          />
-                        ) : (
-                          <>
-                            <TaskChatLiveRunPill
-                              status={tailStatus}
-                              startedAtMs={tailStartedAtMs}
-                              finishedAtMs={tailFinishedAtMs}
-                              toolSummary={tailToolSummary}
-                            />
-                            <TaskChatLiveTail
-                              items={tailItems}
-                              emptyMessage={
-                                tailStatus === "queued"
-                                  ? "Waiting to start..."
-                                  : (liveRun && liveRun.id === tailRunId
-                                      ? liveRun.currentStatusMessage
-                                      : null) || "Waiting for transcript..."
-                              }
-                            />
-                          </>
+              <div
+                className={cn(
+                  "flex flex-col",
+                  !isMobile && "min-h-0 flex-1",
+                  !historyRevealed && "invisible",
+                )}
+                inert={!historyRevealed}
+              >
+                {items.length === 0 && !tailRunId ? (
+                  <div
+                    className={
+                      isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"
+                    }
+                  >
+                    {threadHeaderWithBlockers ? (
+                      <div
+                        className={cn(
+                          "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-6 px-4",
+                          isMobile ? "pt-4" : "pt-3",
+                          streamlinedUiEnabled && "md:px-0",
                         )}
+                        data-testid="task-chat-thread-header"
+                      >
+                        {threadHeaderWithBlockers}
                       </div>
                     ) : null}
-                    {bottomBlockerLinks}
-                  </>
-                ) : null
-              }
-              contentKey={autoFollowContentKey}
-              className={isMobile ? undefined : "pt-3"}
-              scroll={!isMobile}
-            />
-          )}
-        </div>
-        {assignedAgentForNotice?.status === "paused" ? (
-          <div className="mx-auto w-full max-w-(--tc-shell-max-w) px-4 pt-2">
-            <IssueAssigneePausedNotice
-              agent={assignedAgentForNotice}
-              onResume={onResumeAssignee}
-              resuming={resumeAssigneePending}
-            />
-          </div>
-        ) : null}
-        {showComposer ? (
-          <div
-            data-testid="task-chat-composer-dock"
-            className={cn(
-              "sticky",
-              // Mobile mirrors the flag-off thread's dock: lifted above the
-              // safe-area inset and clear of the auto-hiding bottom nav, above
-              // page content in the document-flow stacking context. The bottom
-              // offset (--tc-composer-bottom) tracks the nav: Layout raises it to
-              // the nav height while the nav is visible so the composer's action
-              // row is never occluded, and drops it back to the safe-area dock
-              // when the nav auto-hides (PAP-495). transition-[bottom] rides the
-              // nav's own 200ms slide; the offset only changes on nav toggles, so
-              // it never animates mid-scroll.
-              isMobile
-                ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
-                : "bottom-0 z-10",
-              "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 px-4 pb-2",
-              streamlinedUiEnabled && "md:px-0 md:pb-0",
-              (!streamlinedUiEnabled || isMobile) &&
-                "bg-background/80 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60",
-            )}
-          >
-            {composerAccessory}
-            {tailTurnStatus ? (
-              <TaskChatTurnStatusIsland model={tailTurnStatus} />
-            ) : null}
-            <div
-              className="relative isolate flex flex-col"
-              data-testid="task-chat-composer-stack"
-            >
-              {queuedMessageQueue ? (
-                <TaskChatQueuedMessages
-                  queue={queuedMessageQueue}
-                  onEdit={beginQueuedEdit}
-                  onReorder={async (orderedCommentIds, revision) => {
-                    if (!onReorderQueuedComments)
-                      throw new Error("Queue reordering is unavailable.");
-                    await onReorderQueuedComments(orderedCommentIds, revision);
-                  }}
-                  onSteer={async (commentId, revision) => {
-                    if (!onSteerQueuedComment)
-                      throw new Error("Steering is unavailable.");
-                    await onSteerQueuedComment(commentId, revision);
-                  }}
-                  onInterrupt={
-                    onInterruptQueued && queuedMessageQueue.targetRunId
-                      ? async () => {
-                          await onInterruptQueued(
-                            queuedMessageQueue.targetRunId!,
-                          );
-                        }
-                      : undefined
-                  }
-                  onDiscard={async (commentId, revision) => {
-                    if (commentId.startsWith("optimistic-")) {
-                      if (!onCancelQueued)
-                        throw new Error("Discard is unavailable.");
-                      onCancelQueued(commentId);
-                      return;
+                    <div className="px-3 py-10 text-center text-sm text-muted-foreground">
+                      {emptyMessage}
+                    </div>
+                    {bottomBlockerLinks ? (
+                      <div
+                        className={cn(
+                          "mx-auto w-full max-w-(--tc-shell-max-w) px-4 pb-4",
+                          streamlinedUiEnabled && "md:px-0",
+                        )}
+                      >
+                        {bottomBlockerLinks}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <TaskChatThreadView
+                    items={items}
+                    attachments={attachments}
+                    header={threadHeaderWithBlockers}
+                    renderInteraction={renderInteraction}
+                    renderBrief={renderBrief}
+                    renderMessageActions={renderMessageActions}
+                    renderQueuedAction={renderQueuedAction}
+                    onTryAgainNoLiveExecutionPath={
+                      issueStatus === "blocked" &&
+                      !requiresExecutionReconciliation(
+                        props.recoveryAction?.cause,
+                      ) &&
+                      !linkedRuns?.some(
+                        (run) => run.execution?.phase === "recovery_needed",
+                      )
+                        ? onTryAgainNoLiveExecutionPath
+                        : undefined
                     }
-                    if (!onDiscardQueuedComment)
-                      throw new Error("Discard is unavailable.");
-                    await onDiscardQueuedComment(commentId, revision);
-                    if (queuedEdit?.commentId === commentId)
-                      setQueuedEdit(null);
-                  }}
-                />
-              ) : null}
-              <div className="relative z-10">
-                <TaskChatComposer
-                  onAdd={handleThreadAdd}
-                  workMode={issueWorkMode}
-                  onWorkModeChange={onWorkModeChange}
-                  disabled={Boolean(runtimeComposerDisabledReason)}
-                  disabledReason={runtimeComposerDisabledReason}
-                  onAttachImage={onAttachImage}
-                  onImageUpload={imageUploadHandler}
-                  mentions={mentions}
-                  enableReassign={enableReassign}
-                  reassignOptions={reassignOptions}
-                  agentMap={agentMap}
-                  userProfileMap={userProfileMap}
-                  currentAssigneeValue={currentAssigneeValue}
-                  issueStatus={issueStatus}
-                  mobile={isMobile}
-                  draftKey={draftKey}
-                  queuedEdit={queuedEdit}
-                  onSaveQueuedEdit={saveQueuedEdit}
-                  onCancelQueuedEdit={() => setQueuedEdit(null)}
-                  takeover={composerTakeover}
-                  pendingTakeover={
-                    pendingComposerInputs.length > 0
-                      ? {
-                          count: pendingComposerInputs.length,
-                          label: `${pendingComposerInputs.length} pending input${pendingComposerInputs.length === 1 ? "" : "s"}`,
-                          onOpen: openPendingTakeover,
-                        }
-                      : null
-                  }
-                />
+                    tryAgainNoLiveExecutionPathPending={
+                      tryAgainNoLiveExecutionPathPending
+                    }
+                    onRetryFailedRun={
+                      isTerminalIssueStatus(issueStatus) ||
+                      interactions?.some(
+                        (interaction) => interaction.status === "pending",
+                      ) ||
+                      requiresExecutionReconciliation(
+                        props.recoveryAction?.cause,
+                      ) ||
+                      props.scheduledRetry ||
+                      linkedRuns?.some((run) =>
+                        [
+                          "working",
+                          "retry_scheduled",
+                          "reconnecting",
+                          "finishing",
+                          "queued",
+                          "recovery_needed",
+                        ].includes(run.execution?.phase ?? ""),
+                      )
+                        ? undefined
+                        : onRetryFailedRun
+                    }
+                    retryFailedRunId={retryFailedRunId}
+                    tail={
+                      tailRunId ||
+                      optimisticRunnerStartup ||
+                      bottomBlockerLinks ? (
+                        <>
+                          {tailRunId || optimisticRunnerStartup ? (
+                            <div data-testid="task-chat-live-transcript">
+                              {paperclipRunnerTail ||
+                              optimisticRunnerStartup ? (
+                                <TaskChatRunnerTurn
+                                  runId={tailRunId}
+                                  execution={
+                                    liveRun?.id === tailRunId
+                                      ? liveRun.execution
+                                      : null
+                                  }
+                                  agentName={visibleTailAgentName}
+                                  agentIcon={visibleTailAgentIcon}
+                                  items={tailItems}
+                                  status={
+                                    optimisticRunnerStartup
+                                      ? "queued"
+                                      : tailStatus
+                                  }
+                                  startedAtMs={tailStartedAtMs}
+                                  finishedAtMs={tailFinishedAtMs}
+                                  activityUnavailable={tailActivityUnavailable}
+                                  suppressFinal={
+                                    suppressPaperclipRunnerTailFinal
+                                  }
+                                  continuedAfterSteering={
+                                    paperclipRunnerTail &&
+                                    tailTimelineAnchors.length > 0
+                                  }
+                                  onRuntimeRequestDecision={
+                                    handleRuntimeRequestDecision
+                                  }
+                                />
+                              ) : (
+                                <>
+                                  <TaskChatLiveRunPill
+                                    status={tailStatus}
+                                    execution={
+                                      liveRun?.id === tailRunId
+                                        ? liveRun.execution
+                                        : null
+                                    }
+                                    startedAtMs={tailStartedAtMs}
+                                    finishedAtMs={tailFinishedAtMs}
+                                    toolSummary={tailToolSummary}
+                                  />
+                                  <TaskChatLiveTail
+                                    items={tailItems}
+                                    emptyMessage={
+                                      tailStatus === "queued"
+                                        ? "Waiting to start..."
+                                        : (liveRun && liveRun.id === tailRunId
+                                            ? liveRun.currentStatusMessage
+                                            : null) ||
+                                          "Waiting for transcript..."
+                                    }
+                                  />
+                                </>
+                              )}
+                            </div>
+                          ) : null}
+                          {bottomBlockerLinks}
+                        </>
+                      ) : null
+                    }
+                    contentKey={`${autoFollowContentKey}:${historyRevealed}`}
+                    className={isMobile ? undefined : "pt-3"}
+                    scroll={!isMobile}
+                  />
+                )}
               </div>
             </div>
-            {footer}
+            {assignedAgentForNotice?.status === "paused" ? (
+              <div className="mx-auto w-full max-w-(--tc-shell-max-w) px-4 pt-2">
+                <IssueAssigneePausedNotice
+                  agent={assignedAgentForNotice}
+                  onResume={onResumeAssignee}
+                  resuming={resumeAssigneePending}
+                />
+              </div>
+            ) : null}
+            {showComposer ? (
+              <div
+                data-testid="task-chat-composer-dock"
+                className={cn(
+                  "sticky",
+                  // Mobile mirrors the flag-off thread's dock: lifted above the
+                  // safe-area inset and clear of the auto-hiding bottom nav, above
+                  // page content in the document-flow stacking context. The bottom
+                  // offset (--tc-composer-bottom) tracks the nav: Layout raises it to
+                  // the nav height while the nav is visible so the composer's action
+                  // row is never occluded, and drops it back to the safe-area dock
+                  // when the nav auto-hides (PAP-495). transition-[bottom] rides the
+                  // nav's own 200ms slide; the offset only changes on nav toggles, so
+                  // it never animates mid-scroll.
+                  isMobile
+                    ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
+                    : "bottom-0 z-10",
+                  "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 px-2 pb-2 md:px-4",
+                  streamlinedUiEnabled && "md:px-0 md:pb-0",
+                  (!streamlinedUiEnabled || isMobile) &&
+                    "bg-background/80 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60 dark:bg-transparent dark:backdrop-blur-none dark:supports-[backdrop-filter]:bg-transparent",
+                )}
+              >
+                {composerAccessory}
+                {tailTurnStatus ? (
+                  <TaskChatTurnStatusIsland model={tailTurnStatus} />
+                ) : null}
+                <RunnerGoalWidget control={runnerGoal} />
+                <div
+                  className="relative isolate flex flex-col"
+                  data-testid="task-chat-composer-stack"
+                >
+                  {queuedMessageQueue && !composerPause ? (
+                    <TaskChatQueuedMessages
+                      queue={queuedMessageQueue}
+                      onEdit={beginQueuedEdit}
+                      onReorder={async (orderedCommentIds, revision) => {
+                        if (!onReorderQueuedComments)
+                          throw new Error("Queue reordering is unavailable.");
+                        await onReorderQueuedComments(
+                          orderedCommentIds,
+                          revision,
+                        );
+                      }}
+                      onSteer={async (commentId, revision) => {
+                        if (!onSteerQueuedComment)
+                          throw new Error("Steering is unavailable.");
+                        await onSteerQueuedComment(commentId, revision);
+                      }}
+                      onInterrupt={
+                        onInterruptQueued && queuedMessageQueue.targetRunId
+                          ? async () => {
+                              await onInterruptQueued(
+                                queuedMessageQueue.targetRunId!,
+                              );
+                            }
+                          : undefined
+                      }
+                      onDiscard={async (commentId, revision) => {
+                        if (commentId.startsWith("optimistic-")) {
+                          if (!onCancelQueued)
+                            throw new Error("Discard is unavailable.");
+                          onCancelQueued(commentId);
+                          return;
+                        }
+                        if (!onDiscardQueuedComment)
+                          throw new Error("Discard is unavailable.");
+                        await onDiscardQueuedComment(commentId, revision);
+                        if (queuedEdit?.commentId === commentId)
+                          setQueuedEdit(null);
+                      }}
+                    />
+                  ) : null}
+                  <div className="relative z-10">
+                    <TaskChatComposer
+                      onAdd={handleThreadAdd}
+                      onReviewConversation={onReviewConversation}
+                      onStop={liveRun ? onCancelRun : undefined}
+                      stopPending={stopPending}
+                      stopScope={stopScope}
+                      workMode={issueWorkMode}
+                      onWorkModeChange={onWorkModeChange}
+                      disabled={Boolean(runtimeComposerDisabledReason)}
+                      disabledReason={runtimeComposerDisabledReason}
+                      onAttachImage={onAttachImage}
+                      onImageUpload={imageUploadHandler}
+                      mentions={mentions}
+                      enableReassign={enableReassign}
+                      reassignOptions={reassignOptions}
+                      agentMap={agentMap}
+                      userProfileMap={userProfileMap}
+                      currentAssigneeValue={currentAssigneeValue}
+                      onPendingAssigneeChange={setPendingComposerAssignee}
+                      issueStatus={issueStatus}
+                      mobile={isMobile}
+                      draftKey={draftKey}
+                      queuedEdit={queuedEdit}
+                      onSaveQueuedEdit={saveQueuedEdit}
+                      onCancelQueuedEdit={() => setQueuedEdit(null)}
+                      pause={composerPause}
+                      takeover={composerTakeover}
+                      runnerGoalCapability={runnerGoal.data?.capability ?? null}
+                      onRunnerGoalCommand={runnerGoal.executeComposerCommand}
+                      onRunnerGoalReassign={reassignForRunnerGoal}
+                      pendingTakeover={
+                        pendingComposerInputs.length > 0
+                          ? {
+                              count: pendingComposerInputs.length,
+                              label: `${pendingComposerInputs.length} pending input${pendingComposerInputs.length === 1 ? "" : "s"}`,
+                              onOpen: openPendingTakeover,
+                            }
+                          : null
+                      }
+                    />
+                  </div>
+                </div>
+                {footer}
+              </div>
+            ) : null}
           </div>
-        ) : null}
-      </div>
-    </TaskChatPresentationProvider>
+        </TaskChatPresentationProvider>
+      </TaskChatScrollReady.Provider>
+    </TaskChatExpansionState.Provider>
   );
 }

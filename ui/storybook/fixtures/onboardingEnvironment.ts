@@ -29,6 +29,9 @@ export const STORYBOOK_SANDBOX_ENVIRONMENT_ID = "environment-storybook-sandbox";
 interface FixtureState {
   environments: OnboardingEnvironmentState;
   authSignal: AdapterAuthSignal;
+  savedApiKeys: boolean;
+  savedClaudeLogin: boolean;
+  savedCodexLogin: boolean;
 }
 
 /**
@@ -38,6 +41,9 @@ interface FixtureState {
 export const onboardingFixtureState: FixtureState = {
   environments: "managed-sandbox",
   authSignal: "absent",
+  savedApiKeys: false,
+  savedClaudeLogin: false,
+  savedCodexLogin: false,
 };
 
 export function setOnboardingFixtureState(next: Partial<FixtureState>): void {
@@ -47,6 +53,9 @@ export function setOnboardingFixtureState(next: Partial<FixtureState>): void {
 export function resetOnboardingFixtureState(): void {
   onboardingFixtureState.environments = "managed-sandbox";
   onboardingFixtureState.authSignal = "absent";
+  onboardingFixtureState.savedApiKeys = false;
+  onboardingFixtureState.savedClaudeLogin = false;
+  onboardingFixtureState.savedCodexLogin = false;
 }
 
 /**

@@ -193,6 +193,7 @@ interface RegistryPluginRow {
   status: string;
   version: string;
   manifestJson: PaperclipPluginManifestV1;
+  lastError?: string | null;
 }
 
 export interface BundledPluginProvisionerDeps {
@@ -202,6 +203,7 @@ export interface BundledPluginProvisionerDeps {
       id: string,
       data: { version?: string; manifest?: PaperclipPluginManifestV1 },
     ): Promise<unknown>;
+    updateStatus(id: string, input: { status: "ready"; lastError: string | null }): Promise<unknown>;
   };
   loader: {
     installPlugin(options: { localPath: string }): Promise<{
@@ -214,6 +216,7 @@ export interface BundledPluginProvisionerDeps {
   };
   logger: {
     info(obj: unknown, msg?: string): void;
+    warn(obj: unknown, msg?: string): void;
     error(obj: unknown, msg?: string): void;
   };
   /** Overridable for tests; defaults to checking `dist/manifest.js`. */
@@ -268,6 +271,58 @@ async function reconcileBundledPluginManifest(
 }
 
 /**
+ * Re-enable a bundled plugin that a previous boot left in `error`.
+ *
+ * `error` is not an operator choice: the loader records it when activation
+ * fails (for example the worker's `initialize` RPC timed out once) and it
+ * also switches off the worker's auto-restart. Every automatic path
+ * afterwards (`loadAll()`, the lazy worker recovery, the run lease) only
+ * considers `ready` plugins, so a bundled plugin in `error` stays unusable
+ * across restarts until an operator enables it by hand, and every run that
+ * needs its provider fails with "that plugin is currently error". The bundle
+ * ships with the release image and is expected to work, so one fresh attempt
+ * per boot is the right default: the row goes back to `ready` (with its
+ * `lastError` cleared), and the startup `loadAll()` activates it. If
+ * activation fails again the loader marks `error` again and nothing retries
+ * until the next boot, so this cannot loop within one process.
+ *
+ * This is a plain registry status reset, not `lifecycle.enable()`: the
+ * lifecycle call would emit `plugin.enabled` before `loadAll()` has started
+ * the worker, and a consumer of that event (the dev watcher, activity
+ * listeners) would act on a plugin that may still fail to activate.
+ * Activation, and its own events, stay with `loadAll()`.
+ *
+ * Fail-safe like the rest of the provisioner: a failed status reset is
+ * logged and boot continues with the plugin unavailable.
+ */
+async function reenableErroredBundledPlugin(
+  existing: RegistryPluginRow,
+  install: ResolvedBundledPlugin,
+  deps: BundledPluginProvisionerDeps,
+): Promise<void> {
+  deps.logger.warn(
+    {
+      pluginId: existing.id,
+      pluginKey: install.pluginKey,
+      lastError: existing.lastError ?? null,
+    },
+    "bundled plugin is in error status from a previous activation; re-enabling it for this boot",
+  );
+  try {
+    await deps.registry.updateStatus(existing.id, { status: "ready", lastError: null });
+    deps.logger.info(
+      { pluginId: existing.id, pluginKey: install.pluginKey },
+      "bundled plugin reset to ready; the startup loader will activate it",
+    );
+  } catch (err) {
+    deps.logger.error(
+      { err, pluginId: existing.id, pluginKey: install.pluginKey },
+      "Failed to re-enable errored bundled plugin; continuing boot (degraded: plugin unavailable)",
+    );
+  }
+}
+
+/**
  * Ensure each resolved bundled plugin is installed and loaded.
  *
  * Same mechanism the kubernetes bundle has always used: in-process
@@ -280,6 +335,10 @@ async function reconcileBundledPluginManifest(
  *   operator-disabled plugin is not silently re-enabled on reboot. Before the
  *   skip, the persisted manifest is reconciled to the shipped bundle version
  *   (see `reconcileBundledPluginManifest`).
+ * - The one exception is `error`, which the loader sets when an activation
+ *   fails and which no automatic path ever clears. A bundled plugin in
+ *   `error` is moved back to `ready` once per boot so `loadAll()` gets a
+ *   fresh attempt (see `reenableErroredBundledPlugin`).
  * - A soft-uninstalled plugin is reinstalled only when
  *   `reinstallUninstalled` is set (managed mode, where the control plane
  *   owns provisioning). Self-hosted keeps the pre-refactor behavior of
@@ -303,6 +362,10 @@ export async function ensureBundledPlugins(
         // plugin. The reconcile updates only the stored manifest row; the
         // running worker already runs the shipped code.
         await reconcileBundledPluginManifest(existing, install, deps, bundleManifestExists);
+        if (existing.status === "error") {
+          await reenableErroredBundledPlugin(existing, install, deps);
+          continue;
+        }
         deps.logger.info(
           { pluginKey: install.pluginKey, status: existing.status },
           "bundled plugin already present; skipping auto-install",
