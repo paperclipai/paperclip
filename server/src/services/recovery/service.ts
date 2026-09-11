@@ -182,6 +182,10 @@ type RecoveryWakeupOptions = {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  issueStateGuard?: {
+    statuses: string[];
+    assigneeAgentId: string;
+  };
 };
 
 type RecoveryWakeup = (
@@ -1921,6 +1925,17 @@ export function recoveryService(
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
+      // The sweep can combine an old in-progress issue snapshot with a newer
+      // successful run. Validate eligibility under the enqueue issue lock so
+      // completion or reassignment cannot create a redundant continuation.
+      ...(input.source === "issue.productive_terminal_continuation_recovery"
+        ? {
+            issueStateGuard: {
+              statuses: ["in_progress"],
+              assigneeAgentId: input.agentId,
+            },
+          }
+        : {}),
       payload: withRecoveryContext(
         {
           issueId: input.issueId,

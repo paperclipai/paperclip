@@ -552,6 +552,8 @@ Recovery rule:
 
 This is an active-work continuity recovery.
 
+After a productive successful run, recovery checks that the issue is still `in_progress` and assigned to the same agent under the enqueue transaction's issue lock. The sweep's earlier snapshot cannot authorize a continuation after completion, cancellation, reassignment, or a move to another status. A mismatch records a skipped wake receipt without creating a run. An empty queued continuation cancelled because the issue became terminal is omitted from task chat; its cancellation remains in the run log. Runs that actually started still show their stop state.
+
 The same bounded rule applies when the previous heartbeat reported waiting on a local/background watcher and that watcher was killed, disappeared, or was never represented by a durable Paperclip primitive. Paperclip queues at most one continuation for the same recovery fingerprint. If the continuation also leaves only local watcher evidence, Paperclip must surface a real blocker or explicit recovery action instead of repeating continuation recovery. A new monitor, scheduled wake, healthy delegated blocker issue, or other durable source mutation resolves that recovery fingerprint normally.
 
 #### Deliberate wait is not a lost run

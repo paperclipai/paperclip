@@ -230,7 +230,7 @@ test("release verify workflow covers the same split test surface as stable PR ve
   for (const group of ["general-server-without-chat", "general-chat", "general-workspaces-a", "general-workspaces-b"]) {
     assert.match(verifyWorkflow, new RegExp(`group: ${group}`));
   }
-  for (const [group, count] of [["general-server-without-chat", 5], ["general-chat", 3]]) {
+  for (const [group, count] of [["general-server-without-chat", 10], ["general-chat", 3]]) {
     const rows = [...verifyWorkflow.matchAll(new RegExp(`group: ${group}\\n\\s+group_label: [^\\n]+\\n\\s+shard_index: (\\d+)\\n\\s+shard_count: (\\d+)`, "g"))];
     assert.deepEqual(rows.map((row) => [Number(row[1]), Number(row[2])]),
       Array.from({ length: count }, (_, index) => [index, count]));

@@ -1,3 +1,5 @@
+import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
+import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -383,6 +385,7 @@ function runMetrics(run: HeartbeatRun) {
 }
 
 export type RunLogChunk = {
+  seq?: number;
   ts: string;
   stream: "stdout" | "stderr" | "system";
   chunk: string;
@@ -3720,13 +3723,20 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 
 /* ---- Log Viewer ---- */
 
-function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+  const { visible } = usePageVisibility();
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
-  const [logLines, setLogLines] = useState<Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }>>([]);
+  const [logLines, setLogLines] = useState<RunLogChunk[]>([]);
   const [loading, setLoading] = useState(true);
   const [logLoading, setLogLoading] = useState(!!run.logRef);
   const [logError, setLogError] = useState<string | null>(null);
-  const [logOffset, setLogOffset] = useState(0);
+  const [logOffset, setLogOffsetState] = useState(0);
+  const logOffsetRef = useRef(0);
+  const setLogOffset = useCallback((next: number | ((previous: number) => number)) => {
+    logOffsetRef.current = typeof next === "function" ? next(logOffsetRef.current) : next;
+    setLogOffsetState(logOffsetRef.current);
+  }, []);
+  const logMergeRefs = useRef({ seenChunkKeys: new Set<string>(), trimmedSeqFloorByRun: new Map<string, number>() });
   const [hasMoreLog, setHasMoreLog] = useState(false);
   const [loadingMoreLog, setLoadingMoreLog] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
@@ -3753,6 +3763,12 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     return err instanceof ApiError && err.status === 404;
   }
 
+  function appendLogLines(incoming: RunLogChunk[]) {
+    setLogLines((previous) => mergeRunLogChunks(run.id, previous, incoming.map((line) => ({
+      ...line, dedupeKey: `log:${run.id}:${line.ts}:${line.stream}:${line.chunk}`,
+    })), logMergeRefs.current, isLive ? MAX_LIVE_LOG_LINES : Number.POSITIVE_INFINITY).chunks);
+  }
+
   function appendLogContent(content: string, finalize = false) {
     if (!content && !finalize) return;
     const combined = `${pendingLogLineRef.current}${content}`;
@@ -3763,18 +3779,18 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       pendingLogLineRef.current = "";
     }
 
-    const parsed: Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }> = [];
+    const parsed: RunLogChunk[] = [];
     for (const line of split) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown };
+        const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown; seq?: unknown };
         const stream =
           raw.stream === "stderr" || raw.stream === "system" ? raw.stream : "stdout";
         const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
         const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
         if (!chunk) continue;
-        parsed.push({ ts, stream, chunk });
+        parsed.push({ ts, stream, chunk, seq: readChunkSeq(raw.seq) });
       } catch {
         // ignore malformed lines
       }
@@ -3783,9 +3799,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     if (parsed.length > 0) {
       // Live runs stream forever, so cap the retained tail. Terminated runs are
       // paginated by the user via "Load more log" and keep their full history.
-      setLogLines((prev) =>
-        isLive ? appendCapped(prev, parsed, MAX_LIVE_LOG_LINES) : [...prev, ...parsed],
-      );
+      appendLogLines(parsed);
     }
   }
 
@@ -3883,17 +3897,23 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setIsFollowing((prev) => (prev ? prev : true));
   }, [events.length, logLines.length, isLive, getScrollContainer]);
 
-  // Fetch persisted shell log
+  // Reset only when the log source changes, never when visibility changes.
   useEffect(() => {
-    let cancelled = false;
     pendingLogLineRef.current = "";
+    logMergeRefs.current = { seenChunkKeys: new Set(), trimmedSeqFloorByRun: new Map() };
     seenProgressLogLineKeysRef.current = new Set();
     setLogLines([]);
     setLogOffset(0);
     setHasMoreLog(false);
     setLoadingMoreLog(false);
     setLogError(null);
+  }, [run.id, run.logRef, setLogOffset]);
 
+  // Fetch persisted shell log, retaining partial rows and offsets across hides.
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    const offset = logOffsetRef.current;
     if (!run.logRef && !shouldPollShellLog) {
       setLogLoading(false);
       return () => {
@@ -3904,10 +3924,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setLogLoading(true);
     const load = async () => {
       try {
-        const result = await heartbeatsApi.log(run.id, 0, RUN_LOG_PAGE_BYTES);
+        const result = await heartbeatsApi.log(run.id, offset, RUN_LOG_PAGE_BYTES);
         if (cancelled) return;
         appendLogContent(result.content, result.nextOffset === undefined);
-        const next = result.nextOffset ?? result.content.length;
+        const next = result.nextOffset ?? offset + result.content.length;
         setLogOffset(next);
         setHasMoreLog(!shouldPollShellLog && result.nextOffset !== undefined);
       } catch (err) {
@@ -3927,7 +3947,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     return () => {
       cancelled = true;
     };
-  }, [run.id, run.logRef, run.logBytes, shouldPollShellLog]);
+  }, [visible, run.id, run.logRef, run.logBytes, shouldPollShellLog]);
 
   async function loadMorePersistedLog() {
     if (loadingMoreLog || !hasMoreLog) return;
@@ -3948,27 +3968,42 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   // Poll for live updates
   useEffect(() => {
-    if (!isLive || isStreamingConnected) return;
+    if (!visible || !isLive || isStreamingConnected) return;
+    let pending = false;
+    let cancelled = false;
     const interval = setInterval(async () => {
+      if (pending || cancelled || !getPageVisibility().visible) return;
+      pending = true;
       const maxSeq = events.length > 0 ? Math.max(...events.map((e) => e.seq)) : 0;
       try {
         const newEvents = await heartbeatsApi.events(run.id, maxSeq, 100);
+        if (cancelled) return;
         if (newEvents.length > 0) {
           setEvents((prev) => appendCapped(prev, newEvents, MAX_LIVE_EVENTS));
         }
       } catch {
         // ignore polling errors
+      } finally {
+        pending = false;
       }
     }, 2000);
-    return () => clearInterval(interval);
-  }, [run.id, isLive, isStreamingConnected, events]);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [visible, run.id, isLive, isStreamingConnected, events]);
 
   // Poll shell log for running runs
   useEffect(() => {
-    if (!shouldPollShellLog || isStreamingConnected) return;
+    if (!visible || !shouldPollShellLog || isStreamingConnected) return;
+    let pending = false;
+    let cancelled = false;
     const interval = setInterval(async () => {
+      if (pending || cancelled || !getPageVisibility().visible) return;
+      pending = true;
       try {
         const result = await heartbeatsApi.log(run.id, logOffset, 256_000);
+        if (cancelled) return;
         if (result.content) {
           appendLogContent(result.content, result.nextOffset === undefined);
         }
@@ -3980,14 +4015,19 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       } catch (err) {
         if (isRunLogUnavailable(err)) return;
         // ignore polling errors
+      } finally {
+        pending = false;
       }
     }, 2000);
-    return () => clearInterval(interval);
-  }, [run.id, shouldPollShellLog, isStreamingConnected, logOffset]);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [visible, run.id, shouldPollShellLog, isStreamingConnected, logOffset]);
 
   // Stream live updates from websocket (primary path for running runs).
   useEffect(() => {
-    if (!isLive) return;
+    if (!visible || !isLive) return;
 
     let closed = false;
     let reconnectTimer: number | null = null;
@@ -4031,7 +4071,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           const streamRaw = asNonEmptyString(payload.stream);
           const stream = streamRaw === "stderr" || streamRaw === "system" ? streamRaw : "stdout";
           const ts = asNonEmptyString((payload as Record<string, unknown>).ts) ?? event.createdAt;
-          setLogLines((prev) => appendCapped(prev, [{ ts, stream, chunk }], MAX_LIVE_LOG_LINES));
+          appendLogLines([{ ts, stream, chunk, seq: readChunkSeq(payload.seq) }]);
           return;
         }
 
@@ -4041,7 +4081,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           const key = heartbeatProgressLogLineKey(line);
           if (seenProgressLogLineKeysRef.current.has(key)) return;
           seenProgressLogLineKeysRef.current.add(key);
-          setLogLines((prev) => appendCapped(prev, [line], MAX_LIVE_LOG_LINES));
+          appendLogLines([line]);
           return;
         }
 
@@ -4106,7 +4146,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         socket.close(1000, "run_detail_unmount");
       }
     };
-  }, [isLive, run.companyId, run.id, run.agentId]);
+  }, [visible, isLive, run.companyId, run.id, run.agentId]);
 
   const censorUsernameInLogs = useQuery({
     queryKey: queryKeys.instance.generalSettings,

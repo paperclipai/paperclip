@@ -32,6 +32,12 @@ runner capacity to avoid waiting behind an older release. No verification gate i
 removed from npm publication. Watch organization-wide runner queues when measuring
 the result.
 
+Release verification spreads the general server suites across ten standard hosted
+runners, with the long chat suite split separately across three jobs. Each server
+job still runs one test worker. The partition covers every suite exactly once;
+normal PR and local test groups keep their existing shape. More jobs increase
+concurrent runner demand, so compare queue time as well as test duration.
+
 The artifact wait runs for up to 30 minutes and reports what is missing. Only
 an HTTP 404 means publication is pending; authorization errors, upstream outages,
 and identity mismatches fail the job. A failed, cancelled, or skipped prerequisite
