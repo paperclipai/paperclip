@@ -1,4 +1,4 @@
-import fs from "node:fs/promises";
+﻿import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -130,8 +130,8 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   );
 
   // The remote availability probe is a best-effort pre-flight guard, not a gate.
-  // If `opencode models` itself cannot run on the target — timeout, transient CLI
-  // error, provider hiccup — do NOT abort the run. The real invocation is
+  // If `opencode models` itself cannot run on the target ÔÇö timeout, transient CLI
+  // error, provider hiccup ÔÇö do NOT abort the run. The real invocation is
   // authoritative, so a probe that can't execute must never be fatal. (Previously
   // these threw and crashed runs mid-flight, losing the agent's work + disposition.)
   if (probe.timedOut) {
@@ -708,6 +708,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           stderr: attempt.proc.stderr,
         },
         summary: attempt.parsed.summary,
+        // Structured per-run telemetry derived from OpenCode JSONL events. Always
+        // present when the adapter emits parseable events; mapped to the
+        // adapter-facing AdapterRunTelemetry shape (engine capability
+        // `supportedObservability` must be non-null for the acceptance contract).
+        runTelemetry: attempt.parsed.telemetry
+          ? {
+              toolCalls: attempt.parsed.telemetry.toolCalls,
+              failedToolCalls: attempt.parsed.telemetry.failedToolCalls,
+              retryCount: attempt.parsed.telemetry.retryCount,
+              searchCalls: attempt.parsed.telemetry.searchCalls,
+              fileReads: attempt.parsed.telemetry.fileReads,
+              fileWrites: attempt.parsed.telemetry.fileWrites,
+              testCalls: attempt.parsed.telemetry.testCalls,
+              timeToFirstWriteMs: attempt.parsed.telemetry.timeToFirstWriteMs,
+              timeToFirstTestMs: attempt.parsed.telemetry.timeToFirstTestMs,
+            }
+          : null,
         clearSession: Boolean(clearSessionOnMissingSession && !attempt.parsed.sessionId),
       };
     };
