@@ -147,7 +147,6 @@ export function TaskChatRunnerTurn({
   ) => void | Promise<void>;
 }) {
   const terminal = isTerminalRunStatus(status);
-  const currentActivityItems = currentActivityStatusItems(items);
   const yielded = items.some(
     (item) =>
       item.kind === "protocol" &&
@@ -194,6 +193,7 @@ export function TaskChatRunnerTurn({
   }
   const final = finalRef.current.item;
   const timelineItems = paperclipRunnerTimelineItems(items);
+  const currentActivityItems = currentActivityStatusItems(timelineItems);
   const timelineRows = buildTurnTimelineRows(
     omitProgressRepeatedByResponse(timelineItems, final?.text),
     !terminal,

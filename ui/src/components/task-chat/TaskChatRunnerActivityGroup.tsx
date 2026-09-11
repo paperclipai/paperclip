@@ -16,7 +16,10 @@ import {
   protocolActivityLabel,
   protocolActivityPresentation,
 } from "./task-chat-activity-presentation";
-import { TaskChatProtocolActivityDetails } from "./TaskChatProtocolActivityRow";
+import {
+  TaskChatProtocolActivityDetails,
+  hasTaskChatProtocolActivityDetails,
+} from "./TaskChatProtocolActivityRow";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
 import { toolActivityPresentation } from "./tool-taxonomy";
 
@@ -245,6 +248,23 @@ function ActivityDetails({ item }: { item: Activity }) {
   );
 }
 
+function hasActivityDetails(item: Activity): boolean {
+  if (item.kind === "protocol") return hasTaskChatProtocolActivityDetails(item);
+  if (item.kind === "thinking") return item.lines.some((line) => line.trim());
+  if (item.kind === "tool")
+    return Boolean(
+      item.target?.trim() || item.detail?.trim() || item.diff || item.decision,
+    );
+  if (item.kind === "marker") return Boolean(item.detail?.trim());
+  return Boolean(
+    item.detail ||
+    item.usage.size > 0 ||
+    item.usage.inputTokens != null ||
+    item.usage.outputTokens != null ||
+    item.usage.costUsd != null,
+  );
+}
+
 function ExpandedActivity({
   item,
   active,
@@ -257,22 +277,30 @@ function ExpandedActivity({
     false,
   );
   const detailId = useId();
+  const expandable = hasActivityDetails(item);
+  const content = <ActivityContent item={item} active={active} />;
   return (
     <li className="min-w-0" data-activity-item-id={item.id}>
-      <button
-        type="button"
-        className="flex h-8 w-full min-w-0 items-center gap-2 rounded-sm text-left text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-        aria-controls={detailId}
-      >
-        <ActivityContent item={item} active={active} />
-        <ChevronRight
-          className={cn("size-3.5 shrink-0", open && "rotate-90")}
-          aria-hidden="true"
-        />
-      </button>
-      {open ? (
+      {expandable ? (
+        <button
+          type="button"
+          className="flex h-8 w-full min-w-0 items-center gap-2 rounded-sm text-left text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+          aria-controls={open ? detailId : undefined}
+        >
+          {content}
+          <ChevronRight
+            className={cn("size-3.5 shrink-0", open && "rotate-90")}
+            aria-hidden="true"
+          />
+        </button>
+      ) : (
+        <div className="flex h-8 w-full min-w-0 items-center gap-2 text-muted-foreground">
+          {content}
+        </div>
+      )}
+      {expandable && open ? (
         <div
           id={detailId}
           className="flex min-w-0 flex-col gap-2 overflow-hidden rounded-md bg-muted/40 p-3 text-xs leading-relaxed text-muted-foreground"

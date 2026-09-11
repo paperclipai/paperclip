@@ -255,6 +255,11 @@ function safeActivityHref(value: string | null | undefined): string | undefined 
   }
 }
 
+export function hasTaskChatProtocolActivityDetails(item: TaskChatProtocolItem): boolean {
+  if (item.surface === "resource") return Boolean(safeActivityHref(item.href));
+  return detailContent(item) !== null || (item.surface === "provider_activity" && Boolean(item.summary?.trim()));
+}
+
 export function TaskChatProtocolActivityDetails({ item, neutral = false }: { item: TaskChatProtocolItem; neutral?: boolean }) {
   const detail = detailContent(item, neutral);
   if (item.surface === "resource") {

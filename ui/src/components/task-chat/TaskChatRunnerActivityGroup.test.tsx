@@ -207,6 +207,38 @@ describe("TaskChatRunnerActivityGroup", () => {
     expect(toggle().textContent).toContain("1 failed");
   });
 
+  it("does not offer empty disclosures for sparse activities", () => {
+    render([
+      { id: "thinking-empty", kind: "thinking", lines: [], streaming: true },
+      { id: "tool-empty", kind: "tool", name: "read", status: "completed" },
+      {
+        id: "provider-empty",
+        kind: "protocol",
+        surface: "provider_activity",
+        family: "wait",
+        status: "running",
+        title: "Wait",
+        eventType: "wait.started",
+        details: [],
+        steps: [],
+        links: [],
+        children: [],
+      },
+    ]);
+    act(() => toggle().click());
+    expect(container.querySelectorAll("li")).toHaveLength(3);
+    expect(
+      container.querySelectorAll(
+        "li button, li [aria-expanded], li [aria-controls]",
+      ),
+    ).toHaveLength(0);
+    expect(
+      container.querySelector(
+        '[data-testid="task-chat-runner-activity-detail"]',
+      ),
+    ).toBeNull();
+  });
+
   it("replaces immediately with reduced motion", () => {
     motion.reduced = true;
     render([tool("one")]);
