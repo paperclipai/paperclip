@@ -4341,6 +4341,42 @@ async function materializedSkillFingerprintMatches(
   }
 }
 
+/**
+ * A target holds a gated snapshot when it carries a current-version sentinel
+ * with a fingerprint value, no matter which source it once matched. This
+ * check does not compare against the current source, so it stays valid when
+ * the source is absent or unreadable.
+ */
+async function targetHoldsGatedSnapshot(targetRoot: string): Promise<boolean> {
+  try {
+    const raw = JSON.parse(
+      await fs.readFile(
+        path.join(targetRoot, MATERIALIZED_SKILL_SENTINEL),
+        "utf8",
+      ),
+    ) as unknown;
+    const parsed = parseObject(raw);
+    return (
+      parsed.version === MATERIALIZED_SKILL_SENTINEL_VERSION &&
+      typeof parsed.sourceFingerprint === "string"
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove `targetRoot` unless it already holds a gated snapshot. Call this on
+ * an exit that does not publish a fresh snapshot but must not destroy a
+ * working one: a good gated copy survives a transient fault, while a legacy
+ * or unreadable directory — ungated content an older build could have
+ * written — does not.
+ */
+async function removeUngatedTarget(targetRoot: string): Promise<void> {
+  if (await targetHoldsGatedSnapshot(targetRoot)) return;
+  await fs.rm(targetRoot, { recursive: true, force: true }).catch(() => {});
+}
+
 async function acquireMaterializeLock(
   lockDir: string,
 ): Promise<() => Promise<void>> {
@@ -4438,13 +4474,22 @@ export async function materializePaperclipSkillCopy(
     );
   }
 
-  const rootStat = await fs.lstat(sourceRoot);
+  let rootStat: Awaited<ReturnType<typeof fs.lstat>>;
+  try {
+    rootStat = await fs.lstat(sourceRoot);
+  } catch (err) {
+    // A missing source root is a lookup failure, not a source-root refusal,
+    // but it still does not publish a fresh snapshot: fail closed at the
+    // target unless it already holds a gated snapshot worth keeping. The
+    // self-containment check above reports a different problem — `targetRoot`
+    // can contain `sourceRoot` there — so it alone removes nothing.
+    await removeUngatedTarget(targetRoot);
+    throw err;
+  }
   if (rootStat.isSymbolicLink()) {
     // Fail closed at the target, not only here: a refused source root must
     // not leave a stale, ungated copy from an earlier run in place under
-    // `targetRoot`. A missing source root (`lstat` throws first) and the
-    // self-containment check above report a different problem, so neither
-    // removes the target.
+    // `targetRoot`.
     await fs.rm(targetRoot, { recursive: true, force: true }).catch(() => {});
     throw new Error(
       "Refusing to materialize a skill root that is itself a symlink.",
@@ -4460,7 +4505,13 @@ export async function materializePaperclipSkillCopy(
   };
 
   const lockDir = `${targetRoot}.lock`;
-  const releaseLock = await acquireMaterializeLock(lockDir);
+  let releaseLock: () => Promise<void>;
+  try {
+    releaseLock = await acquireMaterializeLock(lockDir);
+  } catch (err) {
+    await removeUngatedTarget(targetRoot);
+    throw err;
+  }
   const tempRoot = `${targetRoot}.tmp-${process.pid}-${randomUUID()}`;
 
   // The admission gate classifies each entry in the same pass that copies
@@ -4520,17 +4571,7 @@ export async function materializePaperclipSkillCopy(
       await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)
     )
       return result;
-    try {
-      await copyEntry(sourceRoot, tempRoot, path.basename(sourceRoot));
-    } catch (err) {
-      if (err instanceof PaperclipSkillAdmissionRejectedError) {
-        // Fail closed at the target, not only at the temporary root: a
-        // rejected entry must not leave a stale, ungated copy from an
-        // earlier run in place under `targetRoot`.
-        await fs.rm(targetRoot, { recursive: true, force: true }).catch(() => {});
-      }
-      throw err;
-    }
+    await copyEntry(sourceRoot, tempRoot, path.basename(sourceRoot));
     await fs.writeFile(
       path.join(tempRoot, MATERIALIZED_SKILL_SENTINEL),
       `${JSON.stringify(
@@ -4551,6 +4592,20 @@ export async function materializePaperclipSkillCopy(
     await fs.rm(targetRoot, { recursive: true, force: true });
     await fs.rename(tempRoot, targetRoot);
     return result;
+  } catch (err) {
+    if (err instanceof PaperclipSkillAdmissionRejectedError) {
+      // Fail closed at the target, not only at the temporary root: a
+      // rejected entry must not leave a stale, ungated copy from an earlier
+      // run in place under `targetRoot`.
+      await fs.rm(targetRoot, { recursive: true, force: true }).catch(() => {});
+    } else {
+      // A hash failure, a transient copy error, or any other fault in this
+      // block does not publish a fresh snapshot, but it must not destroy a
+      // working one either: keep the target only when it already holds a
+      // gated snapshot.
+      await removeUngatedTarget(targetRoot);
+    }
+    throw err;
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
     await releaseLock();

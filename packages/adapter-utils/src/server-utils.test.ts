@@ -670,6 +670,86 @@ describe("materializePaperclipSkillCopy", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("removes a legacy, ungated target when the source root is missing", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const missingSource = path.join(root, "missing-source");
+      const target = path.join(root, "target");
+      // No prior successful materialization built this target: it has no
+      // sentinel at all, the shape an older, pre-gate build always left. A
+      // gated caller must never trust it and must never stage it.
+      await fs.mkdir(target, { recursive: true });
+      await fs.writeFile(
+        path.join(target, "secret.txt"),
+        "leaked-secret\n",
+        "utf8",
+      );
+
+      await expect(
+        materializePaperclipSkillCopy(missingSource, target),
+      ).rejects.toThrow(/ENOENT/);
+
+      // A missing source root must fail closed at the target when the
+      // target is not a gated snapshot worth keeping.
+      await expect(fs.stat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes a legacy, ungated target when a non-admission failure interrupts materialization", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const source = path.join(root, "source");
+      const target = path.join(root, "target");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      // Simulate the target an older, pre-gate build left behind: it
+      // carries a version-1 sentinel, so a version-2 caller must treat it
+      // as untrusted, not as a snapshot worth preserving.
+      await fs.mkdir(target, { recursive: true });
+      await fs.writeFile(
+        path.join(target, "secret.txt"),
+        "leaked-secret\n",
+        "utf8",
+      );
+      await fs.writeFile(
+        path.join(target, ".paperclip-materialized-skill.json"),
+        `${JSON.stringify({
+          version: 1,
+          sourceFingerprint: "stale-fingerprint",
+          copiedFiles: 1,
+        })}\n`,
+        "utf8",
+      );
+
+      const copyFileSpy = vi
+        .spyOn(fs, "copyFile")
+        .mockRejectedValue(new Error("ENOSPC: no space left on device"));
+      try {
+        const failure = await materializePaperclipSkillCopy(
+          source,
+          target,
+        ).catch((err: unknown) => err);
+        expect(failure).not.toBeInstanceOf(PaperclipSkillAdmissionRejectedError);
+        expect((failure as Error).message).toContain("ENOSPC");
+      } finally {
+        copyFileSpy.mockRestore();
+      }
+
+      // A transient input/output error must fail closed at the target when
+      // the target is a legacy, ungated directory, not a gated snapshot.
+      await expect(fs.stat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("materializeSelectedPaperclipSkillsIntoDir", () => {
