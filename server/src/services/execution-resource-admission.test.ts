@@ -6,6 +6,7 @@ import {
   RUNNER_TIMEOUT_EXIT_CODE,
   parseExecutionWriterResourceReceipt,
   readExecutionResourceResolverConfig,
+  readRunnerAdmissionRejection,
   readRunnerResourceWait,
   readRunnerTimeoutEvidence,
 } from "./execution-resource-admission.js";
@@ -116,6 +117,45 @@ describe("readRunnerResourceWait", () => {
         runId: RUN_ID,
       }),
     ).toBeNull();
+  });
+});
+
+describe("readRunnerAdmissionRejection", () => {
+  const refusal = (overrides: Record<string, unknown> = {}) => envelopeLine({
+    schemaVersion: 1,
+    kind: "run_admission",
+    status: "rejected",
+    runId: RUN_ID,
+    exitCode: 96,
+    reasonCode: "image_prerequisite_missing",
+    modelStarted: false,
+    phase: "image",
+    ...overrides,
+  });
+
+  it("retains a run-bound prerequisite failure without turning it into contention", () => {
+    const input = { exitCode: 96, stdout: refusal(), runId: RUN_ID };
+    expect(readRunnerAdmissionRejection(input)).toMatchObject({
+      reasonCode: "image_prerequisite_missing", modelStarted: false, phase: "image",
+    });
+    expect(readRunnerResourceWait(input)).toBeNull();
+  });
+
+  it("leaves unproven, foreign, or inconsistent refusals as ordinary failures", () => {
+    for (const stdout of [
+      "generic process failure",
+      refusal({ runId: "another-run" }),
+      refusal({ modelStarted: true }),
+      refusal({ status: "deferred" }),
+      refusal({ exitCode: 97 }),
+      refusal({ reasonCode: "broker_unavailable" }),
+      refusal({ schemaVersion: 2 }),
+    ]) {
+      expect(readRunnerAdmissionRejection({ exitCode: 96, stdout, runId: RUN_ID })).toBeNull();
+    }
+    expect(readRunnerAdmissionRejection({
+      exitCode: 5, stdout: refusal(), runId: RUN_ID,
+    })).toBeNull();
   });
 });
 

@@ -106,6 +106,8 @@ An isolated repair is not a live repair. After applying the exact independently 
 
 Verify with `pnpm exec vitest run server/src/__tests__/recovery-engineer.test.ts` against embedded PostgreSQL; skipped database tests are not acceptance evidence. Apply migration 0247 with its generated snapshot and journal together. Disabling the company configuration releases ordinary source recovery suppression without granting repair agents any additional authority.
 
+Contained process runners report pre-model admission failures with exit codes 96 (`image_prerequisite_missing`), 97 (`host_pi_unavailable`), 98 (`broker_unavailable`), and 99 (`containment_unavailable`). Native requires a version-1 `run_admission` stdout envelope whose run ID, rejection status, reason, exit code, and `modelStarted: false` agree before classifying one. An exit code alone stays a generic failure. These are failures for the existing recovery path, never workspace-contention deferrals; recording a clearer reason does not repair the prerequisite or authorize a retry.
+
 ### Mobile-friendly preview (`pnpm dev:mobile`)
 
 The vite dev server serves an unbundled module graph. This is fast to reload on a local machine but too heavy for phones and tablets on slow links (airplane wifi, mobile data, distant tailnet peers). `pnpm dev:mobile` builds the UI once and serves the small production bundle on port `3101` via `vite preview`, proxying `/api` requests to the dev API on `3100`.

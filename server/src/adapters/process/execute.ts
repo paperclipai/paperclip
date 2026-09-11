@@ -1,6 +1,7 @@
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import {
   RUNNER_RESOURCE_WAIT_ERROR_CODE,
+  readRunnerAdmissionRejection,
   readRunnerResourceWait,
   readRunnerTimeoutEvidence,
 } from "../../services/execution-resource-admission.js";
@@ -131,14 +132,23 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   }
 
   if ((proc.exitCode ?? 0) !== 0) {
+    const runnerAdmissionRejection = readRunnerAdmissionRejection({
+      exitCode: proc.exitCode,
+      stdout: proc.stdout,
+      runId,
+    });
     return {
       exitCode: proc.exitCode,
       signal: proc.signal,
       timedOut: false,
-      errorMessage: `Process exited with code ${proc.exitCode ?? -1}`,
+      ...(runnerAdmissionRejection ? { errorCode: runnerAdmissionRejection.reasonCode } : {}),
+      errorMessage: runnerAdmissionRejection
+        ? `Run refused before model launch: ${runnerAdmissionRejection.reasonCode}`
+        : `Process exited with code ${proc.exitCode ?? -1}`,
       resultJson: {
         stdout: proc.stdout,
         stderr: proc.stderr,
+        ...(runnerAdmissionRejection ? { runnerAdmissionRejection } : {}),
       },
     };
   }

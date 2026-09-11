@@ -201,6 +201,41 @@ export function readRunnerResourceWait(input: {
   };
 }
 
+const RUNNER_ADMISSION_REJECTIONS: Readonly<Record<number, string>> = {
+  96: "image_prerequisite_missing",
+  97: "host_pi_unavailable",
+  98: "broker_unavailable",
+  99: "containment_unavailable",
+};
+
+/** Failure evidence only: these refusals never authorize a resource-wait retry. */
+export function readRunnerAdmissionRejection(input: {
+  exitCode: number | null | undefined;
+  stdout: string | null | undefined;
+  runId: string;
+}) {
+  const reasonCode = RUNNER_ADMISSION_REJECTIONS[input.exitCode ?? -1];
+  if (!reasonCode) return null;
+  const envelope = readRunnerEnvelope({
+    stdout: input.stdout,
+    kind: RUNNER_RESOURCE_WAIT_ADMISSION_KIND,
+    runId: input.runId,
+  });
+  if (
+    !envelope
+    || envelope.status !== "rejected"
+    || envelope.modelStarted !== false
+    || envelope.exitCode !== input.exitCode
+    || envelope.reasonCode !== reasonCode
+  ) return null;
+  return {
+    reasonCode,
+    modelStarted: false,
+    phase: readTrimmedString(envelope.phase),
+    nextAction: readTrimmedString(envelope.nextAction),
+  };
+}
+
 /**
  * Reads the resumable evidence a timed-out contained run reports. A timeout is
  * still a timeout; this only tells native whether the run reached the model and
