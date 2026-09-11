@@ -5798,26 +5798,31 @@ describe("native warm session supervision", () => {
         return result;
       });
 
-    await executePaperclipNativeSession({
-      db: leaseDb(base),
-      execution: base,
-      runnerInstanceId: "runner",
-    });
-    await executePaperclipNativeSession({
-      db: leaseDb(lowered),
-      execution: lowered,
-      runnerInstanceId: "runner",
-    });
-    expect(firstClose).toHaveBeenCalledWith({
-      reason: "warm native session configuration changed",
-    });
-    await vi.waitFor(
-      () =>
-        expect(secondClose).toHaveBeenCalledWith({
-          reason: "warm native session idle timeout",
-        }),
-      { timeout: 500 },
-    );
+    // Filesystem work between calls can exceed the idle window on a busy host.
+    // Advance that window only after proving the permission change closed it.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await executePaperclipNativeSession({
+        db: leaseDb(base),
+        execution: base,
+        runnerInstanceId: "runner",
+      });
+      await executePaperclipNativeSession({
+        db: leaseDb(lowered),
+        execution: lowered,
+        runnerInstanceId: "runner",
+      });
+      expect(firstClose).toHaveBeenCalledWith({
+        reason: "warm native session configuration changed",
+      });
+      expect(secondClose).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(20);
+      expect(secondClose).toHaveBeenCalledWith({
+        reason: "warm native session idle timeout",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

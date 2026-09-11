@@ -49,7 +49,6 @@ import type {
   IssueReviewPolicy,
 } from "@paperclipai/shared";
 import { badRequest } from "../errors.js";
-import { PRODUCTIVITY_REVIEW_ORIGIN_KIND } from "./productivity-review.js";
 import { budgetService } from "./budgets.js";
 import {
   BLOCKER_ATTENTION_MAX_DEPTH,
@@ -105,7 +104,6 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
 const OPEN_RECOVERY_STATUSES = ["active", "escalated"] as const;
 const HUMAN_RECOVERY_OWNER_TYPES = ["user", "board"] as const;
-const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"] as const;
 const FAILED_RUN_STATUSES = ["failed", "timed_out"] as const;
 const DETAIL_EXCERPT_LENGTH = 160;
 const DETAIL_IMAGE_LIMIT = 3;
@@ -1450,65 +1448,6 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           relatedIssue: sourceIssue ? issueSubject(prefix, sourceIssue) : null,
           ...issueContext(sourceIssue),
           detail: genericDetail(recovery.nextAction, issueImages(recoveryImageMap, recovery.sourceIssueId)),
-        }));
-      }
-
-      const productivityRows = await db
-        .select({
-          id: issues.id,
-          companyId: issues.companyId,
-          identifier: issues.identifier,
-          title: issues.title,
-          status: issues.status,
-          priority: issues.priority,
-          originId: issues.originId,
-          originFingerprint: issues.originFingerprint,
-          assigneeAgentId: issues.assigneeAgentId,
-          assigneeUserId: issues.assigneeUserId,
-          createdAt: issues.createdAt,
-          updatedAt: issues.updatedAt,
-        })
-        .from(issues)
-        .where(and(
-          eq(issues.companyId, companyId),
-          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
-          isNull(issues.hiddenAt),
-          isNotNull(issues.assigneeUserId),
-          notInArray(issues.status, [...PRODUCTIVITY_REVIEW_TERMINAL_STATUSES]),
-        ))
-        .orderBy(desc(issues.updatedAt), desc(issues.id));
-      const [productivitySourceMap, productivityReviewMap, productivityImageMap] = await Promise.all([
-        issueSummaryMap(db, companyId, productivityRows.map((row) => row.originId)),
-        issueSummaryMap(db, companyId, productivityRows.map((row) => row.id)),
-        issueImageMap(db, companyId, productivityRows.map((row) => row.id)),
-      ]);
-
-      for (const review of productivityRows) {
-        const reviewIssue = productivityReviewMap.get(review.id);
-        if (!reviewIssue) continue;
-        const sourceIssue = review.originId ? productivitySourceMap.get(review.originId) ?? null : null;
-        const dedupKey = `productivity_review:${review.originFingerprint ?? review.originId ?? review.id}`;
-        add(createItem({
-          companyId,
-          sourceKind: "productivity_review",
-          subject: issueSubject(prefix, reviewIssue),
-          whyNow: "Productivity review is awaiting a human decision.",
-          decisionVerbs: decisionVerbs(
-            { id: "resolve", label: "Resolve", description: "Record a productivity review outcome." },
-            { id: "dismiss", label: "Dismiss", description: "Dismiss this review for now." },
-            { id: "reassign", label: "Reassign", description: "Move the review to another owner." },
-          ),
-          inlineResolvable: false,
-          entryRule: "Open issue_productivity_review issue assigned to a user.",
-          exitRule: "Review issue is done/cancelled or no longer assigned to a user.",
-          dedupKey,
-          severity: review.priority === "critical" ? "critical" : review.priority === "high" ? "high" : "medium",
-          activityAt: toIso(review.updatedAt),
-          createdAt: toIso(review.createdAt),
-          updatedAt: toIso(review.updatedAt),
-          relatedIssue: sourceIssue ? issueSubject(prefix, sourceIssue) : null,
-          ...issueContext(reviewIssue),
-          detail: genericDetail(sourceIssue?.title ?? review.title, issueImages(productivityImageMap, review.id)),
         }));
       }
 

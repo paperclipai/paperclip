@@ -183,6 +183,7 @@ export type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentReleaseLeaseParams,
+  PluginEnvironmentTerminationReceipt,
   PluginEnvironmentDestroyLeaseParams,
   PluginEnvironmentRealizeWorkspaceParams,
   PluginEnvironmentRealizeWorkspaceResult,

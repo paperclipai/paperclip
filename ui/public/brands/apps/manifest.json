@@ -4,6 +4,17 @@
   "simpleIconsVersion": "16.28.0",
   "providers": [
     {
+      "slug": "agentmail",
+      "provider": "AgentMail",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/agentmail.svg",
+      "darkAsset": "/brands/apps/agentmail-dark.svg",
+      "officialSourceUrl": "https://docs.agentmail.to",
+      "upstreamAssetUrl": "https://github.com/agentmail-to/agentmail-docs/blob/main/fern/assets/logos/agentmail-logo-landscape-light.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
+    {
       "slug": "airtable",
       "provider": "Airtable",
       "catalogVisible": true,

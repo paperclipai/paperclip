@@ -11,7 +11,7 @@ jobs:
   dispatch_migrator:
     name: Start exact-source cloud migrator publication
     if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 5
     permissions:
       actions: write

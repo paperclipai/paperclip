@@ -1122,8 +1122,6 @@ export type {
   IssueBlockedInboxReason,
   IssueBlockedInboxSeverity,
   IssueBlockedInboxState,
-  IssueProductivityReview,
-  IssueProductivityReviewTrigger,
   IssueRecoveryAction,
   IssueWatchdog,
   IssueWatchdogStatus,
@@ -2761,3 +2759,6 @@ export type { ExecutionContinuationEnvelope } from "./types/execution-continuati
 export type { ExecutionProjection, ExecutionReconciliation, ExecutionBlocker } from "./types/execution-projection.js";
 
 export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from "./types/execution-projection.js";
+
+export * from "./types/email.js";
+export * from "./validators/email.js";

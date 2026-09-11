@@ -1576,3 +1576,16 @@ action outcomes; do not replay tool calls or reset the failed incident's automat
 retry budget. Existing pause, approval, budget, ownership, and dependency gates
 remain in effect. See `doc/execution-semantics.md` for admission and stop-proof
 requirements.
+
+### Experimental task-bound email
+
+AgentMail channel connections extend the experimental conversation/task pipeline
+with explicit email publication. Each owned inbox/provider thread binds one task;
+external email senders do not gain board authority. Incoming correspondence uses
+the assigned agent's normal execution controls. Internal task activity never
+implicitly sends email. New outgoing conversations create child tasks and durable
+send intents before provider contact. The board directs email work through the
+normal task conversation; rich email cards show the correspondence and delivery
+outcomes without a separate email composer. See
+[AgentMail connections](connections/AGENTMAIL.md) for setup, transports, recovery,
+authorization, and the API/CLI contract.

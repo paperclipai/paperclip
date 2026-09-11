@@ -383,6 +383,7 @@ function publicationSummary(
 }
 
 const PROVIDER_LABELS: Record<ChatProvider, string> = {
+  agentmail: "AgentMail",
   slack: "Slack",
   github: "GitHub",
   discord: "Discord",
@@ -576,6 +577,7 @@ async function inspectSlackCallback(
 }
 
 const CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities> = {
+  agentmail: { threads: true, directMessages: true, nativeStreaming: false, messageEdits: false, messageDeletes: false, reactions: false, files: true, cards: false, actions: false, modals: false, slashCommands: false, ephemeralMessages: false, proactiveDirectMessages: true },
   slack: {
     threads: true,
     directMessages: true,
@@ -668,6 +670,7 @@ const REQUIRED_CREDENTIALS: Record<
   Exclude<ChatProvider, "github">,
   readonly string[]
 > = {
+  agentmail: [],
   slack: ["botToken", "signingSecret"],
   discord: ["botToken", "applicationId", "guildId"],
   "microsoft-teams": ["clientId", "tenantId", "clientSecret"],
@@ -725,6 +728,7 @@ const SUPPORTED_GITHUB_WEBHOOK_EVENTS = new Set<string>([
 ]);
 
 const SUPPLIED_CREDENTIAL_KEYS: Record<ChatProvider, readonly string[]> = {
+  agentmail: [],
   slack: ["botToken", "signingSecret"],
   github: ["appId", "privateKey"],
   discord: ["botToken", "applicationId", "guildId"],
@@ -2590,6 +2594,7 @@ function providerSetupState(
   const webhookUrl = publicBaseUrl ? `${publicBaseUrl}${path}` : null;
   const step = endpoint.status === "active" ? "complete" : endpoint.setup.step;
   switch (endpoint.provider) {
+    case "agentmail": return endpoint.setup;
     case "slack": {
       const observations = (endpoint.setup as InternalSetupState)
         .slackCallbackSurfaces;
@@ -5747,6 +5752,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       id: endpoint.id,
       companyId: endpoint.companyId,
       connectionId: endpoint.connectionId,
+      publicationMode: endpoint.publicationMode,
+      externalExecutionPolicy: endpoint.externalExecutionPolicy,
       provider: endpoint.provider,
       publicId: endpoint.publicId,
       status: endpoint.status,
@@ -5832,6 +5839,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     input: CreateChatEndpointInput,
     actorUserId?: string | null,
   ) {
+    if ((input.provider as string) === "agentmail") throw badRequest("Use the email inbox setup API for AgentMail");
     const agent = await db
       .select({ id: agents.id, name: agents.name, status: agents.status })
       .from(agents)
@@ -5968,6 +5976,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   ) {
     const initial = await endpointRecord(endpointId);
     if (!initial) throw notFound("Chat endpoint not found");
+    if (initial.endpoint.provider === "agentmail") throw badRequest("Use the email inbox API for AgentMail");
     await withCredentialMutationLease(
       initial.endpoint,
       async (credentialLease) => {
@@ -8048,6 +8057,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   ) {
     const record = await endpointRecord(endpointId);
     if (!record) throw notFound("Chat endpoint not found");
+    if (record.endpoint.provider === "agentmail") throw badRequest("Use the email inbox API for AgentMail");
     const suppliedCredentialKeys = Object.keys(input.credentials ?? {});
     if (suppliedCredentialKeys.length > 0) {
       const credentialAction =
@@ -26104,7 +26114,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .from(chatDeliveries)
       .where(
         and(
-          onlyDeliveryId ? eq(chatDeliveries.id, onlyDeliveryId) : undefined,
+          sql`not exists (select 1 from chat_endpoints e where e.id = ${chatDeliveries.endpointId} and e.provider = 'agentmail')`,
+            onlyDeliveryId ? eq(chatDeliveries.id, onlyDeliveryId) : undefined,
           inArray(chatDeliveries.eventKind, [
             "reaction_added",
             "reaction_removed",
@@ -26195,6 +26206,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         .from(chatDeliveries)
         .where(
           and(
+            sql`not exists (select 1 from chat_endpoints e where e.id = ${chatDeliveries.endpointId} and e.provider = 'agentmail')`,
             onlyDeliveryId ? eq(chatDeliveries.id, onlyDeliveryId) : undefined,
             notInArray(chatDeliveries.eventKind, [
               "reaction_added",
@@ -28642,6 +28654,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     conversationId: string,
     commentId: string,
   ) {
+    const emailBoundary = await endpointRecord(endpointId);
+    if (emailBoundary?.endpoint.publicationMode === "explicit") throw badRequest("Use an explicit email send action");
     const conversation = await db
       .select()
       .from(chatConversations)
@@ -28714,6 +28728,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     userId: string,
     attachmentIds: string[] = [],
   ) {
+    const emailBoundary = await endpointRecord(endpointId);
+    if (emailBoundary?.endpoint.publicationMode === "explicit") throw badRequest("Use an explicit email send action");
     // Browser request IDs are only unique within the conversation that issued
     // them. Include that durable task boundary so a retried key from another
     // conversation can neither suppress its send nor return the first task's
@@ -35794,6 +35810,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       })
       .where(
         and(
+          sql`not exists (select 1 from chat_endpoints e where e.id = ${chatPublications.endpointId} and e.publication_mode = 'explicit')`,
           eq(chatPublications.state, "streaming"),
           lte(chatPublications.updatedAt, staleBefore),
           // Teams owns separate staged I/O intents and a longer attempt lease.
@@ -35884,6 +35901,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             and(
               or(
                 and(
+                  sql`not exists (select 1 from chat_endpoints e where e.id = ${chatPublications.endpointId} and e.publication_mode = 'explicit')`,
                   inArray(chatPublications.state, ["pending", "retry"]),
                   notExists(
                     db
