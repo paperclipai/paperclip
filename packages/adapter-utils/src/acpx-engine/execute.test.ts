@@ -161,6 +161,7 @@ async function runExecutor(
   config: Record<string, unknown>,
   options: {
     context?: Record<string, unknown>;
+    runtime?: Record<string, unknown>;
     executionTransport?: Record<string, unknown>;
     authToken?: string;
     executionTarget?: Record<string, unknown>;
@@ -194,7 +195,7 @@ async function runExecutor(
       id: "agent-1",
       companyId: "company-1",
     },
-      runtime: {},
+      runtime: options.runtime ?? {},
       config,
       context: options.context ?? {},
       executionTransport: options.executionTransport,
@@ -590,6 +591,52 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).not.toContain("-d '{...}'");
     expect(prompt).not.toContain("runtime-secret-token");
     expect(promptMetrics?.runtimeNoteChars).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ["claude", false], ["codex", false], ["claude", true], ["codex", true],
+  ] as const)("keeps %s ACP conversation policy on fresh, resumed, and reset turns (custom=%s)", async (agent, custom) => {
+    const root = await makeTempRoot();
+    const config = { agent, cwd: root, stateDir: path.join(root, "state"), mode: "persistent",
+      ...(custom ? { promptTemplate: "Custom agent instructions." } : {}),
+    };
+    const chatDirective = "Chat mode: clarify goals and hand accepted plans off to ordinary project tasks.";
+    const context = {
+      conversationMode: true,
+      taskId: "chat-1",
+      paperclipTaskMarkdown: chatDirective,
+      paperclipTaskMarkdownCompact: chatDirective,
+      paperclipWake: {
+        reason: "issue_commented",
+        issue: { id: "chat-1", workMode: "planning", status: "in_progress" },
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        comments: [],
+        commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+        fallbackFetchNeeded: false,
+      },
+    };
+    const fresh = await runExecutor(config, { context });
+    const resumed = await runExecutor(config, {
+      context,
+      runtime: { sessionParams: fresh.result.sessionParams },
+    });
+    expect(resumed.sessionInputs[0]?.resumeSessionId).toBe(fresh.result.sessionId);
+    const reset = await runExecutor(config, { context });
+    expect(reset.sessionInputs[0]?.resumeSessionId).toBeUndefined();
+    for (const { meta } of [fresh, resumed, reset]) {
+      const prompt = String(meta[0]?.prompt ?? "");
+      expect(prompt).toContain(chatDirective);
+      expect(prompt).not.toContain("Execution contract:");
+      expect(prompt).not.toContain("clear final disposition");
+      expect(prompt).not.toContain("Create child issues");
+      expect(prompt).not.toContain("Use child issues");
+    }
+    expect(String(fresh.meta[0]?.prompt)).toContain(custom ? "Custom agent instructions." : "Continue your Paperclip conversation");
+    expect(String(reset.meta[0]?.prompt)).toContain(custom ? "Custom agent instructions." : "Continue your Paperclip conversation");
+    const ordinary = await runExecutor({ ...config, promptTemplate: "" }, { context: { ...context, conversationMode: false } });
+    expect(String(ordinary.meta[0]?.prompt)).toContain("Execution contract:");
+    expect(String(ordinary.meta[0]?.prompt)).toContain("Create child issues from the approved plan");
   });
 
   it("uses only the guarded external-chat contract for a default ACPX prompt", async () => {
