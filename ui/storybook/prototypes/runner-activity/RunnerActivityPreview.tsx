@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Pause, Play, RotateCcw, StepForward } from "lucide-react";
 import { useReducedMotion } from "motion/react";
+import { TaskChatThreadView } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
 import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
 import { buildTurnTimelineRows } from "@/components/task-chat/transcript-adapter";
-import type { TaskChatItem } from "@/components/task-chat/task-chat-model";
+import type {
+  TaskChatItem,
+  TaskChatMessageItem,
+} from "@/components/task-chat/task-chat-model";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -255,14 +259,41 @@ export function RunnerActivityPreview({
           Can you clean up the runner’s activity feed?
         </div>
         <TaskChatExpansionState.Provider key={replay} value={memory}>
-          <TaskChatRunnerTurn
-            runId={`preview-${replay}`}
-            agentName="Engineer"
-            agentIcon="code"
-            items={items}
-            status={finished ? "succeeded" : "running"}
-            startedAtMs={null}
-          />
+          {finished ? (
+            <TaskChatThreadView
+              scroll={false}
+              items={[
+                {
+                  id: "preview-saved-turn",
+                  kind: "turn",
+                  settled: true,
+                  standaloneHeader: true,
+                  agentName: "Engineer",
+                  agentIcon: "code",
+                  items: buildTurnTimelineRows(items, false),
+                  summary: {
+                    durationLabel: "28s",
+                    toolCount: 8,
+                    added: 0,
+                    removed: 0,
+                  },
+                  finalResponse: items.find(
+                    (item): item is TaskChatMessageItem =>
+                      item.kind === "message" && item.channel === "final",
+                  ),
+                },
+              ]}
+            />
+          ) : (
+            <TaskChatRunnerTurn
+              runId={`preview-${replay}`}
+              agentName="Engineer"
+              agentIcon="code"
+              items={items}
+              status={finished ? "succeeded" : "running"}
+              startedAtMs={null}
+            />
+          )}
         </TaskChatExpansionState.Provider>
       </main>
     </div>

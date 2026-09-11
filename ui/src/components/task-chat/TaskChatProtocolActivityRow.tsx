@@ -243,9 +243,24 @@ function detailContent(item: TaskChatProtocolItem, neutral = false): ReactNode |
   }
 }
 
+function safeActivityHref(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    // A fixed HTTPS base accepts relative app paths and fragments as well as
+    // external HTTP(S) resources, but never executable or local-file schemes.
+    const url = new URL(value, "https://paperclip.invalid");
+    return url.protocol === "https:" || url.protocol === "http:" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function TaskChatProtocolActivityDetails({ item, neutral = false }: { item: TaskChatProtocolItem; neutral?: boolean }) {
   const detail = detailContent(item, neutral);
-  if (item.surface === "resource" && item.href) return <a href={item.href} className="text-foreground underline">{item.title}</a>;
+  if (item.surface === "resource") {
+    const href = safeActivityHref(item.href);
+    return href ? <a href={href} className="text-foreground underline">{item.title}</a> : <p>{item.title}</p>;
+  }
   return <>{item.surface === "provider_activity" && item.summary ? <p className="whitespace-pre-wrap break-words">{item.summary}</p> : null}{detail}</>;
 }
 
@@ -299,9 +314,10 @@ export function TaskChatProtocolActivityRow({ item }: { item: TaskChatProtocolIt
     </>
   );
 
-  if (item.surface === "resource" && item.href) {
+  const resourceHref = item.surface === "resource" ? safeActivityHref(item.href) : undefined;
+  if (resourceHref) {
     return (
-      <a className="group/activity -mx-1.5 flex min-h-6 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-sm px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground" href={item.href} data-testid="task-chat-protocol-activity-row">
+      <a className="group/activity -mx-1.5 flex min-h-6 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-sm px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground" href={resourceHref} data-testid="task-chat-protocol-activity-row">
         {row}
       </a>
     );

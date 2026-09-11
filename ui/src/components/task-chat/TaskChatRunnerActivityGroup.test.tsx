@@ -2,6 +2,9 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TaskChatThreadView } from "./TaskChatThreadView";
+import { ThemeProvider } from "@/context/ThemeContext";
+import { MemoryRouter } from "@/lib/router";
 import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatExpansionState } from "./expansion-state";
 import type {
@@ -148,6 +151,60 @@ describe("TaskChatRunnerActivityGroup", () => {
     act(() => container.querySelector<HTMLButtonElement>("li button")!.click());
     expect(container.textContent).toContain("output-failed");
     expect(container.querySelector(".lucide-x, .text-destructive")).toBeNull();
+  });
+
+  it("uses the same group and expansion memory in the real persisted thread renderer", () => {
+    render([tool("one", "failed"), tool("two")]);
+    act(() => toggle().click());
+    act(() => container.querySelector<HTMLButtonElement>("li button")!.click());
+    act(() =>
+      root.render(
+        <TaskChatExpansionState.Provider value={memory}>
+          <MemoryRouter>
+            <ThemeProvider>
+              <TaskChatThreadView
+                scroll={false}
+                items={[
+                  {
+                    id: "saved",
+                    kind: "message",
+                    author: "agent",
+                    text: "Finished",
+                    attachedTurn: {
+                      id: "turn",
+                      kind: "turn",
+                      settled: true,
+                      standaloneHeader: true,
+                      summary: { toolCount: 2, added: 0, removed: 0 },
+                      items: [
+                        {
+                          id: "commentary:phase",
+                          kind: "activity_phase",
+                          active: false,
+                          summary: "Ran commands",
+                          items: [
+                            tool("one", "failed"),
+                            tool("two", "completed"),
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                ]}
+              />
+            </ThemeProvider>
+          </MemoryRouter>
+        </TaskChatExpansionState.Provider>,
+      ),
+    );
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelectorAll("li")).toHaveLength(2);
+    expect(container.textContent).toContain("output-one");
+    expect(container.textContent).toContain("Finished");
+    expect(container.querySelector(".text-destructive,.lucide-x")).toBeNull();
+    act(() => toggle().click());
+    expect(viewport().textContent).toContain("command-two");
+    expect(toggle().textContent).toContain("1 failed");
   });
 
   it("replaces immediately with reduced motion", () => {

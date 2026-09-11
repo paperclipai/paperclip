@@ -77,10 +77,22 @@ function presentation(item: Activity, active: boolean) {
       mono: false,
       running: false,
     };
+  const { used, size, inputTokens, outputTokens, costUsd } = item.usage;
+  const usage = [
+    size > 0
+      ? `${used.toLocaleString()}/${size.toLocaleString()} ctx`
+      : undefined,
+    inputTokens != null || outputTokens != null
+      ? `↑${(inputTokens ?? 0).toLocaleString()} ↓${(outputTokens ?? 0).toLocaleString()}`
+      : undefined,
+    costUsd != null ? `$${costUsd.toFixed(4)}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return {
     icon: Gauge,
     label: item.label ?? "Token usage",
-    target: item.detail,
+    target: usage || item.detail,
     mono: false,
     running: false,
   };
