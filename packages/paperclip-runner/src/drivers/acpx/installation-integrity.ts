@@ -1325,6 +1325,14 @@ function commandLease(
   privateSnapshot: AcpxPrivateSnapshot | null,
 ): VerifiedAcpxCommandLease {
   let consumed = false;
+  let closed = false;
+  let activeChildren = 0;
+  // A spawned child still needs the verified private snapshot while its
+  // bootstrap loads. Closing the reusable lease prevents new launches, but
+  // must not unlink bytes already handed to an existing child.
+  const closeSnapshotIfIdle = async (): Promise<void> => {
+    if (activeChildren === 0 && (closed || !reusable)) await privateSnapshot?.close();
+  };
   let directoriesReleased = false;
   const releaseDirectories = async (): Promise<void> => {
     if (directoriesReleased) return;
@@ -1341,11 +1349,12 @@ function commandLease(
     void releaseDirectories().catch(() => undefined);
   };
   const close = async (): Promise<void> => {
-    if (consumed) return;
+    if (closed) return;
+    closed = true;
     consumed = true;
     verifiedBytes.fill(0);
     await releaseDirectories();
-    await privateSnapshot?.close();
+    await closeSnapshotIfIdle();
   };
   return {
     spawn(
@@ -1528,11 +1537,17 @@ function commandLease(
         void privateSnapshot?.close();
         throw error;
       }
-      if (!reusable) {
-      releaseDirectoriesBestEffort();
-      child.once("exit", () => { void privateSnapshot?.close(); });
-      child.once("error", () => { void privateSnapshot?.close(); });
-      }
+      activeChildren++;
+      let childSettled = false;
+      const settleChild = (): void => {
+        if (childSettled) return;
+        childSettled = true;
+        activeChildren--;
+        void closeSnapshotIfIdle().catch(() => undefined);
+      };
+      child.once("exit", settleChild);
+      child.once("error", settleChild);
+      if (!reusable) releaseDirectoriesBestEffort();
       const sourceInput = child.stdio[COMMAND_SOURCE_FD] as Writable | null;
       if (sourceInput === null) {
         consumed = true;

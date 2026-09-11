@@ -185,7 +185,7 @@ test("both canonical stages exercise pinned CLI versions and verify full tree af
     assert(body);
     const pi = body.indexOf("verify-pi-provider-launch.mjs /provider-pack"), versions = body.indexOf('test "$(acpx --version)" = "0.13.1"'), verification = body.indexOf("verifyProviderPack('/provider-pack'");
     assert(pi >= 0 && versions > pi && verification > versions);
-    assert(body.includes('test "$(claude-agent-acp --version)" = "0.70.0"'));
+    assert(body.includes('test "$(claude-agent-acp --version)" = "0.73.0"'));
     assert(body.includes('test "$(codex-acp --version)" = "@agentclientprotocol/codex-acp 1.6.2"'));
     assert(!body.includes("chmod -R a+rX /provider-pack"), "Modes must be normalized before binding the inventory");
   }

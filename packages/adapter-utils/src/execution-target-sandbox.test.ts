@@ -177,7 +177,9 @@ describe("sandbox adapter execution targets", () => {
         kind: "remote", transport: "sandbox", providerKey: "test", environmentId: "env-1",
         leaseId: "lease-1", remoteCwd: root, timeoutMs: 30_000, runner: { execute },
       };
-      return { runId: "launcher-retry", target, cwd: root, env: {} };
+      // Pin this local fixture PATH so these tests inject failures into writes,
+      // independently of the execution-target PATH discovery tests.
+      return { runId: "launcher-retry", target, cwd: root, env: { PATH: "/usr/bin:/bin" } };
     }
 
     it("hash-skips an accepted upload after its provider reply is lost", async () => {
@@ -3600,7 +3602,7 @@ process.stdin.resume();setTimeout(()=>process.exit(2),20000);`);
           "x-paperclip-github-capability": "current-github-capability",
           "content-type": "application/json",
         },
-        body: "{}",
+        body: Buffer.from("{}"),
       });
       expect(credentials.status).toBe(200);
       expect(api.requests[1]).toMatchObject({
@@ -3609,7 +3611,7 @@ process.stdin.resume();setTimeout(()=>process.exit(2),20000);`);
         auth: "Bearer real-run-jwt",
         runId: "run-http2",
         headers: { "x-paperclip-github-capability": "current-github-capability" },
-        body: "{}",
+        body: Buffer.from("{}"),
       });
     } finally {
       sessionRef.current?.close();
