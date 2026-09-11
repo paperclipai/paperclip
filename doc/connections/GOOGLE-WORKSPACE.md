@@ -60,8 +60,10 @@ Google makes Workspace MCP generally available.
 | Google People | `https://people.googleapis.com/mcp/v1` | Read contacts |
 | Google Workspace Search | `https://workspacemcp.googleapis.com/mcp/v1` | Search Workspace |
 
-The setup flow asks for the capability first. It then offers the authentication
-methods available for that capability:
+The setup flow asks for the capability first. When the managed method is
+available, it uses Paperclip by default. A small **Use your own Google OAuth app**
+link reveals the custom client fields; **Use Paperclip instead** returns to the
+managed method. The available authentication methods are:
 
 - **Connect with Paperclip** uses the Paperclip Cloud broker when that exact
   profile is returned for this enrolled instance by the signed

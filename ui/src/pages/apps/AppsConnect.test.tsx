@@ -1221,18 +1221,28 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       }
       await flushReact();
       // Change auth methods too, including apps with only one capability.
-      const customerAuth = radioContaining("Use your own Google OAuth app");
-      expect(customerAuth).not.toBeNull();
+      expect(container.textContent).not.toContain("How do you want to connect?");
+      expect(container.textContent).not.toContain("Connect with Paperclip");
+      expect(container.textContent).not.toContain("Your OAuth app");
+      expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+      const customerAuth = buttonByText("Use your own Google OAuth app");
+      expect(customerAuth).toBeDefined();
+      expect(customerAuth?.getAttribute("aria-expanded")).toBe("false");
       await act(async () => {
         customerAuth!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
       await flushReact();
-      const managedAuth = radioContaining("Connect with Paperclip");
-      expect(managedAuth).not.toBeNull();
+      expect(container.textContent).toContain("Your OAuth app");
+      expect(container.textContent).toContain("Client ID");
+      expect(buttonByText("Continue to sign in")?.disabled).toBe(true);
+      const managedAuth = buttonByText("Use Paperclip instead");
+      expect(managedAuth).toBeDefined();
+      expect(managedAuth?.getAttribute("aria-expanded")).toBe("true");
       await act(async () => {
         managedAuth!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
       await flushReact();
+      expect(container.textContent).not.toContain("Your OAuth app");
       await act(async () => {
         buttonByText("Continue to sign in")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
