@@ -29,6 +29,7 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
+import { dismissObsoleteNativePolicyReviews } from "./obsolete-policy-reviews.js";
 import {
   cleanupNativeWorkspaceSync,
   readNativeWorkspaceSyncReference,
@@ -56,7 +57,6 @@ export type NativeReconciliationFacts = {
   newEvidenceSatisfiesContract?: boolean;
   dependencyResolved?: boolean;
   authorizedResume?: boolean;
-  policyVersionChanged?: boolean;
   statusVersionAdvanced?: boolean;
 };
 
@@ -109,22 +109,6 @@ export function resolveNativeReconciliationStatus(input: {
   }
   if (input.facts.authoritativeStatusChanged) {
     return preserve("prior_status_terminal_preserved", [{ kind: "append_superseding_assessment" }]);
-  }
-  if (input.facts.policyVersionChanged) {
-    if (["done", "cancelled"].includes(input.priorIssueStatus)) {
-      return preserve("prior_status_terminal_preserved", [{ kind: "append_superseding_assessment" }]);
-    }
-    return {
-      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
-      statusAction: "in_review",
-      toStatus: "in_review",
-      reasonCode: "completion_review_required",
-      unblockDescriptor: null,
-      effects: [
-        { kind: "bind_reviewer", prompt: "Review the superseding native policy assessment.", ownerUserId: null },
-        { kind: "append_superseding_assessment" },
-      ],
-    };
   }
   if (input.facts.statusVersionAdvanced) {
     return preserve("arbitration_conflict_reloaded", [
@@ -552,6 +536,7 @@ export async function reconcileNativeFinalizations(
     }) => Promise<void>;
   } = {},
 ) {
+  await dismissObsoleteNativePolicyReviews(db, runIds);
   const rows = await db
     .select({
       runId: heartbeatRuns.id,
@@ -643,7 +628,6 @@ export async function reconcileNativeFinalizations(
             ),
           )).limit(1).then((entries) => entries[0] ?? null)
         : null;
-      const policyVersionChanged = assessment?.policyVersion !== NATIVE_STATUS_ARBITER_POLICY_VERSION;
       const currentDecision = row.decisionId
         ? await db.select({
             assessmentId: statusDecisions.assessmentId,
@@ -715,7 +699,7 @@ export async function reconcileNativeFinalizations(
       let reassessment = null;
       let resultRow = null;
       let contractRow = null;
-      if (assessment && (policyVersionChanged || authoritativeStatusChanged || changedEvidence)) {
+      if (assessment && (authoritativeStatusChanged || changedEvidence)) {
         [resultRow, contractRow] = await Promise.all([
           db.select().from(nativeRunResults).where(and(
             eq(nativeRunResults.id, assessment.resultId),
@@ -746,11 +730,9 @@ export async function reconcileNativeFinalizations(
         && reassessment.verificationPassed === true;
       const facts: NativeReconciliationFacts = authoritativeStatusChanged
         ? { authoritativeStatusChanged: true }
-        : policyVersionChanged
-          ? { policyVersionChanged: true }
-          : newEvidenceSatisfiesContract
-            ? { newEvidenceSatisfiesContract: true }
-            : {};
+        : newEvidenceSatisfiesContract
+          ? { newEvidenceSatisfiesContract: true }
+          : {};
       if (Object.keys(facts).length > 0) {
         if (!assessment || !reassessment || !resultRow || !contractRow) {
           throw new Error("native_reconciliation_reassessment_missing");
