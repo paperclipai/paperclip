@@ -24,7 +24,10 @@ for (const name of ['index.html', 'iframe.html', 'index.json']) {
     throw new Error(`Missing Storybook output: ${name}`);
   }
 }
-fs.writeFileSync(path.join(source, 'deployment.json'), JSON.stringify(destination, null, 2) + '\n');
+fs.writeFileSync(path.join(source, 'deployment.json'), JSON.stringify({ ...destination,
+  ...(fs.existsSync(path.join(source, 'agent-avatar-images/manifest.json'))
+    ? { avatarManifest: 'agent-avatar-images/manifest.json' } : {}),
+}, null, 2) + '\n');
 const aws = (args) => execFileSync('aws', args, { stdio: 'inherit' });
 // Complete a unique build before changing the branch's entry point. No deletion
 // permissions, shared root writes or mixed-version branch assets are needed.

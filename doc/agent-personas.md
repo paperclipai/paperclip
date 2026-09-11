@@ -69,7 +69,16 @@ the TS palette data; `--check` detects drift. This does not generate images.
 
 Storybook: **Agents / Personas**. Run with
 `PAPERCLIP_STORYBOOK_API_URL=http://localhost:<isolated-port> pnpm storybook`.
-Static Storybook hosting must proxy `/api/agent-avatars` to an instance.
+`pnpm build-storybook` automatically packages all finite avatar presets (17
+palettes plus muted gray, nine poses, eleven logical sizes, both densities).
+The build uses the same bounded Node worker pool, SVG renderer, and Sharp pipeline
+as the API. Storybook-only URL resolution points to relative PNG paths under the
+published build, including branch-prefixed deployments. Production Paperclip
+continues to use its on-demand API; no image generation runs during agent creation.
+The generated files are build output, never committed. A manifest records image
+hashes and pixel dimensions; deployment verification fetches every image and checks
+its content type, PNG signature, dimensions, and hash. Dev Storybook still uses the
+API proxy for cold-cache and regeneration testing.
 
 Focused checks:
 
@@ -85,7 +94,7 @@ Use fixed poses/times for screenshots and Linux for authoritative visual
 baselines. Verify cold and warm URLs, reduced motion, reconnect, and saved
 appearance after refresh alongside normal typecheck/test/build checks.
 
-Linux visual/performance checks (against the built Storybook with the API proxy):
+Linux visual/performance checks (against the self-contained built Storybook):
 
 ```sh
 pnpm exec playwright test --config tests/storybook-visual/agent-personas.config.ts

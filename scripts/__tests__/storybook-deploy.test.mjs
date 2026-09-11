@@ -215,3 +215,43 @@ test('public verification rejects a permanently stale branch URL or wrong source
     wrong === 'branch' ? /does not point to this build/ : /wrong source commit/);
   }
 });
+
+import { createHash } from 'node:crypto';
+import { verifyAvatarImages } from '../../.github/scripts/verify-storybook.cjs';
+function avatarVerificationFixture(change = {}) {
+  const png = Buffer.alloc(24);
+  Buffer.from('89504e470d0a1a0a', 'hex').copy(png);
+  png.writeUInt32BE(48, 16); png.writeUInt32BE(48, 20);
+  const entry = { path: 'agent-avatar-images/cap-v1/bubblegum-sky/rest-24-2.png', pixels: 48,
+    sha256: createHash('sha256').update(png).digest('hex'), ...change.entry };
+  const requested = [];
+  return { requested, fetch: async (url) => {
+    requested.push(String(url));
+    if (String(url).endsWith('manifest.json')) return Response.json({ schemaVersion: 1, images: [entry] });
+    return new Response(change.body ?? png, { status: change.status ?? 200,
+      headers: { 'content-type': change.type ?? 'image/png' } });
+  } };
+}
+test('public avatar verification checks relative PNG paths, bytes and density dimensions', async () => {
+  const fixture = avatarVerificationFixture();
+  const d = storybookDestination(input);
+  await verifyAvatarImages({ buildUrl: d.buildUrl, fetch: fixture.fetch });
+  assert.ok(fixture.requested.every(url => url.startsWith(d.buildUrl.replace('index.html', ''))));
+  assert.equal(fixture.requested.length, 2);
+});
+test('public avatar verification rejects missing, HTML, corrupt or wrong-density images', async () => {
+  for (const change of [{ status: 403 }, { type: 'text/html' }, { body: 'broken PNG' },
+    { entry: { pixels: 24 } }, { entry: { sha256: '0'.repeat(64) } },
+    { entry: { path: '../../api/agent-avatars/portrait.png' } }]) {
+    await assert.rejects(verifyAvatarImages({ buildUrl: storybookDestination(input).buildUrl,
+      fetch: avatarVerificationFixture(change).fetch }), /Avatar|avatar/);
+  }
+});
+test('deployment metadata opts into avatar verification and fails on missing images', async () => {
+  const d = storybookDestination(input);
+  await assert.rejects(verifyStorybook({ branchUrl: d.url, buildUrl: d.buildUrl, sha: d.sha, attempts: 1,
+    fetch: async url => String(url).endsWith('deployment.json')
+      ? Response.json({ sha: d.sha, avatarManifest: 'agent-avatar-images/manifest.json' })
+      : String(url) === d.url ? new Response(branchIndex(d.buildUrl)) : new Response('', { status: 403 }),
+  }), /Avatar manifest returned HTTP 403/);
+});

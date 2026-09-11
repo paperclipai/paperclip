@@ -1,4 +1,4 @@
-import { agentAvatarUrl } from "@paperclipai/shared";
+import { agentAvatarUrl } from "@/lib/agent-avatar-url";
 import { expect, waitFor } from "storybook/test";
 import { useEffect, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
@@ -14,7 +14,7 @@ const meta = {
   title: "Agents/Personas",
   component: AgentCharacter,
   args: { appearance, size: 256, state: "listening", label: "Chief of Staff" },
-  parameters: { docs: { description: { component: "Persistent cap-v1 identities. Avatars request on-demand PNGs from Paperclip; the hero alone loads ClipLab. Run Paperclip locally, or set PAPERCLIP_STORYBOOK_API_URL to an isolated API when starting Storybook. Static Storybook hosting must route /api/agent-avatars to Paperclip. No images are baked into Storybook." } } },
+  parameters: { docs: { description: { component: "Persistent cap-v1 identities. Avatars request on-demand PNGs from Paperclip; the hero alone loads ClipLab. Development Storybook uses PAPERCLIP_STORYBOOK_API_URL. Published Storybook packages PNGs from the same API renderer automatically during its build, including every preset and both densities; no running API is required." } } },
   argTypes: {
     state: { control: "select", options: CHARACTER_STATES },
     size: { control: "select", options: AGENT_AVATAR_SIZES },

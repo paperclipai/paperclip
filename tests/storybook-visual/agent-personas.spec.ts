@@ -45,7 +45,7 @@ test("500 avatars load images without WebGL, live modules or avatar frame loops"
 test("image failures and slow cold responses preserve dimensions", async ({ page }) => {
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  await page.route("**/api/agent-avatars/**", async route => { await held; await route.abort(); });
+  await page.route("**/agent-avatar-images/**", async route => { await held; await route.abort(); });
   await story(page, "cache-miss-loading");
   const image = page.locator("#storybook-root img");
   const before = await image.boundingBox();
@@ -117,7 +117,7 @@ for (const id of fullPages) {
     await page.goto(`/iframe.html?id=agents-personas-full-pages--${id}&viewMode=story&globals=theme:dark`);
     await expect(page.locator("main")).toBeVisible();
     await expect(page.locator("main")).not.toContainText("This page hit an error");
-    await expect(page.locator('img[src*="/api/agent-avatars/"]').first()).toBeAttached();
+    await expect(page.locator('img[src*="/agent-avatar-images/"]').first()).toBeAttached();
     if (id === "company-dashboard") await expect(page.getByText("Live now", { exact: true })).toBeVisible();
     await imagesLoaded(page);
     await expect(page.locator("canvas")).toHaveCount(0);

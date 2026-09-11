@@ -1,3 +1,4 @@
+import { agentAvatarUrl } from "@/lib/agent-avatar-url";
 import { useEffect, useState, useRef } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useQueryClient } from "@tanstack/react-query";
@@ -12,7 +13,7 @@ import { Dashboard } from "@/pages/Dashboard";
 import { NewAgent } from "@/pages/NewAgent";
 import { AgentBasicsDialog } from "@/components/new-agent/AgentBasicsDialog";
 import { queryKeys } from "@/lib/queryKeys";
-import { resolveAgentAppearance, agentAvatarUrl } from "@paperclipai/shared";
+import { resolveAgentAppearance } from "@paperclipai/shared";
 import { storybookAgents, storybookIssues, storybookActivityEvents, storybookLiveRuns, storybookDashboardSummary } from "../fixtures/paperclipData";
 
 const companyId = "company-storybook";

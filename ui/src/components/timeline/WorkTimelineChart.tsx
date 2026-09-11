@@ -1,4 +1,5 @@
-import { agentAvatarUrl, resolveAgentAppearance } from "@paperclipai/shared";
+import { agentAvatarUrl } from "@/lib/agent-avatar-url";
+import { resolveAgentAppearance } from "@paperclipai/shared";
 /**
  * Work Timeline — custom-SVG Gantt (board-locked Direction C, PAP-12422).
  *
