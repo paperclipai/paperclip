@@ -37,6 +37,7 @@ export const HIDEABLE_INSTANCE_PAGES = [
   "instance.experimental",
   "instance.plugins",
   "instance.adapters",
+  "instance.routing",
 ] as const;
 
 export type HideableInstancePage = (typeof HIDEABLE_INSTANCE_PAGES)[number];
