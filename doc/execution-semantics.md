@@ -857,6 +857,32 @@ new run. Preserve the baseline across recovery of the same run and start a new
 delta when attaching a new run. Other stale-event and authority checks remain.
 
 
+### Explicit user continuation after a native failure
+
+An execution recovery hold blocks automatic replay. A new authenticated user
+comment can authorize a fresh native conversation turn after the predecessor's
+execution is confirmed stopped. This is a new request, not another automatic
+attempt in the failed incident. The old attempt count and unknown action outcomes
+remain unchanged.
+
+Admission validates the persisted comment's author, task, and time against every
+held predecessor. An agent-authored comment, an old queued request, or a generic
+system wake cannot release a hold. The source task keeps its assignee. Process
+ownership, active controllers, cleanup leases, pause, approval, budget, and normal
+execution gates still apply. Dependency-blocked interaction mode remains limited
+to its existing answer/triage contract.
+
+The hold retirement, audit record, and new run commit together under the task
+lock. The new turn uses a fresh provider session and retains the latest user
+request, task history, completed work, and the interruption notice. It receives
+no instruction to repeat old tool calls. Later messages cannot reset the old
+incident's retry budget or create another automatic replacement for it.
+
+The initial native admission path verifies local process identities. Missing
+process identity or remote ownership without a target-aware stop proof remains a
+hold; a terminal database status or a PID check on the wrong host is insufficient.
+No historical task is automatically awakened by this change.
+
 ### Explicit Recovery Action
 
 Paperclip opens an explicit recovery action when the system can identify a problem but cannot safely complete the work itself.
