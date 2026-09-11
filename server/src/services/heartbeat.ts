@@ -16108,7 +16108,7 @@ export function heartbeatService(
                 where blocker_edge.company_id = ${issues.companyId}
                   and blocker_edge.related_issue_id = ${issues.id}
                   and blocker_edge.type = 'blocks'
-                  and blocker.status not in ('done', 'cancelled')
+                  and blocker.status <> 'done'
                   and blocker.hidden_at is null
               )`,
               sql`exists (

@@ -932,7 +932,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(run!.id)).toBe(1);
   });
 
-  it("does not treat a cancelled blocker as resolved for generic timer fallback", async () => {
+  it("does not treat mixed done and cancelled blockers as resolved for generic timer fallback", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
         enabled: true,
@@ -941,6 +941,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       },
     });
     const blockedIssueId = randomUUID();
+    const resolvedBlockerId = randomUUID();
     const cancelledBlockerId = randomUUID();
     const now = new Date();
     const priorTimerBaseline = new Date(now.getTime() - 120_000);
@@ -958,6 +959,14 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         assigneeAgentId: agentId,
       },
       {
+        id: resolvedBlockerId,
+        companyId,
+        title: "Resolved dependency",
+        status: "done",
+        priority: "high",
+        updatedAt: new Date(now.getTime() - 30_000),
+      },
+      {
         id: cancelledBlockerId,
         companyId,
         title: "Cancelled dependency",
@@ -966,12 +975,20 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         updatedAt: new Date(now.getTime() - 30_000),
       },
     ]);
-    await db.insert(issueRelations).values({
-      companyId,
-      issueId: cancelledBlockerId,
-      relatedIssueId: blockedIssueId,
-      type: "blocks",
-    });
+    await db.insert(issueRelations).values([
+      {
+        companyId,
+        issueId: resolvedBlockerId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      },
+      {
+        companyId,
+        issueId: cancelledBlockerId,
+        relatedIssueId: blockedIssueId,
+        type: "blocks",
+      },
+    ]);
 
     expect(await heartbeat.tickTimers(now)).toMatchObject({ enqueued: 0 });
     const runs = await db
