@@ -1397,7 +1397,14 @@ describe.sequential("agent skill routes", () => {
           }),
         }),
       }),
-      { claudeLogin: { storedSessionId: null, ownerUserId: "local-board", applyExistingWithoutClaim: false } },
+      {
+        claudeLogin: {
+          storedSessionId: null,
+          ownerUserId: "local-board",
+          applyExistingWithoutClaim: false,
+          inheritedFromAgentId: null,
+        },
+      },
     );
     expect(mockApprovalService.create).toHaveBeenCalledWith(
       "company-1",
