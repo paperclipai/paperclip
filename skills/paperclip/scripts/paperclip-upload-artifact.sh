@@ -20,6 +20,8 @@ Options:
   --summary TEXT         Work product summary
   --content-type TYPE    Override detected upload content type
   --status STATUS        Work product status (default: ready_for_review)
+  --chat-comment TEXT    Bind this file to an explicit external-chat response
+  --retry-unknown-upload Retry after an unresolved transport failure (duplicate risk)
   --no-work-product      Only upload the issue attachment
   --no-primary           Do not mark the artifact work product primary for its type
   --output FORMAT        markdown or json (default: markdown)
@@ -34,6 +36,10 @@ Examples:
   scripts/paperclip-upload-artifact.sh out/walkthrough.webm \
     --title "Walkthrough video" \
     --content-type video/webm
+
+  scripts/paperclip-upload-artifact.sh out/result.png \
+    --title "Generated image" \
+    --chat-comment "Here is the requested image."
 EOF
 }
 
@@ -83,6 +89,30 @@ detect_content_type() {
   esac
 }
 
+sha256_file() {
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -- "$path" | awk '{print tolower($1)}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 -- "$path" | awk '{print tolower($1)}'
+  else
+    printf 'Missing required command: sha256sum or shasum\n' >&2
+    exit 1
+  fi
+}
+
+sha256_text() {
+  local value="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$value" | sha256sum | awk '{print tolower($1)}'
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$value" | shasum -a 256 | awk '{print tolower($1)}'
+  else
+    printf 'Missing required command: sha256sum or shasum\n' >&2
+    exit 1
+  fi
+}
+
 request_json() {
   local method="$1"
   local url="$2"
@@ -128,6 +158,7 @@ upload_file() {
   local escaped_path
   local response_file
   local status_code
+  local curl_status=0
 
   escaped_path="${path//\\/\\\\}"
   escaped_path="${escaped_path//\"/\\\"}"
@@ -138,18 +169,92 @@ upload_file() {
       -H "Authorization: Bearer $PAPERCLIP_API_KEY" \
       -H "X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID" \
       -F "file=@\"${escaped_path}\";type=${content_type}"
-  )"
+  )" || curl_status=$?
+
+  if [[ "$curl_status" -ne 0 ]]; then
+    rm -f "$response_file"
+    return 75
+  fi
 
   if [[ "$status_code" -lt 200 || "$status_code" -ge 300 ]]; then
     printf 'Upload failed (%s): %s\n' "$status_code" "$url" >&2
     cat "$response_file" >&2
     printf '\n' >&2
     rm -f "$response_file"
-    exit 1
+    if [[ "$status_code" == "408" || "$status_code" -ge 500 ]]; then
+      return 75
+    fi
+    return 1
   fi
 
   cat "$response_file"
   rm -f "$response_file"
+}
+
+operation_lock_path=""
+operation_lock_owner=""
+operation_lock_held=0
+operation_state_root=""
+
+process_start_identity() {
+  local pid="$1"
+  ps -p "$pid" -o lstart= 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//'
+}
+
+release_operation_lock() {
+  if [[ "$operation_lock_held" == "1" && -n "$operation_lock_path" ]]; then
+    local current_owner=""
+    current_owner="$(readlink "$operation_lock_path" 2>/dev/null || true)"
+    if [[ "$current_owner" == "$operation_lock_owner" ]]; then
+      rm -f "$operation_lock_path"
+    fi
+    operation_lock_held=0
+  fi
+}
+
+acquire_operation_lock() {
+  local operation_key="$1"
+  local attempts=0
+
+  umask 077
+  operation_state_root="${PAPERCLIP_HELPER_STATE_DIR:-${TMPDIR:-/tmp}/paperclip-upload-artifact}"
+  mkdir -p "$operation_state_root"
+  operation_lock_path="$operation_state_root/$operation_key.lock"
+  operation_lock_owner="$$|$(process_start_identity "$$" || true)"
+  while ! ln -s "$operation_lock_owner" "$operation_lock_path" 2>/dev/null; do
+    local owner_pid=""
+    local owner_start=""
+    local current_lock_owner=""
+    current_lock_owner="$(readlink "$operation_lock_path" 2>/dev/null || true)"
+    IFS='|' read -r owner_pid owner_start <<<"$current_lock_owner"
+    if [[ "$owner_pid" =~ ^[0-9]+$ ]]; then
+      local current_owner_start=""
+      current_owner_start="$(process_start_identity "$owner_pid" || true)"
+      if ! kill -0 "$owner_pid" 2>/dev/null ||
+        [[ -n "$owner_start" && -n "$current_owner_start" && "$owner_start" != "$current_owner_start" ]]; then
+        # Serialize stale-lock reclamation separately. Without this guard, two
+        # contenders can both observe the old owner and the slower one can
+        # delete the faster contender's newly acquired live lock.
+        local reclaim_lock_path="$operation_lock_path.reclaim"
+        if mkdir "$reclaim_lock_path" 2>/dev/null; then
+          local guarded_owner=""
+          guarded_owner="$(readlink "$operation_lock_path" 2>/dev/null || true)"
+          if [[ "$guarded_owner" == "$current_lock_owner" ]]; then
+            rm -f "$operation_lock_path"
+          fi
+          rmdir "$reclaim_lock_path" 2>/dev/null || true
+          continue
+        fi
+      fi
+    fi
+    attempts=$((attempts + 1))
+    if [[ "$attempts" -ge 400 ]]; then
+      printf 'Another matching artifact upload is still in progress; retry after it finishes.\n' >&2
+      exit 1
+    fi
+    sleep 0.05
+  done
+  operation_lock_held=1
 }
 
 file_path=""
@@ -159,10 +264,12 @@ title=""
 summary=""
 content_type=""
 status="ready_for_review"
+chat_comment=""
 create_work_product=1
 is_primary=1
 output_format="markdown"
 dry_run=0
+retry_unknown_upload=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -190,8 +297,16 @@ while [[ $# -gt 0 ]]; do
       status="${2:-}"
       shift 2
       ;;
+    --chat-comment)
+      chat_comment="${2:-}"
+      shift 2
+      ;;
     --no-work-product)
       create_work_product=0
+      shift
+      ;;
+    --retry-unknown-upload)
+      retry_unknown_upload=1
       shift
       ;;
     --no-primary)
@@ -243,6 +358,11 @@ if [[ "$output_format" != "markdown" && "$output_format" != "json" ]]; then
   exit 1
 fi
 
+if [[ -n "$chat_comment" && "$create_work_product" != "1" ]]; then
+  printf '%s\n' '--chat-comment requires the attachment-backed work product created by this helper.' >&2
+  exit 1
+fi
+
 require_command curl
 require_command jq
 
@@ -265,9 +385,10 @@ if [[ "$dry_run" == "1" ]]; then
     --arg summary "$summary" \
     --arg contentType "$content_type" \
     --arg status "$status" \
+    --arg chatComment "$chat_comment" \
     --argjson createWorkProduct "$create_work_product_json" \
     --argjson isPrimary "$is_primary_json" \
-    '{file: $file, issueId: $issueId, companyId: $companyId, title: $title, summary: $summary, contentType: $contentType, status: $status, createWorkProduct: $createWorkProduct, isPrimary: $isPrimary}'
+    '{file: $file, issueId: $issueId, companyId: $companyId, title: $title, summary: $summary, contentType: $contentType, status: $status, chatComment: (if $chatComment == "" then null else $chatComment end), createWorkProduct: $createWorkProduct, isPrimary: $isPrimary}'
   exit 0
 fi
 
@@ -281,29 +402,95 @@ if [[ -z "$issue_id" || -z "$company_id" ]]; then
   exit 1
 fi
 
-api_base="${PAPERCLIP_API_URL%/}/api"
-attachment="$(
-  upload_file \
-    "$api_base/companies/$company_id/issues/$issue_id/attachments" \
-    "$file_path" \
-    "$content_type"
+api_root="${PAPERCLIP_API_URL%/}"
+case "$api_root" in
+  */api) api_base="$api_root" ;;
+  *) api_base="$api_root/api" ;;
+esac
+file_sha256="$(sha256_file "$file_path")"
+original_filename="$(basename "$file_path")"
+operation_key="$(
+  sha256_text "$api_base|$company_id|$issue_id|$PAPERCLIP_RUN_ID|$original_filename|$file_sha256|$content_type"
 )"
+acquire_operation_lock "$operation_key"
+trap release_operation_lock EXIT
+
+attachment=""
+reused_attachment=0
+unknown_upload_marker="$operation_state_root/$operation_key.uncertain"
+lookup_attempts=1
+if [[ -f "$unknown_upload_marker" && "$retry_unknown_upload" != "1" ]]; then
+  lookup_attempts=20
+fi
+for ((lookup_attempt = 1; lookup_attempt <= lookup_attempts; lookup_attempt++)); do
+  existing_attachments="$(request_json GET "$api_base/issues/$issue_id/attachments")"
+  attachment="$(
+    jq -nc \
+      --argjson attachments "$existing_attachments" \
+      --arg runId "$PAPERCLIP_RUN_ID" \
+      --arg sha256 "$file_sha256" \
+      --arg originalFilename "$original_filename" \
+      --arg contentType "$content_type" \
+      'first(
+        $attachments[]
+        | select(
+            .originatingRunId == $runId
+            and ((.sha256 // "") | ascii_downcase) == ($sha256 | ascii_downcase)
+            and (.originalFilename // "") == $originalFilename
+            and ((.contentType // "") | ascii_downcase) == ($contentType | ascii_downcase)
+          )
+      ) // empty'
+  )"
+  if [[ -n "$attachment" ]]; then
+    reused_attachment=1
+    rm -f "$unknown_upload_marker"
+    break
+  fi
+  if [[ "$lookup_attempt" -lt "$lookup_attempts" ]]; then
+    sleep 0.25
+  fi
+done
+
+if [[ -z "$attachment" && -f "$unknown_upload_marker" && "$retry_unknown_upload" != "1" ]]; then
+  printf '%s\n' 'A previous matching upload ended without a definitive response, and Paperclip has not exposed its durable attachment yet.' >&2
+  printf '%s\n' 'Retry this command later. If the upload definitely did not commit, pass --retry-unknown-upload to accept the duplicate-file risk.' >&2
+  exit 1
+fi
+
+if [[ -z "$attachment" ]]; then
+  rm -f "$unknown_upload_marker"
+  : >"$unknown_upload_marker"
+  upload_status=0
+  attachment="$(
+    upload_file \
+      "$api_base/companies/$company_id/issues/$issue_id/attachments" \
+      "$file_path" \
+      "$content_type"
+  )" || upload_status=$?
+  if [[ "$upload_status" -ne 0 ]]; then
+    if [[ "$upload_status" -ne 75 ]]; then
+      rm -f "$unknown_upload_marker"
+    fi
+    exit 1
+  fi
+fi
+
+attachment_id="$(jq -r '.id // empty' <<<"$attachment")"
+content_path="$(jq -r '.contentPath // empty' <<<"$attachment")"
+download_path="$(jq -r '.downloadPath // (if .contentPath then (.contentPath + "?download=1") else "" end)' <<<"$attachment")"
+if [[ -z "$attachment_id" || -z "$content_path" || -z "$download_path" ]]; then
+  printf 'Upload response did not include attachment path metadata.\n' >&2
+  printf '%s\n' "$attachment" >&2
+  exit 1
+fi
+rm -f "$unknown_upload_marker"
 
 work_product="null"
 if [[ "$create_work_product" == "1" ]]; then
   is_primary_json="$(json_bool "$is_primary")"
-  attachment_id="$(jq -r '.id // empty' <<<"$attachment")"
   byte_size="$(jq -r '.byteSize // 0' <<<"$attachment")"
-  content_path="$(jq -r '.contentPath // empty' <<<"$attachment")"
   open_path="$(jq -r '.openPath // .contentPath // empty' <<<"$attachment")"
-  download_path="$(jq -r '.downloadPath // (if .contentPath then (.contentPath + "?download=1") else "" end)' <<<"$attachment")"
   original_filename="$(jq -r '.originalFilename // empty' <<<"$attachment")"
-
-  if [[ -z "$attachment_id" || -z "$content_path" || -z "$download_path" ]]; then
-    printf 'Upload response did not include attachment path metadata.\n' >&2
-    printf '%s\n' "$attachment" >&2
-    exit 1
-  fi
 
   work_product_payload="$(
     jq -nc \
@@ -349,23 +536,51 @@ if [[ "$create_work_product" == "1" ]]; then
   )"
 fi
 
+chat_response="null"
+if [[ -n "$chat_comment" ]]; then
+  chat_comment_payload="$(
+    jq -nc \
+      --arg body "$chat_comment" \
+      --arg attachmentId "$attachment_id" \
+      '{body: $body, attachmentIds: [$attachmentId]}'
+  )"
+  chat_response="$(
+    request_json \
+      POST \
+      "$api_base/issues/$issue_id/comments" \
+      "$chat_comment_payload"
+  )"
+  chat_comment_id="$(jq -r '.id // empty' <<<"$chat_response")"
+  if [[ -z "$chat_comment_id" ]]; then
+    printf 'Chat attachment response did not include a comment id.\n' >&2
+    exit 1
+  fi
+fi
+
 if [[ "$output_format" == "json" ]]; then
-  jq -n --argjson attachment "$attachment" --argjson workProduct "$work_product" \
-    '{attachment: $attachment, workProduct: $workProduct}'
+  jq -n \
+    --argjson attachment "$attachment" \
+    --argjson workProduct "$work_product" \
+    --argjson chatComment "$chat_response" \
+    '{attachment: $attachment, workProduct: $workProduct, chatComment: $chatComment}'
   exit 0
 fi
 
-content_path="$(jq -r '.contentPath // empty' <<<"$attachment")"
-download_path="$(jq -r '.downloadPath // (if .contentPath then (.contentPath + "?download=1") else "" end)' <<<"$attachment")"
-attachment_id="$(jq -r '.id // empty' <<<"$attachment")"
 work_product_id="$(jq -r '.id // empty' <<<"$work_product")"
 
-printf 'Uploaded artifact\n\n'
+if [[ "$reused_attachment" == "1" ]]; then
+  printf 'Reused matching artifact from this run\n\n'
+else
+  printf 'Uploaded artifact\n\n'
+fi
 printf -- '- Attachment: [%s](%s)\n' "$title" "$content_path"
 printf -- '- Download: [%s](%s)\n' "$title" "$download_path"
 printf -- '- Attachment ID: `%s`\n' "$attachment_id"
 if [[ -n "$work_product_id" ]]; then
   printf -- '- Work product ID: `%s`\n' "$work_product_id"
+fi
+if [[ -n "$chat_comment" ]]; then
+  printf -- '- Paperclip comment binding: saved. External publication requires an authorized active chat origin; this helper does not confirm provider delivery.\n'
 fi
 printf '\nFinal comment snippet:\n\n'
 printf -- '- Artifact: [%s](%s)\n' "$title" "$content_path"

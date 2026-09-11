@@ -222,6 +222,7 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   for (const jobId of [
     "typecheck_release_registry",
     "general_tests",
+    "verify_paperclip_runner",
     "build",
     "verify_serialized_server",
     "canary_dry_run",
@@ -243,11 +244,16 @@ test("the trusted PR workflow limits full CI to merge-relevant stack layers", ()
   const verify = jobs.get("verify");
   assert.match(
     verify,
-    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, build, docker_context_integrity\]$/m,
+    /^ {4}needs: \[gate, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity\]$/m,
   );
   assert.match(verify, /POLICY_RESULT: \$\{\{ needs\.policy\.result \}\}/);
   assert.match(verify, /test "\$TYPECHECK_RELEASE_REGISTRY_RESULT" = "skipped"/);
   assert.match(verify, /test "\$GENERAL_TESTS_RESULT" = "skipped"/);
+  // Runner verification must participate in the legacy aggregate required
+  // check, or a runner regression could be merged while `verify` succeeds.
+  assert.match(verify, /RUNNER_VERIFICATION_RESULT: \$\{\{ needs\.verify_paperclip_runner\.result \}\}/);
+  assert.match(verify, /test "\$RUNNER_VERIFICATION_RESULT" = "success"/);
+  assert.match(verify, /test "\$RUNNER_VERIFICATION_RESULT" = "skipped"/);
   assert.match(verify, /test "\$BUILD_RESULT" = "skipped"/);
   // Both halves of the docker-context lane's gating: the result must be
   // wired into the aggregate's env AND asserted successful on full CI —
@@ -327,7 +333,7 @@ test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
   const restoreSteps = workflow.match(
     /- name: Restore regenerated PR lockfile \(if policy uploaded one\)\n        if: needs\.policy\.outputs\.lockfile_regenerated == '1'/g,
   ) ?? [];
-  assert.equal(restoreSteps.length, 6, "every downstream install job must restore a required regenerated artifact");
+  assert.equal(restoreSteps.length, 7, "every downstream install job must restore a required regenerated artifact");
   assert.doesNotMatch(
     workflow,
     /- name: Restore regenerated PR lockfile \(if policy uploaded one\)[\s\S]{0,220}continue-on-error:/,

@@ -41,6 +41,10 @@ import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { materializeRuntimeQuestionFallback } from "./native-session-executor.js";
+import {
+  subscribeAllCompanyLiveEvents,
+  subscribeCompanyLiveEvents,
+} from "../live-events.js";
 
 describe("PaperclipControlPlanePort conformance", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -345,6 +349,182 @@ describe("PaperclipControlPlanePort conformance", () => {
     await expect(db.select().from(activityLog).where(eq(activityLog.entityId, identity.issueId))).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ action: "issue.updated" })]),
     );
+  });
+
+  it("signals committed safe progress after row visibility without forwarding its payload", async () => {
+    const identity = CONTROL_PLANE_CONFORMANCE_OPEN.identity;
+    const issueId = "40000000-0000-4000-8000-000000000042";
+    const runId = "41000000-0000-4000-8000-000000000042";
+    const sessionId = "42000000-0000-4000-8000-000000000042";
+    const runnerInstanceId = "43000000-0000-4000-8000-000000000042";
+    const localContractId = "44000000-0000-4000-8000-000000000042";
+    const localContractSha = "safe-progress-signal-contract";
+    await db.insert(issues).values({
+      id: issueId,
+      companyId: identity.companyId,
+      title: "Signal committed safe progress",
+      status: "in_progress",
+      assigneeAgentId: identity.agentId,
+      workMode: "standard",
+    });
+    await db.insert(completionContracts).values({
+      id: localContractId,
+      companyId: identity.companyId,
+      issueId,
+      revision: 1,
+      schemaVersion: "paperclip.completion-contract.v1",
+      policyVersion: "phase6-v1",
+      risk: "standard",
+      completionAuthority: "server_arbiter",
+      incompleteCriteriaPolicy: "preserve_non_terminal",
+      contractJson: {
+        revision: "phase6-v1",
+        objective: "Signal committed safe progress",
+        criteria: [{ id: "objective", requirement: "Signal progress" }],
+      },
+      canonicalSha256: localContractSha,
+      createdByActorType: "system",
+      createdByActorId: "test",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: identity.companyId,
+      agentId: identity.agentId,
+      status: "running",
+      runtimeMode: "native",
+      nativeIssueId: issueId,
+      nativeSessionId: sessionId,
+      runnerInstanceId,
+      completionContractId: localContractId,
+      completionContractSha256: localContractSha,
+      contextSnapshot: { issueId },
+    });
+    const observerDb = createDb(temporary!.connectionString);
+    const observed: Array<Record<string, unknown>> = [];
+    const committedCallbacks: string[] = [];
+    let visibilityCheck: Promise<Array<{ eventType: string }>> | null = null;
+    const unsubscribe = subscribeAllCompanyLiveEvents((event) => {
+      if (
+        event.companyId !== identity.companyId ||
+        event.type !== "heartbeat.run.event" ||
+        event.payload.runId !== runId
+      ) return;
+      observed.push(event.payload);
+      visibilityCheck = observerDb
+        .select({ eventType: heartbeatRunEvents.eventType })
+        .from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, runId));
+    });
+    const port = new PaperclipControlPlanePort(db, {
+      companyId: identity.companyId,
+      issueId,
+      runId,
+      agentId: identity.agentId,
+      sessionId,
+      completionContractId: localContractId,
+      completionContractSha256: localContractSha,
+      sourceInstanceId: runnerInstanceId,
+      controlPlaneSourceInstanceId: `safe-progress-control-${runId}`,
+    }, {
+      onCommittedEvent: async (event) => {
+        committedCallbacks.push(event.sourceEventId);
+      },
+    });
+    await port.openRun({
+      identity: { ...identity, issueId, runId, sessionId },
+      backendKind: "mock",
+      sourceInstanceId: runnerInstanceId,
+    });
+    const progressEvent: PrpEvent = {
+      schema: "paperclip.prp.event.v1",
+      sourceEventId: "safe-progress-signal:1",
+      sourceSeq: 1,
+      sourceInstanceId: runnerInstanceId,
+      sourceKind: "runner",
+      runId,
+      normalizedSessionId: sessionId,
+      turnId: "safe-progress-signal-turn",
+      eventType: "tool.execution.started",
+      schemaVersion: 1,
+      priority: 0,
+      emittedAt: "2026-09-08T10:30:00.000Z",
+      payload: {
+        schema: "paperclip.tool.execution.v1",
+        executionId: "safe-progress-execution",
+        transport: "builtin",
+        operation: "execute",
+        name: "must-not-cross-live-signal",
+        target: null,
+        namespace: null,
+        readOnly: false,
+        status: "running",
+        durationMs: null,
+        exitCode: null,
+        progress: null,
+        output: "must-not-cross-live-signal",
+        outputBytes: 26,
+        outputTruncated: false,
+        outputDigest: `sha256:${"a".repeat(64)}`,
+      },
+    };
+    try {
+      await expect(port.appendEvent(progressEvent)).resolves.toMatchObject({
+        disposition: "committed",
+      });
+      await expect(visibilityCheck).resolves.toEqual([
+        { eventType: "tool.execution.started" },
+      ]);
+      expect(observed).toEqual([{
+        runId,
+        agentId: identity.agentId,
+        issueId,
+        seq: 1,
+        eventType: "tool.execution.started",
+      }]);
+      expect(JSON.stringify(observed)).not.toContain("must-not-cross-live-signal");
+
+      await expect(port.appendEvent(progressEvent)).resolves.toMatchObject({
+        disposition: "duplicate",
+      });
+      expect(observed).toHaveLength(1);
+
+      const unsubscribeThrowingListener = subscribeCompanyLiveEvents(
+        identity.companyId,
+        () => {
+          throw new Error("simulated_live_listener_failure");
+        },
+      );
+      try {
+        await expect(port.appendEvent({
+          ...progressEvent,
+          sourceEventId: "safe-progress-signal:2",
+          sourceSeq: 2,
+        })).resolves.toMatchObject({ disposition: "committed" });
+      } finally {
+        unsubscribeThrowingListener();
+      }
+      expect(committedCallbacks).toEqual([
+        "safe-progress-signal:1",
+        "safe-progress-signal:2",
+      ]);
+      expect(observed).toHaveLength(1);
+
+      await expect(port.appendEvent({
+        ...progressEvent,
+        sourceEventId: "safe-progress-signal:3",
+        sourceSeq: 3,
+        eventType: "turn.started",
+        payload: {},
+      })).resolves.toMatchObject({ disposition: "committed" });
+      expect(observed).toHaveLength(1);
+      expect(committedCallbacks).toEqual([
+        "safe-progress-signal:1",
+        "safe-progress-signal:2",
+        "safe-progress-signal:3",
+      ]);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("recovers a runtime question when the event commits before its callback", async () => {

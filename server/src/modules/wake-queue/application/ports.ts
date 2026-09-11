@@ -79,6 +79,8 @@ export type DeferredWakeCandidate = {
   /** The comment ids the wake's context snapshot carries (a separate set from queuedCommentIds), used for the reopen check. */
   deferredCommentIds: string[];
   wakeReason: string | null;
+  /** Exact failed-chat retry authority revalidated by the transaction-bound adapter. */
+  authorizedFailedChatRetry?: boolean;
 };
 
 export type PromoteDeferredWakeInput = {
@@ -94,6 +96,8 @@ export type PromoteDeferredWakeInput = {
   payload: Record<string, unknown>;
   responsibleUserId: string;
   sessionBefore: string | null;
+  /** Only a proven failed-chat retry may retain its original retry lineage. */
+  authorizedFailedChatRetry?: boolean;
   now: Date;
 };
 
@@ -177,6 +181,8 @@ export interface WakeQueueTransaction {
   /** An open, non-hidden issue that still lists this issue as a `blocks` predecessor. */
   hasExplicitBlockerPath(input: { companyId: string; issueId: string }): Promise<boolean>;
   isAutomaticRecoverySuppressedByPauseHold(input: { companyId: string; issueId: string }): Promise<boolean>;
+  /** Deny-only facts from the exact finishing run and its durable chat wake owner. */
+  isImmediateRecoverySourceBlocked(input: { companyId: string; runId: string }): Promise<boolean>;
   queueReviewParticipantRecoveryRun(input: {
     companyId: string;
     issue: IssueSnapshot;
@@ -244,3 +250,199 @@ export interface RecoveryEscalationPort {
 }
 
 export type { PostCommitEffect, ReleaseOutcome };
+
+/**
+ * Temporary port: `heartbeat.ts` still opens and owns the transaction that
+ * admits a wake behind an active issue execution; the module does not own
+ * that transaction yet. A later change will decompose `enqueueWakeup` so
+ * the module owns the transaction itself. That change removes this handle
+ * and replaces it with a transaction the module opens on its own.
+ *
+ * Only this module builds a scope. `createWakeQueue` exposes a method that
+ * builds one for a caller outside the module. That caller receives an
+ * opaque handle back and never touches this class directly.
+ */
+export class TransactionScope {
+  private constructor(
+    private readonly companyId: string,
+    private readonly rawTx: unknown,
+  ) {}
+
+  static create(companyId: string, rawTx: unknown): TransactionScope {
+    return new TransactionScope(companyId, rawTx);
+  }
+
+  /** Returns the bound transaction only when `companyId` matches the scope's own company. */
+  requireTx(companyId: string): unknown {
+    if (companyId !== this.companyId) {
+      throw new Error(
+        "wake-queue: the transaction scope belongs to a different company than the requested write",
+      );
+    }
+    return this.rawTx;
+  }
+}
+
+/** Reads a scope's bound transaction. Rejects a missing scope with the same clear error as a mismatched one; never falls back to any other executor. */
+export function requireTransactionScopeTx(
+  scope: TransactionScope | null | undefined,
+  companyId: string,
+): unknown {
+  if (!scope) {
+    throw new Error("wake-queue: this call carries no transaction scope");
+  }
+  return scope.requireTx(companyId);
+}
+
+/** The active execution run a new wake arrives behind. */
+export type WakeAdmissionActiveExecutionRun = {
+  id: string;
+  agentId: string;
+  status: string;
+  contextSnapshot: unknown;
+  wakeupRequestId?: string | null;
+};
+
+/** Already authorized by the heartbeat admission transaction; identity, not a grant. */
+export type DurableWakeAdmissionReceipt = {
+  id: string;
+  requestedAt: Date;
+};
+
+export type CoalescedDeferredAdmissionReceipt = DurableWakeAdmissionReceipt & {
+  agentId: string;
+  source: string;
+  triggerDetail: string | null;
+  reason: string | null;
+  payload: Record<string, unknown>;
+  requestedByActorType: string | null;
+  requestedByActorId: string | null;
+  idempotencyKey: string | null;
+  runId: string | null;
+};
+
+export type ExistingDeferredWake = {
+  id: string;
+  runId?: string | null;
+  payload: Record<string, unknown>;
+  /** `payload._paperclipWakeContext`, already parsed to a plain object. */
+  deferredContext: Record<string, unknown>;
+  coalescedCount: number | null;
+};
+
+/**
+ * The four wake-admission decision helpers that stay in `heartbeat.ts`
+ * today. The application layer receives them through this port so it never
+ * imports the service it is extracted from.
+ */
+export type WakeAdmissionHeartbeatHelpers = {
+  /** `filterZombieCoalesceTarget` in `heartbeat.ts`. */
+  filterZombieCoalesceTarget(
+    target: WakeAdmissionActiveExecutionRun | null,
+    liveRunExecutions: { has(id: string): boolean },
+  ): WakeAdmissionActiveExecutionRun | null;
+  /** `mergeCoalescedContextSnapshot` in `heartbeat.ts`. */
+  mergeCoalescedContextSnapshot(
+    existingRaw: unknown,
+    incoming: Record<string, unknown>,
+    options?: { preserveExistingInteractionContinuation?: boolean },
+  ): Record<string, unknown>;
+  /** `shouldDeferFollowupWakeForSameIssue` in `heartbeat.ts`. */
+  shouldDeferFollowupWakeForSameIssue(input: {
+    activeRunStatus: string | null | undefined;
+    isSameExecutionAgent: boolean;
+    wakeCommentId: string | null | undefined;
+    forceFreshSession: boolean;
+  }): boolean;
+  /** `shouldQueueFollowupForRunningIssueWake` in `heartbeat.ts`. */
+  shouldQueueFollowupForRunningIssueWake(input: {
+    contextSnapshot: Record<string, unknown> | null | undefined;
+    wakeCommentId: string | null;
+  }): boolean;
+};
+
+export type AdmitWakeBehindIssueExecutionResult =
+  | { kind: "proceed" }
+  | { kind: "coalesced"; run: Record<string, unknown> }
+  | { kind: "deferred" };
+
+/** Read-only lookups the admission use case needs, each scoped to a company. */
+export interface WakeAdmissionReader {
+  /** A durable incoming request may share an active run only with the exact actor on its persisted wake receipt. */
+  matchesActiveWakeActor(
+    scope: TransactionScope,
+    input: {
+      companyId: string;
+      wakeupRequestId: string | null;
+      requestedByActorType: string | null;
+      requestedByActorId: string | null;
+    },
+  ): Promise<boolean>;
+  /** True when the active execution run's agent and this wake's own agent share an execution-agent-name key. */
+  isSameExecutionAgent(
+    scope: TransactionScope,
+    input: {
+      companyId: string;
+      activeExecutionRunAgentId: string;
+      issueExecutionAgentNameKey: string | null;
+      agentNameKey: string | null;
+    },
+  ): Promise<boolean>;
+  findExistingDeferredWake(
+    scope: TransactionScope,
+    input: {
+      companyId: string;
+      agentId: string;
+      issueId: string;
+      durableActor?: { type: string | null; id: string | null };
+    },
+  ): Promise<ExistingDeferredWake | null>;
+}
+
+/** The transaction-scoped write operations that admit a wake behind an active issue execution. */
+export interface WakeAdmissionWriter {
+  /** Merges the wake's context into the active execution run and records the wake as coalesced. Returns the updated run row. */
+  coalesceIntoActiveExecutionRun(
+    scope: TransactionScope,
+    input: {
+      companyId: string;
+      activeExecutionRunId: string;
+      mergedContextSnapshot: Record<string, unknown>;
+      durableReceipt?: DurableWakeAdmissionReceipt;
+      agentId: string;
+      source: string;
+      triggerDetail: string | null;
+      payload: Record<string, unknown> | null;
+      requestedByActorType: string | null;
+      requestedByActorId: string | null;
+      idempotencyKey: string | null;
+    },
+  ): Promise<Record<string, unknown>>;
+  /** Merges the wake's context into an already-queued deferred wake, guarded by its current status. */
+  mergeIntoExistingDeferredWake(
+    scope: TransactionScope,
+    input: {
+      companyId: string;
+      existingDeferredWakeId: string;
+      mergedPayload: Record<string, unknown>;
+      nextCoalescedCount: number;
+      /** Persist each durable input's own receipt atomically with the merge. */
+      coalescedReceipt?: CoalescedDeferredAdmissionReceipt;
+    },
+  ): Promise<void>;
+  /** Queues a new deferred wake behind the active execution run. */
+  insertNewDeferredWake(
+    scope: TransactionScope,
+    input: {
+      companyId: string;
+      agentId: string;
+      source: string;
+      triggerDetail: string | null;
+      payload: Record<string, unknown>;
+      requestedByActorType: string | null;
+      requestedByActorId: string | null;
+      idempotencyKey: string | null;
+      durableReceipt?: DurableWakeAdmissionReceipt;
+    },
+  ): Promise<void>;
+}

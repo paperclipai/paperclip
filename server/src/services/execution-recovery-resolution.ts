@@ -4,6 +4,7 @@ import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
 import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import {
+  chatActions,
   environmentLeases,
   heartbeatRuns,
   issueRecoveryActions,
@@ -129,11 +130,34 @@ export async function markExecutionReconciliation(
   db: Db,
   action: Pick<
     typeof issueRecoveryActions.$inferSelect,
-    "companyId" | "id" | "evidence"
+    "companyId" | "id" | "evidence" | "sourceIssueId"
   >,
   decision: ExecutionReconciliation,
   actorId: string,
+  deliveryOwner?: { kind: "chat_failed_run_retry"; actionId: string },
 ) {
+  if (deliveryOwner) {
+    const [retry] = await db
+      .select()
+      .from(chatActions)
+      .where(
+        and(
+          eq(chatActions.companyId, action.companyId),
+          eq(chatActions.id, deliveryOwner.actionId),
+        ),
+      );
+    if (
+      deliveryOwner.kind !== "chat_failed_run_retry" ||
+      !retry ||
+      retry.kind !== "failed_run_retry" ||
+      !["issued", "processing", "processed"].includes(retry.status) ||
+      retry.payload.version !== 1 ||
+      retry.payload.failedRunId !== decision.runId ||
+      retry.payload.issueId !== action.sourceIssueId
+    ) {
+      throw conflict("The authorized chat retry owner is no longer valid.");
+    }
+  }
   await db
     .update(nativeRunFinalizations)
     .set({
@@ -156,7 +180,8 @@ export async function markExecutionReconciliation(
           actorId,
           recordedAt: new Date().toISOString(),
         },
-        continuationDelivery: "pending",
+        continuationDelivery: deliveryOwner ? "delegated" : "pending",
+        ...(deliveryOwner ? { continuationDeliveryOwner: deliveryOwner } : {}),
       },
     })
     .where(

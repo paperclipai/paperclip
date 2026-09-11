@@ -566,6 +566,97 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(mockTelemetryClient.track).not.toHaveBeenCalled();
   });
 
+  it("does not terminalize or clear issue locks when an ownership hold arrives after the sweep snapshot", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const issueId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        runtimeMode: "native",
+        nativeIssueId: issueId,
+        processPid: process.pid,
+      })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Ownership hold races stale issue-lock recovery",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+
+    let releaseTerminalWrite!: () => void;
+    const terminalWriteReleased = new Promise<void>((resolve) => {
+      releaseTerminalWrite = resolve;
+    });
+    let terminalWriteReached!: () => void;
+    const atTerminalWrite = new Promise<void>((resolve) => {
+      terminalWriteReached = resolve;
+    });
+    const sweep = recoveryService(db, {
+      enqueueWakeup: vi.fn(),
+      beforeOrphanedRunTerminalWrite: async (runId) => {
+        if (runId !== runningRunId) return;
+        terminalWriteReached();
+        await terminalWriteReleased;
+      },
+    }).sweepStaleIssueLocks();
+
+    try {
+      await atTerminalWrite;
+      await db
+        .update(heartbeatRuns)
+        .set({
+          nativePhase: "terminal_failure",
+          errorCode: "native_execution_ownership_unverified",
+        })
+        .where(eq(heartbeatRuns.id, runningRunId));
+    } finally {
+      releaseTerminalWrite();
+    }
+
+    await expect(sweep).resolves.toEqual({
+      cleared: 0,
+      issueIds: [],
+      terminalizedRunIds: [],
+    });
+    await expect(
+      db
+        .select({
+          status: heartbeatRuns.status,
+          nativePhase: heartbeatRuns.nativePhase,
+          errorCode: heartbeatRuns.errorCode,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runningRunId)),
+    ).resolves.toEqual([
+      {
+        status: "running",
+        nativePhase: "terminal_failure",
+        errorCode: "native_execution_ownership_unverified",
+      },
+    ]);
+    await expect(
+      db
+        .select({
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId)),
+    ).resolves.toEqual([
+      {
+        checkoutRunId: runningRunId,
+        executionRunId: runningRunId,
+      },
+    ]);
+    expect(mockTelemetryClient.track).not.toHaveBeenCalled();
+  });
+
   it("does not terminalize a live run that a terminal issue and an active issue both reference", async () => {
     // A stale lock on a terminal issue and the real lock on an active issue can
     // point at the same running run. The terminal reference alone must not

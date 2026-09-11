@@ -9,7 +9,7 @@ import type { Agent, Environment, UserSecretDefinition } from "@paperclipai/shar
 import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
-import { AgentConfigForm, AdapterLoginPanel, type AdapterLoginDescriptor } from "./AgentConfigForm";
+import { AgentConfigForm, AdapterLoginPanel, subtractPersistedOverlay, type AdapterLoginDescriptor } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
@@ -1746,6 +1746,414 @@ describe("AgentConfigForm environment selector", () => {
     expect(findButton(container, "Cancel")).toBeFalsy();
     expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
   });
+  it("reports the account-binding claim upward exactly once when the session authenticates", async () => {
+    // The authenticated owner read can carry the non-secret Codex
+    // account-binding claim. The panel hands it to the caller once; the
+    // caller (the edit-mode form) decides whether a bind is warranted.
+    mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({
+      sessionId: "bind-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: { url: "https://auth.example.test/bind", code: "BIND-1" },
+    });
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "bind-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+      codexAccountBinding: { secretId: "secret-bind-1", companyIdentityDiffers: true },
+    });
+    const onAccountBinding = vi.fn();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="codex_local"
+                environmentId="sandbox-1"
+                autoStart
+                onAccountBinding={onAccountBinding}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => onAccountBinding.mock.calls.length > 0);
+
+    expect(onAccountBinding).toHaveBeenCalledTimes(1);
+    expect(onAccountBinding).toHaveBeenCalledWith({
+      secretId: "secret-bind-1",
+      companyIdentityDiffers: true,
+    });
+    // The panel narrates the bind as its own state, separate from the login's
+    // success line — the bind is a second save that can still fail.
+    await flushUntil(() => container.textContent?.includes("Agent bound to the signed-in account") ?? false);
+  });
+
+  it("a failed bind save renders an explicit Retry instead of silently latching the claim", async () => {
+    // The status poll stops at the terminal state, so a rejected save behind
+    // a fire-and-forget latch would leave nothing to re-fire the bind. The
+    // panel keeps the claim and offers Retry.
+    mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({
+      sessionId: "bind-session-2",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: { url: "https://auth.example.test/bind", code: "BIND-2" },
+    });
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "bind-session-2",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+      codexAccountBinding: { secretId: "secret-bind-2", companyIdentityDiffers: true },
+    });
+    const onAccountBinding = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("save failed"))
+      .mockResolvedValueOnce(undefined);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="codex_local"
+                environmentId="sandbox-1"
+                autoStart
+                onAccountBinding={onAccountBinding}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => container.textContent?.includes("Could not bind this agent") ?? false);
+    const retry = findButton(container, "Retry");
+    expect(retry).toBeTruthy();
+
+    await act(async () => {
+      retry!.click();
+    });
+    await flushUntil(() => container.textContent?.includes("Agent bound to the signed-in account") ?? false);
+    expect(onAccountBinding).toHaveBeenCalledTimes(2);
+    expect(onAccountBinding).toHaveBeenLastCalledWith({
+      secretId: "secret-bind-2",
+      companyIdentityDiffers: true,
+    });
+  });
+
+  it("a second login in the same mounted panel runs its own bind", async () => {
+    // The terminal state re-enables Sign in without unmounting the panel. The
+    // bind latch is scoped to the session, so a second cross-account login
+    // binds again with ITS claim instead of being silently skipped.
+    mockAgentsApi.startAdapterAuthLogin
+      .mockResolvedValueOnce({
+        sessionId: "rebind-s1",
+        environmentId: "sandbox-1",
+        status: "waiting_for_user",
+        expiresAt: null,
+        failure: null,
+        prompt: { url: "https://auth.example.test/rebind", code: "REBIND-1" },
+      })
+      .mockResolvedValueOnce({
+        sessionId: "rebind-s2",
+        environmentId: "sandbox-1",
+        status: "waiting_for_user",
+        expiresAt: null,
+        failure: null,
+        prompt: { url: "https://auth.example.test/rebind", code: "REBIND-2" },
+      });
+    mockAgentsApi.getAdapterAuthLoginStatus.mockImplementation(
+      async (_companyId: string, _adapterType: string, sid: string) => ({
+        sessionId: sid,
+        environmentId: "sandbox-1",
+        status: "authenticated",
+        expiresAt: null,
+        failure: null,
+        prompt: null,
+        codexAccountBinding: {
+          secretId: sid === "rebind-s2" ? "secret-second" : "secret-first",
+          companyIdentityDiffers: true,
+        },
+      }),
+    );
+    const onAccountBinding = vi.fn().mockResolvedValue(undefined);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="codex_local"
+                environmentId="sandbox-1"
+                autoStart
+                onAccountBinding={onAccountBinding}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => onAccountBinding.mock.calls.length === 1);
+    expect(onAccountBinding).toHaveBeenLastCalledWith({
+      secretId: "secret-first",
+      companyIdentityDiffers: true,
+    });
+
+    const signIn = findButton(container, "Sign in");
+    expect(signIn).toBeTruthy();
+    await act(async () => {
+      signIn!.click();
+    });
+    await flushUntil(() => onAccountBinding.mock.calls.length === 2);
+    expect(onAccountBinding).toHaveBeenLastCalledWith({
+      secretId: "secret-second",
+      companyIdentityDiffers: true,
+    });
+  });
+
+  it("a new Sign in stays disabled while the bind save is in flight", async () => {
+    // Two overlapping bind saves can land out of order — the older save
+    // finishing last would silently revert the agent to the previous account.
+    // The panel serializes at its only entry point: Sign in is disabled until
+    // the current bind settles.
+    mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({
+      sessionId: "serialize-s1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: { url: "https://auth.example.test/serialize", code: "SER-1" },
+    });
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "serialize-s1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+      codexAccountBinding: { secretId: "secret-serialize", companyIdentityDiffers: true },
+    });
+    let releaseSave: (() => void) | null = null;
+    const onAccountBinding = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseSave = resolve;
+        }),
+    );
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="codex_local"
+                environmentId="sandbox-1"
+                autoStart
+                onAccountBinding={onAccountBinding}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => container.textContent?.includes("Binding this agent") ?? false);
+    const signInWhileSaving = findButton(container, "Sign in");
+    expect(signInWhileSaving).toBeTruthy();
+    expect(signInWhileSaving!.disabled).toBe(true);
+
+    await act(async () => {
+      releaseSave?.();
+    });
+    await flushUntil(() => container.textContent?.includes("Agent bound to the signed-in account") ?? false);
+    const signInAfterSave = findButton(container, "Sign in");
+    expect(signInAfterSave!.disabled).toBe(false);
+  });
+
+  it("keeps edits made while the bind save is pending after the agent refresh", async () => {
+    // The bind save runs in the background while the form stays editable. The
+    // agent refresh that follows the save must subtract only what the save
+    // persisted — an edit made during "Binding this agent…" survives as
+    // pending dirty state instead of being wiped with the rest of the overlay.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+      codexAccountBinding: { secretId: "secret-keep-edits", companyIdentityDiffers: true },
+    });
+    const releaseSaves: Array<() => void> = [];
+    const onSave = vi.fn(
+      (_patch: Record<string, unknown>) =>
+        new Promise<void>((resolve) => {
+          releaseSaves.push(resolve);
+        }),
+    );
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "Daytona",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+      }),
+    ]);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    // The harness swaps the agent object the way the page does after a save
+    // refresh: same mounted form, new agent identity.
+    let refreshAgent: (agent: Agent) => void = () => {};
+    function RefreshHarness() {
+      const [agent, setAgent] = useState(() => makeAgent({ defaultEnvironmentId: "sandbox-1" }));
+      refreshAgent = setAgent;
+      return (
+        <AgentConfigForm
+          mode="edit"
+          agent={agent}
+          onSave={onSave}
+          hidePromptTemplate
+          showAdapterTypeField={false}
+          showAdapterTestEnvironmentButton
+        />
+      );
+    }
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <RefreshHarness />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await runTest(container);
+    await startLogin(container);
+    await flushUntil(() => onSave.mock.calls.length > 0);
+
+    // Rename the agent while the bind save is still in flight.
+    const nameInput = container.querySelector<HTMLInputElement>('input[placeholder="Agent name"]');
+    expect(nameInput).toBeTruthy();
+    setInputValue(nameInput!, "Renamed during bind");
+    await flushReact();
+
+    // An UNRELATED refresh lands while the save is still pending — a poll or
+    // another actor's save, so this agent does NOT carry the binding yet. It
+    // must not consume the persisted snapshot (the bind save's own refresh
+    // still needs it), and it must not subtract the snapshot from the overlay
+    // either: with the binding entry gone from both the overlay and the
+    // refreshed agent, an ordinary Save racing the binding refresh would
+    // replace the config without CODEX_HOME and undo the just-persisted bind.
+    await act(async () => {
+      refreshAgent(makeAgent({ defaultEnvironmentId: "sandbox-1" }));
+    });
+    await flushReact();
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Agent name"]')!.value,
+    ).toBe("Renamed during bind");
+
+    // An ordinary Save in that window still carries the binding.
+    const persistedPatch = onSave.mock.calls[0]![0] as Record<string, unknown>;
+    const saveButton = findButton(container, "Save");
+    expect(saveButton).toBeTruthy();
+    await act(async () => {
+      saveButton!.click();
+    });
+    await flushReact();
+    expect(onSave.mock.calls.length).toBeGreaterThan(1);
+    const racingPatch = onSave.mock.calls.at(-1)![0] as Record<string, unknown>;
+    const racingEnv = (racingPatch.adapterConfig as Record<string, unknown>).env as Record<
+      string,
+      unknown
+    >;
+    expect(racingEnv.CODEX_HOME).toEqual({
+      type: "secret_ref",
+      secretId: "secret-keep-edits",
+      version: "latest",
+    });
+
+    // Both saves land, and the page refreshes the agent with the persisted
+    // binding — the same adapter config the bind save sent.
+    await act(async () => {
+      for (const release of releaseSaves) release();
+    });
+    await flushReact();
+    await act(async () => {
+      refreshAgent(
+        makeAgent({
+          defaultEnvironmentId: "sandbox-1",
+          adapterConfig: persistedPatch.adapterConfig as Record<string, unknown>,
+        }),
+      );
+    });
+    await flushReact();
+
+    // The rename survives the refresh instead of reverting to the refreshed
+    // agent's name.
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Agent name"]')!.value,
+    ).toBe("Renamed during bind");
+  });
+
   it("resumes an active login session on mount, adopting its session id and prompt", async () => {
     // A page reload loses every piece of local state, so the panel must read
     // the caller's active session and adopt it instead of starting a new one.
@@ -3390,5 +3798,64 @@ describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
     const adapterFields = result.container.querySelector('[data-testid="adapter-config-fields"]');
     expect(adapterFields?.getAttribute("data-managed-sandbox-only")).toBe("true");
     expect(adapterFields?.getAttribute("data-hide-instructions-file")).toBe("true");
+  });
+});
+
+describe("subtractPersistedOverlay", () => {
+  const overlayWith = (adapterConfig: Record<string, unknown>) => ({
+    identity: {},
+    adapterConfig,
+    heartbeat: {},
+    debug: {},
+    runtime: {},
+  });
+
+  it("drops an entry whose value is structurally equal even with a new reference", () => {
+    // An edit-then-restore rebuilds the env object, so a reference compare
+    // would keep it falsely dirty after the refresh subtracts the snapshot —
+    // a false "Unsaved changes" state and a redundant full-config save.
+    const persisted = overlayWith({
+      env: { CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" } },
+    });
+    const current = overlayWith({
+      env: { CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" } },
+    });
+    expect(subtractPersistedOverlay(current, persisted).adapterConfig).toEqual({});
+  });
+
+  it("keeps an entry the user changed after the snapshot", () => {
+    const persisted = overlayWith({
+      env: { CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" } },
+    });
+    const current = overlayWith({
+      env: {
+        CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" },
+        EXTRA: { type: "plain", value: "added-during-save" },
+      },
+    });
+    expect(subtractPersistedOverlay(current, persisted).adapterConfig).toEqual({
+      env: {
+        CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" },
+        EXTRA: { type: "plain", value: "added-during-save" },
+      },
+    });
+  });
+
+  it("keeps an entry the snapshot never carried", () => {
+    const persisted = overlayWith({});
+    const current = overlayWith({ model: "gpt-5.5" });
+    expect(subtractPersistedOverlay(current, persisted).adapterConfig).toEqual({
+      model: "gpt-5.5",
+    });
+  });
+
+  it("compares arrays structurally", () => {
+    const persisted = overlayWith({ args: ["--flag", "value"] });
+    const equal = overlayWith({ args: ["--flag", "value"] });
+    const changed = overlayWith({ args: ["--flag", "other"] });
+    expect(subtractPersistedOverlay(equal, persisted).adapterConfig).toEqual({});
+    expect(subtractPersistedOverlay(changed, persisted).adapterConfig).toEqual({
+      args: ["--flag", "other"],
+    });
   });
 });

@@ -500,15 +500,22 @@ describe("Discord native command Gateway boundary", () => {
     );
   });
 
-  it("keeps a deliberate denial private and suppresses all mentions", async () => {
+  it("keeps a deliberate denial private with recovery guidance that also applies to linked users", async () => {
     const f = await setup(async () => ({ kind: "denied" }));
     await f.adapter.handleGatewayInteraction(f.command());
+    expect(f.post).toHaveBeenCalledOnce();
+    expect(f.post.mock.calls[0]?.[1]).toMatchObject({
+      body: { type: 5, data: { flags: 64 } },
+    });
+    expect(f.patch).toHaveBeenCalledOnce();
     expect(f.patch.mock.calls[0]?.[1]).toMatchObject({
       body: {
-        content: expect.stringContaining("not available here"),
+        content:
+          "This command is not available here. Open the Paperclip task or ask an operator to check your chat access.",
         allowed_mentions: { parse: [] },
       },
     });
+    expect(f.fetch).not.toHaveBeenCalled();
   });
 
   it("does not replay the callback or any response after an ambiguous initial POST", async () => {

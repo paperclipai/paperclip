@@ -21,6 +21,7 @@ import { describe, expect, it } from "vitest";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 const dockerfile = readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
 const workflow = readFileSync(path.join(repoRoot, ".github", "workflows", "docker.yml"), "utf8");
+const cloudWorkflow = readFileSync(path.join(repoRoot, ".github", "workflows", "docker-cloud.yml"), "utf8");
 
 /**
  * Return the text of the Dockerfile stage that starts at the named target.
@@ -34,6 +35,25 @@ function stageBody(source: string, stageName: string): string {
   const end = froms[startIdx + 1]?.index ?? source.length;
   return source.slice(start, end);
 }
+
+it("keeps per-build runtime metadata out of the weekly CLI-install cache", () => {
+  const production = stageBody(dockerfile, "production");
+  const tools = production.search(/^RUN echo "cli-tools-epoch:/m);
+  const entrypoint = production.search(/^RUN chmod \+x \/usr\/local\/bin\/docker-entrypoint\.sh/m);
+  const runtime = production.search(/^ENV NODE_ENV=production/m);
+  const epoch = production.search(/^ARG CLI_TOOLS_CACHE_EPOCH\b/m);
+  expect(tools).toBeGreaterThanOrEqual(0);
+  expect(entrypoint).toBeGreaterThan(tools);
+  expect(epoch).toBeGreaterThanOrEqual(0);
+  expect(epoch).toBeLessThan(tools);
+  for (const name of ["PAPERCLIP_BUILD_VERSION", "PAPERCLIP_BUILD_COMMIT"]) {
+    const declarations = [...production.matchAll(new RegExp(`^ARG ${name}\\b`, "gm"))];
+    expect(declarations).toHaveLength(1);
+    expect(declarations[0].index).toBeGreaterThan(entrypoint);
+    expect(declarations[0].index).toBeLessThan(runtime);
+    expect(production.slice(runtime)).toContain(`${name}=\${${name}}`);
+  }
+});
 
 describe("docker build-stamp wiring", () => {
   it("declares PAPERCLIP_BUILD_COMMIT in the build stage before the server build", () => {
@@ -49,7 +69,7 @@ describe("docker build-stamp wiring", () => {
   });
 
   it("passes PAPERCLIP_BUILD_COMMIT as a build-arg for both image targets", () => {
-    const argLines = [...workflow.matchAll(/^\s*PAPERCLIP_BUILD_COMMIT=.*$/gm)];
+    const argLines = [...`${workflow}\n${cloudWorkflow}`.matchAll(/^\s*PAPERCLIP_BUILD_COMMIT=.*$/gm)];
     expect(
       argLines.length,
       "the docker workflow must pass PAPERCLIP_BUILD_COMMIT for the production and cloud builds",

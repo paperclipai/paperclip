@@ -26,7 +26,7 @@ const connection = {
   uid: "notion/storybook", transport: "mcp_remote", authKind: "oauth", status: "active",
   enabled: true, healthStatus: "ok", credentialPolicy: "per_user",
   config: { sourceTemplateKey: "notion" }, transportConfig: { sourceTemplateKey: "notion" },
-  connectionKind: "managed", ownership: "customer", credentialSource: "paperclip_vault",
+  connectionKind: "managed", connectionPurpose: "tool", ownership: "customer", credentialSource: "paperclip_vault",
   credentialSecretRefs: [], healthCheckedAt: null, lastError: null,
   createdByAgentId: null, createdByUserId: "user-board", createdAt: new Date("2026-09-07"), updatedAt: new Date("2026-09-07"),
 } satisfies ToolConnection;

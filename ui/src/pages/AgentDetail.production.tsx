@@ -92,6 +92,8 @@ import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import { AgentToolsTab } from "./AgentToolsTab";
+import { AgentChannelsPanel } from "../components/chat/AgentChannelsPanel";
+import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
 import {
   appendCapped,
   LIVE_TRANSCRIPT_RENDER_LIMIT,
@@ -275,7 +277,7 @@ function scrollToContainerBottom(container: ScrollContainer, behavior: ScrollBeh
   container.scrollTo({ top: container.scrollHeight, behavior });
 }
 
-type AgentDetailView = "dashboard" | "instructions" | "configuration" | "secrets" | "skills" | "tools" | "runs" | "audit" | "budget";
+type AgentDetailView = "dashboard" | "instructions" | "configuration" | "secrets" | "skills" | "tools" | "channels" | "runs" | "audit" | "budget";
 
 export const AGENT_DETAIL_TABS: ReadonlyArray<{ value: AgentDetailView; label: string }> = [
   { value: "dashboard", label: "Dashboard" },
@@ -284,6 +286,7 @@ export const AGENT_DETAIL_TABS: ReadonlyArray<{ value: AgentDetailView; label: s
   { value: "configuration", label: "Configuration" },
   { value: "secrets", label: "Secrets" },
   { value: "tools", label: "Tools" },
+  { value: "channels", label: "Channels" },
   { value: "runs", label: "Runs" },
   { value: "audit", label: "Audit" },
   { value: "budget", label: "Budget" },
@@ -329,6 +332,7 @@ export function parseAgentDetailView(value: string | null): AgentDetailView {
   if (value === "secrets") return "secrets";
   if (value === "skills") return "skills";
   if (value === "tools") return "tools";
+  if (value === "channels") return "channels";
   if (value === "budget") return "budget";
   if (value === "audit") return "audit";
   if (value === "runs") return value;
@@ -760,7 +764,9 @@ export function AgentDetail() {
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
-  const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
+  const { enabled: chatConnectorsEnabled, loaded: chatConnectorsLoaded } = useChatConnectorsEnabled();
+  const activeView = urlRunId ? "runs" as AgentDetailView
+    : urlTab === "channels" && !chatConnectorsEnabled ? "dashboard" : parseAgentDetailView(urlTab ?? null);
   const needsDashboardData = activeView === "dashboard";
   const needsRunData = activeView === "runs" || Boolean(urlRunId);
   const shouldLoadHeartbeats = needsDashboardData || needsRunData;
@@ -946,6 +952,7 @@ export function AgentDetail() {
 
   useEffect(() => {
     if (!agent) return;
+    if (!urlRunId && urlTab === "channels" && !chatConnectorsLoaded) return;
     if (urlRunId) {
       if (routeAgentRef !== canonicalAgentRef) {
         navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
@@ -961,8 +968,8 @@ export function AgentDetail() {
             ? "secrets"
             : activeView === "skills"
               ? "skills"
-              : activeView === "tools"
-                ? "tools"
+              : activeView === "tools" || activeView === "channels"
+                ? activeView
                 : activeView === "runs"
                   ? "runs"
                   : activeView === "audit"
@@ -974,7 +981,7 @@ export function AgentDetail() {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}`, { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, navigate]);
+  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, navigate, chatConnectorsLoaded]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -1402,7 +1409,7 @@ export function AgentDetail() {
           onValueChange={handleAgentTabChange}
         >
           <PageTabBar
-            items={AGENT_DETAIL_TABS}
+            items={AGENT_DETAIL_TABS.filter((item) => item.value !== "channels" || chatConnectorsEnabled)}
             value={activeView}
             onValueChange={handleAgentTabChange}
           />
@@ -1534,6 +1541,10 @@ export function AgentDetail() {
 
       {activeView === "tools" && resolvedCompanyId && (
         <AgentToolsTab agent={agent} companyId={resolvedCompanyId} />
+      )}
+
+      {activeView === "channels" && resolvedCompanyId && (
+        <AgentChannelsPanel agentId={agent.id} companyId={resolvedCompanyId} />
       )}
 
       {activeView === "runs" && (
@@ -3302,34 +3313,15 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   });
 
   const canRetryRun = run.status === "failed" || run.status === "timed_out";
-  const retryPayload = useMemo(() => {
-    const payload: Record<string, unknown> = {};
-    const context = asRecord(run.contextSnapshot);
-    if (!context) return payload;
-    const issueId = asNonEmptyString(context.issueId);
-    const taskId = asNonEmptyString(context.taskId);
-    const taskKey = asNonEmptyString(context.taskKey);
-    if (issueId) payload.issueId = issueId;
-    if (taskId) payload.taskId = taskId;
-    if (taskKey) payload.taskKey = taskKey;
-    return payload;
-  }, [run.contextSnapshot]);
   const retryRun = useMutation({
     mutationFn: async () => {
-      const result = await agentsApi.wakeup(run.agentId, {
-        source: "on_demand",
-        triggerDetail: "manual",
-        reason: "retry_failed_run",
-        payload: retryPayload,
-      }, run.companyId);
-      if (!("id" in result)) {
-        throw new Error(result.message ?? "Retry was skipped.");
-      }
-      return result;
+      return agentsApi.retryFailedRun(run.agentId, run.id, run.companyId);
     },
     onSuccess: (newRun) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
-      navigate(`/agents/${agentRouteId}/runs/${newRun.id}`);
+      if (newRun.runId)
+        navigate(`/agents/${agentRouteId}/runs/${newRun.runId}`);
+      else if (newRun.issueId) navigate(`/issues/${newRun.issueId}`);
     },
   });
 

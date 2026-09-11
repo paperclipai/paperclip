@@ -23,6 +23,7 @@ import {
   validatePrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { publishChatPublicationCommitSignal } from "../chat-publication-reconciliation.js";
 import { nativeSha256 } from "./canonical.js";
 
 export interface PaperclipControlPlaneBinding {
@@ -208,6 +209,14 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       },
     });
     if (persisted.disposition === "committed") {
+      publishChatPublicationCommitSignal({
+        companyId: this.#binding.companyId,
+        issueId: this.#binding.issueId,
+        runId: this.#binding.runId,
+        agentId: this.#binding.agentId,
+        seq: persisted.row.seq,
+        eventType: event.eventType,
+      });
       await this.#onCommittedEvent?.(event);
     } else {
       // A recovered runner may replay the event whose durable side effects

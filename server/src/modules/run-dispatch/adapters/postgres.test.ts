@@ -466,6 +466,68 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   });
 
   describe("cancelStaleQueuedRun", () => {
+    it.each([
+      { label: "chat source", source: "chat:slack", expected: "chat:slack" },
+      {
+        label: "native status source",
+        source: "native_status_decision",
+        expected: "native_status_decision",
+      },
+      { label: "absent source", source: undefined, expected: null },
+      { label: "null source", source: null, expected: null },
+      { label: "blank source", source: "   ", expected: null },
+      { label: "numeric source", source: 42, expected: null },
+      { label: "object source", source: { type: "chat:slack" }, expected: null },
+      { label: "array source", source: ["chat:slack"], expected: null },
+    ])("projects only the committed $label into a cancellation effect", async ({ source, expected }) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "done", assigneeAgentId: agentId });
+      const runId = await seedRun({
+        companyId,
+        agentId,
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_assigned",
+          ...(source === undefined ? {} : { source }),
+          paperclipWake: { privateTestMarker: "not-for-the-status-effect" },
+        },
+      });
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId,
+        companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+
+      expect(outcome.outcome).toBe("cancelled");
+      if (outcome.outcome !== "cancelled") throw new Error("expected stale run cancellation");
+      expect(outcome.postCommitEffects).toHaveLength(1);
+      const effect = outcome.postCommitEffects[0];
+      expect(effect).toMatchObject({
+        kind: "run_status_published",
+        companyId,
+        runId,
+        agentId,
+        issueId,
+        status: "cancelled",
+        previousStatus: "queued",
+        errorCode: "issue_terminal_status",
+        contextSource: expected,
+      });
+      expect(effect).not.toHaveProperty("contextSnapshot");
+      expect(JSON.stringify(effect)).not.toContain("not-for-the-status-effect");
+      const persisted = await db
+        .select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0]);
+      expect(persisted?.status).toBe("cancelled");
+      expect(persisted?.contextSnapshot).toMatchObject({
+        paperclipWake: { privateTestMarker: "not-for-the-status-effect" },
+      });
+    });
+
     it("maps a reassigned issue into a stale queued-run decision", async () => {
       const { companyId, agentId } = await seedCompanyAndAgent();
       const replacementAgentId = randomUUID();

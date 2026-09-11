@@ -68,6 +68,8 @@ const sourceUrl = new URL(
 const runner = (await import(sourceUrl.href)) as RunnerModule;
 
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
+export const inspectWarmRunTransition = runner.inspectWarmRunTransition;
+export const readRunnerdArtifactBinding = runner.readRunnerdArtifactBinding;
 export const NativeSessionCleanupQuarantinedError =
   runner.NativeSessionCleanupQuarantinedError;
 export const NativeSessionProtocolIntegrityError =
@@ -97,6 +99,12 @@ export const defaultCapabilityRunnerdBinary =
 export const executeNativeSession = runner.executeNativeSession;
 export const applyNativeSessionGoalControl =
   runner.applyNativeSessionGoalControl;
+export const completeRetainedNativeSessionCleanup = runner.completeRetainedNativeSessionCleanup;
+export const settleRetainedRunnerdSession = runner.settleRetainedRunnerdSession;
+export const retainedRunnerdMaintenanceIsIdle =
+  runner.retainedRunnerdMaintenanceIsIdle;
+export const drainRetainedRunnerdMaintenanceOperations =
+  runner.drainRetainedRunnerdMaintenanceOperations;
 export const nativeRuntimePromptDigest = runner.nativeRuntimePromptDigest;
 export const normalizePrpResultSignals = runner.normalizePrpResultSignals;
 export const parseCodexTurnDiff = runner.parseCodexTurnDiff;

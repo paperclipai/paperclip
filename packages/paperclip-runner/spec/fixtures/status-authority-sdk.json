@@ -94,11 +94,20 @@
       "replay": { "attempts": 3, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
     },
     {
-      "id": "false-task-wide-blocker",
+      "id": "current-track-blocker-without-alternative",
       "mode": "native",
-      "covers": { "decisionRows": ["SD-07"], "terminalRows": [], "attentionRows": ["ATT-05"], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
-      "tags": ["false_blocker", "excessive_human_request", "continuation"],
-      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "blocked", "nativeFinalization": "present", "completionState": "alternate_track_runnable", "trigger": "runner_finalizer" },
+      "covers": { "decisionRows": ["SD-07"], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["blocked_request", "no_inferred_alternative", "atomic_liveness"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "blocked", "nativeFinalization": "present", "completionState": "current_track_without_alternative", "trigger": "runner_finalizer" },
+      "expected": { "runStatus": "succeeded", "statusAction": "blocked", "reasonCode": "current_track_blocker_waiting", "requiredEffects": ["bind_blocker"], "forbiddenEffects": ["enqueue_continuation", "notify_owner", "create_interaction"], "livePathKind": "blocker", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
+    },
+    {
+      "id": "authorized-alternate-track-attention",
+      "mode": "native",
+      "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": ["ATT-05"], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
+      "tags": ["explicit_attention", "continuation"],
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "blocked", "nativeFinalization": "present", "completionState": "alternate_track_runnable", "trigger": "attention_candidate" },
       "expected": { "runStatus": "succeeded", "statusAction": "in_progress", "reasonCode": "turn_waiting_other_track_live", "requiredEffects": ["enqueue_continuation"], "forbiddenEffects": ["bind_blocker", "create_interaction"], "livePathKind": "continuation", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
       "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
     },

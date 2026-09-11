@@ -102,7 +102,6 @@
       "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch",
       "acpx@0.12.0": "patches/acpx@0.12.0.patch",
       "acpx@0.13.1": "patches/acpx@0.13.1.patch",
-      "@agentclientprotocol/claude-agent-acp@0.70.0": "patches/@agentclientprotocol__claude-agent-acp@0.70.0.patch",
       "@agentclientprotocol/claude-agent-acp@0.73.0": "patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
       "@agentclientprotocol/codex-acp@1.6.2": "patches/@agentclientprotocol__codex-acp@1.6.2.patch",
       "@chat-adapter/telegram@4.39.0": "patches/@chat-adapter__telegram@4.39.0.patch",
@@ -114,7 +113,7 @@
     },
     "overrides": {
       "@agentclientprotocol/codex-acp@1.6.2>@openai/codex": "0.153.4",
-      "@agentclientprotocol/claude-agent-acp@0.70.0>@anthropic-ai/claude-agent-sdk": "0.3.263",
+      "@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk": "0.3.263",
       "rollup": ">=4.59.0",
       "react": "^19.2.8",
       "react-dom": "^19.2.8"
