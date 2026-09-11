@@ -1,3 +1,4 @@
+import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -536,7 +537,9 @@ export async function reconcileNativeFinalizations(
     }) => Promise<void>;
   } = {},
 ) {
-  await dismissObsoleteNativePolicyReviews(db, runIds);
+  await dismissObsoleteNativePolicyReviews(db, runIds).catch((err) => {
+    logger.warn({ err }, "Obsolete native policy review lookup failed; continuing native reconciliation");
+  });
   const rows = await db
     .select({
       runId: heartbeatRuns.id,

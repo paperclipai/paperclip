@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
   agents,
@@ -2030,6 +2030,10 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     });
     const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, seeded.issueId));
     const [decision] = await db.select().from(statusDecisions).where(eq(statusDecisions.id, committed.decision.id));
+    await db.insert(workspaceOperations).values({
+      companyId, heartbeatRunId: seeded.runId, issueId: seeded.issueId,
+      phase: "workspace_finalize", status: "succeeded", exitCode: 0, cwd: process.cwd(), finishedAt: new Date(),
+    });
     return { ...seeded, decision: decision!, interaction: interaction! };
   }
 
@@ -2101,6 +2105,42 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     await dismissObsoleteNativePolicyReviews(db, [seeded.runId]);
     const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
     expect(issue!.status).toBe("in_review");
+  });
+
+  it("isolates a failed cleanup candidate and retries it on the next pass", async () => {
+    const first = await seedPolicyReview();
+    const second = await seedPolicyReview();
+    const runIds = [first.runId, second.runId];
+    const transaction = vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("injected cleanup failure"));
+    try {
+      await expect(dismissObsoleteNativePolicyReviews(db, runIds)).resolves.toBeUndefined();
+    } finally {
+      transaction.mockRestore();
+    }
+    const statuses = await Promise.all([first, second].map(async (seeded) => {
+      const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, seeded.interaction.id));
+      return interaction!.status;
+    }));
+    expect(statuses.sort()).toEqual(["cancelled", "pending"]);
+    await dismissObsoleteNativePolicyReviews(db, runIds);
+    for (const seeded of [first, second]) {
+      const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
+      expect(issue!.status).toBe("in_progress");
+    }
+  });
+
+  it("continues native finalization when the obsolete-card lookup fails", async () => {
+    const seeded = await seedPolicyReview({ genuine: true });
+    const select = vi.spyOn(db, "select").mockImplementationOnce(() => {
+      throw new Error("injected cleanup lookup failure");
+    });
+    try {
+      const reconciled = await reconcileNativeFinalizations(db, [seeded.runId]);
+      expect(reconciled).toHaveLength(1);
+      expect(reconciled[0]!.phase).toBe("committed");
+    } finally {
+      select.mockRestore();
+    }
   });
 
   it("preserves a later authoritative status during reconciliation", () => {
