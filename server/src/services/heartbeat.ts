@@ -17726,7 +17726,10 @@ export function heartbeatService(
   // cap and then stops the retries for that lease.
   async function sweepPendingCleanupLeases(opts?: {
     backoffMs?: number;
-    /** One user-requested cleanup attempt for this failed run only. */
+    /** One cleanup attempt per explicit user Retry, for this failed run only.
+     * A later user Retry may try again after a provider failure; automatic
+     * sweeps retain their exhausted budget and never gain extra attempts.
+     */
     explicitRetry?: { companyId: string; runId: string; actorId: string };
   }): Promise<{
     swept: number;

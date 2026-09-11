@@ -13,7 +13,7 @@ import { buildExecutionContinuation } from "./execution-continuation.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity } from "./activity-log.js";
 
-import { isConversationAdapter } from "./conversation-continuation.js";
+import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 const terminal = ["failed", "interrupted", "timed_out", "cancelled"];
@@ -89,12 +89,19 @@ export async function admitExplicitNativeContinuation(input: {
     const unusedAdmission = run.status === "cancelled" && !run.startedAt &&
       run.errorCode === "execution_reconciliation_required" &&
       !run.processPid && !run.processGroupId && !run.nativeSessionId;
-    const legacyConversation = run.runtimeMode === "legacy" &&
+    const legacyUserTurn = run.runtimeMode === "legacy" &&
       action.cause === "legacy_execution_requires_reconciliation" &&
-      agent && isConversationAdapter(agent.adapterType);
-    // An explicit user turn can follow an unknown historical adapter once its
-    // authority is proven stopped. This does not relabel or replay that run.
-    if (run.runtimeMode !== "native" && !unusedAdmission && !legacyConversation) return null;
+      isConversationAdapter(agent.adapterType);
+    if (legacyUserTurn) {
+      const historicalAdapter = await historicalAdapterType(db, run);
+      // A settings change never converts a known process/webhook execution into
+      // a conversation. Those adapters retain their reconciliation contract.
+      if (historicalAdapter && !isConversationAdapter(historicalAdapter)) return null;
+    }
+    // For pre-upgrade rows without adapter evidence, only a new explicit user
+    // turn is allowed, after the termination proofs below. This does not infer
+    // an old adapter type, certify old outcomes, or authorize automatic replay.
+    if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn) return null;
     const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, run.id),
     )).for("update");

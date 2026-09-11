@@ -882,7 +882,11 @@ comment or exact failed-run Retry can authorize a fresh native or legacy
 conversation turn after the predecessor's
 execution is confirmed stopped. This is a new request, not another automatic
 attempt in the failed incident. The old attempt count and unknown action outcomes
-remain unchanged.
+remain unchanged. Known non-conversation adapter evidence still requires its
+original reconciliation flow even if the agent's current settings change.
+Pre-upgrade runs with no adapter evidence may receive a new explicit user turn
+only after termination is proven; their old adapter and action outcomes remain
+unknown, and they do not gain automatic replay eligibility.
 
 Admission validates the persisted comment's author, task, and time against every
 held predecessor. Retry validates the selected failed run's company, task, and
@@ -910,8 +914,10 @@ No historical task is automatically awakened by this change.
 
 Startup waits for provider plugin initialization before remote recovery and
 lease cleanup. The task's blocked notice offers Retry, and a refused retry
-shows the actual recovery hold. A user Retry can make one scoped cleanup attempt
-for its failed run even after automatic cleanup is exhausted; it does not reset
+shows the actual recovery hold. Each explicit user Retry can make one scoped
+cleanup attempt for its failed run even after automatic cleanup is exhausted.
+If that attempt fails, a later user Retry may try again after the provider
+recovers. The failed cleanup keeps the execution hold in place. Retry does not reset
 the automatic limit or clean up another task's leases. Provider shutdown must
 still be confirmed before a new conversation is admitted.
 
