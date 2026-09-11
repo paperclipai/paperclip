@@ -330,7 +330,7 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         max_frame_bytes: usize_value(args, "--max-frame-bytes", 1024 * 1024)?,
         reconnect_delay: duration("--reconnect-delay-ms", 250)?,
         reconnect_grace: optional_u64(args, "--reconnect-grace-ms")?.map(Duration::from_millis),
-        max_runtime: duration("--max-runtime-ms", 60 * 60 * 1000)?,
+        max_runtime: duration("--max-runtime-ms", 0)?,
     };
     let executor = NativeProviderCommandExecutor::with_runner_config(state_dir, &config);
     run_durable_runner(config, ticket, executor)

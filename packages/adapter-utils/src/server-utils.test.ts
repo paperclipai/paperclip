@@ -6,6 +6,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import {
+  readPaperclipRuntimeSkillEntries,
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
   buildPersistentSkillSnapshot,
@@ -3751,5 +3752,21 @@ describe("buildPaperclipEnv", () => {
         expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3200");
       },
     );
+  });
+});
+
+
+describe("runtime skill assignment boundaries", () => {
+  it("preserves an explicitly empty assignment instead of discovering bundled connector skills", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-empty-"));
+    try {
+      await fs.mkdir(path.join(root, "agentmail"));
+      await fs.writeFile(path.join(root, "agentmail", "SKILL.md"), "---\nname: agentmail\ndescription: Email connector\n---\n");
+      const discovered = await readPaperclipRuntimeSkillEntries({}, root, [root]);
+      expect(discovered.some((entry) => entry.runtimeName === "agentmail")).toBe(true);
+      expect(await readPaperclipRuntimeSkillEntries({ paperclipRuntimeSkills: [] }, root, [root])).toEqual([]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

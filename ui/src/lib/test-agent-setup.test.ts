@@ -4,6 +4,7 @@ const testEnvironment = vi.hoisted(() => vi.fn());
 vi.mock("../api/agents", () => ({ agentsApi: { testEnvironment } }));
 const input = {
   companyId: "company-1",
+  agentId: "agent-1",
   adapterType: "paperclip_runner",
   providerAdapter: "claude_local",
   environmentId: "sandbox-1",
@@ -48,6 +49,7 @@ it("does not report a connection when runtime readiness passes but provider auth
     "company-1",
     "claude_local",
     {
+      agentId: "agent-1",
       environmentId: "sandbox-1",
       adapterConfig: { ...input.adapterConfig, engine: "cli" },
     },

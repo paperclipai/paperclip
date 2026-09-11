@@ -1,3 +1,5 @@
+import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
+import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
 import { z } from "zod";
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
@@ -76,24 +78,31 @@ export async function admitExplicitNativeContinuation(input: {
       run.errorCode === "execution_reconciliation_required" &&
       !run.processPid && !run.processGroupId && !run.nativeSessionId;
     if (run.runtimeMode !== "native" && !unusedAdmission) return null;
-    if (!unusedAdmission) {
-      // A missing process identity is not evidence that a provider exited.
-      if (!run.processPid && !run.processGroupId) return null;
-      if (run.processPid && !processStopped(run.processPid)) return null;
-      if (run.processGroupId && !processStopped(-run.processGroupId)) return null;
-    }
     const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, run.id),
     )).for("update");
     if (coordinator && (coordinator.phase !== "terminal_failure" || coordinator.leaseOwner ||
         coordinator.resultId || coordinator.failureDetail?.successorRunId)) return null;
-    const leases = await db.select({ provider: environmentLeases.provider, releasedAt: environmentLeases.releasedAt })
+    const leases = await db.select()
       .from(environmentLeases).where(and(
         eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, run.id),
       ));
-    // A PID on another host cannot be checked with this server's process table.
-    // Remote execution retains its hold until a target-aware stop proof exists.
-    if (leases.some(lease => !lease.releasedAt || lease.provider !== "local")) return null;
+    const remote = leases.some(lease => lease.provider !== "local");
+    if (remote) {
+      // Never interpret remote PIDs using the control-plane host's process table.
+      if (!leases.every(hasRemoteTerminationReceipt)) return null;
+      if (!input.dryRun && !leases.every(lease => completeTerminatedRemoteNativeSessionCleanup({
+        companyId, runId: run.id, remoteCleanupScope: remoteLeaseCleanupScope(lease)!,
+      }))) return null;
+    } else {
+      if (leases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed")) return null;
+      if (!unusedAdmission) {
+        // A missing process identity is not evidence that a provider exited.
+        if (!run.processPid && !run.processGroupId) return null;
+        if (run.processPid && !processStopped(run.processPid)) return null;
+        if (run.processGroupId && !processStopped(-run.processGroupId)) return null;
+      }
+    }
     sources.push(run);
   }
   const nativeSources = sources.filter(run => run.runtimeMode === "native");

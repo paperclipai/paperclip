@@ -4612,7 +4612,9 @@ describe("ensureRuntimeServicesForRun", () => {
         command: serviceCommand,
         cwd: ".",
         port: { type: "auto" as const },
-        readiness: { type: "http" as const, urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 3, intervalMs: 100 },
+        // This checks replacement, not startup latency. Allow the same startup
+        // budget as other real-process fixtures on busy CI hosts.
+        readiness: { type: "http" as const, urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 10, intervalMs: 100 },
         expose: { type: "url" as const, urlTemplate: "http://127.0.0.1:{{port}}" },
         lifecycle: "shared" as const,
         stopPolicy: { type: "manual" as const },
@@ -4638,7 +4640,7 @@ describe("ensureRuntimeServicesForRun", () => {
       });
       await fs.rm(workspaceRoot, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it("reuses a shared Paperclip dev runtime after one transient unhealthy response", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-transient-health-"));
