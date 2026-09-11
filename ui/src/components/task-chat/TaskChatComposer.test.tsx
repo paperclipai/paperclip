@@ -2198,6 +2198,74 @@ describe("TaskChatComposer", () => {
       });
     });
 
+    describe("single-choice confirmation animation", () => {
+      const questionSet = {
+        schema: "paperclip.question_set.v1" as const,
+        questions: ["First", "Second", "Third"].map((prompt) => ({
+          id: prompt, prompt, required: true, answerMode: "single_select" as const,
+          options: [{ id: "yes", label: "Yes" }], customAnswer: { enabled: true as const },
+        })),
+      };
+      const form = (disabled = false) => (
+        <QuestionForm id="animated" questionSet={questionSet} disabled={disabled} onSubmit={vi.fn()} />
+      );
+      const click = (selector: string) => act(() => {
+        flushSync(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      });
+      beforeEach(() => {
+        vi.useFakeTimers();
+        document.documentElement.style.setProperty("--motion-question-confirm", "160ms");
+      });
+      afterEach(() => {
+        render(<div />);
+        vi.useRealTimers();
+        document.documentElement.style.removeProperty("--motion-question-confirm");
+      });
+
+      it("shows the selected radio before advancing exactly one page", () => {
+        render(form());
+        click('[role="radio"]');
+        expect(container.querySelector('[role="radio"]')?.getAttribute("aria-checked")).toBe("true");
+        expect(container.querySelector(".tc-question-choice-confirm")).not.toBeNull();
+        expect(container.textContent).toContain("1 of 3");
+        act(() => vi.advanceTimersByTime(159));
+        expect(container.textContent).toContain("1 of 3");
+        act(() => vi.advanceTimersByTime(1));
+        expect(container.textContent).toContain("2 of 3");
+        expect(document.activeElement?.textContent).toBe("Second");
+        act(() => vi.advanceTimersByTime(160));
+        expect(container.textContent).toContain("2 of 3");
+      });
+
+      it.each(["navigation", "custom answer", "disabled", "unmount"])("cancels the pending advance on %s", (reason) => {
+        render(form());
+        click('[role="radio"]');
+        if (reason === "navigation") {
+          click('[aria-label="Next question"]');
+          click('[aria-label="Next question"]');
+        } else if (reason === "custom answer") {
+          click('#animated-First-custom');
+        } else if (reason === "disabled") {
+          render(form(true));
+          render(form(false));
+        } else {
+          render(<div>Closed</div>);
+        }
+        act(() => vi.advanceTimersByTime(160));
+        expect(container.textContent).toContain(
+          reason === "navigation" ? "3 of 3" : reason === "unmount" ? "Closed" : "1 of 3",
+        );
+      });
+
+      it("advances immediately when the motion token is zero", () => {
+        document.documentElement.style.setProperty("--motion-question-confirm", "0ms");
+        render(form());
+        click('[role="radio"]');
+        expect(container.textContent).toContain("2 of 3");
+        expect(container.querySelector(".tc-question-choice-confirm")).toBeNull();
+      });
+    });
+
     it("Skip on the last question submits the other answers", async () => {
       const onSubmit = vi.fn();
       render(

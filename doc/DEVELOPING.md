@@ -83,7 +83,8 @@ pnpm build-storybook
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
 
 Use **Chat & Comments → Issue Thread Interactions → Composer Questions Auto Advance**
-to try the paged composer form. A single selection advances to the next question.
+to try the paged composer form. A single selection shows a brief checked-state animation before advancing to the
+next question. Reduced-motion mode advances without animation.
 Multi-select and custom answers wait for Next, and the final page waits for
 Submit answers. The adjacent **Verified** story exercises the full flow.
 

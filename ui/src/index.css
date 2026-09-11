@@ -260,6 +260,8 @@
   --motion-approval-pulse: 1.6s;
   --motion-plan-entry-stagger: 40ms;
   --motion-plan-check: var(--motion-duration-fast);
+  --motion-question-confirm: var(--motion-duration-fast);
+  --motion-question-page-enter: var(--motion-duration-instant);
   --motion-count-tween: var(--motion-duration-slow);
   --motion-streaming-cursor-blink: 1.1s;
   --motion-turn-fold: 380ms;            /* finished-turn activity folding into its summary line */
@@ -857,6 +859,14 @@
   0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklab, var(--primary) 0%, transparent); }
   50% { box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 18%, transparent); }
 }
+@keyframes tc-question-choice-confirm {
+  from { transform: scale(0.65); }
+  50%, to { transform: scale(1); }
+}
+.tc-question-choice-confirm { animation: tc-question-choice-confirm var(--motion-question-confirm) var(--motion-ease-out-expo) both; }
+.tc-question-option { transition-duration: var(--motion-duration-instant); }
+.tc-question-page { animation: tc-fade-in var(--motion-question-page-enter) var(--motion-ease-standard) both; }
+
 @keyframes tc-cursor-blink {
   0%, 45% { opacity: 1; }
   55%, 100% { opacity: 0; }

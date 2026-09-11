@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import type { PaperclipQuestionResponse, PaperclipQuestionSet } from "@paperclipai/adapter-utils";
 import { QuestionForm, QuestionResponseSummary } from "@/components/task-chat/QuestionForm";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
@@ -585,7 +585,7 @@ export const ComposerQuestionsAutoAdvance: Story = {
     <StoryFrame>
       <ScenarioCard
         title="Composer questions"
-        description="Choose a single option to advance. Other stays open for typing. Multi-select waits for Next, and the last question waits for Submit answers."
+        description="Choose a single option to see a quick selection confirmation, then advance. Other stays open for typing. Multi-select waits for Next, and the last question waits for Submit answers."
       >
         <InteractiveComposerQuestions />
       </ScenarioCard>
@@ -601,7 +601,7 @@ export const ComposerQuestionsAutoAdvanceVerified: Story = {
     await expect(canvas.getByText("1 of 3")).toBeVisible();
     await expect(canvas.getByTestId("question-other-answer-composer")).toBeVisible();
     await userEvent.click(canvas.getByRole("radio", { name: /SQLite file/ }));
-    await expect(canvas.getByText("2 of 3")).toBeVisible();
+    await waitFor(() => expect(canvas.getByText("2 of 3")).toBeVisible());
     await userEvent.click(canvas.getByRole("checkbox", { name: "Sign in" }));
     await userEvent.click(canvas.getByRole("checkbox", { name: "Search" }));
     await expect(canvas.getByText("2 of 3")).toBeVisible();
