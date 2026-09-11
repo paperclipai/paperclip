@@ -35,6 +35,15 @@ import {
 } from "./services/company-import-transfers.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
+import {
+  hostOpsRoutes,
+  parseNetquirkLockTtlSec,
+  resolvedLockTtl,
+  NETQUIRK_LOCK_TTL_SEC_ENV_KEY,
+  NETQUIRK_LOCK_TTL_SEC_MAX,
+  NETQUIRK_LOCK_TTL_SEC_MIN,
+  NETQUIRK_LOCK_TTL_SEC_DEFAULT,
+} from "./routes/host-ops.js";
 import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
 import { cloudControlMiddleware } from "./middleware/cloud-control.js";
 import { cloudRoutes } from "./routes/cloud.js";
@@ -619,6 +628,28 @@ export async function createApp(
   // Mount API routes
   const api = Router();
   api.use(boardMutationGuard());
+  // NET-6820: compute the host-ops lock TTL snapshot once at app
+  // boot. /healthz surfaces this so an operator can see, at a
+  // glance, whether `NETQUIRK_LOCK_TTL_SEC` is set, valid, and within
+  // the 30..3600 range — without having to read server logs.
+  const hostOpsLockTtlRaw = process.env[NETQUIRK_LOCK_TTL_SEC_ENV_KEY];
+  const resolvedHostOpsTtl = resolvedLockTtl();
+  const hostOpsLockTtlStatus: "ok" | "invalid" | "default" =
+    hostOpsLockTtlRaw === undefined
+      ? "default"
+      : (() => {
+          try {
+            // Re-run the validator so /healthz reports `invalid`
+            // when the env value would have been rejected by the
+            // module loader. resolvedLockTtl() swallows this so we
+            // can keep the server up; the healthz surface is the
+            // operator-visible signal.
+            parseNetquirkLockTtlSec(hostOpsLockTtlRaw);
+            return "ok";
+          } catch {
+            return "invalid";
+          }
+        })();
   api.use(
     "/health",
     healthRoutes(db, {
@@ -627,9 +658,24 @@ export async function createApp(
       authReady: opts.authReady,
       companyDeletionEnabled: opts.companyDeletionEnabled,
       databaseBackupHealth: opts.databaseBackupHealth,
+      hostOpsLockTtl: {
+        ttl_seconds: resolvedHostOpsTtl.ttlSeconds,
+        source: resolvedHostOpsTtl.source,
+        env_key: NETQUIRK_LOCK_TTL_SEC_ENV_KEY,
+        env_value: hostOpsLockTtlRaw ?? null,
+        min: NETQUIRK_LOCK_TTL_SEC_MIN,
+        max: NETQUIRK_LOCK_TTL_SEC_MAX,
+        default: NETQUIRK_LOCK_TTL_SEC_DEFAULT,
+        status: hostOpsLockTtlStatus,
+      },
     }),
   );
   api.use(openApiRoutes());
+  // NET-6820: host-ops lock-status probe. The route itself enforces
+  // `requireBoard(req)` so the mount is safe; default-deny at the
+  // handler means non-board actors get 403 regardless of how the
+  // express router is layered.
+  api.use("/host-ops", hostOpsRoutes());
   api.use("/cloud", cloudRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));

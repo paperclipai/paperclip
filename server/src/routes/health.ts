@@ -116,6 +116,17 @@ function getCloudHealthStatus(env: CloudInstanceEnv) {
   };
 }
 
+export interface HostOpsLockTtlHealth {
+  ttl_seconds: number;
+  source: "env" | "default";
+  env_key: string;
+  env_value: string | null;
+  min: number;
+  max: number;
+  default: number;
+  status: "ok" | "invalid" | "default";
+}
+
 export function healthRoutes(
   db?: Db,
   opts: {
@@ -125,6 +136,14 @@ export function healthRoutes(
     companyDeletionEnabled: boolean;
     serverInfo?: ServerInfoSnapshot;
     databaseBackupHealth?: InspectDatabaseBackupHealthOptions;
+    /**
+     * NET-6820: a pre-computed snapshot of the validated
+     * `NETQUIRK_LOCK_TTL_SEC` value plus its source / status. The
+     * `app.ts` mount point builds this once at boot from
+     * `resolvedLockTtl()` so /healthz can surface a broken env
+     * without crashing the server.
+     */
+    hostOpsLockTtl?: HostOpsLockTtlHealth;
     runtimeEnv?: CloudInstanceEnv;
   } = {
     deploymentMode: "local_trusted",
@@ -403,6 +422,12 @@ export function healthRoutes(
         ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
         ...(cloud ? { cloud } : {}),
         ...(hiddenSettings.length ? { hiddenSettings } : {}),
+        // NET-6820: surface the validated host-ops lock TTL even on
+        // the redacted path — it carries no host / agent / intent
+        // metadata, just the TTL configuration. Operators watching
+        // /healthz need to see `host-ops.lock_ttl_sec.status: invalid`
+        // without authenticating first.
+        ...(opts.hostOpsLockTtl ? { "host-ops": { lock_ttl_sec: opts.hostOpsLockTtl } } : {}),
       });
       return;
     }
@@ -429,6 +454,8 @@ export function healthRoutes(
       ...(workspaceReadiness ? { workspace: workspaceReadiness } : {}),
       ...(cloud ? { cloud } : {}),
       ...(hiddenSettings.length ? { hiddenSettings } : {}),
+      // NET-6820: full /healthz response mirrors the redacted shape.
+      ...(opts.hostOpsLockTtl ? { "host-ops": { lock_ttl_sec: opts.hostOpsLockTtl } } : {}),
     });
   });
 
