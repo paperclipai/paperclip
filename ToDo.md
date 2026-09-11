@@ -28,6 +28,15 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
       gehoert also zum bestehenden `max_iterations`-Eintrag unten. Die drei
       Agenten zusammen sind rund ein Drittel aller Flotten-Runs.
       *(2026-09-11, Chat: Routinen-Lastverteilung)*
+      **Gegenprobe 11.09. abends: der Hauptposten ist weg.** Die tote Modell-ID
+      `qwen2.5-coder-14b-instruct-mlx` kommt in **7 Tagen kein einziges Mal**
+      mehr vor (`select count(*) from heartbeat_runs where error like
+      '%qwen2.5-coder%' and started_at > now()-interval '7 days'` → 0). Was in
+      den letzten 24 h bleibt, ist ein **anderer** Fehler: 8 × `adapter_failed`
+      und 2 × `claude_auth_required`, beide mit derselben Meldung
+      `400 blocked_by_pii_proxy:classifier_unavailable`. Der Eintrag gehoert
+      damit inhaltlich zum PII-Proxy-Punkt weiter unten, nicht mehr zum
+      Modell-Rename. *(2026-09-11, Chat: WHITESTAG Agenten-Aufsicht)*
 
 - [ ] **`max_iterations` bleibt als eigenes Muster** — die Infrastrukturfehler
       (`fetch failed`, `Engine protocol`) sind mit dem Circuit Breaker und der
@@ -82,19 +91,77 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
       Nachweis:
       `select r.identifier, z.identifier from issues r join issues z on z.id=r.origin_id::uuid join issue_relations x on x.issue_id=r.id and x.related_issue_id=z.id and x.type='blocks' where r.status='blocked' and z.status='blocked';`
       *(2026-09-02, Chat: Paperclip Issue-Bereinigung)*
+      **Stand 11.09.: Halde zweimal geleert, Bug besteht.** Am 09.09. wurden 57
+      Paare aufgeloest, am 11.09. weitere 27 plus 33 **verwaiste** Recovery-Issues
+      (blocked, blockieren aber nichts — reine Karteileichen) und 8 Faelle mit
+      ausschliesslich toten Blockern. `blocked` fiel von **158 auf 44**, davon
+      sind jetzt **39 regulaere Arbeit** statt Mechanik: Recovery-Issues in
+      `blocked` gingen von 60 auf **1**. Das Nachwachsen ist damit nicht
+      gestoppt, nur der Bestand abgetragen — am 09.09. entstanden binnen eines
+      Tages 65 neue Recovery-Issues. Die **wirksame** Gegenmassnahme war nicht
+      das Abraeumen, sondern das Beseitigen der Fehlerquelle, die das Stranden
+      ausloest (siehe Lessons-Schleife unten).
 
-- [ ] **24 offene Deadlock-Paare abraeumen** — bewusst stehen gelassen, weil
-      ein Abraeumen die Issues erneut gegen die instabile Farm laufen liesse
-      und ueber Nacht neue Zirkel gebildet haette. Erst die Farm stabilisieren,
-      dann aufloesen (Reihenfolge: **erst** am Ziel `blockedByIssueIds: []` +
-      `todo`, **dann** das Recovery-Issue canceln — umgekehrt wird R zum
-      cancelled Blocker und haelt Z endgueltig fest).
-      *(2026-09-02, Chat: Paperclip Issue-Bereinigung)*
 
-- [ ] **65 der 69 freigegebenen Aufgaben stehen wieder auf `blocked`** — sie
-      liefen gegen die gestoerte Farm. 10 sind durchgekommen, 4 waren in Arbeit.
-      Nach der Stabilisierung erneut freigeben. *(2026-09-02, Chat: Paperclip Issue-Bereinigung)*
+- [ ] **★★Lessons-Schleife entschaerft — Wirkung erst ab dem Nachtlauf 02:00
+      messbar** — der naechtliche „Reibungs-Sweep" (`de.whitestag.agent-learning.lessons`)
+      war der **Motor** der Recovery-Halde: Er legt fuer jeden `failed`-Run des
+      Vortags einen Lessons-Kandidaten an; scheiterte das Issue selbst, erzeugte
+      genau dieses Scheitern neue failed-Runs, die am Folgetag wieder im
+      naechsten Issue landeten. 64 solcher Issues seit dem 14.05., 18 davon offen.
+      **Ursache war eine rechnerisch unloesbare Aufgabe:** je Run zwei
+      API-Abrufe, Destillat, Vault-Datei und MEMORY-Update — bei
+      `max_runs_per_sweep: 10` plus Context-Bundle-Sync sind das 40+
+      Werkzeugaufrufe gegen `maxIterations: 12`. Die Config nimmt in ihrem
+      Kommentar noch an, der Loop laufe auf `claude_local`/Sonnet; tatsaechlich
+      haengt er am Online-Rechercheur auf `lmstudio_local`/qwen3.6-35b.
+      **Am 11.09. geaendert:** `max_runs_per_sweep` 10 → **3**
+      (`~/.paperclip/instances/default/agent-learning.config.yaml`) und
+      `maxIterations` des Online-Rechercheurs 12 → **30**. 16 veraltete
+      Lessons-Issues (aelter als eine Woche) abgebrochen, die zwei juengsten
+      (WHI-6983, WHI-7439) bewusst als **Probelauf** auf `todo` gelassen.
+      **Zu pruefen:** Laeuft der Sweep um 02:00 erstmals bis `done` durch? Wenn
+      nein, ist das Iterationsbudget immer noch zu klein — dann Faustregel
+      `max_runs x 5 Schritte < maxIterations` nachziehen.
+      *(2026-09-11, Chat: WHITESTAG Agenten-Aufsicht)*
 
+- [ ] **Agenten kommen aus `error` nicht von selbst zurueck** — in einer einzigen
+      Sitzung mussten **sechs** Agenten per `POST /api/agents/:id/resume` geholt
+      werden (VP Engineering, Lektorat, Online-Rechercheur, Buchhaltung,
+      n8n-Betriebsingenieur, Sekretaerin). Die Buchhaltung stand dabei **ueber
+      zwei Tage** still (letzter Heartbeat 09.09. 15:47, bemerkt am 11.09.), ohne
+      dass irgendetwas Alarm geschlagen haette. Der bekannte Selbstheilungs-Pfad
+      greift hier nicht, und `escalateToHuman` ist nur eine Log-Zeile. Ein
+      Waechter, der `agents.status='error'` periodisch prueft und entweder
+      resumed oder meldet, waere die naheliegende Luecke.
+      Nachweis: `select name, status, last_heartbeat_at from agents where status='error';`
+      *(2026-09-11, Chat: WHITESTAG Agenten-Aufsicht)*
+
+## WHITESTAG.ACADEMY
+
+- [ ] **Pfad-Falle entschaerft — zweiten Kurszyklus gegenpruefen** — die Routine
+      produzierte 20 Kurse, aber **kein Zyklus lief je sauber zu Ende**. Zwei
+      Ursachen, beide am 11.09. behoben: (1) Der CEO erfand beim Delegieren einen
+      Ablagepfad (`Paperclip/Projekte/WHITESTAG.ACADEMY/content/`), weil die Spec
+      den Platzhalter `<ACADEMY>` nirgends aufloeste — der Kurs vom 08.09. lag
+      dort und war fuer den Lektor unauffindbar. (2) Der **Lektoratsauftrag
+      enthielt gar keinen Dateipfad**, also verbrauchte der Lektor sein
+      Iterationsbudget mit Suchen und endete fuenfmal in `max_iterations`.
+      Geaendert: absoluter Pfad in `_KURS-SPEC.md` § 9 verankert, Routine-
+      Beschreibung (Revision 8) um die Pflicht ergaenzt, den vollen Pfad in jeden
+      Auftrag zu schreiben; der verirrte Kurs wurde in den kanonischen Ordner
+      verschoben. **Belegt wirksam fuer einen Durchlauf:** WHI-6997 lief danach
+      durch, Urteil GRUEN, alle 10 Pruefpunkte. Ob der naechste Zyklus (Di/Do
+      06:00) ohne Eingriff durchlaeuft, ist noch offen.
+      *(2026-09-11, Chat: WHITESTAG Agenten-Aufsicht)*
+
+- [ ] **Zwei ACADEMY-Auftraege ohne Ergebnis — Muster pruefen** — WHI-5016 wurde
+      mit **leerer Beschreibung** angelegt; der Autor meldete daraufhin dreimal
+      `No work assigned, exiting heartbeat` und das Issue lag 15 Tage auf `todo`.
+      Abgebrochen, weil Thema und Slug nicht rekonstruierbar waren. Falls das
+      wieder auftritt: Der CEO erzeugt den Auftrag offenbar gelegentlich ohne
+      Rumpf — dann gehoert eine Mindestpruefung in die Routine.
+      *(2026-09-11, Chat: WHITESTAG Agenten-Aufsicht)*
 
 ## Mail-Spiegel und Belege
 
@@ -286,6 +353,24 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
       Freigaben binnen zwei Stunden 24 neue Zirkel.
       *(2026-09-02, Chat: Paperclip Issue-Bereinigung)*
 
+- [ ] **★★Die Drosselung gehoert an die LLM-Slots, nicht an die Run-Zahl** —
+      `maxConcurrentRuns: 1` ist bei allen 27 Agenten gesetzt (verschachtelt
+      unter `heartbeat`, **nicht** auf oberster Ebene von `runtime_config` — wer
+      dort nachsieht, haelt es faelschlich fuer ungesetzt). Es schuetzt gegen
+      Run-**Stuerme**, aber **nicht** gegen Slot-**Erschoepfung**: bei 27 Agenten
+      koennen 27 parallele Runs auf ~12–16 geladene Slots treffen.
+      **Gemessen am 09. vs. 11.09., gleiche Aufgabe:**
+      Wellen zu **8** bei Schwelle 4 → Runs pendelten bei 8–10, `llm_error`
+      (`fetch failed`) sprang von 0 auf **69/Tag**, Erfolgsquote fiel von 78 %
+      auf **39 %**, und sie blieb zwei Tage unten. Drei Agenten fielen dabei in
+      `error`.
+      Wellen zu **4** bei Schwelle 6 → Runs blieben bei 3–6, **1** `llm_error`
+      am ganzen Tag, dieselbe Menge Arbeit sauber abgeraeumt.
+      **Rezept:** Wellen zu 4, erst nachlegen wenn < 6 Runs laufen, und als
+      zweite Bremse die `llm_error` der letzten 10 Minuten mitpruefen (bei ≥ 3
+      weiter warten). Schwelle 3 ist zu streng — der Lauf wartet dann fast nur
+      noch. *(2026-09-11, Chat: WHITESTAG Agenten-Aufsicht)*
+
 - [ ] **Beim Massen-Cancel niemals `comment` mitschicken** — weckt den Assignee
       trotz `status: cancelled` (436 Issues = 339 unnoetige Runs). Begruendung
       bei Bedarf vorher per `POST /issues/{id}/comments` setzen.
@@ -326,6 +411,15 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
       Nachweis-Befehl unbrauchbar macht. Filter dazunehmen:
       `diff -rq ~/.paperclip/scripts tools | grep differ | grep -vE '__pycache__|venv/'`
       *(2026-09-11, Chat: Vorlauf Kontaktrecherche)*
+      **Korrektur 11.09. abends: es sind 21 Quelldateien, nicht 4** — der Filter
+      muss `pytest_cache` mit ausschliessen, sonst bleibt Rauschen drin. Neben
+      `seo-geo/` (4) betroffen: **`voice-echo-bot/` (10)**, `wake-satellite/` (4)
+      und `websuche/` (3). Beim voice-echo-bot ist Drift allerdings **erwartbar**
+      — er hat ein eigenes Repo und sein Deploy schliesst `test_*.py` aus; dort
+      also nicht blind nachziehen, sondern erst die Richtung pruefen.
+      Vollstaendiger Nachweis-Befehl:
+      `diff -rq ~/.paperclip/scripts tools | grep differ | grep -vE '__pycache__|venv/|pytest_cache'`
+      *(2026-09-11, Chat: WHITESTAG Agenten-Aufsicht)*
 
 - [ ] **7 uncommittete Dateien im Worktree `agent-learning-tree`** — liegt unter
       `~/.paperclip/scripts/agent-learning-tree`, Branch
