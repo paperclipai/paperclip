@@ -359,3 +359,28 @@ default branch) are master here. A workflow with authority to execute arbitrary
 code on master can affect verification directly and is already trusted. The
 cache contains dependency build artifacts, not credentials or workspace output.
 See [GitHub cache access restrictions](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#restrictions-for-accessing-a-cache).
+
+## Chat integration test shards
+
+Release verification runs the large chat integration file on three independent
+runners. Four other server shards cover every remaining general server file.
+The ordinary local test command and trusted PR workflow keep their complete
+`general-server` group. No application test assertions or fixtures change.
+
+Each chat job collects active tests with Vitest, groups cases by source line,
+and balances those groups by case count. Parameterized cases and loop-generated
+cases on one line stay together. The job re-collects with the exact line filters
+it will execute and fails if the selected case identities differ. Hooks and test
+execution remain sequential inside each runner with its own temporary home.
+
+Run one shard locally with:
+
+```sh
+pnpm test:run:general -- --group general-chat --shard-index 0 --shard-count 3
+```
+
+Use indexes 0, 1, and 2 to run the complete chat suite. The CLI validates that
+each shard has work and that collection includes usable source locations. A
+Vitest collection or filtering change fails verification instead of dropping
+tests. Splitting adds two release-verification jobs and repeats collection and
+fixture setup; it does not make a single test faster.
