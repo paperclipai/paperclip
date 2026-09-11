@@ -3400,7 +3400,7 @@ describe("ACPX engine Claude skill bundle staging (remote ACP lane)", () => {
     return async (input) => {
       const stagedRuntime = await input.stage(
         input.skillsBundleDir
-          ? [{ key: "skills", localDir: input.skillsBundleDir, followSymlinks: true }]
+          ? [{ key: "skills", localDir: input.skillsBundleDir, followSymlinks: false }]
           : [],
       );
       return { stagedRuntime };
@@ -3460,7 +3460,7 @@ describe("ACPX engine Claude skill bundle staging (remote ACP lane)", () => {
       async (input) => {
         const stagedRuntime = await input.stage(
           input.skillsBundleDir
-            ? [{ key: "skills", localDir: input.skillsBundleDir, followSymlinks: true }]
+            ? [{ key: "skills", localDir: input.skillsBundleDir, followSymlinks: false }]
             : [],
         );
         stagedRuntime.assetDirs.skills = overridePath;
@@ -3496,6 +3496,83 @@ describe("ACPX engine Claude skill bundle staging (remote ACP lane)", () => {
         cwd: localCwd,
         paperclipRuntimeSkills: [],
         paperclipSkillSync: { desiredSkills: [] },
+      },
+      { authToken: "real-run-jwt", executionTarget, prepareRemoteManagedHome: stagingClaudeSeam() },
+    );
+
+    const stageArgs = vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0];
+    expect((stageArgs.assets ?? []).some((asset) => asset.key === "skills")).toBe(false);
+    expect(String(meta[0]?.prompt ?? "")).not.toContain("Skill root:");
+  });
+
+  it("drops a skill that fails to materialize from the prompt, the identity, and the staged bundle", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const skillsRoot = path.join(localCwd, "skills");
+    const review = await createSkill(skillsRoot, "review");
+
+    // A skill whose source is a symlink. `materializePaperclipSkillCopy`
+    // refuses a symlinked skill root, so this skill's copy fails while its
+    // source still exists (it does not hit the separate missing-source
+    // filter).
+    const linkedTarget = path.join(skillsRoot, "broken-target");
+    await fs.mkdir(linkedTarget, { recursive: true });
+    await fs.writeFile(path.join(linkedTarget, "SKILL.md"), "# broken\n", "utf8");
+    const brokenSource = path.join(skillsRoot, "broken");
+    await fs.symlink(linkedTarget, brokenSource, "dir");
+    const broken = {
+      key: "paperclipai/test/broken",
+      runtimeName: "broken",
+      source: brokenSource,
+      required: false,
+    };
+
+    const { meta, result } = await runExecutor(
+      {
+        agent: "claude",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        paperclipRuntimeSkills: [review, broken],
+        paperclipSkillSync: { desiredSkills: [review.key, broken.key] },
+      },
+      { authToken: "real-run-jwt", executionTarget, prepareRemoteManagedHome: stagingClaudeSeam() },
+    );
+
+    const prompt = String(meta[0]?.prompt ?? "");
+    expect(prompt).toContain("Selected skills: review");
+    expect(prompt).not.toContain("broken");
+
+    const skillsIdentity = result.sessionParams?.skills as { selectedSkills?: string[] } | undefined;
+    expect(skillsIdentity?.selectedSkills).toEqual(["review"]);
+
+    const hostBundleDir = await onlyChildDir(path.join(stateDir, "runtime-skills", "claude"));
+    const hostSkillsHome = path.join(hostBundleDir, ".claude", "skills");
+    await expect(pathExists(path.join(hostSkillsHome, "broken"))).resolves.toBe(false);
+  });
+
+  it("stages no skills asset when every selected skill fails to materialize", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    const skillsRoot = path.join(localCwd, "skills");
+    const linkedTarget = path.join(skillsRoot, "broken-target");
+    await fs.mkdir(linkedTarget, { recursive: true });
+    await fs.writeFile(path.join(linkedTarget, "SKILL.md"), "# broken\n", "utf8");
+    const brokenSource = path.join(skillsRoot, "broken");
+    await fs.symlink(linkedTarget, brokenSource, "dir");
+    const broken = {
+      key: "paperclipai/test/broken",
+      runtimeName: "broken",
+      source: brokenSource,
+      required: false,
+    };
+
+    const { meta } = await runExecutor(
+      {
+        agent: "claude",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        paperclipRuntimeSkills: [broken],
+        paperclipSkillSync: { desiredSkills: [broken.key] },
       },
       { authToken: "real-run-jwt", executionTarget, prepareRemoteManagedHome: stagingClaudeSeam() },
     );

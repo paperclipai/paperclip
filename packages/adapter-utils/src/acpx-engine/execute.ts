@@ -1088,8 +1088,9 @@ async function prepareClaudeSkillRuntime(input: {
   /**
    * The host directory that directly holds the materialized skill
    * directories (`<bundleDir>/<skill-name>/SKILL.md`). This field is `null`
-   * when no skill is selected. A remote run stages this directory into the
-   * sandbox and rewrites the prompt onto the in-sandbox copy. See
+   * when no skill is selected, or when every selected skill failed to
+   * materialize. A remote run stages this directory into the sandbox and
+   * rewrites the prompt onto the in-sandbox copy. See
    * `AcpxRemoteManagedHomeContext.skillsBundleDir`.
    */
   bundleDir: string | null;
@@ -1100,10 +1101,17 @@ async function prepareClaudeSkillRuntime(input: {
   const skillsHome = path.join(bundleRoot, ".claude", "skills");
   await fs.mkdir(skillsHome, { recursive: true });
 
+  // A failed materialization must drop the skill from every advertised list
+  // below. Otherwise the prompt and the session identity still name a skill
+  // whose directory is not in `skillsHome`, and the agent's read of its
+  // `SKILL.md` fails with a missing-file error — the same symptom this
+  // bundle exists to fix.
+  const materializedNames: string[] = [];
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
       const result = await materializePaperclipSkillCopy(entry.source, target);
+      materializedNames.push(entry.runtimeName);
       if (result.skippedSymlinks.length > 0) {
         await input.onLog(
           "stdout",
@@ -1118,14 +1126,14 @@ async function prepareClaudeSkillRuntime(input: {
     }
   }
 
-  const selectedNames = selectedSkills.map((entry) => entry.runtimeName).sort();
-  const promptInstructions = selectedSkills.length > 0
+  const selectedNames = materializedNames.sort();
+  const promptInstructions = selectedNames.length > 0
     ? [
         "Paperclip has materialized selected runtime skills for this ACPX Claude session.",
         `Skill root: ${skillsHome}`,
-        selectedNames.length > 0 ? `Selected skills: ${selectedNames.join(", ")}` : "",
+        `Selected skills: ${selectedNames.join(", ")}`,
         "When a task calls for one of these skills, read its SKILL.md from that root and follow it.",
-      ].filter(Boolean).join("\n")
+      ].join("\n")
     : "";
 
   return {
@@ -1134,13 +1142,13 @@ async function prepareClaudeSkillRuntime(input: {
       skillSetKey,
       desiredSkillNames,
       selectedSkills: selectedNames,
-      skillRoot: selectedSkills.length > 0 ? skillsHome : null,
+      skillRoot: selectedNames.length > 0 ? skillsHome : null,
     },
     promptInstructions,
-    commandNotes: selectedSkills.length > 0
-      ? [`Materialized ${selectedSkills.length} Paperclip skill(s) for ACPX Claude at ${skillsHome}.`]
+    commandNotes: selectedNames.length > 0
+      ? [`Materialized ${selectedNames.length} Paperclip skill(s) for ACPX Claude at ${skillsHome}.`]
       : [],
-    bundleDir: selectedSkills.length > 0 ? skillsHome : null,
+    bundleDir: selectedNames.length > 0 ? skillsHome : null,
   };
 }
 

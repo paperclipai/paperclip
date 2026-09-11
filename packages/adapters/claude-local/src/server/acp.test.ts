@@ -550,7 +550,7 @@ describe("claude_local ACP lane", () => {
     expect(settings.permissions.allow).toEqual(expect.arrayContaining(["Bash(curl:*)", "Bash(env)"]));
   });
 
-  it("stages the skill bundle as a followSymlinks asset for a remote ACP run, and points the prompt at the in-sandbox skill root", async () => {
+  it("stages the skill bundle as a no-follow-symlinks asset for a remote ACP run, and points the prompt at the in-sandbox skill root", async () => {
     vi.mocked(prepareAdapterExecutionTargetRuntime).mockClear();
     const root = await makeTempRoot("paperclip-claude-acp-skills-remote-");
     const skill = await createRuntimeSkill(root);
@@ -597,11 +597,14 @@ describe("claude_local ACP lane", () => {
 
     expect(result.exitCode).toBe(0);
 
-    // The real seam sent the bundle to the shared staging call as a
-    // followSymlinks asset, at the same key the CLI lane uses.
+    // The real seam sent the bundle to the shared staging call with
+    // `followSymlinks: false`: the bundle holds a plain copy of each skill's
+    // files, so staging never needs to carry a symbolic link's target
+    // content, and a link planted in the bundle after materialization must
+    // not cross into the sandbox.
     const stageArgs = vi.mocked(prepareAdapterExecutionTargetRuntime).mock.calls[0]![0];
     const skillsAsset = stageArgs.assets?.find((asset) => asset.key === "skills");
-    expect(skillsAsset).toMatchObject({ followSymlinks: true });
+    expect(skillsAsset).toMatchObject({ followSymlinks: false });
 
     // The prompt names the in-sandbox skill root, not the host bundle dir...
     const prompt = String(runtimes[0]?.startInputs[0]?.text ?? "");
