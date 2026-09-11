@@ -35,7 +35,8 @@ function StatusIcon({ status }: { status: "running" | "completed" | "failed" | "
   return <Circle className="h-3.5 w-3.5 text-muted-foreground" aria-hidden />;
 }
 
-function stepStatusIcon(status: TaskChatProtocolStep["status"]) {
+function stepStatusIcon(status: TaskChatProtocolStep["status"], neutral = false) {
+  if (neutral && (status === "blocked" || status === "failed")) return <Circle className="h-3 w-3 text-muted-foreground" aria-hidden />;
   if (status === "in_progress") return <Loader2 className="h-3 w-3 animate-spin text-(--status-agent-running)" aria-hidden />;
   if (status === "completed") return <Check className="h-3 w-3 text-(--status-task-icon-done)" aria-hidden />;
   if (status === "blocked" || status === "failed") return <X className="h-3 w-3 text-destructive" aria-hidden />;
@@ -125,7 +126,7 @@ function ResearchDetails({ item }: { item: TaskChatProviderActivityItem }) {
   );
 }
 
-function ProviderDetails({ item }: { item: TaskChatProviderActivityItem }) {
+function ProviderDetails({ item, neutral = false }: { item: TaskChatProviderActivityItem; neutral?: boolean }) {
   if (item.family === "research") return <ResearchDetails item={item} />;
   return (
     <div className="flex min-w-0 flex-col gap-2">
@@ -133,7 +134,7 @@ function ProviderDetails({ item }: { item: TaskChatProviderActivityItem }) {
         <ol className="flex flex-col gap-1" aria-label="Plan steps">
           {item.steps.map((step) => (
             <li className="flex min-w-0 items-start gap-2" key={step.id}>
-              <span className="mt-0.5 shrink-0">{stepStatusIcon(step.status)}</span>
+              <span className="mt-0.5 shrink-0">{stepStatusIcon(step.status, neutral)}</span>
               <span className={cn("min-w-0", step.status === "completed" && "text-muted-foreground line-through")}>{step.label}</span>
             </li>
           ))}
@@ -226,11 +227,11 @@ function WorkspaceFileDetails({ item }: { item: TaskChatWorkspaceFileItem }) {
   );
 }
 
-function detailContent(item: TaskChatProtocolItem): ReactNode | null {
+function detailContent(item: TaskChatProtocolItem, neutral = false): ReactNode | null {
   switch (item.surface) {
     case "provider_activity": {
       const expandable = item.details.length > 0 || item.steps.length > 0 || item.links.length > 0 || item.children.length > 0 || Boolean(item.output) || Boolean(item.outputTruncated);
-      return expandable ? <ProviderDetails item={item} /> : null;
+      return expandable ? <ProviderDetails item={item} neutral={neutral} /> : null;
     }
     case "workspace_change": return <WorkspaceChangeDetails item={item} />;
     case "workspace_file": return <WorkspaceFileDetails item={item} />;
@@ -240,6 +241,12 @@ function detailContent(item: TaskChatProtocolItem): ReactNode | null {
     case "run_terminal":
       return null;
   }
+}
+
+export function TaskChatProtocolActivityDetails({ item, neutral = false }: { item: TaskChatProtocolItem; neutral?: boolean }) {
+  const detail = detailContent(item, neutral);
+  if (item.surface === "resource" && item.href) return <a href={item.href} className="text-foreground underline">{item.title}</a>;
+  return <>{item.surface === "provider_activity" && item.summary ? <p className="whitespace-pre-wrap break-words">{item.summary}</p> : null}{detail}</>;
 }
 
 function itemStatus(item: TaskChatProtocolItem): "running" | "completed" | "failed" | "interrupted" | "informational" {

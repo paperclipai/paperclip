@@ -1,6 +1,7 @@
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKeySelect";
 import { RepositoryEditor } from "@/components/RepositoryEditor";
+import { TaskChatRunnerActivityGroup } from "@/components/task-chat/TaskChatRunnerActivityGroup";
 import { TaskChatMarker } from "@/components/task-chat/TaskChatMarker";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { TaskTreeControlDialog, TaskTreeControlMenuItems } from "@/components/TaskTreeControls";
@@ -624,6 +625,13 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TYPOGRAPHY                                                   */}
       {/* ============================================================ */}
+      <Section title="Runner activity">
+        <TaskChatRunnerActivityGroup item={{ id: "design-runner-activity", kind: "activity_phase", active: true, summary: "", interstitial: { id: "design-runner-commentary", kind: "message", author: "agent", text: "I’ll inspect the activity feed and check the layout.", interstitial: true }, items: [
+          { id: "design-runner-read", kind: "tool", name: "read", target: "TaskChatRunnerTurn.tsx", status: "completed", detail: "Found the activity groups." },
+          { id: "design-runner-check", kind: "tool", name: "exec_command", target: "pnpm check:token-gates", status: "in_progress" },
+        ] }} />
+      </Section>
+
       <Section title="Typography">
         <div className="space-y-3">
           <h2 className="text-xl font-bold">Page Title — text-xl font-bold</h2>

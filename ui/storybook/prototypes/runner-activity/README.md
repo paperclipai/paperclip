@@ -24,19 +24,7 @@ pnpm --filter @paperclipai/ui exec storybook dev --port 6024 --host 127.0.0.1 --
   not leave the desktop animation squeezed into a mobile preview.
 - Reduced motion uses immediate replacement instead of the rolling transition.
 
-This is a local presentation fixture. It reuses the shipped tool vocabulary,
-Markdown renderer, agent identity, buttons, and design tokens. It does not change
-the production task feed or invoke a runner. After design review, the selected
-behavior can be integrated into the existing task-chat components.
-
-## Review verification
-
-- UI typecheck, token gates, and the Storybook production build pass.
-- Browser walkthrough: compact groups stay 32 CSS pixels tall while their
-  current item changes; expanded groups keep their history when Next is pressed.
-- Measured icon centers match row centers exactly in both compact rows and
-  expanded rows. No horizontal row overflow in the
-  narrow fixture. Light and dark previews were visually reviewed.
-- Keyboard Enter expands a group, and tool details open independently.
-- This review does not qualify the production runner integration; that comes
-  after selecting the presentation.
+The fixture renders the production `TaskChatRunnerTurn` and activity group, with
+simulated event timing. It does not invoke a runner. Production integration tests
+cover commentary boundaries, approvals, final replies, retained expansion,
+neutral failures, and reduced motion.
