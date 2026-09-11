@@ -92,7 +92,6 @@ import {
   readIssueDetailHeaderSeed,
   withIssueDetailHeaderSeed,
   rememberIssueDetailLocationState,
-  shouldArmIssueDetailInboxQuickArchive,
 } from "../lib/issueDetailBreadcrumb";
 import {
   resolveIssueActiveRun,
@@ -233,7 +232,6 @@ import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
-import { ProductivityReviewBadge } from "../components/ProductivityReviewBadge";
 import { Identity } from "../components/Identity";
 import {
   PluginSlotMount,
@@ -306,7 +304,6 @@ import {
   Check,
   ChevronRight,
   Copy,
-  Eye,
   EyeOff,
   ScanEye,
   Flag,
@@ -5667,10 +5664,7 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
   const goToInboxShortcutArmedRef = useRef(false);
   const goToInboxShortcutTimeoutRef = useRef<number | null>(null);
   const canQuickArchiveFromInbox =
-    keyboardShortcutsEnabled &&
-    (!streamlinedUiEnabled ||
-      (isFromInbox && shouldArmIssueDetailInboxQuickArchive(location.state))) &&
-    !issue?.hiddenAt;
+    keyboardShortcutsEnabled && !issue?.hiddenAt;
 
   useEffect(() => {
     if (!issue?.id || !canQuickArchiveFromInbox) return;
@@ -6912,21 +6906,6 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
           </Link>
         )}
 
-        {issue.productivityReview ? (
-          <ProductivityReviewBadge review={issue.productivityReview} />
-        ) : null}
-
-        {issue.originKind === "issue_productivity_review" ? (
-          <Badge
-            variant="outline"
-            className="border-amber-500/40 bg-amber-500/10 text-(length:--text-nano) text-amber-700 dark:text-amber-300"
-            title="This task is a productivity review."
-          >
-            <Eye className="h-3 w-3" />
-            Productivity review
-          </Badge>
-        ) : null}
-
         {issue.originKind === "task_watchdog" ? (
           <Badge
             variant="outline"
@@ -8060,7 +8039,7 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
               showCloseButton={!taskChatShellEnabled}
               className={cn(
                 taskChatShellEnabled
-                  ? "h-(--sz-85dvh) max-h-(--sz-85dvh) gap-0 p-0 pb-(--sz-safe-bottom)"
+                  ? "h-(--sz-85dvh) max-h-(--sz-85dvh) w-full max-w-none gap-0 p-0 pb-(--sz-safe-bottom)"
                   : documentDeepLink?.documentKey === "plan"
                     ? "inset-0 h-dvh w-screen max-w-none gap-0 border-0 p-0 sm:max-w-none"
                     : "max-h-(--sz-85dvh) pb-(--sz-safe-bottom)",

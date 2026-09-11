@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { MemoryRouter } from "@/lib/router";
 import type { TaskChatProtocolItem, TaskChatProviderActivityItem } from "./task-chat-model";
-import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
+import { TaskChatProtocolActivityRow, TaskChatProtocolActivityDetails } from "./TaskChatProtocolActivityRow";
 
 describe("TaskChatProtocolActivityRow", () => {
   let container: HTMLDivElement;
@@ -117,6 +117,20 @@ describe("TaskChatProtocolActivityRow", () => {
     expect(container.textContent).toContain("2 more files not shown");
     expect(container.textContent).not.toContain("new-1");
     expect(container.querySelector('[data-testid="task-chat-workspace-change-details"] pre')).toBeNull();
+  });
+
+  it.each(["javascript:alert(1)", "java\nscript:alert(1)", "data:text/html,unsafe", "file:///etc/passwd", "vbscript:unsafe"])("rejects unsafe resource URLs in rows and details: %s", (href) => {
+    const item: TaskChatProtocolItem = { id: "unsafe-resource", kind: "protocol", surface: "resource", resourceKind: "document", title: "Notes", subtitle: "Document", href };
+    render(item);
+    expect(container.querySelector("a")).toBeNull();
+    act(() => root.render(<TaskChatProtocolActivityDetails item={item} />));
+    expect(container.querySelector("a")).toBeNull();
+    expect(container.textContent).toContain("Notes");
+  });
+
+  it.each(["https://example.com/report", "http://example.com/report", "/documents/notes", "#notes"])("allows safe resource links in details: %s", (href) => {
+    act(() => root.render(<TaskChatProtocolActivityDetails item={{ id: "resource", kind: "protocol", surface: "resource", resourceKind: "document", title: "Notes", subtitle: "Document", href }} />));
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(href);
   });
 
   it("renders durable resources as direct compact links", () => {
