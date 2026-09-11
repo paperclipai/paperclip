@@ -199,16 +199,17 @@ export const AgentRunCard = memo(function AgentRunCard({
             className="min-w-0 rounded-lg border border-border/60 bg-background/60 px-2.5 py-2 text-sm text-foreground transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             title={issue ? `${issue.title} · ${issue.identifier}` : taskTitle}
           >
-            <span className="flex min-w-0 items-center gap-2">
-              <span className="flex min-w-0 flex-1 items-center gap-1.5">
+            <span className="flex min-w-0 items-baseline gap-2">
+              <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
                 <StatusGlyph
                   status={issue?.status ?? "backlog"}
                   size="lg"
+                  className="self-center"
                   title={issue ? `Task ${issue.status.replace(/_/g, " ")}` : undefined}
                 />
                 <span className="truncate">{taskTitle}</span>
               </span>
-              <span className="shrink-0 font-mono text-(length:--text-compact) text-muted-foreground">{issue?.identifier ?? run.issueId.slice(0, 8)}</span>
+              <span className="shrink-0 font-mono text-(length:--text-nano) text-muted-foreground">{issue?.identifier ?? run.issueId.slice(0, 8)}</span>
             </span>
           </Link>
         ) : (
