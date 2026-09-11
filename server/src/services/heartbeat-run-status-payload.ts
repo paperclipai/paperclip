@@ -20,6 +20,9 @@ export function buildHeartbeatRunStatusLiveEventPayload(
   return {
     runId: run.id,
     agentId: run.agentId,
+    issueId: typeof run.contextSnapshot?.issueId === "string"
+      ? run.contextSnapshot.issueId
+      : null,
     status: run.status,
     invocationSource: run.invocationSource,
     triggerDetail: run.triggerDetail,

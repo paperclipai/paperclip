@@ -1,11 +1,17 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { drizzle } from "drizzle-orm/postgres-js";
+import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import {
   DEFAULT_DATABASE_APPLICATION_NAME,
   applyPendingMigrations,
+  closeRegisteredClients,
   createDb,
+  ensurePostgresDatabase,
   inspectMigrations,
   resetPostgresDatabase,
 } from "./client.js";
@@ -1491,8 +1497,22 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
   it(
     "preserves legacy runs while adding native persistence and replay-safe status versioning",
     async () => {
-      const connectionString = await createTempDatabase();
-      await applyPendingMigrations(connectionString);
+      const clusterUrl = await createTempDatabase();
+      await ensurePostgresDatabase(clusterUrl, "native_legacy");
+      const legacyUrl = new URL(clusterUrl);
+      legacyUrl.pathname = "/native_legacy";
+      const connectionString = legacyUrl.href;
+      cleanups.push(() => closeRegisteredClients(connectionString));
+      const directory = await fs.promises.mkdtemp(join(tmpdir(), "paperclip-native-prior-migrations-"));
+      cleanups.push(() => fs.promises.rm(directory, { recursive: true, force: true }));
+      const migrationsRoot = new URL("./migrations/", import.meta.url);
+      const journal = JSON.parse(await fs.promises.readFile(new URL("meta/_journal.json", migrationsRoot), "utf8"));
+      const priorEntries = journal.entries.filter((entry: { idx: number }) => entry.idx < 227);
+      await fs.promises.mkdir(join(directory, "meta"));
+      for (const entry of priorEntries) {
+        await fs.promises.copyFile(new URL(`${entry.tag}.sql`, migrationsRoot), join(directory, `${entry.tag}.sql`));
+      }
+      await fs.promises.writeFile(join(directory, "meta/_journal.json"), JSON.stringify({ ...journal, entries: priorEntries }));
 
       const nativePersistenceHash = await migrationHash("0227_modern_pandemic.sql");
       const eventSequenceUniquenessHash = await migrationHash(
@@ -1517,44 +1537,10 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
       const otherDecisionId = "81000000-0000-4000-8000-000000000227";
 
       try {
-        await sql.unsafe(`
-          DROP TABLE IF EXISTS status_decision_effects, status_decisions, work_assessments,
-            native_run_finalizations, native_run_results, completion_contracts CASCADE;
-          DROP TRIGGER IF EXISTS paperclip_issue_status_version_trigger ON issues;
-          DROP FUNCTION IF EXISTS paperclip_bump_issue_status_version();
-          DROP INDEX IF EXISTS issues_company_id_uq;
-          DROP INDEX IF EXISTS heartbeat_run_events_run_source_event_uq;
-          DROP INDEX IF EXISTS heartbeat_run_events_run_source_seq_uq;
-          DROP INDEX IF EXISTS heartbeat_run_events_run_seq_uq;
-          ALTER TABLE heartbeat_run_events
-            DROP COLUMN IF EXISTS source_instance_id,
-            DROP COLUMN IF EXISTS source_event_id,
-            DROP COLUMN IF EXISTS source_seq,
-            DROP COLUMN IF EXISTS source_payload_sha256,
-            DROP COLUMN IF EXISTS protocol_schema_version;
-          ALTER TABLE heartbeat_run_events ALTER COLUMN seq TYPE integer;
-          ALTER TABLE heartbeat_runs
-            DROP COLUMN IF EXISTS runtime_mode,
-            DROP COLUMN IF EXISTS runtime_mode_resolver_version,
-            DROP COLUMN IF EXISTS runtime_mode_reason,
-            DROP COLUMN IF EXISTS runtime_mode_resolved_at,
-            DROP COLUMN IF EXISTS runner_profile_json,
-            DROP COLUMN IF EXISTS runner_instance_id,
-            DROP COLUMN IF EXISTS native_session_id,
-            DROP COLUMN IF EXISTS native_issue_id,
-            DROP COLUMN IF EXISTS driver_kind,
-            DROP COLUMN IF EXISTS driver_version,
-            DROP COLUMN IF EXISTS completion_contract_id,
-            DROP COLUMN IF EXISTS completion_contract_sha256,
-            DROP COLUMN IF EXISTS next_event_seq,
-            DROP COLUMN IF EXISTS native_phase,
-            DROP COLUMN IF EXISTS native_phase_updated_at;
-          ALTER TABLE issues
-            DROP COLUMN IF EXISTS status_version,
-            DROP COLUMN IF EXISTS last_status_decision_id;
-        `);
-        await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${nativePersistenceHash}`;
-        await sql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${eventSequenceUniquenessHash}`;
+        // Build the real pre-native schema. Downgrading the latest schema by
+        // dropping its unique index is invalid once later tenant FKs use it.
+        await migrate(drizzle(sql), { migrationsFolder: directory });
+        expect(await sql`SELECT to_regclass('public.native_run_results') AS native_results`).toEqual([{ native_results: null }]);
         await sql`
           INSERT INTO companies (id, name, issue_prefix)
           VALUES (${companyId}, 'Native persistence fixture', 'NPF')

@@ -145,7 +145,7 @@ impl AcpxProviderDescriptor {
             "claude" => (
                 "claude-sonnet-5",
                 "@agentclientprotocol/claude-agent-acp",
-                "0.70.0",
+                "0.73.0",
                 Some("@anthropic-ai/claude-agent-sdk"),
                 Some("0.3.263"),
                 "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
@@ -156,7 +156,7 @@ impl AcpxProviderDescriptor {
                 "1.6.2",
                 Some("@openai/codex"),
                 Some("0.153.4"),
-                "sha256:91d61bdfcb3c2830a5af690b13e355c669a483b562ce2f5d82d3e53b2378bb00",
+                "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
             ),
             "pi" => return Err(DurableRunnerError::invalid(
                 "ACPX agent pi is not executable through the verified runnerd provider boundary",
@@ -1764,7 +1764,7 @@ mod tests {
                 (
                     "claude-sonnet-5",
                     "@agentclientprotocol/claude-agent-acp",
-                    "0.70.0",
+                    "0.73.0",
                     json!("@anthropic-ai/claude-agent-sdk"),
                     json!("0.3.263"),
                     "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
@@ -1776,7 +1776,7 @@ mod tests {
                     "1.6.2",
                     json!("@openai/codex"),
                     json!("0.153.4"),
-                    "sha256:91d61bdfcb3c2830a5af690b13e355c669a483b562ce2f5d82d3e53b2378bb00",
+                    "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3",
                 )
             };
         json!({

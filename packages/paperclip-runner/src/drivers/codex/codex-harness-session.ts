@@ -1,3 +1,5 @@
+import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
+import { codexRunUsage, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
 import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
 
@@ -105,6 +107,10 @@ export class CodexHarnessSession
       this.pendingRuntimeRequestMap.clear();
       this.eventQueue.clear();
     }
+    if (this.codexUsageBaseline && input.runId !== this.runId) {
+      this.codexUsageBaseline = { baseline: { ...this.codexUsageBaseline.latest }, latest: { ...this.codexUsageBaseline.latest } };
+      this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
+    }
     this.runId = input.runId;
     this.result = null;
     this.resultFingerprint = null;
@@ -202,9 +208,9 @@ export class CodexHarnessSession
         threadId: this.opened.threadId,
         cwd: this.opened.context.workingDirectory,
         permissions:
-          requestedMode === "plan"
+          text(record(record(this.opened.context.sandbox).permissionProfile).id) || (requestedMode === "plan"
             ? PLANNING_PERMISSION_PROFILE
-            : SKILLLESS_PERMISSION_PROFILE,
+            : SKILLLESS_PERMISSION_PROFILE),
         runtimeWorkspaceRoots: [this.opened.context.workingDirectory],
         ...(this.opened.collaborationMode === null
           ? {}
@@ -615,10 +621,7 @@ export class CodexHarnessSession
     this.assertProtocolIntegrity();
     this.requireCapability("read");
     try {
-      const snapshot = await this.transport.request("thread/read", {
-        threadId: this.opened.threadId,
-        includeTurns: true,
-      });
+      const snapshot = await readCodexThreadState(this.transport, this.opened.threadId);
       this.assertProtocolIntegrity();
       return snapshot;
     } catch (error) {
@@ -646,12 +649,33 @@ export class CodexHarnessSession
         "thread/read returned a different provider session",
       );
     }
-    const turns = Array.isArray(thread.turns) ? thread.turns.map(record) : [];
+    const turns = await readCodexTurnMetadata(this.transport, this.opened.threadId);
+    thread.turns = turns;
+    for (const turn of turns) {
+      if ((text(turn.id) === this.activeTurnId || this.terminalTurns.has(text(turn.id)))
+        && text(turn.status) !== "inProgress") {
+        turn.items = await readCodexTurnItems(this.transport, this.opened.threadId, text(turn.id));
+        turn.itemsView = "full";
+      }
+    }
     const reconciledUsage = boundedPayload(
       record(thread.tokenUsage ?? snapshot.tokenUsage),
     );
-    if (Object.keys(reconciledUsage).length > 0)
-      this.usageSnapshot = reconciledUsage;
+    if (Object.keys(reconciledUsage).length > 0) {
+      if (this.driverKind === "codex_app_server" && this.codexUsageBaseline) {
+        this.codexUsageBaseline = observeCodexUsage(
+          this.codexUsageBaseline,
+          reconciledUsage.total,
+          false,
+        );
+        this.usageSnapshot = {
+          ...reconciledUsage,
+          ...codexRunUsage(this.codexUsageBaseline),
+        };
+      } else {
+        this.usageSnapshot = reconciledUsage;
+      }
+    }
     const activeTurns = turns.filter(
       (turn) => text(turn.status) === "inProgress",
     );
@@ -730,6 +754,7 @@ export class CodexHarnessSession
     this.assertProtocolIntegrity();
     return {
       driverKind: this.driverKind,
+      workingDirectory: this.opened.context.workingDirectory,
       driverSessionId: this.opened.threadId,
       providerSessionId: this.opened.providerSessionId,
       ...(this.opened.providerIdentity === undefined
@@ -749,6 +774,7 @@ export class CodexHarnessSession
               callId: this.resultCallId,
               turnId: this.resultTurnId,
             },
+      ...(this.codexUsageBaseline ? { codexUsageBaseline: structuredClone(this.codexUsageBaseline) } : {}),
       terminalTurns: [...this.terminalTurns].map(([turnId, fingerprint]) => ({
         turnId,
         fingerprint,

@@ -652,6 +652,19 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 }),
             );
         }
+        "paperclip/resumeUsageSnapshot" => push(
+            &mut events,
+            "harness.diagnostic",
+            EventPriority::P0,
+            json!({
+                "code": "codex_resume_usage_snapshot",
+                "method": "thread/tokenUsage/updated",
+                "classification": "resume_usage_snapshot",
+                "receivedThreadId": params.get("threadId"),
+                "receivedTurnId": params.get("turnId"),
+                "cumulative": measurement(params.get("total").unwrap_or(&Value::Null)),
+            }),
+        ),
         "thread/tokenUsage/updated" => {
             let cumulative = params
                 .get("tokenUsage")
@@ -692,7 +705,13 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 "scope": if method.contains("config") { "environment" } else { "turn" },
                 "recoverable": method != "error",
                 "userActionable": true,
-                "summary": bounded_text(string(params.get("message")), MAX_TEXT_CHARS),
+                "summary": bounded_text(
+                    ["summary", "message", "details"].iter()
+                        .map(|key| string(params.get(*key)))
+                        .find(|value| !value.trim().is_empty())
+                        .unwrap_or("Provider notice"),
+                    MAX_TEXT_CHARS,
+                ),
             }),
         ),
         "item/agentMessage/delta" => push(
@@ -714,11 +733,14 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
             let item_type = string(provider_item.get("type"));
             let provider_phase = string(provider_item.get("phase"));
             let completed = method == "item/completed";
-            if matches!(item_type, "commandExecution" | "mcpToolCall") {
+            if matches!(
+                item_type,
+                "commandExecution" | "mcpToolCall" | "dynamicToolCall"
+            ) {
                 let mut payload = json!({
                     "schema": "paperclip.tool.execution.v1",
                     "executionId": item_id,
-                    "transport": if item_type == "mcpToolCall" { "mcp" } else { "process" },
+                    "transport": match item_type { "mcpToolCall" => "mcp", "dynamicToolCall" => "dynamic", _ => "process" },
                     "operation": if item_type == "commandExecution" { "execute" } else { "unknown" },
                     "name": provider_item.get("tool").or_else(|| provider_item.get("command")).and_then(Value::as_str).map(|value| bounded_text(value, 240)),
                     "target": Value::Null,
@@ -1241,6 +1263,66 @@ fn has_rfc_uri_scheme_prefix(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_codex_notice_text_from_current_and_legacy_payloads() {
+        for method in ["configWarning", "deprecationNotice", "warning"] {
+            for (params, expected) in [
+                (
+                    json!({"summary": "Repository is not trusted", "message": "old message"}),
+                    "Repository is not trusted",
+                ),
+                (
+                    json!({"summary": "", "message": "Legacy warning"}),
+                    "Legacy warning",
+                ),
+                (
+                    json!({"details": "Additional warning details"}),
+                    "Additional warning details",
+                ),
+                (json!({}), "Provider notice"),
+            ] {
+                let events = normalize_codex_notification(method, &params);
+                assert_eq!(events[0].event_type, "provider.notice.recorded");
+                assert_eq!(events[0].payload["summary"], expected);
+            }
+        }
+        let events = normalize_codex_notification(
+            "configWarning",
+            &json!({
+                "summary": "x".repeat(MAX_TEXT_CHARS + 100), "accessToken": "not-for-the-log"
+            }),
+        );
+        assert!(
+            events[0].payload["summary"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count()
+                <= MAX_TEXT_CHARS
+        );
+        assert!(!events[0].payload.to_string().contains("not-for-the-log"));
+    }
+
+    #[test]
+    fn preserves_dynamic_tool_identity_without_arguments() {
+        for method in ["item/started", "item/completed"] {
+            let events = normalize_codex_notification(
+                method,
+                &json!({"item": {
+                    "id": "finish-1", "type": "dynamicToolCall", "tool": "paperclip_finish",
+                    "status": if method == "item/started" { "inProgress" } else { "completed" },
+                    "arguments": {"secret": "not-for-the-log"}
+                }}),
+            );
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].payload["name"], "paperclip_finish");
+            assert_eq!(events[0].payload["transport"], "dynamic");
+            assert_eq!(events[0].payload["executionId"], "finish-1");
+            assert!(events[0].event_type.starts_with("tool.execution."));
+            assert!(!events[0].payload.to_string().contains("not-for-the-log"));
+        }
+    }
 
     #[test]
     fn enforces_the_declared_safe_path_contract() {

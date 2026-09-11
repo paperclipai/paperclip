@@ -8,15 +8,24 @@ import {
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
+import { useComposerStop } from "@/hooks/useComposerStop";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
   DRAFT_DEBOUNCE_MS,
   clearDraft,
   loadDraft,
+  loadDraftAttachments,
   saveDraft,
+  saveDraftAttachments,
+  loadDraftSubmission,
+  saveDraftSubmission,
+  clearDraftSubmission,
+  type ComposerDraftSubmission,
 } from "@/lib/composer-draft";
+import { CommentSubmissionUnknownError } from "@/lib/comment-submit-result";
 import {
   ArrowUp,
+  Square,
   Check,
   ChevronDown,
   CircleHelp,
@@ -90,7 +99,11 @@ interface TaskChatComposerProps {
     body: string,
     reopen?: boolean,
     reassignment?: CommentReassignment,
+    attachmentIds?: string[],
   ) => Promise<void> | void;
+  onStop?: () => Promise<void>;
+  stopPending?: boolean;
+  stopScope?: "leaf" | "subtree";
   workMode: IssueWorkMode;
   onWorkModeChange?: (mode: IssueWorkMode) => Promise<void> | void;
   disabled?: boolean;
@@ -116,6 +129,7 @@ interface TaskChatComposerProps {
   mobile?: boolean;
   /** Storage key used to restore, persist, and clear this task's text draft. */
   draftKey?: string;
+  onReviewConversation?: () => Promise<void>;
   /** When set, the main composer temporarily edits this queued message. */
   queuedEdit?: { commentId: string; body: string; stale?: boolean } | null;
   onSaveQueuedEdit?: (commentId: string, body: string) => Promise<void>;
@@ -127,8 +141,12 @@ interface TaskChatComposerProps {
     onOpen: () => void;
   } | null;
   runnerGoalCapability?: RunnerGoalCapability | null;
-  onRunnerGoalCommand?: (command: RunnerGoalComposerCommand) => Promise<void> | void;
-  onRunnerGoalReassign?: (reassignment: CommentReassignment) => Promise<void> | void;
+  onRunnerGoalCommand?: (
+    command: RunnerGoalComposerCommand,
+  ) => Promise<void> | void;
+  onRunnerGoalReassign?: (
+    reassignment: CommentReassignment,
+  ) => Promise<void> | void;
 }
 
 export type RunnerGoalComposerCommand =
@@ -172,14 +190,19 @@ export function parseRunnerGoalCommand(value: string): ParsedRunnerGoalCommand {
   const trimmed = normalizeRunnerGoalCommandText(value);
   if (!trimmed) return { matched: false };
   const firstWhitespace = trimmed.search(/\s/);
-  const firstToken = firstWhitespace === -1 ? trimmed : trimmed.slice(0, firstWhitespace);
+  const firstToken =
+    firstWhitespace === -1 ? trimmed : trimmed.slice(0, firstWhitespace);
   if (firstToken !== "/goal") return { matched: false };
-  const remainder = firstWhitespace === -1 ? "" : trimmed.slice(firstWhitespace).trim();
+  const remainder =
+    firstWhitespace === -1 ? "" : trimmed.slice(firstWhitespace).trim();
   if (!remainder) return { matched: true, command: { action: "focus" } };
   const [subcommand, ...extra] = remainder.split(/\s+/);
   if (["edit", "pause", "resume", "clear"].includes(subcommand)) {
     if (extra.length > 0) {
-      return { matched: true, error: `/goal ${subcommand} does not accept extra arguments.` };
+      return {
+        matched: true,
+        error: `/goal ${subcommand} does not accept extra arguments.`,
+      };
     }
     return {
       matched: true,
@@ -275,7 +298,12 @@ const MODE_DESCRIPTION: Partial<Record<IssueWorkMode, string>> = {
 };
 
 /** v7 per-mode placeholder copy; `{agent}` is the pending assignee's name. */
-function modePlaceholder(mode: IssueWorkMode, agentName: string): string {
+function modePlaceholder(mode: IssueWorkMode, agentName: string, mobile: boolean): string {
+  if (mobile) {
+    if (mode === "planning") return `Plan with ${agentName}…`;
+    if (mode === "ask") return `Ask ${agentName}…`;
+    return `Message ${agentName}…`;
+  }
   switch (mode) {
     case "planning":
       return `Plan with ${agentName} — shapes the plan doc, no code changes…`;
@@ -288,6 +316,8 @@ function modePlaceholder(mode: IssueWorkMode, agentName: string): string {
 
 type ComposerAttachment = {
   id: string;
+  attachmentId?: string;
+  inline?: boolean;
   name: string;
   size?: number;
   status: "uploading" | "attached" | "error";
@@ -346,6 +376,9 @@ function escapeMarkdownLabel(name: string): string {
  */
 export function TaskChatComposer({
   onAdd,
+  onStop,
+  stopPending = false,
+  stopScope = "leaf",
   workMode,
   onWorkModeChange,
   disabled = false,
@@ -363,6 +396,7 @@ export function TaskChatComposer({
   issueStatus,
   mobile = false,
   draftKey,
+  onReviewConversation,
   queuedEdit = null,
   onSaveQueuedEdit,
   onCancelQueuedEdit,
@@ -373,8 +407,22 @@ export function TaskChatComposer({
   onRunnerGoalReassign,
 }: TaskChatComposerProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
+  const stopControl = useComposerStop(onStop, stopPending);
   const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const [submitting, setSubmitting] = useState(false);
+  const [reviewError, setReviewError] = useState(false);
+  const [uncertainSubmission, setUncertainSubmission] =
+    useState<ComposerDraftSubmission | null>(() =>
+      draftKey ? loadDraftSubmission(draftKey) : null,
+    );
+  const mountedTaskKey = useRef(draftKey);
+  useEffect(() => {
+    mountedTaskKey.current = draftKey;
+    setUncertainSubmission(draftKey ? loadDraftSubmission(draftKey) : null);
+    return () => {
+      mountedTaskKey.current = undefined;
+    };
+  }, [draftKey]);
   const [takeoverBusy, setTakeoverBusy] = useState(false);
   const [takeoverError, setTakeoverError] = useState<string | null>(null);
   const [takeoverHeaderClaimed, setTakeoverHeaderClaimed] = useState(false);
@@ -384,10 +432,30 @@ export function TaskChatComposer({
     useState<HTMLElement | null>(null);
   const [pendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [attachments, setAttachmentState] = useState<ComposerAttachment[]>(
+    () =>
+      draftKey
+        ? loadDraftAttachments(draftKey).map((item) => ({
+            ...item,
+            id: `receipt:${item.attachmentId}`,
+            status: "attached",
+          }))
+        : [],
+  );
   const attachmentsRef = useRef(attachments);
-  attachmentsRef.current = attachments;
+  function setAttachments(
+    update:
+      | ComposerAttachment[]
+      | ((previous: ComposerAttachment[]) => ComposerAttachment[]),
+  ) {
+    const next =
+      typeof update === "function" ? update(attachmentsRef.current) : update;
+    attachmentsRef.current = next;
+    setAttachmentState(next);
+  }
+  const submittingRef = useRef(submitting);
+  submittingRef.current = submitting;
   const pendingAssigneeRef = useRef(pendingAssignee);
   pendingAssigneeRef.current = pendingAssignee;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -447,11 +515,46 @@ export function TaskChatComposer({
 
   useEffect(() => {
     if (!draftKey || queuedEdit) return;
-    setBody(loadDraft(draftKey));
+    bodyRef.current = loadDraft(draftKey);
+    setBody(bodyRef.current);
   }, [draftKey, queuedEdit]);
 
   useEffect(() => {
-    if (!draftKey || queuedEdit) {
+    if (!draftKey) return;
+    setAttachments(
+      loadDraftAttachments(draftKey).map((item) => ({
+        ...item,
+        id: `receipt:${item.attachmentId}`,
+        status: "attached",
+      })),
+    );
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (
+      !draftKey ||
+      queuedEdit ||
+      submitting ||
+      uncertainSubmission ||
+      attachments !== attachmentsRef.current
+    )
+      return;
+    saveDraftAttachments(
+      draftKey,
+      attachments
+        .filter((item) => item.status === "attached" && item.attachmentId)
+        .map((item) => ({
+          attachmentId: item.attachmentId,
+          name: item.name,
+          size: item.size,
+          inline: item.inline === true,
+          contentPath: item.contentPath,
+        })),
+    );
+  }, [attachments, draftKey, queuedEdit, submitting]);
+
+  useEffect(() => {
+    if (!draftKey || queuedEdit || submitting) {
       if (draftTimer.current) {
         clearTimeout(draftTimer.current);
         draftTimer.current = null;
@@ -462,12 +565,12 @@ export function TaskChatComposer({
     draftTimer.current = setTimeout(() => {
       saveDraft(draftKey, body);
     }, DRAFT_DEBOUNCE_MS);
-  }, [body, draftKey, queuedEdit]);
+  }, [body, draftKey, queuedEdit, submitting]);
 
   useEffect(() => {
     return () => {
       if (draftTimer.current) clearTimeout(draftTimer.current);
-      if (draftKey && !queuedEditRef.current)
+      if (draftKey && !queuedEditRef.current && !submittingRef.current)
         saveDraft(draftKey, bodyRef.current);
     };
   }, [draftKey]);
@@ -475,14 +578,18 @@ export function TaskChatComposer({
   useEffect(() => {
     if (!draftKey) return;
     const flushDraft = () => {
-      if (!queuedEditRef.current) saveDraft(draftKey, bodyRef.current);
+      if (!queuedEditRef.current && !submittingRef.current)
+        saveDraft(draftKey, bodyRef.current);
     };
     window.addEventListener("beforeunload", flushDraft);
     return () => window.removeEventListener("beforeunload", flushDraft);
   }, [draftKey]);
 
   const modeMeta = workModeMetaFor(pendingMode);
-  const canAcceptFiles = !queuedEdit && Boolean(onAttachImage || onImageUpload);
+  const canAcceptFiles =
+    !queuedEdit &&
+    !uncertainSubmission &&
+    Boolean(onAttachImage || onImageUpload);
   const showAssignee = Boolean(
     enableReassign && reassignOptions && reassignOptions.length > 0,
   );
@@ -493,7 +600,7 @@ export function TaskChatComposer({
     assigneeLabel === "Unassigned" ? "the agent" : assigneeLabel;
   const effectivePlaceholder = queuedEdit
     ? "Edit queued message…"
-    : (placeholder ?? modePlaceholder(pendingMode, assigneeName));
+    : (placeholder ?? modePlaceholder(pendingMode, assigneeName, mobile));
   const goalUnavailable = runnerGoalCapability?.availability !== "available";
   const goalCommandOption: ActionCommandOption = {
     id: "action:goal",
@@ -507,7 +614,8 @@ export function TaskChatComposer({
     aliases: ["goal", "pursue", "continue"],
     disabled: goalUnavailable && runnerGoalCapability !== null,
     disabledReason:
-      runnerGoalCapability?.reason ?? "Session goals are unsupported by this agent.",
+      runnerGoalCapability?.reason ??
+      "Session goals are unsupported by this agent.",
   };
 
   function updatePendingAssignee(value: string | null) {
@@ -517,13 +625,52 @@ export function TaskChatComposer({
 
   /** Upload an image and return its URL for inline `![](src)` markdown. */
   async function uploadInlineImage(file: File): Promise<string> {
-    if (onAttachImage) {
-      const attachment = await onAttachImage(file);
-      if (attachment?.contentPath) return attachment.contentPath;
-      throw new Error("Upload did not return a file URL");
+    const id = crypto.randomUUID();
+    setAttachments((prev) => [
+      ...prev,
+      {
+        id,
+        name: file.name,
+        size: file.size,
+        inline: true,
+        status: "uploading",
+      },
+    ]);
+    try {
+      const attachment = onAttachImage ? await onAttachImage(file) : undefined;
+      const url = onAttachImage
+        ? attachment?.contentPath
+        : await onImageUpload?.(file);
+      if (!url) throw new Error("Upload did not return a file URL");
+      if (!attachmentsRef.current.some((item) => item.id === id))
+        throw new Error("Attachment was removed");
+      setAttachments((prev) =>
+        prev.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                attachmentId: attachment?.id,
+                contentPath: url,
+                status: "attached",
+              }
+            : item,
+        ),
+      );
+      return url;
+    } catch (err) {
+      setAttachments((prev) =>
+        prev.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                status: "error",
+                error: err instanceof Error ? err.message : "Upload failed",
+              }
+            : item,
+        ),
+      );
+      throw err;
     }
-    if (onImageUpload) return onImageUpload(file);
-    throw new Error("This file type cannot be attached here");
   }
 
   /** Non-image files: attach to the task and track in the chip row. */
@@ -549,6 +696,8 @@ export function TaskChatComposer({
         return;
       }
       const attachment = await onAttachImage(file);
+      if (!attachment?.contentPath)
+        throw new Error("Upload did not return a file URL");
       const name = attachment?.originalFilename ?? file.name;
       setAttachments((prev) =>
         prev.map((item) =>
@@ -556,6 +705,7 @@ export function TaskChatComposer({
             ? {
                 ...item,
                 name,
+                attachmentId: attachment?.id,
                 status: "attached",
                 contentPath: attachment?.contentPath,
               }
@@ -583,23 +733,13 @@ export function TaskChatComposer({
       await attachNonImageFile(file);
       return;
     }
-    const id = `${file.name}:${file.size}:${file.lastModified}:${Math.random().toString(36).slice(2)}`;
     try {
       const url = await uploadInlineImage(file);
       editorRef.current?.insertMarkdown(
         `![${escapeMarkdownLabel(file.name)}](${url})`,
       );
-    } catch (err) {
-      setAttachments((prev) => [
-        ...prev,
-        {
-          id,
-          name: file.name,
-          size: file.size,
-          status: "error",
-          error: err instanceof Error ? err.message : "Upload failed",
-        },
-      ]);
+    } catch {
+      // uploadInlineImage retains the failed receipt in the removable chip row.
     }
   }
 
@@ -636,11 +776,20 @@ export function TaskChatComposer({
   // Uploaded file references ride along as trailing `[name](contentPath)`
   // lines — the bubble renderer folds those link-only lines back into chips.
   const attachedRefs = attachments.filter(
-    (item) => item.status === "attached" && item.contentPath,
+    (item) => item.status === "attached" && item.contentPath && !item.inline,
+  );
+  const visibleAttachments = attachments.filter(
+    (item) => !item.inline || item.status !== "attached",
   );
   // Sending mid-upload would silently drop the pending file from the comment;
   // sending past a failed chip would discard the file the user selected and
   // clear its error state, so both hold submission until resolved or removed.
+  const showStop =
+    !queuedEdit &&
+    !submitting &&
+    body.trim().length === 0 &&
+    attachments.length === 0 &&
+    Boolean(onStop || stopControl.stopping);
   const uploadPending = attachments.some((item) => item.status === "uploading");
   const uploadFailed = attachments.some((item) => item.status === "error");
   const takeoverVisible = Boolean(
@@ -655,6 +804,12 @@ export function TaskChatComposer({
   }, [queuedEdit, takeoverVisible]);
 
   async function submit() {
+    const retained =
+      draftKey && !queuedEdit ? loadDraftSubmission(draftKey) : null;
+    if (retained && !submitting) {
+      setUncertainSubmission(retained);
+      return;
+    }
     const submittedBody = bodyRef.current;
     const submittedAttachments = attachmentsRef.current;
     const submittedAssignee = pendingAssigneeRef.current;
@@ -673,18 +828,24 @@ export function TaskChatComposer({
       }
       if (!onRunnerGoalCommand) {
         setActionError(
-          runnerGoalCapability?.reason ?? "Session goals are unsupported by this agent.",
+          runnerGoalCapability?.reason ??
+            "Session goals are unsupported by this agent.",
         );
         return;
       }
-      if (runnerGoalCapability && runnerGoalCapability.availability !== "available") {
+      if (
+        runnerGoalCapability &&
+        runnerGoalCapability.availability !== "available"
+      ) {
         setActionError(
-          runnerGoalCapability.reason ?? "Session goals are unsupported by this agent.",
+          runnerGoalCapability.reason ??
+            "Session goals are unsupported by this agent.",
         );
         return;
       }
       try {
-        const hasReassignment = showAssignee && assigneeValue !== currentAssigneeValue;
+        const hasReassignment =
+          showAssignee && assigneeValue !== currentAssigneeValue;
         if (hasReassignment && goalCommand.command.action !== "focus") {
           const reassignment = parseAssigneeValue(assigneeValue);
           if (!reassignment || !onRunnerGoalReassign) {
@@ -704,7 +865,9 @@ export function TaskChatComposer({
         editorRef.current?.clear();
       } catch (error) {
         setActionError(
-          error instanceof Error ? error.message : "The goal action could not be applied.",
+          error instanceof Error
+            ? error.message
+            : "The goal action could not be applied.",
         );
       }
       return;
@@ -714,6 +877,7 @@ export function TaskChatComposer({
       uploadPending ||
       uploadFailed ||
       submitting ||
+      uncertainSubmission ||
       disabled
     )
       return;
@@ -743,9 +907,18 @@ export function TaskChatComposer({
       clearTimeout(draftTimer.current);
       draftTimer.current = null;
     }
-    if (draftKey) clearDraft(draftKey);
+    if (draftKey && !queuedEdit) {
+      if (
+        submittedAttachments.some(
+          (item) => item.status === "attached" && item.attachmentId,
+        )
+      )
+        saveDraft(draftKey, submittedBody);
+      else clearDraft(draftKey);
+    }
     setBody("");
     setSubmitting(true);
+    let attemptId: string | null = null;
     try {
       if (queuedEdit) {
         if (!onSaveQueuedEdit) return;
@@ -756,19 +929,61 @@ export function TaskChatComposer({
       if (pendingMode !== workMode && onWorkModeChange) {
         await onWorkModeChange(pendingMode);
       }
-      await onAdd(fullBody, reopen, reassignment);
+      const retainedAfterMode = draftKey ? loadDraftSubmission(draftKey) : null;
+      if (retainedAfterMode) {
+        setUncertainSubmission(retainedAfterMode);
+        setBody(submittedBody);
+        return;
+      }
+      attemptId = crypto.randomUUID();
+      if (draftKey) {
+        saveDraft(draftKey, submittedBody);
+        saveDraftSubmission(draftKey, { attemptId, reviewed: false });
+      }
+      // IDs come only from this composer's upload receipts, never from parsing
+      // arbitrary Markdown. A removed inline image no longer selects its receipt.
+      const attachmentIds = [
+        ...new Set(
+          submittedAttachments
+            .filter(
+              (item) =>
+                item.status === "attached" &&
+                item.attachmentId &&
+                (!item.inline ||
+                  (item.contentPath &&
+                    submittedBody.includes(item.contentPath))),
+            )
+            .map((item) => item.attachmentId!),
+        ),
+      ];
+      if (attachmentIds.length > 0)
+        await onAdd(fullBody, reopen, reassignment, attachmentIds);
+      else await onAdd(fullBody, reopen, reassignment);
+      if (mountedTaskKey.current !== draftKey) return;
+      if (draftKey) clearDraftSubmission(draftKey, attemptId);
       if (draftKey && bodyRef.current) {
         // The editor stays writable while the request is pending. Preserve
         // text entered after this submission started as the next draft.
         saveDraft(draftKey, bodyRef.current);
+      } else if (draftKey) {
+        clearDraft(draftKey);
       }
-      if (attachmentsRef.current === submittedAttachments) {
-        setAttachments([]);
-      }
+      const submittedIds = new Set(submittedAttachments.map((item) => item.id));
+      setAttachments((current) =>
+        current.filter((item) => !submittedIds.has(item.id)),
+      );
       if (pendingAssigneeRef.current === submittedAssignee) {
         updatePendingAssignee(null);
       }
-    } catch {
+    } catch (error) {
+      if (mountedTaskKey.current !== draftKey) return;
+      if (attemptId && error instanceof CommentSubmissionUnknownError) {
+        const uncertain = { attemptId, reviewed: false };
+        setUncertainSubmission(uncertain);
+        if (draftKey && loadDraftSubmission(draftKey)?.attemptId === attemptId)
+          saveDraftSubmission(draftKey, uncertain);
+      } else if (draftKey && attemptId)
+        clearDraftSubmission(draftKey, attemptId);
       // Restore the failed message for retry without discarding a next draft
       // that was entered while the request was pending.
       const nextDraft = bodyRef.current;
@@ -780,11 +995,39 @@ export function TaskChatComposer({
         clearTimeout(draftTimer.current);
         draftTimer.current = null;
       }
-      if (draftKey) saveDraft(draftKey, restoredBody);
+      if (draftKey) saveDraft(draftKey, restoredBody, attemptId ?? undefined);
       setBody(restoredBody);
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function reviewUncertainSubmission() {
+    if (!uncertainSubmission) return;
+    setReviewError(false);
+    try {
+      if (!onReviewConversation) throw new Error("Review unavailable");
+      await onReviewConversation();
+      if (mountedTaskKey.current !== draftKey) return;
+      const reviewed = { ...uncertainSubmission, reviewed: true };
+      setUncertainSubmission(reviewed);
+      if (
+        draftKey &&
+        loadDraftSubmission(draftKey)?.attemptId === reviewed.attemptId
+      )
+        saveDraftSubmission(draftKey, reviewed);
+    } catch {
+      setReviewError(true);
+    }
+  }
+
+  function discardUncertainDraft() {
+    if (!uncertainSubmission?.reviewed) return;
+    if (draftKey) clearDraft(draftKey, uncertainSubmission.attemptId);
+    bodyRef.current = "";
+    setBody("");
+    setAttachments([]);
+    setUncertainSubmission(null);
   }
 
   function skipTakeover() {
@@ -822,6 +1065,7 @@ export function TaskChatComposer({
         streamlined
           ? "paperclip-task-chat-composer rounded-(--radius-task-composer) border border-border bg-card p-(--sz-18px) shadow-(--shadow-task-composer) dark:border-0 dark:bg-muted dark:shadow-none"
           : "paperclip-task-chat-composer rounded-xl bg-card p-(--sz-18px)",
+        mobile && "p-3",
       )}
       onKeyDownCapture={(e) => {
         // Capture mode shortcuts on the wrapper so they work while the rich
@@ -841,6 +1085,44 @@ export function TaskChatComposer({
       }}
       onPasteCapture={handlePasteCapture}
     >
+      {uncertainSubmission ? (
+        <div
+          role="alert"
+          className="mb-3 space-y-2 rounded-md border border-border bg-muted p-3 text-sm"
+        >
+          <p>
+            We couldn’t confirm whether this comment was saved. It may already
+            be in the conversation. Review it before starting another draft.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={reviewUncertainSubmission}
+          >
+            Review conversation
+          </Button>
+          {reviewError ? (
+            <p>Couldn’t refresh the conversation. Try reviewing it again.</p>
+          ) : null}
+          {uncertainSubmission.reviewed ? (
+            <>
+              <p>
+                Discarding this draft does not remove any saved comment or
+                uploaded file.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={discardUncertainDraft}
+              >
+                Discard draft and start new
+              </Button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
       {takeoverVisible && takeover ? (
         <section
           className="relative"
@@ -848,7 +1130,12 @@ export function TaskChatComposer({
           data-testid="task-chat-composer-takeover"
         >
           <div
-            className={cn("flex min-w-0 items-center gap-2", takeover.hideLabel && takeover.pendingCount === 1 ? "absolute right-0 top-0 z-10" : "mb-3")}
+            className={cn(
+              "flex min-w-0 items-center gap-2",
+              takeover.hideLabel && takeover.pendingCount === 1
+                ? "absolute right-0 top-0 z-10"
+                : "mb-3",
+            )}
             data-testid="task-chat-composer-takeover-header"
           >
             <div className="min-w-0 flex-1">
@@ -893,7 +1180,14 @@ export function TaskChatComposer({
               </Button>
             </div>
           </div>
-          <div className={takeover.hideLabel && takeover.pendingCount === 1 ? "pr-8" : "pr-1"} data-testid="task-chat-composer-takeover-body">
+          <div
+            className={
+              takeover.hideLabel && takeover.pendingCount === 1
+                ? "pr-8"
+                : "pr-1"
+            }
+            data-testid="task-chat-composer-takeover-body"
+          >
             <TaskChatComposerTakeoverActionsContext.Provider
               value={{
                 skipButton:
@@ -950,7 +1244,7 @@ export function TaskChatComposer({
                   ? (disabledReason ?? "Composer disabled")
                   : effectivePlaceholder
               }
-              readOnly={disabled}
+              readOnly={disabled || !!uncertainSubmission}
               mentions={mentions}
               actionCommands={[goalCommandOption]}
               onSubmit={() => void submit()}
@@ -962,7 +1256,7 @@ export function TaskChatComposer({
               className={cn(disabled && "opacity-60")}
               contentClassName={
                 mobile
-                  ? "max-h-(--sz-28dvh) min-h-(--sz-72px) overflow-y-auto px-1 py-1 text-base scrollbar-auto-hide"
+                  ? "max-h-(--sz-28dvh) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-base scrollbar-auto-hide"
                   : "max-h-(--sz-28dvh) min-h-(--sz-48px) overflow-y-auto px-1 py-1 text-sm scrollbar-auto-hide"
               }
             />
@@ -978,12 +1272,12 @@ export function TaskChatComposer({
             </p>
           ) : null}
 
-          {attachments.length > 0 ? (
+          {visibleAttachments.length > 0 ? (
             <AttachmentGroup
               className="mb-1 px-1"
               data-testid="task-chat-composer-attachments"
             >
-              {attachments.map((attachment) => {
+              {visibleAttachments.map((attachment) => {
                 const kind = fileKindForName(attachment.name);
                 const KindIcon = kind.icon;
                 const sizeLabel = formatFileSize(attachment.size);
@@ -1023,6 +1317,7 @@ export function TaskChatComposer({
                     <AttachmentActions>
                       <AttachmentAction
                         aria-label={`Remove ${attachment.name}`}
+                        disabled={!!uncertainSubmission}
                         onClick={() =>
                           setAttachments((prev) =>
                             prev.filter((item) => item.id !== attachment.id),
@@ -1085,6 +1380,7 @@ export function TaskChatComposer({
                     )}
                     style={{ "--sc": modeHue(pendingMode) } as CSSProperties}
                     data-testid="task-chat-composer-mode"
+                    data-slot="task-chat-mode-trigger"
                     data-pending-work-mode={pendingMode}
                   >
                     {modeMeta.label}
@@ -1194,47 +1490,70 @@ export function TaskChatComposer({
 
             <button
               type="button"
-              onClick={() => void submit()}
+              onClick={() => void (showStop ? stopControl.stop() : submit())}
               disabled={
-                disabled ||
-                submitting ||
-                uploadPending ||
-                uploadFailed ||
-                (body.trim().length === 0 && attachedRefs.length === 0)
+                showStop
+                  ? disabled || stopControl.stopping
+                  : disabled ||
+                    submitting ||
+                    !!uncertainSubmission ||
+                    uploadPending ||
+                    uploadFailed ||
+                    (body.trim().length === 0 && attachedRefs.length === 0)
               }
               title={
-                queuedEdit
-                  ? queuedEdit.stale
-                    ? "Queue as new message"
-                    : "Save queued message"
-                  : uploadPending
-                    ? "Waiting for upload to finish"
-                    : uploadFailed
-                      ? "Remove the failed attachment to send"
-                      : "Send (⌘+Enter)"
+                showStop
+                  ? stopControl.stopping
+                    ? "Stopping…"
+                    : stopScope === "subtree"
+                      ? "Stop and pause subtree"
+                      : "Stop and pause task"
+                  : queuedEdit
+                    ? queuedEdit.stale
+                      ? "Queue as new message"
+                      : "Save queued message"
+                    : uploadPending
+                      ? "Waiting for upload to finish"
+                      : uploadFailed
+                        ? "Remove the failed attachment to send"
+                        : "Send (⌘+Enter)"
               }
               aria-label={
-                queuedEdit
-                  ? queuedEdit.stale
-                    ? "Queue as new message"
-                    : "Save queued message"
-                  : "Send"
+                showStop
+                  ? stopControl.stopping
+                    ? "Stopping…"
+                    : "Stop"
+                  : queuedEdit
+                    ? queuedEdit.stale
+                      ? "Queue as new message"
+                      : "Save queued message"
+                    : "Send"
               }
               className={cn(
-                "flex h-8 w-8 shrink-0 items-center justify-center transition-transform hover:scale-105 disabled:scale-100",
+                "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105 disabled:scale-100",
                 streamlined
-                  ? "rounded-full bg-foreground text-background disabled:bg-foreground disabled:text-background disabled:opacity-100"
-                  : "rounded-md bg-primary text-primary-foreground disabled:bg-muted disabled:text-muted-foreground",
+                  ? "bg-foreground text-background disabled:bg-foreground disabled:text-background disabled:opacity-100"
+                  : "bg-primary text-primary-foreground disabled:bg-muted disabled:text-muted-foreground",
               )}
-              data-testid="task-chat-composer-send"
+              data-testid={
+                showStop ? "task-chat-composer-stop" : "task-chat-composer-send"
+              }
+              data-slot="icon-button"
             >
-              {submitting ? (
+              {submitting || (showStop && stopControl.stopping) ? (
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+              ) : showStop ? (
+                <Square className="h-4 w-4 fill-current" aria-hidden />
               ) : (
                 <ArrowUp className="h-4 w-4" aria-hidden />
               )}
             </button>
           </div>
+          {stopControl.error ? (
+            <p role="alert" className="text-xs text-destructive">
+              {stopControl.error}
+            </p>
+          ) : null}
         </>
       )}
     </div>

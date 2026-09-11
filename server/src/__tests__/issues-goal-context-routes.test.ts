@@ -222,6 +222,7 @@ describe.sequential("issue goal context routes", () => {
     const emptyQuery: any = {};
     emptyQuery.from = vi.fn(() => emptyQuery);
     emptyQuery.innerJoin = vi.fn(() => emptyQuery);
+    emptyQuery.leftJoin = vi.fn(() => emptyQuery);
     emptyQuery.where = vi.fn(() => emptyQuery);
     emptyQuery.orderBy = vi.fn(() => emptyQuery);
     emptyQuery.limit = vi.fn(async () => []);

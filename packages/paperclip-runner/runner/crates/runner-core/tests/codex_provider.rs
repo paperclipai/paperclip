@@ -5944,3 +5944,151 @@ fn durable_descendant_lineage_survives_capacity_and_provider_restoration() {
     restored.shutdown().unwrap();
     fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn resume_usage_is_a_historical_diagnostic_not_a_warning_or_charge() {
+    let directory = temporary_directory("resume-usage-snapshot");
+    let config = provider_config(
+        &directory,
+        &["--durable-turn-ids", "--resume-usage-snapshot"],
+    );
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({
+                "provider": config,
+                "authorizedTools": task_context_tool_set(),
+                "completionContract": {
+                    "revision": "sha256:settled-attach-contract",
+                    "criterionIds": ["criterion_settled_attach"]
+                },
+            }),
+        ))
+        .expect("prepare the durable provider");
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open the durable provider session");
+    first
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Settle before rotating run authority."}),
+        ))
+        .expect("start the provider turn");
+
+    let mut saw_terminal = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let events = poll_and_ack(&mut first).expect("drain the settled provider turn");
+        saw_terminal |= events
+            .iter()
+            .any(|event| event.event_type == "run.terminal");
+        if saw_terminal && events.is_empty() {
+            break;
+        }
+        if events.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    assert!(saw_terminal, "the first run must settle before attachment");
+    first.shutdown().expect("stop the first provider process");
+    drop(first);
+
+    let mut resumed = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    let mut events = Vec::new();
+    for _ in 0..50 {
+        events.extend(poll_and_ack(&mut resumed).expect("poll resume snapshots"));
+        if events
+            .iter()
+            .filter(|event| event.payload["code"] == "codex_resume_usage_snapshot")
+            .count()
+            == 2
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let snapshots: Vec<_> = events
+        .iter()
+        .filter(|event| event.payload["code"] == "codex_resume_usage_snapshot")
+        .collect();
+    assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots[0].payload["receivedTurnId"], "provider-turn-1");
+    assert_eq!(snapshots[0].payload["cumulative"]["inputTokens"], 100);
+    assert!(!events.iter().any(|event| matches!(
+        event.event_type.as_str(),
+        "provider.notice.recorded" | "usage.reported"
+    )));
+    resumed.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn lightweight_history_pages_metadata_only_when_state_is_active() {
+    let directory = temporary_directory("lightweight-history");
+    let config = provider_config(
+        &directory,
+        &[
+            "--hold-turn",
+            "--require-lightweight-history",
+            "--paginated-history",
+        ],
+    );
+    let mut provider = CodexProvider::start(&config, None).unwrap();
+    let thread_id = provider.thread_id().to_owned();
+    assert_eq!(
+        provider.read_thread().unwrap()["thread"]["turns"],
+        json!([])
+    );
+    assert!(!fs::read_to_string(directory.join("calls.log"))
+        .unwrap()
+        .contains("thread/turns/list"));
+    provider.start_turn("Keep working", &config.cwd).unwrap();
+    let active = provider.active_provider_turn_id().unwrap().to_owned();
+    let state = provider.read_thread().unwrap();
+    assert_eq!(state["thread"]["turns"][0]["id"], active);
+    assert_eq!(state["thread"]["turns"][0]["items"], json!([]));
+    assert_eq!(
+        fs::read_to_string(directory.join("calls.log"))
+            .unwrap()
+            .matches("thread/turns/list")
+            .count(),
+        2
+    );
+    provider.shutdown().unwrap();
+    let mut resumed = CodexProvider::start(&config, Some(&thread_id)).unwrap();
+    assert_eq!(
+        resumed.read_thread().unwrap()["thread"]["turns"][0]["id"],
+        active
+    );
+    resumed.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn lightweight_history_repeated_cursor_is_not_idle_evidence() {
+    let directory = temporary_directory("repeated-history-cursor");
+    let config = provider_config(
+        &directory,
+        &[
+            "--hold-turn",
+            "--require-lightweight-history",
+            "--repeat-history-cursor",
+        ],
+    );
+    let mut provider = CodexProvider::start(&config, None).unwrap();
+    provider.start_turn("Keep working", &config.cwd).unwrap();
+    assert!(provider
+        .read_thread()
+        .unwrap_err()
+        .to_string()
+        .contains("repeated turn cursor"));
+    assert!(provider.active_provider_turn_id().is_some());
+    provider.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}

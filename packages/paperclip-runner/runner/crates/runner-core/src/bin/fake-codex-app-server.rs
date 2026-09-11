@@ -1051,6 +1051,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }}))?;
                     continue;
                 }
+                if args
+                    .iter()
+                    .any(|arg| arg == "--require-lightweight-history")
+                    && message.pointer("/params/excludeTurns") != Some(&json!(true))
+                {
+                    return Err("thread/resume must exclude turns".into());
+                }
                 if require_external_sandbox
                     && (message.pointer("/params/sandbox") != Some(&json!("danger-full-access"))
                         || message.pointer("/params/permissions").is_some())
@@ -1079,6 +1086,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     "id": id,
                     "result": {"thread": {"id": state.thread_id, "sessionId": "codex-account-session"}}
                 }))?;
+                if args.iter().any(|arg| arg == "--resume-usage-snapshot")
+                    && state.active_turn_id.is_none()
+                    && state.next_turn > 0
+                {
+                    for _ in 0..2 {
+                        send(json!({"method": "thread/tokenUsage/updated", "params": {
+                            "threadId": state.thread_id, "turnId": format!("provider-turn-{}", state.next_turn),
+                            "tokenUsage": {"total": {"inputTokens": 100, "outputTokens": 20}, "last": {"inputTokens": 50, "outputTokens": 10}}
+                        }}))?;
+                    }
+                }
                 if descendant_notifications {
                     // Restoration must retain lineage without a replay of thread/started.
                     send(json!({"method": "turn/completed", "params": {
@@ -1101,7 +1119,34 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+            "thread/turns/list" => {
+                if args
+                    .iter()
+                    .any(|arg| arg == "--require-lightweight-history")
+                    && message.pointer("/params/itemsView") != Some(&json!("notLoaded"))
+                {
+                    return Err("turn metadata must not hydrate items".into());
+                }
+                if args.iter().any(|arg| arg == "--repeat-history-cursor")
+                    || (args.iter().any(|arg| arg == "--paginated-history")
+                        && message.pointer("/params/cursor").is_none_or(Value::is_null))
+                {
+                    send(json!({"id": id, "result": {"data": [], "nextCursor": "next-page"}}))?;
+                    continue;
+                }
+                let turns = state.active_turn_id.as_ref()
+                    .map(|turn_id| vec![json!({"id": turn_id, "status": "inProgress", "items": [], "itemsView": "notLoaded"})])
+                    .unwrap_or_default();
+                send(json!({"id": id, "result": {"data": turns, "nextCursor": null}}))?;
+            }
             "thread/read" => {
+                if args
+                    .iter()
+                    .any(|arg| arg == "--require-lightweight-history")
+                    && message.pointer("/params/includeTurns") != Some(&json!(false))
+                {
+                    return Err("thread/read must not hydrate turns".into());
+                }
                 let turns = state
                     .active_turn_id
                     .as_ref()
@@ -1109,7 +1154,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or_default();
                 send(json!({
                     "id": id,
-                    "result": {"thread": {"id": state.thread_id, "turns": turns}}
+                    "result": {"thread": {"id": state.thread_id, "status": {"type": if state.active_turn_id.is_some() { "active" } else { "idle" }}, "turns": turns}}
                 }))?;
                 if fail_after_thread_read {
                     return Err("configured failure after thread read".into());

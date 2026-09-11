@@ -1,6 +1,8 @@
 import { Readable } from "node:stream";
 import express from "express";
 import request from "supertest";
+import { getTableName, type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 
@@ -121,6 +123,10 @@ const mockHeartbeatService = vi.hoisted(() => ({
 const mockRunnerGoalService = vi.hoisted(() => ({
   projection: vi.fn(async () => null),
   act: vi.fn(),
+}));
+const mockChatRunRetries = vi.hoisted(() => ({
+  prepareFailedChatRunRetry: vi.fn(),
+  processFailedChatRunRetry: vi.fn(),
 }));
 const mockExternalObjectService = vi.hoisted(() => ({
   getIssueSummaries: vi.fn(async () => new Map()),
@@ -312,7 +318,9 @@ function createRunContextDb(
   contextSnapshot: Record<string, unknown> = {},
   runAgentOrRows: string | Record<string, unknown>[] = ownerAgentId,
   runId: string = ownerRunId,
+  chatBindings: Array<{ id: string; companyId: string; issueId: string; state: string }> = [],
 ) {
+  const chatBindingQueries: ReturnType<PgDialect["sqlToQuery"]>[] = [];
   const runRows = Array.isArray(runAgentOrRows)
     ? runAgentOrRows
     : [{
@@ -325,7 +333,11 @@ function createRunContextDb(
   const firstRun = runRows[0] ?? {};
   const runAgentId = typeof firstRun.agentId === "string" ? firstRun.agentId : ownerAgentId;
   const runAgentCompanyId = typeof firstRun.agentCompanyId === "string" ? firstRun.agentCompanyId : companyId;
-  const rowsForSelection = async (selection: Record<string, unknown>) => {
+  const rowsForSelection = async (selection: Record<string, unknown>, chatBindingQuery = false, settledRecoveryQuery = false) => {
+    if (chatBindingQuery) return chatBindings;
+    // An unknown selector has no settled recovery receipt. Returning the
+    // generic issue fixture here would invent an unrelated replay row.
+    if (settledRecoveryQuery) return [];
     const keys = Object.keys(selection);
     if (keys.includes("entityId")) return [];
     if (keys.includes("contextSnapshot")) return runRows;
@@ -336,34 +348,43 @@ function createRunContextDb(
     }
     return [{ id: runAgentId, companyId: runAgentCompanyId, permissions: {}, role: "engineer", reportsTo: null }];
   };
-  const buildQuery = (selection: Record<string, unknown>) => {
+  const buildQuery = (selection: Record<string, unknown>, chatBindingQuery = false, settledRecoveryQuery = false) => {
     const whereResult = {
       orderBy: vi.fn(async () => []),
       limit: vi.fn(() => ({
-        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection)),
+        then: async (resolve: (limitedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
       })),
       for: vi.fn(() => ({
-        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection)),
+        then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
       })),
-      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection)),
+      then: async (resolve: (selectedRows: unknown[]) => unknown) => resolve(await rowsForSelection(selection, chatBindingQuery, settledRecoveryQuery)),
     };
     const query = {
       innerJoin: vi.fn(() => query),
-      where: vi.fn(() => whereResult),
+      where: vi.fn((condition: SQL) => {
+        if (chatBindingQuery) chatBindingQueries.push(new PgDialect().sqlToQuery(condition));
+        return whereResult;
+      }),
     };
     return query;
   };
   const dbStub = {
+    chatBindingQueries,
     transaction: async (callback: (tx: typeof dbStub) => Promise<unknown>) => callback(dbStub),
     select: vi.fn((selection: Record<string, unknown> = {}) => ({
-      from: vi.fn(() => buildQuery(selection)),
+      from: vi.fn((table: Parameters<typeof getTableName>[0]) =>
+        buildQuery(selection, getTableName(table) === "chat_conversations", getTableName(table) === "issue_recovery_actions")),
     })),
     insert: vi.fn(() => ({ values: vi.fn(async () => undefined) })),
   };
   return dbStub;
 }
 
-async function createApp(actor: Record<string, unknown>, db?: unknown) {
+async function createApp(
+  actor: Record<string, unknown>,
+  db?: unknown,
+  options: { chatRunRetries?: typeof mockChatRunRetries } = {},
+) {
   const routeDb = db ?? createRunContextDb(
     {},
     typeof actor.agentId === "string" ? actor.agentId : ownerAgentId,
@@ -379,7 +400,7 @@ async function createApp(actor: Record<string, unknown>, db?: unknown) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes(routeDb as any, mockStorageService as any));
+  app.use("/api", issueRoutes(routeDb as any, mockStorageService as any, options));
   app.use(errorHandler);
   return app;
 }
@@ -434,6 +455,8 @@ describe("agent issue mutation checkout ownership", () => {
     vi.doUnmock("../middleware/index.js");
     registerRouteMocks();
     vi.clearAllMocks();
+    mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
+    mockChatRunRetries.processFailedChatRunRetry.mockReset();
     mockAccessService.canUser.mockReset();
     mockAccessService.decide.mockReset();
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
@@ -870,6 +893,7 @@ describe("agent issue mutation checkout ownership", () => {
       "I can respond here.",
       expect.any(Object),
       expect.any(Object),
+      expect.any(Object),
     );
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
@@ -890,6 +914,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       issueId,
       "I was not mentioned.",
+      expect.any(Object),
       expect.any(Object),
       expect.any(Object),
     );
@@ -1580,6 +1605,7 @@ describe("agent issue mutation checkout ownership", () => {
       "progress update",
       expect.any(Object),
       expect.any(Object),
+      expect.any(Object),
     );
     expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalled();
     expect(mockWorkProductService.update).toHaveBeenCalledWith("product-1", { title: "Updated product" });
@@ -1964,6 +1990,435 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it.each(["active", "waiting", "completed", "unavailable", "endpoint_removed"])(
+    "rejects restoring a %s chat task before changing its issue or recovery action",
+    async (state) => {
+      const sourceIssue = makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId });
+      mockIssueService.getById.mockResolvedValue(sourceIssue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...sourceIssue,
+        ...patch,
+      }));
+      mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+        id: recoveryActionId,
+        status: "active",
+        ownerType: "board",
+        ownerAgentId: null,
+        returnOwnerAgentId: ownerAgentId,
+        evidence: { runId: ownerRunId },
+      });
+      const db = createRunContextDb({}, ownerAgentId, ownerRunId, [{
+        id: "88888888-8888-4888-8888-888888888888",
+        companyId,
+        issueId,
+        state,
+      }]);
+
+      const res = await request(await createApp(boardActor(), db))
+        .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus: "todo" });
+
+      expect.soft(res.status).toBe(409);
+      expect.soft(res.body.details?.code).toBe("chat_recovery_requires_authorized_context");
+      expect.soft(mockIssueService.update).not.toHaveBeenCalled();
+      expect.soft(mockIssueRecoveryActionService.resolveActiveForIssue).not.toHaveBeenCalled();
+      expect.soft(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      expect.soft(mockLogActivity).not.toHaveBeenCalled();
+      // This is a route-boundary test, not a fake SQL engine: inspect the
+      // actual compiled predicate so a global or active-only query cannot pass.
+      expect(db.chatBindingQueries).toHaveLength(1);
+      expect(db.chatBindingQueries[0].sql).toBe(
+        '("chat_conversations"."company_id" = $1 and "chat_conversations"."issue_id" = $2)',
+      );
+      expect(db.chatBindingQueries[0].params).toEqual([companyId, issueId]);
+    },
+  );
+
+  describe("exact chat recovery retry", () => {
+    const chatRetryActionId = "99999999-9999-4999-8999-999999999999";
+    const retryRequest = {
+      actionId: recoveryActionId,
+      outcome: "restored",
+      sourceIssueStatus: "todo",
+    };
+
+    function setupChatRecovery(overrides: Record<string, unknown> = {}) {
+      const sourceIssue = makeIssue({
+        status: "blocked",
+        assigneeAgentId: ownerAgentId,
+      });
+      mockIssueService.getById.mockResolvedValue(sourceIssue);
+      mockIssueService.update.mockImplementation(
+        async (_id: string, patch: Record<string, unknown>) => ({
+          ...sourceIssue,
+          ...patch,
+        }),
+      );
+      mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+        id: recoveryActionId,
+        status: "active",
+        ownerType: "board",
+        ownerAgentId: null,
+        returnOwnerAgentId: ownerAgentId,
+        evidence: { runId: ownerRunId },
+        ...overrides,
+      });
+      const db = createRunContextDb({}, ownerAgentId, ownerRunId, [
+        {
+          id: "88888888-8888-4888-8888-888888888888",
+          companyId,
+          issueId,
+          state: "active",
+        },
+      ]);
+      const order: string[] = [];
+      const transaction = db.transaction;
+      db.transaction = async (callback) => {
+        order.push("begin");
+        try {
+          const result = await transaction(callback);
+          order.push("commit");
+          return result;
+        } catch (error) {
+          order.push("rollback");
+          throw error;
+        }
+      };
+      mockChatRunRetries.prepareFailedChatRunRetry.mockImplementation(
+        async () => {
+          order.push("stage");
+          expect(mockIssueService.update).not.toHaveBeenCalled();
+          expect(
+            mockIssueRecoveryActionService.resolveActiveForIssue,
+          ).not.toHaveBeenCalled();
+          return { actionId: chatRetryActionId, issueId };
+        },
+      );
+      mockChatRunRetries.processFailedChatRunRetry.mockImplementation(
+        async () => {
+          order.push("dispatch");
+          expect(
+            mockIssueRecoveryActionService.resolveActiveForIssue,
+          ).toHaveBeenCalledTimes(1);
+          return {
+            actionId: chatRetryActionId,
+            issueId,
+            runId: null,
+            status: "deferred",
+          };
+        },
+      );
+      return { db, order, sourceIssue };
+    }
+
+    it("stages immutable recovery evidence before resolution and accepts deferred dispatch", async () => {
+      const { db, order } = setupChatRecovery();
+      const res = await request(
+        await createApp(boardActor(), db, {
+          chatRunRetries: mockChatRunRetries,
+        }),
+      )
+        .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send(retryRequest);
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.issue).toMatchObject({
+        id: issueId,
+        status: "todo",
+        activeRecoveryAction: null,
+      });
+      expect(
+        mockChatRunRetries.prepareFailedChatRunRetry,
+      ).toHaveBeenCalledExactlyOnceWith(db, {
+        companyId,
+        issueId,
+        agentId: ownerAgentId,
+        failedRunId: ownerRunId,
+        initiatedByUserId: "board-user",
+      });
+      expect(mockIssueService.update).toHaveBeenCalledExactlyOnceWith(
+        issueId,
+        expect.objectContaining({ status: "todo" }),
+        db,
+        expect.any(Array),
+      );
+      expect(
+        mockIssueRecoveryActionService.resolveActiveForIssue,
+      ).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          companyId,
+          sourceIssueId: issueId,
+          actionId: recoveryActionId,
+        }),
+        db,
+      );
+      expect(
+        mockChatRunRetries.processFailedChatRunRetry,
+      ).toHaveBeenCalledExactlyOnceWith(chatRetryActionId);
+      expect(order).toEqual(["begin", "stage", "commit", "dispatch"]);
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      expect(db.chatBindingQueries[0].params).toEqual([companyId, issueId]);
+    });
+
+    it("keeps committed recovery resolution successful when immediate dispatch rejects", async () => {
+      const { db, order } = setupChatRecovery();
+      mockChatRunRetries.processFailedChatRunRetry.mockImplementation(
+        async () => {
+          order.push("dispatch");
+          throw new Error("PRIVATE immediate dispatch failure");
+        },
+      );
+      const res = await request(
+        await createApp(boardActor(), db, {
+          chatRunRetries: mockChatRunRetries,
+        }),
+      )
+        .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send(retryRequest);
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body.issue).toMatchObject({
+        id: issueId,
+        status: "todo",
+        activeRecoveryAction: null,
+      });
+      expect(res.body.recoveryAction).toMatchObject({
+        id: recoveryActionId,
+        status: "resolved",
+      });
+      expect(order).toEqual(["begin", "stage", "commit", "dispatch"]);
+      expect(
+        mockChatRunRetries.prepareFailedChatRunRetry,
+      ).toHaveBeenCalledTimes(1);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(
+        mockIssueRecoveryActionService.resolveActiveForIssue,
+      ).toHaveBeenCalledTimes(1);
+      expect(
+        mockChatRunRetries.processFailedChatRunRetry,
+      ).toHaveBeenCalledExactlyOnceWith(chatRetryActionId);
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      expect(res.text).not.toContain("PRIVATE");
+    });
+
+    it("does not mutate issue, recovery action, or wake after exact source authorization refuses", async () => {
+      const { db, order } = setupChatRecovery();
+      const { HttpError: CurrentHttpError } =
+        await vi.importActual<typeof import("../errors.js")>("../errors.js");
+      mockChatRunRetries.prepareFailedChatRunRetry.mockRejectedValue(
+        new CurrentHttpError(
+          409,
+          "The original conversation generation is retired",
+          { code: "chat_retry_source_denied" },
+        ),
+      );
+      const res = await request(
+        await createApp(boardActor(), db, {
+          chatRunRetries: mockChatRunRetries,
+        }),
+      )
+        .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send(retryRequest);
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.details?.code).toBe("chat_retry_source_denied");
+      expect(order).toEqual(["begin", "rollback"]);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(
+        mockIssueRecoveryActionService.resolveActiveForIssue,
+      ).not.toHaveBeenCalled();
+      expect(
+        mockChatRunRetries.processFailedChatRunRetry,
+      ).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it("does not dispatch staged retry if the recovery-resolution transaction aborts", async () => {
+      const { db, order } = setupChatRecovery();
+      mockIssueRecoveryActionService.resolveActiveForIssue.mockResolvedValue(
+        null,
+      );
+      const res = await request(
+        await createApp(boardActor(), db, {
+          chatRunRetries: mockChatRunRetries,
+        }),
+      )
+        .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send(retryRequest);
+      expect(res.status, JSON.stringify(res.body)).toBe(404);
+      expect(
+        mockChatRunRetries.prepareFailedChatRunRetry,
+      ).toHaveBeenCalledTimes(1);
+      expect(order).toEqual(["begin", "stage", "rollback"]);
+      // The real DB owns rollback of prepared intent and issue changes. This
+      // route stub proves both writes share its transaction and no worker ran.
+      expect(mockIssueService.update.mock.calls[0]?.[2]).toBe(db);
+      expect(
+        mockIssueRecoveryActionService.resolveActiveForIssue,
+      ).toHaveBeenCalledExactlyOnceWith(expect.any(Object), db);
+      expect(
+        mockChatRunRetries.processFailedChatRunRetry,
+      ).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      expect(mockLogActivity).not.toHaveBeenCalled();
+    });
+
+    it.each([undefined, {}, { runId: null }, { runId: "not-a-run-id" }])(
+      "rejects missing or invalid server recovery evidence: %j",
+      async (evidence) => {
+        const { db } = setupChatRecovery({ evidence });
+        const res = await request(
+          await createApp(boardActor(), db, {
+            chatRunRetries: mockChatRunRetries,
+          }),
+        )
+          .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+          .send(retryRequest);
+        expect(res.status, JSON.stringify(res.body)).toBe(409);
+        expect(res.body.details?.code).toBe(
+          "chat_recovery_requires_authorized_context",
+        );
+        expect(
+          mockChatRunRetries.prepareFailedChatRunRetry,
+        ).not.toHaveBeenCalled();
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+        expect(
+          mockIssueRecoveryActionService.resolveActiveForIssue,
+        ).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      { failedRunId: peerAgentId },
+      {
+        payload: {
+          issueId: peerAgentId,
+          wakeCommentId: "forged",
+          taskKey: "forged",
+        },
+      },
+      { initiatedByUserId: "forged-user" },
+    ])(
+      "rejects caller-supplied retry context before resolution: %j",
+      async (override) => {
+        const { db } = setupChatRecovery();
+        const res = await request(
+          await createApp(boardActor(), db, {
+            chatRunRetries: mockChatRunRetries,
+          }),
+        )
+          .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+          .send({ ...retryRequest, ...override });
+        expect(res.status, JSON.stringify(res.body)).toBe(400);
+        expect(
+          mockChatRunRetries.prepareFailedChatRunRetry,
+        ).not.toHaveBeenCalled();
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+        expect(
+          mockIssueRecoveryActionService.resolveActiveForIssue,
+        ).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      },
+    );
+
+    it("rejects a stale recovery action selector before retry staging", async () => {
+      const { db } = setupChatRecovery();
+      const res = await request(
+        await createApp(boardActor(), db, {
+          chatRunRetries: mockChatRunRetries,
+        }),
+      )
+        .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send({ ...retryRequest, actionId: peerAgentId });
+      expect(res.status).toBe(404);
+      expect(
+        mockChatRunRetries.prepareFailedChatRunRetry,
+      ).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(
+        mockIssueRecoveryActionService.resolveActiveForIssue,
+      ).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it.each(["agent", "company", "issue-read"])(
+      "denies %s authority before exact retry staging",
+      async (denial) => {
+        const { db } = setupChatRecovery();
+        const actor =
+          denial === "agent"
+            ? ownerActor()
+            : {
+                ...boardActor(),
+                source: "session",
+                companyIds: denial === "company" ? [] : [companyId],
+              };
+        if (denial === "issue-read")
+          mockAccessService.decide.mockResolvedValue({
+            allowed: false,
+            reason: "deny_policy_restricted",
+            explanation: "Issue read denied",
+          });
+        const res = await request(
+          await createApp(actor, db, { chatRunRetries: mockChatRunRetries }),
+        )
+          .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+          .send(retryRequest);
+        if (denial === "agent") {
+          expect(res.status, JSON.stringify(res.body)).toBe(409);
+          expect(res.body.details?.code).toBe(
+            "chat_recovery_requires_authorized_context",
+          );
+        } else {
+          expect([403, 404]).toContain(res.status);
+        }
+        expect(
+          mockChatRunRetries.prepareFailedChatRunRetry,
+        ).not.toHaveBeenCalled();
+        expect(mockIssueService.update).not.toHaveBeenCalled();
+        expect(
+          mockIssueRecoveryActionService.resolveActiveForIssue,
+        ).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  it.each(["done", "in_review"])(
+    "keeps non-retry %s recovery resolution available for chat tasks",
+    async (sourceIssueStatus) => {
+      const sourceIssue = makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId });
+      mockIssueService.getById.mockResolvedValue(sourceIssue);
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...sourceIssue,
+        ...patch,
+      }));
+      mockIssueRecoveryActionService.getActiveForIssue.mockResolvedValue({
+        id: recoveryActionId,
+        status: "active",
+        ownerType: "board",
+        ownerAgentId: null,
+        returnOwnerAgentId: ownerAgentId,
+      });
+      const db = createRunContextDb({}, ownerAgentId, ownerRunId, [{
+        id: "88888888-8888-4888-8888-888888888888",
+        companyId,
+        issueId,
+        state: "completed",
+      }]);
+
+      const res = await request(await createApp(boardActor(), db))
+        .post(`/api/issues/${issueId}/recovery-actions/resolve`)
+        .send({ actionId: recoveryActionId, outcome: "restored", sourceIssueStatus });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+      expect(mockIssueRecoveryActionService.resolveActiveForIssue).toHaveBeenCalledTimes(1);
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+      expect(db.chatBindingQueries).toEqual([]);
+    },
+  );
+
   it.each([
     ["checkoutRunId", ownerRunId],
     ["executionRunId", ownerRunId],
@@ -2174,6 +2629,7 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.addComment).toHaveBeenCalledWith(
         issueId,
         "Watchdog finding",
+        expect.any(Object),
         expect.any(Object),
         expect.any(Object),
       );

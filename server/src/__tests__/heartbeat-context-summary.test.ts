@@ -7,6 +7,225 @@ import {
 } from "../services/heartbeat.js";
 
 describe("buildPaperclipTaskMarkdown", () => {
+  it("surfaces every coalesced wake comment in provider order", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-burst",
+        identifier: "PAP-5000",
+        title: "Handle a chat burst",
+        workMode: "standard",
+        description: "Original request",
+      },
+      wakeComment: {
+        id: "comment-3",
+        body: "burst-four",
+      },
+      wakeComments: [
+        { id: "comment-1", body: "burst-two" },
+        { id: "comment-2", body: "burst-three" },
+        { id: "comment-3", body: "burst-four" },
+      ],
+    });
+
+    expect(markdown).toContain(
+      "Address every comment in order. You may answer them together, but do not silently omit any comment.",
+    );
+    expect(markdown).toContain("Pending wake comments (oldest to newest):");
+    expect(markdown).not.toContain("Latest wake comment:");
+    expect(markdown!.indexOf("burst-two")).toBeLessThan(
+      markdown!.indexOf("burst-three"),
+    );
+    expect(markdown!.indexOf("burst-three")).toBeLessThan(
+      markdown!.indexOf("burst-four"),
+    );
+  });
+
+  it("surfaces exact wake-comment attachment descriptors and inspection guidance", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-attachments",
+        identifier: "PAP-5001",
+        title: "Inspect provider files",
+        workMode: "standard",
+        description: null,
+      },
+      wakeComments: [
+        {
+          id: "comment-files",
+          body: "Identify the image and quote the text file.",
+          attachments: [
+            {
+              id: "attachment-image",
+              filename: "evidence.png",
+              contentType: "image/png",
+              byteSize: 2048,
+              contentPath: "/api/attachments/attachment-image/content",
+            },
+            {
+              id: "attachment-text",
+              filename: "phrase.txt",
+              contentType: "text/plain",
+              byteSize: 128,
+              contentPath: "/api/attachments/attachment-text/content",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(markdown).toContain(
+      'Attachments on wake comment "comment-files":',
+    );
+    expect(markdown).toContain('"id":"attachment-image"');
+    expect(markdown).toContain('"filename":"phrase.txt"');
+    expect(markdown).toContain(
+      '"contentPath":"/api/attachments/attachment-text/content"',
+    );
+    expect(markdown).toContain("PAPERCLIP_API_URL");
+    expect(markdown).toContain("PAPERCLIP_API_KEY");
+    expect(markdown).toContain("never invoke `npx`");
+    expect(markdown).toContain(
+      "Do not infer file contents from filenames or metadata",
+    );
+  });
+
+  it.each(["slack", "discord", "telegram", "microsoft-teams", "github"])(
+    "directs %s file replies through the bundled artifact handoff",
+    (externalChatProvider) => {
+      const markdown = buildPaperclipTaskMarkdown({
+        issue: {
+          id: "issue-file-reply",
+          title: "Send the requested image and file",
+          workMode: "standard",
+          description: null,
+        },
+        externalChatProvider,
+      });
+      expect(markdown).toContain("External chat file delivery:");
+      expect(markdown).toContain("paperclip-upload-artifact.sh --chat-comment");
+      expect(markdown).toContain("installed skill location, not the task workspace");
+      expect(markdown).toContain("Do not search for a separate provider tool connection");
+      expect(markdown).toContain("do not claim provider delivery merely because binding succeeded");
+      expect(markdown).toContain(
+        "one helper command per file into as few tool calls as practical",
+      );
+      expect(markdown).toContain("do not manually bind the same file again");
+      expect(markdown).toContain(
+        "Retry or investigate only a failed or ambiguous step",
+      );
+    },
+  );
+
+  it("omits external file handoff instructions from non-chat tasks", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-internal",
+        title: "An internal task",
+        workMode: "standard",
+        description: null,
+      },
+    });
+    expect(markdown).not.toContain("External chat file delivery:");
+    expect(markdown).not.toContain("External chat turn efficiency:");
+  });
+
+  it.each(["slack", "discord", "telegram", "microsoft-teams", "github"])(
+    "directs native %s files through scoped tools without legacy credentials",
+    (externalChatProvider) => {
+      const markdown = buildPaperclipTaskMarkdown({
+        issue: {
+          id: "native-files",
+          title: "Inspect and share requested files",
+          workMode: "standard",
+          description: null,
+        },
+        externalChatProvider,
+        nativeRunner: true,
+        wakeComments: [{
+          id: "native-file-comment",
+          body: "Inspect this image, then send the requested file.",
+          attachments: [{
+            id: "native-attachment",
+            filename: "image.png",
+            contentType: "image/png",
+            byteSize: 2048,
+            contentPath: "/api/attachments/native-attachment/content",
+          }],
+        }],
+      });
+      expect(markdown).toContain("`register_deliverable`");
+      expect(markdown).toContain("workspace-relative `contentRef`");
+      expect(markdown).toContain("do not confirm provider delivery");
+      expect(markdown).toContain("Register or reuse only the requested files");
+      expect(markdown).toContain("`list_chat_attachments`");
+      expect(markdown).toContain("`reuse_chat_attachment`");
+      expect(markdown).toContain(
+        "never substitute an earlier file for unavailable current-turn input",
+      );
+      expect(markdown).toContain("workspace-relative staged attachment descriptors");
+      expect(markdown).toContain("clearly state that you could not inspect it");
+      expect(markdown).toContain("batch independent reads/inspection with the appropriate available tools");
+      expect(markdown).toContain("Compute exact sizes and SHA-256 hashes in the same preparation step");
+      expect(markdown).toContain("batch independent per-file registrations into as few tool calls as practical");
+      expect(markdown).toContain("one registration and a distinct stable idempotencyKey per file");
+      expect(markdown).toContain("wait for each receipt before the final-response protocol");
+      expect(markdown).toContain("retry only a failed or ambiguous step with its original key");
+      expect(markdown).toContain("current source/generation authorization, exact-byte reuse, or approval gates");
+      expect(markdown).toContain("skip a separate preamble and narration before each step");
+      expect(markdown).toContain("Keep useful wait, blocker, permission, and failure updates");
+      expect(markdown).toContain("do not suppress transport-managed progress");
+      expect(markdown).toContain('"id":"native-attachment"');
+      expect(markdown).not.toContain("paperclip-upload-artifact.sh");
+      expect(markdown).not.toContain("PAPERCLIP_API_KEY");
+      expect(markdown).not.toContain("/api/attachments/");
+    },
+  );
+
+  it.each([
+    { nativeRunner: false, externalChatProvider: "slack" },
+    { nativeRunner: true, externalChatProvider: null },
+  ])("keeps native media batching out of unrelated instruction paths: %j", (mode) => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: { id: "other-workflow", identifier: null, title: "Other work" },
+      ...mode,
+    });
+    expect(markdown).not.toContain("batch independent per-file registrations");
+    expect(markdown).not.toContain("skip a separate preamble and narration before each step");
+  });
+
+  it("does not imply that GitHub chat grants attachment or repository-tool access", () => {
+    const markdown = buildPaperclipTaskMarkdown({
+      issue: {
+        id: "issue-github-chat",
+        identifier: "PAP-5002",
+        title: "Inspect a GitHub comment",
+        workMode: "standard",
+        description: null,
+      },
+      wakeComments: [
+        {
+          id: "comment-github",
+          body: "Inspect https://user-images.githubusercontent.com/example/file.png",
+        },
+      ],
+      externalChatProvider: "github",
+    });
+
+    expect(markdown).toContain("GitHub chat attachment note:");
+    expect(markdown).toContain(
+      "does not grant repository-tool or attachment-download authority",
+    );
+    expect(markdown).toContain(
+      "do not ask for another chat connection",
+    );
+    expect(markdown).toContain(
+      "attach the file directly to this Paperclip task or paste the needed text",
+    );
+    expect(markdown).toContain(
+      "Never borrow browser cookies or forward credentials to an attachment URL",
+    );
+  });
+
   it("adds planning directives for assignment and comment task context", () => {
     const assignment = buildPaperclipTaskMarkdown({
       issue: {

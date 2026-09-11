@@ -13,7 +13,6 @@ import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
 import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
-import { AgentActionButtons } from "../components/AgentActionButtons";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
@@ -442,22 +441,6 @@ export function Agents() {
               <span className="w-20 flex justify-end">
                 <AgentStatusBadge status={agent.status} />
               </span>
-              {/* Row actions mirror the agent detail page; stop the click
-                  from bubbling to the row link so buttons don't navigate.
-                  Hidden on mobile so the agent name keeps room to render. */}
-              <div
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-              >
-                <AgentActionButtons
-                  agent={agent}
-                  companyId={selectedCompanyId}
-                  runLabel="Run Heartbeat"
-                  showStatus={false}
-                />
-              </div>
               <StarToggle
                 size="row"
                 starred={agentStarred}

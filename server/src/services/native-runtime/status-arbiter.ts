@@ -1,6 +1,6 @@
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
 
-export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v3";
+export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v4";
 
 export type NativeAuthoritativeIssueStatus =
   | "backlog"
@@ -28,14 +28,28 @@ export type NativeStatusEffect =
   | { kind: "notify_owner"; agentId: string; reason: string }
   | {
       kind: "enqueue_continuation";
-      continuationKind: "same_agent" | "retry" | "delegated_issue" | "response_wake" | "monitor";
+      continuationKind:
+        | "same_agent"
+        | "retry"
+        | "delegated_issue"
+        | "response_wake"
+        | "monitor";
       summary: string;
       idempotencyKey: string;
       agentId: string;
     }
-  | { kind: "bind_blocker"; owner: { agentId: string } | "board"; action: string }
+  | {
+      kind: "bind_blocker";
+      owner: { agentId: string } | "board";
+      action: string;
+    }
   | { kind: "schedule_retry"; cause: string; summary: string; agentId: string }
-  | { kind: "record_finalization_error"; cause: string; nextAction: string; agentId: string }
+  | {
+      kind: "record_finalization_error";
+      cause: string;
+      nextAction: string;
+      agentId: string;
+    }
   | { kind: "release_run_resources" }
   | { kind: "create_delegated_issue"; agentId: string; summary: string }
   | { kind: "accept_replacement_turn" }
@@ -55,7 +69,12 @@ export type NativeStatusEffect =
   | { kind: "record_expiry" }
   | { kind: "record_stale_response" }
   | { kind: "link_canonical_request" }
-  | { kind: "record_recovery"; cause: string; nextAction: string; agentId: string }
+  | {
+      kind: "record_recovery";
+      cause: string;
+      nextAction: string;
+      agentId: string;
+    }
   | { kind: "release_checkout" };
 
 export interface NativeStatusDecision {
@@ -63,7 +82,10 @@ export interface NativeStatusDecision {
   statusAction: NativeAuthoritativeIssueStatus | "preserve";
   toStatus: NativeAuthoritativeIssueStatus;
   reasonCode: string | null;
-  unblockDescriptor: { owner: { agentId: string } | "board"; action: string } | null;
+  unblockDescriptor: {
+    owner: { agentId: string } | "board";
+    action: string;
+  } | null;
   effects: NativeStatusEffect[];
 }
 
@@ -83,6 +105,10 @@ export function arbitrateNativeStatus(input: {
   hasUnresolvedIssueBlockers?: boolean;
   /** A governance interaction created by this run was accepted before the run settled. */
   governanceResolvedForRun?: boolean;
+  externalChatResponseWaitAuthorization?:
+    "authorized" | "revoked" | "not_applicable";
+  boardResponseWaitAuthorized?: boolean;
+  boardResponseWaitOrigin?: boolean;
   reviewOwnerUserId?: string | null;
   agentId: string;
   priorIssueStatus: NativeAuthoritativeIssueStatus;
@@ -104,12 +130,15 @@ export function arbitrateNativeStatus(input: {
       toStatus: input.priorIssueStatus,
       reasonCode: "finalization_failed_claim_preserved",
       unblockDescriptor: null,
-      effects: [{
-        kind: "record_finalization_error",
-        cause: "workspace_finalization_failed",
-        nextAction: "Repair and re-run workspace finalization for the persisted native result.",
-        agentId: input.agentId,
-      }],
+      effects: [
+        {
+          kind: "record_finalization_error",
+          cause: "workspace_finalization_failed",
+          nextAction:
+            "Repair and re-run workspace finalization for the persisted native result.",
+          agentId: input.agentId,
+        },
+      ],
     };
   }
   if (input.terminalState !== "succeeded") {
@@ -129,18 +158,21 @@ export function arbitrateNativeStatus(input: {
       toStatus: input.priorIssueStatus,
       reasonCode: "run_failed_partial_evidence_preserved",
       unblockDescriptor: null,
-      effects: [{
-        kind: "schedule_retry",
-        cause: "native_run_failed",
-        summary: "Resume the persisted native run without opening a second provider session.",
-        agentId: input.agentId,
-      }],
+      effects: [
+        {
+          kind: "schedule_retry",
+          cause: "native_run_failed",
+          summary:
+            "Resume the persisted native run without opening a second provider session.",
+          agentId: input.agentId,
+        },
+      ],
     };
   }
   if (input.governanceGate) {
     if (
-      input.assessment.reportedDisposition === "yielded"
-      && input.assessment.continuation?.kind === "response_wake"
+      input.assessment.reportedDisposition === "yielded" &&
+      input.assessment.continuation?.kind === "response_wake"
     ) {
       return {
         policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -162,16 +194,24 @@ export function arbitrateNativeStatus(input: {
       unblockDescriptor: null,
       effects: [
         { kind: "create_interaction", gate: input.governanceGate },
-        { kind: "notify_owner", agentId: input.agentId, reason: "governed_gate_pending" },
+        {
+          kind: "notify_owner",
+          agentId: input.agentId,
+          reason: "governed_gate_pending",
+        },
       ],
     };
   }
   if (
-    input.governanceResolvedForRun === true
-    && ["needs_review", "blocked"].includes(input.assessment.reportedDisposition)
-    && input.assessment.attentionRequests.length > 0
-    && input.assessment.attentionRequests.every((request) =>
-      request.ownerClass === "human" && ["review", "approval"].includes(request.kind)
+    input.governanceResolvedForRun === true &&
+    ["needs_review", "blocked"].includes(
+      input.assessment.reportedDisposition,
+    ) &&
+    input.assessment.attentionRequests.length > 0 &&
+    input.assessment.attentionRequests.every(
+      (request) =>
+        request.ownerClass === "human" &&
+        ["review", "approval"].includes(request.kind),
     )
   ) {
     return {
@@ -188,10 +228,12 @@ export function arbitrateNativeStatus(input: {
     };
   }
   if (
-    input.hasUnresolvedIssueBlockers === true
-    && ["done", "blocked"].includes(input.assessment.reportedDisposition)
+    input.hasUnresolvedIssueBlockers === true &&
+    ["done", "blocked"].includes(input.assessment.reportedDisposition)
   ) {
-    const owner = input.assessment.blocker?.boardOwned ? "board" as const : { agentId: input.agentId };
+    const owner = input.assessment.blocker?.boardOwned
+      ? ("board" as const)
+      : { agentId: input.agentId };
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "blocked",
@@ -199,8 +241,9 @@ export function arbitrateNativeStatus(input: {
       reasonCode: "durable_dependency_blocker_bound",
       unblockDescriptor: {
         owner,
-        action: input.assessment.blocker?.unblockAction
-          ?? "Wait for the issue's durable dependency blockers to complete.",
+        action:
+          input.assessment.blocker?.unblockAction ??
+          "Wait for the issue's durable dependency blockers to complete.",
       },
       // Dependency completion owns the wake. Do not immediately rerun the
       // blocked issue merely because the provider mislabeled its scope/status.
@@ -221,7 +264,9 @@ export function arbitrateNativeStatus(input: {
     input.assessment.contractRevisionMatches &&
     input.assessment.objectiveClaimSatisfied &&
     input.assessment.criterionAssessments.length > 0 &&
-    input.assessment.criterionAssessments.every((entry) => entry.claimStatus === "satisfied") &&
+    input.assessment.criterionAssessments.every(
+      (entry) => entry.claimStatus === "satisfied",
+    ) &&
     !input.assessment.hasFailedVerification &&
     input.assessment.attentionRequests.length === 0 &&
     !input.assessment.hasBlockingRemainingWork;
@@ -239,23 +284,27 @@ export function arbitrateNativeStatus(input: {
     };
   }
   if (
-    input.assessment.reportedDisposition === "needs_review"
-    || input.assessment.reportedDisposition === "done"
-    || input.assessment.attentionRequests.length > 0
+    input.assessment.reportedDisposition === "needs_review" ||
+    input.assessment.reportedDisposition === "done" ||
+    input.assessment.attentionRequests.length > 0
   ) {
     const failedVerification = input.assessment.verificationAssessments
       .filter((entry) => entry.claimStatus === "failed")
       .map((entry) => entry.commandOrCheck);
-    const unrunVerification = input.assessment.verificationCaveats
-      .map((entry) => entry.commandOrCheck);
-    const attention = input.assessment.attentionRequests.map((entry) => entry.summary);
-    const reasonCode = failedVerification.length > 0
-      ? "completion_claim_conflict"
-      : attention.length > 0
-        ? "actionable_attention_pending"
-        : input.completionClaimPolicyAccepted === true
-          ? "completion_claim_incomplete"
-          : "external_verification_required";
+    const unrunVerification = input.assessment.verificationCaveats.map(
+      (entry) => entry.commandOrCheck,
+    );
+    const attention = input.assessment.attentionRequests.map(
+      (entry) => entry.summary,
+    );
+    const reasonCode =
+      failedVerification.length > 0
+        ? "completion_claim_conflict"
+        : attention.length > 0
+          ? "actionable_attention_pending"
+          : input.completionClaimPolicyAccepted === true
+            ? "completion_claim_incomplete"
+            : "external_verification_required";
     const reviewReasons = [
       ...failedVerification.map((value) => `Failed verification: ${value}`),
       ...unrunVerification.map((value) => `Verification not run: ${value}`),
@@ -264,15 +313,24 @@ export function arbitrateNativeStatus(input: {
     const reviewPrompt = [
       "Review the persisted native-run evidence and confirm whether this issue may be completed.",
       ...reviewReasons.slice(0, 5),
-    ].join("\n").slice(0, 1_000);
+    ]
+      .join("\n")
+      .slice(0, 1_000);
     const detailsMarkdown = [
-      reviewReasons.length > 0 ? `## Missing or conflicting verification\n${reviewReasons.map((value) => `- ${value}`).join("\n")}` : null,
+      reviewReasons.length > 0
+        ? `## Missing or conflicting verification\n${reviewReasons.map((value) => `- ${value}`).join("\n")}`
+        : null,
       input.assessment.acceptedEvidenceRefs.length > 0
         ? `## Accepted evidence\n${input.assessment.acceptedEvidenceRefs.map((value) => `- \`${value}\``).join("\n")}`
         : "## Accepted evidence\nNo durable accepted evidence was recorded.",
-    ].filter(Boolean).join("\n\n").slice(0, 20_000);
-    const requestedAgentOwner = input.assessment.attentionRequests
-      .find((entry) => entry.ownerClass === "agent" && entry.targetAgentId)?.targetAgentId ?? null;
+    ]
+      .filter(Boolean)
+      .join("\n\n")
+      .slice(0, 20_000);
+    const requestedAgentOwner =
+      input.assessment.attentionRequests.find(
+        (entry) => entry.ownerClass === "agent" && entry.targetAgentId,
+      )?.targetAgentId ?? null;
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "in_review",
@@ -284,56 +342,146 @@ export function arbitrateNativeStatus(input: {
           kind: "bind_reviewer",
           prompt: reviewPrompt,
           detailsMarkdown,
-          ownerUserId: requestedAgentOwner ? null : input.reviewOwnerUserId ?? null,
+          ownerUserId: requestedAgentOwner
+            ? null
+            : (input.reviewOwnerUserId ?? null),
           ownerAgentId: requestedAgentOwner,
         },
       ],
     };
   }
-  if (input.assessment.reportedDisposition === "blocked" && input.assessment.blocker) {
-    const owner = input.assessment.blocker.boardOwned ? "board" as const : { agentId: input.agentId };
+  if (
+    input.assessment.reportedDisposition === "blocked" &&
+    input.assessment.blocker
+  ) {
+    const owner = input.assessment.blocker.boardOwned
+      ? ("board" as const)
+      : { agentId: input.agentId };
     if (input.assessment.blocker.scope === "task_wide") {
       return {
         policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
         statusAction: "blocked",
         toStatus: "blocked",
         reasonCode: "task_wide_blocker_bound",
-        unblockDescriptor: { owner, action: input.assessment.blocker.unblockAction },
+        unblockDescriptor: {
+          owner,
+          action: input.assessment.blocker.unblockAction,
+        },
         effects: [
-          { kind: "bind_blocker", owner, action: input.assessment.blocker.unblockAction },
-          { kind: "notify_owner", agentId: input.agentId, reason: "task_wide_blocker_bound" },
+          {
+            kind: "bind_blocker",
+            owner,
+            action: input.assessment.blocker.unblockAction,
+          },
+          {
+            kind: "notify_owner",
+            agentId: input.agentId,
+            reason: "task_wide_blocker_bound",
+          },
         ],
       };
     }
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
-      statusAction: "in_progress",
-      toStatus: "in_progress",
-      reasonCode: "turn_waiting_other_track_live",
-      unblockDescriptor: null,
-      effects: [{
-        kind: "enqueue_continuation",
-        continuationKind: "same_agent",
-        summary: `Continue another productive track while resolving: ${input.assessment.blocker.unblockAction}`,
-        idempotencyKey: `native-track-blocked:${input.assessment.blocker.unblockAction}`,
-        agentId: input.agentId,
-      }],
+      statusAction: "blocked",
+      toStatus: "blocked",
+      reasonCode: "current_track_blocker_waiting",
+      // A provider's current_track label is not evidence that another
+      // authorized, productive track exists. Bind the actual unblock request
+      // without waking the same agent to repeat the blocked work or old title.
+      unblockDescriptor: {
+        owner: "board",
+        action: input.assessment.blocker.unblockAction,
+      },
+      effects: [
+        {
+          kind: "bind_blocker",
+          owner: "board",
+          action: input.assessment.blocker.unblockAction,
+        },
+      ],
     };
   }
-  if (input.assessment.reportedDisposition === "yielded" && input.assessment.continuation) {
+  if (
+    input.assessment.reportedDisposition === "yielded" &&
+    input.assessment.continuation?.kind === "response_wake" &&
+    input.externalChatResponseWaitAuthorization === "authorized"
+  ) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "in_progress",
+      toStatus: "in_progress",
+      reasonCode: "external_chat_response_waiting",
+      unblockDescriptor: null,
+      // The active, authorized provider conversation is the durable liveness
+      // path. Only its next admitted message may enqueue the response wake.
+      effects: [],
+    };
+  }
+  if (
+    input.assessment.reportedDisposition === "yielded" &&
+    input.assessment.continuation?.kind === "response_wake" &&
+    input.externalChatResponseWaitAuthorization === "revoked"
+  ) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "preserve",
+      toStatus: input.priorIssueStatus,
+      reasonCode: "external_chat_response_wait_authorization_lost",
+      unblockDescriptor: null,
+      // Revocation cannot be converted into an unrequested background run.
+      effects: [],
+    };
+  }
+  if (
+    input.assessment.reportedDisposition === "yielded" &&
+    input.assessment.continuation?.kind === "response_wake" &&
+    input.boardResponseWaitAuthorized === true
+  ) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "in_progress",
+      toStatus: "in_progress",
+      reasonCode: "board_response_waiting",
+      unblockDescriptor: null,
+      // The committer proves the current Board cause again before persisting
+      // the wait. Only a new user cause may wake this completed response.
+      effects: [],
+    };
+  }
+  if (
+    input.assessment.reportedDisposition === "yielded" &&
+    input.assessment.continuation?.kind === "response_wake" &&
+    input.boardResponseWaitOrigin
+  ) {
+    return {
+      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      statusAction: "preserve",
+      toStatus: input.priorIssueStatus,
+      reasonCode: "board_response_wait_superseded",
+      unblockDescriptor: null,
+      effects: [],
+    };
+  }
+  if (
+    input.assessment.reportedDisposition === "yielded" &&
+    input.assessment.continuation
+  ) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "in_progress",
       toStatus: "in_progress",
       reasonCode: "live_continuation_registered",
       unblockDescriptor: null,
-      effects: [{
-        kind: "enqueue_continuation",
-        continuationKind: input.assessment.continuation.kind,
-        summary: input.assessment.continuation.summary,
-        idempotencyKey: input.assessment.continuation.idempotencyKey,
-        agentId: input.agentId,
-      }],
+      effects: [
+        {
+          kind: "enqueue_continuation",
+          continuationKind: input.assessment.continuation.kind,
+          summary: input.assessment.continuation.summary,
+          idempotencyKey: input.assessment.continuation.idempotencyKey,
+          agentId: input.agentId,
+        },
+      ],
     };
   }
   if (input.allowIncompleteContinuation === false) {
@@ -343,12 +491,15 @@ export function arbitrateNativeStatus(input: {
       toStatus: input.priorIssueStatus,
       reasonCode: "prior_status_preserved_no_live_path",
       unblockDescriptor: null,
-      effects: [{
-        kind: "record_finalization_error",
-        cause: "completion_evidence_incomplete",
-        nextAction: "Bind a durable continuation or a named recovery owner before changing issue status.",
-        agentId: input.agentId,
-      }],
+      effects: [
+        {
+          kind: "record_finalization_error",
+          cause: "completion_evidence_incomplete",
+          nextAction:
+            "Bind a durable continuation or a named recovery owner before changing issue status.",
+          agentId: input.agentId,
+        },
+      ],
     };
   }
   return {
@@ -357,12 +508,15 @@ export function arbitrateNativeStatus(input: {
     toStatus: "in_progress",
     reasonCode: "completion_evidence_incomplete",
     unblockDescriptor: null,
-    effects: [{
-      kind: "enqueue_continuation",
-      continuationKind: "same_agent",
-      summary: "Continue work on the missing or unverifiable completion-contract evidence.",
-      idempotencyKey: "native-completion-incomplete",
-      agentId: input.agentId,
-    }],
+    effects: [
+      {
+        kind: "enqueue_continuation",
+        continuationKind: "same_agent",
+        summary:
+          "Continue work on the missing or unverifiable completion-contract evidence.",
+        idempotencyKey: "native-completion-incomplete",
+        agentId: input.agentId,
+      },
+    ],
   };
 }

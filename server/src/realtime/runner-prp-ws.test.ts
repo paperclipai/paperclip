@@ -1,7 +1,10 @@
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 
-import type { DurablePrpControlPlane } from "@paperclipai/paperclip-runner";
+import { DurablePrpControlPlane } from "@paperclipai/paperclip-runner";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -170,7 +173,10 @@ describe("runner PRP websocket route", () => {
     const registration = await registerRunnerPrpAuthority({
       companyId: "company-1",
       runId,
-      authority: { queueCommand } as unknown as DurablePrpControlPlane,
+      authority: {
+        queueCommand,
+        store: { state: { identity: { runId } } },
+      } as unknown as DurablePrpControlPlane,
     });
     const input = {
       companyId: "company-1",
@@ -238,6 +244,16 @@ describe("runner PRP websocket route", () => {
         },
       }),
     ).toThrowError("native_runtime_request_resolver_denied");
+    for (const pendingRequest of [
+      { ...input.pendingRequest, companyId: "company-2" },
+      { ...input.pendingRequest, runId: "00000000-0000-4000-8000-000000000783" },
+    ]) {
+      expect(() => queueRunnerPrpRuntimeRequestResolution({
+        ...input,
+        pendingRequest,
+      })).toThrowError("runner_prp_authority_not_active");
+    }
+    expect(queueCommand).toHaveBeenCalledTimes(1);
 
     await registration.release();
     expect(() => queueRunnerPrpRuntimeRequestResolution(input)).toThrowError(
@@ -245,4 +261,121 @@ describe("runner PRP websocket route", () => {
     );
     server.close();
   });
+
+  it.each([false, true])(
+    "rejects a retained old route after real authority rotation (cached=%s)",
+    async (cached) => {
+      const directory = mkdtempSync(join(tmpdir(), "runner-route-rotation-"));
+      const server = createServer();
+      setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3214" });
+      const identity = {
+        runnerInstanceId: "runner-route-test",
+        environmentLeaseId: "environment-route-test",
+        normalizedSessionId: "session-route-test",
+        runId: "00000000-0000-4000-8000-000000000781",
+        turnId: "turn-route-old",
+        itemId: "item-route-old",
+      };
+      const nextIdentity = {
+        ...identity,
+        runId: "00000000-0000-4000-8000-000000000782",
+        turnId: "turn-route-new",
+        itemId: "item-route-new",
+      };
+      try {
+        const authority = new DurablePrpControlPlane({
+          stateDirectory: directory,
+          identity,
+          expectedRunnerVersion: "0.3.0",
+          expectedRunnerDigest: `sha256:${"a".repeat(64)}`,
+        });
+        const oldRoute = await registerRunnerPrpAuthority({
+          companyId: "company-1",
+          runId: identity.runId,
+          authority,
+        });
+        // Warm attach registers the next route before rotating the same core.
+        const nextRoute = await registerRunnerPrpAuthority({
+          companyId: "company-1",
+          runId: nextIdentity.runId,
+          authority,
+        });
+        const input = {
+          companyId: "company-1",
+          runId: identity.runId,
+          pendingRequest: {
+            companyId: "company-1",
+            runId: identity.runId,
+            requestId: "request-old",
+            requestKind: "command_approval" as const,
+            turnId: "provider-turn-old",
+            resolverPolicy: "instance_admin" as const,
+          },
+          actor: {
+            type: "user" as const,
+            userId: "instance-admin",
+            isInstanceAdmin: true,
+          },
+          resolution: { action: "accept" as const },
+        };
+        const nextInput = {
+          ...input,
+          runId: nextIdentity.runId,
+          pendingRequest: {
+            ...input.pendingRequest,
+            runId: nextIdentity.runId,
+            requestId: "request-new",
+            turnId: "provider-turn-new",
+          },
+        };
+        // Registering the future URL cannot dispatch into the old authority.
+        expect(() =>
+          queueRunnerPrpRuntimeRequestResolution(nextInput),
+        ).toThrowError(
+          "runner_prp_authority_not_active",
+        );
+        expect(authority.store.state.commands).toEqual([]);
+        if (cached) {
+          const queued = queueRunnerPrpRuntimeRequestResolution(input);
+          const command = authority.store.state.commands.find(
+            (candidate) => candidate.commandId === queued.commandId,
+          )!;
+          // Represent a completed old response before the warm attachment.
+          command.status = "completed";
+          command.result = { status: "completed" };
+        }
+        authority.rotateRunIdentity(nextIdentity);
+        expect(authority.store.state.identity).toEqual(nextIdentity);
+        expect(authority.store.state.commands).toEqual([]);
+        const statePath = join(directory, "control-plane-state.json");
+        const before = readFileSync(statePath, "utf8");
+
+        expect(() => queueRunnerPrpRuntimeRequestResolution(input)).toThrowError(
+          "runner_prp_authority_not_active",
+        );
+        expect(authority.store.state.commands).toEqual([]);
+        expect(readFileSync(statePath, "utf8")).toBe(before);
+
+        const next = queueRunnerPrpRuntimeRequestResolution(nextInput);
+        expect(queueRunnerPrpRuntimeRequestResolution(nextInput)).toEqual(next);
+        expect(authority.store.state.commands).toHaveLength(1);
+        expect(authority.store.state.commands[0]).toMatchObject({
+          commandId: next.commandId,
+          type: "request.resolve",
+          payload: { requestId: "request-new", turnId: "provider-turn-new" },
+        });
+        await oldRoute.release();
+        expect(
+          runnerPrpWebSocketInternals.activeRegistration({
+            companyId: "company-1",
+            runId: nextIdentity.runId,
+          }),
+        ).toBe(true);
+        await nextRoute.release();
+      } finally {
+        server.close();
+        rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
 });

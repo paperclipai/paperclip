@@ -370,6 +370,7 @@ describe("Codex app-server Codex driver", () => {
 
     expect(recovered.recovered).toBe(true);
     expect(transportFactory).toHaveBeenCalledWith({
+      workingDirectory: snapshot.workingDirectory,
       providerRecoveryPolicy: snapshot.providerRecoveryPolicy,
       persistedSession: {
         driverSessionId: snapshot.driverSessionId,

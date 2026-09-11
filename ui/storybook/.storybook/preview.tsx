@@ -11,6 +11,7 @@ import { ONBOARDING_STORAGE_KEY } from "@/components/OnboardingWizard";
 import { STORYBOOK_COMPANY_ID } from "../fixtures/onboardingDraft";
 import {
   STORYBOOK_SANDBOX_ENVIRONMENT_ID,
+  onboardingFixtureState,
   storybookAuthSignal,
   storybookEnvironmentCapabilities,
   storybookEnvironmentTest,
@@ -204,6 +205,7 @@ function installStorybookApiFixtures() {
       /^\/api\/companies\/[^/]+\/adapters\/([^/]+)\/login-sessions(?:\/([^/]+))?(\/cancel)?$/,
     );
     if (adapterLoginMatch) {
+      if (adapterLoginMatch[2] === "active") return new Response(null, { status: 404 });
       const session = {
         sessionId: "adapter-login-storybook",
         environmentId: STORYBOOK_SANDBOX_ENVIRONMENT_ID,
@@ -248,6 +250,9 @@ function installStorybookApiFixtures() {
         expiresAt: null,
         failure: null,
       });
+    }
+    if (/^\/api\/companies\/[^/]+\/setup-token-login-sessions\/active$/.test(url.pathname)) {
+      return new Response(null, { status: 404 });
     }
     if (
       /^\/api\/companies\/[^/]+\/setup-token-login-sessions\/[^/]+$/.test(
@@ -298,7 +303,15 @@ function installStorybookApiFixtures() {
     if (
       /^\/api\/companies\/[^/]+\/claude-oauth-token-status$/.test(url.pathname)
     ) {
-      return new Response(null, { status: 404 });
+      return onboardingFixtureState.savedClaudeLogin
+        ? Response.json({ secretId: "saved-claude-subscription", latestVersion: 1 })
+        : new Response(null, { status: 404 });
+    }
+    if (/^\/api\/companies\/[^/]+\/me\/user-secrets$/.test(url.pathname)) {
+      return Response.json(onboardingFixtureState.savedApiKeys ? ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"].map((key) => ({
+        definition: { id: key, companyId: "company-storybook", key: `${key}.setup.storybook`, name: key === "ANTHROPIC_API_KEY" ? "My Claude key" : "My OpenAI key", status: "active" },
+        secret: { id: `secret-${key}`, companyId: "company-storybook", scope: "user", status: "active" },
+      })) : []);
     }
 
     // The hire, and the three calls either side of it.
@@ -315,7 +328,12 @@ function installStorybookApiFixtures() {
       /^\/api\/companies\/[^/]+\/adapters\/([^/]+)\/test-environment$/,
     );
     if (testEnvMatch) {
-      return Response.json(storybookEnvironmentTest(testEnvMatch[1]));
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+      const env = body.adapterConfig?.env ?? {};
+      const usesSavedCodex = onboardingFixtureState.savedCodexLogin && env.CODEX_HOME?.secretId === "saved-codex-home";
+      const usesSavedKey = onboardingFixtureState.savedApiKeys && ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"].some((key) => env[key]?.type === "user_secret_ref" && env[key]?.key === `${key}.setup.storybook`);
+      const usesSavedClaude = onboardingFixtureState.savedClaudeLogin && env.CLAUDE_CODE_OAUTH_TOKEN?.type === "user_secret_ref" && env.CLAUDE_CODE_OAUTH_TOKEN?.key === "CLAUDE_CODE_OAUTH_TOKEN";
+      return Response.json(usesSavedCodex || usesSavedKey || usesSavedClaude ? { adapterType: testEnvMatch[1], status: "pass", checks: [], testedAt: new Date(0).toISOString() } : storybookEnvironmentTest(testEnvMatch[1]));
     }
     if (/^\/api\/companies\/[^/]+\/agent-hires$/.test(url.pathname)) {
       // `approval: null` on purpose. A hire that returns one sends the wizard
@@ -501,7 +519,7 @@ function installStorybookApiFixtures() {
     if (secretsListMatch) {
       const [, companyId] = secretsListMatch;
       return Response.json(
-        companyId === "company-storybook" ? storybookSecrets : [],
+        companyId === "company-storybook" ? [...storybookSecrets, ...(onboardingFixtureState.savedCodexLogin ? [{ ...storybookSecrets[0], id: "saved-codex-home", key: "codex_home_saved", name: "CODEX_HOME_team-account" }] : [])] : [],
       );
     }
 

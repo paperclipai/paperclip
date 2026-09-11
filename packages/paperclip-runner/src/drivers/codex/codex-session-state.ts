@@ -1,3 +1,4 @@
+import { type CodexUsageBaseline, codexRunUsage } from "./codex-usage-baseline.js";
 import type {
   HarnessRuntimeRequest,
   HarnessThreadGoal,
@@ -105,6 +106,7 @@ export class CodexSessionState {
   sourceSequence: number;
   activeTurnId: string | null;
   usageSnapshot: Record<string, unknown> | null = null;
+  codexUsageBaseline: CodexUsageBaseline | null = null;
   result: PrpStructuredRunResult | null = null;
   resultFingerprint: string | null = null;
   resultCallId: string | null = null;
@@ -154,6 +156,7 @@ export class CodexSessionState {
     activeTurnId?: string | null;
     semanticResult?: PersistedHarnessSemanticResult | null;
     terminalTurns?: PersistedHarnessTurnTerminal[];
+    codexUsageBaseline?: CodexUsageBaseline;
     dispositionOnlyRecoveryConsumed?: boolean;
     dispositionOnlyRecoveryTurnId?: string | null;
     stalePendingRuntimeRequests?: HarnessRuntimeRequest[];
@@ -171,6 +174,8 @@ export class CodexSessionState {
     dynamicTools: readonly Readonly<Record<string, unknown>>[];
     dynamicToolHandler?: CodexAppServerDriverOptions["dynamicToolHandler"];
   }) {
+    this.codexUsageBaseline = input.codexUsageBaseline ?? null;
+    if (this.codexUsageBaseline) this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
     this.transport = input.transport;
     this.runId = input.runId;
     this.sourceSequence = 0;

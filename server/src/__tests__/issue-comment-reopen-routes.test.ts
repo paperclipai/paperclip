@@ -39,25 +39,41 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockTxInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
-const mockTxInsert = vi.hoisted(() => vi.fn(() => ({ values: mockTxInsertValues })));
+const mockTxInsert = vi.hoisted(() =>
+  vi.fn(() => ({ values: mockTxInsertValues })),
+);
 const mockTx = vi.hoisted(() => ({
   insert: mockTxInsert,
 }));
 const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
-const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
-  orderBy: mockDbSelectOrderBy,
-  then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-    Promise.resolve([]).then(onFulfilled, onRejected),
-})));
-const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
-const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
+const mockDbSelectWhere = vi.hoisted(() =>
+  vi.fn(() => ({
+    orderBy: mockDbSelectOrderBy,
+    then: (
+      onFulfilled: (rows: unknown[]) => unknown,
+      onRejected?: (reason: unknown) => unknown,
+    ) => Promise.resolve([]).then(onFulfilled, onRejected),
+  })),
+);
+const mockDbSelectFrom = vi.hoisted(() =>
+  vi.fn(() => ({ where: mockDbSelectWhere })),
+);
+const mockDbSelect = vi.hoisted(() =>
+  vi.fn(() => ({ from: mockDbSelectFrom })),
+);
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
-  transaction: vi.fn(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx)),
+  transaction: vi.fn(async (fn: (tx: typeof mockTx) => Promise<unknown>) =>
+    fn(mockTx),
+  ),
 }));
 const mockFeedbackService = vi.hoisted(() => ({
   listIssueVotesForUser: vi.fn(async () => []),
-  saveIssueVote: vi.fn(async () => ({ vote: null, consentEnabledNow: false, sharingEnabled: false })),
+  saveIssueVote: vi.fn(async () => ({
+    vote: null,
+    consentEnabledNow: false,
+    sharingEnabled: false,
+  })),
 }));
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(async () => ({
@@ -152,7 +168,9 @@ vi.mock("../services/index.js", () => ({
   companySkillService: () => ({
     completeTestRunForIssue: vi.fn(async () => null),
   }),
-  documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
+  documentAnnotationService: () => ({
+    remapOpenThreadsForDocument: async () => [],
+  }),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => mockFeedbackService,
@@ -199,7 +217,10 @@ function createApp() {
   return app;
 }
 
-async function installActor(app: express.Express, actor?: Record<string, unknown>) {
+async function installActor(
+  app: express.Express,
+  actor?: Record<string, unknown>,
+) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     import("../routes/issues.js"),
     import("../middleware/index.js"),
@@ -223,14 +244,26 @@ async function normalizePolicy(input: {
   stages: Array<{
     id: string;
     type: "review" | "approval";
-    participants: Array<{ type: "agent"; agentId: string } | { type: "user"; userId: string }>;
+    participants: Array<
+      { type: "agent"; agentId: string } | { type: "user"; userId: string }
+    >;
   }>;
 }) {
-  const { normalizeIssueExecutionPolicy } = await import("../services/issue-execution-policy.js");
+  const { normalizeIssueExecutionPolicy } =
+    await import("../services/issue-execution-policy.js");
   return normalizeIssueExecutionPolicy(input);
 }
 
-function makeIssue(status: "backlog" | "todo" | "done" | "blocked" | "cancelled" | "in_progress" | "in_review") {
+function makeIssue(
+  status:
+    | "backlog"
+    | "todo"
+    | "done"
+    | "blocked"
+    | "cancelled"
+    | "in_progress"
+    | "in_review",
+) {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
@@ -248,12 +281,20 @@ function makeIssueUpdateReceipt(
   patch: Record<string, unknown>,
 ) {
   const fields = Object.fromEntries(
-    Object.entries(patch).filter(([key]) => key !== "actorAgentId" && key !== "actorUserId"),
+    Object.entries(patch).filter(
+      ([key]) => key !== "actorAgentId" && key !== "actorUserId",
+    ),
   );
   const changes = Object.fromEntries(
     Object.entries(fields)
-      .filter(([key, value]) => !Object.is(existing[key as keyof typeof existing], value))
-      .map(([key, value]) => [key, { from: existing[key as keyof typeof existing], to: value }]),
+      .filter(
+        ([key, value]) =>
+          !Object.is(existing[key as keyof typeof existing], value),
+      )
+      .map(([key, value]) => [
+        key,
+        { from: existing[key as keyof typeof existing], to: value },
+      ]),
   );
   return { ...existing, ...fields, changes };
 }
@@ -322,13 +363,19 @@ describe.sequential("issue comment reopen routes", () => {
     mockDbSelectOrderBy.mockResolvedValue([]);
     mockDbSelectWhere.mockImplementation(() => ({
       orderBy: mockDbSelectOrderBy,
-      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-        Promise.resolve([]).then(onFulfilled, onRejected),
+      then: (
+        onFulfilled: (rows: unknown[]) => unknown,
+        onRejected?: (reason: unknown) => unknown,
+      ) => Promise.resolve([]).then(onFulfilled, onRejected),
     }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
-    mockDb.transaction.mockImplementation(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx));
-    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
+    mockDb.transaction.mockImplementation(
+      async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx),
+    );
+    mockIssueService.getByIdForUpdate.mockImplementation(async () =>
+      mockIssueService.getById(),
+    );
     mockHeartbeatService.wakeup.mockResolvedValue(undefined);
     mockHeartbeatService.reportRunActivity.mockResolvedValue(undefined);
     mockHeartbeatService.getRun.mockResolvedValue(null);
@@ -343,15 +390,24 @@ describe.sequential("issue comment reopen routes", () => {
       cap: 20,
       enforceAt: "2026-08-11T00:00:00.000Z",
     });
-    mockCrossIssueInfluenceLimitError.mockImplementation((decision: { count: number; cap: number }) => ({
-      error: `Cross-issue influence cap exceeded: this run is limited to ${decision.cap} cross-issue comments or updates`,
-      details: { code: "cross_issue_influence_cap_exceeded", count: decision.count, cap: decision.cap },
-    }));
-    mockCrossIssueInfluenceRunContextError.mockImplementation(() => new HttpError(
-      403,
-      "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
-      { code: "cross_issue_influence_run_context_required" },
-    ));
+    mockCrossIssueInfluenceLimitError.mockImplementation(
+      (decision: { count: number; cap: number }) => ({
+        error: `Cross-issue influence cap exceeded: this run is limited to ${decision.cap} cross-issue comments or updates`,
+        details: {
+          code: "cross_issue_influence_cap_exceeded",
+          count: decision.count,
+          cap: decision.cap,
+        },
+      }),
+    );
+    mockCrossIssueInfluenceRunContextError.mockImplementation(
+      () =>
+        new HttpError(
+          403,
+          "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
+          { code: "cross_issue_influence_run_context_required" },
+        ),
+    );
     mockLogActivity.mockResolvedValue(undefined);
     mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
     mockFeedbackService.saveIssueVote.mockResolvedValue({
@@ -392,18 +448,26 @@ describe.sequential("issue comment reopen routes", () => {
     });
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
-    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
-    mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
-    mockAccessService.canUser.mockResolvedValue(false);
-    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
-      const allowed = input.action !== "tasks:manage_active_checkouts";
-      return {
-        allowed,
-        action: input.action,
-        reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
-        explanation: allowed ? "Allowed by test grant." : "Missing active checkout override.",
-      };
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(
+      null,
+    );
+    mockIssueService.assertCheckoutOwner.mockResolvedValue({
+      adoptedFromRunId: null,
     });
+    mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.decide.mockImplementation(
+      async (input: { action?: string }) => {
+        const allowed = input.action !== "tasks:manage_active_checkouts";
+        return {
+          allowed,
+          action: input.action,
+          reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
+          explanation: allowed
+            ? "Allowed by test grant."
+            : "Missing active checkout override.",
+        };
+      },
+    );
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAgentService.getById.mockResolvedValue(null);
     mockAgentService.list.mockResolvedValue([
@@ -418,39 +482,49 @@ describe.sequential("issue comment reopen routes", () => {
         permissions: { canCreateAgents: false },
       },
     ]);
-    mockAgentService.resolveByReference.mockImplementation(async (_companyId: string, reference: string) => {
-      if (reference === "ambiguous-codex") {
-        return { ambiguous: true, agent: null };
-      }
-      if (reference === "missing-codex") {
-        return { ambiguous: false, agent: null };
-      }
-      if (reference === "codexcoder") {
+    mockAgentService.resolveByReference.mockImplementation(
+      async (_companyId: string, reference: string) => {
+        if (reference === "ambiguous-codex") {
+          return { ambiguous: true, agent: null };
+        }
+        if (reference === "missing-codex") {
+          return { ambiguous: false, agent: null };
+        }
+        if (reference === "codexcoder") {
+          return {
+            ambiguous: false,
+            agent: { id: "33333333-3333-4333-8333-333333333333" },
+          };
+        }
         return {
           ambiguous: false,
-          agent: { id: "33333333-3333-4333-8333-333333333333" },
+          agent: { id: reference },
         };
-      }
-      return {
-        ambiguous: false,
-        agent: { id: reference },
-      };
-    });
+      },
+    );
   });
 
   it("treats reopen=true as a no-op when the issue is already open", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("todo"),
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("todo"),
+        ...patch,
+      }),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ comment: "hello", reopen: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
+      .send({
+        comment: "hello",
+        reopen: true,
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      });
 
     expect(res.status).toBe(200);
-    expect(res.body.assigneeAgentId).toBe("33333333-3333-4333-8333-333333333333");
+    expect(res.body.assigneeAgentId).toBe(
+      "33333333-3333-4333-8333-333333333333",
+    );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -460,15 +534,89 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("binds explicit attachments in the same transaction as a PATCH comment reassignment", async () => {
+    const issue = makeIssue("todo");
+    const id = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch),
+    );
+    const res = await request(await installActor(createApp()))
+      .patch(`/api/issues/${issue.id}`)
+      .send({
+        comment: "Inspect the file",
+        attachmentIds: [id],
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      });
+    expect(res.status).toBe(200);
+    expect(mockDb.transaction).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issue.id,
+      expect.not.objectContaining({ attachmentIds: expect.anything() }),
+      mockTx,
+    );
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issue.id,
+      "Inspect the file",
+      expect.anything(),
+      expect.objectContaining({ attachmentIds: [id] }),
+      mockTx,
+    );
+  });
+
+  it("rejects attachment IDs without a PATCH comment before updating or waking", async () => {
+    const issue = makeIssue("todo");
+    mockIssueService.getById.mockResolvedValue(issue);
+    const res = await request(await installActor(createApp()))
+      .patch(`/api/issues/${issue.id}`)
+      .send({
+        attachmentIds: [],
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      });
+    expect(res.status).toBe(400);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not dispatch a wake or fallback comment when transactional attachment binding fails", async () => {
+    const issue = makeIssue("todo");
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch),
+    );
+    mockIssueService.addComment.mockRejectedValueOnce(
+      new HttpError(409, "Attachment is already bound"),
+    );
+    const res = await request(await installActor(createApp()))
+      .patch(`/api/issues/${issue.id}`)
+      .send({
+        comment: "Inspect",
+        attachmentIds: ["9af8228f-0be7-45ae-a104-6fbe0af6f1d3"],
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      });
+    expect(res.status).toBe(409);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
   it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
     const issue = makeIssue("done");
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
-      makeIssueUpdateReceipt(issue, patch));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ comment: "hello", assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
+      .send({
+        comment: "hello",
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
@@ -495,17 +643,22 @@ describe.sequential("issue comment reopen routes", () => {
 
   it("resolves assignee shortnames before updating an issue", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("todo"),
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("todo"),
+        ...patch,
+      }),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "hello", assigneeAgentId: "codexcoder" });
 
     expect(res.status).toBe(200);
-    expect(mockAgentService.resolveByReference).toHaveBeenCalledWith("company-1", "codexcoder");
+    expect(mockAgentService.resolveByReference).toHaveBeenCalledWith(
+      "company-1",
+      "codexcoder",
+    );
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({
@@ -540,12 +693,18 @@ describe.sequential("issue comment reopen routes", () => {
   it("reopens closed issues via the PATCH comment path", async () => {
     const issue = makeIssue("done");
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
-      makeIssueUpdateReceipt(issue, patch));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ comment: "hello", reopen: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
+      .send({
+        comment: "hello",
+        reopen: true,
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
@@ -573,8 +732,10 @@ describe.sequential("issue comment reopen routes", () => {
   it("implicitly reopens closed issues via POST comments when an agent is assigned", async () => {
     const issue = makeIssue("done");
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
-      makeIssueUpdateReceipt(issue, patch));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch),
+    );
 
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
@@ -585,15 +746,17 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
     );
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_reopened_via_comment",
-        payload: expect.objectContaining({
-          reopenedFrom: "done",
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "issue_reopened_via_comment",
+          payload: expect.objectContaining({
+            reopenedFrom: "done",
+          }),
         }),
-      }),
-    ));
+      ),
+    );
   });
 
   it("allows default-open non-assignee POST comments on closed issues without reopening", async () => {
@@ -608,20 +771,27 @@ describe.sequential("issue comment reopen routes", () => {
       authorAgentId: "33333333-3333-4333-8333-333333333333",
       authorUserId: null,
     });
-    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
-      allowed: input.action !== "tasks:manage_active_checkouts",
-      action: input.action,
-      reason: input.action === "issue:comment" ? "allow_visible_issue_write" : "allow_explicit_grant",
-      explanation: "Allowed by the shared visible-issue write rule.",
-    }));
+    mockAccessService.decide.mockImplementation(
+      async (input: { action?: string }) => ({
+        allowed: input.action !== "tasks:manage_active_checkouts",
+        action: input.action,
+        reason:
+          input.action === "issue:comment"
+            ? "allow_visible_issue_write"
+            : "allow_explicit_grant",
+        explanation: "Allowed by the shared visible-issue write rule.",
+      }),
+    );
 
-    const res = await request(await installActor(createApp(), {
-      type: "agent",
-      agentId: "33333333-3333-4333-8333-333333333333",
-      companyId: "company-1",
-      source: "agent_key",
-      runId: "77777777-7777-4777-8777-777777777777",
-    }))
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "77777777-7777-4777-8777-777777777777",
+      }),
+    )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "hello" });
 
@@ -644,17 +814,23 @@ describe.sequential("issue comment reopen routes", () => {
       authorAgentId: mentionedAgentId,
       authorUserId: null,
     });
-    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
-      const allowed = input.action === "issue:comment";
-      return {
-        allowed,
-        action: input.action,
-        reason: allowed ? "allow_issue_mention_grant" : "deny_missing_grant",
-        explanation: allowed ? "Allowed by a mention-scoped issue comment grant." : "Missing permission.",
-      };
-    });
+    mockAccessService.decide.mockImplementation(
+      async (input: { action?: string }) => {
+        const allowed = input.action === "issue:comment";
+        return {
+          allowed,
+          action: input.action,
+          reason: allowed ? "allow_issue_mention_grant" : "deny_missing_grant",
+          explanation: allowed
+            ? "Allowed by a mention-scoped issue comment grant."
+            : "Missing permission.",
+        };
+      },
+    );
 
-    const res = await request(await installActor(createApp(), agentActor(mentionedAgentId)))
+    const res = await request(
+      await installActor(createApp(), agentActor(mentionedAgentId)),
+    )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "I can answer the mention without reopening." });
 
@@ -662,7 +838,9 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
-    expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
+    expect(mockAccessService.decide).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "issue:mutate" }),
+    );
   });
 
   it.each([
@@ -684,17 +862,25 @@ describe.sequential("issue comment reopen routes", () => {
         authorAgentId: mentionedAgentId,
         authorUserId: null,
       });
-      mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
-        const allowed = input.action === "issue:comment";
-        return {
-          allowed,
-          action: input.action,
-          reason: allowed ? "allow_issue_mention_grant" : "deny_missing_grant",
-          explanation: allowed ? "Allowed by a mention-scoped issue comment grant." : "Missing permission.",
-        };
-      });
+      mockAccessService.decide.mockImplementation(
+        async (input: { action?: string }) => {
+          const allowed = input.action === "issue:comment";
+          return {
+            allowed,
+            action: input.action,
+            reason: allowed
+              ? "allow_issue_mention_grant"
+              : "deny_missing_grant",
+            explanation: allowed
+              ? "Allowed by a mention-scoped issue comment grant."
+              : "Missing permission.",
+          };
+        },
+      );
 
-      const res = await request(await installActor(createApp(), agentActor(mentionedAgentId)))
+      const res = await request(
+        await installActor(createApp(), agentActor(mentionedAgentId)),
+      )
         .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
         .send({ body: "Please continue this closed issue.", ...intent });
 
@@ -704,8 +890,12 @@ describe.sequential("issue comment reopen routes", () => {
       expect(res.body.error).toContain("Issue visibility");
       expect(res.body.error).toContain("Who can act:");
       expect(res.body.details.sanctionedPath).toContain("child issue");
-      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
-      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
+      expect(mockAccessService.decide).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "issue:comment" }),
+      );
+      expect(mockAccessService.decide).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "issue:mutate" }),
+      );
       expect(mockIssueService.update).not.toHaveBeenCalled();
       expect(mockIssueService.addComment).not.toHaveBeenCalled();
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
@@ -718,8 +908,10 @@ describe.sequential("issue comment reopen routes", () => {
     const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
     const issue = makeIssue("done");
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
-      makeIssueUpdateReceipt(issue, patch));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch),
+    );
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -758,10 +950,12 @@ describe.sequential("issue comment reopen routes", () => {
   it("does not reopen via POST comment+reopen when the assignee agent is the actor on a cancelled issue", async () => {
     const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
     mockIssueService.getById.mockResolvedValue(makeIssue("cancelled"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("cancelled"),
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("cancelled"),
+        ...patch,
+      }),
+    );
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -806,10 +1000,12 @@ describe.sequential("issue comment reopen routes", () => {
   it("does not reopen via PATCH comment+reopen when the assignee agent is the actor on a done issue", async () => {
     const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("done"),
+        ...patch,
+      }),
+    );
 
     const res = await request(
       await installActor(createApp(), {
@@ -841,16 +1037,20 @@ describe.sequential("issue comment reopen routes", () => {
   // themselves with comment + reopen=true still reopens as today (AC-3).
   it("still reopens a done issue via PATCH when a different agent reassigns to self with reopen=true", async () => {
     const otherAgentId = "33333333-3333-4333-8333-333333333333";
-    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
-      allowed: true,
-      action: input.action,
-      reason: "allow_explicit_grant",
-      explanation: "Allowed by test grant.",
-    }));
+    mockAccessService.decide.mockImplementation(
+      async (input: { action?: string }) => ({
+        allowed: true,
+        action: input.action,
+        reason: "allow_explicit_grant",
+        explanation: "Allowed by test grant.",
+      }),
+    );
     const issue = makeIssue("done");
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
-      makeIssueUpdateReceipt(issue, patch));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch),
+    );
 
     const res = await request(
       await installActor(createApp(), {
@@ -861,7 +1061,11 @@ describe.sequential("issue comment reopen routes", () => {
       }),
     )
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ comment: "taking over", reopen: true, assigneeAgentId: otherAgentId });
+      .send({
+        comment: "taking over",
+        reopen: true,
+        assigneeAgentId: otherAgentId,
+      });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalledWith(
@@ -886,10 +1090,12 @@ describe.sequential("issue comment reopen routes", () => {
 
   it("moves assigned blocked issues back to todo via POST comments", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("blocked"),
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("blocked"),
+        ...patch,
+      }),
+    );
 
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
@@ -900,23 +1106,25 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
     );
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_reopened_via_comment",
-        payload: expect.objectContaining({
-          commentId: "comment-1",
-          reopenedFrom: "blocked",
-          mutation: "comment",
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "issue_reopened_via_comment",
+          payload: expect.objectContaining({
+            commentId: "comment-1",
+            reopenedFrom: "blocked",
+            mutation: "comment",
+          }),
+          contextSnapshot: expect.objectContaining({
+            issueId: "11111111-1111-4111-8111-111111111111",
+            wakeCommentId: "comment-1",
+            wakeReason: "issue_reopened_via_comment",
+            reopenedFrom: "blocked",
+          }),
         }),
-        contextSnapshot: expect.objectContaining({
-          issueId: "11111111-1111-4111-8111-111111111111",
-          wakeCommentId: "comment-1",
-          wakeReason: "issue_reopened_via_comment",
-          reopenedFrom: "blocked",
-        }),
-      }),
-    ));
+      ),
+    );
   });
 
   it("moves in-progress issues with a scheduled retry back to todo via POST human comments", async () => {
@@ -937,11 +1145,13 @@ describe.sequential("issue comment reopen routes", () => {
       error: null,
       errorCode: null,
     });
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-      updatedAt: new Date(),
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }),
+    );
     mockHeartbeatService.cancelRun.mockResolvedValue({
       id: "retry-run-1",
       companyId: "company-1",
@@ -971,20 +1181,22 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     );
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_commented",
-        payload: expect.objectContaining({
-          commentId: "comment-1",
-          mutation: "comment",
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "issue_commented",
+          payload: expect.objectContaining({
+            commentId: "comment-1",
+            mutation: "comment",
+          }),
+          contextSnapshot: expect.objectContaining({
+            wakeReason: "issue_commented",
+            source: "issue.comment",
+          }),
         }),
-        contextSnapshot: expect.objectContaining({
-          wakeReason: "issue_commented",
-          source: "issue.comment",
-        }),
-      }),
-    ));
+      ),
+    );
   });
 
   it("does not move scheduled-retry issues to todo when POST comment retry cancellation fails", async () => {
@@ -1005,7 +1217,9 @@ describe.sequential("issue comment reopen routes", () => {
       error: null,
       errorCode: null,
     });
-    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("cancel failed"));
+    mockHeartbeatService.cancelRun.mockRejectedValue(
+      new Error("cancel failed"),
+    );
 
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
@@ -1030,15 +1244,19 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: "Checking in without retry state." });
 
     expect(res.status).toBe(201);
-    expect(mockIssueService.getCurrentScheduledRetry).toHaveBeenCalledWith("11111111-1111-4111-8111-111111111111");
+    expect(mockIssueService.getCurrentScheduledRetry).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+    );
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_commented",
-      }),
-    ));
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "issue_commented",
+        }),
+      ),
+    );
   });
 
   it("skips the assignee wakeup when the issue is concurrently cancelled while the comment is being written", async () => {
@@ -1072,7 +1290,10 @@ describe.sequential("issue comment reopen routes", () => {
     const reassignedAgentId = "44444444-4444-4444-8444-444444444444";
     mockIssueService.getById
       .mockResolvedValueOnce(makeIssue("in_progress"))
-      .mockResolvedValueOnce({ ...makeIssue("in_progress"), assigneeAgentId: reassignedAgentId });
+      .mockResolvedValueOnce({
+        ...makeIssue("in_progress"),
+        assigneeAgentId: reassignedAgentId,
+      });
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-race-reassign",
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -1085,10 +1306,12 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: "Status update" });
 
     expect(res.status).toBe(201);
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      reassignedAgentId,
-      expect.objectContaining({ reason: "issue_commented" }),
-    ));
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        reassignedAgentId,
+        expect.objectContaining({ reason: "issue_commented" }),
+      ),
+    );
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
       "22222222-2222-4222-8222-222222222222",
       expect.anything(),
@@ -1117,10 +1340,12 @@ describe.sequential("issue comment reopen routes", () => {
 
     expect(res.status).toBe(201);
     expect(mockIssueService.addComment).toHaveBeenCalled();
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({ reason: "issue_commented" }),
-    ));
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({ reason: "issue_commented" }),
+      ),
+    );
   });
 
   it("passes validated comment presentation fields to trusted board comment writes", async () => {
@@ -1134,10 +1359,24 @@ describe.sequential("issue comment reopen routes", () => {
       authorAgentId: null,
       authorUserId: "local-board",
       body: "Paperclip needs a disposition before this issue can continue.",
-      presentation: { kind: "system_notice", tone: "warning", detailsDefaultOpen: false },
+      presentation: {
+        kind: "system_notice",
+        tone: "warning",
+        detailsDefaultOpen: false,
+      },
       metadata: {
         version: 1,
-        sections: [{ rows: [{ type: "key_value", label: "Cause", value: "successful_run_missing_state" }] }],
+        sections: [
+          {
+            rows: [
+              {
+                type: "key_value",
+                label: "Cause",
+                value: "successful_run_missing_state",
+              },
+            ],
+          },
+        ],
       },
       createdAt: new Date(),
       updatedAt: new Date(),
@@ -1146,7 +1385,17 @@ describe.sequential("issue comment reopen routes", () => {
 
     const metadata = {
       version: 1,
-      sections: [{ rows: [{ type: "key_value", label: "Cause", value: "successful_run_missing_state" }] }],
+      sections: [
+        {
+          rows: [
+            {
+              type: "key_value",
+              label: "Cause",
+              value: "successful_run_missing_state",
+            },
+          ],
+        },
+      ],
     };
     const presentation = { kind: "system_notice", tone: "warning" };
     const res = await request(app)
@@ -1161,14 +1410,25 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       "Paperclip needs a disposition before this issue can continue.",
-      { agentId: undefined, userId: "local-board", runId: null, onBehalfOfUserId: undefined },
       {
+        agentId: undefined,
+        userId: "local-board",
+        runId: null,
+        onBehalfOfUserId: undefined,
+      },
+      {
+        attachmentIds: undefined,
         authorType: "user",
         authorizationReason: "allow_board_actor",
-        presentation: { kind: "system_notice", tone: "warning", detailsDefaultOpen: false },
+        presentation: {
+          kind: "system_notice",
+          tone: "warning",
+          detailsDefaultOpen: false,
+        },
         metadata,
         sourceTrust: null,
       },
+      mockDb,
     );
   });
 
@@ -1183,7 +1443,17 @@ describe.sequential("issue comment reopen routes", () => {
         presentation: { kind: "system_notice", tone: "warning" },
         metadata: {
           version: 1,
-          sections: [{ rows: [{ type: "key_value", label: "Cause", value: "covert_channel_attempt" }] }],
+          sections: [
+            {
+              rows: [
+                {
+                  type: "key_value",
+                  label: "Cause",
+                  value: "covert_channel_attempt",
+                },
+              ],
+            },
+          ],
         },
       });
 
@@ -1194,21 +1464,28 @@ describe.sequential("issue comment reopen routes", () => {
   it("derives compact presentation for comments from source-scoped recovery runs", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
     mockDbSelectWhere.mockImplementation(() => ({
-      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-        Promise.resolve([{
-          id: "run-1",
-          companyId: "company-1",
-          agentId: "22222222-2222-4222-8222-222222222222",
-          contextSnapshot: {
-            wakeReason: "source_scoped_recovery_action",
-            recoveryCause: "process_lost",
+      then: (
+        onFulfilled: (rows: unknown[]) => unknown,
+        onRejected?: (reason: unknown) => unknown,
+      ) =>
+        Promise.resolve([
+          {
+            id: "run-1",
+            companyId: "company-1",
+            agentId: "22222222-2222-4222-8222-222222222222",
+            contextSnapshot: {
+              wakeReason: "source_scoped_recovery_action",
+              recoveryCause: "process_lost",
+            },
           },
-        }]).then(onFulfilled, onRejected),
+        ]).then(onFulfilled, onRejected),
     }));
 
     const res = await request(await installActor(createApp(), agentActor()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: "Recovered the execution path.\nHanded back to the original owner." });
+      .send({
+        body: "Recovered the execution path.\nHanded back to the original owner.",
+      });
 
     expect(res.status).toBe(201);
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
@@ -1221,6 +1498,7 @@ describe.sequential("issue comment reopen routes", () => {
         onBehalfOfUserId: null,
       },
       expect.objectContaining({
+        attachmentIds: undefined,
         authorType: "agent",
         presentation: {
           kind: "system_notice",
@@ -1230,6 +1508,7 @@ describe.sequential("issue comment reopen routes", () => {
           density: "compact",
         },
       }),
+      mockDb,
     );
   });
 
@@ -1250,23 +1529,29 @@ describe.sequential("issue comment reopen routes", () => {
         runId: "run-1",
         onBehalfOfUserId: null,
       },
-      expect.objectContaining({ presentation: null }),
+      expect.objectContaining({ attachmentIds: undefined, presentation: null }),
+      mockDb,
     );
   });
 
   it("keeps successful-run missing-state recovery comments fully visible", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
     mockDbSelectWhere.mockImplementation(() => ({
-      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-        Promise.resolve([{
-          id: "run-1",
-          companyId: "company-1",
-          agentId: "22222222-2222-4222-8222-222222222222",
-          contextSnapshot: {
-            wakeReason: "source_scoped_recovery_action",
-            recoveryCause: "successful_run_missing_state",
+      then: (
+        onFulfilled: (rows: unknown[]) => unknown,
+        onRejected?: (reason: unknown) => unknown,
+      ) =>
+        Promise.resolve([
+          {
+            id: "run-1",
+            companyId: "company-1",
+            agentId: "22222222-2222-4222-8222-222222222222",
+            contextSnapshot: {
+              wakeReason: "source_scoped_recovery_action",
+              recoveryCause: "successful_run_missing_state",
+            },
           },
-        }]).then(onFulfilled, onRejected),
+        ]).then(onFulfilled, onRejected),
     }));
 
     const res = await request(await installActor(createApp(), agentActor()))
@@ -1283,7 +1568,8 @@ describe.sequential("issue comment reopen routes", () => {
         runId: "run-1",
         onBehalfOfUserId: null,
       },
-      expect.objectContaining({ presentation: null }),
+      expect.objectContaining({ attachmentIds: undefined, presentation: null }),
+      mockDb,
     );
   });
 
@@ -1319,26 +1605,31 @@ describe.sequential("issue comment reopen routes", () => {
 
     expect(res.status).toBe(201);
     expect(mockIssueService.update).not.toHaveBeenCalled();
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_commented",
-        payload: expect.objectContaining({
-          commentId: "comment-1",
-          mutation: "comment",
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "issue_commented",
+          payload: expect.objectContaining({
+            commentId: "comment-1",
+            mutation: "comment",
+          }),
+          contextSnapshot: expect.objectContaining({
+            issueId: "11111111-1111-4111-8111-111111111111",
+            wakeCommentId: "comment-1",
+            wakeReason: "issue_commented",
+          }),
         }),
-        contextSnapshot: expect.objectContaining({
-          issueId: "11111111-1111-4111-8111-111111111111",
-          wakeCommentId: "comment-1",
-          wakeReason: "issue_commented",
-        }),
-      }),
-    ));
+      ),
+    );
   });
 
   it("does not implicitly reopen a blocked issue via PATCH when the same request wires blockers", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
-    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [],
+      blocks: [],
+    });
     mockIssueService.getDependencyReadiness.mockResolvedValue({
       issueId: "11111111-1111-4111-8111-111111111111",
       blockerIssueIds: [],
@@ -1347,10 +1638,12 @@ describe.sequential("issue comment reopen routes", () => {
       allBlockersDone: true,
       isDependencyReady: true,
     });
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("blocked"),
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("blocked"),
+        ...patch,
+      }),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -1361,14 +1654,22 @@ describe.sequential("issue comment reopen routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalled();
-    const patch = mockIssueService.update.mock.calls[0][1] as Record<string, unknown>;
+    const patch = mockIssueService.update.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
     expect(patch.status).toBeUndefined();
-    expect(patch.blockedByIssueIds).toEqual(["33333333-3333-4333-8333-333333333333"]);
+    expect(patch.blockedByIssueIds).toEqual([
+      "33333333-3333-4333-8333-333333333333",
+    ]);
   });
 
   it("still implicitly reopens a blocked issue via PATCH when the same request clears blockers", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
-    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.getRelationSummaries.mockResolvedValue({
+      blockedBy: [],
+      blocks: [],
+    });
     mockIssueService.getDependencyReadiness.mockResolvedValue({
       issueId: "11111111-1111-4111-8111-111111111111",
       blockerIssueIds: [],
@@ -1377,18 +1678,26 @@ describe.sequential("issue comment reopen routes", () => {
       allBlockersDone: true,
       isDependencyReady: true,
     });
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("blocked"),
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("blocked"),
+        ...patch,
+      }),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ blockedByIssueIds: [], comment: "nothing left to wait on, please continue" });
+      .send({
+        blockedByIssueIds: [],
+        comment: "nothing left to wait on, please continue",
+      });
 
     expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalled();
-    const patch = mockIssueService.update.mock.calls[0][1] as Record<string, unknown>;
+    const patch = mockIssueService.update.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
     expect(patch.status).toBe("todo");
   });
 
@@ -1414,14 +1723,16 @@ describe.sequential("issue comment reopen routes", () => {
       executionRunId: null,
     });
 
-    const res = await request(await installActor(createApp(), {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-      runId: "run-same-as-actor",
-    }))
+    const res = await request(
+      await installActor(createApp(), {
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+        runId: "run-same-as-actor",
+      }),
+    )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "Done — final note from the run that owns the issue" });
 
@@ -1439,14 +1750,16 @@ describe.sequential("issue comment reopen routes", () => {
       executionRunId: "run-same-as-actor",
     });
 
-    const res = await request(await installActor(createApp(), {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-      runId: "run-same-as-actor",
-    }))
+    const res = await request(
+      await installActor(createApp(), {
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+        runId: "run-same-as-actor",
+      }),
+    )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "Done — note from the still-active execution run" });
 
@@ -1463,19 +1776,23 @@ describe.sequential("issue comment reopen routes", () => {
       checkoutRunId: "run-owning",
       executionRunId: "run-owning",
     });
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("done"),
+        ...patch,
+      }),
+    );
 
-    const res = await request(await installActor(createApp(), {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-      runId: "run-different",
-    }))
+    const res = await request(
+      await installActor(createApp(), {
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+        runId: "run-different",
+      }),
+    )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "Real human follow-up — please reopen" });
 
@@ -1493,19 +1810,23 @@ describe.sequential("issue comment reopen routes", () => {
       executionRunId: null,
     };
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+      }),
+    );
 
-    const res = await request(await installActor(createApp(), {
-      type: "board",
-      userId: "local-board",
-      companyIds: ["company-1"],
-      source: "local_implicit",
-      isInstanceAdmin: false,
-      runId: "run-same-as-actor",
-    }))
+    const res = await request(
+      await installActor(createApp(), {
+        type: "board",
+        userId: "local-board",
+        companyIds: ["company-1"],
+        source: "local_implicit",
+        isInstanceAdmin: false,
+        runId: "run-same-as-actor",
+      }),
+    )
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "Done — final note from the run that owns the issue" });
 
@@ -1519,8 +1840,10 @@ describe.sequential("issue comment reopen routes", () => {
   it("moves assigned blocked issues back to todo via the PATCH comment path", async () => {
     const issue = makeIssue("blocked");
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
-      makeIssueUpdateReceipt(issue, patch));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -1535,17 +1858,19 @@ describe.sequential("issue comment reopen routes", () => {
         actorUserId: "local-board",
       }),
     );
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_reopened_via_comment",
-        payload: expect.objectContaining({
-          commentId: "comment-1",
-          reopenedFrom: "blocked",
-          mutation: "comment",
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "issue_reopened_via_comment",
+          payload: expect.objectContaining({
+            commentId: "comment-1",
+            reopenedFrom: "blocked",
+            mutation: "comment",
+          }),
         }),
-      }),
-    ));
+      ),
+    );
   });
 
   it("moves in-progress issues with a scheduled retry back to todo via the PATCH comment path", async () => {
@@ -1566,11 +1891,13 @@ describe.sequential("issue comment reopen routes", () => {
       error: null,
       errorCode: null,
     });
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-      updatedAt: new Date(),
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }),
+    );
     mockHeartbeatService.cancelRun.mockResolvedValue({
       id: "retry-run-1",
       companyId: "company-1",
@@ -1592,16 +1919,18 @@ describe.sequential("issue comment reopen routes", () => {
       }),
     );
     expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_commented",
-        payload: expect.objectContaining({
-          commentId: "comment-1",
-          mutation: "comment",
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "issue_commented",
+          payload: expect.objectContaining({
+            commentId: "comment-1",
+            mutation: "comment",
+          }),
         }),
-      }),
-    ));
+      ),
+    );
   });
 
   it("does not move scheduled-retry issues to todo when PATCH comment retry cancellation fails", async () => {
@@ -1622,7 +1951,9 @@ describe.sequential("issue comment reopen routes", () => {
       error: null,
       errorCode: null,
     });
-    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("cancel failed"));
+    mockHeartbeatService.cancelRun.mockRejectedValue(
+      new Error("cancel failed"),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -1650,18 +1981,22 @@ describe.sequential("issue comment reopen routes", () => {
       authorAgentId: "33333333-3333-4333-8333-333333333333",
       authorUserId: null,
     });
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("done"),
+        ...patch,
+      }),
+    );
 
-    const res = await request(await installActor(createApp(), {
-      type: "agent",
-      agentId: "33333333-3333-4333-8333-333333333333",
-      companyId: "company-1",
-      source: "agent_key",
-      runId: "88888888-8888-4888-8888-888888888888",
-    }))
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: "33333333-3333-4333-8333-333333333333",
+        companyId: "company-1",
+        source: "agent_key",
+        runId: "88888888-8888-4888-8888-888888888888",
+      }),
+    )
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "hello" });
 
@@ -1681,10 +2016,12 @@ describe.sequential("issue comment reopen routes", () => {
       allBlockersDone: false,
       isDependencyReady: false,
     });
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("blocked"),
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("blocked"),
+        ...patch,
+      }),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -1702,61 +2039,71 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({ status: "todo" }),
     );
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "issue_commented",
-        payload: expect.objectContaining({
-          commentId: "comment-1",
-          mutation: "comment",
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "issue_commented",
+          payload: expect.objectContaining({
+            commentId: "comment-1",
+            mutation: "comment",
+          }),
         }),
-      }),
-    ));
+      ),
+    );
   });
 
   it("wakes the assignee when an assigned blocked issue moves back to todo", async () => {
     const issue = makeIssue("blocked");
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-      updatedAt: new Date(),
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ status: "todo" });
 
     expect(res.status).toBe(200);
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        source: "automation",
-        triggerDetail: "system",
-        reason: "issue_status_changed",
-        payload: expect.objectContaining({
-          issueId: "11111111-1111-4111-8111-111111111111",
-          mutation: "update",
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_status_changed",
+          payload: expect.objectContaining({
+            issueId: "11111111-1111-4111-8111-111111111111",
+            mutation: "update",
+          }),
         }),
-      }),
-    ));
+      ),
+    );
   });
 
   it("wakes the assignee when a board user moves an assigned review back to todo", async () => {
     const issue = makeIssue("in_review");
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-      updatedAt: new Date(),
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ status: "todo" });
 
     expect(res.status).toBe(200);
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1),
+    );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       "22222222-2222-4222-8222-222222222222",
       expect.objectContaining({
@@ -1780,11 +2127,13 @@ describe.sequential("issue comment reopen routes", () => {
   it("does not wake the assignee when the assignee agent moves its own review back to todo", async () => {
     const issue = makeIssue("in_review");
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-      updatedAt: new Date(),
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }),
+    );
 
     const res = await request(await installActor(createApp(), agentActor()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -1797,11 +2146,13 @@ describe.sequential("issue comment reopen routes", () => {
   it("does not enqueue a resume wake when an unassigned review moves back to todo", async () => {
     const issue = { ...makeIssue("in_review"), assigneeAgentId: null };
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-      updatedAt: new Date(),
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -1814,18 +2165,22 @@ describe.sequential("issue comment reopen routes", () => {
   it("keeps the existing backlog to todo assignee wake", async () => {
     const issue = makeIssue("backlog");
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-      updatedAt: new Date(),
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ status: "todo" });
 
     expect(res.status).toBe(200);
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1),
+    );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       "22222222-2222-4222-8222-222222222222",
       expect.objectContaining({ reason: "issue_status_changed" }),
@@ -1835,11 +2190,13 @@ describe.sequential("issue comment reopen routes", () => {
   it("wakes the assignee when an assigned done issue moves back to todo", async () => {
     const issue = makeIssue("done");
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-      updatedAt: new Date(),
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -1867,8 +2224,10 @@ describe.sequential("issue comment reopen routes", () => {
   it("explicit same-agent resume works through the PATCH comment path", async () => {
     const issue = makeIssue("done");
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
-      makeIssueUpdateReceipt(issue, patch));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) =>
+        makeIssueUpdateReceipt(issue, patch),
+    );
 
     const res = await request(await installActor(createApp(), agentActor()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -1924,10 +2283,12 @@ describe.sequential("issue comment reopen routes", () => {
 
   it("explicit same-agent resume comments reopen closed issues and mark the wake payload", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("done"),
+        ...patch,
+      }),
+    );
 
     const res = await request(await installActor(createApp(), agentActor()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
@@ -1970,20 +2331,30 @@ describe.sequential("issue comment reopen routes", () => {
 
   it("honors explicit agent resume intent from a default-open peer as an agent-class wake", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("done"),
-      ...patch,
-    }));
-    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
-      allowed: input.action !== "tasks:manage_active_checkouts",
-      action: input.action,
-      reason: input.action === "issue:comment" || input.action === "issue:mutate"
-        ? "allow_visible_issue_write"
-        : "deny_missing_grant",
-      explanation: "Allowed by the shared visible-issue write rule.",
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("done"),
+        ...patch,
+      }),
+    );
+    mockAccessService.decide.mockImplementation(
+      async (input: { action?: string }) => ({
+        allowed: input.action !== "tasks:manage_active_checkouts",
+        action: input.action,
+        reason:
+          input.action === "issue:comment" || input.action === "issue:mutate"
+            ? "allow_visible_issue_write"
+            : "deny_missing_grant",
+        explanation: "Allowed by the shared visible-issue write rule.",
+      }),
+    );
 
-    const res = await request(await installActor(createApp(), agentActor("44444444-4444-4444-8444-444444444444")))
+    const res = await request(
+      await installActor(
+        createApp(),
+        agentActor("44444444-4444-4444-8444-444444444444"),
+      ),
+    )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "restart someone else's work", resume: true });
 
@@ -2007,19 +2378,24 @@ describe.sequential("issue comment reopen routes", () => {
     const agentA = "44444444-4444-4444-8444-444444444444";
     const agentB = "22222222-2222-4222-8222-222222222222";
 
-    mockIssueService.getById.mockResolvedValue({ ...makeIssue("todo"), assigneeAgentId: agentB });
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("todo"),
+      assigneeAgentId: agentB,
+    });
     let res = await request(await installActor(createApp(), agentActor(agentA)))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "A asks B for input" });
     expect(res.status).toBe(201);
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      agentB,
-      expect.objectContaining({
-        reason: "issue_commented",
-        requestedByActorType: "agent",
-        requestedByActorId: agentA,
-      }),
-    ));
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        agentB,
+        expect.objectContaining({
+          reason: "issue_commented",
+          requestedByActorType: "agent",
+          requestedByActorId: agentA,
+        }),
+      ),
+    );
 
     mockHeartbeatService.wakeup.mockClear();
     mockIssueService.findMentionedAgents.mockClear();
@@ -2027,98 +2403,131 @@ describe.sequential("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "B replies on B's own issue" });
     expect(res.status).toBe(201);
-    await vi.waitFor(() => expect(mockIssueService.findMentionedAgents).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(mockIssueService.findMentionedAgents).toHaveBeenCalledOnce(),
+    );
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
 
-    mockIssueService.getById.mockResolvedValue({ ...makeIssue("todo"), assigneeAgentId: agentA });
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("todo"),
+      assigneeAgentId: agentA,
+    });
     res = await request(await installActor(createApp(), agentActor(agentB)))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "B explicitly comments back on A's issue" });
     expect(res.status).toBe(201);
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      agentA,
-      expect.objectContaining({
-        reason: "issue_commented",
-        requestedByActorType: "agent",
-        requestedByActorId: agentB,
-      }),
-    ));
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        agentA,
+        expect.objectContaining({
+          reason: "issue_commented",
+          requestedByActorType: "agent",
+          requestedByActorId: agentB,
+        }),
+      ),
+    );
   });
 
   it.each([
-    ["comment", (app: express.Express) => request(app)
-      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: "cross-issue attempt 21" })],
-    ["update", (app: express.Express) => request(app)
-      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ title: "cross-issue attempt 21" })],
-  ] as const)("fails closed when a run exceeds the cross-issue %s cap", async (kind, sendRequest) => {
-    const agentA = "44444444-4444-4444-8444-444444444444";
-    mockIssueService.getById.mockResolvedValue({ ...makeIssue("todo"), assigneeAgentId: "22222222-2222-4222-8222-222222222222" });
-    mockHeartbeatService.getRun.mockResolvedValue({
-      id: "run-1",
-      companyId: "company-1",
-      agentId: agentA,
-      responsibleUserId: null,
-      contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
-    });
-    mockObserveCrossIssueInfluence.mockResolvedValue({
-      allowed: false,
-      mode: "enforce",
-      count: 21,
-      cap: 20,
-      enforceAt: "2026-08-11T00:00:00.000Z",
-    });
-
-    const res = await sendRequest(await installActor(createApp(), agentActor(agentA)));
-
-    expect(res.status).toBe(429);
-    expect(res.body.error).toContain("limited to 20 cross-issue comments or updates");
-    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        runId: "run-1",
+    [
+      "comment",
+      (app: express.Express) =>
+        request(app)
+          .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+          .send({ body: "cross-issue attempt 21" }),
+    ],
+    [
+      "update",
+      (app: express.Express) =>
+        request(app)
+          .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+          .send({ title: "cross-issue attempt 21" }),
+    ],
+  ] as const)(
+    "fails closed when a run exceeds the cross-issue %s cap",
+    async (kind, sendRequest) => {
+      const agentA = "44444444-4444-4444-8444-444444444444";
+      mockIssueService.getById.mockResolvedValue({
+        ...makeIssue("todo"),
+        assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      });
+      mockHeartbeatService.getRun.mockResolvedValue({
+        id: "run-1",
+        companyId: "company-1",
         agentId: agentA,
-        targetIssueId: "11111111-1111-4111-8111-111111111111",
-        kind,
-      }),
-    );
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
-  });
+        responsibleUserId: null,
+        contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" },
+      });
+      mockObserveCrossIssueInfluence.mockResolvedValue({
+        allowed: false,
+        mode: "enforce",
+        count: 21,
+        cap: 20,
+        enforceAt: "2026-08-11T00:00:00.000Z",
+      });
+
+      const res = await sendRequest(
+        await installActor(createApp(), agentActor(agentA)),
+      );
+
+      expect(res.status).toBe(429);
+      expect(res.body.error).toContain(
+        "limited to 20 cross-issue comments or updates",
+      );
+      expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          runId: "run-1",
+          agentId: agentA,
+          targetIssueId: "11111111-1111-4111-8111-111111111111",
+          kind,
+        }),
+      );
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["hide", "2026-08-04T18:00:00.000Z"],
     ["unhide", null],
-  ] as const)("counts a cross-issue %s PATCH before mutation", async (_label, hiddenAt) => {
-    const agentA = "44444444-4444-4444-8444-444444444444";
-    mockIssueService.getById.mockResolvedValue({
-      ...makeIssue("todo"),
-      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
-      hiddenAt: hiddenAt === null ? new Date("2026-08-04T17:00:00.000Z") : null,
-    });
-    mockObserveCrossIssueInfluence.mockResolvedValue({
-      allowed: false,
-      mode: "enforce",
-      count: 21,
-      cap: 20,
-      enforceAt: "2026-08-11T00:00:00.000Z",
-    });
+  ] as const)(
+    "counts a cross-issue %s PATCH before mutation",
+    async (_label, hiddenAt) => {
+      const agentA = "44444444-4444-4444-8444-444444444444";
+      mockIssueService.getById.mockResolvedValue({
+        ...makeIssue("todo"),
+        assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+        hiddenAt:
+          hiddenAt === null ? new Date("2026-08-04T17:00:00.000Z") : null,
+      });
+      mockObserveCrossIssueInfluence.mockResolvedValue({
+        allowed: false,
+        mode: "enforce",
+        count: 21,
+        cap: 20,
+        enforceAt: "2026-08-11T00:00:00.000Z",
+      });
 
-    const res = await request(await installActor(createApp(), agentActor(agentA)))
-      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ hiddenAt });
+      const res = await request(
+        await installActor(createApp(), agentActor(agentA)),
+      )
+        .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+        .send({ hiddenAt });
 
-    expect(res.status).toBe(429);
-    expect(res.body.error).toContain("limited to 20 cross-issue comments or updates");
-    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(1);
-    expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ kind: "update" }),
-    );
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-  });
+      expect(res.status).toBe(429);
+      expect(res.body.error).toContain(
+        "limited to 20 cross-issue comments or updates",
+      );
+      expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(1);
+      expect(mockObserveCrossIssueInfluence).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({ kind: "update" }),
+      );
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    },
+  );
 
   it("counts bundled cross-issue PATCH updates and comments separately before mutation", async () => {
     const agentA = "44444444-4444-4444-8444-444444444444";
@@ -2148,10 +2557,9 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ title: "Bundled update", comment: "Bundled comment" });
 
     expect(res.status).toBe(429);
-    expect(mockObserveCrossIssueInfluence.mock.calls.map(([, input]) => input.kind)).toEqual([
-      "update",
-      "comment",
-    ]);
+    expect(
+      mockObserveCrossIssueInfluence.mock.calls.map(([, input]) => input.kind),
+    ).toEqual(["update", "comment"]);
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
@@ -2163,12 +2571,16 @@ describe.sequential("issue comment reopen routes", () => {
       assigneeAgentId: "22222222-2222-4222-8222-222222222222",
     };
     mockIssueService.getById.mockResolvedValue(existing);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...existing,
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...existing,
+        ...patch,
+      }),
+    );
 
-    const res = await request(await installActor(createApp(), agentActor(agentA)))
+    const res = await request(
+      await installActor(createApp(), agentActor(agentA)),
+    )
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "Comment without an issue update" });
 
@@ -2181,34 +2593,52 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it.each([
-    ["comment", (app: express.Express) => request(app)
-      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: "cross-issue write" })],
-    ["update", (app: express.Express) => request(app)
-      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ title: "cross-issue write" })],
-  ] as const)("rejects cross-issue %s writes without a run header", async (_kind, sendRequest) => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
-    const actor = { ...agentActor("44444444-4444-4444-8444-444444444444"), runId: undefined };
-    const res = await sendRequest(await installActor(createApp(), actor));
+    [
+      "comment",
+      (app: express.Express) =>
+        request(app)
+          .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+          .send({ body: "cross-issue write" }),
+    ],
+    [
+      "update",
+      (app: express.Express) =>
+        request(app)
+          .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+          .send({ title: "cross-issue write" }),
+    ],
+  ] as const)(
+    "rejects cross-issue %s writes without a run header",
+    async (_kind, sendRequest) => {
+      mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+      const actor = {
+        ...agentActor("44444444-4444-4444-8444-444444444444"),
+        runId: undefined,
+      };
+      const res = await sendRequest(await installActor(createApp(), actor));
 
-    expect(res.status).toBe(403);
-    expect(res.body.details).toEqual({ code: "cross_issue_influence_run_context_required" });
-    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
-    expect(mockObserveCrossIssueInfluence).not.toHaveBeenCalled();
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
-  });
+      expect(res.status).toBe(403);
+      expect(res.body.details).toEqual({
+        code: "cross_issue_influence_run_context_required",
+      });
+      expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+      expect(mockObserveCrossIssueInfluence).not.toHaveBeenCalled();
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["invalid", "wrong agent", "wrong company"])(
     "rejects comment and PATCH writes with a %s run",
     async () => {
       mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
-      mockObserveCrossIssueInfluence.mockRejectedValue(new HttpError(
-        403,
-        "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
-        { code: "cross_issue_influence_run_context_required" },
-      ));
+      mockObserveCrossIssueInfluence.mockRejectedValue(
+        new HttpError(
+          403,
+          "Agent issue comments and updates require a valid heartbeat run so cross-issue influence can be contained",
+          { code: "cross_issue_influence_run_context_required" },
+        ),
+      );
       const actor = agentActor("44444444-4444-4444-8444-444444444444");
 
       const commentRes = await request(await installActor(createApp(), actor))
@@ -2220,7 +2650,9 @@ describe.sequential("issue comment reopen routes", () => {
 
       for (const res of [commentRes, updateRes]) {
         expect(res.status).toBe(403);
-        expect(res.body.details).toEqual({ code: "cross_issue_influence_run_context_required" });
+        expect(res.body.details).toEqual({
+          code: "cross_issue_influence_run_context_required",
+        });
       }
       expect(mockObserveCrossIssueInfluence).toHaveBeenCalledTimes(2);
       expect(mockIssueService.update).not.toHaveBeenCalled();
@@ -2245,17 +2677,21 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: "please resume", resume: true });
 
     expect(res.status).toBe(409);
-    expect(res.body.error).toBe("Issue follow-up blocked by active subtree pause hold");
+    expect(res.body.error).toBe(
+      "Issue follow-up blocked by active subtree pause hold",
+    );
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("honors explicit resume intent on cancelled issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("cancelled"));
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...makeIssue("cancelled"),
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue("cancelled"),
+        ...patch,
+      }),
+    );
 
     const res = await request(await installActor(createApp(), agentActor()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
@@ -2272,7 +2708,10 @@ describe.sequential("issue comment reopen routes", () => {
       expect.objectContaining({
         requestedByActorType: "agent",
         reason: "issue_reopened_via_comment",
-        payload: expect.objectContaining({ reopenedFrom: "cancelled", resumeIntent: true }),
+        payload: expect.objectContaining({
+          reopenedFrom: "cancelled",
+          resumeIntent: true,
+        }),
       }),
     );
   });
@@ -2283,10 +2722,12 @@ describe.sequential("issue comment reopen routes", () => {
       executionRunId: "run-1",
     };
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+      }),
+    );
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
@@ -2302,7 +2743,11 @@ describe.sequential("issue comment reopen routes", () => {
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
-      .send({ comment: "hello", interrupt: true, assigneeAgentId: "33333333-3333-4333-8333-333333333333" });
+      .send({
+        comment: "hello",
+        interrupt: true,
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      });
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.getRun).toHaveBeenCalledWith("run-1");
@@ -2343,10 +2788,12 @@ describe.sequential("issue comment reopen routes", () => {
       executionRunId: "run-1",
     };
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+      }),
+    );
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
@@ -2385,10 +2832,12 @@ describe.sequential("issue comment reopen routes", () => {
       executionRunId: "run-1",
     };
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+      }),
+    );
     mockHeartbeatService.getRun.mockResolvedValue({
       id: "run-1",
       companyId: "company-1",
@@ -2426,22 +2875,27 @@ describe.sequential("issue comment reopen routes", () => {
         currentStageIndex: 0,
         currentStageType: "approval",
         currentParticipant: { type: "user", userId: "local-board" },
-        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
       },
     };
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
-      ...issue,
-      ...patch,
-      executionState: patch.executionState,
-      status: "done",
-      completedAt: new Date(),
-      updatedAt: new Date(),
-      _tx: tx,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
+        ...issue,
+        ...patch,
+        executionState: patch.executionState,
+        status: "done",
+        completedAt: new Date(),
+        updatedAt: new Date(),
+        _tx: tx,
+      }),
+    );
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
@@ -2462,7 +2916,10 @@ describe.sequential("issue comment reopen routes", () => {
       expect.any(Array),
       expect.any(Array),
     );
-    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<
+      string,
+      any
+    >;
     const decisionId = updatePatch.executionState.lastDecisionId;
     expect(mockTxInsertValues).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2496,7 +2953,10 @@ describe.sequential("issue comment reopen routes", () => {
         currentStageIndex: 0,
         currentStageType: "review",
         currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
@@ -2514,15 +2974,17 @@ describe.sequential("issue comment reopen routes", () => {
       authorAgentId: reviewerAgentId,
       authorUserId: null,
     });
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
-      ...issue,
-      ...patch,
-      executionState: patch.executionState,
-      status: "done",
-      completedAt: new Date(),
-      updatedAt: new Date(),
-      _tx: tx,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
+        ...issue,
+        ...patch,
+        executionState: patch.executionState,
+        status: "done",
+        completedAt: new Date(),
+        updatedAt: new Date(),
+        _tx: tx,
+      }),
+    );
 
     const res = await request(
       await installActor(createApp(), {
@@ -2583,7 +3045,10 @@ describe.sequential("issue comment reopen routes", () => {
         currentStageIndex: 0,
         currentStageType: "review",
         currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
@@ -2601,15 +3066,17 @@ describe.sequential("issue comment reopen routes", () => {
       authorAgentId: reviewerAgentId,
       authorUserId: null,
     });
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
-      ...issue,
-      ...patch,
-      executionState: patch.executionState,
-      status: "done",
-      completedAt: new Date(),
-      updatedAt: new Date(),
-      _tx: tx,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
+        ...issue,
+        ...patch,
+        executionState: patch.executionState,
+        status: "done",
+        completedAt: new Date(),
+        updatedAt: new Date(),
+        _tx: tx,
+      }),
+    );
 
     const res = await request(
       await installActor(createApp(), {
@@ -2671,7 +3138,10 @@ describe.sequential("issue comment reopen routes", () => {
         currentStageIndex: 0,
         currentStageType: "review",
         currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
@@ -2690,15 +3160,17 @@ describe.sequential("issue comment reopen routes", () => {
       authorAgentId: reviewerAgentId,
       authorUserId: null,
     });
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
-      ...issue,
-      ...patch,
-      executionState: patch.executionState,
-      status: "done",
-      completedAt: new Date(),
-      updatedAt: new Date(),
-      _tx: tx,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
+        ...issue,
+        ...patch,
+        executionState: patch.executionState,
+        status: "done",
+        completedAt: new Date(),
+        updatedAt: new Date(),
+        _tx: tx,
+      }),
+    );
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
       {
         id: "dependent-1",
@@ -2720,7 +3192,9 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: reviewBody });
 
     expect(res.status).toBe(201);
-    expect(mockIssueService.listWakeableBlockedDependents).toHaveBeenCalledWith(issue.id);
+    expect(mockIssueService.listWakeableBlockedDependents).toHaveBeenCalledWith(
+      issue.id,
+    );
     await waitForWakeup(() => {
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
         dependentAgentId,
@@ -2779,16 +3253,18 @@ describe.sequential("issue comment reopen routes", () => {
     });
     // Simulate the policy transition reassigning the now-done issue back to the
     // returnAssignee so the post-mutation assignee differs from the reviewer.
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
-      ...issue,
-      ...patch,
-      executionState: patch.executionState,
-      assigneeAgentId: returnAssigneeAgentId,
-      status: "done",
-      completedAt: new Date(),
-      updatedAt: new Date(),
-      _tx: tx,
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
+        ...issue,
+        ...patch,
+        executionState: patch.executionState,
+        assigneeAgentId: returnAssigneeAgentId,
+        status: "done",
+        completedAt: new Date(),
+        updatedAt: new Date(),
+        _tx: tx,
+      }),
+    );
 
     const res = await request(
       await installActor(createApp(), {
@@ -2805,9 +3281,11 @@ describe.sequential("issue comment reopen routes", () => {
     expect(res.status).toBe(201);
     // Allow any deferred wakeup task to flush before asserting it never fired.
     await new Promise((resolve) => setImmediate(resolve));
-    const issueCommentedWakeCalls = mockHeartbeatService.wakeup.mock.calls.filter(
-      ([, wakeup]: [string, { reason?: string }]) => wakeup?.reason === "issue_commented",
-    );
+    const issueCommentedWakeCalls =
+      mockHeartbeatService.wakeup.mock.calls.filter(
+        ([, wakeup]: [string, { reason?: string }]) =>
+          wakeup?.reason === "issue_commented",
+      );
     expect(issueCommentedWakeCalls).toEqual([]);
   });
 
@@ -2833,7 +3311,10 @@ describe.sequential("issue comment reopen routes", () => {
         currentStageIndex: 0,
         currentStageType: "review",
         currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
@@ -2890,7 +3371,10 @@ describe.sequential("issue comment reopen routes", () => {
         currentStageIndex: 0,
         currentStageType: "review",
         currentParticipant: { type: "user", userId: sharedId },
-        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
@@ -2950,7 +3434,10 @@ describe.sequential("issue comment reopen routes", () => {
         currentStageIndex: 0,
         currentStageType: "review",
         currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
@@ -3008,7 +3495,10 @@ describe.sequential("issue comment reopen routes", () => {
         currentStageIndex: 0,
         currentStageType: "review",
         currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
@@ -3067,7 +3557,10 @@ describe.sequential("issue comment reopen routes", () => {
         currentStageIndex: 0,
         currentStageType: "review",
         currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
@@ -3106,12 +3599,21 @@ describe.sequential("issue comment reopen routes", () => {
 
   describe.each([
     { name: "uppercase negation", body: "## Review: NOT APPROVED" },
-    { name: "uppercase negation with trailing period", body: "## Review: NOT APPROVED." },
+    {
+      name: "uppercase negation with trailing period",
+      body: "## Review: NOT APPROVED.",
+    },
     { name: "mixed-case negation", body: "## Review: Not approved." },
     { name: "do-not phrasing", body: "## Review: Do not approve" },
     { name: "present-progressive negation", body: "## Review: Not approving" },
-    { name: "structured rejection", body: "kind: review\ndecision: rejected\nsummary: ship it" },
-    { name: "structured changes_requested", body: "kind: review\ndecision: changes_requested\nsummary: ship it" },
+    {
+      name: "structured rejection",
+      body: "kind: review\ndecision: rejected\nsummary: ship it",
+    },
+    {
+      name: "structured changes_requested",
+      body: "kind: review\ndecision: changes_requested\nsummary: ship it",
+    },
     {
       name: "disjoint structured metadata across prose",
       body: "kind: review\n\nThe previous sprint decision: approved by stakeholders, but this round still needs work.",
@@ -3143,7 +3645,10 @@ describe.sequential("issue comment reopen routes", () => {
           currentStageIndex: 0,
           currentStageType: "review",
           currentParticipant: { type: "agent", agentId: reviewerAgentId },
-          returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+          returnAssignee: {
+            type: "agent",
+            agentId: "22222222-2222-4222-8222-222222222222",
+          },
           completedStageIds: [],
           lastDecisionId: null,
           lastDecisionOutcome: null,
@@ -3185,7 +3690,10 @@ describe.sequential("issue comment reopen routes", () => {
     { name: "trailing punctuation", body: "## Review: APPROVED!" },
     { name: "ticketed approval", body: "## Review: PAP-580 - APPROVED" },
     { name: "lowercase approval", body: "## Review: LGTM, approved" },
-    { name: "approval with body context", body: "## Review: APPROVED\n\nReady to ship." },
+    {
+      name: "approval with body context",
+      body: "## Review: APPROVED\n\nReady to ship.",
+    },
   ])("auto-approves positive approval phrasings ($name)", ({ body }) => {
     it("triggers the auto-approval transition", async () => {
       const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
@@ -3209,7 +3717,10 @@ describe.sequential("issue comment reopen routes", () => {
           currentStageIndex: 0,
           currentStageType: "review",
           currentParticipant: { type: "agent", agentId: reviewerAgentId },
-          returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+          returnAssignee: {
+            type: "agent",
+            agentId: "22222222-2222-4222-8222-222222222222",
+          },
           completedStageIds: [],
           lastDecisionId: null,
           lastDecisionOutcome: null,
@@ -3226,15 +3737,17 @@ describe.sequential("issue comment reopen routes", () => {
         authorAgentId: reviewerAgentId,
         authorUserId: null,
       });
-      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
-        ...issue,
-        ...patch,
-        executionState: patch.executionState,
-        status: "done",
-        completedAt: new Date(),
-        updatedAt: new Date(),
-        _tx: tx,
-      }));
+      mockIssueService.update.mockImplementation(
+        async (_id: string, patch: Record<string, unknown>, tx?: unknown) => ({
+          ...issue,
+          ...patch,
+          executionState: patch.executionState,
+          status: "done",
+          completedAt: new Date(),
+          updatedAt: new Date(),
+          _tx: tx,
+        }),
+      );
 
       const res = await request(
         await installActor(createApp(), {
@@ -3293,7 +3806,10 @@ describe.sequential("issue comment reopen routes", () => {
         currentStageIndex: 0,
         currentStageType: "review",
         currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
@@ -3312,7 +3828,9 @@ describe.sequential("issue comment reopen routes", () => {
       authorUserId: null,
     });
     const { unprocessable } = await import("../errors.js");
-    mockIssueService.update.mockRejectedValue(unprocessable("Issue can only have one assignee"));
+    mockIssueService.update.mockRejectedValue(
+      unprocessable("Issue can only have one assignee"),
+    );
 
     const res = await request(
       await installActor(createApp(), {
@@ -3363,7 +3881,10 @@ describe.sequential("issue comment reopen routes", () => {
         currentStageIndex: 0,
         currentStageType: "review",
         currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
@@ -3417,7 +3938,9 @@ describe.sequential("issue comment reopen routes", () => {
         {
           id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           type: "review",
-          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+          participants: [
+            { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+          ],
         },
       ],
     })!;
@@ -3429,11 +3952,13 @@ describe.sequential("issue comment reopen routes", () => {
       executionState: null,
     };
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-      updatedAt: new Date(),
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }),
+    );
 
     const res = await request(
       await installActor(createApp(), {
@@ -3449,12 +3974,15 @@ describe.sequential("issue comment reopen routes", () => {
         assigneeAgentId: null,
         assigneeUserId: "local-board",
         reviewRequest: {
-          instructions: "Please verify the fix against the reproduction steps and note any residual risk.",
+          instructions:
+            "Please verify the fix against the reproduction steps and note any residual risk.",
         },
       });
 
     expect(res.status).toBe(200);
-    expect(res.body.assigneeAgentId).toBe("33333333-3333-4333-8333-333333333333");
+    expect(res.body.assigneeAgentId).toBe(
+      "33333333-3333-4333-8333-333333333333",
+    );
     expect(res.body.assigneeUserId).toBeNull();
     expect(res.body.executionState).toMatchObject({
       status: "pending",
@@ -3468,26 +3996,30 @@ describe.sequential("issue comment reopen routes", () => {
         agentId: "22222222-2222-4222-8222-222222222222",
       },
       reviewRequest: {
-        instructions: "Please verify the fix against the reproduction steps and note any residual risk.",
+        instructions:
+          "Please verify the fix against the reproduction steps and note any residual risk.",
       },
     });
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "33333333-3333-4333-8333-333333333333",
-      expect.objectContaining({
-        reason: "execution_review_requested",
-        payload: expect.objectContaining({
-          issueId: "11111111-1111-4111-8111-111111111111",
-          executionStage: expect.objectContaining({
-            wakeRole: "reviewer",
-            stageType: "review",
-            reviewRequest: {
-              instructions: "Please verify the fix against the reproduction steps and note any residual risk.",
-            },
-            allowedActions: ["approve", "request_changes"],
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "33333333-3333-4333-8333-333333333333",
+        expect.objectContaining({
+          reason: "execution_review_requested",
+          payload: expect.objectContaining({
+            issueId: "11111111-1111-4111-8111-111111111111",
+            executionStage: expect.objectContaining({
+              wakeRole: "reviewer",
+              stageType: "review",
+              reviewRequest: {
+                instructions:
+                  "Please verify the fix against the reproduction steps and note any residual risk.",
+              },
+              allowedActions: ["approve", "request_changes"],
+            }),
           }),
         }),
-      }),
-    ));
+      ),
+    );
   });
 
   it("wakes the return assignee with execution_changes_requested", async () => {
@@ -3496,7 +4028,9 @@ describe.sequential("issue comment reopen routes", () => {
         {
           id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
           type: "review",
-          participants: [{ type: "agent", agentId: "33333333-3333-4333-8333-333333333333" }],
+          participants: [
+            { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
+          ],
         },
       ],
     })!;
@@ -3510,19 +4044,27 @@ describe.sequential("issue comment reopen routes", () => {
         currentStageId: policy.stages[0].id,
         currentStageIndex: 0,
         currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: "33333333-3333-4333-8333-333333333333" },
-        returnAssignee: { type: "agent", agentId: "22222222-2222-4222-8222-222222222222" },
+        currentParticipant: {
+          type: "agent",
+          agentId: "33333333-3333-4333-8333-333333333333",
+        },
+        returnAssignee: {
+          type: "agent",
+          agentId: "22222222-2222-4222-8222-222222222222",
+        },
         completedStageIds: [],
         lastDecisionId: null,
         lastDecisionOutcome: null,
       },
     };
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-      updatedAt: new Date(),
-    }));
+    mockIssueService.update.mockImplementation(
+      async (_id: string, patch: Record<string, unknown>) => ({
+        ...issue,
+        ...patch,
+        updatedAt: new Date(),
+      }),
+    );
 
     const res = await request(
       await installActor(createApp(), {
@@ -3539,20 +4081,22 @@ describe.sequential("issue comment reopen routes", () => {
       });
 
     expect(res.status).toBe(200);
-    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      "22222222-2222-4222-8222-222222222222",
-      expect.objectContaining({
-        reason: "execution_changes_requested",
-        payload: expect.objectContaining({
-          issueId: "11111111-1111-4111-8111-111111111111",
-          executionStage: expect.objectContaining({
-            wakeRole: "executor",
-            stageType: "review",
-            lastDecisionOutcome: "changes_requested",
-            allowedActions: ["address_changes", "resubmit"],
+    await waitForWakeup(() =>
+      expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+        "22222222-2222-4222-8222-222222222222",
+        expect.objectContaining({
+          reason: "execution_changes_requested",
+          payload: expect.objectContaining({
+            issueId: "11111111-1111-4111-8111-111111111111",
+            executionStage: expect.objectContaining({
+              wakeRole: "executor",
+              stageType: "review",
+              lastDecisionOutcome: "changes_requested",
+              allowedActions: ["address_changes", "resubmit"],
+            }),
           }),
         }),
-      }),
-    ));
+      ),
+    );
   });
 });

@@ -155,9 +155,9 @@ class FakeCodexTransport implements CodexAppServerTransport {
           cwd: TEST_WORKING_DIRECTORY,
           turns: [],
           activePermissionProfile: {
-            id: planMode
+            id: params.permissions ?? (planMode
               ? "paperclip-runner-workspace-read-only"
-              : "paperclip-runner-workspace-only",
+              : "paperclip-runner-workspace-only"),
           },
         },
         model: "gpt-test",
@@ -198,8 +198,18 @@ class FakeCodexTransport implements CodexAppServerTransport {
       this.goalState = null;
       return {};
     }
+    if (method === "thread/turns/list") {
+      const snapshot = this.readResponse ?? { thread: { turns: [{ id: "turn-1", status: "inProgress", items: [] }] } };
+      const turns = (snapshot.thread as Record<string, unknown>).turns;
+      return { data: Array.isArray(turns) ? turns.map(turn => ({ ...turn, items: [], itemsView: "notLoaded" })) : turns, nextCursor: null };
+    }
+    if (method === "thread/items/list") {
+      const turns = ((this.readResponse?.thread as Record<string, unknown> | undefined)?.turns ?? []) as Array<Record<string, unknown>>;
+      const turn = turns.find(value => value.id === params.turnId);
+      return { data: ((turn?.items ?? []) as Array<Record<string, unknown>>).map(item => ({ turnId: params.turnId, item })), nextCursor: null };
+    }
     if (method === "thread/read") {
-      return (
+      return structuredClone(
         this.readResponse ?? {
           thread: {
             id: this.threadId,
@@ -3370,10 +3380,13 @@ describe("Codex app-server Codex driver", () => {
     expect(second.calls.map((call) => call.method)).toEqual([
       "initialize",
       "thread/read",
+      "thread/turns/list",
       "thread/resume",
       "thread/goal/get",
       "thread/read",
+      "thread/turns/list",
       "thread/read",
+      "thread/turns/list",
     ]);
     expect((await recovery?.session?.snapshot())?.activeTurnId).toBe("turn-1");
   });

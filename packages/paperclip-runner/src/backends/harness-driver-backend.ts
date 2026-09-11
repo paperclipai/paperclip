@@ -120,6 +120,12 @@ export class HarnessDriverBackend implements NativeSessionBackend {
       ...(snapshot.providerIdentity === undefined
         ? {}
         : { providerIdentity: structuredClone(snapshot.providerIdentity) }),
+      ...(snapshot.workingDirectory === undefined
+        ? {}
+        : { workingDirectory: snapshot.workingDirectory }),
+      ...(snapshot.codexUsageBaseline === undefined
+        ? {}
+        : { codexUsageBaseline: structuredClone(snapshot.codexUsageBaseline) }),
       ...(snapshot.providerRecoveryPolicy === undefined
         ? {}
         : { providerRecoveryPolicy: snapshot.providerRecoveryPolicy }),
@@ -774,6 +780,12 @@ class HarnessNativeSession implements NativeSession {
       ...(snapshot.providerIdentity === undefined
         ? {}
         : { providerIdentity: structuredClone(snapshot.providerIdentity) }),
+      ...(snapshot.workingDirectory === undefined
+        ? {}
+        : { workingDirectory: snapshot.workingDirectory }),
+      ...(snapshot.codexUsageBaseline === undefined
+        ? {}
+        : { codexUsageBaseline: structuredClone(snapshot.codexUsageBaseline) }),
       ...(snapshot.providerRecoveryPolicy === undefined
         ? {}
         : { providerRecoveryPolicy: snapshot.providerRecoveryPolicy }),

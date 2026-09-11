@@ -29,20 +29,29 @@ import {
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
 import { reconcileAbandonedExecutionControl } from "../execution-control-reconciliation.js";
-const support = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
+const support = externalDatabaseUrl
+  ? { supported: true }
+  : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)(
   "durable replacement and control recovery",
   () => {
     let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
     let db: ReturnType<typeof createDb>;
     beforeAll(async () => {
+      if (externalDatabaseUrl) {
+        // The caller owns this fresh, already-migrated database.
+        db = createDb(externalDatabaseUrl);
+        return;
+      }
       database = await startEmbeddedPostgresTestDatabase(
         "paperclip-safe-replacement-",
       );
       db = createDb(database.connectionString);
     }, 30_000);
     afterAll(async () => {
-      await database?.cleanup();
+      if (externalDatabaseUrl) await db?.$client.end();
+      else await database?.cleanup();
     });
     async function seed(attempt = 1) {
       const companyId = randomUUID(),
@@ -202,6 +211,19 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } })).toBe(false);
       expect(legacyExecutionNeedsReconciliation({ ...run, status: "failed", scheduledRetryAttempt: 2, resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } })).toBe(true);
     });
+    it("does not reopen a reconciled legacy run while continuation is pending", async () => {
+      const source = await seed();
+      const [run] = await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "cancelled" }).where(eq(heartbeatRuns.id, source.runId)).returning();
+      await terminalizeLegacyExecution({ db, run, status: "cancelled" });
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      await markExecutionReconciliation(db, action!, { runId: source.runId, providerStopped: true, actionOutcome: "not_performed", outcomeEvidence: "The deterministic fixture has stopped and only printed output." }, "board");
+      await db.update(issueRecoveryActions).set({ status: "resolved" }).where(eq(issueRecoveryActions.id, action!.id));
+      await terminalizeLegacyExecution({ db, run, status: "cancelled" });
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      expect(actions).toHaveLength(1);
+      expect(actions[0]).toMatchObject({ status: "resolved", evidence: { continuationDelivery: "pending", executionReconciliation: { runId: source.runId } } });
+      await db.update(issueRecoveryActions).set({ evidence: { ...actions[0]!.evidence, continuationDelivery: "invalidated" } }).where(eq(issueRecoveryActions.id, action!.id));
+    });
     it("surfaces a failed current reviewer without transferring the original assignment", async () => {
       const source = await seed();
       const reviewerId = randomUUID();
@@ -294,10 +316,20 @@ const support = await getEmbeddedPostgresTestSupport();
       const deliveryId = randomUUID();
       await db
         .update(heartbeatRuns)
-        .set({ executionStatusDeliveryId: deliveryId,
-          error: "credential-in-provider-error", errorCode: "credential-in-provider-code",
+        .set({
+          executionStatusDeliveryId: deliveryId,
+          error: "credential-in-provider-error",
+          errorCode: "credential-in-provider-code",
           triggerDetail: "credential-in-trigger-detail",
-          resultJson: { summary: "credential-in-provider-summary", toolResult: "credential-in-tool-result" },
+          contextSnapshot: {
+            issueId: source.issueId,
+            secret: "credential-in-context",
+            nested: { provider: "credential-in-nested-context" },
+          },
+          resultJson: {
+            summary: "credential-in-provider-summary",
+            toolResult: "credential-in-tool-result",
+          },
         })
         .where(eq(heartbeatRuns.id, source.runId));
       await deliverExecutionStatuses(db, {
@@ -328,14 +360,27 @@ const support = await getEmbeddedPostgresTestSupport();
       ).rejects.toThrow("crash after publication");
       await deliverExecutionStatuses(db, { publish });
       expect(JSON.stringify(observed)).not.toContain("credential-in-");
-      expect(Object.keys((observed[0] as { payload: Record<string, unknown> }).payload).sort()).toEqual(
-        ["runId", "agentId", "status", "startedAt", "finishedAt", "deliveryId"].sort(),
+      expect(
+        Object.keys(
+          (observed[0] as { payload: Record<string, unknown> }).payload,
+        ).sort(),
+      ).toEqual(
+        [
+          "runId",
+          "agentId",
+          "issueId",
+          "status",
+          "startedAt",
+          "finishedAt",
+          "deliveryId",
+        ].sort(),
       );
       expect(observed).toEqual([
         expect.objectContaining({
           companyId: source.companyId,
           payload: expect.objectContaining({
             runId: source.runId,
+            issueId: source.issueId,
             deliveryId,
             status: "failed",
           }),
@@ -344,6 +389,7 @@ const support = await getEmbeddedPostgresTestSupport();
           companyId: source.companyId,
           payload: expect.objectContaining({
             runId: source.runId,
+            issueId: source.issueId,
             deliveryId,
             status: "failed",
           }),
@@ -364,6 +410,168 @@ const support = await getEmbeddedPostgresTestSupport();
           .where(eq(heartbeatRuns.retryOfRunId, source.runId)),
       ).toHaveLength(0);
     });
+    it.each([
+      "native",
+      "legacy",
+      "native_precedes_context",
+      "missing",
+      "nonexistent",
+      "deleted",
+      "foreign",
+      "malformed",
+      "object",
+      "array",
+      "number",
+      "json_null",
+      "native_foreign",
+      "native_nonexistent",
+    ] as const)(
+      "routes status delivery only through a proven same-company task: %s",
+      async (association) => {
+        await deliverExecutionStatuses(db);
+        const source = await seed();
+        const otherIssueId = randomUUID();
+        await db.insert(issues).values({
+          id: otherIssueId,
+          companyId: source.companyId,
+          title: "Other task",
+          status: "backlog",
+        });
+        const foreign =
+          association === "foreign" || association === "native_foreign"
+            ? await seed()
+            : null;
+        const runId = randomUUID();
+        const deliveryId = randomUUID();
+        let nativeIssueId: string | null = null;
+        let contextSnapshot: Record<string, unknown> = {
+          issueId: source.issueId,
+        };
+        let expectedIssueId: string | null = null;
+        switch (association) {
+          case "native":
+            nativeIssueId = source.issueId;
+            contextSnapshot = {};
+            expectedIssueId = source.issueId;
+            break;
+          case "legacy":
+            expectedIssueId = source.issueId;
+            break;
+          case "native_precedes_context":
+            nativeIssueId = source.issueId;
+            contextSnapshot = { issueId: otherIssueId };
+            expectedIssueId = source.issueId;
+            break;
+          case "missing":
+            contextSnapshot = {};
+            break;
+          case "nonexistent":
+            contextSnapshot = { issueId: randomUUID() };
+            break;
+          case "deleted":
+            contextSnapshot = { issueId: otherIssueId };
+            await db.delete(issues).where(eq(issues.id, otherIssueId));
+            break;
+          case "foreign":
+            contextSnapshot = { issueId: foreign!.issueId };
+            break;
+          case "malformed":
+            contextSnapshot = { issueId: "credential-in-invalid-issue-id" };
+            break;
+          case "object":
+            contextSnapshot = { issueId: { secret: "credential-in-object" } };
+            break;
+          case "array":
+            contextSnapshot = {
+              issueId: [source.issueId, "credential-in-array"],
+            };
+            break;
+          case "number":
+            contextSnapshot = { issueId: 42 };
+            break;
+          case "json_null":
+            contextSnapshot = { issueId: null };
+            break;
+          case "native_foreign":
+            nativeIssueId = foreign!.issueId;
+            break;
+          case "native_nonexistent":
+            nativeIssueId = randomUUID();
+            break;
+        }
+        await db.insert(heartbeatRuns).values({
+          id: runId,
+          companyId: source.companyId,
+          agentId: source.agentId,
+          runtimeMode: nativeIssueId ? "native" : "legacy",
+          nativeIssueId,
+          contextSnapshot: {
+            ...contextSnapshot,
+            secret: "credential-in-context",
+          },
+          status: "cancelled",
+          executionStatusDeliveryId: deliveryId,
+          error: "credential-in-error",
+          resultJson: { output: "credential-in-output" },
+        });
+        const beforeRunIds = (
+          await db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.companyId, source.companyId))
+        )
+          .map((row) => row.id)
+          .sort();
+        const observed: Parameters<typeof publishLiveEvent>[0][] = [];
+        await deliverExecutionStatuses(db, {
+          publish: (event) => {
+            observed.push(event);
+            return publishLiveEvent(event);
+          },
+        });
+        expect(observed).toEqual([
+          {
+            companyId: source.companyId,
+            type: "heartbeat.run.status",
+            payload: {
+              runId,
+              agentId: source.agentId,
+              issueId: expectedIssueId,
+              status: "cancelled",
+              startedAt: null,
+              finishedAt: null,
+              deliveryId,
+            },
+          },
+        ]);
+        expect(JSON.stringify(observed)).not.toContain("credential-in-");
+        if (foreign)
+          expect(JSON.stringify(observed)).not.toContain(foreign.issueId);
+        expect(
+          (
+            await db
+              .select({ id: heartbeatRuns.id })
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.companyId, source.companyId))
+          )
+            .map((row) => row.id)
+            .sort(),
+        ).toEqual(beforeRunIds);
+        expect(
+          (
+            await db
+              .select()
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, runId))
+          )[0],
+        ).toMatchObject({
+          status: "cancelled",
+          executionStatusDeliveryId: null,
+          processPid: null,
+        });
+      },
+    );
+
     it("never resets an exhausted incident by assigning another run id", async () => {
       const source = await seed(3);
       await reconcileSafeNativeReplacements(db);

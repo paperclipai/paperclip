@@ -32,7 +32,7 @@ diff --git a/dist/index.js b/dist/index.js
                // content: [messageContent],   — omitted: already rendered via item/started
 -              // rawInput: { ... }            — omitted: same reason
              },
-@@ -26988,4 +26988,13 @@
+@@ -26988,4 +26988,18 @@
  };
 +function paperclipBaseInstructions(request) {
 +  if (process.env.PAPERCLIP_ACPX_ISOLATED_CONTEXT !== "1") return void 0;
@@ -42,6 +42,11 @@ diff --git a/dist/index.js b/dist/index.js
 +    return prompt.append;
 +  }
 +  return void 0;
++}
++function paperclipSandboxPolicy(sandboxPolicy) {
++  const networkAccess = process.env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS;
++  if (sandboxPolicy.type !== "workspaceWrite" || !["true", "false"].includes(networkAccess)) return sandboxPolicy;
++  return { ...sandboxPolicy, networkAccess: networkAccess === "true" && process.env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled" };
 +}
  var CodexAcpClient = class {
    codexClient;
@@ -109,6 +114,15 @@ diff --git a/dist/index.js b/dist/index.js
        forceReload: true
      });
    }
+@@ -27600,7 +27624,7 @@
+       threadId: request.sessionId,
+       input,
+       approvalPolicy: agentMode.approvalPolicy,
+-      sandboxPolicy: addAdditionalDirectoriesToSandboxPolicy(agentMode.sandboxPolicy, additionalDirectories),
++      sandboxPolicy: addAdditionalDirectoriesToSandboxPolicy(paperclipSandboxPolicy(agentMode.sandboxPolicy), additionalDirectories),
+       summary: disableSummary ? "none" : "auto",
+       effort,
+       model: modelId.model,
 @@ -30595,6 +30614,9 @@
                updatedGoal
              );

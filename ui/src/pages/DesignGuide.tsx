@@ -1,4 +1,8 @@
+import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKeySelect";
 import { RepositoryEditor } from "@/components/RepositoryEditor";
+import { TaskChatMarker } from "@/components/task-chat/TaskChatMarker";
+import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import { TaskPauseNotice, TaskTreeControlDialog, TaskTreeControlMenuItems } from "@/components/TaskTreeControls";
 import { useState } from "react";
 import { ServicesList } from "./apps/app-detail/ServicesPanel";
 import { ComposioProvenanceChip } from "./apps/ComposioProvenanceChip";
@@ -448,6 +452,27 @@ function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
 /*  Page                                                               */
 /* ------------------------------------------------------------------ */
 
+function TaskExecutionControlsExample() {
+  const [running, setRunning] = useState(true);
+  const [dialogMode, setDialogMode] = useState<"resume" | "cancel" | "restore" | null>(null);
+  const [wake, setWake] = useState(true);
+  return <div className="max-w-xl space-y-4">
+    <div className="w-52 rounded-md border border-border p-1">
+      <TaskTreeControlMenuItems scope="subtree" canPause={running} canResume={!running} canCancel canRestore={!running}
+        onPause={() => setRunning(false)} onResume={() => setDialogMode("resume")}
+        onCancel={() => setDialogMode("cancel")} onRestore={() => setDialogMode("restore")} />
+    </div>
+    <p className="text-sm text-muted-foreground">{running ? "Running: type to switch Stop to Send." : "Paused: resume from the menu."}</p>
+    {!running ? <TaskPauseNotice scope="subtree" onResume={() => setDialogMode("resume")} /> : null}
+    {!running ? <TaskChatMarker item={{ id: "design-cancelled", kind: "marker", variant: "interrupted", tone: "neutral", label: "Run cancelled", detail: "The run was cancelled before returning an answer.", collapsible: true }} /> : null}
+    <TaskChatComposer onAdd={async () => {}} workMode="standard" stopScope="subtree" onStop={running ? async () => setRunning(false) : undefined} />
+    <TaskTreeControlDialog open={dialogMode !== null} onOpenChange={(open) => { if (!open) setDialogMode(null); }}
+      mode={dialogMode ?? "cancel"} scope="subtree" affectedCount={3} affectedAgentCount={2} loading={false} pending={false} valid
+      wakeAgents={wake} onWakeAgentsChange={setWake} onRetry={() => {}}
+      onApply={() => { setRunning(dialogMode !== "cancel" && wake); setDialogMode(null); }} />
+  </div>;
+}
+
 export function DesignGuide() {
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
@@ -517,6 +542,10 @@ export function DesignGuide() {
             </div>
           </SubSection>
         </div>
+      </Section>
+
+      <Section title="Task Execution Controls">
+        <TaskExecutionControlsExample />
       </Section>
 
       <Section title="Task Collection">
@@ -2149,6 +2178,12 @@ export function DesignGuide() {
           normal presentation. Recovery decisions and attempts belong in the run log;
           there is no execution status card or reconciliation form.
         </p>
+      </Section>
+
+      <Section title="Saved provider API keys">
+        <SavedProviderKeySelect options={[{ id: "example", label: "Claude API key (Your key)", binding: { type: "user_secret_ref", key: "ANTHROPIC_API_KEY", version: "latest" } }]} value="example" onChange={() => {}} loading={false} error={false} />
+        <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading error={false} />
+        <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading={false} error />
       </Section>
 
       <Section title="Connection Intent">

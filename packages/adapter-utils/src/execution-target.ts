@@ -344,6 +344,20 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
    * bridge path never sets it, so the method is absent there.
    */
   markOrderlyCompletion?(): void;
+  /**
+   * Register a listener for a newly latched terminal loss. The listener
+   * fires at most once, and only for a loss that flips the disposition to
+   * failed — never for a clean channel end that orders after a
+   * host-observed orderly completion. Returns a function that unregisters
+   * the listener.
+   *
+   * The caller uses this to abort an in-flight Agent Client Protocol turn
+   * the moment the channel dies, instead of waiting for the turn to return
+   * a terminal result on its own (a dead channel can leave a turn with
+   * nothing to return). The file bridge path never sets it, so the method
+   * is absent there.
+   */
+  onLoss?(listener: (reason: DuplexLossReason) => void): () => void;
   stop(): Promise<void>;
 }
 
@@ -1650,7 +1664,9 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
 `;
     const result = await adapterExecutionTargetCommandRunner(remote).execute({
       command: "sh", args: ["-c", probe, "paperclip-git-context", input.hostCredentials ? "host" : "managed"],
-      cwd: input.cwd, timeoutMs: 15_000,
+      // The caller's cwd belongs to the controller. Copied sandbox/SSH
+      // workspaces can live at a different path on the execution target.
+      cwd: remote.remoteCwd, timeoutMs: 15_000,
     });
     if (result.exitCode !== 0) throw new Error("Could not read execution-target Git context");
     const payload = result.stdout.split("\0PAPERCLIP_GIT_CONTEXT_V1\0")[1]?.split("\0PAPERCLIP_GIT_CONTEXT_END\0")[0];
@@ -3659,12 +3675,19 @@ interface Http2RunDispositionLatch {
   markOrderlyCompletion(): void;
   /** Atomically mark the orderly completion and read the disposition. */
   settleRunDisposition(): DuplexBrokerRunDisposition;
+  /**
+   * Register a listener that fires once, only on the call to `recordLoss`
+   * that actually latches a new terminal loss. Returns a function that
+   * unregisters the listener.
+   */
+  onLoss(listener: (reason: DuplexLossReason) => void): () => void;
 }
 
 function createHttp2RunDispositionLatch(): Http2RunDispositionLatch {
   let lossOrdered = false;
   let lossReason: DuplexLossReason | null = null;
   let completionOrdered = false;
+  let lossListener: ((reason: DuplexLossReason) => void) | null = null;
   const markOrderlyCompletion = (): void => {
     if (completionOrdered || lossOrdered) return;
     completionOrdered = true;
@@ -3677,12 +3700,19 @@ function createHttp2RunDispositionLatch(): Http2RunDispositionLatch {
       if (lossOrdered || completionOrdered) return false;
       lossOrdered = true;
       lossReason = reason;
+      lossListener?.(reason);
       return true;
     },
     markOrderlyCompletion,
     settleRunDisposition(): DuplexBrokerRunDisposition {
       markOrderlyCompletion();
       return { failed: lossOrdered, lossReason };
+    },
+    onLoss(listener: (reason: DuplexLossReason) => void): () => void {
+      lossListener = listener;
+      return () => {
+        if (lossListener === listener) lossListener = null;
+      };
     },
   };
 }
@@ -4670,6 +4700,8 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
             // the mark and a teardown loss cannot slip in between.
             settleRunDisposition: (): DuplexBrokerRunDisposition => dispositionLatch.settleRunDisposition(),
             markOrderlyCompletion: (): void => dispositionLatch.markOrderlyCompletion(),
+            onLoss: (listener: (reason: DuplexLossReason) => void): (() => void) =>
+              dispositionLatch.onLoss(listener),
             stop: async () => {
               // Close the HTTP/2 server's sessions, then the channel, before
               // lease release, so no live provider session remains when the

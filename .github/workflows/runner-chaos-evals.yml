@@ -12,7 +12,9 @@ on:
         type: string
 
 concurrency:
-  group: runner-chaos-evals-${{ inputs.ref || github.ref }}
+  # Reusable calls inherit the caller's workflow name. Cloud readiness and
+  # Release verify the same SHA independently and must not cancel each other.
+  group: runner-chaos-evals-${{ github.workflow }}-${{ inputs.ref || github.ref }}
   cancel-in-progress: true
 
 jobs:

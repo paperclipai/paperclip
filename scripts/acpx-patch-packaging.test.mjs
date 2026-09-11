@@ -45,9 +45,67 @@ const acpxRuntimePatch = await readFile(
   "utf8",
 );
 const claudeAcpPatch = await readFile(
-  new URL("../patches/@agentclientprotocol__claude-agent-acp@0.70.0.patch", import.meta.url),
+  new URL("../patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch", import.meta.url),
   "utf8",
 );
+
+for (const version of ["0.12.0", "0.13.1"]) {
+  test(`ACPX ${version} release patch uses portable generated unified hunks`, async () => {
+    const patch = await readFile(
+      new URL(`../patches/acpx@${version}.patch`, import.meta.url),
+      "utf8",
+    );
+    const lines = patch.split("\n");
+    let hunkCount = 0;
+    for (let index = 0; index < lines.length; index += 1) {
+      const header = lines[index].match(
+        /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/,
+      );
+      if (!header) continue;
+      hunkCount += 1;
+      const body = [];
+      let oldLines = 0;
+      let newLines = 0;
+      while (index + 1 < lines.length && (oldLines < Number(header[2] ?? 1) || newLines < Number(header[4] ?? 1))) {
+        const line = lines[++index];
+        // Unified diff's EOF marker is metadata, not a source/destination
+        // line, and may occur between the removed and added final lines.
+        if (line === "\\ No newline at end of file") continue;
+        // Git accepts an empty context line with its optional space omitted.
+        assert.ok(line === "" || /^[ +\-]/.test(line), `invalid unified hunk line: ${line}`);
+        const normalized = line === "" ? " " : line;
+        body.push(normalized);
+        if (!normalized.startsWith("+")) oldLines += 1;
+        if (!normalized.startsWith("-")) newLines += 1;
+      }
+      assert.equal(
+        body.filter((line) => !line.startsWith("+")).length,
+        Number(header[2] ?? 1),
+      );
+      assert.equal(
+        body.filter((line) => !line.startsWith("-")).length,
+        Number(header[4] ?? 1),
+      );
+      const prefix = body.findIndex((line) => !line.startsWith(" "));
+      const suffix = body
+        .slice()
+        .reverse()
+        .findIndex((line) => !line.startsWith(" "));
+      // pnpm patch-commit emits three context lines. Hand-added asymmetric
+      // context can force GNU patch's locate_hunk() to require EOF even when
+      // BSD patch and git apply accept the same source and hunk.
+      assert.ok(
+        prefix >= 0 && prefix <= 3,
+        `regenerate ${version} hunk at old line ${header[1]} with pnpm patch-commit (prefix ${prefix})`,
+      );
+      assert.ok(
+        suffix >= 0 && suffix <= 3,
+        `regenerate ${version} hunk at old line ${header[1]} with pnpm patch-commit (suffix ${suffix})`,
+      );
+    }
+    assert.ok(hunkCount > 0);
+  });
+}
 
 test("published packages preserve the patched ACPX runtime", () => {
   assert.equal(
@@ -61,7 +119,7 @@ test("published packages preserve the patched ACPX runtime", () => {
   assert.equal(adapterUtilsPackage.dependencies.acpx, "0.12.0");
   assert.deepEqual(adapterUtilsPackage.bundleDependencies, ["acpx"]);
   assert.equal(serverPackage.dependencies.acpx, "0.13.1");
-  assert.deepEqual(serverPackage.bundleDependencies, ["acpx"]);
+  assert.ok(serverPackage.bundleDependencies.includes("acpx"));
   assert.equal(bundledCliNpmDependencies.has("acpx"), true);
   assert.equal(cliEsbuildConfig.external.includes("acpx"), false);
 });
@@ -69,11 +127,11 @@ test("published packages preserve the patched ACPX runtime", () => {
 test("Paperclip Runner pins the qualified ACPX host callbacks", () => {
   assert.equal(rootPackage.pnpm.patchedDependencies["acpx@0.13.1"], "patches/acpx@0.13.1.patch");
   assert.equal(
-    rootPackage.pnpm.patchedDependencies["@agentclientprotocol/claude-agent-acp@0.70.0"],
-    "patches/@agentclientprotocol__claude-agent-acp@0.70.0.patch",
+    rootPackage.pnpm.patchedDependencies["@agentclientprotocol/claude-agent-acp@0.73.0"],
+    "patches/@agentclientprotocol__claude-agent-acp@0.73.0.patch",
   );
   assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
-  assert.equal(runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"], "0.70.0");
+  assert.equal(runnerPackage.dependencies["@agentclientprotocol/claude-agent-acp"], "0.73.0");
   assert.equal(runnerPackage.dependencies["@agentclientprotocol/codex-acp"], "1.6.2");
   for (const callback of [
     "spawnEnvironment", "spawnCwd", "spawnAgent", "isPlainStringEnvironment",
@@ -226,7 +284,7 @@ test("bundled package patch selection rejects an unpatched installed version", (
   );
 });
 
-test("server package staging bundles and patches the vendored runner's acpx runtime", (t) => {
+test("server package staging applies every bundled runtime patch and preserves the vendored runner", (t) => {
   const fixtureDir = mkdtempSync(join(tmpdir(), "paperclip-bundled-stage-"));
   const sourceDir = join(fixtureDir, "source");
   const destinationDir = join(fixtureDir, "destination");
@@ -263,7 +321,7 @@ mkdir -p "$destination/node_modules/.pnpm"
 set -euo pipefail
 printf 'npm %s\\n' "$*" >> "$FAKE_CALL_LOG"
 [ "$*" = "install --omit=dev --ignore-scripts --no-audit --no-fund" ]
-node -e 'const pkg = require("./package.json"); if ("devDependencies" in pkg) process.exit(1)'
+node -e 'const fs = require("node:fs"); const pkg = require("./package.json"); if ("devDependencies" in pkg) process.exit(1); for (const [name, version] of Object.entries(pkg.dependencies)) { const dir = "node_modules/" + name; fs.mkdirSync(dir + "/dist", { recursive: true }); fs.writeFileSync(dir + "/package.json", JSON.stringify({ name, version })); }'
 mkdir -p node_modules/acpx/dist
 printf 'unpatched runtime\\n' > node_modules/acpx/dist/runtime.js
 printf '{"name":"acpx","version":"0.13.1"}\\n' > node_modules/acpx/package.json
@@ -284,6 +342,10 @@ while [ "$#" -gt 0 ]; do
   fi
 done
 patch_input="$(cat)"
+printf '%s\\n' "$patch_input" > "$target/applied.patch"
+if [[ "$target" != */acpx ]]; then
+  exit 0
+fi
 grep -q spawnEnvironment <<< "$patch_input"
 grep -q spawnAgent <<< "$patch_input"
 grep -q onAgentStderr <<< "$patch_input"
@@ -293,7 +355,11 @@ printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
 
   execFileSync(
     process.execPath,
-    [new URL("./prepare-bundled-package.mjs", import.meta.url).pathname, sourceDir, destinationDir],
+    [
+      new URL("./prepare-bundled-package.mjs", import.meta.url).pathname,
+      sourceDir,
+      destinationDir,
+    ],
     {
       env: {
         ...process.env,
@@ -318,9 +384,23 @@ printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
     /patch -p1 --forward -d .*node_modules\/acpx/,
   );
   assert.equal(
-    readFileSync(callLog, "utf8").split("\n").filter((line) => line.startsWith("patch ")).length,
-    1,
+    readFileSync(callLog, "utf8")
+      .split("\n")
+      .filter((line) => line.startsWith("patch ")).length,
+    serverPackage.bundleDependencies.length,
   );
+  for (const name of serverPackage.bundleDependencies) {
+    const specifier = `${name}@${serverPackage.dependencies[name]}`;
+    const patchPath = rootPackage.pnpm.patchedDependencies[specifier];
+    assert.equal(
+      readFileSync(
+        join(destinationDir, "node_modules", name, "applied.patch"),
+        "utf8",
+      ),
+      `${readFileSync(new URL(`../${patchPath}`, import.meta.url), "utf8").trimEnd()}\n`,
+      `${specifier} receives its own full configured patch`,
+    );
+  }
 });
 
 test("bundled package dry runs preview without querying published versions", () => {

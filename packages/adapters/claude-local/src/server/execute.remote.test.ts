@@ -123,6 +123,7 @@ describe("claude remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "claude",
         instructionsFilePath: instructionsPath,
         env: {
@@ -257,6 +258,7 @@ describe("claude remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "claude",
       },
       context: {
@@ -318,6 +320,7 @@ describe("claude remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "claude",
       },
       context: {
@@ -385,6 +388,7 @@ describe("claude remote execution", () => {
         taskKey: null,
       },
       config: {
+        engine: "cli",
         command: "claude",
       },
       context: {
@@ -434,6 +438,7 @@ describe("claude remote execution", () => {
           taskKey: null,
         },
         config: {
+        engine: "cli",
           command: "claude",
           ...config,
         },

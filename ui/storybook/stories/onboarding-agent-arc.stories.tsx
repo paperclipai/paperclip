@@ -348,8 +348,9 @@ function signedOutConnectionFixture() {
 
 async function openProviderConnection(provider: "Claude" | "OpenAI", mode: "subscription" | "api") {
   await advance("Connect a model");
-  if (mode === "api") {
-    await userEvent.click(await screen.findByRole("button", { name: "Use API key instead" }, { timeout: STEP_TIMEOUT_MS }));
+  await userEvent.click(await screen.findByRole("button", { name: "Use API key instead" }, { timeout: STEP_TIMEOUT_MS }));
+  if (mode === "subscription") {
+    await userEvent.click(await screen.findByRole("button", { name: "Use subscription instead" }, { timeout: STEP_TIMEOUT_MS }));
   }
   await userEvent.click(await screen.findByRole("radio", { name: new RegExp(`^${provider} `) }, { timeout: STEP_TIMEOUT_MS }));
   if (mode === "api") {
@@ -384,4 +385,45 @@ export const CodexApiKey: StoryObj = {
   beforeEach: signedOutConnectionFixture,
   render: () => <WizardArc />,
   play: () => openProviderConnection("OpenAI", "api"),
+};
+
+/** Production onboarding, with the current user's previously saved provider key. */
+export const ConnectWithSavedApiKey: StoryObj = {
+  beforeEach: () => {
+    setOnboardingFixtureState({ savedApiKeys: true, authSignal: "absent" });
+    return resetOnboardingFixtureState;
+  },
+  render: () => <WizardArc />,
+  play: async () => {
+    await advance("Connect a model");
+    await pickFirstSource();
+    await screen.findByRole("combobox", { name: "Saved API key" }, { timeout: STEP_TIMEOUT_MS });
+    await expect(screen.getByRole("combobox", { name: "Saved API key" })).toHaveValue("user:ANTHROPIC_API_KEY");
+  },
+};
+
+export const ConnectWithSavedChatGptSubscription: StoryObj = {
+  beforeEach: () => {
+    setOnboardingFixtureState({ savedCodexLogin: true, authSignal: "unknown" });
+    return resetOnboardingFixtureState;
+  },
+  render: () => <WizardArc />,
+  play: async () => {
+    await advance("Connect a model");
+    await userEvent.click(screen.getByRole("radio", {name: /OpenAI/}));
+    await screen.findByRole("combobox", {name: "Saved subscription"}, {timeout: STEP_TIMEOUT_MS});
+  },
+};
+
+export const ConnectWithSavedClaudeSubscription: StoryObj = {
+  beforeEach: () => {
+    setOnboardingFixtureState({ savedClaudeLogin: true, savedApiKeys: true, authSignal: "absent" });
+    return resetOnboardingFixtureState;
+  },
+  render: () => <WizardArc />,
+  play: async () => {
+    await advance("Connect a model");
+    await pickFirstSource();
+    await expect(screen.queryByRole("combobox", { name: "Saved API key" })).not.toBeInTheDocument();
+  },
 };

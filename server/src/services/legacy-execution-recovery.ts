@@ -1,7 +1,7 @@
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
@@ -22,6 +22,10 @@ export function legacyExecutionNeedsReconciliation(
   if (normalizeMaxTurnStopReason(run.resultJson?.stopReason) ?? normalizeMaxTurnStopReason(run.errorCode)) return false;
   const evidence = run.resultJson?.executionRecovery as
     Record<string, unknown> | undefined;
+  if (run.status === "cancelled" && evidence?.kind === "interrupted"
+      && evidence.providerStopped === true && evidence.sessionPreserved === true
+      && evidence.actionOutcomes === "settled"
+      && (run.resultJson?.executionCancellation as Record<string, unknown> | undefined)?.state === "acknowledged") return false;
   // Waiting for a live workspace holder precedes provider execution. It is a
   // resource wait, not a failed provider attempt or permission to replay work.
   if (run.status === "cancelled" && run.errorCode === "workspace_busy" &&
@@ -98,6 +102,16 @@ export async function terminalizeLegacyExecution(input: {
       (task.assigneeAgentId === run.agentId || isCurrentReviewer) &&
       !["done", "cancelled"].includes(task.status)
     ) {
+      // Periodic stranded-work checks may revisit this terminal run before its
+      // reconciled continuation is dispatched. Preserve the recorded decision.
+      const [reconciled] = await tx.select({ id: issueRecoveryActions.id })
+        .from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, run.companyId),
+          eq(issueRecoveryActions.sourceIssueId, task.id),
+          eq(issueRecoveryActions.status, "resolved"),
+          sql`${issueRecoveryActions.evidence}->'executionReconciliation'->>'runId' = ${run.id}`,
+        )).limit(1);
+      if (reconciled) return updated;
       await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
         companyId: run.companyId,
         sourceIssueId: task.id,

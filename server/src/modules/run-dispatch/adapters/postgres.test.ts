@@ -21,6 +21,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresRunDispatchAdapter } from "./postgres.js";
+import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 
 // Proves the DB-to-facts mapping this adapter owns for each state the two
 // run-dispatch gates decide on. `application/use-cases.test.ts` and
@@ -465,6 +466,68 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   });
 
   describe("cancelStaleQueuedRun", () => {
+    it.each([
+      { label: "chat source", source: "chat:slack", expected: "chat:slack" },
+      {
+        label: "native status source",
+        source: "native_status_decision",
+        expected: "native_status_decision",
+      },
+      { label: "absent source", source: undefined, expected: null },
+      { label: "null source", source: null, expected: null },
+      { label: "blank source", source: "   ", expected: null },
+      { label: "numeric source", source: 42, expected: null },
+      { label: "object source", source: { type: "chat:slack" }, expected: null },
+      { label: "array source", source: ["chat:slack"], expected: null },
+    ])("projects only the committed $label into a cancellation effect", async ({ source, expected }) => {
+      const { companyId, agentId } = await seedCompanyAndAgent();
+      const issueId = randomUUID();
+      await seedIssue({ companyId, issueId, status: "done", assigneeAgentId: agentId });
+      const runId = await seedRun({
+        companyId,
+        agentId,
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_assigned",
+          ...(source === undefined ? {} : { source }),
+          paperclipWake: { privateTestMarker: "not-for-the-status-effect" },
+        },
+      });
+      const outcome = await createPostgresRunDispatchAdapter(db).cancelStaleQueuedRun({
+        runId,
+        companyId,
+        expectedStatus: "queued",
+        now: new Date(),
+      });
+
+      expect(outcome.outcome).toBe("cancelled");
+      if (outcome.outcome !== "cancelled") throw new Error("expected stale run cancellation");
+      expect(outcome.postCommitEffects).toHaveLength(1);
+      const effect = outcome.postCommitEffects[0];
+      expect(effect).toMatchObject({
+        kind: "run_status_published",
+        companyId,
+        runId,
+        agentId,
+        issueId,
+        status: "cancelled",
+        previousStatus: "queued",
+        errorCode: "issue_terminal_status",
+        contextSource: expected,
+      });
+      expect(effect).not.toHaveProperty("contextSnapshot");
+      expect(JSON.stringify(effect)).not.toContain("not-for-the-status-effect");
+      const persisted = await db
+        .select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0]);
+      expect(persisted?.status).toBe("cancelled");
+      expect(persisted?.contextSnapshot).toMatchObject({
+        paperclipWake: { privateTestMarker: "not-for-the-status-effect" },
+      });
+    });
+
     it("maps a reassigned issue into a stale queued-run decision", async () => {
       const { companyId, agentId } = await seedCompanyAndAgent();
       const replacementAgentId = randomUUID();
@@ -701,8 +764,31 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     await db.insert(issues).values({ id: issueId, companyId, title: "Uncertain email", status: "in_progress", assigneeAgentId: agentId });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "queued", contextSnapshot: { issueId, wakeReason: "retry_failed_run" } });
     await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board", cause: "uncertain_external_action", status, evidence: status === "resolved" ? { automaticRecovery: { replay: "blocked" } } : {}, fingerprint: runId, nextAction: "Verify whether email-1 was sent before continuing." });
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ cause: "uncertain_external_action", nextAction: "Verify whether email-1 was sent before continuing." });
+    expect(await getExecutionBlocker(db, randomUUID(), issueId)).toBeNull();
     const adapter = createPostgresRunDispatchAdapter(db);
     await expect(adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() })).resolves.toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+  });
+
+  it("links the stopped run's agent instead of its return owner, within the same company", async () => {
+    const { companyId, agentId: ownerId } = await seedCompanyAndAgent();
+    const reviewerId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
+    await seedAgent({ id: reviewerId, companyId, name: "Reviewer" });
+    await seedIssue({ companyId, issueId, status: "in_review", assigneeAgentId: ownerId });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: reviewerId, status: "cancelled" });
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board",
+      returnOwnerAgentId: ownerId, cause: "legacy_execution_requires_reconciliation", status: "active",
+      evidence: { runId }, fingerprint: runId, nextAction: "Inspect the stopped reviewer.",
+    }).returning();
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId, agentId: reviewerId });
+    const other = await seedCompanyAndAgent();
+    const otherRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: otherRunId, companyId: other.companyId, agentId: other.agentId, status: "cancelled" });
+    await db.update(issueRecoveryActions).set({ evidence: { runId: otherRunId } }).where(eq(issueRecoveryActions.id, action!.id));
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ agentId: null });
+    await db.update(issueRecoveryActions).set({ evidence: { runId: "invalid" } }).where(eq(issueRecoveryActions.id, action!.id));
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId: null, agentId: null });
   });
 
 });

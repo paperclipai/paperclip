@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryKeys } from "@/lib/queryKeys";
 import { NewAgent } from "./NewAgent";
+import { ApiError } from "@/api/client";
 
 const api = vi.hoisted(() => ({
   get: vi.fn(),
@@ -14,6 +15,7 @@ const api = vi.hoisted(() => ({
   hire: vi.fn(),
   testEnvironment: vi.fn(),
   getAdapterAuthSignal: vi.fn(),
+  getClaudeOAuthTokenStatus: vi.fn(),
 }));
 const envApi = vi.hoisted(() => ({ list: vi.fn(), capabilities: vi.fn() }));
 const settings = vi.hoisted(() => ({
@@ -165,6 +167,7 @@ beforeEach(() => {
   api.adapterModels.mockResolvedValue([]);
   api.list.mockResolvedValue([{ id: "ceo", role: "ceo", status: "idle" }]);
   api.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
+  api.getClaudeOAuthTokenStatus.mockRejectedValue(new ApiError("Not found", 404, null));
   api.testEnvironment.mockResolvedValue(pass);
   api.hire.mockImplementation(async (_company, input) => ({
     agent: { ...input, id: "new-agent", status: "idle", urlKey: "atlas" },
@@ -383,6 +386,29 @@ describe("New agent setup", () => {
     expect(api.hire.mock.calls[0][1].adapterConfig.env[key].type).toBe("user_secret_ref");
     expect(JSON.stringify(api.hire.mock.calls)).not.toContain("connection-key");
   });
+  it.each([
+    ["claude_local", "claude", "Claude", "ANTHROPIC_API_KEY"],
+    ["codex_local", "codex", "OpenAI", "OPENAI_API_KEY"],
+    ["paperclip_runner", "claude", "Claude", "ANTHROPIC_API_KEY"],
+    ["paperclip_runner", "codex", "OpenAI", "OPENAI_API_KEY"],
+  ])("defaults %s %s to a saved key and preserves its reference through hire", async (adapter, runner, provider, key) => {
+    secrets.listMyUserSecrets.mockResolvedValue([{
+      definition: { id: "existing-key", companyId: "company-1", key, name: "Existing key", status: "active" },
+      secret: { companyId: "company-1", status: "active" },
+    }]);
+    await render(adapter, runner);
+    await click(provider + "API");
+    expect((container.querySelector("select[aria-label='Saved API key']") as HTMLSelectElement).value).toBe("user:existing-key");
+    await click("Use saved API key");
+    const binding = { type: "user_secret_ref", key, version: "latest" };
+    expect(api.testEnvironment.mock.calls[0][2].adapterConfig.env[key]).toEqual(binding);
+    expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({});
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterConfig.env[key]).toEqual(binding);
+    expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
+    expect(secrets.createMyUserSecret).not.toHaveBeenCalled();
+    expect(secrets.rotateMyUserSecret).not.toHaveBeenCalled();
+  });
   it.each(["opencode_local", "pi_local"])(
     "persists %s OpenRouter credentials only as a secret reference",
     async (adapter) => {
@@ -514,8 +540,10 @@ describe("New agent setup", () => {
     settings.getExperimental.mockResolvedValue({
       enableManagedSandboxOnly: true,
     });
+    api.getClaudeOAuthTokenStatus.mockResolvedValue({ secretId: "saved-oauth", latestVersion: 1 });
     await render("claude_local");
-    await connect("Claude");
+    await click("ClaudeSubscription");
+    await click("Use saved subscription");
     await click("Finish setup");
     expect(api.testEnvironment.mock.calls[0][2].environmentId).toBe(
       "sandbox-1",

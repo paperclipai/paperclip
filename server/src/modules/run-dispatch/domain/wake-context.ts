@@ -23,6 +23,7 @@ export const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 export const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set([
   "accepted",
   "answered",
+  "cancelled",
   "rejected",
 ]);
 

@@ -37,10 +37,9 @@ import {
 } from "./live/runnerd-codex-transport.js";
 
 export const DEFAULT_NATIVE_RUNTIME_INPUT_LIVE_WINDOW_MS = 120_000;
-export const DEFAULT_NATIVE_SEMANTIC_RESULT_TERMINAL_GRACE_MS = 5_000;
 const OPTIONAL_SESSION_CANCELLATION_GRACE_MS = 100;
 const FAILED_OPERATION_SETTLEMENT_GRACE_MS = 100;
-// Retaining a remote provider requires its semantic-result interruption to be
+// Retaining a remote provider requires terminal subscription teardown to be
 // acknowledged before the session is handed to another run. Daytona command
 // round trips routinely exceed the generic failed-operation grace, but remain
 // bounded by the transport. Other iterator and handoff cleanup keeps the short
@@ -146,8 +145,6 @@ export interface ExecuteNativeSessionOptions {
   checkpointTimeoutMs?: number;
   /** Internal test seam; production uses the fixed 120-second platform policy. */
   runtimeInputLiveWindowMs?: number;
-  /** Internal test seam; production gives the provider five seconds to end after a result. */
-  semanticResultTerminalGraceMs?: number;
   onSession?: (session: NativeSession | null) => void;
   /** Observes why a retained session was removed from warm reuse. */
   onSessionQuarantined?: (reason: string) => Promise<void> | void;
@@ -794,7 +791,6 @@ async function consumeTurn(
   input: NativeExecutionInput,
   timeoutMs: number,
   runtimeInputLiveWindowMs: number,
-  semanticResultTerminalGraceMs: number,
   reusableSessionCancellationGraceMs: number,
   closeFailedSession: () => Promise<void>,
   quarantineSession: (reason: string) => void,
@@ -807,12 +803,9 @@ async function consumeTurn(
   initialGoal?: HarnessThreadGoal | null,
 ) {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let semanticResultTimer: ReturnType<typeof setTimeout> | undefined;
-  const semanticResultGraceExpired = Symbol("semantic_result_grace_expired");
   const appendAbort = new AbortController();
   const governedCleanupOperations = new Set<Promise<unknown>>();
   let governedCancellationCommitted = false;
-  let semanticCancellationCommitted = false;
   let semanticResultObserved = false;
   let deferredGovernedCleanupSettlement: Promise<unknown> | null = null;
   let deferredSessionCancellationSettlement: Promise<unknown> | null = null;
@@ -859,11 +852,6 @@ async function consumeTurn(
     let goalControlObserved = false;
     let latestSessionGoal: HarnessThreadGoal | null = null;
     let resultSource: "semantic_result" | "governed_wait" | null = null;
-    let semanticResultEvent: PrpEvent | null = null;
-    let semanticResultDeadline: Promise<
-      typeof semanticResultGraceExpired
-    > | null = null;
-    let pendingNext: ReturnType<typeof eventIterator.next> | null = null;
     let providerFailure: NativeProviderTerminalFailure | null = null;
     const settleDurableResult = (
       event: PrpEvent,
@@ -878,7 +866,6 @@ async function consumeTurn(
         signal: appendAbort.signal,
       });
       governedCancellationCommitted = true;
-      semanticCancellationCommitted = event.eventType === "run.result.proposed";
       const cleanup = cancellation.cleanup;
       governedCleanupOperations.add(cleanup);
       void cleanup
@@ -892,37 +879,11 @@ async function consumeTurn(
       };
     };
     while (true) {
-      pendingNext ??= eventIterator.next().catch(error => { throw providerFailure ?? error; });
-      const next =
-        semanticResultDeadline === null
-          ? await pendingNext
-          : await Promise.race([pendingNext, semanticResultDeadline]);
-      if (next === semanticResultGraceExpired) {
-        void pendingNext.catch(() => undefined);
-        if (semanticResultEvent === null || governedResult === null) {
-          throw new Error("native_semantic_result_grace_lost_result");
-        }
-        return settleDurableResult(
-          semanticResultEvent,
-          governedResult,
-          "Paperclip accepted the durable semantic result.",
-        );
-      }
-      pendingNext = null;
+      const next = await eventIterator.next().catch((error) => {
+        throw providerFailure ?? error;
+      });
       if (stopConsumer) throw new Error("native event consumer stopped");
       if (next.done) {
-        if (
-          resultSource === "semantic_result" &&
-          semanticResultEvent !== null &&
-          governedResult !== null
-        ) {
-          return {
-            event: semanticResultEvent,
-            eventCount,
-            highestContiguousSourceSeq,
-            governedResult,
-          };
-        }
         if (providerFailure) throw providerFailure;
         throw new Error(
           "native event stream closed before a turn terminal fact",
@@ -969,10 +930,8 @@ async function consumeTurn(
         sessionGoalObserved = true;
         latestSessionGoal = eventGoal;
         // A harness-created goal may arrive after a semantic result proposal.
-        // The goal owns the durable lifetime; revoke the old grace deadline.
+        // The goal owns the durable lifetime instead of the completion proposal.
         if (resultSource === "semantic_result") {
-          if (semanticResultTimer !== null) clearTimeout(semanticResultTimer);
-          semanticResultDeadline = null;
           governedResult = null;
           resultSource = null;
         }
@@ -1068,17 +1027,7 @@ async function consumeTurn(
         }
         governedResult = validation.result;
         resultSource = "semantic_result";
-        semanticResultEvent = event;
         semanticResultObserved = true;
-        if (session.cancel !== undefined) {
-          semanticResultDeadline = new Promise((resolve) => {
-            semanticResultTimer = setTimeout(
-              () => resolve(semanticResultGraceExpired),
-              semanticResultTerminalGraceMs,
-            );
-            semanticResultTimer.unref?.();
-          });
-        }
       }
       if (governedResult === null && resolveGovernedWait) {
         if (appendAbort.signal.aborted) {
@@ -1095,9 +1044,8 @@ async function consumeTurn(
       }
       if (governedResult !== null && !isTurnTerminal(event) && !sessionGoalObserved) {
         if (resultSource === "semantic_result") {
-          // Give the provider a short grace to publish its final assistant
-          // message and terminal after the semantic tool returns. If no
-          // terminal arrives, the deadline above finalizes the durable result.
+          // A completion tool reports task disposition, not provider termination.
+          // Persist the final answer and authoritative terminal before finalizing.
           continue;
         }
         return settleDurableResult(
@@ -1161,6 +1109,7 @@ async function consumeTurn(
         }
       }
       if (isTurnTerminal(event)) {
+        if (providerFailure) throw providerFailure;
         return {
           event,
           eventCount,
@@ -1281,14 +1230,13 @@ async function consumeTurn(
       // Iterator and provider cleanup own no control-plane mutation authority.
       // A reusable session with a semantic result needs a longer bounded
       // window for the remote event subscription to release. This applies
-      // both when Paperclip forced an interrupt and when the provider emitted
-      // its own terminal immediately afterward: the latter still crosses the
-      // remote PRP acknowledgement boundary and routinely takes longer than
+      // after the provider terminal, which still crosses the remote PRP
+      // acknowledgement boundary and routinely takes longer than
       // the generic local cleanup grace. Governed waits and unrelated stalled
       // cleanup retain the short fail-closed boundary.
       const teardownSettled = await settlesWithin(
         passiveTeardownSettlement,
-        semanticCancellationCommitted || semanticResultObserved
+        semanticResultObserved
           ? reusableSessionCancellationGraceMs
           : FAILED_OPERATION_SETTLEMENT_GRACE_MS,
       );
@@ -1296,7 +1244,6 @@ async function consumeTurn(
         quarantineSession("provider_event_teardown_timed_out");
     }
     if (timer !== undefined) clearTimeout(timer);
-    if (semanticResultTimer !== undefined) clearTimeout(semanticResultTimer);
     removeExternalAbort();
   }
 }
@@ -2257,8 +2204,6 @@ export async function executeNativeSession(
               options.timeoutMs ?? 900_000,
               options.runtimeInputLiveWindowMs ??
                 DEFAULT_NATIVE_RUNTIME_INPUT_LIVE_WINDOW_MS,
-              options.semanticResultTerminalGraceMs ??
-                DEFAULT_NATIVE_SEMANTIC_RESULT_TERMINAL_GRACE_MS,
               options.keepSessionOpen
                 ? REUSABLE_SESSION_CANCELLATION_SETTLEMENT_GRACE_MS
                 : FAILED_OPERATION_SETTLEMENT_GRACE_MS,
@@ -2381,13 +2326,17 @@ export async function executeNativeSession(
               ? await session.result()
               : {
                   result: consumed.governedResult,
-                  terminal: {
-                    schema: "paperclip.prp.terminal.v1",
-                    turnTerminalState: "completed",
-                    runTerminalState: "succeeded",
-                    reportedWorkDisposition:
-                      consumed.governedResult.reportedWorkDisposition,
-                  },
+                  terminal: isTurnTerminal(terminalEvent)
+                    ? terminalFromEvent(
+                        terminalEvent,
+                        consumed.governedResult.reportedWorkDisposition,
+                      )
+                    : {
+                        schema: "paperclip.prp.terminal.v1",
+                        turnTerminalState: "completed",
+                        runTerminalState: "succeeded",
+                        reportedWorkDisposition: consumed.governedResult.reportedWorkDisposition,
+                      },
                   turnId: terminalEvent.turnId ?? null,
                 };
           signal.throwIfAborted();

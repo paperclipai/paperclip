@@ -35,7 +35,7 @@
     "dev": "tsx src/index.ts",
     "dev:watch": "cross-env PAPERCLIP_MIGRATION_PROMPT=never PAPERCLIP_MIGRATION_AUTO_APPLY=true tsx ./scripts/dev-watch.ts",
     "prepare:ui-dist": "bash ../scripts/prepare-server-ui-dist.sh",
-    "build": "pnpm run prepare:runner-vendor && tsc && mkdir -p dist/onboarding-assets dist/built-ins dist/services/scripts dist/vendor/paperclip-runner && cp -R src/onboarding-assets/. dist/onboarding-assets/ && cp -R src/built-ins/. dist/built-ins/ && cp -R src/services/scripts/. dist/services/scripts/ && cp -R ../packages/paperclip-runner/dist/. dist/vendor/paperclip-runner/ && node scripts/write-build-stamp.mjs",
+    "build": "pnpm run prepare:runner-vendor && node scripts/verify-runner-vendor-dependencies.mjs && tsc && mkdir -p dist/onboarding-assets dist/built-ins dist/services/scripts dist/vendor/paperclip-runner && cp -R src/onboarding-assets/. dist/onboarding-assets/ && cp -R src/built-ins/. dist/built-ins/ && cp -R src/services/scripts/. dist/services/scripts/ && cp -R ../packages/paperclip-runner/dist/. dist/vendor/paperclip-runner/ && node scripts/write-build-stamp.mjs",
     "prepack": "pnpm run prepare:ui-dist && pnpm run build",
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
@@ -45,6 +45,12 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1122.0",
+    "@chat-adapter/github": "4.39.0",
+    "@chat-adapter/discord": "4.39.0",
+    "@chat-adapter/slack": "4.39.0",
+    "@chat-adapter/teams": "4.39.0",
+    "@chat-adapter/telegram": "4.39.0",
+    "@discordjs/ws": "1.2.3",
     "@opentelemetry/api": "^1.9.0",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
@@ -67,6 +73,7 @@
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "better-auth": "1.7.2",
+    "chat": "4.39.0",
     "chokidar": "^5.0.0",
     "detect-port": "^2.1.0",
     "dompurify": "^3.4.14",
@@ -81,11 +88,18 @@
     "pino-http": "^11.0.0",
     "pino-pretty": "^13.1.3",
     "sharp": "^0.35.4",
+    "smol-toml": "^1.4.2",
     "ssh2": "^1.17.0",
     "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
   "bundleDependencies": [
+    "@chat-adapter/discord",
+    "@chat-adapter/github",
+    "@chat-adapter/slack",
+    "@chat-adapter/teams",
+    "@chat-adapter/telegram",
+    "@discordjs/ws",
     "acpx"
   ],
   "devDependencies": {

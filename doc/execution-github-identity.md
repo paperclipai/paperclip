@@ -16,6 +16,12 @@ Executions with managed GitHub configured receive token-free `git` and `gh` laun
 
 The broker endpoint rejects browser origins and session cookies, validates a distinct signed runtime scope, and rechecks the company, agent, and live run. Sandboxes relay the capability through the existing authenticated callback bridge. Tokens are returned only to the managed command process. They are not persisted in identity history or injected into the long-lived provider process.
 
+Low-trust executions cannot receive raw GitHub credentials, including dedicated
+agent tokens. The broker rechecks current agent, project, task, and retained run
+policies before credential resolution. An external guest's internal sponsor is
+accountable for the task, but does not authorize using the sponsor's account.
+Read-only access must use separately authorized tools that enforce that boundary.
+
 Server-side Git operations and GitHub gateway calls follow the same selection rules. Approved gateway operations retain their signed originating identity. Connection audience and tool policies continue to apply to the selected person's connection. Native catalogs remain stable across identity changes, but each invocation resolves the selected grant again. Personal OAuth secret declarations survive connection pauses and metadata edits.
 
 Managed commands disable ambient Git credential helpers, Git global/system configuration, host GitHub CLI configuration, and host SSH identity access. Per-operation GitHub CLI configuration is isolated in a writable configuration directory beneath the managed launcher directory. Missing credentials clear previous author and token values; no teammate, standing delegation, host token, or company-default user's account is substituted. Anonymous/local operations remain available where supported.

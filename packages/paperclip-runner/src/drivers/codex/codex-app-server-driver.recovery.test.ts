@@ -91,7 +91,7 @@ describe("Codex app-server Codex driver", () => {
     second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE, turns } };
     await original.close({ reason: "controller lost" });
     await expect(driver.recoverSession?.(snapshot)).resolves.toEqual({
-      recovered: false, reason: "provider exposed ambiguous autonomous goal turn history",
+      recovered: false, reason: expect.stringMatching(/ambiguous autonomous goal turn history|codex_history_incomplete/),
     });
     expect(second.calls.some((call) => call.method === "turn/start" || call.method === "thread/goal/set")).toBe(false);
   });
@@ -254,10 +254,13 @@ describe("Codex app-server Codex driver", () => {
     expect(second.calls.map((call) => call.method)).toEqual([
       "initialize",
       "thread/read",
+      "thread/turns/list",
       "thread/resume",
       "thread/goal/get",
       "thread/read",
+      "thread/turns/list",
       "thread/read",
+      "thread/turns/list",
     ]);
     expect((await recovery?.session?.snapshot())?.activeTurnId).toBe("turn-1");
   });
@@ -845,23 +848,10 @@ describe("Codex app-server Codex driver", () => {
           dispositionOnlyRecoveryTurnId:
             testCase.dispositionOnlyRecoveryTurnId,
         });
-        expect(recovery).toMatchObject({ recovered: true });
-        await expect(recovery!.session!.snapshot()).resolves.toMatchObject({
-          activeTurnId: null,
-          dispositionOnlyRecoveryConsumed: true,
-          dispositionOnlyRecoveryTurnId:
-            testCase.dispositionOnlyRecoveryTurnId,
-        });
-        await expect(recovery!.session!.startTurn({
-          message: {
-            role: "user",
-            text: "Do not repeat the task while provider history is unknown.",
-          },
-        })).rejects.toThrow("session cannot start another turn");
+        expect(recovery).toMatchObject({ recovered: false, reason: expect.stringContaining("codex_history_incomplete") });
         expect(
           second.calls.filter((call) => call.method === "turn/start"),
         ).toHaveLength(0);
-        await recovery!.session!.close({ reason: "test complete" });
       },
     );
   }
