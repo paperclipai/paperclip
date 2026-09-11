@@ -79,8 +79,6 @@ import type {
   IssueReviewAttentionPath,
   IssueBlockedInboxAttention,
   IssueBlockedInboxIssueRef,
-  IssueProductivityReview,
-  IssueProductivityReviewTrigger,
   IssueRelationIssueSummary,
   IssueWatchdogSummary,
   LowTrustBoundary,
@@ -3238,15 +3236,6 @@ const BLOCKER_ATTENTION_PENDING_APPROVAL_STATUSES = [
 const BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND =
   "harness_liveness_escalation";
 const BLOCKER_ATTENTION_CHILD_TERMINAL_STATUSES = ["done", "cancelled"];
-const PRODUCTIVITY_REVIEW_ORIGIN_KIND = "issue_productivity_review";
-const PRODUCTIVITY_REVIEW_TERMINAL_STATUSES = ["done", "cancelled"];
-const PRODUCTIVITY_REVIEW_ACTIVITY_ACTIONS = [
-  "issue.productivity_review_created",
-  "issue.productivity_review_updated",
-];
-const PRODUCTIVITY_REVIEW_TRIGGERS: readonly IssueProductivityReviewTrigger[] =
-  ["no_comment_streak", "long_active_duration", "high_churn"];
-
 function lowTrustBoundaryIssueCondition(
   companyId: string,
   boundary: (LowTrustBoundary & { companyId: string }) | null | undefined,
@@ -3626,132 +3615,6 @@ async function terminalExplicitBlockersByRoot(
   }
 
   return terminalByRoot;
-}
-
-function readProductivityReviewTrigger(
-  value: unknown,
-): IssueProductivityReviewTrigger | null {
-  if (typeof value !== "string") return null;
-  return PRODUCTIVITY_REVIEW_TRIGGERS.includes(
-    value as IssueProductivityReviewTrigger,
-  )
-    ? (value as IssueProductivityReviewTrigger)
-    : null;
-}
-
-function readProductivityReviewStreak(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0)
-    return null;
-  return Math.floor(value);
-}
-
-async function listIssueProductivityReviewMap(
-  dbOrTx: any,
-  companyId: string,
-  sourceIssueIds: string[],
-): Promise<Map<string, IssueProductivityReview>> {
-  const map = new Map<string, IssueProductivityReview>();
-  if (sourceIssueIds.length === 0) return map;
-
-  const reviewRows: Array<{
-    sourceIssueId: string | null;
-    reviewIssueId: string;
-    reviewIdentifier: string | null;
-    status: string;
-    priority: string;
-    createdAt: Date;
-    updatedAt: Date;
-  }> = [];
-  for (const chunk of chunkList(
-    [...new Set(sourceIssueIds)],
-    ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
-  )) {
-    const rows = await dbOrTx
-      .select({
-        sourceIssueId: issues.originId,
-        reviewIssueId: issues.id,
-        reviewIdentifier: issues.identifier,
-        status: issues.status,
-        priority: issues.priority,
-        createdAt: issues.createdAt,
-        updatedAt: issues.updatedAt,
-      })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, companyId),
-          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
-          inArray(issues.originId, chunk),
-          visibleIssueCondition(),
-          notInArray(issues.status, PRODUCTIVITY_REVIEW_TERMINAL_STATUSES),
-        ),
-      )
-      .orderBy(desc(issues.createdAt), desc(issues.id));
-    reviewRows.push(...rows);
-  }
-
-  if (reviewRows.length === 0) return map;
-
-  const reviewIssueIds = reviewRows.map((row) => row.reviewIssueId);
-  const triggerByReviewIssueId = new Map<
-    string,
-    {
-      trigger: IssueProductivityReviewTrigger | null;
-      noCommentStreak: number | null;
-    }
-  >();
-  for (const chunk of chunkList(
-    reviewIssueIds,
-    ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE,
-  )) {
-    const detailRows = await dbOrTx
-      .select({
-        entityId: activityLog.entityId,
-        details: activityLog.details,
-        createdAt: activityLog.createdAt,
-      })
-      .from(activityLog)
-      .where(
-        and(
-          eq(activityLog.companyId, companyId),
-          eq(activityLog.entityType, "issue"),
-          inArray(activityLog.entityId, chunk),
-          inArray(activityLog.action, PRODUCTIVITY_REVIEW_ACTIVITY_ACTIONS),
-        ),
-      )
-      .orderBy(desc(activityLog.createdAt));
-    for (const row of detailRows as Array<{
-      entityId: string;
-      details: Record<string, unknown> | null;
-      createdAt: Date;
-    }>) {
-      if (triggerByReviewIssueId.has(row.entityId)) continue;
-      triggerByReviewIssueId.set(row.entityId, {
-        trigger: readProductivityReviewTrigger(row.details?.trigger),
-        noCommentStreak: readProductivityReviewStreak(
-          row.details?.noCommentStreak,
-        ),
-      });
-    }
-  }
-
-  for (const row of reviewRows) {
-    if (!row.sourceIssueId) continue;
-    if (map.has(row.sourceIssueId)) continue;
-    const detail = triggerByReviewIssueId.get(row.reviewIssueId);
-    map.set(row.sourceIssueId, {
-      reviewIssueId: row.reviewIssueId,
-      reviewIdentifier: row.reviewIdentifier,
-      status: row.status as IssueProductivityReview["status"],
-      priority: row.priority as IssueProductivityReview["priority"],
-      trigger: detail?.trigger ?? null,
-      noCommentStreak: detail?.noCommentStreak ?? null,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    });
-  }
-
-  return map;
 }
 
 async function listIssueBlockerAttentionMap(
@@ -6369,7 +6232,6 @@ async function listBlockedInboxIssues(
       blockerAttention?: IssueBlockerAttention;
       reviewAttention?: IssueReviewAttention;
       blockedInboxAttention: IssueBlockedInboxAttention;
-      productivityReview?: IssueProductivityReview | null;
       liveDescendantCount?: number;
       lastActivityAt: Date;
       myLastTouchAt?: Date | null;
@@ -6418,7 +6280,6 @@ async function listBlockedInboxIssues(
     blockedByMap,
     blockerAttentionByIssueId,
     reviewAttentionByIssueId,
-    productivityReviewByIssueId,
     blockedInboxAttentionByIssueId,
     liveDescendantCountByIssueId,
   ] = await Promise.all([
@@ -6432,7 +6293,6 @@ async function listBlockedInboxIssues(
     blockedByMapForIssues(dbOrTx, companyId, issueIds),
     listIssueBlockerAttentionMap(dbOrTx, companyId, withRuns),
     listIssueReviewAttentionMap(dbOrTx, companyId, withRuns),
-    listIssueProductivityReviewMap(dbOrTx, companyId, issueIds),
     listIssueBlockedInboxAttentionMap(dbOrTx, companyId, withRuns),
     includeLiveDescendantSummary
       ? liveDescendantCountMapForIssues(dbOrTx, companyId, issueIds)
@@ -6506,9 +6366,6 @@ async function listBlockedInboxIssues(
           reviewAttention:
             reviewAttentionByIssueId.get(row.id) ?? reviewAttentionNone(),
           blockedInboxAttention,
-          ...(productivityReviewByIssueId.has(row.id)
-            ? { productivityReview: productivityReviewByIssueId.get(row.id) }
-            : {}),
           ...(includeLiveDescendantSummary
             ? {
                 liveDescendantCount:
@@ -8160,12 +8017,10 @@ export function issueService(db: Db) {
       const [
         blockerAttentionByIssueId,
         reviewAttentionByIssueId,
-        productivityReviewByIssueId,
         blockedInboxAttentionByIssueId,
       ] = await Promise.all([
         listIssueBlockerAttentionMap(db, companyId, withRuns),
         listIssueReviewAttentionMap(db, companyId, withRuns),
-        listIssueProductivityReviewMap(db, companyId, issueIds),
         includeBlockedInboxAttention
           ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns)
           : Promise.resolve(new Map<string, IssueBlockedInboxAttention>()),
@@ -8202,9 +8057,6 @@ export function issueService(db: Db) {
                   liveDescendantCount:
                     liveDescendantCountByIssueId.get(row.id) ?? 0,
                 }
-              : {}),
-            ...(productivityReviewByIssueId.has(row.id)
-              ? { productivityReview: productivityReviewByIssueId.get(row.id) }
               : {}),
           };
         });
@@ -8248,9 +8100,6 @@ export function issueService(db: Db) {
                 liveDescendantCount:
                   liveDescendantCountByIssueId.get(row.id) ?? 0,
               }
-            : {}),
-          ...(productivityReviewByIssueId.has(row.id)
-            ? { productivityReview: productivityReviewByIssueId.get(row.id) }
             : {}),
           ...deriveIssueUserContext(row, contextUserId, {
             myLastCommentAt:
@@ -9117,14 +8966,6 @@ export function issueService(db: Db) {
       dbOrTx: any = db,
     ) => {
       return listIssueReviewAttentionMap(dbOrTx, companyId, issueRows);
-    },
-
-    listProductivityReviews: async (
-      companyId: string,
-      sourceIssueIds: string[],
-      dbOrTx: any = db,
-    ) => {
-      return listIssueProductivityReviewMap(dbOrTx, companyId, sourceIssueIds);
     },
 
     listWakeableBlockedDependents: async (blockerIssueId: string) => {
@@ -10474,8 +10315,8 @@ export function issueService(db: Db) {
             createdAt: row.createdAt ?? new Date(),
             updatedAt: row.updatedAt ?? new Date(),
             // Imported in-progress work did not start at import time; fabricating
-            // startedAt here trips duration-based sweeps (e.g. productivity
-            // review). Only a bundle-carried startedAt is written.
+            // startedAt here would misrepresent its active episode.
+            // Only a bundle-carried startedAt is written.
             startedAt: row.startedAt ?? null,
             completedAt:
               row.completedAt ?? (row.status === "done" ? new Date() : null),

@@ -683,8 +683,6 @@ export type {
   IssueBlockedInboxReason,
   IssueBlockedInboxSeverity,
   IssueBlockedInboxState,
-  IssueProductivityReview,
-  IssueProductivityReviewTrigger,
   IssueRecoveryAction,
   SuccessfulRunHandoffState,
   SuccessfulRunHandoffStateKind,

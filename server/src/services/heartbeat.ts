@@ -501,7 +501,6 @@ import {
   REVIEW_PATH_RECOVERY_INSTRUCTION,
   reviewPathConsumedRefFromRun,
 } from "./recovery/review-path-recovery.js";
-import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
@@ -9725,7 +9724,6 @@ export function heartbeatService(
     return interaction.id;
   }
 
-  const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
@@ -12511,29 +12509,6 @@ export function heartbeatService(
             projectId: issue.projectId,
           })
         : null;
-    if (issue) {
-      const productivityHold =
-        await productivityReviews.isProductivityReviewContinuationHoldActive({
-          companyId: issue.companyId,
-          issueId: issue.id,
-          agentId: run.agentId,
-        });
-      if (productivityHold.held) {
-        await setRunStatus(run.id, run.status, {
-          livenessReason: `${run.livenessReason ?? "Run ended without concrete progress"}; continuation held by productivity review ${productivityHold.reviewIdentifier ?? productivityHold.reviewIssueId}`,
-        });
-        await productivityReviews.recordContinuationHold({
-          companyId: issue.companyId,
-          issueId: issue.id,
-          runId: run.id,
-          agentId: run.agentId,
-          reviewIssueId: productivityHold.reviewIssueId,
-          trigger: productivityHold.trigger,
-          reason: productivityHold.reason,
-        });
-        return;
-      }
-    }
 
     const nextAttempt = readContinuationAttempt(run.continuationAttempt) + 1;
     const idempotencyKey = issue
@@ -18617,16 +18592,6 @@ export function heartbeatService(
     companyId?: string;
   }) {
     return recovery.scanSilentActiveRuns({
-      ...opts,
-      issueCreatedAtGte: await getWorktreeExecutionCutoff(),
-    });
-  }
-
-  async function reconcileProductivityReviews(opts?: {
-    now?: Date;
-    companyId?: string;
-  }) {
-    return productivityReviews.reconcileProductivityReviews({
       ...opts,
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
     });
@@ -27930,8 +27895,6 @@ export function heartbeatService(
     reconcileResolvedDependencyWakes,
 
     scanSilentActiveRuns,
-
-    reconcileProductivityReviews,
 
     reconcileTaskWatchdogs,
 

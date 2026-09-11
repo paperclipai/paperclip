@@ -233,7 +233,6 @@ import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
-import { ProductivityReviewBadge } from "../components/ProductivityReviewBadge";
 import { Identity } from "../components/Identity";
 import {
   PluginSlotMount,
@@ -306,7 +305,6 @@ import {
   Check,
   ChevronRight,
   Copy,
-  Eye,
   EyeOff,
   ScanEye,
   Flag,
@@ -6911,21 +6909,6 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
             Routine
           </Link>
         )}
-
-        {issue.productivityReview ? (
-          <ProductivityReviewBadge review={issue.productivityReview} />
-        ) : null}
-
-        {issue.originKind === "issue_productivity_review" ? (
-          <Badge
-            variant="outline"
-            className="border-amber-500/40 bg-amber-500/10 text-(length:--text-nano) text-amber-700 dark:text-amber-300"
-            title="This task is a productivity review."
-          >
-            <Eye className="h-3 w-3" />
-            Productivity review
-          </Badge>
-        ) : null}
 
         {issue.originKind === "task_watchdog" ? (
           <Badge
