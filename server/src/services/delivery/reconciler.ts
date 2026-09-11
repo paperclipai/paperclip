@@ -1159,6 +1159,12 @@ export function deliveryReconciler(
       return { unitId: unit.id, status: "cancelled", phase: "not_started", blocker: null, merged: false, changed: true };
     }
 
+    // Repair persisted readiness from older versions even when the provider
+    // recheck below is deferred or the same blocker would otherwise be a no-op.
+    if (unit.status === "blocked") {
+      await downgradeBlockedIssueStatus({ companyId: input.companyId, unitId: unit.id });
+    }
+
     // Provider wait gate. A unit blocked on an external branch-protection /
     // merge-queue state owns its next check durably: sweeps re-read the
     // provider no earlier than the recorded instant instead of re-running the

@@ -1407,6 +1407,17 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
       lastErrorCode: "merge_queue_blocked",
     });
 
+    // Older versions left a persisted merge-ready issue beside a blocked unit.
+    // Even a deferred provider recheck must withdraw that stale readiness.
+    await db.update(issues).set({ status: "ready_to_merge" }).where(eq(issues.id, issue.id));
+    await reconciler.reconcileUnit({ companyId, unitId: unit!.id, trigger: "sweep" });
+    const [legacyIssue] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(legacyIssue?.status).toBe("in_review");
+    expect((await issueOverviewService(db).list(companyId, [issue.id])).items[0]).toMatchObject({
+      phase: "in_review",
+      blocked: true,
+    });
+
     // Genuine re-admission on fresh provider facts restores every surface,
     // including the merge the refusal had refused.
     github.mergePullRequest = async (_company, _connection, _host, _owner, _repo, _number, mergeInput) => ({
