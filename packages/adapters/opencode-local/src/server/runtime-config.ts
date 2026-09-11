@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { asBoolean } from "@paperclipai/adapter-utils/server-utils";
+import type { AdapterRuntimeMcpServer } from "@paperclipai/adapter-utils";
 
 type PreparedOpenCodeRuntimeConfig = {
   env: Record<string, string>;
@@ -84,6 +85,38 @@ function parseProviderConfig(
   return Object.keys(providers).length > 0 ? providers : null;
 }
 
+// OpenCode's native remote-MCP shape (matches what `opencode mcp add --url --header`
+// itself writes): { mcp: { name: { type: "remote", url, headers } } }. Server names
+// are deduped the same way claude-local's writePaperclipClaudeMcpConfig does, since
+// Paperclip-granted gateway names are not guaranteed unique across connections.
+// Unlike claude-local (which writes a dedicated, standalone mcp-config.json),
+// this config is merged into the user's own opencode.json, so `reservedNames`
+// must also seed the collision set with the user's existing `mcp` keys —
+// otherwise a managed name matching a user-defined server silently replaces it.
+function buildOpenCodeMcpConfig(
+  servers: AdapterRuntimeMcpServer[],
+  reservedNames: Iterable<string> = [],
+): Record<string, unknown> {
+  const usedNames = new Set<string>(reservedNames);
+  const mcp: Record<string, unknown> = {};
+  for (const server of servers) {
+    let name = server.name;
+    if (usedNames.has(name)) name = `${name}-${server.connectionId.slice(0, 8)}`;
+    let suffix = 2;
+    while (usedNames.has(name)) {
+      name = `${server.name}-${server.connectionId.slice(0, 8)}-${suffix}`;
+      suffix += 1;
+    }
+    usedNames.add(name);
+    mcp[name] = {
+      type: "remote",
+      url: server.url,
+      headers: { Authorization: `Bearer ${server.token}` },
+    };
+  }
+  return mcp;
+}
+
 function parseConfiguredModelRef(raw: unknown): { provider: string; model: string } | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim();
@@ -105,10 +138,17 @@ async function readJsonObject(filepath: string): Promise<Record<string, unknown>
 export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
+  mcpServers?: AdapterRuntimeMcpServer[];
   targetIsRemote?: boolean;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
-  if (!skipPermissions) {
+  const mcpServers = input.mcpServers ?? [];
+  // Paperclip-managed MCP grants (e.g. the 1MCP gateway) carry per-run bearer
+  // tokens that must never land in the persistent, shared opencode.json — they
+  // need the same ephemeral runtime-config-dir treatment as the permission
+  // override below, independent of dangerouslySkipPermissions.
+  const needsRuntimeConfig = skipPermissions || mcpServers.length > 0;
+  if (!needsRuntimeConfig) {
     return {
       env: input.env,
       notes: [],
@@ -119,15 +159,9 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   // For remote execution targets the host XDG_CONFIG_HOME path is meaningless
   // (and actively harmful — it leaks a macOS-only path into the remote Linux
   // env). Callers that need to ship a runtime opencode config to the remote
-  // box do that via prepareAdapterExecutionTargetRuntime in execute.ts; this
-  // host-fs helper is local-only.
-  if (input.targetIsRemote) {
-    return {
-      env: input.env,
-      notes: [],
-      cleanup: async () => {},
-    };
-  }
+  // box do that via prepareAdapterExecutionTargetRuntime in execute.ts, which
+  // ships this function's local runtime config dir as the `xdgConfig` asset —
+  // this host-fs helper still needs to run to produce that dir.
 
   const sourceConfigDir = path.join(resolveXdgConfigHome(input.env), "opencode");
   const runtimeConfigHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-config-"));
@@ -152,9 +186,12 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   const existingPermission = isPlainObject(existingConfig.permission)
     ? existingConfig.permission
     : {};
-  const notes = [
-    "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
-  ];
+  const notes: string[] = [];
+  if (skipPermissions) {
+    notes.push(
+      "Injected runtime OpenCode config with permission.external_directory=allow to avoid headless approval prompts.",
+    );
+  }
 
   // Merge gateway/custom provider definitions supplied via PAPERCLIP_OPENCODE_PROVIDERS
   // (a JSON object in OpenCode's `provider` shape). OpenCode resolves a `--model
@@ -205,15 +242,24 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     }
   }
 
-  const nextConfig: Record<string, unknown> = {
-    ...existingConfig,
-    permission: {
+  const nextConfig: Record<string, unknown> = { ...existingConfig };
+  if (skipPermissions) {
+    nextConfig.permission = {
       ...existingPermission,
       external_directory: "allow",
-    },
-  };
+    };
+  }
   if (Object.keys(nextProvider).length > 0) {
     nextConfig.provider = nextProvider;
+  }
+
+  // Wire Paperclip-managed MCP grants (e.g. the 1MCP gateway) into OpenCode's
+  // native remote-MCP config so opencode_local agents get the same tool access
+  // claude_local/codex_local already get via their own MCP config injection.
+  if (mcpServers.length > 0) {
+    const existingMcp = isPlainObject(existingConfig.mcp) ? existingConfig.mcp : {};
+    nextConfig.mcp = { ...existingMcp, ...buildOpenCodeMcpConfig(mcpServers, Object.keys(existingMcp)) };
+    notes.push(`Injected ${mcpServers.length} Paperclip-managed MCP server(s) into OpenCode config.`);
   }
 
   // Pin OpenCode's auxiliary "small" model (used for session-title generation and
