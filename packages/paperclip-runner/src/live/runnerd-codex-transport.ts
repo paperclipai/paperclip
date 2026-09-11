@@ -4032,8 +4032,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // A failed drain still proceeds through bounded suspension/containment,
       // but can never authorize a reusable checkpoint or deletion of evidence.
     }
+    const lastDrain = [...core.store.state.commands]
+      .reverse()
+      .find((command) => command.type === "runner.drain");
     this.#diagnostic(
-      "provider suffix did not prove durable drain before bounded runner suspension",
+      "provider suffix did not prove durable drain before bounded runner suspension: " +
+        JSON.stringify({
+          providerState: this.#providerDrainState(),
+          semanticResultsSettled: core.semanticToolResultsSettled(),
+          drainStatus: lastDrain?.status ?? null,
+          retainedEventsDrained:
+            record(record(lastDrain?.result).result).retainedEventsDrained ?? null,
+        }),
     );
     return false;
   }

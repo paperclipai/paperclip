@@ -27,7 +27,7 @@ const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Objec
   report_progress: "active_task", answer_status_question: "active_task", write_document: "documents",
   request_human_input: "documents", register_deliverable: "documents", finish_task: "active_task",
   block_task: "active_task", request_review: "active_task", search_tasks: "discovery",
-  list_agents: "discovery", get_agent: "discovery", create_task: "delegation",
+  list_agents: "discovery", get_agent: "discovery", create_task: "delegation", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
   set_dependencies: "delegation", list_approvals: "governance", get_approval: "governance",
   get_approval_context: "governance", request_approval: "governance",
   decide_approval: "governance", comment_on_approval: "governance",
