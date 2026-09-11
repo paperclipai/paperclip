@@ -143,3 +143,21 @@ these fixes. Focused live checks additionally passed legacy Codex project reuse
 and repository handoff, legacy Claude plan revision/acceptance/handoff, and native
 Claude planning, Stop/reset/resume, fresh sessions, and multiple repositories.
 Final campaign results and broad verification are recorded below when complete.
+
+The next full campaign (`34640536416`) reached 18/24 passing cells and identified
+three additional issues. Execution prompts now include the task's persisted plan
+and selected revision on both fresh and resumed runs; a plan handed off without a
+description therefore still reaches its executor. Native durable redaction keeps
+explicit literal/exact acceptance identifiers while continuing to redact actual
+credential-shaped values. Recovery for an older conversation generation or an
+already answered turn cannot block a reset or healthy idle chat. Regression tests
+also preserve recovery for current unanswered turns and unprepared failures.
+
+Fixture assertions now accept concrete clarification requests without requiring a
+question mark. They check the approved revision and final execution output rather
+than rejecting an old draft quoted in plan revision history. Restart verification
+opens the canonical chat route after reconnecting, preserving the continuity and
+no-unsolicited-run checks. Stable inconsistent idle states fail promptly instead
+of waiting through a long timeout and hiding a product race behind a paid retry.
+Focused native Claude project reuse and multiple-repository handoffs, and legacy
+Claude multiple-repository handoff, passed on their first attempts with these fixes.

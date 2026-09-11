@@ -1,4 +1,5 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -335,7 +336,14 @@ const SKIP_DIRS = new Set([
   "tmp",
 ]);
 
-const SKIP_PATH_PREFIXES = ["doc/logs/", "doc/plans/", "scripts/"];
+const SKIP_PATH_PREFIXES = [
+  "doc/logs/",
+  "doc/plans/",
+  "scripts/",
+  // Generated paid-run transcripts contain historical copies of instructions,
+  // including escaped warning examples; they are not authored guidance.
+  "tests/runner-e2e/results/",
+];
 
 const SCAN_EXTENSIONS = new Set([
   ".md",
@@ -355,7 +363,7 @@ function isTestFile(relPath: string): boolean {
   );
 }
 
-function listGuidanceFiles(): string[] {
+function listGuidanceFiles(root = repoRoot): string[] {
   const found: string[] = [];
 
   function walk(absDir: string, relDir: string): void {
@@ -364,6 +372,7 @@ function listGuidanceFiles(): string[] {
       const relPath = relDir ? `${relDir}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         if (SKIP_DIRS.has(entry.name)) continue;
+        if (SKIP_PATH_PREFIXES.some((prefix) => `${relPath}/`.startsWith(prefix))) continue;
         walk(path.join(absDir, entry.name), relPath);
         continue;
       }
@@ -374,7 +383,7 @@ function listGuidanceFiles(): string[] {
     }
   }
 
-  walk(repoRoot, "");
+  walk(root, "");
   return found;
 }
 
@@ -466,6 +475,28 @@ function scanForBrokenExecForm(): string[] {
 }
 
 describe("paperclipai CLI invocation safety", () => {
+  it("excludes generated runner evidence while preserving authored runner guidance", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "paperclip-cli-guidance-"));
+    const sourcePaths = [
+      "doc/CLI.md",
+      "tests/runner-e2e/README.md",
+      "tests/runner-e2e/catalog.ts",
+    ];
+    try {
+      for (const relPath of [
+        ...sourcePaths,
+        "tests/runner-e2e/results/campaign/attempt-1/snapshots/api-state.json",
+      ]) {
+        const absPath = path.join(root, relPath);
+        mkdirSync(path.dirname(absPath), { recursive: true });
+        writeFileSync(absPath, "fixture");
+      }
+      expect(listGuidanceFiles(root).sort()).toEqual(sourcePaths.sort());
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("allows only exact-allowlist pnpm paperclipai commands on every guidance surface", () => {
     const offenders = scanForOffenders();
     expect(
