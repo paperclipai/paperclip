@@ -506,3 +506,37 @@ serialize concurrent requests; changed source, target or message conflicts.
 Replay and the existing orphan-reaper sweep recover pending dispatch errors and
 crash windows without duplicate notices or durable wakes. Legitimately blocked,
 skipped and deferred wake outcomes settle rather than becoming a retry loop.
+
+## 15. Bounded implementation advice and durable dispatch
+
+Implementation advice uses the existing `ask_user_questions` interaction, not a
+review approval or a replacement task. The framework's `delivery_request_advice`
+resolves the operator-configured advisor, exact model and effort; the worker
+cannot choose them. The advisor must be distinct from both the author and the
+final reviewer. Candidate access uses the immutable candidate admission path.
+The advisor receives read-only tools and can submit an answer only for its
+commissioned interaction through `delivery_submit_advice`.
+
+The native answer retains advisor attribution and configuration evidence.
+Configured model identity is not independent provider attestation. Answering
+does not change the issue assignee or satisfy review, conversation, CI, merge or
+release gates. Existing question-response delivery resumes the original worker.
+An identical request can be replayed by an authorized successor run without
+changing the consultation's original source-run correlation.
+
+Terminal-run reconciliation and the existing restart sweep settle unanswered
+consultations only when no live continuation remains. They record cancellation,
+never a fabricated advisor answer or review verdict. A durable reconciliation
+marker preserves an owed original-owner continuation across enqueue failures and
+restart; a persisted wake receipt settles that obligation. Distinct consultations
+retain distinct wake identities, including workspace and issue-execution deferral.
+Pause holds, current ownership and terminal issue state remain authoritative.
+
+Native `heartbeat.enqueueWakeup` commits admission before starting execution.
+Its internal `bindWake(tx)` hook fences every admitted wake, including coalesced,
+deferred and parked carriers; `bindRun(run, tx)` binds authority to fresh or
+parked run identities. Throwing rolls back the corresponding admission. Advice
+continuations use the wake fence; recovery incidents use the run fence plus an
+exact dispatch-claim lease, so an expired producer cannot launch or consume its
+replacement's claim. Callbacks must use the supplied transaction rather than
+acquiring another database connection.

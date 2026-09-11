@@ -1218,6 +1218,48 @@ export interface PaperclipQuestionSetPayload {
   questions: PaperclipQuestionSetQuestion[];
 }
 
+/**
+ * The exact candidate revision an advisor consultation is bound to. Mirrors the
+ * review-pin candidate: a lane key plus a full commit digest, never a
+ * filesystem path. Absent on an "upfront scope" consultation that is not tied
+ * to one revision.
+ */
+export interface AskUserQuestionsAdviceCandidate {
+  workspaceKey: string;
+  revision: string;
+}
+
+/**
+ * Strict metadata pinned on an advisor consultation card (kind
+ * `ask_user_questions`). The host broker pins the addressee, the exact model,
+ * and the reasoning effort; this block records that pin so the server can
+ * verify the answering agent's live configuration against it and so the answer
+ * stays attributable to the pinned model and candidate. The pin is
+ * authoritative input — the addressed agent's configured model is the live
+ * metadata the instance owns and is re-checked at create and at answer time;
+ * no observed provider response identity is claimed beyond that.
+ */
+export interface AskUserQuestionsAdvice {
+  expectedModel: string;
+  expectedThinking: "high";
+  candidate?: AskUserQuestionsAdviceCandidate;
+}
+
+/**
+ * Durable answer-time evidence recorded on an advice consultation result. The
+ * answering agent and run are recorded on the row (`resolvedByAgentId`,
+ * `resolvedByRunId`); this block additionally records the pinned model the
+ * answering advisor's live configuration was re-verified against, and the
+ * candidate the advice was bound to. This is configuration evidence the
+ * instance owns — it deliberately does not claim the provider was observed
+ * serving that model identity, which configuration alone cannot prove.
+ */
+export interface AskUserQuestionsAdviceResult {
+  version: 1;
+  expectedModel: string;
+  candidate: AskUserQuestionsAdviceCandidate | null;
+}
+
 export interface AskUserQuestionsPayload {
   version: 1;
   title?: string | null;
@@ -1228,6 +1270,13 @@ export interface AskUserQuestionsPayload {
   questionSet?: PaperclipQuestionSetPayload;
   /** Correlates a recovered interaction with the live runtime request it replaces. */
   runtimeRequestId?: string | null;
+  /**
+   * Pinned advisor-consultation metadata. Present only on a directed advice
+   * card the host broker addressed to a specific advisor agent; its presence
+   * narrows answering to that agent and that exact model, and never grants
+   * review, approval, or completion authority.
+   */
+  advice?: AskUserQuestionsAdvice;
 }
 
 export interface AskUserQuestionsAnswer {
@@ -1249,6 +1298,41 @@ export interface AskUserQuestionsResult {
   // sibling ask_user_questions that replaced this one (PAP-437).
   supersededByInteractionId?: string | null;
   summaryMarkdown?: string | null;
+  /**
+   * Answer-time evidence for a pinned advisor consultation: the pinned model
+   * the answering advisor's live configuration was re-verified against, and
+   * the candidate the advice was bound to. Configuration evidence the instance
+   * owns — it does not claim the provider was observed serving that identity.
+   * The answering agent and run live on the row's resolved-by columns. Presence
+   * of this block never implies approval — an advice answer is a substantive
+   * response, not a review verdict.
+   */
+  advice?: AskUserQuestionsAdviceResult;
+  /**
+   * Recovery-only settlement evidence for a pinned advisor consultation that
+   * recovery reconciled because its answering path died. Recorded only by the
+   * server; it never carries answers or approval. `continuation` tracks the
+   * durable original-owner continuation wake: `pending` means a continuation
+   * is still owed (restart sweeps retry it), `arranged` means a durable wake
+   * receipt exists, `not_required` means no continuation target exists.
+   */
+  reconciliation?: AskUserQuestionsAdviceReconciliation;
+}
+
+/** The truthful causes recovery records when settling a dead consultation. */
+export type AdviceReconciliationCause =
+  | "advisor_run_failed"
+  | "advisor_run_timed_out"
+  | "advisor_run_cancelled"
+  | "advisor_run_interrupted"
+  | "advisor_run_exited_without_answer"
+  | "advisor_wake_skipped"
+  | "advisor_wake_unavailable";
+
+export interface AskUserQuestionsAdviceReconciliation {
+  cause: AdviceReconciliationCause;
+  advisorRunId: string | null;
+  continuation: "pending" | "arranged" | "not_required";
 }
 
 export interface RequestConfirmationIssueDocumentTarget {

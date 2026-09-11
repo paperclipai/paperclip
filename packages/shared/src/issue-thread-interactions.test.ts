@@ -297,6 +297,68 @@ describe("issue thread interaction schemas", () => {
     })).toThrow("text questions cannot define options");
   });
 
+  it("parses a pinned advice consultation and keeps ordinary question payloads advice-free", () => {
+    const payload = {
+      version: 1 as const,
+      title: "Implementation advice",
+      questions: [{
+        id: "advice",
+        prompt: "How should I sequence the cache invalidation fix?",
+        selectionMode: "single" as const,
+        options: [{ id: "free_text", label: "Type your advice", freeText: true }],
+      }],
+      advice: {
+        expectedModel: "openai-codex/gpt-5.6-sol",
+        expectedThinking: "high" as const,
+        candidate: { workspaceKey: "lane-7", revision: "0123456789abcdef0123456789abcdef01234567" },
+      },
+    };
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "ask_user_questions",
+      addresseeAgentId: "11111111-1111-4111-8111-111111111111",
+      payload,
+    });
+    expect(parsed.kind).toBe("ask_user_questions");
+    if (parsed.kind !== "ask_user_questions") return;
+    expect(parsed.payload.advice).toEqual(payload.advice);
+
+    expect(askUserQuestionsResultSchema.parse({
+      version: 1,
+      answers: [{ questionId: "advice", optionIds: ["free_text"], otherText: "Fix the reader path first." }],
+      advice: { version: 1, expectedModel: "openai-codex/gpt-5.6-sol", candidate: null },
+    })).toMatchObject({ advice: { expectedModel: "openai-codex/gpt-5.6-sol", candidate: null } });
+
+    const base = { kind: "ask_user_questions" as const, payload: structuredClone(payload) };
+    expect(() => createIssueThreadInteractionSchema.parse({
+      ...base,
+      payload: { ...payload, advice: { ...payload.advice, expectedThinking: "low" } },
+    })).toThrow();
+    expect(() => createIssueThreadInteractionSchema.parse({
+      ...base,
+      payload: { ...payload, advice: { ...payload.advice, extra: true } },
+    })).toThrow();
+    expect(() => createIssueThreadInteractionSchema.parse({
+      ...base,
+      payload: {
+        ...payload,
+        advice: { ...payload.advice, candidate: { ...payload.advice.candidate, workspaceKey: "/Users/mirko/repo" } },
+      },
+    })).toThrow(/lane key/);
+    expect(() => createIssueThreadInteractionSchema.parse({
+      ...base,
+      payload: { ...payload, advice: { ...payload.advice, candidate: { ...payload.advice.candidate, revision: "abc123" } } },
+    })).toThrow(/40- or 64-character/);
+    expect(() => createIssueThreadInteractionSchema.parse({
+      ...base,
+      payload: { ...payload, advice: { ...payload.advice, expectedModel: "gpt-5.6-sol" } },
+    })).toThrow(/exact provider\/model id/);
+    expect(() => askUserQuestionsResultSchema.parse({
+      version: 1,
+      answers: [],
+      advice: { version: 1, expectedModel: "openai-codex/gpt-5.6-sol", candidate: null, approved: true },
+    })).toThrow();
+  });
+
   it("accepts a recommended decision question and keeps information questions free", () => {
     const parsed = createIssueThreadInteractionSchema.parse({
       kind: "ask_user_questions",

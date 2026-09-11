@@ -867,6 +867,27 @@ export const suggestTasksResultSchema = z.object({
   rejectionReason: z.string().trim().max(4000).nullable().optional(),
 });
 
+// The exact candidate revision a pinned review or an advisor consultation is
+// bound to. `workspaceKey` is a single lane key, `revision` a full commit
+// digest — lane keys / model ids, never filesystem paths — and the object is
+// strict so a caller cannot smuggle extra fields (e.g. a host path) past the
+// validator. Shared by `request_confirmation` reviews and `ask_user_questions`
+// advice so both pins validate identically.
+const pinnedCandidateSchema = z.object({
+  workspaceKey: z.string().trim().min(1).max(255)
+    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "workspaceKey must be a single lane key, not a path"),
+  revision: z.string().trim()
+    .regex(/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/, "revision must be a full 40- or 64-character hex digest"),
+}).strict();
+
+// The exact provider/model id a pinned review names or an advisor consultation
+// is addressed with (e.g. "openai-codex/gpt-5.6-sol").
+const exactProviderModelIdSchema = z.string().trim().min(3).max(255)
+  .regex(
+    /^[A-Za-z0-9][A-Za-z0-9._:@+-]*(?:\/[A-Za-z0-9][A-Za-z0-9._:@+-]*)+$/,
+    "expectedModel must be an exact provider/model id",
+  );
+
 export const askUserQuestionsQuestionOptionSchema = z.object({
   id: z.string().trim().min(1).max(160),
   label: z.string().trim().min(1).max(1000),
@@ -1171,6 +1192,18 @@ export const paperclipQuestionSetPayloadSchema = z.object({
   }
 });
 
+// A pinned advisor consultation. The host broker pins the addressed advisor
+// agent, the exact provider/model, and the reasoning effort (`high`); this
+// block records that pin so the server can verify the answering agent's live
+// configuration against it at create and again at answer time. `candidate`
+// binds the consultation to one workspace revision; omitting it marks an
+// upfront-scope consultation. Strict so no extra field can ride along.
+const askUserQuestionsAdviceSchema = z.object({
+  expectedModel: exactProviderModelIdSchema,
+  expectedThinking: z.literal("high"),
+  candidate: pinnedCandidateSchema.optional(),
+}).strict();
+
 export const askUserQuestionsPayloadSchema = z.object({
   version: z.literal(1),
   title: z.string().trim().max(240).nullable().optional(),
@@ -1181,6 +1214,8 @@ export const askUserQuestionsPayloadSchema = z.object({
   questionSet: paperclipQuestionSetPayloadSchema.optional(),
   /** Stable correlation for draft handoff from a live runtime request. */
   runtimeRequestId: z.string().trim().min(1).max(255).nullable().optional(),
+  /** Pinned advisor-consultation metadata on a directed advice card. */
+  advice: askUserQuestionsAdviceSchema.optional(),
 }).superRefine((value, ctx) => {
   // A plain board/user comment must never stand in for a consequential
   // decision. Information questions keep the default supersede behavior.
@@ -1252,6 +1287,35 @@ export const askUserQuestionsResultSchema = z.object({
   // the newer sibling ask_user_questions that replaced this one (PAP-437).
   supersededByInteractionId: z.string().guid().nullable().optional(),
   summaryMarkdown: z.string().max(20000).nullable().optional(),
+  // Answer-time evidence for a pinned advisor consultation: the pinned model
+  // the answering advisor's live configuration was re-verified against, and
+  // the candidate the advice was bound to. Configuration evidence recorded
+  // only by the server at answer time — it does not claim the provider was
+  // observed serving that model identity. Callers cannot supply it.
+  advice: z.object({
+    version: z.literal(1),
+    expectedModel: exactProviderModelIdSchema,
+    candidate: pinnedCandidateSchema.nullable(),
+  }).strict().optional(),
+  // Recovery-only settlement evidence for a reconciled pinned advisor
+  // consultation (its answering path died). Recorded only by recovery: never
+  // answers, never approval. `continuation` tracks the durable original-owner
+  // continuation wake so a crash between settlement and wake admission cannot
+  // lose the continuation — `pending` is retried by the restart sweep until a
+  // durable wake receipt exists.
+  reconciliation: z.object({
+    cause: z.enum([
+      "advisor_run_failed",
+      "advisor_run_timed_out",
+      "advisor_run_cancelled",
+      "advisor_run_interrupted",
+      "advisor_run_exited_without_answer",
+      "advisor_wake_skipped",
+      "advisor_wake_unavailable",
+    ]),
+    advisorRunId: z.string().guid().nullable(),
+    continuation: z.enum(["pending", "arranged", "not_required"]),
+  }).strict().optional(),
 });
 
 const requestConfirmationHrefSchema = z.string().trim().min(1).max(2000).refine((value) => {
@@ -1318,20 +1382,11 @@ export const requestConfirmationSecretProposalPayloadSchema = z.object({
 // upstream. Both are lane keys / model ids, never filesystem paths, and both
 // objects are strict so a caller cannot smuggle extra fields (e.g. a host path)
 // past the validator.
-const requestConfirmationReviewCandidateSchema = z.object({
-  workspaceKey: z.string().trim().min(1).max(255)
-    .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, "workspaceKey must be a single lane key, not a path"),
-  revision: z.string().trim()
-    .regex(/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$/, "revision must be a full 40- or 64-character hex digest"),
-}).strict();
+const requestConfirmationReviewCandidateSchema = pinnedCandidateSchema;
 
 const requestConfirmationReviewSchema = z.object({
   candidate: requestConfirmationReviewCandidateSchema,
-  expectedModel: z.string().trim().min(3).max(255)
-    .regex(
-      /^[A-Za-z0-9][A-Za-z0-9._:@+-]*(?:\/[A-Za-z0-9][A-Za-z0-9._:@+-]*)+$/,
-      "expectedModel must be an exact provider/model id",
-    ),
+  expectedModel: exactProviderModelIdSchema,
 }).strict();
 
 export const requestConfirmationPayloadSchema = z.object({

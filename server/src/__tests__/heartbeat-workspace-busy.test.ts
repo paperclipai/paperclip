@@ -1046,4 +1046,67 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(finishedRetry?.errorCode).not.toBe("issue_assignee_changed");
     expect(executedRunIds).toContain(retryRun!.id);
   });
+
+  it("keeps distinct advisor consultations executable across workspace deferral", async () => {
+    const fixture = await seedWorkspaceFixture();
+    const interactionIds = [randomUUID(), randomUUID(), randomUUID()];
+    const retries: Array<typeof heartbeatRuns.$inferSelect> = [];
+    for (const interactionId of interactionIds) {
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId: fixture.companyId,
+        issueId: fixture.issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: fixture.agentId,
+        addresseeAgentId: fixture.nonAssigneeAgentId,
+        effectiveResolverPolicy: "anyone",
+        payload: {
+          version: 1,
+          advice: { expectedModel: "openai-codex/gpt-5.6-sol", expectedThinking: "high" },
+        },
+      });
+      const wake = (refuseAdmission = false) => heartbeat.wakeup(fixture.nonAssigneeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "interaction_pending",
+        payload: { issueId: fixture.issueId, interactionId, mutation: "interaction" },
+        idempotencyKey: `interaction-pending:${interactionId}`,
+        bindWake: refuseAdmission ? () => { throw new Error("stale advice continuation"); } : undefined,
+        contextSnapshot: {
+          issueId: fixture.issueId,
+          taskId: fixture.issueId,
+          interactionId,
+          interactionKind: "ask_user_questions",
+          wakeReason: "interaction_pending",
+          source: "issue.interaction.created",
+        },
+      });
+      const run = await wake();
+      if (run) {
+        const stopped = await waitForRunToLeaveActiveStates(run.id);
+        expect(stopped?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
+        const retry = await waitForRetryRun(run.id);
+        expect(retry?.contextSnapshot).toMatchObject({ interactionId });
+        retries.push(retry!);
+      }
+      await expect(wake(true)).rejects.toThrow("stale advice continuation");
+    }
+    await db.update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, fixture.holderRunId));
+    const afterDue = new Date(Math.max(...retries.map(run => new Date(run.scheduledRetryAt!).getTime())) + 1_000);
+    await heartbeat.promoteDueScheduledRetries(afterDue);
+    await heartbeat.resumeQueuedRuns();
+    for (const retry of retries) {
+      expect(await waitForRunToLeaveActiveStates(retry.id)).toMatchObject({ status: "succeeded", errorCode: null });
+    }
+    await expect.poll(() =>
+      [...executedInputs.values()]
+        .filter(input => input.agent.id === fixture.nonAssigneeAgentId)
+        .map(input => input.context.interactionId)
+        .sort(),
+    { timeout: 10_000 }).toEqual([...interactionIds].sort());
+  });
 });

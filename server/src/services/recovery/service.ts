@@ -1,8 +1,10 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+  askUserQuestionsResultSchema,
+  type AdviceReconciliationCause,
   type IssueCommentMetadata,
   type IssueCommentPresentation,
 } from "@paperclipai/shared";
@@ -124,6 +126,15 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
 );
 
+type RecoveryWakeupBindRun = (
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "status">,
+  tx: Pick<Db, "select" | "update" | "insert" | "execute">,
+) => Promise<void> | void;
+
+type RecoveryWakeupBindWake = (
+  tx: Pick<Db, "select" | "update" | "insert" | "execute">,
+) => Promise<void> | void;
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -133,6 +144,22 @@ type RecoveryWakeupOptions = {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  /**
+   * Fresh/parked run-creation fence invoked by heartbeat inside the native
+   * enqueue transaction. Throwing rolls the whole enqueue back. Covers only
+   * branches that create a run — coalesced and deferred admissions need
+   * {@link bindWake}.
+   */
+  bindRun?: RecoveryWakeupBindRun;
+  /**
+   * Pre-admission fence invoked by heartbeat before EVERY committed
+   * wake/carrier admission — fresh run, coalesced run, deferred_issue_execution,
+   * or parked carrier — inside that admission's transaction. Throwing rolls
+   * the admission back: a continuation arranger that lost the fence (another
+   * arranger already arranged or retired the owed continuation) must not
+   * enqueue a duplicate wake.
+   */
+  bindWake?: RecoveryWakeupBindWake;
 };
 
 type RecoveryWakeup = (
@@ -663,6 +690,158 @@ function isRepeatedProductiveContinuationRecovery(latestRun: SuccessfulLatestIss
   return readNonEmptyString(latestContext.retryReason) === "issue_continuation_needed" &&
     readNonEmptyString(latestContext.source) === "issue.productive_terminal_continuation_recovery" &&
     isProductiveContinuationRun(latestRun);
+}
+
+// ── Orphaned advisor-consultation reconciliation (ADVICE-LIVENESS-002) ──────
+//
+// A pending pinned advisor consultation (kind `ask_user_questions` with an
+// `advice` pin, addressed to its advisor agent) whose answering path has
+// definitively died must never keep suppressing recovery as if a human gate
+// were pending. Terminal handling calls `reconcileFailedAdviceForRun` for a
+// settled advisor run; the restart sweep calls `reconcileFailedAdvice` for a
+// company. Both settle through the same gates: only genuinely dead advisor
+// paths are settled (rechecked under issue/card row locks against committed
+// state, so a newly admitted wake stands the settle down), a live/deferred/
+// queued continuation always stands down, and the persisted evidence is a
+// truthful cancellation — never a fabricated answer or approval. The
+// settlement commits a durable `reconciliation.continuation` marker in the
+// same transaction; the continuation wake to the original owner is arranged
+// through the existing wake machinery and retried by the sweep until a
+// durable wake receipt exists, so a crash or admission failure can never
+// silently drop the continuation.
+
+/** The wake key heartbeat uses for pending addressed-interaction wakes. */
+const ADVICE_WAKE_INTERACTION_KEY_PREFIX = "interaction-pending:";
+/** Durable continuation wake namespace for reconciled consultations. */
+export const ADVICE_RECONCILIATION_WAKE_IDEMPOTENCY_PREFIX = "advice-reconciliation:";
+/** Candidate ceiling for one company-scoped restart sweep pass. */
+export const ADVICE_RESTART_SWEEP_CANDIDATE_LIMIT = 200;
+/**
+ * A freshly created consultation always gets its wake enqueued inside the
+ * creating request; only consults older than this grace window with no live
+ * wake evidence are judged orphans by the restart sweep.
+ */
+export const ADVICE_RESTART_SWEEP_MIN_AGE_MS = 10 * 60 * 1000;
+
+const LIVE_ADVICE_WAKE_STATUSES = [
+  "queued",
+  "claimed",
+  "running",
+  "deferred_issue_execution",
+  "retrying",
+  "scheduled_retry",
+] as const;
+
+const NATIVE_RUN_RECOVERY_LIVE_STATES = [
+  "awaiting_evidence",
+  "awaiting_runner_reattach",
+  "resuming_session",
+  "bootstrap_incomplete",
+] as const;
+
+/**
+ * Wake-request statuses that count as a durable continuation receipt. A
+ * skipped/failed/cancelled receipt does NOT count: the wake was durably
+ * refused, so the owed continuation stays retryable by the restart sweep.
+ */
+const ADVICE_CONTINUATION_ARRANGED_WAKE_STATUSES = [
+  "queued",
+  "claimed",
+  "running",
+  "deferred_issue_execution",
+  "retrying",
+  "scheduled_retry",
+  "coalesced",
+  "succeeded",
+  "completed",
+] as const;
+
+export type AdviceInteractionReconciliationOutcome =
+  | "settled"
+  | "respected_live_continuation"
+  | "continuation_retry"
+  | "skipped";
+
+export interface AdviceInteractionReconciliation {
+  interactionId: string;
+  issueId: string;
+  outcome: AdviceInteractionReconciliationOutcome;
+  cause: AdviceReconciliationCause | null;
+  advisorRunId: string | null;
+  /** Durable state of the original-owner continuation after this pass. */
+  continuationState: "arranged" | "pending" | "not_required" | null;
+  continuationWakeArranged: boolean;
+}
+
+export interface AdviceRunReconciliationOutcome {
+  runId: string;
+  /** `run_still_live` / `run_not_found` reconcile nothing by design. */
+  status: "reconciled" | "run_not_found" | "run_still_live";
+  scannedInteractions: number;
+  settled: number;
+  respectedLiveContinuation: number;
+  skipped: number;
+  continuationWakesArranged: number;
+  interactions: AdviceInteractionReconciliation[];
+}
+
+export interface AdviceRestartSweepOutcome {
+  companyId: string;
+  /** Pending orphan candidates examined this pass. */
+  scanned: number;
+  settled: number;
+  respectedLiveContinuation: number;
+  skipped: number;
+  /** New settlements whose continuation reached a durable wake receipt. */
+  continuationWakesArranged: number;
+  /** Owed continuations (marker `pending`) retried by this pass. */
+  continuationsRetried: number;
+  continuationWakesRetired: number;
+  /** True when either pass hit its bounded candidate limit. */
+  truncated: boolean;
+  interactions: AdviceInteractionReconciliation[];
+}
+
+export type { AdviceReconciliationCause };
+
+function adviceCauseFromRunStatus(status: string): AdviceReconciliationCause | null {
+  switch (status) {
+    case "failed":
+      return "advisor_run_failed";
+    case "timed_out":
+      return "advisor_run_timed_out";
+    case "cancelled":
+      return "advisor_run_cancelled";
+    case "interrupted":
+      return "advisor_run_interrupted";
+    case "succeeded":
+      return "advisor_run_exited_without_answer";
+    default:
+      return null;
+  }
+}
+
+function adviceCancellationReason(
+  cause: AdviceReconciliationCause,
+  advisorRunId: string | null,
+): string {
+  const runSuffix = advisorRunId ? ` (advisor run ${advisorRunId})` : "";
+  switch (cause) {
+    case "advisor_run_failed":
+      return `Advisor consultation failed: the addressed advisor run failed before answering${runSuffix}`;
+    case "advisor_run_timed_out":
+      return `Advisor consultation failed: the addressed advisor run timed out before answering${runSuffix}`;
+    case "advisor_run_cancelled":
+      return `Advisor consultation failed: the addressed advisor run was cancelled before answering${runSuffix}`;
+    case "advisor_run_interrupted":
+      return `Advisor consultation failed: the addressed advisor run was interrupted before answering${runSuffix}`;
+    case "advisor_run_exited_without_answer":
+      return `Advisor consultation closed: the addressed advisor exited without answering${runSuffix}`;
+    case "advisor_wake_skipped":
+      return "Advisor consultation closed: the advisor wake could not be dispatched";
+    case "advisor_wake_unavailable":
+      return "Advisor consultation closed: no live advisor execution path remained for this consultation";
+  }
 }
 
 export function recoveryService(
@@ -4628,6 +4807,780 @@ export function recoveryService(
     return result;
   }
 
+  type AdviceInteractionRow = typeof issueThreadInteractions.$inferSelect;
+
+  /**
+   * The pending pinned-advice consultations a run was addressed to answer:
+   * every wake heartbeat linked to this run under the `interaction-pending:`
+   * namespace (including coalesced wake rows), plus the run's own interaction
+   * context when it was woken as a pending-interaction wake. The wake rows are
+   * authoritative — each consultation's wake keeps its own idempotency key
+   * even when carriers merge.
+   */
+  async function collectAdvisorWakeInteractionIds(run: typeof heartbeatRuns.$inferSelect) {
+    const ids = new Set<string>();
+    const context = parseObject(run.contextSnapshot);
+    if (readNonEmptyString(context.wakeReason) === "interaction_pending") {
+      const interactionId = readNonEmptyString(context.interactionId);
+      if (interactionId) ids.add(interactionId);
+    }
+    const wakeRows = await db
+      .select({ idempotencyKey: agentWakeupRequests.idempotencyKey })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, run.companyId),
+        eq(agentWakeupRequests.runId, run.id),
+      ));
+    for (const wake of wakeRows) {
+      const key = readNonEmptyString(wake.idempotencyKey);
+      if (!key || !key.startsWith(ADVICE_WAKE_INTERACTION_KEY_PREFIX)) continue;
+      const interactionId = key.slice(ADVICE_WAKE_INTERACTION_KEY_PREFIX.length);
+      if (interactionId) ids.add(interactionId);
+    }
+    return [...ids];
+  }
+
+  /**
+   * True when the consultation still has a genuine answering path: a live
+   * advisor run addressed to it, a live (queued/deferred/retrying) wake, or a
+   * native advisor-session recovery that still owns one of the wake-linked
+   * runs. Reconciliation must stand down in every one of these cases. Callers
+   * may pass a transaction handle so the check observes committed wake/run
+   * admissions under the settlement's row locks.
+   */
+  async function adviceInteractionHasLiveContinuation(
+    dbOrTx: Pick<Db, "select">,
+    card: AdviceInteractionRow,
+    options: { excludeRunId?: string | null } = {},
+  ) {
+    const advisorAgentId = card.addresseeAgentId;
+    if (!advisorAgentId) return true; // not a reconcile target; caller filters
+
+    const liveRun = await dbOrTx
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, card.companyId),
+          eq(heartbeatRuns.agentId, advisorAgentId),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'interactionId' = ${card.id}`,
+          options.excludeRunId ? ne(heartbeatRuns.id, options.excludeRunId) : undefined,
+        ),
+      )
+      .limit(1);
+    if (liveRun.length > 0) return true;
+
+    const liveWake = await dbOrTx
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, card.companyId),
+          eq(agentWakeupRequests.agentId, advisorAgentId),
+          inArray(agentWakeupRequests.status, [...LIVE_ADVICE_WAKE_STATUSES]),
+          or(
+            eq(agentWakeupRequests.idempotencyKey, `${ADVICE_WAKE_INTERACTION_KEY_PREFIX}${card.id}`),
+            sql`${agentWakeupRequests.payload} ->> 'interactionId' = ${card.id}`,
+          ),
+        ),
+      )
+      .limit(1);
+    if (liveWake.length > 0) return true;
+
+    const linkedWakeRunIds = (
+      await dbOrTx
+        .select({ runId: agentWakeupRequests.runId })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, card.companyId),
+            eq(agentWakeupRequests.agentId, advisorAgentId),
+            or(
+              eq(agentWakeupRequests.idempotencyKey, `${ADVICE_WAKE_INTERACTION_KEY_PREFIX}${card.id}`),
+              sql`${agentWakeupRequests.payload} ->> 'interactionId' = ${card.id}`,
+            ),
+          ),
+        )
+    )
+      .map((row) => row.runId)
+      .filter((runId): runId is string => Boolean(runId));
+    if (linkedWakeRunIds.length === 0) return false;
+    const nativeRecovery = await dbOrTx
+      .select({ runId: nativeRunFinalizations.runId })
+      .from(nativeRunFinalizations)
+      .where(
+        and(
+          eq(nativeRunFinalizations.companyId, card.companyId),
+          inArray(nativeRunFinalizations.runId, linkedWakeRunIds),
+          isNull(nativeRunFinalizations.resultId),
+          or(
+            inArray(nativeRunFinalizations.recoveryState, [...NATIVE_RUN_RECOVERY_LIVE_STATES]),
+            eq(nativeRunFinalizations.phase, "retryable_failure"),
+          ),
+        ),
+      )
+      .limit(1);
+    return nativeRecovery.length > 0;
+  }
+
+  /**
+   * Truthful terminal evidence for a dead consultation, read from the
+   * wake-linked runs: the newest wake that produced a settled run names the
+   * failure. Wakes that never produced a run (admission skipped/failed) and
+   * consults with no wake evidence at all settle as wake-unavailable.
+   */
+  async function readAdviceInteractionFailureEvidence(card: AdviceInteractionRow) {
+    const advisorAgentId = card.addresseeAgentId;
+    if (advisorAgentId) {
+      const wakeRows = await db
+        .select({
+          runId: agentWakeupRequests.runId,
+          status: agentWakeupRequests.status,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, card.companyId),
+            eq(agentWakeupRequests.agentId, advisorAgentId),
+            or(
+              eq(agentWakeupRequests.idempotencyKey, `${ADVICE_WAKE_INTERACTION_KEY_PREFIX}${card.id}`),
+              sql`${agentWakeupRequests.payload} ->> 'interactionId' = ${card.id}`,
+            ),
+          ),
+        )
+        .orderBy(desc(agentWakeupRequests.createdAt));
+      const wakeRunIds = wakeRows
+        .map((row) => row.runId)
+        .filter((runId): runId is string => Boolean(runId));
+      const runStatusById: Record<string, string> = {};
+      if (wakeRunIds.length > 0) {
+        const linkedRuns = await db
+          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, card.companyId),
+              inArray(heartbeatRuns.id, wakeRunIds),
+            ),
+          );
+        for (const run of linkedRuns) runStatusById[run.id] = run.status;
+      }
+      for (const wake of wakeRows) {
+        if (!wake.runId) continue;
+        const cause = adviceCauseFromRunStatus(runStatusById[wake.runId] ?? "");
+        if (cause) return { cause, advisorRunId: wake.runId };
+      }
+      const unroutedWake = wakeRows.find((row) => row.status === "skipped" || row.status === "failed" || row.status === "cancelled");
+      if (unroutedWake) return { cause: "advisor_wake_skipped" as const, advisorRunId: null };
+    }
+    return { cause: "advisor_wake_unavailable" as const, advisorRunId: null };
+  }
+
+  /**
+   * Durable receipt for an arranged continuation wake: any live wake-request
+   * row under the reconciliation idempotency key. A skipped/failed/cancelled
+   * receipt does not count — the wake was durably refused and the continuation
+   * stays owed.
+   */
+  async function findAdviceContinuationWakeReceipt(companyId: string, interactionId: string) {
+    return db
+      .select({ id: agentWakeupRequests.id, status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.idempotencyKey, `${ADVICE_RECONCILIATION_WAKE_IDEMPOTENCY_PREFIX}${interactionId}`),
+          inArray(agentWakeupRequests.status, [...ADVICE_CONTINUATION_ARRANGED_WAKE_STATUSES]),
+        ),
+      )
+      .orderBy(desc(agentWakeupRequests.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  /**
+   * CAS the owed-continuation marker on a settled card (`pending` → state).
+   * Returns the number of rows fenced: 0 means another arranger already
+   * transitioned the marker (or the row is gone). Usable with a transaction
+   * handle so a `bindWake`/`bindRun` pre-admission callback can fence inside
+   * the native enqueue transaction.
+   */
+  async function fenceAdviceContinuationMarker(
+    dbOrTx: Pick<Db, "update">,
+    card: AdviceInteractionRow,
+    state: "arranged" | "not_required",
+  ): Promise<number> {
+    const fenced = await dbOrTx
+      .update(issueThreadInteractions)
+      .set({
+        result: sql`jsonb_set(${issueThreadInteractions.result}, '{reconciliation,continuation}', ${JSON.stringify(state)}::jsonb)`,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(issueThreadInteractions.id, card.id),
+          eq(issueThreadInteractions.companyId, card.companyId),
+          eq(issueThreadInteractions.status, "cancelled"),
+          sql`${issueThreadInteractions.result}->'reconciliation'->>'continuation' = 'pending'`,
+        ),
+      )
+      .returning({ id: issueThreadInteractions.id });
+    return fenced.length;
+  }
+
+  /**
+   * Read the durable continuation marker off a settled consultation through
+   * the shared result schema: a tampered or legacy result fails validation
+   * and the sweep skips the card for triage instead of guessing at a
+   * continuation.
+   */
+  function readAdviceReconciliationMarker(card: AdviceInteractionRow) {
+    const parsed = askUserQuestionsResultSchema.safeParse(card.result);
+    if (!parsed.success) return null;
+    const reconciliation = parsed.data.reconciliation;
+    if (!reconciliation || reconciliation.continuation !== "pending") return null;
+    return {
+      cause: reconciliation.cause,
+      advisorRunId: reconciliation.advisorRunId,
+    };
+  }
+
+  /**
+   * Arrange (or re-arrange) the durable original-owner continuation for a
+   * settled consultation. Idempotent by wake idempotency key and by the card's
+   * `reconciliation.continuation` marker: the marker stays `pending` until a
+   * durable wake receipt exists, so a crash or enqueue failure between
+   * settlement and arrangement is retried by the restart sweep instead of
+   * being lost. Terminal issues and pause holds retire or defer the
+   * continuation without fighting their authority.
+   */
+  async function arrangeAdviceReconciliationContinuation(input: {
+    card: AdviceInteractionRow;
+    cause: AdviceReconciliationCause;
+    advisorRunId: string | null;
+  }): Promise<"arranged" | "pending" | "not_required"> {
+    const card = input.card;
+    // Source assignment/terminal/hold guards, re-read at arrangement time:
+    // only an open issue with an execution owner (or, failing that, the
+    // consultation's requester) receives the continuation. A pause hold means
+    // an operator owns the tree — the owed continuation stays pending until
+    // the hold lifts.
+    const [issueRow] = await db
+      .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(and(eq(issues.id, card.issueId), eq(issues.companyId, card.companyId)))
+      .limit(1);
+    const issueOpen = issueRow !== undefined
+      && issueRow.status !== "done"
+      && issueRow.status !== "cancelled";
+    const continuationAgentId = issueOpen
+      ? issueRow.assigneeAgentId ?? card.createdByAgentId ?? null
+      : null;
+    if (!continuationAgentId) {
+      await fenceAdviceContinuationMarker(db, card, "not_required");
+      return "not_required";
+    }
+    if (await isAutomaticRecoverySuppressedByPauseHold(db, card.companyId, card.issueId, treeControlSvc)) {
+      return "pending";
+    }
+
+    // Preflight reuse: a durable receipt from an earlier attempt (possibly
+    // parked or coalesced by enqueue admission) already carries the intent.
+    if (!(await findAdviceContinuationWakeReceipt(card.companyId, card.id))) {
+      try {
+        await deps.enqueueWakeup(continuationAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "advice_reconciliation",
+          payload: {
+            issueId: card.issueId,
+            interactionId: card.id,
+            interactionKind: card.kind,
+            interactionStatus: "cancelled",
+            sourceRunId: card.sourceRunId ?? null,
+            advisorRunId: input.advisorRunId,
+            adviceReconciliationCause: input.cause,
+            mutation: "interaction",
+          },
+          idempotencyKey: `${ADVICE_RECONCILIATION_WAKE_IDEMPOTENCY_PREFIX}${card.id}`,
+          requestedByActorType: "system",
+          requestedByActorId: "recovery.advice-reconciliation",
+          contextSnapshot: {
+            issueId: card.issueId,
+            taskId: card.issueId,
+            interactionId: card.id,
+            interactionKind: card.kind,
+            interactionStatus: "cancelled",
+            sourceRunId: card.sourceRunId ?? null,
+            wakeReason: "advice_reconciliation",
+            source: "recovery.reconcile_failed_advice",
+            adviceReconciliation: {
+              cause: input.cause,
+              advisorRunId: input.advisorRunId,
+            },
+          },
+          // Atomic pre-admission fence inside the native enqueue transaction:
+          // the owed continuation flips to `arranged` with the wake itself,
+          // covering every committed admission branch — fresh, coalesced,
+          // deferred, and parked carriers alike (bindRun only covers
+          // run-creating branches, so a coalesced/deferred first delivery
+          // could otherwise finish while the marker stays pending and let a
+          // second fresh enqueue run a duplicate). Two concurrent sweeps can
+          // both pass the receipt preflight (enqueueWakeup does not dedupe
+          // idempotencyKeys); the loser's fence finds no pending marker and
+          // must throw so its duplicate admission rolls back.
+          bindWake: async (tx) => {
+            const fenced = await fenceAdviceContinuationMarker(tx, card, "arranged");
+            if (fenced === 0) {
+              throw new Error("advice_continuation_already_arranged");
+            }
+          },
+        });
+      } catch (error) {
+        // A lost fence (a competing arranger won) also lands here; the receipt
+        // check below distinguishes it from a genuine failure. The marker
+        // stays `pending` on a real failure: the restart sweep retries the
+        // owed continuation until a durable wake receipt exists.
+        logger.warn(
+          { err: error, interactionId: card.id, agentId: continuationAgentId },
+          "failed to arrange original-owner continuation after advice reconciliation",
+        );
+      }
+    }
+    const receipt = await findAdviceContinuationWakeReceipt(card.companyId, card.id);
+    if (!receipt) return "pending";
+    await fenceAdviceContinuationMarker(db, card, "arranged");
+    return "arranged";
+  }
+
+  /**
+   * Settle one orphaned consultation inside a single transaction: lock the
+   * issue row (terminal/assignee authority), lock the card row, re-run the
+   * live-continuation check against committed state under those locks — so a
+   * newly admitted advisor wake stands the settle down instead of being
+   * cancelled after an unlocked stale read — then flip pending → cancelled
+   * with truthful cancellation evidence plus a durable `reconciliation`
+   * marker. The marker records the owed original-owner continuation
+   * (`pending`) in the SAME transaction as the settlement, so a crash before
+   * the wake is arranged is retried by the restart sweep rather than lost.
+   * Never records an answer, a verdict, or approval.
+   */
+  async function settleOrphanedAdviceInteraction(input: {
+    card: AdviceInteractionRow;
+    cause: AdviceReconciliationCause;
+    advisorRunId: string | null;
+    excludeRunId?: string | null;
+  }): Promise<AdviceInteractionReconciliation> {
+    const now = new Date();
+    const cancellationReason = adviceCancellationReason(input.cause, input.advisorRunId);
+    const settled = await db.transaction(async (tx): Promise<AdviceInteractionReconciliation> => {
+      const skipped: AdviceInteractionReconciliation = {
+        interactionId: input.card.id,
+        issueId: input.card.issueId,
+        outcome: "skipped",
+        cause: null,
+        advisorRunId: null,
+        continuationState: null,
+        continuationWakeArranged: false,
+      };
+      // Lock the issue row first, matching the create path's lock order: the
+      // locked row is the authority for terminal status and the continuation
+      // target, and holding it serializes against concurrent interaction
+      // writes on the same issue.
+      const [issueRow] = await tx
+        .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+        .from(issues)
+        .where(and(eq(issues.id, input.card.issueId), eq(issues.companyId, input.card.companyId)))
+        .for("update");
+      if (!issueRow || issueRow.status === "done" || issueRow.status === "cancelled") {
+        // Terminal-issue expiry owns cards on closed issues.
+        return skipped;
+      }
+      const [lockedCard] = await tx
+        .select()
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            eq(issueThreadInteractions.id, input.card.id),
+            eq(issueThreadInteractions.companyId, input.card.companyId),
+          ),
+        )
+        .for("update");
+      if (!lockedCard || lockedCard.status !== "pending") {
+        // A concurrent resolution won the card — its outcome stays authoritative.
+        return skipped;
+      }
+      // Authoritative liveness recheck under the row locks: a continuation
+      // admitted before this transaction commits is seen here and stands the
+      // settlement down.
+      if (await adviceInteractionHasLiveContinuation(tx as unknown as Db, lockedCard, { excludeRunId: input.excludeRunId ?? null })) {
+        return {
+          interactionId: lockedCard.id,
+          issueId: lockedCard.issueId,
+          outcome: "respected_live_continuation",
+          cause: null,
+          advisorRunId: null,
+          continuationState: null,
+          continuationWakeArranged: false,
+        };
+      }
+      const continuationTarget = issueRow.assigneeAgentId ?? lockedCard.createdByAgentId ?? null;
+      const [row] = await tx
+        .update(issueThreadInteractions)
+        .set({
+          status: "cancelled",
+          result: {
+            version: 1,
+            answers: [],
+            cancelled: true,
+            cancellationReason,
+            summaryMarkdown: null,
+            reconciliation: {
+              cause: input.cause,
+              advisorRunId: input.advisorRunId,
+              continuation: continuationTarget ? "pending" : "not_required",
+            },
+          },
+          resolvedByAgentId: null,
+          resolvedByRunId: null,
+          resolvedByUserId: null,
+          resolvedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(issueThreadInteractions.id, lockedCard.id),
+            eq(issueThreadInteractions.companyId, lockedCard.companyId),
+            eq(issueThreadInteractions.status, "pending"),
+          ),
+        )
+        .returning();
+      if (!row) return skipped;
+      return {
+        interactionId: row.id,
+        issueId: row.issueId,
+        outcome: "settled",
+        cause: input.cause,
+        advisorRunId: input.advisorRunId,
+        continuationState: continuationTarget ? "pending" : "not_required",
+        continuationWakeArranged: false,
+      };
+    });
+
+    if (settled.outcome !== "settled") return settled;
+
+    await logActivity(db, {
+      companyId: input.card.companyId,
+      actorType: "system",
+      actorId: "recovery.advice-reconciliation",
+      agentId: null,
+      runId: input.advisorRunId,
+      action: "issue.advice_consultation_reconciled",
+      entityType: "issue",
+      entityId: input.card.issueId,
+      details: {
+        source: "recovery.reconcile_failed_advice",
+        interactionId: input.card.id,
+        cause: input.cause,
+        advisorRunId: input.advisorRunId,
+        advisorAgentId: input.card.addresseeAgentId ?? null,
+        createdByAgentId: input.card.createdByAgentId ?? null,
+        sourceRunId: input.card.sourceRunId ?? null,
+        cancellationReason,
+      },
+    }).catch(() => undefined);
+
+    if (settled.continuationState === "pending") {
+      const continuationState = await arrangeAdviceReconciliationContinuation({
+        card: input.card,
+        cause: input.cause,
+        advisorRunId: input.advisorRunId,
+      }).catch((error: unknown) => {
+        logger.warn(
+          { err: error, interactionId: input.card.id },
+          "advice continuation arrangement attempt failed; the restart sweep will retry",
+        );
+        return "pending" as const;
+      });
+      settled.continuationState = continuationState;
+      settled.continuationWakeArranged = continuationState === "arranged";
+    }
+    return settled;
+  }
+
+  /**
+   * Reconcile pending pinned advisor consultations that the given settled run
+   * was addressed to answer (ADVICE-LIVENESS-002). Called from terminal
+   * handling; safe for any run — live runs, unknown runs, and runs that were
+   * not advisors reconcile nothing. A live/deferred/queued continuation always
+   * stands down, and the persisted outcome is a truthful cancellation with a
+   * bounded idempotent original-owner continuation, never an answer.
+   */
+  async function reconcileFailedAdviceForRun(runId: string): Promise<AdviceRunReconciliationOutcome> {
+    const outcome: AdviceRunReconciliationOutcome = {
+      runId,
+      status: "reconciled",
+      scannedInteractions: 0,
+      settled: 0,
+      respectedLiveContinuation: 0,
+      skipped: 0,
+      continuationWakesArranged: 0,
+      interactions: [],
+    };
+    const run = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!run) {
+      outcome.status = "run_not_found";
+      return outcome;
+    }
+    // A run that has not reached a terminal status still owns its wake: the
+    // advisor may yet answer. Terminal handling only reconciles settled runs.
+    if (!TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) {
+      outcome.status = "run_still_live";
+      return outcome;
+    }
+    const cause = adviceCauseFromRunStatus(run.status) ?? "advisor_run_failed";
+    const candidateIds = await collectAdvisorWakeInteractionIds(run);
+    outcome.scannedInteractions = candidateIds.length;
+    if (candidateIds.length === 0) return outcome;
+
+    const cards = (
+      await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            eq(issueThreadInteractions.companyId, run.companyId),
+            inArray(issueThreadInteractions.id, candidateIds),
+            eq(issueThreadInteractions.kind, "ask_user_questions"),
+            eq(issueThreadInteractions.status, "pending"),
+            eq(issueThreadInteractions.addresseeAgentId, run.agentId),
+            sql`${issueThreadInteractions.payload} ? 'advice'`,
+          ),
+        )
+    ).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+
+    for (const card of cards) {
+      // Cheap pre-filter; the settlement rechecks under row locks.
+      if (await adviceInteractionHasLiveContinuation(db, card, { excludeRunId: run.id })) {
+        outcome.respectedLiveContinuation += 1;
+        outcome.interactions.push({
+          interactionId: card.id,
+          issueId: card.issueId,
+          outcome: "respected_live_continuation",
+          cause: null,
+          advisorRunId: null,
+          continuationState: null,
+          continuationWakeArranged: false,
+        });
+        continue;
+      }
+      const reconciliation = await settleOrphanedAdviceInteraction({
+        card,
+        cause,
+        advisorRunId: run.id,
+        excludeRunId: run.id,
+      });
+      if (reconciliation.outcome === "settled") {
+        outcome.settled += 1;
+        if (reconciliation.continuationWakeArranged) outcome.continuationWakesArranged += 1;
+      } else if (reconciliation.outcome === "respected_live_continuation") {
+        outcome.respectedLiveContinuation += 1;
+      } else {
+        outcome.skipped += 1;
+      }
+      outcome.interactions.push(reconciliation);
+    }
+    if (outcome.settled > 0) {
+      logger.info(
+        {
+          runId,
+          advisorAgentId: run.agentId,
+          advisorRunStatus: run.status,
+          settled: outcome.settled,
+          respectedLiveContinuation: outcome.respectedLiveContinuation,
+          continuationWakesArranged: outcome.continuationWakesArranged,
+        },
+        "reconciled orphaned advisor consultations after a settled advisor run",
+      );
+    }
+    return outcome;
+  }
+
+  /**
+   * Company-scoped restart sweep (ADVICE-LIVENESS-002), two bounded passes:
+   *
+   * 1. Settle pending pinned advisor consultations that outlived every live
+   *    answering path — a crash can lose the terminal-handling hook that
+   *    `reconcileFailedAdviceForRun` covers.
+   * 2. Retry owed original-owner continuations: settlements persist a durable
+   *    `reconciliation.continuation = "pending"` marker in the same
+   *    transaction as the cancellation, so a crash or enqueue failure between
+   *    settlement and wake arrangement is retried here until a durable wake
+   *    receipt exists (or the continuation is retired as not required).
+   *
+   * Live/deferred/queued continuations stand down in both passes.
+   */
+  async function reconcileFailedAdvice(companyId: string): Promise<AdviceRestartSweepOutcome> {
+    const outcome: AdviceRestartSweepOutcome = {
+      companyId,
+      scanned: 0,
+      settled: 0,
+      respectedLiveContinuation: 0,
+      skipped: 0,
+      continuationWakesArranged: 0,
+      continuationsRetried: 0,
+      continuationWakesRetired: 0,
+      truncated: false,
+      interactions: [],
+    };
+    const graceCutoff = new Date(Date.now() - ADVICE_RESTART_SWEEP_MIN_AGE_MS);
+
+    // Pass 1: orphaned pending consultations.
+    const candidates = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.kind, "ask_user_questions"),
+          eq(issueThreadInteractions.status, "pending"),
+          isNotNull(issueThreadInteractions.addresseeAgentId),
+          sql`${issueThreadInteractions.payload} ? 'advice'`,
+          lt(issueThreadInteractions.createdAt, graceCutoff),
+        ),
+      )
+      .orderBy(asc(issueThreadInteractions.createdAt))
+      .limit(ADVICE_RESTART_SWEEP_CANDIDATE_LIMIT + 1);
+    const passOneTruncated = candidates.length > ADVICE_RESTART_SWEEP_CANDIDATE_LIMIT;
+    const boundedPassOne = passOneTruncated
+      ? candidates.slice(0, ADVICE_RESTART_SWEEP_CANDIDATE_LIMIT)
+      : candidates;
+    outcome.scanned = boundedPassOne.length;
+
+    for (const card of boundedPassOne) {
+      // Cheap pre-filter; the settlement rechecks under row locks.
+      if (await adviceInteractionHasLiveContinuation(db, card)) {
+        outcome.respectedLiveContinuation += 1;
+        outcome.interactions.push({
+          interactionId: card.id,
+          issueId: card.issueId,
+          outcome: "respected_live_continuation",
+          cause: null,
+          advisorRunId: null,
+          continuationState: null,
+          continuationWakeArranged: false,
+        });
+        continue;
+      }
+      const evidence = await readAdviceInteractionFailureEvidence(card);
+      const reconciliation = await settleOrphanedAdviceInteraction({
+        card,
+        cause: evidence.cause,
+        advisorRunId: evidence.advisorRunId,
+      });
+      if (reconciliation.outcome === "settled") {
+        outcome.settled += 1;
+        if (reconciliation.continuationWakeArranged) outcome.continuationWakesArranged += 1;
+      } else if (reconciliation.outcome === "respected_live_continuation") {
+        outcome.respectedLiveContinuation += 1;
+      } else {
+        outcome.skipped += 1;
+      }
+      outcome.interactions.push(reconciliation);
+    }
+
+    // Pass 2: owed continuations whose arrangement did not complete (crash or
+    // enqueue failure after settlement). The durable marker on the settled
+    // card names the cause and advisor run; retry until a durable wake receipt
+    // exists or the continuation is retired.
+    const owedCards = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(
+        and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.kind, "ask_user_questions"),
+          eq(issueThreadInteractions.status, "cancelled"),
+          sql`${issueThreadInteractions.payload} ? 'advice'`,
+          sql`${issueThreadInteractions.result}->'reconciliation'->>'continuation' = 'pending'`,
+        ),
+      )
+      .orderBy(asc(issueThreadInteractions.updatedAt))
+      .limit(ADVICE_RESTART_SWEEP_CANDIDATE_LIMIT + 1);
+    const passTwoTruncated = owedCards.length > ADVICE_RESTART_SWEEP_CANDIDATE_LIMIT;
+    const boundedOwed = passTwoTruncated
+      ? owedCards.slice(0, ADVICE_RESTART_SWEEP_CANDIDATE_LIMIT)
+      : owedCards;
+    outcome.truncated = passOneTruncated || passTwoTruncated;
+
+    for (const card of boundedOwed) {
+      const marker = readAdviceReconciliationMarker(card);
+      if (!marker) {
+        // Unparseable marker: leave it for triage instead of guessing.
+        outcome.skipped += 1;
+        outcome.interactions.push({
+          interactionId: card.id,
+          issueId: card.issueId,
+          outcome: "skipped",
+          cause: null,
+          advisorRunId: null,
+          continuationState: null,
+          continuationWakeArranged: false,
+        });
+        continue;
+      }
+      outcome.continuationsRetried += 1;
+      const arranged = await arrangeAdviceReconciliationContinuation({
+        card,
+        cause: marker.cause,
+        advisorRunId: marker.advisorRunId,
+      }).catch((error: unknown) => {
+        logger.warn(
+          { err: error, interactionId: card.id },
+          "advice continuation retry failed; the marker stays pending",
+        );
+        return "pending" as const;
+      });
+      if (arranged === "arranged") {
+        outcome.continuationWakesArranged += 1;
+      } else if (arranged === "not_required") {
+        outcome.continuationWakesRetired += 1;
+      }
+      outcome.interactions.push({
+        interactionId: card.id,
+        issueId: card.issueId,
+        outcome: "continuation_retry",
+        cause: marker.cause,
+        advisorRunId: marker.advisorRunId,
+        continuationState: arranged,
+        continuationWakeArranged: arranged === "arranged",
+      });
+    }
+
+    if (outcome.settled > 0 || outcome.continuationsRetried > 0 || outcome.truncated) {
+      logger.info(
+        {
+          companyId,
+          scanned: outcome.scanned,
+          settled: outcome.settled,
+          respectedLiveContinuation: outcome.respectedLiveContinuation,
+          continuationsRetried: outcome.continuationsRetried,
+          continuationWakesArranged: outcome.continuationWakesArranged,
+          continuationWakesRetired: outcome.continuationWakesRetired,
+          truncated: outcome.truncated,
+        },
+        "advice consultation restart reconciliation pass finished",
+      );
+    }
+    return outcome;
+  }
+
   return {
     buildRunOutputSilence,
     escalateStrandedRecoveryIssueInPlace,
@@ -4637,6 +5590,8 @@ export function recoveryService(
     reconcileStrandedAssignedIssues,
     sweepStaleIssueLocks,
     reconcileResolvedDependencyWakeBackstop,
+    reconcileFailedAdviceForRun,
+    reconcileFailedAdvice,
     readRecoveryTimerIntervalMs,
   };
 }

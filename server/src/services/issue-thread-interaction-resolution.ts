@@ -67,6 +67,14 @@ export type IssueThreadInteractionResolverAudienceInput = {
    * an agent.
    */
   storedDecisionQuestion?: boolean;
+  /**
+   * True when the stored payload carries a pinned advisor consultation. Advice
+   * narrows resolution further than the persisted policy: only the addressed
+   * advisor agent may answer — never a human override, never a different agent.
+   * The pinned model is re-checked against the addressee's current
+   * configuration by the caller, because that needs a database read.
+   */
+  storedAdvice?: boolean;
 };
 
 export type IssueThreadInteractionResolverAudienceDecision =
@@ -190,6 +198,18 @@ export function evaluateIssueThreadInteractionResolverAudience(
   }
 
   if (input.actor.type === "user") {
+    // A pinned advisor consultation is answered only by its addressed advisor
+    // agent. A human override would let a person speak as the pinned model, so
+    // it is refused ahead of every other human path.
+    if (input.storedAdvice) {
+      return {
+        allowed: false,
+        effectiveResolverPolicy,
+        status: 403,
+        code: "interaction_addressee_mismatch",
+        message: "Only the addressed advisor agent may answer this advice consultation",
+      };
+    }
     if (
       input.interaction.addresseeUserId
       && input.interaction.addresseeUserId !== input.actor.userId
@@ -273,6 +293,19 @@ export function evaluateIssueThreadInteractionResolverAudience(
       status: 403,
       code: "interaction_addressee_mismatch",
       message: "This issue-thread interaction is addressed to a specific user",
+    };
+  }
+
+  // A stored advice pin without an addressee cannot be resolved by anyone:
+  // the pin demands a specific advisor agent, so an unaddressed row is
+  // tampered or malformed and must fail closed.
+  if (input.storedAdvice && !input.interaction.addresseeAgentId) {
+    return {
+      allowed: false,
+      effectiveResolverPolicy,
+      status: 403,
+      code: "interaction_addressee_mismatch",
+      message: "A pinned advice consultation must be addressed to its advisor agent",
     };
   }
 
@@ -393,6 +426,49 @@ export function assertIssueThreadInteractionCodeReviewResolver(input: {
 }
 
 /**
+ * Additional identity restriction for a pinned advisor consultation. The host
+ * broker pins one advisor agent, so only that agent may answer the card: never
+ * a human override, never a different agent, and never the worker that
+ * requested the advice or the run that produced the candidate. The pinned
+ * model itself is re-checked against the advisor's current configuration by the
+ * caller, because that needs a database read.
+ */
+export function assertIssueThreadInteractionAdviceResolver(input: {
+  actor: IssueThreadInteractionResolverActor;
+  interaction: {
+    addresseeAgentId?: string | null;
+    createdByAgentId?: string | null;
+    sourceRunId?: string | null;
+  };
+}) {
+  const addresseeAgentId = input.interaction.addresseeAgentId ?? null;
+  const agentActor = input.actor.type === "agent" ? input.actor : null;
+  const agentId = agentActor?.agentId ?? null;
+  if (!agentActor || !addresseeAgentId || !agentId || addresseeAgentId !== agentId) {
+    throw issueThreadInteractionResolutionError(
+      403,
+      "interaction_addressee_mismatch",
+      "Only the addressed advisor agent may answer this advice consultation",
+      { addresseeAgentId, requiredResolver: "addressed_advisor_agent" },
+    );
+  }
+  if (
+    input.interaction.createdByAgentId === agentId
+    || (
+      Boolean(input.interaction.sourceRunId)
+      && input.interaction.sourceRunId === agentActor.runId
+    )
+  ) {
+    throw issueThreadInteractionResolutionError(
+      403,
+      "interaction_creator_excluded",
+      "The worker that requested advice cannot answer its own consultation",
+      { requiredResolver: "advisor_other_than_requester" },
+    );
+  }
+}
+
+/**
  * Resolves agent-owned attention with the same audience rules used by mutation
  * routes. Run attribution is deliberately represented by the interaction's
  * source run for the creator and by an opaque non-source run for other agents;
@@ -403,6 +479,7 @@ export function issueThreadInteractionAttentionAgentAllowed(input: {
   interaction: IssueThreadInteractionResolverAudienceInput["interaction"];
   additionalRestriction?: IssueThreadInteractionResolverAudienceInput["additionalRestriction"];
   governedAction?: boolean;
+  storedAdvice?: boolean;
 }) {
   const attentionRunId = input.interaction.createdByAgentId === input.agentId
     ? input.interaction.sourceRunId ?? "attention-owner-creator-run"
@@ -412,5 +489,6 @@ export function issueThreadInteractionAttentionAgentAllowed(input: {
     interaction: input.interaction,
     additionalRestriction: input.additionalRestriction,
     governedAction: input.governedAction,
+    storedAdvice: input.storedAdvice,
   }).allowed;
 }

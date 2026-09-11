@@ -201,4 +201,52 @@ describe("issue-thread interaction resolver audience", () => {
       interaction: interaction({ effectiveResolverPolicy: "human_only" }),
     })).toBe(false);
   });
+
+  it("narrows a pinned advice card to its addressed advisor agent", () => {
+    const adviceInteraction = interaction({
+      createdByAgentId: "agent-worker",
+      sourceRunId: "run-worker",
+      addresseeAgentId: "agent-2",
+    });
+
+    // The addressed advisor answers under the persisted `anyone` policy.
+    expect(evaluateIssueThreadInteractionResolverAudience({
+      actor: { type: "agent", agentId: "agent-2", runId: "run-advisor" },
+      interaction: adviceInteraction,
+      storedAdvice: true,
+    })).toMatchObject({ allowed: true, effectiveResolverPolicy: "anyone", reason: "allow_addressee" });
+
+    // A different agent is refused.
+    expect(evaluateIssueThreadInteractionResolverAudience({
+      actor: agent,
+      interaction: adviceInteraction,
+      storedAdvice: true,
+    })).toMatchObject({
+      allowed: false,
+      code: "interaction_addressee_mismatch",
+    });
+
+    // A human board override is refused: the pin demands the advisor agent.
+    expect(evaluateIssueThreadInteractionResolverAudience({
+      actor: { type: "user", userId: "local-board" },
+      interaction: adviceInteraction,
+      storedAdvice: true,
+    })).toMatchObject({
+      allowed: false,
+      code: "interaction_addressee_mismatch",
+    });
+
+    // A stored advice pin without an addressee fails closed for every agent.
+    expect(evaluateIssueThreadInteractionResolverAudience({
+      actor: agent,
+      interaction: interaction(),
+      storedAdvice: true,
+    })).toMatchObject({
+      allowed: false,
+      code: "interaction_addressee_mismatch",
+    });
+
+    // Creator and run exclusion for advice mirrors the code-review pin and is
+    // enforced by assertIssueThreadInteractionAdviceResolver at answer time.
+  });
 });
