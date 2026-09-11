@@ -9,6 +9,7 @@ import {
   collectChatRunEvidence,
   readRunningChatLog,
   readChatOutputDocument,
+  isChatClarificationReply,
   isResetRun,
   type ChatIssue,
   type ChatRun,
@@ -44,6 +45,25 @@ const run: ChatRun = {
   startedAt: "2026-09-11T10:00:01Z",
 };
 describe("chat acceptance contracts", () => {
+  it("accepts concrete information requests without requiring question punctuation", () => {
+    expect(isChatClarificationReply("What is the club name?")).toBe(true);
+    expect(
+      isChatClarificationReply(
+        "Before assigning the welcome-note work, please share:\n\n1. Club name and intended readers.\n2. Format, length, and tone.\n3. Required details, sender, and deadline.",
+      ),
+    ).toBe(true);
+    expect(
+      isChatClarificationReply("Tell me the intended audience and format."),
+    ).toBe(true);
+    expect(isChatClarificationReply("Please share:")).toBe(false);
+    expect(
+      isChatClarificationReply("Asked the user clarifying questions about their club."),
+    ).toBe(false);
+    expect(
+      isChatClarificationReply("I created the task and started writing the welcome note."),
+    ).toBe(false);
+  });
+
   it("keeps chat markers literal across rich-text and Markdown boundaries", () => {
     for (const prefix of ["CHAT", "DRAFT", "OLDCONTEXT"] as const) {
       expect(chatMarker(prefix, "abc123-1")).toBe(`${prefix}abc1231`);

@@ -48,6 +48,15 @@ type Comment = {
 type Plan = { body: string; latestRevisionId: string; updatedAt: string };
 type ChatOutputDocument = Plan & { id: string; issueId: string; key: string };
 
+/** Clarification may request information imperatively rather than end in a question mark. */
+export function isChatClarificationReply(body: string): boolean {
+  if (body.includes("?")) return true;
+  const request = body.match(
+    /\b(?:please\s+(?:share|provide|clarify|confirm)|tell me|let me know)\b([\s\S]*)/i,
+  );
+  return Boolean(request?.[1].replace(/[\s:*-]/g, ""));
+}
+
 /** A requested output document may have a descriptive key; a copied plan is not output. */
 export async function readChatOutputDocument(
   api: Pick<RunnerApi, "get">,
@@ -446,7 +455,7 @@ export async function runChatFlow(input: {
         expect(
           Boolean(pendingQuestions?.length) ||
             (await comments()).some(
-              (c) => c.authorAgentId && c.body.includes("?"),
+              (c) => c.authorAgentId && isChatClarificationReply(c.body),
             ),
         ).toBe(true);
         const clarification = `It is the garden club; use the existing Garden ${nonce} project. Make one assigned task for yourself to write a two-sentence welcome note. Include ${marker} in that note, save it as the output document, and finish that execution task. Please get it started now.`;
