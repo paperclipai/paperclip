@@ -1,3 +1,4 @@
+import { buildExecutionContinuation } from "../execution-continuation.js";
 import { activityService } from "../activity.js";
 import { buildPaperclipWakePayload, heartbeatService } from "../heartbeat.js";
 import { legacyExecutionNeedsReconciliation, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
@@ -20,6 +21,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueRecoveryActions,
+  issueComments,
   issues,
   nativeRunFinalizations,
 } from "@paperclipai/db";
@@ -275,6 +277,30 @@ const support = externalDatabaseUrl
       expect(coordinator?.failureDetail?.replacementDenied).toBe(
         "provider_failure_meaning_unverified",
       );
+    });
+    it("does not carry a consumed explicit authorization into a later safe replacement", async () => {
+      const source = await seed();
+      const previousRunId = randomUUID(), commentId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: previousRunId, companyId: source.companyId,
+        agentId: source.agentId, runtimeMode: "native", status: "failed", contextSnapshot: { issueId: source.issueId } });
+      await db.insert(issueComments).values({ id: commentId, companyId: source.companyId,
+        issueId: source.issueId, authorType: "user", authorUserId: "board", body: "Continue" });
+      await db.insert(issueRecoveryActions).values({ companyId: source.companyId, sourceIssueId: source.issueId,
+        kind: "active_run_watchdog", cause: "native_provider_terminal_failed", fingerprint: previousRunId,
+        status: "resolved", outcome: "cancelled", nextAction: "User continued", evidence: {
+          explicitUserContinuation: { previousRunId, commentId, actorId: "board", runId: source.runId },
+        } });
+      await db.update(heartbeatRuns).set({ contextSnapshot: {
+        issueId: source.issueId, previousRunId,
+        explicitUserContinuation: { previousRunId, commentId },
+      } }).where(eq(heartbeatRuns.id, source.runId));
+      await reconcileSafeNativeReplacements(db);
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
+      expect(successor.contextSnapshot?.explicitUserContinuation).toBeUndefined();
+      const envelope = await buildExecutionContinuation({ db, companyId: source.companyId,
+        issueId: source.issueId, agentId: source.agentId, context: successor.contextSnapshot!,
+        summary: null, exposeLowTrustRaw: false });
+      expect(envelope.trigger.sourceRunId).toBe(source.runId);
     });
     it("persists exactly one linked successor under competing sweepers and restarts", async () => {
       const source = await seed(2);

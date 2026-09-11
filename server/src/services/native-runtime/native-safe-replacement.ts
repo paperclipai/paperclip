@@ -316,8 +316,11 @@ export async function reconcileSafeNativeReplacements(
           return false;
         const successorRunId = randomUUID();
         const dueAt = new Date(now.getTime() + 30_000);
+        const predecessorContext = { ...record(run.contextSnapshot) };
+        // The user authorization belongs to its original successor, not later retries.
+        delete predecessorContext.explicitUserContinuation;
         const context = {
-          ...record(run.contextSnapshot),
+          ...predecessorContext,
           issueId: task.id,
           retryOfRunId: run.id,
           wakeReason: NATIVE_SAFE_REPLACEMENT_REASON,
