@@ -1598,7 +1598,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       contextExtras: { interactionId: randomUUID(), interactionKind: "connection_intent", interactionStatus,
         interactionResolvedAt: new Date().toISOString(), mutation: "interaction", source: "connection_intent.resolved", forceFreshSession: true } });
     await heartbeat.resumeQueuedRuns();
-    await waitForCondition(async () => (await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status === "succeeded");
+    expect(await waitForCondition(async () => (await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status === "succeeded")).toBe(true);
+    // Terminal status precedes completion bookkeeping. Drain those writes before
+    // afterEach truncates the fixture, otherwise PostgreSQL can deadlock.
+    await heartbeat.waitForRunExecutionDrain(runId);
     expect(countExecuteCallsForRun(runId)).toBe(1);
   });
 });
