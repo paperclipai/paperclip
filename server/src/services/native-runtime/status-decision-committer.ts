@@ -747,13 +747,31 @@ async function materializeDecisionEffect(input: {
     }
     const prior = await input.tx.select({
       assessmentId: statusDecisions.assessmentId,
+      runId: statusDecisions.runId,
     }).from(statusDecisions).where(and(
       eq(statusDecisions.id, input.issue.lastStatusDecisionId),
       eq(statusDecisions.companyId, input.companyId),
+      eq(statusDecisions.issueId, input.issue.id),
     )).limit(1).then((rows) => rows[0] ?? null);
     if (!prior) throw new Error("native_superseded_assessment_missing");
+    // Decisions can supersede earlier issue decisions across runs, while
+    // evidence assessments are deliberately owned by one run. A historical
+    // run's reassessment already points at its own preceding assessment.
+    const existing = prior.runId !== input.runId
+      ? await input.tx.select({ supersedesAssessmentId: workAssessments.supersedesAssessmentId })
+          .from(workAssessments).where(and(
+            eq(workAssessments.id, lineage.currentAssessmentId),
+            eq(workAssessments.companyId, input.companyId),
+            eq(workAssessments.issueId, input.issue.id),
+            eq(workAssessments.runId, input.runId),
+          )).limit(1).then((rows) => rows[0] ?? null)
+      : null;
+    const supersedesAssessmentId = prior.runId === input.runId
+      ? prior.assessmentId
+      : existing?.supersedesAssessmentId;
+    if (!supersedesAssessmentId) throw new Error("native_superseding_assessment_not_linked");
     const [assessment] = await input.tx.update(workAssessments).set({
-      supersedesAssessmentId: prior.assessmentId,
+      supersedesAssessmentId,
     }).where(and(
       eq(workAssessments.id, lineage.currentAssessmentId),
       eq(workAssessments.companyId, input.companyId),
@@ -774,7 +792,7 @@ async function materializeDecisionEffect(input: {
       payload: {
         supersedesDecisionId: input.issue.lastStatusDecisionId,
         assessmentId: assessment.id,
-        supersedesAssessmentId: prior.assessmentId,
+        supersedesAssessmentId,
       },
     };
   }
