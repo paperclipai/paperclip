@@ -16,6 +16,8 @@ import {
   instanceSettings,
   issueComments,
   issueDocuments,
+  issueRelations,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import {
@@ -76,6 +78,8 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     // per-test instances dispatched.
     await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.delete(issueComments);
+    await db.delete(issueThreadInteractions);
+    await db.delete(issueRelations);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
@@ -94,10 +98,9 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     await tempDb?.cleanup();
   }, 60_000);
 
-  async function insertAgentAndIssue() {
+  async function insertCompanyAndAgent() {
     const companyId = randomUUID();
     const agentId = randomUUID();
-    const issueId = randomUUID();
 
     await db.insert(companies).values({
       id: companyId,
@@ -128,6 +131,13 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       },
       permissions: {},
     });
+
+    return { companyId, agentId };
+  }
+
+  async function insertAgentAndIssue() {
+    const { companyId, agentId } = await insertCompanyAndAgent();
+    const issueId = randomUUID();
 
     await db.insert(issues).values({
       id: issueId,
@@ -302,6 +312,136 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     });
     expect(userRun).not.toBeNull();
     await heartbeat.waitForRunExecutionDrain(userRun!.id);
+  }, 10_000);
+
+  it("runs the armed-worktree timer for a post-cutoff typed review participant", async () => {
+    const { companyId, agentId } = await insertCompanyAndAgent();
+    const cutoff = new Date("2026-09-11T00:00:00.000Z");
+    const tickAt = new Date(cutoff.getTime() + 120_000);
+    await armWorktreeRunExecution(cutoff);
+    await db
+      .update(agents)
+      .set({ lastHeartbeatAt: new Date(cutoff.getTime() - 60_000) })
+      .where(eq(agents.id, agentId));
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Post-cutoff typed review",
+      status: "in_review",
+      priority: "high",
+      assigneeUserId: "review-owner",
+      executionState: {
+        status: "pending",
+        currentParticipant: { type: "agent", agentId },
+      },
+      createdAt: new Date(cutoff.getTime() + 1_000),
+    });
+
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_INSTANCE_ID: "test-worktree",
+      },
+    });
+
+    expect(await heartbeat.tickTimers(tickAt)).toMatchObject({
+      checked: 1,
+      enqueued: 1,
+    });
+  }, 10_000);
+
+  it("runs the armed-worktree timer for post-cutoff answered-interaction finalization", async () => {
+    const { companyId, agentId } = await insertCompanyAndAgent();
+    const cutoff = new Date("2026-09-11T00:00:00.000Z");
+    const tickAt = new Date(cutoff.getTime() + 120_000);
+    const issueId = randomUUID();
+    await armWorktreeRunExecution(cutoff);
+    await db
+      .update(agents)
+      .set({ lastHeartbeatAt: new Date(cutoff.getTime() - 60_000) })
+      .where(eq(agents.id, agentId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Post-cutoff answered interaction",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
+      createdAt: new Date(cutoff.getTime() + 1_000),
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "answered",
+      payload: {},
+      resolvedAt: new Date(cutoff.getTime() + 60_000),
+      resolvedByUserId: "review-owner",
+    });
+
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_INSTANCE_ID: "test-worktree",
+      },
+    });
+
+    expect(await heartbeat.tickTimers(tickAt)).toMatchObject({
+      checked: 1,
+      enqueued: 1,
+    });
+  }, 10_000);
+
+  it("runs the armed-worktree timer for post-cutoff resolved-blocker finalization", async () => {
+    const { companyId, agentId } = await insertCompanyAndAgent();
+    const cutoff = new Date("2026-09-11T00:00:00.000Z");
+    const tickAt = new Date(cutoff.getTime() + 120_000);
+    const blockedIssueId = randomUUID();
+    const resolvedBlockerId = randomUUID();
+    await armWorktreeRunExecution(cutoff);
+    await db
+      .update(agents)
+      .set({ lastHeartbeatAt: new Date(cutoff.getTime() - 60_000) })
+      .where(eq(agents.id, agentId));
+    await db.insert(issues).values([
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Post-cutoff blocked work",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: agentId,
+        createdAt: new Date(cutoff.getTime() + 1_000),
+      },
+      {
+        id: resolvedBlockerId,
+        companyId,
+        title: "Resolved blocker",
+        status: "done",
+        priority: "high",
+        createdAt: new Date(cutoff.getTime() + 1_000),
+        updatedAt: new Date(cutoff.getTime() + 60_000),
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: resolvedBlockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    const heartbeat = heartbeatService(db, {
+      runtimeEnv: {
+        PAPERCLIP_IN_WORKTREE: "true",
+        PAPERCLIP_INSTANCE_ID: "test-worktree",
+      },
+    });
+
+    expect(await heartbeat.tickTimers(tickAt)).toMatchObject({
+      checked: 1,
+      enqueued: 1,
+    });
   }, 10_000);
 
   it("still creates live-plane assignment runs when suppression is not active", async () => {

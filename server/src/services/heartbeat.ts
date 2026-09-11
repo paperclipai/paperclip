@@ -16061,6 +16061,7 @@ export function heartbeatService(
   async function hasActionableTimerWork(
     agent: typeof agents.$inferSelect,
     timerActionableSince?: Date,
+    issueCreatedAtGte?: Date,
   ) {
     const priorTimerBaseline = timerActionableSince ?? agent.lastHeartbeatAt ?? agent.createdAt;
     const row = await db
@@ -16070,6 +16071,9 @@ export function heartbeatService(
         and(
           eq(issues.companyId, agent.companyId),
           isNull(issues.hiddenAt),
+          issueCreatedAtGte
+            ? gte(issues.createdAt, issueCreatedAtGte)
+            : undefined,
           or(
             and(
               eq(issues.assigneeAgentId, agent.id),
@@ -27973,20 +27977,8 @@ export function heartbeatService(
         if (!policy.enabled || policy.intervalSec <= 0) continue;
 
         if (cutoff) {
-          const eligibleIssue = await db
-            .select({ id: issues.id })
-            .from(issues)
-            .where(
-              and(
-                eq(issues.companyId, agent.companyId),
-                eq(issues.assigneeAgentId, agent.id),
-                inArray(issues.status, ["todo", "in_progress"]),
-                gte(issues.createdAt, cutoff),
-              ),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null);
-          if (!eligibleIssue) continue;
+          if (!(await hasActionableTimerWork(agent, undefined, cutoff)))
+            continue;
         }
 
         checked += 1;
