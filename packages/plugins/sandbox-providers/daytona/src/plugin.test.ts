@@ -2645,6 +2645,29 @@ describe("Daytona sandbox provider plugin", () => {
       expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
     });
 
+    it.each(["release", "destroy"])("%s terminates through the provider when bridge activity never settles", async (kind) => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "lease-a" });
+      let finish!: () => void;
+      sandbox.process.executeCommand.mockImplementation(async () => {
+        await new Promise<void>(resolve => { finish = resolve; });
+        return { exitCode: 0, result: "bash", artifacts: { stdout: "bash" } };
+      });
+      mockGet.mockResolvedValue(sandbox);
+      const execute = plugin.definition.onEnvironmentExecute?.(execParams("lease-a"));
+      await vi.waitFor(() => expect(finish).toBeTypeOf("function"));
+      const params = { driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+        providerLeaseId: "lease-a", config: { timeoutMs: 300000, livenessTimeoutMs: 5, reuseLease: true } };
+      try {
+        const receipt = kind === "release"
+          ? await plugin.definition.onEnvironmentReleaseLease?.(params)
+          : await plugin.definition.onEnvironmentDestroyLease?.(params);
+        expect(receipt).toEqual({ providerLeaseId: "lease-a", state: kind === "release" ? "stopped" : "destroyed" });
+        expect(kind === "release" ? sandbox.stop : sandbox.delete).toHaveBeenCalledTimes(1);
+        await expect(plugin.definition.onEnvironmentExecute?.(execParams("lease-a"))).rejects.toThrow(/no longer active/);
+      } finally { finish(); await execute; }
+    });
+
     it("waits for an in-flight execute before teardown cleanup starts", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox({ id: "lease-a" });

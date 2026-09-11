@@ -233,7 +233,7 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     expect(destroyRunLease).toHaveBeenCalledTimes(20);
   });
 
-  it("test_pending_cleanup_sweep_stops_at_attempt_cap_and_warns_once", async () => {
+  it("test_pending_cleanup_sweep_continues_after_escalation_with_durable_backoff", async () => {
     const { companyId, environmentId } = await seedCompanyAndEnvironment();
     const leaseId = await insertPendingCleanupLease({
       companyId,
@@ -249,8 +249,8 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
 
     const first = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
     expect(first).toEqual({ swept: 1, destroyed: 0, capped: 1 });
-    // A capped lease is not retried.
-    expect(destroyRunLease).not.toHaveBeenCalled();
+    // Escalation never abandons a possibly running sandbox.
+    expect(destroyRunLease).toHaveBeenCalledTimes(1);
 
     const metadataAfterFirst = await db
       .select({ metadata: environmentLeases.metadata })
@@ -262,9 +262,57 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
 
     // A second sweep warns no more; the lease keeps its warned flag.
     const second = await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
-    expect(second).toEqual({ swept: 1, destroyed: 0, capped: 1 });
-    expect(destroyRunLease).not.toHaveBeenCalled();
+    expect(second).toEqual({ swept: 0, destroyed: 0, capped: 0 });
+    expect(destroyRunLease).toHaveBeenCalledTimes(1);
     expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries after a restart and cooldown when the provider recovers", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const leaseId = await insertOrphanEphemeralLease({ companyId, environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60_000),
+      metadata: { [ATTEMPTS_KEY]: ATTEMPT_CAP, pendingCleanupRetryAfterMs: Date.now() - 1 },
+    });
+    const failing = vi.fn(async () => { throw new Error("provider unavailable"); });
+    const first = heartbeatService(db, { environmentRuntime: {
+      retryPendingSandboxTeardown: failing,
+    } as unknown as HeartbeatEnvironmentRuntime });
+    await first.sweepPendingCleanupLeases();
+    expect(failing).toHaveBeenCalledTimes(1);
+    const recovered = vi.fn(async ({ lease }) => ({ providerLeaseId: lease.providerLeaseId, state: "destroyed" }));
+    const restarted = heartbeatService(db, { environmentRuntime: {
+      retryPendingSandboxTeardown: recovered,
+    } as unknown as HeartbeatEnvironmentRuntime });
+    await restarted.sweepPendingCleanupLeases();
+    expect(recovered).not.toHaveBeenCalled();
+    await db.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || '{"pendingCleanupRetryAfterMs":0}'::jsonb` })
+      .where(eq(environmentLeases.id, leaseId));
+    expect((await restarted.sweepPendingCleanupLeases()).destroyed).toBe(1);
+    expect(recovered).toHaveBeenCalledTimes(1);
+    const [saved] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+    expect(saved.cleanupStatus).toBe("success");
+    expect(saved.status).toBe("expired");
+  });
+
+  it("does not start another cleanup while a previous attempt remains in flight", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const leaseId = await insertOrphanEphemeralLease({ companyId, environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60_000),
+      metadata: { [ATTEMPTS_KEY]: ATTEMPT_CAP },
+    });
+    let finish!: () => void;
+    const started = Promise.withResolvers<void>();
+    const teardown = vi.fn(async () => { started.resolve(); await new Promise<void>(resolve => { finish = resolve; }); });
+    const first = heartbeatService(db, { environmentRuntime: { retryPendingSandboxTeardown: teardown } as unknown as HeartbeatEnvironmentRuntime });
+    const second = heartbeatService(db, { environmentRuntime: { retryPendingSandboxTeardown: teardown } as unknown as HeartbeatEnvironmentRuntime });
+    const running = first.sweepPendingCleanupLeases();
+    await started.promise;
+    try {
+      await second.sweepPendingCleanupLeases();
+      expect(teardown).toHaveBeenCalledTimes(1);
+      const [saved] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+      expect(saved.metadata?.pendingCleanupInFlight).toBe(true);
+    } finally { finish(); await running; }
   });
 
   // Two sweep ticks can overlap. Without an atomic claim, both read the same
@@ -1198,7 +1246,7 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     // The value clamped to the cap, so the lease took the cap branch, not a
     // destroy. The warn-once flag is set exactly once.
     expect(result.capped).toBe(1);
-    expect(destroyedLeaseIds).not.toContain(outOfRangeLeaseId);
+    expect(destroyedLeaseIds).toContain(outOfRangeLeaseId);
     const outOfRangeMetadata = await readMetadata(outOfRangeLeaseId);
     expect(outOfRangeMetadata?.[CAP_WARNED_KEY]).toBe(true);
 

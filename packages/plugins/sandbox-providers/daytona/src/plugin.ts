@@ -463,6 +463,28 @@ async function withLivenessTimeout<T>(
   }
 }
 
+/** A dead bridge must not prevent provider-level termination. Stop/delete is
+ * the receipt boundary; timing out this drain is never termination evidence. */
+async function drainSandboxBeforeTermination(sandbox: Sandbox, scope: SandboxScope) {
+  const timeoutMs = Math.max(1, Math.min(scope.config.livenessTimeoutMs || 10_000, 10_000));
+  try {
+    await withLivenessTimeout("sandbox.activityDrain", timeoutMs,
+      () => sandboxHandleActivityGates.waitForIdle(scope));
+    await withLivenessTimeout("sandbox.sessionTeardown", timeoutMs,
+      () => teardownSession(sandbox, scope));
+    await withLivenessTimeout("sandbox.channelTeardown", timeoutMs,
+      () => closeDaytonaDuplexChannelsForLease(scope.providerLeaseId));
+  } catch {
+    // Do not log provider exception text: it can contain credentials.
+    console.warn("Sandbox bridge drain failed; continuing provider termination.");
+  }
+}
+
+async function terminateAtProvider<T>(scope: SandboxScope, operation: string, action: () => Promise<T>) {
+  const timeoutMs = scope.config.timeoutMs > 0 ? scope.config.timeoutMs : 300_000;
+  return withLivenessTimeout(operation, timeoutMs + LIVENESS_START_TIMEOUT_MARGIN_MS, action);
+}
+
 async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number): Promise<void> {
   if (sandbox.state === "started") return;
   // Bound the lifecycle call just past its own SDK deadline. A normal slow start
@@ -2283,11 +2305,7 @@ const plugin = definePlugin({
       if (!sandbox) return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
 
       evictSandboxHandle(scope);
-      await sandboxHandleActivityGates.waitForIdle(scope);
-      await teardownSession(sandbox, scope);
-      // Close every duplex channel on this lease before the stop or the delete,
-      // so no channel outlives the sandbox and no stored channel id survives.
-      await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
+      await drainSandboxBeforeTermination(sandbox, scope);
 
       // A cached stopped state is not a receipt: the resource could have been
       // resumed since the handle was cached. Read provider state at this boundary.
@@ -2295,12 +2313,12 @@ const plugin = definePlugin({
       if (config.reuseLease) {
         if (sandbox.state !== "stopped") {
           try {
-            await sandbox.stop(toTimeoutSeconds(config.timeoutMs));
+            await terminateAtProvider(scope, "sandbox.stop", () => sandbox.stop(toTimeoutSeconds(config.timeoutMs)));
           } catch (error) {
             console.warn(
               `Failed to stop Daytona sandbox during lease release: ${formatErrorMessage(error)}. Attempting delete instead.`,
             );
-            await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
+            await terminateAtProvider(scope, "sandbox.delete", () => sandbox.delete(toTimeoutSeconds(config.timeoutMs), true));
             return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
           }
         }
@@ -2310,7 +2328,7 @@ const plugin = definePlugin({
       if (config.archiveOnRelease) {
         try {
           if (sandbox.state !== "stopped") {
-            await sandbox.stop(toTimeoutSeconds(config.timeoutMs));
+            await terminateAtProvider(scope, "sandbox.stop", () => sandbox.stop(toTimeoutSeconds(config.timeoutMs)));
           }
           await sandbox.setAutoDeleteInterval(ARCHIVE_ON_RELEASE_AUTO_DELETE_MINUTES);
           await sandbox.archive();
@@ -2322,7 +2340,7 @@ const plugin = definePlugin({
         }
       }
 
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
+      await terminateAtProvider(scope, "sandbox.delete", () => sandbox.delete(toTimeoutSeconds(config.timeoutMs), true));
       return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
@@ -2351,12 +2369,8 @@ const plugin = definePlugin({
       if (!sandbox) return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
 
       evictSandboxHandle(scope);
-      await sandboxHandleActivityGates.waitForIdle(scope);
-      await teardownSession(sandbox, scope);
-      // Close every duplex channel on this lease before the delete, so no channel
-      // outlives the sandbox and no stored channel id survives.
-      await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs), true);
+      await drainSandboxBeforeTermination(sandbox, scope);
+      await terminateAtProvider(scope, "sandbox.delete", () => sandbox.delete(toTimeoutSeconds(config.timeoutMs), true));
       return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
     } finally {
       sandboxHandleTeardownGates.end(scope, teardownGate);
