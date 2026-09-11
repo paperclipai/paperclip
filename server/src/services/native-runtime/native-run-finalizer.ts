@@ -1,3 +1,4 @@
+import { conversationNativeDecision, isConversation } from "../agent-conversations.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1154,7 +1155,7 @@ export async function finalizeNativeRun(input: {
         runId: run.id,
       }),
     ]);
-    const decision = resolveNativeFinalizerStatus({
+    const proposedDecision = resolveNativeFinalizerStatus({
       assessment,
       terminalState: terminalState as "succeeded" | "failed" | "cancelled",
       workspaceFinalizeStatus: input.workspaceFinalizeStatus,
@@ -1174,6 +1175,11 @@ export async function finalizeNativeRun(input: {
         null,
       agentId: run.agentId,
       priorIssueStatus: authoritativeStatus(authoritativeIssue.status),
+    });
+    const decision = conversationNativeDecision({
+      conversation: isConversation(authoritativeIssue), terminalState,
+      workspaceFinalizeStatus: input.workspaceFinalizeStatus, hasGovernanceGate: !!governanceGate,
+      priorStatus: authoritativeStatus(authoritativeIssue.status), decision: proposedDecision,
     });
     const assessmentRow = await recordNativeWorkAssessment({
       db: input.db,

@@ -56,6 +56,7 @@ const apiPrefixes: Record<string, string> = {
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
   "projects.ts": "/api",
+  "project-tools.ts": "/api",
   "resource-memberships.ts": "/api",
   "remote-agent-profiles.ts": "/api",
   "routines.ts": "/api",
@@ -253,12 +254,10 @@ describe("openapi routes", () => {
       AgentBearerAuth: { type: "http", scheme: "bearer" },
     });
     expect(res.body.paths["/api/health"].get.security).toEqual([]);
-    expect(
-      res.body.paths["/mcp/gateways/{gatewayPublicId}"].post.security,
-    ).toEqual([]);
-    expect(
-      res.body.paths["/api/mcp/gateways/{gatewayPublicId}"],
-    ).toBeUndefined();
+    expect(res.body.paths["/api/mcp/project-tools"].post.security).toEqual([{ AgentRunAuth: [] }]);
+    expect(res.body.paths["/api/mcp/project-tools"].post["x-paperclip-authorization"]).toEqual({ actor: "agent", heartbeatBound: true, taskBound: true });
+    expect(res.body.paths["/mcp/gateways/{gatewayPublicId}"].post.security).toEqual([]);
+    expect(res.body.paths["/api/mcp/gateways/{gatewayPublicId}"]).toBeUndefined();
     expect(res.body.paths["/api/companies"].get.parameters).toContainEqual({
       name: "scope",
       in: "query",

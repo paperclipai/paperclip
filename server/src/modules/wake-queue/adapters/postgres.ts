@@ -96,6 +96,9 @@ function toRunSnapshot(row: HeartbeatRunRow): RunSnapshot {
 
 function toIssueSnapshot(row: IssueRow): IssueSnapshot {
   return {
+    conversationAgentId: row.conversationAgentId,
+    conversationUserId: row.conversationUserId,
+    conversationState: row.conversationState,
     id: row.id,
     companyId: row.companyId,
     identifier: row.identifier ?? "",

@@ -410,7 +410,10 @@ async function runReleaseRecoveryTail(
   input: ReleaseIssueExecutionInput,
   postCommitEffects: PostCommitEffect[],
 ): Promise<ReleaseTransactionResult> {
-  const suppressImmediateRecovery = input.suppressImmediateRecovery ?? false;
+  const suppressImmediateRecovery = input.suppressImmediateRecovery === true || Boolean(
+    issue.conversationAgentId && issue.conversationUserId &&
+    issue.conversationState === "waiting" && issue.status === "in_review"
+  );
   const isStrandedRecoveryOrigin =
     issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND;
   const recoveryAgent = await transaction.findInvokableAgent({

@@ -2587,14 +2587,39 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     ]);
   });
 
-  it("records superseding assessment lineage when a board transition has no native decision predecessor", async () => {
+  it.each(["none", "same_run", "other_run"])("records run-scoped superseding assessment lineage with %s predecessor", async (predecessor) => {
     const fixture = corpus.fixtures.find((candidate) => candidate.mode === "native");
     if (!fixture) throw new Error("native corpus fixture missing");
     const seeded = await seedFixture(fixture);
+    let priorDecisionId: string | null = null;
+    if (predecessor !== "none") {
+      let priorRunId = seeded.runId;
+      let priorAssessmentId = seeded.assessmentId;
+      if (predecessor === "other_run") {
+        priorRunId = randomUUID();
+        const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId));
+        await db.insert(heartbeatRuns).values({ ...run, id: priorRunId });
+        const [result] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, seeded.resultId!));
+        const resultId = randomUUID();
+        await db.insert(nativeRunResults).values({ ...result, id: resultId, runId: priorRunId });
+        const [assessment] = await db.select().from(workAssessments).where(eq(workAssessments.id, seeded.assessmentId));
+        priorAssessmentId = randomUUID();
+        await db.insert(workAssessments).values({ ...assessment, id: priorAssessmentId, runId: priorRunId,
+          resultId, inputDigest: `later-run:${priorRunId}` });
+      }
+      const [prior] = await db.insert(statusDecisions).values({
+        companyId, issueId: seeded.issueId, runId: priorRunId, assessmentId: priorAssessmentId,
+        decisionVersion: 1, policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        fromStatus: "in_progress", toStatus: "blocked", reasonCode: "prior_authoritative_decision",
+        decisionJson: { statusAction: "blocked" }, decisionDigest: `prior:${seeded.issueId}`,
+        applicationState: "applied", appliedAt: new Date(),
+      }).returning();
+      priorDecisionId = prior.id;
+    }
     await db.update(issues).set({
       status: "blocked",
       statusVersion: 1,
-      lastStatusDecisionId: null,
+      lastStatusDecisionId: priorDecisionId,
     }).where(eq(issues.id, seeded.issueId));
     const supersedingAssessmentId = randomUUID();
     await db.insert(workAssessments).values({
@@ -2608,7 +2633,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       triggerActorCompanyId: companyId,
       priorIssueStatus: "blocked",
       priorStatusVersion: 1,
-      priorDecisionId: null,
+      priorDecisionId,
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       assessmentJson: { reason: "board_transition_without_native_decision" },
       inputDigest: `board-transition-assessment:${seeded.issueId}`,
@@ -2623,7 +2648,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       assessmentId: supersedingAssessmentId,
       priorStatus: "blocked",
       priorStatusVersion: 1,
-      priorDecisionId: null,
+      priorDecisionId,
       decision: {
         policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
         statusAction: "preserve",
@@ -2634,7 +2659,9 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       },
     });
 
-    expect(committed.decision.supersedesDecisionId).toBeNull();
+    const [persistedDecision] = await db.select().from(statusDecisions)
+      .where(eq(statusDecisions.id, committed.decision.id));
+    expect(persistedDecision.supersedesDecisionId).toBe(priorDecisionId);
     await expect(db.select({
       supersedesAssessmentId: workAssessments.supersedesAssessmentId,
     }).from(workAssessments).where(eq(workAssessments.id, supersedingAssessmentId))).resolves.toEqual([

@@ -1898,6 +1898,13 @@
       "when": 1789137216452,
       "tag": "0272_light_kate_bishop",
       "breakpoints": true
+    },
+    {
+      "idx": 273,
+      "version": "7",
+      "when": 1789163980231,
+      "tag": "0273_agent_chat",
+      "breakpoints": true
     }
   ]
 }
