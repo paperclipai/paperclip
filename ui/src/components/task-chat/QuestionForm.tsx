@@ -24,6 +24,7 @@ import {
   useTaskChatComposerTakeoverActions,
 } from "./TaskChatComposerTakeoverContext";
 import { TaskChatRichInput } from "./TaskChatRichInput";
+import { parseCssTimeMs } from "./motion-tokens";
 import { matchSafeQuestionValidationPattern } from "./question-validation-pattern";
 
 type Question = PaperclipQuestionSet["questions"][number];
@@ -311,8 +312,7 @@ export function QuestionForm({
     const duration = getComputedStyle(document.documentElement)
       .getPropertyValue("--motion-question-confirm")
       .trim();
-    const durationMs =
-      (Number.parseFloat(duration) || 0) * (duration.endsWith("ms") ? 1 : 1000);
+    const durationMs = parseCssTimeMs(duration) || 0;
     const advance = () => {
       setPendingAdvance(null);
       setPage(page + 1);
