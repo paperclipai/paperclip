@@ -335,3 +335,19 @@ Check:
 - [doc/RELEASING.md](RELEASING.md)
 - [doc/PUBLISHING.md](PUBLISHING.md)
 - [doc/plans/2026-03-17-release-automation-and-versioning.md](plans/2026-03-17-release-automation-and-versioning.md)
+
+## Runner verification dependency cache
+
+`release-verify.yml` caches Cargo dependencies for its `Verify Paperclip Runner`
+job using a pinned Rust Cache action. It selects the compiler from the Runner
+package's `rust-toolchain.toml` before computing the cache key. Compiler and Cargo
+metadata changes select a new cache; the `release-runner-v1` shared key lets
+callers of this reusable verification workflow reuse the same dependency cache.
+
+Workspace crates and installed Cargo binaries are excluded. Every run still
+builds the Runner workspace and runs `check:all`, including the Rust and
+TypeScript tests. Only a successful master-push run verifying that push's exact
+SHA saves the shared cache. Manual candidate verification can restore it without
+saving. A miss or eviction costs compilation time but does not change the checks.
+To discard old dependency caches, increment the shared-key version and let the
+next successful master verification warm it again.
