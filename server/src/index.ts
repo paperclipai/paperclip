@@ -794,6 +794,11 @@ async function startServerWithDatabaseTeardown(
     Number(process.env.PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS) ||
       Math.max(26, Math.ceil((config.databaseBackupIntervalMinutes / 60) * 2)),
   );
+  // Hard cap on a single backup's dump phase. A wedged pg_dump must fail
+  // loudly (and reset databaseBackupInFlight via the finally below) instead
+  // of silently skipping every later scheduled backup.
+  const databaseBackupDumpTimeoutMs =
+    Math.max(1, Number(process.env.PAPERCLIP_DB_BACKUP_TIMEOUT_MINUTES) || 30) * 60 * 1000;
   const databaseBackupAlertFile =
     process.env.PAPERCLIP_DB_BACKUP_ALERT_FILE ||
     resolve(config.databaseBackupDir, "..", "health", "db-backup-to-s3.failure");
@@ -830,6 +835,7 @@ async function startServerWithDatabaseTeardown(
         backupDir: config.databaseBackupDir,
         retention,
         filenamePrefix: "paperclip",
+        dumpTimeoutMs: databaseBackupDumpTimeoutMs,
       });
       const finishedAt = new Date();
       const response: InstanceDatabaseBackupRunResult = {
@@ -1815,6 +1821,7 @@ async function startServerWithDatabaseTeardown(
     logger.info(
       {
         intervalMinutes: config.databaseBackupIntervalMinutes,
+        dumpTimeoutMinutes: Math.round(databaseBackupDumpTimeoutMs / 60000),
         retentionSource: "instance-settings-db",
         backupDir: config.databaseBackupDir,
       },
