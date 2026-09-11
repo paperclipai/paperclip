@@ -3139,9 +3139,22 @@ export function agentRoutes(
       if (requestedEnvironmentId) {
         await assertAdapterTestEnvironmentForCompany(companyId, requestedEnvironmentId);
       }
+      // Agent reads redact every plain environment value. When this is a saved
+      // agent test, restore those display-only placeholders from the
+      // server-side config before validating or resolving secrets; otherwise
+      // the probe treats "***REDACTED***" as a value to persist.
+      const savedAgentId = typeof req.body.agentId === "string" ? req.body.agentId : null;
+      let adapterConfigForTest = inputAdapterConfig;
+      if (savedAgentId) {
+        const savedAgent = await getAccessibleResource(req, res, svc.getById(savedAgentId), "Agent not found");
+        if (!savedAgent) return;
+        if (savedAgent.companyId !== companyId) throw notFound("Agent not found");
+        await assertCanUpdateAgent(req, savedAgent);
+        adapterConfigForTest = restoreRedactedAgentEnv(inputAdapterConfig, savedAgent.adapterConfig);
+      }
       const normalizedAdapterConfig = await secretsSvc.normalizeAdapterConfigForPersistence(
         companyId,
-        inputAdapterConfig,
+        adapterConfigForTest,
         { strictMode: strictSecretsMode, adapterType: type },
       );
       // Prospective, non-persisted config: resolve the acting user's own user
