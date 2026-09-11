@@ -5,6 +5,37 @@ Run-log events write to the `heartbeat_run_events` table
 Paperclip Telemetry events, and they are not OpenTelemetry exports. A run-log
 event needs no operator endpoint.
 
+## Choosing the authoritative evidence
+
+First identify the run's adapter and runtime mode. A process-adapter run uses
+`heartbeat_runs`, `heartbeat_run_events`, its persisted `context_snapshot`, and
+the linked wake/retry records. An empty `native_run_results` or
+`native_run_finalizations` table does not establish missing process-adapter
+evidence: those tables belong to the native runner protocol.
+
+Captured stdout and stderr are separate from the structured event rows. For a
+`local_file` log, resolve `heartbeat_runs.log_ref` beneath `RUN_LOG_BASE_PATH`
+when configured, otherwise beneath the instance's `data/run-logs` directory.
+Do not resolve it beneath the worker scratch directory or a guessed `logs`
+directory. Prefer `GET /api/heartbeat-runs/:runId/log` with `offset` and
+`limitBytes`; the store owns range reads and any configured durable fallback.
+A missing local file alone does not establish that the API cannot read the log.
+
+Retry counters describe their own mechanisms, not all continuations.
+`process_loss_retry_count` is incremented on the process-loss retry successor;
+`continuation_attempt` tracks the liveness continuation path. Inspect
+`retry_of_run_id`, `scheduled_retry_reason`, the wake linkage and the persisted
+timeout or recovery carrier before interpreting a zero counter. Do not backfill
+these counters from comments, elapsed time or a different retry mechanism.
+
+Likewise, execution-workspace rows are not worker leases. An issue requests
+workspace reuse with `executionWorkspacePreference: "reuse_existing"`; absent
+that preference, successive runs can have distinct workspace records rooted
+at the same project directory. `active` does not prove a live process owns that
+directory. Consult the run's writer-resource admission receipt and current
+holder, and never clean a shared directory merely because an older workspace
+record is no longer linked from the issue.
+
 ## Native PRP Run-Log Events
 
 The hidden native coordinator writes each validated PRP event to the bound
