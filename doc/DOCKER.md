@@ -338,3 +338,25 @@ Notes:
 
 - The `docker-entrypoint.sh` adjusts the container `node` user UID/GID at startup to match the values passed via `USER_UID`/`USER_GID`, avoiding permission issues on bind-mounted volumes.
 - Paperclip data persists via Docker volumes/bind mounts (compose) or at `~/.local/share/paperclip` (quadlet).
+
+## Native Runner build cache
+
+The image compiles the native Runner in `runner-build`, before copying the
+application source. That stage includes the pinned Rust compiler, the complete
+Cargo workspace and lockfile, and the protocol schemas and fixtures embedded
+by Rust. Changes to those inputs rebuild the native binary. Ordinary server or
+UI changes can reuse it through the existing registry cache (`mode=max`). Each
+platform gets its own native build; no cross-architecture binary is reused.
+
+The application build inherits that stage and still runs the normal server
+build, including Cargo, binary staging, and generated-contract checks. Rust
+input file times are normalized in both stages so fresh checkouts do not force
+Cargo to rebuild unchanged source. Changes made by build scripts still reach
+Cargo's normal validation. The final application copy excludes Cargo's target
+directory as before. Cache misses only cost compilation time.
+
+Pull requests that change the Dockerfile, Docker ignore rules, or Runner native
+inputs also build the isolated `runner-build` target in `Docker Runner check`.
+This compiles against the actual reduced context and catches missing embedded
+inputs before the post-merge image build. It uses a GitHub-hosted runner with
+read-only repository access and does not publish images or cache artifacts.
