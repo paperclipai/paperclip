@@ -19,7 +19,8 @@ const support = await getEmbeddedPostgresTestSupport();
   afterAll(async () => { await database?.cleanup(); });
   async function seed() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
-    const sourceRunId = randomUUID(), commentId = randomUUID(), successorRunId = randomUUID();
+    const sourceRunId = randomUUID(), successorRunId = randomUUID();
+    const commentId: string = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Explicit turn", defaultResponsibleUserId: "board", issuePrefix: `E${companyId.slice(0, 6)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Native", role: "engineer", adapterType: "paperclip_runner", status: "idle", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } });
     await db.insert(issues).values({ id: issueId, companyId, title: "Deploy", status: "blocked", assigneeAgentId: agentId });
