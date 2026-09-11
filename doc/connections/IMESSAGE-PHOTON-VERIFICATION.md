@@ -1,9 +1,13 @@
 # iMessage Photon verification
 
 Date: 2026-09-11. Branch: `codex/imessage-photon`.
-Base inspected: `1c4bcff2b` (`origin/master`).
-Status: implementation and targeted acceptance complete; repository verification in progress.
-**Not live-provider qualified.**
+Base inspected: `1c4bcff2b`; rebased onto `f12b647ae` (`origin/master`).
+Implementation checked: `7ada38eb7ef5dff5441f23c02131798b11d57712`.
+**Status: experimental implementation; not live-provider qualified.**
+
+[PR #13299](https://github.com/paperclipai/paperclip/pull/13299) carries the current
+CI and review results. Greptile reviewed the implementation commit at 5/5 with no
+actionable comments. This record distinguishes local evidence from live proof.
 
 ## Environment and versions
 
@@ -64,12 +68,34 @@ Slack, Discord, GitHub, Teams, and Telegram surfaces.
 | --- | --- |
 | Photon targeted tests | 30 passed, including checkpoint takeover, Live Photo companion retention, and native continuation authorization. |
 | Token gates | Passed. All four gates clean. |
-| Workspace typecheck | Passed. |
+| Workspace typecheck | Full `pnpm -r typecheck` passed before and after rebase. |
 | Full chat-adapters browser suite | 38 passed, including Photon light/dark/mobile coverage and existing providers. |
-| Repository Vitest suite | Full `pnpm test:run` in progress; result recorded before handoff. |
-| Build | Full `pnpm build` passed. Final server changes also pass direct TypeScript compilation; post-rebase validation follows. |
+| Post-rebase channel/native checks | 87 passed across Photon, explicit native continuation, and chat-control admission retry. |
+| Native session resume | 37 passed after building the required local fake-provider binary. |
+| UI Vitest project | 6,008 passed across 582 files after rebase. |
+| Shared catalog project | 727 passed, including exact catalog and branding coverage. |
+| Repository Vitest suite | `pnpm test:run` exercised the general-server suite; initial catalog/fixture failures were corrected and focused reruns pass. Full gate status and route-suite results are recorded in the linked PR. |
+| Build | Full `pnpm build` passed before and after rebase. |
 | Generated forward migration | Generated through `pnpm db:generate`; `@paperclipai/db check:migrations` passed. Disposable database migrations exercised by integration tests. |
 | Native HEIF platform packages | macOS arm64 executed; other published platforms not executed. |
+
+### Local test prerequisites
+
+The standard `pnpm test:run` launcher isolates `PAPERCLIP_CONFIG`, `PAPERCLIP_HOME`,
+and temporary files. Direct heartbeat/continuation tests must use equivalent
+isolation; otherwise the worktree preview configuration suppresses execution.
+The actual runner-driver fixture also requires:
+
+```sh
+cargo build --manifest-path packages/paperclip-runner/runner/Cargo.toml --bin fake-codex-app-server
+```
+
+A run without that binary failed at provider startup; the complete 37-case native
+session-resume suite passed after building it. Catalog assertions were updated
+for the 42nd visible app, and the focused catalog/Browse/board-gallery tests pass.
+Some broad package runs encountered host embedded-Postgres startup limits during
+concurrent local development. These startup failures are not provider proof;
+inspect the linked PR for the current complete gate results.
 
 ## Live qualification still required
 
