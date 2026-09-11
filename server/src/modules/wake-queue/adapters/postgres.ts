@@ -514,7 +514,16 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       );
     },
 
-    async queueReviewParticipantRecoveryRun({ companyId, issue, finishingRun, recoveryAgent, sessionBefore, now }) {
+    async queueReviewParticipantRecoveryRun({
+      companyId,
+      issue,
+      finishingRun,
+      recoveryAgent,
+      contextSnapshot,
+      responsibleUserId,
+      sessionBefore,
+      now,
+    }) {
       const executionState = parseIssueExecutionState(issue.executionState);
       const wakeupRequest = await tx
         .insert(agentWakeupRequests)
@@ -542,6 +551,15 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .returning()
         .then((rows) => rows[0]);
 
+      // The caller already resolved the responsible user against this same
+      // `contextSnapshot` object, so this insert persists that object as
+      // given. The two stage fields below only exist in this adapter, so
+      // this is the one place that can add them; the merge writes them onto
+      // the same object instead of building a new one, so it does not
+      // disturb any key the resolver already set.
+      contextSnapshot.currentStageId = executionState?.currentStageId ?? null;
+      contextSnapshot.currentStageType = executionState?.currentStageType ?? null;
+
       const queuedRun = await tx
         .insert(heartbeatRuns)
         .values({
@@ -551,21 +569,8 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           triggerDetail: "system",
           status: "queued",
           wakeupRequestId: wakeupRequest.id,
-          contextSnapshot: withRecoveryContext(
-            {
-              issueId: issue.id,
-              taskId: issue.id,
-              wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
-              retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
-              source: "issue.execution_review_recovery",
-              retryOfRunId: finishingRun.id,
-              currentStageId: executionState?.currentStageId ?? null,
-              currentStageType: executionState?.currentStageType ?? null,
-              reviewRecoveryInstruction:
-                "The previous reviewer run ended while this execution-review stage was still pending. Submit the review decision now, or mark the issue blocked with the exact unblock action.",
-            },
-            "normal_model",
-          ),
+          contextSnapshot,
+          responsibleUserId,
           sessionIdBefore: sessionBefore,
           retryOfRunId: finishingRun.id,
           updatedAt: now,

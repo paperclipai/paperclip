@@ -21,7 +21,8 @@ import {
   createWakeAdmissionWriter,
 } from "./postgres.js";
 import type { WakeQueuePostgresAdapterDeps } from "./postgres.js";
-import type { TransactionScope } from "../application/ports.js";
+import { createReleaseIssueExecution } from "../application/use-cases.js";
+import type { RecoveryEscalationPort, TransactionScope } from "../application/ports.js";
 
 // Proves the atomicity and company-scope properties the security review
 // requires: every mutation names `companyId` in its own SQL `WHERE` clause,
@@ -391,6 +392,164 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
     // All three finalize calls each still insert their own run row.
     expect(runs.map((run) => run.id).sort()).toEqual([runId, runA, runB, runC].sort());
+  });
+
+  // The application layer now resolves the responsible user and builds the
+  // context snapshot before this write runs (proven in the application-layer
+  // test). This proves the adapter persists the caller-resolved responsible
+  // user, and merges the two stage fields it alone can derive onto that same
+  // snapshot instead of building a new one, so a marker the resolver already
+  // stamped on it survives into the persisted row.
+  it("queueReviewParticipantRecoveryRun persists the caller-resolved responsible user and context snapshot, merged with the derived stage fields", async () => {
+    const companyId = await seedCompany();
+    const finishingAgentId = await seedAgent({ companyId, name: "Finishing Agent" });
+    const recoveryAgentId = await seedAgent({ companyId, name: "Recovery Agent" });
+    const stageId = randomUUID();
+    const issueId = await seedIssue({ companyId, assigneeAgentId: null, status: "in_review" });
+    await db
+      .update(issues)
+      .set({
+        executionState: {
+          status: "pending",
+          currentStageId: stageId,
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: recoveryAgentId },
+          returnAssignee: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      })
+      .where(eq(issues.id, issueId));
+    // A finishing run status other than the legacy-reconciliation set
+    // (failed, timed_out, interrupted, cancelled) reaches the module's own
+    // drain logic, so this call runs.
+    const finishingRunId = await seedRun({
+      companyId,
+      agentId: finishingAgentId,
+      contextSnapshot: { issueId },
+      status: "succeeded",
+    });
+
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    const result = await adapter.withIssueExecutionLock(
+      { companyId, runId: finishingRunId, now: new Date() },
+      async (locked, ports) => {
+        // The caller resolves the responsible user against this exact
+        // object before this call, and the resolver can stamp a marker on
+        // it; simulate that stamp here, the same way the real resolver does.
+        const contextSnapshot: Record<string, unknown> = {
+          issueId,
+          taskId: issueId,
+          wakeReason: "execution_review_participant_recovery",
+          retryReason: "execution_review_participant_recovery",
+          source: "issue.execution_review_recovery",
+          retryOfRunId: finishingRunId,
+          reviewRecoveryInstruction: "Submit the review decision now.",
+          executionIdentityCause: "company_default",
+        };
+        const run = await ports.transaction.queueReviewParticipantRecoveryRun({
+          companyId,
+          issue: locked.primaryIssue,
+          finishingRun: locked.run,
+          recoveryAgent: { id: recoveryAgentId, companyId, name: "Recovery Agent", invokable: true },
+          contextSnapshot,
+          responsibleUserId: "responsible-user",
+          sessionBefore: null,
+          now: new Date(),
+        });
+        return { outcome: { kind: "queued_review_participant_recovery" as const, run }, postCommitEffects: [] };
+      },
+    );
+    expect(result.outcome.kind).toBe("queued_review_participant_recovery");
+
+    const runRow = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).find(
+      (row) => row.agentId === recoveryAgentId,
+    );
+    expect(runRow?.responsibleUserId).toBe("responsible-user");
+    expect(runRow?.contextSnapshot).toMatchObject({
+      issueId,
+      retryOfRunId: finishingRunId,
+      // The marker the resolver stamped survives the merge.
+      executionIdentityCause: "company_default",
+      // The two fields only this adapter can derive.
+      currentStageId: stageId,
+      currentStageType: "review",
+    });
+  });
+
+  // Regression test for the Greptile P1 finding on PR #13156: an unresolved
+  // responsible user must not leave the review-participant recovery issue
+  // locked. This drives the real application-layer release use case (not a
+  // hand-written `fn`) against a real transaction, so a throw inside the
+  // lock would roll back the clearing of `executionRunId`/`checkoutRunId`
+  // the same way it did before the fix.
+  it("clears the execution lock and blocks the issue, instead of leaving it locked, when the review-participant recovery run has no responsible user", async () => {
+    const companyId = await seedCompany();
+    const finishingAgentId = await seedAgent({ companyId, name: "Finishing Agent" });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: null, status: "in_review" });
+    // A finishing run status other than the legacy-reconciliation set
+    // (failed, timed_out, interrupted, cancelled) reaches the module's own
+    // drain logic, so this call runs.
+    const finishingRunId = await seedRun({
+      companyId,
+      agentId: finishingAgentId,
+      contextSnapshot: { issueId, wakeReason: "execution_review_requested" },
+      status: "succeeded",
+    });
+    await db
+      .update(issues)
+      .set({
+        executionRunId: finishingRunId,
+        checkoutRunId: finishingRunId,
+        executionState: {
+          status: "pending",
+          currentStageId: randomUUID(),
+          currentStageIndex: 0,
+          currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: finishingAgentId },
+          returnAssignee: null,
+          completedStageIds: [],
+          lastDecisionId: null,
+          lastDecisionOutcome: null,
+        },
+      })
+      .where(eq(issues.id, issueId));
+
+    const issueLock = createPostgresWakeQueueAdapter(db, {
+      ...stubDeps,
+      // The condition under test: identity resolution finds no responsible user.
+      resolveResponsibleUserId: async () => null,
+    });
+    const escalatedInputs: Array<{ issueId: string; noticeKind: string }> = [];
+    const recovery: RecoveryEscalationPort = {
+      escalateStrandedAssignedIssue: async (input) => {
+        escalatedInputs.push({ issueId: input.issue.id, noticeKind: input.noticeKind });
+      },
+      escalateStrandedRecoveryIssueInPlace: async () => {},
+    };
+    const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery });
+
+    const result = await releaseIssueExecution({ companyId, runId: finishingRunId, now: new Date() });
+
+    expect(result.outcome.kind).toBe("blocked");
+    expect(result.outcome.kind === "blocked" && result.outcome.noticeKind).toBe("execution_review_participant");
+
+    // The lock must clear even though identity resolution failed: this is
+    // the bug this test guards against.
+    const issueRow = (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
+    expect(issueRow?.executionRunId).toBeNull();
+    expect(issueRow?.checkoutRunId).toBeNull();
+
+    expect(escalatedInputs).toHaveLength(1);
+    expect(escalatedInputs[0]?.issueId).toBe(issueId);
+    expect(escalatedInputs[0]?.noticeKind).toBe("execution_review_participant");
+
+    // No review-participant recovery run was queued for the unresolved identity.
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(finishingRunId);
   });
 
   it("locks the context issue and every sibling issue in id order, and two concurrent releases do not deadlock", async () => {
