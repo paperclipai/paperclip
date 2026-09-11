@@ -1681,6 +1681,197 @@ describe("agent issue mutation checkout ownership", () => {
     },
   );
 
+  it("allows an authorized agent to cancel an unassigned blocked issue without changing ownership or dependencies", async () => {
+    const blockedBy = [
+      {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        identifier: "PAP-1650",
+        title: "Upstream blocker",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: ownerAgentId,
+        assigneeUserId: null,
+      },
+    ];
+    const blockedIssue = makeIssue({
+      status: "blocked",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      blockedBy,
+    });
+    mockIssueService.getById.mockResolvedValue(blockedIssue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...blockedIssue,
+      ...patch,
+    }));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      blockerIssueIds: blockedBy.map((blocker) => blocker.id),
+      isDependencyReady: false,
+      unresolvedBlockerCount: 1,
+      unresolvedBlockerIssueIds: blockedBy.map((blocker) => blocker.id),
+      pendingFinalizeBlockerIssueIds: [],
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({
+        status: "cancelled",
+        comment: "Cancel obsolete work without changing its routing metadata.",
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: issueId,
+      status: "cancelled",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      blockedBy,
+    });
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "cancelled" }),
+      expect.anything(),
+      undefined,
+      expect.any(Array),
+    );
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch).not.toHaveProperty("assigneeAgentId");
+    expect(updatePatch).not.toHaveProperty("assigneeUserId");
+    expect(updatePatch).not.toHaveProperty("blockedByIssueIds");
+    expect(mockIssueService.getDependencyReadiness).not.toHaveBeenCalled();
+  });
+
+  it("allows an authorized peer agent to cancel an assigned blocked issue without taking ownership", async () => {
+    const blockedIssue = makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId });
+    mockIssueService.getById.mockResolvedValue(blockedIssue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...blockedIssue,
+      ...patch,
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: issueId,
+      status: "cancelled",
+      assigneeAgentId: ownerAgentId,
+    });
+    const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(updatePatch).not.toHaveProperty("assigneeAgentId");
+    expect(updatePatch).not.toHaveProperty("assigneeUserId");
+  });
+
+  it.each(["todo", "in_progress"] as const)(
+    "keeps a blocked-to-%s transition behind unresolved dependency checks",
+    async (status) => {
+      mockIssueService.getById.mockResolvedValue(
+        makeIssue({ status: "blocked", assigneeAgentId: ownerAgentId }),
+      );
+      mockIssueService.getDependencyReadiness.mockResolvedValue({
+        blockerIssueIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+        isDependencyReady: false,
+        unresolvedBlockerCount: 1,
+        unresolvedBlockerIssueIds: ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],
+        pendingFinalizeBlockerIssueIds: [],
+      });
+
+      const res = await request(await createApp(ownerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.error).toBe("Issue follow-up blocked by unresolved blockers");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps company boundaries enforced for blocked issue cancellation", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "blocked", assigneeAgentId: null }),
+    );
+
+    const res = await request(
+      await createApp(
+        peerActor({ companyId: "99999999-9999-4999-8999-999999999999" }),
+      ),
+    )
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps active checkout ownership enforced for issue cancellation", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "in_progress", assigneeAgentId: ownerAgentId }),
+    );
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body.details.code).toBe("issue_write_assignee_run_lock");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps human-only review authorization enforced for issue cancellation", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({
+        status: "in_review",
+        assigneeAgentId: ownerAgentId,
+        reviewPolicy: "human_only",
+      }),
+    );
+
+    const res = await request(await createApp(ownerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.details.code).toBe("review_policy_denied");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("keeps low-trust agents from cancelling blocked issues", async () => {
+    mockIssueService.getById.mockResolvedValue(
+      makeIssue({ status: "blocked", assigneeAgentId: null }),
+    );
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === peerAgentId) {
+        return makeAgent(peerAgentId, {
+          permissions: {
+            trustPreset: "low_trust_review",
+            authorizationPolicy: {
+              managedBy: "core-trust-preset",
+              trustBoundary: {
+                mode: "low_trust_review",
+                companyId,
+                issueIds: [issueId],
+              },
+            },
+          },
+        });
+      }
+      return id === ownerAgentId ? makeAgent(ownerAgentId) : null;
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe(
+      "Low-trust actors cannot use this control-plane surface",
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
