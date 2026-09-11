@@ -27,7 +27,13 @@ docker build -t paperclip-local \
 ## Cloud image addresses
 
 The Docker workflow publishes the managed deployment image for Linux AMD64.
-After the pushed image passes its Sentry check, the workflow verifies its
+`Docker cloud` starts on each master push independently of the multi-platform
+self-hosted build. Different commits use separate concurrency groups and existing
+GitHub-hosted runners, so an older production or cloud build does not hold the
+new commit in a workflow queue. Available GitHub runner capacity still applies.
+Release tags and manual `Docker` dispatches call the same cloud build workflow.
+
+After the pushed image passes its Sentry and orphan-reaping checks, the workflow verifies its
 commit label and platform and adds `ghcr.io/paperclipai/paperclip:sha-<full-commit-sha>-cloud`.
 This address lets commit-based deployment tooling reuse the normal build.
 Existing short-SHA and release tags remain available.

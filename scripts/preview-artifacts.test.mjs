@@ -128,9 +128,25 @@ test("commits sharing a short prefix use separate full-SHA image addresses", asy
   assert.deepEqual(urls.filter((url) => url.includes("/manifests/")), [sha, other].map((commit) => `https://ghcr.io/v2/paperclipai/paperclip/manifests/sha-${commit}-cloud`));
 });
 
+test("cloud builds start per commit and preserve tag promotion dependencies", () => {
+  const docker = readFileSync(new URL("../.github/workflows/docker.yml", import.meta.url), "utf8");
+  const cloud = readFileSync(new URL("../.github/workflows/docker-cloud.yml", import.meta.url), "utf8");
+  assert.match(cloud, /branches: \[master\]/);
+  assert.match(cloud, /workflow_call:/);
+  assert.match(cloud, /group: docker-cloud-\$\{\{ github.sha \}\}/);
+  assert.match(cloud, /cancel-in-progress: false/);
+  const caller = docker.split("  build-and-push-cloud:")[1].split("  promote_canary_channel:")[0];
+  assert.match(caller, /if: github.event_name != 'push' \|\| github.ref != 'refs\/heads\/master'/);
+  assert.match(caller, /uses: .\/.github\/workflows\/docker-cloud.yml/);
+  assert.match(docker.split("  promote_canary_channel:")[1], /needs: \[merge-and-push, build-and-push-cloud\]/);
+  const reaping = cloud.indexOf("      - name: Verify cloud PID 1 reaps orphaned processes");
+  assert.ok(reaping > cloud.indexOf("      - name: Verify the pushed image resolves the declared Sentry version"));
+  assert.ok(reaping < cloud.indexOf("      - name: Publish verified full-SHA cloud tag"));
+});
+
 test("normal cloud builds publish the checked digest only when source and platform match", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/docker.yml", import.meta.url), "utf8");
-  const cloud = workflow.split("  build-and-push-cloud:")[1].split("  promote_canary_channel:")[0];
+  const workflow = readFileSync(new URL("../.github/workflows/docker-cloud.yml", import.meta.url), "utf8");
+  const cloud = workflow.split("  build-and-push-cloud:")[1];
   const verify = cloud.indexOf("      - name: Verify the pushed image resolves the declared Sentry version");
   const publish = cloud.indexOf("      - name: Publish verified full-SHA cloud tag");
   assert.ok(verify >= 0 && publish > verify);
