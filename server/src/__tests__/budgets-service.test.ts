@@ -10,6 +10,7 @@ import {
   createDb,
   projects,
 } from "@paperclipai/db";
+import { agentService } from "../services/agents.ts";
 import { budgetService } from "../services/budgets.ts";
 import {
   getEmbeddedPostgresTestSupport,
@@ -636,5 +637,42 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
       pauseReason: null,
     });
     expect(overviewAfterResume.activeIncidents).toHaveLength(0);
+  });
+
+  it("keeps the overview readable after the agent a policy points at is deleted", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const service = budgetService(db, { cancelWorkForScope: vi.fn().mockResolvedValue(undefined) });
+    await db.insert(budgetPolicies).values({
+      companyId,
+      scopeType: "agent",
+      scopeId: agentId,
+      metric: "billed_cents",
+      windowKind: "lifetime",
+      amount: 500,
+      warnPercent: 80,
+      hardStopEnabled: true,
+      notifyEnabled: false,
+      isActive: true,
+    });
+
+    // Delete through the real service path rather than the table, so this test
+    // also proves the dangling-scope state is reachable in production: nothing
+    // in agent deletion touches budget_policies, and scopeId carries no foreign
+    // key, so the policy is left pointing at a row that is gone.
+    const removed = await agentService(db).remove(agentId);
+    expect(removed).not.toBeNull();
+
+    // Previously this threw notFound. The overview resolves every scope in one
+    // pass, so one deleted agent took out the whole view instead of one row.
+    const overview = await service.overview(companyId);
+
+    expect(overview.policies).toHaveLength(1);
+    expect(overview.policies[0]).toMatchObject({
+      scopeType: "agent",
+      scopeId: agentId,
+      amount: 500,
+      paused: false,
+    });
+    expect(overview.policies[0]?.scopeName).toContain("deleted");
   });
 });
