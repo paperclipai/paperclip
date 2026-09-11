@@ -467,16 +467,17 @@ async function withLivenessTimeout<T>(
  * the receipt boundary; timing out this drain is never termination evidence. */
 async function drainSandboxBeforeTermination(sandbox: Sandbox, scope: SandboxScope) {
   const timeoutMs = Math.max(1, Math.min(scope.config.livenessTimeoutMs || 10_000, 10_000));
-  try {
-    await withLivenessTimeout("sandbox.activityDrain", timeoutMs,
-      () => sandboxHandleActivityGates.waitForIdle(scope));
-    await withLivenessTimeout("sandbox.sessionTeardown", timeoutMs,
-      () => teardownSession(sandbox, scope));
-    await withLivenessTimeout("sandbox.channelTeardown", timeoutMs,
-      () => closeDaytonaDuplexChannelsForLease(scope.providerLeaseId));
-  } catch {
-    // Do not log provider exception text: it can contain credentials.
-    console.warn("Sandbox bridge drain failed; continuing provider termination.");
+  const steps: [string, () => Promise<unknown>][] = [
+    ["sandbox.activityDrain", () => sandboxHandleActivityGates.waitForIdle(scope)],
+    ["sandbox.sessionTeardown", () => teardownSession(sandbox, scope)],
+    ["sandbox.channelTeardown", () => closeDaytonaDuplexChannelsForLease(scope.providerLeaseId)],
+  ];
+  for (const [operation, action] of steps) {
+    try { await withLivenessTimeout(operation, timeoutMs, action); }
+    catch {
+      // Each cleanup is independent; one hung bridge must not retain other routes.
+      console.warn("Sandbox bridge cleanup failed; continuing provider termination.");
+    }
   }
 }
 
@@ -1572,6 +1573,9 @@ async function getOrCreateSession(sandbox: Sandbox, scope: SandboxScope): Promis
 async function teardownSession(sandbox: Sandbox, scope: SandboxScope): Promise<void> {
   const sessionId = sandboxHandleSessionStore.get(scope);
   if (!sessionId) return;
+  // Retire the captured identity before awaiting the provider. A late response
+  // must not clear a new session created after this lease is resumed.
+  sandboxHandleSessionStore.clear(scope);
   try {
     // Wrap the session delete in a short `session.close` provider span. The
     // host maps the name to `sandbox.daytona.session.close`.
@@ -1585,8 +1589,6 @@ async function teardownSession(sandbox: Sandbox, scope: SandboxScope): Promise<v
     console.error(
       `Failed to delete Daytona session ${sessionId} during teardown: ${formatErrorMessage(error)}`,
     );
-  } finally {
-    sandboxHandleSessionStore.clear(scope);
   }
 }
 
@@ -2012,10 +2014,8 @@ async function closeDaytonaDuplexChannelsForLease(providerLeaseId: string): Prom
   const matches = [...daytonaDuplexChannelByRoute.values()].filter(
     (entry) => entry.providerLeaseId === providerLeaseId,
   );
-  for (const entry of matches) {
-    forgetDaytonaDuplexChannel(entry);
-    await entry.session.close().catch(() => undefined);
-  }
+  for (const entry of matches) forgetDaytonaDuplexChannel(entry);
+  await Promise.allSettled(matches.map(entry => entry.session.close()));
 }
 
 const plugin = definePlugin({

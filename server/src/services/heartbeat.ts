@@ -682,6 +682,7 @@ function pendingCleanupRetryDueSql() {
   return sql`case
     when jsonb_typeof(${environmentLeases.metadata}->'pendingCleanupRetryAfterMs') = 'number'
       then (${environmentLeases.metadata}->>'pendingCleanupRetryAfterMs')::numeric <= ${Date.now()}
+        or (${environmentLeases.metadata}->>'pendingCleanupRetryAfterMs')::numeric > ${Date.now() + 30 * 60_000 + 1_000}
     else true end`;
 }
 
@@ -17789,20 +17790,7 @@ export function heartbeatService(
       const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
       const attempts = readPendingCleanupRetryAttempts(metadata);
 
-      if (attempts >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP) {
-        capped += 1;
-        // Warn once, then continue automatic cleanup with backoff. The atomic claim
-        // keeps the warning to one log line even when two sweeps overlap.
-        if (metadata[PENDING_CLEANUP_CAP_WARNED_METADATA_KEY] !== true) {
-          const warned = await claimPendingCleanupCapWarning(row.id);
-          if (warned) {
-            logger.warn(
-              { leaseId: row.id, environmentId: row.environmentId, attempts },
-              "environment lease needs operator attention; automatic cleanup continues with backoff",
-            );
-          }
-        }
-      }
+
 
       const environment = row.environmentId
         ? await environmentsSvc.getById(row.environmentId)
@@ -17911,13 +17899,27 @@ export function heartbeatService(
           "pending_cleanup lease retry failed",
         );
       }
+      if (attempts + 1 >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP) {
+        capped += 1;
+        // Warn once, then continue automatic cleanup with backoff. The atomic claim
+        // keeps the warning to one log line even when two sweeps overlap.
+        if (metadata[PENDING_CLEANUP_CAP_WARNED_METADATA_KEY] !== true) {
+          const warned = await claimPendingCleanupCapWarning(row.id);
+          if (warned) {
+            logger.warn(
+              { leaseId: row.id, environmentId: row.environmentId, attempts },
+              "environment lease needs operator attention; automatic cleanup continues with backoff",
+            );
+          }
+        }
+      }
       // Persist the cooldown independently of process memory. A crash before
       // this write leaves the bounded in-flight lease for a later sweep.
       await db.update(environmentLeases).set({
         metadata: sql`${pendingCleanupMetadataObjectSql()} || ${JSON.stringify({
           pendingCleanupInFlight: false,
-          pendingCleanupRetryAfterMs: Date.now() + (attempts >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP
-            ? 30 * 60_000 : Math.max(30_000, backoffMs)),
+          pendingCleanupRetryAfterMs: Date.now() + (attempts + 1 >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP
+            ? 30 * 60_000 : Math.min(30 * 60_000, Math.max(30_000, backoffMs))),
         })}::jsonb`,
       }).where(and(eq(environmentLeases.id, lease.id),
         sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${claimed}`));
