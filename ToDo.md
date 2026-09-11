@@ -4,6 +4,31 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
 
 ## Farm-Stabilitaet
 
+- [ ] **★★VP Engineering laeuft leer — 2.143 Runs, 99 % Fehlerquote** — mit
+      Abstand der groesste Einzelverbraucher der Flotte (23 % aller Runs der
+      letzten 14 Tage) und praktisch ohne Ergebnis. **Zwei Drittel davon sind
+      derselbe Fehler:** 1.388 von 2.118 Fehlschlaegen lauten
+      `LLM call failed on fallback: LM Studio model error 400 — Invalid model
+      identifier "qwen2.5-coder-14b-instruct-mlx"`. Der Agent faehrt
+      `claude-sonnet-5` ueber den PII-Proxy (`ANTHROPIC_BASE_URL` →
+      `localhost:4711/anthropic`); sein `fallbackModel` ist **`null`**, die tote
+      Modell-ID steht also **nicht** in seiner `adapter_config`. Gegenprobe: die
+      ID kommt weder in `agents.adapter_config`/`runtime_config` noch in
+      `instance_settings` vor — nur in LM Studios `model-data.json` und in
+      llm-advisor-Testfixtures. Sie wird demnach **zur Laufzeit** vergeben,
+      Verdacht: Modell-Router/lmstudio-Adapter waehlt fuer die Coder-Rolle ein
+      „coder"-Modell, das nach dem `-mlx`-Rename nicht mehr existiert (passt zum
+      bekannten Muster „LM-Studio-Rename bricht Fallbacks"). Zweitgroesster
+      Posten: 642 × `Prompt is too long` / `adapter_failed`.
+      Nachweis:
+      `select error_code, count(*) from heartbeat_runs r join agents a on a.id=r.agent_id where a.name='VP Engineering' and r.status='failed' and r.started_at > now() - interval '14 days' group by 1 order by 2 desc;`
+      **Verwandter Befund aus derselben Messung:** Buchhaltung (418 Runs, 96 %
+      Fehler) und Lektorat (159 Runs, 96 %) laufen ebenfalls leer, dort aber aus
+      anderer Ursache — fast ausschliesslich `max_iterations` (386 bzw. 147),
+      gehoert also zum bestehenden `max_iterations`-Eintrag unten. Die drei
+      Agenten zusammen sind rund ein Drittel aller Flotten-Runs.
+      *(2026-09-11, Chat: Routinen-Lastverteilung)*
+
 - [ ] **`max_iterations` bleibt als eigenes Muster** — die Infrastrukturfehler
       (`fetch failed`, `Engine protocol`) sind mit dem Circuit Breaker und der
       RTX-Rueckkehr weg; `max_iterations` nicht. Sechs Agenten stehen weiter auf
@@ -167,22 +192,64 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
 
 ## Kontaktrecherche-Agent (Clara Sound, R9)
 
-- [ ] **★Agent wartet auf den deterministischen Vorlauf** — „Kontaktrecherche
-      Booker (R9)" ist angelegt und einsatzbereit (Konto, Instruktionen,
-      verifizierter Booker-Zugang), Issue **CLAA-2568** steht auf `backlog`.
-      Nach sechs Laeufen die Diagnose: Die **Recherche** gelingt (bei einer
-      Angular-SPA korrekt `gefunden: false` statt einer erfundenen Adresse), die
-      **API-Choreografie** nicht — sechs Laeufe, sechs verschiedene
-      Prozedurfehler, drei nachgeschaerfte Instruktionen aenderten die Fehlerart,
-      nicht die Fehlerrate. Der Vorlauf entsteht im Booker-Projekt
-      (`Apps/WHITESTAG Booker/docs/vorlauf-kontaktrecherche.md`); **erst danach**
-      den Agenten wieder wecken. *(2026-09-06, Chat: Kontaktrecherche-Agent Clara)*
+- [ ] **★Große Charge läuft — Ergebnis prüfen** — der deterministische Vorlauf
+      ist seit dem 08.09. gebaut (Booker-Commit `4958d35`, 801 Tests grün) und
+      läuft seit dem **11.09. 20:01 über alle 5.299 Zeilen**, rund vier Stunden,
+      per `nohup`. Protokoll:
+      `~/Library/Logs/booker-research-prefetch-20260911-2001.log`.
+      Sicherung davor: `Backup/booker-2026-09-11.dump` (32,7 MB).
+      Erstlauf über 50 Zeilen zum Vergleich: 25 Funde (davon 14 triviale
+      `mailto:`), Stichprobe **12 von 12 wörtlich belegt, kein Fehltreffer**.
+      Nach dem Durchlauf: Zahlen aus dem Protokoll auswerten und eine **zweite
+      Stichprobe** ziehen — die erste war klein. *(2026-09-11, Chat: Vorlauf Kontaktrecherche)*
+
+- [ ] **★CLAA-2568 auf `todo` setzen — der Agent ist wach, hat aber keine
+      Arbeit** — `heartbeat.enabled` steht seit dem 11.09. wieder auf `true`,
+      das Issue aber weiterhin auf `backlog` und wird deshalb nicht ausgecheckt.
+      Bewusst so: Er soll erst ran, wenn die Charge durch ist und die Reste
+      vollständig vorliegen (erwartet rund 2.600 statt bisher 25). **Beim
+      Umsetzen kein `comment` mitschicken** — siehe Aufräum-Rezept unten.
+      *(2026-09-11, Chat: Vorlauf Kontaktrecherche)*
+
+- [ ] **Fehlerklasse „wörtlich richtig, inhaltlich falsch"** — bei
+      `meinbezirk.at` steht jetzt `info@rtr.at` im Bestand: die österreichische
+      Regulierungsbehörde, die im Impressum als Aufsicht genannt ist. Wörtlich
+      korrekt, nur nicht der Ansprechpartner. Die eiserne Regel verhindert
+      **erfundene** Adressen, nicht **kontextuell falsche**, und weil nur eine
+      Adresse auf der Seite stand, greift auch die Mehrdeutigkeitsprüfung nicht.
+      Ob eine Ausschlussliste (Aufsichtsbehörden, Hoster, CMS-Agenturen) lohnt,
+      an den Zahlen der großen Charge entscheiden.
+      *(2026-09-11, Chat: Vorlauf Kontaktrecherche)*
+
+- [ ] **Vorrangregel bei mehreren Adressen — bewusst nicht gebaut** — mit rund
+      einem Drittel die größte Restgruppe, oft nur `info@` plus `datenschutz@`.
+      Eine Rangfolge nach Rolle wäre deterministisch und würde einen guten Teil
+      davon lösen; das Auftragsdokument weist die Auswahl unter mehreren
+      Adressen aber ausdrücklich dem Agenten zu. Entscheidung vertagt, bis die
+      Charge zeigt, wie groß der Anteil wirklich ist.
+      *(2026-09-11, Chat: Vorlauf Kontaktrecherche)*
+
+- [ ] **Die Instruktion des R9 ist nirgends versioniert** — der Agent steht
+      **nicht** in `tools/agents-instructions/agents-manifest.json`, seine
+      `AGENTS.md` existiert nur unter
+      `~/.paperclip/instances/default/companies/0e426844…/agents/cd2a58ce…/instructions/`.
+      Das ist einerseits gut (der nächtliche Generator überschreibt sie nicht,
+      anders als bei der Sekretärin), andererseits gibt es keine Sicherung und
+      keine Historie. Am 11.09. wurde dort die falsche Formular-Anweisung
+      korrigiert — diese Änderung existiert genau einmal auf der Platte.
+      *(2026-09-11, Chat: Vorlauf Kontaktrecherche)*
 
 - [ ] **Ergebnis-Pruefer bauen (zweistufig)** — sobald echte Funde vorliegen.
       **Stufe 1 deterministisch:** Fundstelle abrufen, gemeldete Adresse als
       Zeichenkette suchen — steht sie nicht drin, ist es ein Fehltreffer. Das
       laeuft ueber *alle* Ergebnisse, kostet nichts und kann selbst nicht
-      halluzinieren. **Stufe 2 mit Opus**, nur fuer die Reste: JS-gerenderte
+      halluzinieren.
+      **Stand 11.09.: als Einweg-Skript erprobt** (12 von 12 Adressen belegt),
+      als dauerhaftes Werkzeug noch nicht gebaut. **Eine Falle dabei, die Stufe 1
+      sonst unbrauchbar macht:** Vor dem Vergleich **HTML-Entities auflösen**.
+      `artup.mannheim.de` liefert die Adresse als `&#x6b;&#x75;&#x6c;…`; ein
+      `grep` über den Rohtext meldet dort einen Fehltreffer, wo keiner ist —
+      und genau dieser Alarm gilt als Abbruchkriterium. **Stufe 2 mit Opus**, nur fuer die Reste: JS-gerenderte
       Seiten, Impressen in Bild/PDF und die Frage, ob von mehreren Adressen die
       *richtige* gewaehlt wurde. Wichtig beim Zuschnitt: Die Frage an Opus muss
       „steht diese Adresse in diesem Text?" lauten, nicht „ist das die richtige
@@ -193,7 +260,9 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
 
 - [ ] **Routine fuer den Regelbetrieb anlegen** — bewusst noch nicht geschehen.
       Erst muss eine Stichprobe von 50 Ergebnissen sauber sein (ueber null
-      Fehltreffer = Alarmzeichen). Wichtig: `heartbeat.enabled: false` heisst
+      Fehltreffer = Alarmzeichen). **Für den Vorlauf ist diese Hürde am 11.09.
+      genommen** (12 von 12 belegt) — für den *Agenten* steht sie weiter aus, er
+      hat bis heute keine verwertbaren Funde geliefert. Wichtig: `heartbeat.enabled: false` heisst
       **kein Zeitplan** — die anderen Clara-Agenten laufen nur, weil ihre
       Routinen Issues anlegen und **das Anlegen** das weckende Ereignis ist. Fuer
       Einzelanstoesse: `POST /api/agents/:id/heartbeat/invoke`.
@@ -247,17 +316,16 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
       enthaelt auch `__pycache__`/`.pytest_cache`-Rauschen — die acht bekannten
       Quelldateien stehen unveraendert darunter). Nichts verschlechtert, aber
       auch nichts aufgeholt. *(2026-09-07, Chat: Kontext-Bedarf und MLX-Autofit)*
-
-- [ ] **1 Commit nicht gepusht** — `9f3845eb5` (der ToDo-Stand vom 07.09.).
-      Push ist ansagepflichtig und wurde bewusst nicht ausgefuehrt.
-      **Korrektur zur ersten Fassung dieses Eintrags:** dort standen „10+
-      Commits", gemessen gegen `origin/master`. Das ist der **falsche
-      Massstab** — `origin` ist paperclipai (fremd) und liegt bauartbedingt
-      **672** Commits zurueck; dorthin wird nie gepusht. Das echte Push-Ziel ist
-      `fork/master` (whitestagai), und dagegen war und ist nur der eine
-      Doku-Commit offen. Merksatz: **immer `git log fork/master..HEAD` fahren
-      oder `@{u}` aufloesen — nie `origin` als Referenz nehmen.**
-      *(2026-09-07, korrigiert 2026-09-08, Chat: Kontext-Bedarf und MLX-Autofit)*
+      **Gegenprobe 11.09.: der Hauptfall ist erledigt** — `waechter.py` steht
+      live wie im Repo bei **534** Zeilen (nachgezogen mit `4bea151c7`
+      „ops(tools): Live-Staende der Betriebsskripte ins Repo nachziehen").
+      Offen sind noch **4 echte Quelldateien**, alle unter `seo-geo/`
+      (`cli.py`, `seo_approvals.py` und die zwei zugehoerigen Tests). Der
+      Restzaehler von 160 besteht fast vollstaendig aus `seo-geo/venv/` — ein
+      virtuelles Environment, das ueberhaupt nicht ins Repo gehoert und den
+      Nachweis-Befehl unbrauchbar macht. Filter dazunehmen:
+      `diff -rq ~/.paperclip/scripts tools | grep differ | grep -vE '__pycache__|venv/'`
+      *(2026-09-11, Chat: Vorlauf Kontaktrecherche)*
 
 - [ ] **7 uncommittete Dateien im Worktree `agent-learning-tree`** — liegt unter
       `~/.paperclip/scripts/agent-learning-tree`, Branch
