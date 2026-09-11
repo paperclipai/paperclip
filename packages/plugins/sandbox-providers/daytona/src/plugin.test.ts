@@ -1330,16 +1330,16 @@ describe("Daytona sandbox provider plugin", () => {
     expect(sandbox.stop).toHaveBeenCalled();
   });
 
-  it("does not acknowledge termination when both provider stop and delete fail", async () => {
+  it("does not acknowledge termination or delete a reusable sandbox when stopping fails", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox({ id: "sandbox-failed-stop", state: "started" });
     sandbox.stop.mockRejectedValueOnce(new Error("stop failed"));
-    sandbox.delete.mockRejectedValueOnce(new Error("delete failed"));
     mockGet.mockResolvedValue(sandbox);
     await expect(plugin.definition.onEnvironmentReleaseLease?.({
       driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
       providerLeaseId: sandbox.id, config: { reuseLease: true },
-    })).rejects.toThrow("delete failed");
+    })).rejects.toThrow("stop failed");
+    expect(sandbox.delete).not.toHaveBeenCalled();
   });
 
   it("stops reusable leases and deletes ephemeral leases on release", async () => {
