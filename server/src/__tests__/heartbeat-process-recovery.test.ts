@@ -655,7 +655,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     processPid?: number | null;
     processGroupId?: number | null;
     processLossRetryCount?: number;
-    runtimeMode?: "legacy" | "native";
+    scheduledRetryAttempt?: number | null;
+    scheduledRetryReason?: string | null;
+    scheduledRetryAt?: Date | null;
     includeIssue?: boolean;
     runErrorCode?: string | null;
     runError?: string | null;
@@ -717,7 +719,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processPid: input?.processPid ?? null,
       processGroupId: input?.processGroupId ?? null,
       processLossRetryCount: input?.processLossRetryCount ?? 0,
-      ...(input?.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
+      scheduledRetryAttempt: input?.scheduledRetryAttempt ?? null,
+      scheduledRetryReason: input?.scheduledRetryReason ?? null,
+      scheduledRetryAt: input?.scheduledRetryAt ?? null,
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
       nextEventSeq: 2,
@@ -2472,6 +2476,147 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retry?.contextSnapshot).toMatchObject({
       wakeReason: "process_lost_environment_retry",
       retryReason: "retry_transient_environment_failure",
+      retryOfRunId: runId,
+      issueId: failed?.contextSnapshot?.issueId,
+    });
+  });
+
+  it("schedules attempt 2 of the null-environment ladder at 180s and attempt 3 at 540s", async () => {
+    const attempt2 = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "retry_transient_environment_failure",
+    });
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [attempt2.runId] });
+
+    const attempt2Rows = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, attempt2.agentId));
+    const attempt2Failed = attempt2Rows.find((row) => row.id === attempt2.runId);
+    const attempt2Retry = attempt2Rows.find((row) => row.retryOfRunId === attempt2.runId);
+    expect(attempt2Retry).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 2,
+      scheduledRetryReason: "retry_transient_environment_failure",
+    });
+    expect(attempt2Retry?.scheduledRetryAt?.getTime()).toBe(
+      (attempt2Failed?.finishedAt?.getTime() ?? 0) + 180_000,
+    );
+
+    const attempt3 = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      scheduledRetryAttempt: 2,
+      scheduledRetryReason: "retry_transient_environment_failure",
+      contextSnapshot: {
+        wakeReason: "process_lost_environment_retry",
+        retryReason: "retry_transient_environment_failure",
+        retryOfRunId: attempt2.runId,
+      },
+    });
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [attempt3.runId] });
+
+    const attempt3Rows = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, attempt3.agentId));
+    const attempt3Failed = attempt3Rows.find((row) => row.id === attempt3.runId);
+    const attempt3Retry = attempt3Rows.find((row) => row.retryOfRunId === attempt3.runId);
+    expect(attempt3Retry).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryAttempt: 3,
+      scheduledRetryReason: "retry_transient_environment_failure",
+    });
+    expect(attempt3Retry?.scheduledRetryAt?.getTime()).toBe(
+      (attempt3Failed?.finishedAt?.getTime() ?? 0) + 540_000,
+    );
+  });
+
+  it("does not queue another null-environment retry past attempt 3 and emits a single exhaustion event", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      scheduledRetryAttempt: 3,
+      scheduledRetryReason: "retry_transient_environment_failure",
+      contextSnapshot: {
+        wakeReason: "process_lost_environment_retry",
+        retryReason: "retry_transient_environment_failure",
+        retryOfRunId: "previous-run",
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [runId] });
+
+    const retries = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.retryOfRunId, runId),
+      ));
+    expect(retries).toHaveLength(0);
+
+    const exhaustionEvents = await db
+      .select()
+      .from(heartbeatRunEvents)
+      .where(and(
+        eq(heartbeatRunEvents.companyId, companyId),
+        eq(heartbeatRunEvents.runId, runId),
+        eq(heartbeatRunEvents.eventType, "lifecycle"),
+      ));
+    const exhaustion = exhaustionEvents.find((event) =>
+      typeof event.message === "string"
+      && event.message.includes("Bounded retry exhausted")
+      && event.message.includes("retry_transient_environment_failure"),
+    );
+    expect(exhaustion).toBeDefined();
+  });
+
+  it("does not route process loss through the null-environment ladder when a child pid was recorded", async () => {
+    const { companyId, agentId, runId } = await seedRunFixture({
+      adapterType: "codex_local",
+      agentStatus: "idle",
+      processPid: 4321,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [runId] });
+
+    const rows = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const failed = rows.find((row) => row.id === runId);
+    const retry = rows.find((row) => row.retryOfRunId === runId);
+
+    expect(failed?.resultJson).not.toMatchObject({
+      environmentAllocationDiagnostic: expect.objectContaining({
+        phase: "environment_selection",
+      }),
+    });
+    expect(failed?.stderrExcerpt ?? "").not.toContain("[environment-allocation]");
+    expect(retry).toMatchObject({
+      status: "queued",
+      retryOfRunId: runId,
+      processLossRetryCount: 1,
+    });
+    // Legacy path uses the immediate process_lost_retry wake reason, not the
+    // bounded environment retry wake reason.
+    expect(retry?.contextSnapshot).toMatchObject({
+      wakeReason: "process_lost_retry",
+    });
+    expect(retry?.contextSnapshot).not.toMatchObject({
+      wakeReason: "process_lost_environment_retry",
     });
   });
 
