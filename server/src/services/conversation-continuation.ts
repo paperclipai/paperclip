@@ -5,7 +5,7 @@ import { agents, heartbeatRuns, issueRecoveryActions } from "@paperclipai/db";
 // replay the action itself, so those adapters retain their recovery contract.
 export const CONVERSATION_ADAPTER_TYPES = [
   "claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
-  "pi_local", "grok_local", "kimi_local",
+  "pi_local", "grok_local", "kimi_local", "hermes_local",
 ] as const;
 
 export function isConversationAdapter(adapterType: string): boolean {

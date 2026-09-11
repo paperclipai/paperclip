@@ -60,7 +60,8 @@ export type ScheduledRetryGateErrorCode =
   | "issue_review_participant_changed"
   | "issue_paused"
   | "issue_dependencies_blocked"
-  | "issue_disposition_repair_superseded";
+  | "issue_disposition_repair_superseded"
+  | "issue_waiting_for_response";
 
 export type GateDecision =
   | { allowed: true }
@@ -100,6 +101,8 @@ export type ScheduledRetryFacts = {
 
   /** Present only when retryReasonKind is "disposition_repair". */
   dispositionRepair: DispositionRepairFacts | null;
+  /** A conversation retry must wait for unresolved questions and approvals. */
+  pendingResponse?: "interaction" | "approval" | null;
 };
 
 export type QueuedRunStalenessErrorCode =
@@ -453,6 +456,16 @@ export function decideScheduledRetryGate(
         unresolvedBlockerIssueIds: facts.dependenciesBlocked.unresolvedBlockerIssueIds,
         unresolvedBlockerCount: facts.dependenciesBlocked.unresolvedBlockerCount,
       },
+    };
+  }
+
+  if (facts.pendingResponse) {
+    return {
+      allowed: false,
+      reason: "Conversation retry is waiting for a response to a pending question or approval",
+      errorCode: "issue_waiting_for_response",
+      issueId: facts.issueId,
+      details: { waitingFor: facts.pendingResponse },
     };
   }
 

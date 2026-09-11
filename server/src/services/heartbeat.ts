@@ -15191,6 +15191,8 @@ export function heartbeatService(
             status: "scheduled_retry",
             wakeupRequestId: wakeupRequest.id,
             contextSnapshot: retryContextSnapshot,
+            ...(hasConversationContinuationPolicy(run.resultJson)
+              ? { resultJson: { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } } : {}),
             responsibleUserId,
             sessionIdBefore: sessionBefore,
             retryOfRunId: run.id,
