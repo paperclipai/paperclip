@@ -3,8 +3,21 @@ import { executionWorkspaces, heartbeatRuns, issues, type Db } from "@paperclipa
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { issueExecutionWorkspaceModeForPersistedWorkspace } from "./execution-workspace-policy.js";
 
+/** Sandbox reuse is independent of whether the provider process stays warm. */
+export function shouldBindReusableSandboxWorkspace(environment: {
+  driver: string;
+  config: unknown;
+} | null | undefined): boolean {
+  const config = environment?.config;
+  return environment?.driver === "sandbox"
+    && typeof config === "object"
+    && config !== null
+    && !Array.isArray(config)
+    && (config as Record<string, unknown>).reuseLease === true;
+}
+
 /** Host runtime state must survive even when user-configurable worktrees are disabled. */
-export async function bindWarmSandboxWorkspace(db: Db, input: {
+export async function bindReusableSandboxWorkspace(db: Db, input: {
   companyId: string; issueId: string; runId: string; agentId: string; workspaceId: string;
 }) {
   const publications: ActivityPublication[] = [];
@@ -22,7 +35,7 @@ export async function bindWarmSandboxWorkspace(db: Db, input: {
     )).for("update");
     if (!issue || !run || !workspace || workspace.projectId !== issue.projectId || workspace.status !== "active"
       || (workspace.sourceIssueId !== null && workspace.sourceIssueId !== issue.id)) {
-      throw new Error("Warm sandbox workspace no longer belongs to this active task run");
+      throw new Error("Reusable sandbox workspace no longer belongs to this active task run");
     }
     await tx.update(issues).set({
       executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing",
@@ -37,7 +50,7 @@ export async function bindWarmSandboxWorkspace(db: Db, input: {
       companyId: input.companyId, actorType: "agent", actorId: input.agentId, agentId: input.agentId,
       runId: input.runId, issueId: issue.id, action: "execution_workspace.sandbox_bound",
       entityType: "execution_workspace", entityId: workspace.id,
-      details: { issueId: issue.id, reason: "warm_sandbox_reuse" },
+      details: { issueId: issue.id, reason: "sandbox_reuse" },
     }, publications);
   });
   for (const publication of publications) publishActivity(publication);

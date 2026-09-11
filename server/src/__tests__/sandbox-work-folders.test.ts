@@ -11,7 +11,7 @@ import os from "node:os";
 import { agents, assets, companyMemberships, issueAttachments, companies, createDb, heartbeatRuns, issues, environments, environmentLeases, executionWorkspaces, projects, projectWorkspaces, taskRepositoryBindings, workFolderObjects, workFolderRuns, startEmbeddedPostgresTestDatabase, type Db } from "@paperclipai/db";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { prepareSandboxWorkFolders } from "../services/sandbox-work-folders.js";
-import { bindWarmSandboxWorkspace } from "../services/sandbox-workspace-binding.js";
+import { bindReusableSandboxWorkspace, shouldBindReusableSandboxWorkspace } from "../services/sandbox-workspace-binding.js";
 import { findUnboundLegacyTaskWorkspace } from "../services/legacy-sandbox-workspace.js";
 import { retainUnsavedWorkFolderLease, workFolderSandboxKey } from "../services/work-folder-retention.js";
 import * as activityLog from "../services/activity-log.js";
@@ -21,6 +21,27 @@ import { collectWorkFolderGarbage } from "../services/work-folder-garbage.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { localTestWorkFolderRunner } from "./helpers/work-folder-runner.js";
 const exec = promisify(execFile);
+
+describe("sandbox workspace reuse policy", () => {
+  it.each(["warm", "per_turn", undefined])(
+    "pins reusable task workspaces independently of provider lifecycle %s",
+    (runnerLifecycleMode) => {
+      expect(shouldBindReusableSandboxWorkspace({
+        driver: "sandbox", config: { reuseLease: true, runnerLifecycleMode },
+      })).toBe(true);
+    },
+  );
+
+  it.each([
+    null,
+    { driver: "local", config: { reuseLease: true } },
+    { driver: "ssh", config: { reuseLease: true } },
+    { driver: "sandbox", config: { reuseLease: false, runnerLifecycleMode: "warm" } },
+    { driver: "sandbox", config: {} },
+  ])("leaves local and non-reusable execution unchanged: %j", (environment) => {
+    expect(shouldBindReusableSandboxWorkspace(environment)).toBe(false);
+  });
+});
 
 describe("shared sandbox work-folder lifecycle", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -113,14 +134,14 @@ describe("shared sandbox work-folder lifecycle", () => {
     await db.insert(executionWorkspaces).values({ id: workspaceId, companyId, projectId, sourceIssueId: task,
       mode: "shared_workspace", strategyType: "project_primary", name: "Warm binding" });
     const input = { companyId, issueId: task, runId, agentId, workspaceId };
-    await bindWarmSandboxWorkspace(db, input);
+    await bindReusableSandboxWorkspace(db, input);
     const [bound] = await db.select().from(issues).where(eq(issues.id, task));
     expect(bound).toMatchObject({ executionWorkspaceId: workspaceId, executionWorkspacePreference: "reuse_existing", executionWorkspaceSettings: { mode: "shared_workspace" } });
     for (const bad of [{ companyId: randomUUID() }, { agentId: randomUUID() }, { issueId: taskId }, { runId: randomUUID() }]) {
-      await expect(bindWarmSandboxWorkspace(db, { ...input, ...bad })).rejects.toThrow("active task run");
+      await expect(bindReusableSandboxWorkspace(db, { ...input, ...bad })).rejects.toThrow("active task run");
     }
     await db.update(executionWorkspaces).set({ sourceIssueId: taskId }).where(eq(executionWorkspaces.id, workspaceId));
-    await expect(bindWarmSandboxWorkspace(db, input)).rejects.toThrow("active task run");
+    await expect(bindReusableSandboxWorkspace(db, input)).rejects.toThrow("active task run");
     await db.update(executionWorkspaces).set({ sourceIssueId: task }).where(eq(executionWorkspaces.id, workspaceId));
     const originalLogActivity = activityLog.logActivity;
     let release!: () => void;
@@ -130,7 +151,7 @@ describe("shared sandbox work-folder lifecycle", () => {
     const audit = vi.spyOn(activityLog, "logActivity").mockImplementationOnce(async (...args) => {
       entered(); await gate; return originalLogActivity(...args);
     });
-    const pendingBinding = bindWarmSandboxWorkspace(db, input);
+    const pendingBinding = bindReusableSandboxWorkspace(db, input);
     try {
       await reached;
       // These state changes must wait until the validated binding commits.
@@ -145,7 +166,7 @@ describe("shared sandbox work-folder lifecycle", () => {
       release(); await pendingBinding; audit.mockRestore();
     }
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, runId));
-    await expect(bindWarmSandboxWorkspace(db, input)).rejects.toThrow("active task run");
+    await expect(bindReusableSandboxWorkspace(db, input)).rejects.toThrow("active task run");
   });
   async function prepare(home: string, leaseId: string, physicalId = leaseId, responsibleUserId: string | null = null,
     options: { taskId?: string; branchName?: string; agentId?: string; bulkStdin?: boolean } = {}) {
@@ -535,6 +556,13 @@ describe("shared sandbox work-folder lifecycle", () => {
     expect(await retainUnsavedWorkFolderLease(db, { id: leaseId, companyId })).toBe(true);
     await run.stop(); active.splice(active.indexOf(run), 1);
     expect(await retainUnsavedWorkFolderLease(db, { id: leaseId, companyId })).toBe(false);
+    // The next startup may fail before writing a manifest; the old final save
+    // must not leave its working copy active and permanently blocking retries.
+    await db.update(environmentLeases).set({ status: "active" }).where(eq(environmentLeases.id, leaseId));
+    expect(await retainUnsavedWorkFolderLease(db, { id: leaseId, companyId }, { runSaveFailed: true })).toBe(true);
+    const [retained] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+    expect(retained).toMatchObject({ status: "retained", expiresAt: null,
+      metadata: { workFolderRecoveryRequired: true } });
   }, 120_000);
   it("reconciles file-directory replacements and preserves deleted children in trash", async () => {
     const svc = workFolderService(db, storage);

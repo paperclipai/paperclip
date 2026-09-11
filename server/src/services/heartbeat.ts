@@ -7,8 +7,9 @@ import { cleanupGitHubOperationLaunchers, prepareGitHubOperationLaunchers } from
 import fs from "node:fs/promises";
 import { retainUnsavedWorkFolderLease, workFolderSandboxKey } from "./work-folder-retention.js";
 import { findUnboundLegacyTaskWorkspace, hasLegacySandboxWorkspace } from "./legacy-sandbox-workspace.js";
+import { recoverLegacySandboxSession } from "./legacy-sandbox-session.js";
 import { prepareSandboxWorkFolders } from "./sandbox-work-folders.js";
-import { bindWarmSandboxWorkspace } from "./sandbox-workspace-binding.js";
+import { bindReusableSandboxWorkspace, shouldBindReusableSandboxWorkspace } from "./sandbox-workspace-binding.js";
 import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -5473,6 +5474,7 @@ type EffectiveRunSessionConfigMetadata = {
   categories: EffectiveRunSessionConfigCategory[];
   categoryFingerprints: Record<EffectiveRunSessionConfigCategory, string>;
   fingerprints: EffectiveRunConfigFingerprints;
+  compatibleFingerprints: string[];
 };
 
 type TaskSessionConfigFreshnessDecision = {
@@ -5556,6 +5558,7 @@ export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
   existingExecutionWorkspaceStatus?: string | null;
   requestedExistingBranch?: string | null;
   existingExecutionWorkspaceBranchName?: string | null;
+  reuseDefaultSandboxWorkspace?: boolean;
 }): ExecutionWorkspaceReuseRequestForIssue {
   const requestedExecutionWorkspaceId = readNonEmptyString(
     input.issueExecutionWorkspaceId,
@@ -5571,7 +5574,8 @@ export function resolveExecutionWorkspaceReuseRequestForIssue(input: {
     readNonEmptyString(input.existingExecutionWorkspaceBranchName) ===
       requestedExistingBranch;
   const requestedShouldReuseExisting =
-    input.issueExecutionWorkspacePreference === "reuse_existing" &&
+    (input.issueExecutionWorkspacePreference === "reuse_existing" ||
+      (input.issueExecutionWorkspacePreference == null && input.reuseDefaultSandboxWorkspace === true)) &&
     requestedExecutionWorkspaceId !== null &&
     existingWorkspaceMatchesRequestedBranch;
 
@@ -6109,6 +6113,20 @@ function buildSessionConfigCategoryValues(input: {
   // the timestamp here makes every comment invalidate an otherwise reusable
   // task session.
   delete workspaceConfig.issueConfigRevisionAt;
+  // A project's updatedAt also changes for its title, description, and other
+  // metadata. Compare the effective project policy and workspace settings
+  // below, not that timestamp, or an unrelated edit drops the native session
+  // while its reusable sandbox still contains the original provider state.
+  delete workspaceConfig.projectConfigRevisionAt;
+  // First sandbox startup pins the effective mode onto the issue. An inherited
+  // mode and that identical explicit pin describe the same execution contract.
+  // Keep other issue settings (network, credentials, etc.) in the fingerprint.
+  if (typeof workspaceConfig.effectiveMode === "string") {
+    workspaceConfig.issueSettings = {
+      ...parseObject(workspaceConfig.issueSettings),
+      mode: workspaceConfig.effectiveMode,
+    };
+  }
   // This row is runtime state, not requested configuration. It is absent
   // before the first reusable run is realized and present on the next turn;
   // fingerprinting that transition would rotate the native session exactly
@@ -6181,12 +6199,38 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
     subcategories: EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES,
     secretManifest,
   });
+  // Pre-normalization releases hashed the project timestamp and the issue's
+  // raw mode setting. Accept only an exact old-algorithm hash of the current
+  // effective configuration, never a blanket exemption for workspace changes.
+  // A successful run publishes the new fingerprint through the usual path.
+  const legacyWorkspace: Record<string, unknown> = {
+    ...categoryValues.workspaceConfig,
+    projectConfigRevisionAt: parseObject(input.workspaceConfig).projectConfigRevisionAt,
+    issueSettings: parseObject(input.workspaceConfig).issueSettings,
+  };
+  const legacyWorkspaceVariants = [legacyWorkspace];
+  const legacyIssueSettings = parseObject(legacyWorkspace.issueSettings);
+  if (legacyIssueSettings.mode === legacyWorkspace.effectiveMode) {
+    const inheritedSettings = { ...legacyIssueSettings };
+    delete inheritedSettings.mode;
+    legacyWorkspaceVariants.push({ ...legacyWorkspace, issueSettings: inheritedSettings });
+    if (Object.keys(inheritedSettings).length === 0) {
+      legacyWorkspaceVariants.push({ ...legacyWorkspace, issueSettings: null });
+    }
+  }
+  const compatibleFingerprints = [...new Set(legacyWorkspaceVariants.map((workspaceConfig) =>
+    createEffectiveRunConfigFingerprints({
+      session: { ...categoryValues, workspaceConfig },
+      secretManifest,
+    }).sessionFingerprint.fingerprint,
+  ))];
   return {
     version: EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION,
     fingerprint: fingerprints.sessionFingerprint.fingerprint,
     categories: [...EFFECTIVE_RUN_SESSION_CONFIG_CATEGORIES],
     categoryFingerprints,
     fingerprints,
+    compatibleFingerprints,
   };
 }
 
@@ -6534,7 +6578,8 @@ export function resolveTaskSessionConfigFreshness(input: {
       );
     } else if (
       storedConfig &&
-      storedConfig.fingerprint !== input.configMetadata.fingerprint
+      storedConfig.fingerprint !== input.configMetadata.fingerprint &&
+      !input.configMetadata.compatibleFingerprints.includes(storedConfig.fingerprint)
     ) {
       changedCategories = changedEffectiveRunSessionConfigCategories({
         previous: storedConfig.categoryFingerprints,
@@ -18849,6 +18894,15 @@ export function heartbeatService(
             : (issueRef?.executionWorkspacePreference ?? null),
           existingExecutionWorkspaceStatus:
             existingExecutionWorkspace?.status ?? null,
+          // Older per-turn runs recorded a task-owned workspace but left its
+          // reuse preference unset. Recover that binding without interpreting
+          // an explicit workspace choice as an upgrade default. Lease identity
+          // and configuration freshness still gate the actual restoration.
+          reuseDefaultSandboxWorkspace:
+            shouldBindReusableSandboxWorkspace(selectedEnvironmentForConfig) &&
+            existingExecutionWorkspace?.companyId === agent.companyId &&
+            existingExecutionWorkspace?.sourceIssueId === issueId &&
+            existingExecutionWorkspace?.projectId === issueRef?.projectId,
         });
       const requestedShouldReuseExisting =
         workspaceReuseRequest.requestedShouldReuseExisting;
@@ -19415,10 +19469,8 @@ export function heartbeatService(
         issueRef?.executionWorkspacePreference ?? null;
       let issueExecutionWorkspaceModeForRun =
         issueExecutionWorkspaceSettings?.mode ?? null;
-      const warmReusableExecutionWorkspace =
-        selectedEnvironmentForConfig?.driver === "sandbox" &&
-        selectedEnvironmentConfigForFingerprint.reuseLease === true &&
-        selectedEnvironmentConfigForFingerprint.runnerLifecycleMode === "warm";
+      const reusableSandboxExecutionWorkspace =
+        shouldBindReusableSandboxWorkspace(selectedEnvironmentForConfig);
       const bindIssueToPersistedExecutionWorkspace = async (
         workspace: ExecutionWorkspace | null,
       ) => {
@@ -19432,7 +19484,7 @@ export function heartbeatService(
           issueRef?.executionWorkspacePreference === "reuse_existing" ||
           requestedExecutionWorkspaceMode === "isolated_workspace" ||
           requestedExecutionWorkspaceMode === "operator_branch" ||
-          warmReusableExecutionWorkspace;
+          reusableSandboxExecutionWorkspace;
         const nextIssuePatch: Record<string, unknown> = {};
         if (issueExecutionWorkspaceIdForRun !== workspace.id) {
           nextIssuePatch.executionWorkspaceId = workspace.id;
@@ -19455,8 +19507,8 @@ export function heartbeatService(
           };
         }
         if (Object.keys(nextIssuePatch).length > 0) {
-          if (warmReusableExecutionWorkspace && !isolatedWorkspacesEnabled) {
-            await measureSandboxOperation("heartbeat.bind_warm_sandbox_workspace", { operationIndex: 58 }, async () => (bindWarmSandboxWorkspace(db, {
+          if (reusableSandboxExecutionWorkspace && !isolatedWorkspacesEnabled) {
+            await measureSandboxOperation("heartbeat.bind_reusable_sandbox_workspace", { operationIndex: 58 }, async () => (bindReusableSandboxWorkspace(db, {
               companyId: agent.companyId, issueId, runId: run.id, agentId: agent.id, workspaceId: workspace.id,
             })));
           } else {
@@ -20037,6 +20089,24 @@ export function heartbeatService(
           updatedAt: new Date(),
         })
         .where(eq(heartbeatRuns.id, run.id))));
+      if (taskSessionForRun?.lastRunId && previousSessionParams && issueId
+        && !explicitResumeSessionParams && !explicitResumeSessionDisplayId
+        && ["codex_local", "claude_local"].includes(agent.adapterType)
+        && executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
+        && executionTarget.sandboxLeaseAcquisition?.outcome === "resumed"
+        && !parseObject(previousSessionParams.remoteExecution).providerLeaseId) {
+        const previousRun = await db.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, taskSessionForRun.lastRunId),
+          eq(heartbeatRuns.companyId, agent.companyId),
+          eq(heartbeatRuns.agentId, agent.id),
+        )).then((rows) => rows[0] ?? null);
+        previousSessionParams = recoverLegacySandboxSession({
+          adapterType: agent.adapterType, params: previousSessionParams, target: executionTarget,
+          companyId: agent.companyId, agentId: agent.id, taskId: issueId,
+          responsibleUserId: run.responsibleUserId ?? null,
+          executionWorkspaceId: persistedExecutionWorkspace?.id ?? null, previousRun,
+        });
+      }
       const runtimeSessionResolution = resolveRuntimeSessionParamsForWorkspace({
         agentId: agent.id,
         previousSessionParams,
@@ -20600,6 +20670,7 @@ export function heartbeatService(
           workspaceId: persistedExecutionWorkspace?.id ?? null,
         });
         let nativeExecution: NativeExecutionInput | null = null;
+        let freshNativeSessionAuthority: { runId: string; normalizedSessionId: string } | undefined;
         let nativeRunnerInstanceId: string | null = null;
         if (nativeRuntimeResolution.kind === "native") {
           if (!issueRef) {
@@ -20976,6 +21047,13 @@ export function heartbeatService(
                 });
               }
             }
+          }
+          // A retained physical sandbox may host a newly minted conversation
+          // after an intentional reset. Resume and restart paths never receive
+          // this authority; the executor also requires an absent session root.
+          if (!persistedNativeExecutionInput && !run.nativeSessionId &&
+              nativeSessionId !== resumableTaskSessionId) {
+            freshNativeSessionAuthority = { runId: run.id, normalizedSessionId: nativeSessionId };
           }
           const nativeSandboxLifecycle = resolveNativeSandboxLifecycle({
             adapterType: agent.adapterType,
@@ -21548,6 +21626,7 @@ export function heartbeatService(
                       runnerInstanceId: nativeRunnerInstanceId,
                       leaseOwner: runOptions.nativeLeaseOwner,
                       restartRecovery: runOptions.nativeRestartRecovery,
+                      freshSessionAuthority: freshNativeSessionAuthority,
                       backend:
                         options.nativeSessionBackendFactory?.(nativeExecution),
                       useRunnerd: agent.adapterType === "paperclip_runner",
@@ -23081,7 +23160,7 @@ export function heartbeatService(
         }
         if (workFolderSaveFailed && workFolderLeaseId) {
           const unsavedLeaseId = workFolderLeaseId;
-          await measureSandboxOperation("heartbeat.retain_unsaved_work_folder_lease.catch", { operationIndex: 250 }, async () => (retainUnsavedWorkFolderLease(db, { id: unsavedLeaseId, companyId: run.companyId }).catch((error) => {
+          await measureSandboxOperation("heartbeat.retain_unsaved_work_folder_lease.catch", { operationIndex: 250 }, async () => (retainUnsavedWorkFolderLease(db, { id: unsavedLeaseId, companyId: run.companyId }, { runSaveFailed: true }).catch((error) => {
             logger.error({ err: error, runId: run.id }, "Could not record work folder retention; lease remains active");
           })));
         }
