@@ -106,7 +106,23 @@ test('different branches have distinct stable URLs, including names that sanitiz
   const branches = ['feature/foo', 'feature-foo', 'Feature/foo', 'master', 'feature_foo', 'a'.repeat(100), 'a'.repeat(101)];
   const urls = branches.map(branch => storybookDestination({ ...input, branch }).url);
   assert.equal(new Set(urls).size, branches.length);
-  assert.ok(urls.every(url => /^https:\/\/example.cloudfront.net\/storybook\/branches\/[a-z0-9-]+\/index.html$/.test(url)));
+  assert.ok(urls.every(url => /^https:\/\/example.cloudfront.net\/storybook\/branches\/[A-Za-z0-9_~\-]+\/$/.test(url)));
+  assert.equal(storybookDestination({ ...input, branch: 'master' }).url,
+    'https://example.cloudfront.net/storybook/branches/master/');
+  assert.equal(storybookDestination(input).url,
+    'https://example.cloudfront.net/storybook/branches/feature~2Ffoo/');
+});
+test('bookmark paths cannot collide with other branches or existing immutable build directories', () => {
+  const branches = ['feature/foo', 'feature~2Ffoo', '../master', 'master/index.html',
+    'master', storybookDestination({ ...input, branch: 'master' }).branchKey,
+    'a'.repeat(1000), 'a'.repeat(1001), 'café', 'caf~C3~A9'];
+  const destinations = branches.map(branch => storybookDestination({ ...input, branch }));
+  assert.equal(new Set(destinations.map(d => d.url)).size, branches.length);
+  for (const d of destinations) {
+    assert.doesNotMatch(d.bookmarkPrefix.slice('storybook/branches/'.length), /[/.]/);
+    assert.ok(Buffer.byteLength(`${d.bookmarkPrefix}/index.html`) <= 1024);
+    assert.ok(destinations.every(other => d.bookmarkPrefix !== other.prefix));
+  }
 });
 test('redeploying a branch preserves its entry URL and creates a new build URL', () => {
   const a = storybookDestination(input);
@@ -166,10 +182,12 @@ function publishFixture(options = {}) {
 test('publisher uploads a complete build then updates only that branch entry', () => {
   const { result, uploads } = publishFixture();
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(uploads.length, 2);
+  assert.equal(uploads.length, 3);
   const d = storybookDestination(input);
   assert.ok(uploads[0].includes(`s3://${input.bucket}/${d.buildPrefix}/`));
   assert.ok(uploads[1].includes(`s3://${input.bucket}/${d.prefix}/index.html`));
+  assert.ok(uploads[2].includes(`s3://${input.bucket}/${d.bookmarkPrefix}/index.html`));
+  assert.ok(uploads[2].includes('no-cache,max-age=0,must-revalidate'));
   assert.ok(uploads[0].includes('--no-follow-symlinks'));
   assert.doesNotMatch(JSON.stringify(uploads), /--delete/);
 });
