@@ -1,3 +1,4 @@
+import { ExecutionBlockerNotice } from "../components/ExecutionBlockerNotice";
 import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { EmailThreadProvider } from "../components/EmailMessageCard";
@@ -7659,23 +7660,7 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
               }
             >
               {issue.executionBlocker && (
-                <div
-                  role="status"
-                  className="px-(--sz-execution-blocker-inline) py-(--sz-execution-blocker-block) text-sm text-muted-foreground"
-                >
-                  <span>
-                    Work cannot start. {issue.executionBlocker.nextAction}
-                  </span>{" "}
-                  {issue.executionBlocker.runId &&
-                    issue.executionBlocker.agentId && (
-                      <Link
-                        className="underline"
-                        to={`/agents/${issue.executionBlocker.agentId}/runs/${issue.executionBlocker.runId}`}
-                      >
-                        View stopped run
-                      </Link>
-                    )}
-                </div>
+                <ExecutionBlockerNotice companyId={issue.companyId} issueId={issue.id} blocker={issue.executionBlocker} onRetried={invalidateIssueDetail} />
               )}
               {resolvedDetailTab === "chat" ? (
                 <IssueDetailChatTab

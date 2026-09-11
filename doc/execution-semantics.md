@@ -154,6 +154,11 @@ New comments received during an execution hold retain their individual deferred 
 
 The conversation groups repeated empty pre-start reconciliation cancellations into a neutral waiting notice. Started runs, actual startup failures, and run history remain inspectable. No historical run records are deleted.
 
+The legacy remote ACP process-session relay runs on the control-plane host. Its
+launch command uses the host's absolute Node executable even when the adapter's
+launch environment is sanitized for a remote sandbox; the sandbox PATH remains
+owned by the sandbox image.
+
 ### Pre-dispatch configuration validation
 
 Pre-dispatch configuration validation is a distinct gate that runs after ownership and checkout are resolved but before the control plane actually dispatches a run.
@@ -846,7 +851,7 @@ Local recovery records a server-authored stop receipt before it clears a verifie
 
 If cleanup or another execution gate is still pending, the message stays in its existing queue receipt. Startup and periodic scheduling reconsider up to 50 due receipts per pass, at most once per 30 seconds per receipt, without calling a model or resetting recovery attempts. Cleanup callbacks use the same admission path. The issue lock prevents concurrent workers from delivering an adopted or discarded receipt again. The queued-message area shows the current wait reason. Pauses, approvals, budgets, ownership, and external chat authorization remain enforced. A message sent before the run finished does not grant new post-stop authority.
 
-Historical legacy interruption holds for conversational adapters no longer block new messages or Resume. Classification uses the run’s saved adapter invocation or continuation policy, never the agent’s current adapter settings. Missing historical adapter evidence retains the hold. A terminal row with a live predecessor process or unreleased environment lease still blocks actual admission and Resume. Retry scheduling can happen before cleanup, but grants no execution authority. Recovery folds their obsolete no-replay bookkeeping without changing task ownership, status, or automatically waking old work. The audit trail remains readable. Native integrity and ownership holds, and non-conversational adapter holds, remain enforced.
+Historical legacy interruption holds for conversational adapters no longer block new messages or Resume. Automatic classification uses the server-owned adapter identity saved atomically at run claim, the saved adapter invocation, or the continuation policy, never the agent’s current adapter settings. Missing historical adapter evidence retains the automatic hold; an explicit user continuation can retire it after proving the predecessor stopped. A terminal row with a live predecessor process, an unreleased environment lease, or failed/pending cleanup still blocks actual admission and Resume; a release timestamp alone does not prove cleanup succeeded. Retry scheduling can happen before cleanup, but grants no execution authority. Recovery folds their obsolete no-replay bookkeeping without changing task ownership, status, or automatically waking old work. The audit trail remains readable. Native integrity and ownership holds, and non-conversational adapter holds, remain enforced.
 
 The server projection remains available for diagnostics. Normal working, finishing, and interaction waits add no badges or cards to task lists or feeds. Active transcript headers keep saying Working during automatic retry and execution confirmation; attempts, causes, and recovery decisions belong in the run log. Recovery uses the existing transcript and run log rather than adding a reconciliation form. A cancelled run that never started says “Couldn't start” instead of implying that the agent answered.
 
@@ -870,16 +875,23 @@ new run. Preserve the baseline across recovery of the same run and start a new
 delta when attaching a new run. Other stale-event and authority checks remain.
 
 
-### Explicit user continuation after a native failure
+### Explicit user continuation after execution failure
 
 An execution recovery hold blocks automatic replay. A new authenticated user
-comment can authorize a fresh native conversation turn after the predecessor's
+comment or exact failed-run Retry can authorize a fresh native or legacy
+conversation turn after the predecessor's
 execution is confirmed stopped. This is a new request, not another automatic
 attempt in the failed incident. The old attempt count and unknown action outcomes
-remain unchanged.
+remain unchanged. Known non-conversation adapter evidence still requires its
+original reconciliation flow even if the agent's current settings change.
+Pre-upgrade runs with no adapter evidence may receive a new explicit user turn
+only after termination is proven; their old adapter and action outcomes remain
+unknown, and they do not gain automatic replay eligibility.
 
 Admission validates the persisted comment's author, task, and time against every
-held predecessor. An agent-authored comment, an old queued request, or a generic
+held predecessor. Retry validates the selected failed run's company, task, and
+agent and preserves that run's identity through admission and history loading.
+Duplicate Retry requests adopt the same successor. An agent-authored comment, an old queued request, or a generic
 system wake cannot release a hold. The source task keeps its assignee. Process
 ownership, active controllers, cleanup leases, pause, approval, budget, and normal
 execution gates still apply. Dependency-blocked interaction mode remains limited
@@ -891,7 +903,7 @@ request, task history, completed work, and the interruption notice. It receives
 no instruction to repeat old tool calls. Later messages cannot reset the old
 incident's retry budget or create another automatic replacement for it.
 
-Native admission verifies local process identities for local runs. Remote runs
+Explicit continuation verifies local process identities for local runs. Remote runs
 instead require a provider termination receipt for every lease, with successful
 cleanup and no active ownership. This applies to both per-turn and warm native
 runners. A stop receipt retires only the settled cleanup owner for that exact company, run, provider, and sandbox resource, without changing its checkpoint or recorded action outcomes. Independent remote sandboxes have separate cleanup gates, including when one run owns multiple sandboxes. Successful pending-cleanup retries persist the same receipt and reconsider deferred user messages; a delivery failure never reverts successful provider cleanup. A failed checkpoint does not prevent destruction of a terminal run's isolated sandbox; busy ownership still prevents it.
@@ -899,6 +911,15 @@ Missing receipts and failed cleanup retain the hold. Older providers that return
 no receipt remain supported but cannot authorize remote continuation. A terminal
 database status or a PID check on the wrong host is insufficient.
 No historical task is automatically awakened by this change.
+
+Startup waits for provider plugin initialization before remote recovery and
+lease cleanup. The task's blocked notice offers Retry, and a refused retry
+shows the actual recovery hold. Each explicit user Retry can make one scoped
+cleanup attempt for its failed run even after automatic cleanup is exhausted.
+If that attempt fails, a later user Retry may try again after the provider
+recovers. The failed cleanup keeps the execution hold in place. Retry does not reset
+the automatic limit or clean up another task's leases. Provider shutdown must
+still be confirmed before a new conversation is admitted.
 
 ### Explicit Recovery Action
 

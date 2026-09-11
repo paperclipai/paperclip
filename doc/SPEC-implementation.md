@@ -1568,10 +1568,10 @@ Export/import behavior in V1:
 - import preview reports skill-policy and legacy-grant mappings before apply and rejects unknown policy schema versions
 - GitHub imports warn on unpinned refs instead of blocking
 
-### User messages after native execution recovery stops
+### User continuation after execution recovery stops
 
-An authenticated user message can start a fresh native conversation turn once
-the prior execution is confirmed stopped. Retain the source history and uncertain
+An authenticated user message or an exact failed-run Retry can start a fresh
+native or legacy conversation turn once the prior execution is confirmed stopped. Retain the source history and uncertain
 action outcomes; do not replay tool calls or reset the failed incident's automatic
 retry budget. Existing pause, approval, budget, ownership, and dependency gates
 remain in effect. See `doc/execution-semantics.md` for admission and stop-proof

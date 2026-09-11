@@ -2346,6 +2346,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(0);
   });
 
+  it("recovers legacy startup before adapter.invoke using the claimed adapter identity", async () => {
+    const f = await seedRunFixture({ agentStatus: "idle", adapterType: "claude_local" });
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: {
+      adapterDispatch: { adapterType: "claude_local" },
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    await heartbeatService(db).reapOrphanedRuns();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(source.resultJson).toMatchObject({ conversationContinuation: "continue_conversation_v1" });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agentId));
+    expect(runs.filter(run => run.retryOfRunId === f.runId)).toHaveLength(1);
+  });
+
   it("schedules one conversation continuation after losing the provider", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
