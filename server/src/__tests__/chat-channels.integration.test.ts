@@ -1033,6 +1033,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       if (fixtureCompanies.size > 0) {
         await db.update(chatEndpoints).set({ status: "paused" })
           .where(and(inArray(chatEndpoints.companyId, [...fixtureCompanies]), eq(chatEndpoints.status, "active")));
+        // The milestone scanner also considers paused endpoints while their
+        // conversations are active. Retire those bindings after assertions.
+        await db.update(chatConversations).set({ state: "completed" })
+          .where(and(inArray(chatConversations.companyId, [...fixtureCompanies]), inArray(chatConversations.state, ["active", "waiting"])));
       }
       fixtureServices.clear();
       fixtureCompanies.clear();
