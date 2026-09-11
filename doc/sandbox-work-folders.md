@@ -105,6 +105,9 @@ workspace, environment, provider sandbox, working directory, and conversation
 all match. An explicit conflicting identity is never overwritten. Local and SSH
 session matching remain separate; a replacement sandbox cannot inherit a
 conversation merely because its working-directory path is the same.
+Old codecs that recorded the host checkout path are translated to the sandbox
+path only when both the saved workspace and its local realization prove that
+exact host path and project-workspace ID. Arbitrary path changes still reset.
 Codex configuration refresh replaces only the managed auth/config/skills entries;
 it preserves the sandbox's rollout files and SQLite state, including WAL files.
 Those provider-session files stay outside shared work-folder collections.
@@ -584,6 +587,8 @@ that digest before installing dependencies, failing if registry resolution
 has changed. Transfer those artifacts to the staging bucket using conditional
 creates, publishing the manifest last. Do not create GitHub releases or publish
 npm packages for this flow.
+The reusable Cloud build workflow receives those staging inputs explicitly;
+splitting the workflow must not drop the app/migrator dependency-integrity gate.
 
 Cloud enables this lane only in staging through
 `CLOUD_HARNESS_STAGING_ARTIFACT_BASE_URL`. Resolve `preview:<full SHA>` through

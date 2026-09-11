@@ -36,6 +36,16 @@ export function recoverLegacySandboxSession(input: {
   const context = record(previous.contextSnapshot);
   const environment = record(context.paperclipEnvironment);
   const realization = record(environment.workspaceRealization);
+  const workspace = record(context.paperclipWorkspace);
+  const local = record(realization.local);
+  // Old CLI codecs persisted the host checkout path even when the provider
+  // conversation lived in the sandbox. Translate only the exact path and
+  // workspace recorded by the successful host run; never accept another path.
+  const savedHostCwd = typeof params.cwd === "string" && params.cwd.length > 0
+    && params.cwd === workspace.cwd && params.cwd === local.path
+    && typeof params.workspaceId === "string" && params.workspaceId.length > 0
+    && params.workspaceId === workspace.workspaceId
+    && params.workspaceId === local.projectWorkspaceId;
   if (previous.status !== "succeeded"
     || previous.companyId !== input.companyId || previous.agentId !== input.agentId
     || previous.responsibleUserId !== input.responsibleUserId
@@ -45,13 +55,14 @@ export function recoverLegacySandboxSession(input: {
     || environment.driver !== "sandbox" || environment.id !== target.environmentId
     || realization.provider !== target.providerKey
     || realization.providerLeaseId !== target.sandboxLeaseAcquisition.providerLeaseId
-    || params.cwd !== target.remoteCwd || environment.remoteCwd !== params.cwd
+    || environment.remoteCwd !== target.remoteCwd
+    || (params.cwd !== target.remoteCwd && !savedHostCwd)
     || (params.remoteExecution != null && (
       saved.leaseId !== environment.leaseId || saved.environmentId !== environment.id
       || saved.providerKey !== target.providerKey || saved.remoteCwd !== params.cwd
     ))) return params;
   return {
-    ...params, remoteExecution: adapterExecutionTargetSessionIdentity(target),
+    ...params, cwd: target.remoteCwd, remoteExecution: adapterExecutionTargetSessionIdentity(target),
     ...(input.adapterType === "claude_local" && !params.mcpServerIdentity
       ? { legacyPlatformMcpSession: true } : {}),
   };

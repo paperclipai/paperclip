@@ -89,6 +89,25 @@ describe("legacy sandbox conversation persistence", () => {
       expect(recoverLegacySandboxSession(input)).toBe(input.params);
     }
   });
+  it.each(["codex_local", "claude_local"])("recovers %s host cwd only from the exact recorded workspace", (adapterType) => {
+    const input = fixture(); input.adapterType = adapterType;
+    input.params = { ...input.params, cwd: "/host/project", workspaceId: "project-workspace" };
+    const context = input.previousRun!.contextSnapshot as Record<string, any>;
+    context.paperclipWorkspace = { cwd: "/host/project", workspaceId: "project-workspace" };
+    context.paperclipEnvironment.workspaceRealization.local = { path: "/host/project", projectWorkspaceId: "project-workspace" };
+    expect(recoverLegacySandboxSession(input)).toMatchObject({ cwd: target.remoteCwd, remoteExecution: adapterExecutionTargetSessionIdentity(target) });
+    for (const mutate of [
+      (copy: typeof input) => { copy.params!.cwd = "/another/project"; },
+      (copy: typeof input) => { copy.params!.workspaceId = "another-workspace"; },
+      (copy: typeof input) => { delete (copy.previousRun!.contextSnapshot as any).paperclipWorkspace; },
+      (copy: typeof input) => { (copy.previousRun!.contextSnapshot as any).paperclipEnvironment.workspaceRealization.local.path = "/another/project"; },
+      (copy: typeof input) => { (copy.previousRun!.contextSnapshot as any).paperclipEnvironment.remoteCwd = "/another/remote"; },
+    ]) {
+      const changed = structuredClone(input); mutate(changed);
+      expect(recoverLegacySandboxSession(changed)).toBe(changed.params);
+    }
+  });
+
   it("keeps legacy host-lease matching when no physical identity is available", () => {
     const oldTarget = { ...target, sandboxLeaseAcquisition: undefined };
     const saved = adapterExecutionTargetSessionIdentity(oldTarget);
