@@ -101,7 +101,10 @@ describe("Codex ACPX runtime adapter", () => {
     });
   });
 
-  it.each([["claude" as const, "claude-sonnet-5", "claude-sonnet-5"]])(
+  it.each([
+    ["claude" as const, "claude-sonnet-5", "claude-sonnet-5"],
+    ["claude" as const, "custom-claude-model", "custom-claude-model"],
+  ])(
     "opens the qualified %s session through the verified lease",
     async (agent, model, providerModel) => {
       const runtime = fakeRuntime();
@@ -109,7 +112,7 @@ describe("Codex ACPX runtime adapter", () => {
       const options = openOptions(command);
       let runtimeOptions: AcpRuntimeOptions | undefined;
       options.profile = resolveQualifiedAcpxProfile(agent, model);
-      options.launchEnvironment = { PATH: "/verified/bin" };
+      options.launchEnvironment = { PATH: "/verified/bin", ANTHROPIC_CUSTOM_MODEL_OPTION: "stale-model" };
 
       await openCodexAcpxRuntime(options, {
         createRegistry: ({ overrides }) => {
@@ -128,6 +131,7 @@ describe("Codex ACPX runtime adapter", () => {
       expect(runtimeOptions?.spawnEnvironment?.()).toEqual({
         PATH: "/verified/bin",
         PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+        ANTHROPIC_CUSTOM_MODEL_OPTION: providerModel,
       });
       expect(runtime.ensureSession).toHaveBeenCalledWith(
         expect.objectContaining({
