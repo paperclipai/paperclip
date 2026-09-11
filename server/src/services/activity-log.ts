@@ -90,7 +90,45 @@ function readNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActivityInput) {
+export interface ActivityRunRef {
+  id: string;
+  responsibleUserId: string | null;
+}
+
+/**
+ * Resolve the `heartbeat_runs` row an activity claims to belong to, or `null` when there is
+ * no such row for this company.
+ *
+ * `activity_log.run_id` is a foreign key onto `heartbeat_runs.id`, and nothing upstream of
+ * here proves the caller's run id is real: any client may send an `X-Paperclip-Run-Id` header,
+ * and only the signed-agent-JWT path checks it against a claim. A well-formed-but-unknown UUID
+ * therefore used to reach the INSERT and violate the FK *after* the mutation it describes had
+ * already committed -- taking down the whole request with a 500 and leaving an entity on the
+ * board that the client never learned the id of. Resolving the row up front lets the caller
+ * drop an unusable reference instead, which is also the only transaction-safe option: many
+ * callers pass a `tx` handle, where a failed statement poisons the surrounding transaction and
+ * cannot be recovered by catching the error.
+ */
+export async function loadActivityRunRef(
+  db: Db,
+  companyId: string,
+  runId: string | null | undefined,
+): Promise<ActivityRunRef | null> {
+  const normalized = readNonEmptyString(runId);
+  if (!normalized || !isUuidLike(normalized)) return null;
+  return db
+    .select({ id: heartbeatRuns.id, responsibleUserId: heartbeatRuns.responsibleUserId })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, normalized)))
+    .then((rows) => rows[0] ?? null);
+}
+
+export async function resolveResponsibleUserIdForActivity(
+  db: Db,
+  input: LogActivityInput,
+  /** Pre-resolved run row, so a caller that already looked it up does not query twice. */
+  preloadedRun?: ActivityRunRef | null,
+) {
   if (input.responsibleUserIdOverride !== undefined) {
     return readNonEmptyString(input.responsibleUserIdOverride);
   }
@@ -98,11 +136,9 @@ export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActi
 
   const runId = readNonEmptyString(input.runId);
   if (runId && isUuidLike(runId)) {
-    const run = await db
-      .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, runId)))
-      .then((rows) => rows[0] ?? null);
+    const run = preloadedRun !== undefined
+      ? preloadedRun
+      : await loadActivityRunRef(db, input.companyId, runId);
     const runResponsibleUserId = readNonEmptyString(run?.responsibleUserId);
     if (runResponsibleUserId) return runResponsibleUserId;
   }
@@ -159,7 +195,11 @@ export function publishActivity(publication: ActivityPublication) {
 
 export async function persistActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = await redactActivityDetails(db, input.details ?? null);
-  const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
+  const run = await loadActivityRunRef(db, input.companyId, input.runId);
+  const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input, run);
+  // Only reference a run we just proved exists; an unknown id would violate the FK and fail
+  // the already-committed mutation this row is describing. See loadActivityRunRef.
+  const runId = run?.id ?? null;
   const [activity] = await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -168,7 +208,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId,
     responsibleUserId,
     details: redactedDetails,
   }).returning({ id: activityLog.id });
@@ -180,7 +220,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId,
     responsibleUserId,
     details: redactedDetails,
   };
@@ -198,7 +238,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
         payload: {
           ...redactedDetails,
           agentId: input.agentId ?? null,
-          runId: input.runId ?? null,
+          runId,
           responsibleUserId,
         },
       }
