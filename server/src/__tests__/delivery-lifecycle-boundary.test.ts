@@ -925,6 +925,10 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
       attempt, status: "requested", ownerAgentId: unit.ownerAgentId,
       candidateGeneration: unit.candidateGeneration, headSha: HEAD,
     }))).returning();
+    await db.insert(deliveryRepairAttempts).values({
+      companyId, unitId: unit.id, reasonCode: "review_blocking_findings",
+      attempt: 4, status: "exhausted",
+    });
     for (let round = 0; round < 4; round += 1) {
       pipeline.provider.body = `P1: remaining defect ${round}`;
       await pipeline.reconciler.reconcileUnit({ companyId, unitId: unit.id, trigger: "sweep" });
@@ -953,6 +957,41 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     ]);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
       .toMatchObject([{ agentId: unit.ownerAgentId, contextSnapshot: { issueId: pipeline.issue.id } }]);
+  });
+
+  it("dispatches through a single-connection pool without holding admission locks", async () => {
+    const pipeline = await governedPipeline();
+    const { companyId, unit } = pipeline;
+    const single = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    const { policy, queue, events } = services(pipeline.github);
+    const units = deliveryUnitService(single, {
+      policy, queue, events, github: pipeline.github,
+      requestOwnerWake: async (agentId) => single.transaction(async (tx) => {
+        const [run] = await tx.insert(heartbeatRuns).values({
+          companyId, agentId, invocationSource: "automation", status: "queued",
+        }).returning();
+        return run;
+      }),
+    });
+    // Bound a real database deadlock so finally can release the poisoned pool.
+    // Fake time cannot advance PostgreSQL I/O; the passing path never waits.
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        units.dispatchOwnerWake({
+          companyId, agentId: unit.ownerAgentId!, reason: "delivery_repair_requested",
+          payload: { issueId: pipeline.issue.id }, idempotencyKey: `delivery_repair:${unit.id}:single`,
+        }),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("Admission held the only database connection")), 5_000);
+        }),
+      ]);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId)))
+        .toMatchObject([{ agentId: unit.ownerAgentId, status: "queued" }]);
+    } finally {
+      clearTimeout(timer);
+      await single.$client.end({ timeout: 1 });
+    }
   });
 
   it("exposes exhausted repairs instead of claiming a nonexistent owner continuation", async () => {

@@ -267,18 +267,30 @@ export function deliveryUnitService(
     contextSnapshot?: Record<string, unknown>;
     idempotencyKey: string;
   }): Promise<{ intentId: string | null; dispatched: boolean }> {
-    return db.transaction(async (tx) => {
+    const claim = await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${input.companyId}:${input.idempotencyKey}`}, 0))`);
       const [existing] = await tx
-        .select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId, status: agentWakeupRequests.status })
+        .select({
+          id: agentWakeupRequests.id, runId: agentWakeupRequests.runId,
+          status: agentWakeupRequests.status, claimedAt: agentWakeupRequests.claimedAt,
+        })
         .from(agentWakeupRequests)
         .where(and(
           eq(agentWakeupRequests.companyId, input.companyId),
           eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
         ))
-        .orderBy(sql`${agentWakeupRequests.runId} is not null desc`, desc(agentWakeupRequests.createdAt))
+        .orderBy(
+          sql`${agentWakeupRequests.runId} is not null desc`,
+          sql`${agentWakeupRequests.status} = 'claimed' desc`,
+          desc(agentWakeupRequests.createdAt),
+        )
         .limit(1);
-      if (existing?.runId) return { intentId: existing.id, dispatched: true };
+      if (existing?.runId) return { intentId: existing.id, dispatched: true, claimedAt: null };
+      const now = new Date();
+      if (existing?.status === "claimed" && existing.claimedAt
+        && now.getTime() - existing.claimedAt.getTime() < 60_000) {
+        return { intentId: existing.id, dispatched: false, claimedAt: null };
+      }
       const [intent] = existing ? [existing] : await tx
         .insert(agentWakeupRequests)
         .values({
@@ -302,39 +314,52 @@ export function deliveryUnitService(
         .onConflictDoNothing()
         .returning({ id: agentWakeupRequests.id });
       const intentId = intent?.id ?? null;
-      if (!intentId || !deps.requestOwnerWake) return { intentId, dispatched: false };
-      try {
-        const run = await deps.requestOwnerWake(input.agentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: input.reason,
-          payload: input.payload,
-          ...(input.contextSnapshot ? { contextSnapshot: input.contextSnapshot } : {}),
-          idempotencyKey: input.idempotencyKey,
-          requestedByActorType: "system",
-          requestedByActorId: "delivery-controller",
-        }) as { id?: string } | null;
-        await tx
-          .update(agentWakeupRequests)
-          .set({
-            status: run?.id ? "coalesced" : "queued",
-            runId: run?.id ?? null,
-            error: run?.id ? null : "Heartbeat dispatcher queued no run; intent remains for the next sweep",
-            updatedAt: new Date(),
-          })
-          .where(eq(agentWakeupRequests.id, intentId));
-        return { intentId, dispatched: Boolean(run?.id) };
-      } catch (error) {
-        await tx
-          .update(agentWakeupRequests)
-          .set({
-            error: error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000),
-            updatedAt: new Date(),
-          })
-          .where(eq(agentWakeupRequests.id, intentId));
-        return { intentId, dispatched: false };
-      }
+      if (!intentId || !deps.requestOwnerWake) return { intentId, dispatched: false, claimedAt: null };
+      await tx.update(agentWakeupRequests)
+        .set({ status: "claimed", claimedAt: now, updatedAt: now })
+        .where(eq(agentWakeupRequests.id, intentId));
+      return { intentId, dispatched: false, claimedAt: now };
     });
+    if (!claim.intentId || !claim.claimedAt || !deps.requestOwnerWake) return claim;
+
+    // Heartbeat uses this same database pool. The claim must be committed
+    // before calling it, including when the pool has only one connection.
+    const ownedClaim = and(
+      eq(agentWakeupRequests.companyId, input.companyId),
+      eq(agentWakeupRequests.id, claim.intentId),
+      eq(agentWakeupRequests.status, "claimed"),
+      eq(agentWakeupRequests.claimedAt, claim.claimedAt),
+    );
+    try {
+      const run = await deps.requestOwnerWake(input.agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: input.reason,
+        payload: input.payload,
+        ...(input.contextSnapshot ? { contextSnapshot: input.contextSnapshot } : {}),
+        idempotencyKey: input.idempotencyKey,
+        requestedByActorType: "system",
+        requestedByActorId: "delivery-controller",
+      }) as { id?: string } | null;
+      await db.update(agentWakeupRequests)
+        .set({
+          status: run?.id ? "coalesced" : "queued",
+          runId: run?.id ?? null,
+          error: run?.id ? null : "Heartbeat dispatcher queued no run; intent remains for the next sweep",
+          updatedAt: new Date(),
+        })
+        .where(ownedClaim);
+      return { intentId: claim.intentId, dispatched: Boolean(run?.id) };
+    } catch (error) {
+      await db.update(agentWakeupRequests)
+        .set({
+          status: "queued",
+          error: error instanceof Error ? error.message.slice(0, 1000) : String(error).slice(0, 1000),
+          updatedAt: new Date(),
+        })
+        .where(ownedClaim);
+      return { intentId: claim.intentId, dispatched: false };
+    }
   }
 
   async function getUnit(companyId: string, unitId: string) {

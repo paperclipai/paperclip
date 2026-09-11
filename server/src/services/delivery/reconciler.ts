@@ -441,8 +441,9 @@ export function deliveryReconciler(
   }) {
     const [attemptsRow] = await db
       .select({
-        used: sql<number>`count(*) filter (where ${deliveryRepairAttempts.status} = 'dispatched' or ${agentWakeupRequests.runId} is not null)::int`,
+        used: sql<number>`count(*) filter (where ${deliveryRepairAttempts.status} = 'dispatched' or (${deliveryRepairAttempts.status} = 'requested' and ${agentWakeupRequests.runId} is not null))::int`,
         lastAttempt: sql<number>`coalesce(max(${deliveryRepairAttempts.attempt}), 0)::int`,
+        lastActiveAttempt: sql<number>`coalesce(max(${deliveryRepairAttempts.attempt}) filter (where ${deliveryRepairAttempts.status} <> 'exhausted'), 0)::int`,
       })
       .from(deliveryRepairAttempts)
       .leftJoin(agentWakeupRequests, and(
@@ -453,10 +454,12 @@ export function deliveryReconciler(
         eq(deliveryRepairAttempts.companyId, input.companyId),
         eq(deliveryRepairAttempts.unitId, input.unit.id),
         eq(deliveryRepairAttempts.reasonCode, input.reasonCode),
-        inArray(deliveryRepairAttempts.status, ["requested", "dispatched"]),
       ));
-    const attempt = (attemptsRow?.lastAttempt ?? 0) + 1;
-    if ((attemptsRow?.used ?? 0) >= DELIVERY_MAX_REPAIR_ATTEMPTS) {
+    const exhausted = (attemptsRow?.used ?? 0) >= DELIVERY_MAX_REPAIR_ATTEMPTS;
+    const attempt = exhausted
+      ? Math.max((attemptsRow?.lastActiveAttempt ?? 0) + 1, attemptsRow?.lastAttempt ?? 0)
+      : (attemptsRow?.lastAttempt ?? 0) + 1;
+    if (exhausted) {
       await db.insert(deliveryRepairAttempts).values({
         companyId: input.companyId,
         unitId: input.unit.id,
