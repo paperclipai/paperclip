@@ -67,7 +67,12 @@ try {
   } finally {
     clearTimeout(forceTimer);
     clearTimeout(deadlineTimer);
-    await lease.close();
+    try {
+      await lease.close();
+    } finally {
+      // A failed verifier aborts this disposable image-build step. Remove its
+      // temporary HOME even when shutdown or lease cleanup reports a failure.
+      await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
   }
-  await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
