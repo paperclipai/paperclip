@@ -179,7 +179,10 @@ test("commits sharing a short prefix use separate full-SHA image addresses", asy
 test("cloud builds start per commit and preserve tag promotion dependencies", () => {
   const docker = readFileSync(new URL("../.github/workflows/docker.yml", import.meta.url), "utf8");
   const cloud = readFileSync(new URL("../.github/workflows/docker-cloud.yml", import.meta.url), "utf8");
-  assert.match(cloud, /branches: \[master\]/);
+  const readiness = readFileSync(new URL("../.github/workflows/cloud-readiness.yml", import.meta.url), "utf8");
+  assert.match(readiness, /branches: \[master\]/);
+  assert.match(readiness, /uses: \.\/\.github\/workflows\/docker-cloud.yml/);
+  assert.doesNotMatch(cloud, /^  push:/m);
   assert.match(cloud, /workflow_call:/);
   assert.match(cloud, /group: docker-cloud-\$\{\{ github.sha \}\}/);
   assert.match(cloud, /cancel-in-progress: false/);
