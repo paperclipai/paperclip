@@ -6890,8 +6890,8 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
             className={cn("gap-1.5 text-(length:--text-nano)", liveBlueBadge)}
           >
             <span className="relative flex h-1.5 w-1.5">
-              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-blue-500" />
+              <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-(--status-task-in_progress) opacity-75" />
+              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-(--status-task-in_progress)" />
             </span>
             Live
           </Badge>

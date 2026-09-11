@@ -180,7 +180,7 @@ function WaitingStepGlyph({ status }: { status: WaitingBlockerStatus }) {
   if (status === "running") {
     return (
       <span className="flex h-3.5 w-3.5 items-center justify-center" aria-hidden>
-        <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-blue-400" />
+        <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-(--status-task-in_progress)" />
       </span>
     );
   }
@@ -211,7 +211,7 @@ function SuccessfulRunHandoffInFlightNotice({
     >
       <div className="flex items-start gap-2">
         <span className="mt-1 flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden>
-          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-400" />
+          <span className="h-2 w-2 animate-pulse rounded-full bg-(--status-task-in_progress)" />
         </span>
         <p className="min-w-0 leading-5">
           A correction run is in progress — the agent is working. This alert returns if the run
@@ -285,7 +285,7 @@ function WaitingOnLiveWorkNotice({
     >
       <div className="flex items-start gap-2">
         <span className="mt-1.5 flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden>
-          <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-blue-400" />
+          <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-(--status-task-in_progress)" />
         </span>
         <div className="min-w-0 flex-1 space-y-2">
           <div className="space-y-1">
@@ -318,7 +318,7 @@ function WaitingOnLiveWorkNotice({
                     status === "done"
                       ? "bg-blue-500 dark:bg-blue-400"
                       : status === "running"
-                        ? "animate-pulse bg-blue-400"
+                        ? "animate-pulse bg-(--status-task-in_progress)"
                         : "bg-blue-200 dark:bg-blue-500/30",
                   )}
                   style={{ width: `${100 / total}%` }}

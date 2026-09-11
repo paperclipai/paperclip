@@ -178,7 +178,7 @@ function getIconSpec(
   // Heartbeat — animated when active, static otherwise
   if (action.startsWith("heartbeat.")) {
     if (isActive && action === "heartbeat.invoked") {
-      return { kind: "lucide", Icon: Loader2, color: "text-blue-600 dark:text-blue-400", spin: true };
+      return { kind: "lucide", Icon: Loader2, color: "text-(--status-task-in_progress)", spin: true };
     }
     return { kind: "lucide", Icon: Loader2, color: "text-muted-foreground" };
   }

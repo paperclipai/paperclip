@@ -342,10 +342,10 @@ function KanbanCard({
             </Badge>
           ) : null}
           {isLive && (
-            <span className="inline-flex shrink-0 items-center gap-1 text-(length:--text-nano) font-medium text-blue-600 dark:text-blue-400">
+            <span className="inline-flex shrink-0 items-center gap-1 text-(length:--text-nano) font-medium text-(--status-task-in_progress)">
               <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-(--status-task-in_progress) opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-(--status-task-in_progress)" />
               </span>
               {compact ? "Live" : null}
             </span>
