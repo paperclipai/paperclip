@@ -1597,6 +1597,28 @@ pub(crate) fn sanitize_semantic_tool_input(
     input: &Value,
 ) -> Result<Value, DurableRunnerError> {
     let mut sanitized = sanitize_value(input);
+    // Mutation prose is the user's intended work, not a diagnostic. Preserve
+    // ordinary references to a token in these declared text fields; credential
+    // syntax and high-confidence secret values are still scrubbed. All other
+    // fields and operations retain the strict diagnostic policy.
+    let prose_fields: &[&str] = match operation_id {
+        "create_task" => &["title", "description", "initialPlan"],
+        "create_project" => &["name", "description"],
+        "write_document" => &["title", "body", "changeSummary"],
+        _ => &[],
+    };
+    if let Some(sanitized_input) = sanitized.as_object_mut() {
+        for field in prose_fields {
+            if let Some(text) = input.get(*field).and_then(Value::as_str) {
+                sanitized_input.insert(
+                    (*field).to_owned(),
+                    // The tool/API schema bounds business content. A diagnostic
+                    // preview limit must never truncate a plan or document.
+                    Value::String(redact_sensitive_text_values_with_context(text, true)),
+                );
+            }
+        }
+    }
     if !matches!(operation_id, "paperclip_finish" | "paperclip_block") {
         return Ok(sanitized);
     }
@@ -1720,6 +1742,10 @@ pub(crate) fn redact_text(input: &str) -> String {
 }
 
 fn redact_sensitive_text_values(input: &str) -> String {
+    redact_sensitive_text_values_with_context(input, false)
+}
+
+fn redact_sensitive_text_values_with_context(input: &str, semantic_prose: bool) -> String {
     let normalized = input.to_ascii_lowercase();
     let bytes = normalized.as_bytes();
     let mut ranges: Vec<(usize, usize)> = Vec::new();
@@ -1893,6 +1919,7 @@ fn redact_sensitive_text_values(input: &str) -> String {
         ("ghu_", 20),
         ("ghs_", 20),
         ("ghr_", 20),
+        ("github_pat_", 20),
     ] {
         for (start, _) in normalized.match_indices(prefix) {
             if start > 0 && is_name_byte(bytes[start - 1]) {
@@ -2088,12 +2115,12 @@ fn redact_sensitive_text_values(input: &str) -> String {
                     .any(|delimiter| before.ends_with(delimiter))
         };
         let has_hyphenated_count_lead = token_phrase_has_lead("one-");
-        // An explicitly literal/exact token is a requested text value (for
-        // example an acceptance identifier), not a diagnostic credential pair.
-        // Keep this grammatical exception separate from credential syntax:
-        // assignments, quoted values/keys, CLI and compound keys still redact,
-        // as do the independent Bearer, key-prefix and JWT scanners above.
-        let is_literal_token_reference = key == "token"
+        // A bare token reference in declared mutation prose can be an output
+        // requirement. Auth/access/session context, explicit assignment,
+        // quoted credentials and CLI/compound names remain credential pairs.
+        // Known key/JWT/Bearer values are independently scrubbed above.
+        let is_semantic_token_reference = semantic_prose
+            && key == "token"
             && !key_is_compound
             && whitespace_start == start + key.len()
             && separator > whitespace_start
@@ -2102,9 +2129,21 @@ fn redact_sensitive_text_values(input: &str) -> String {
                 .iter()
                 .all(|value| matches!(value, b' ' | b'\t'))
             && quoted_value_start(separator).1.is_none()
-            && ["literal ", "exact "]
-                .iter()
-                .any(|lead| token_phrase_has_lead(lead));
+            && ![
+                "auth ",
+                "authentication ",
+                "authorization ",
+                "access ",
+                "refresh ",
+                "session ",
+                "api ",
+                "security ",
+                "secret ",
+                "credential ",
+                "bearer ",
+            ]
+            .iter()
+            .any(|lead| token_phrase_has_lead(lead));
         let is_benign_token_noun_phrase = key == "token"
             && (!key_is_compound || has_hyphenated_count_lead)
             && whitespace_start == start + key.len()
@@ -2168,7 +2207,7 @@ fn redact_sensitive_text_values(input: &str) -> String {
         let has_whitespace_separator = separator > whitespace_start
             && (key != "authorization" || key_is_compound || has_authorization_scheme)
             && !is_benign_token_noun_phrase
-            && !is_literal_token_reference;
+            && !is_semantic_token_reference;
         if !has_assignment_separator && !has_whitespace_separator {
             continue;
         }
@@ -3178,9 +3217,14 @@ mod tests {
     }
 
     #[test]
-    fn semantic_handoff_preserves_literal_acceptance_identifiers() {
-        let description = "The document body must contain the literal token CHAT250ed7e4dc071. No code changes needed.";
-        let plan = "## Plan\n- Include the literal token CHAT250ed7e4dc071 in the document body.\n- Save the output document.";
+    fn semantic_handoff_preserves_acceptance_identifiers_in_declared_prose() {
+        let description =
+            "The document body must contain the token CHAT250ed7e4dc071. No code changes needed.";
+        let plan = format!(
+            "## Plan\n{}\n- The token CHAT250ed7e4dc071 included somewhere in the body.\n- Save the output document.",
+            "Relevant task context. ".repeat(300),
+        );
+        assert!(plan.len() > 4096);
         let input = json!({
             "title": "Write project description",
             "description": description,
@@ -3193,23 +3237,69 @@ mod tests {
         );
         for text in [
             description,
-            plan,
+            plan.as_str(),
             "Must include the literal token `CHAT66e7813a4f9d1` somewhere in the text.",
             "Include the exact token ACCEPTANCE-42 in the final output.",
         ] {
-            assert_eq!(redact_text(text), text);
             assert_eq!(
-                sanitize_value(&json!({"body": text})),
+                sanitize_semantic_tool_input("write_document", &json!({"body": text})).unwrap(),
                 json!({"body": text})
             );
+            assert_ne!(
+                redact_text(text),
+                text,
+                "diagnostics keep their strict policy"
+            );
         }
+        let config = config(PathBuf::from("unused"));
+        let mut state = DurableState::new(&config);
+        state
+            .enqueue_executor_event(
+                &config,
+                "provider-create-task".to_owned(),
+                "semantic_tool.input".to_owned(),
+                EventPriority::P0,
+                json!({"semantic_tool": {
+                    "schema": "paperclip.prp.semantic_tool.v1",
+                    "schemaVersion": 1,
+                    "phase": "input",
+                    "operationId": "create_task",
+                    "content": {"digest": semantic_value_digest(&input)},
+                    "input": input,
+                }}),
+            )
+            .unwrap();
+        let transmitted = state.outbox[0]
+            .envelope
+            .pointer("/payload/payload/semantic_tool/input")
+            .unwrap();
+        assert_eq!(transmitted, &input);
+        assert_eq!(
+            state.outbox[0]
+                .envelope
+                .pointer("/payload/payload/semantic_tool/content/digest"),
+            Some(&json!(semantic_value_digest(transmitted))),
+        );
+        let document = format!(
+            "{}\nAuthorization: Bearer late-credential\nFINAL-ACCEPTANCE-42",
+            "Document content. ".repeat(400)
+        );
+        let safe =
+            sanitize_semantic_tool_input("write_document", &json!({"body": document})).unwrap();
+        let body = safe["body"].as_str().unwrap();
+        assert!(body.len() > 4096);
+        assert!(body.ends_with("FINAL-ACCEPTANCE-42"));
+        assert!(!body.contains("late-credential"));
     }
 
     #[test]
-    fn literal_token_prose_does_not_exempt_credential_syntax_or_shapes() {
+    fn semantic_prose_does_not_exempt_credential_syntax_or_shapes() {
         for text in [
             "auth token opaque-credential",
-            "the token opaque-credential",
+            "access token opaque-credential",
+            "session token opaque-credential",
+            "refresh token opaque-credential",
+            "authentication token opaque-credential",
             "literal token=opaque-credential",
             "literal token:opaque-credential",
             "literal --token opaque-credential",
@@ -3218,14 +3308,29 @@ mod tests {
             "literal token \"opaque-credential\"",
         ] {
             assert!(!redact_text(text).contains("opaque-credential"), "{text}");
+            let input = json!({"description": text, "initialPlan": text});
+            assert!(
+                !sanitize_semantic_tool_input("create_task", &input)
+                    .unwrap()
+                    .to_string()
+                    .contains("opaque-credential"),
+                "{text}"
+            );
         }
         for secret in [
             "sk-proj-secretvalue123456",
             "ghp_secretvalue12345678901234567890",
+            "github_pat_secretvalue12345678901234567890",
             "eyJhbGciOiJIUzI1NiJ9.c2VjcmV0LWNsYWlt.signaturesecret",
         ] {
             let text = format!("Include the literal token {secret} in the document.");
             assert!(!redact_text(&text).contains(secret), "{text}");
+            assert!(
+                !sanitize_semantic_tool_input("write_document", &json!({"body": text}))
+                    .unwrap()
+                    .to_string()
+                    .contains(secret)
+            );
         }
         let input = json!({
             "description": "Include the literal token ACCEPTANCE-42. Authorization: Bearer opaque-credential",
@@ -3237,6 +3342,20 @@ mod tests {
             .unwrap()
             .contains("ACCEPTANCE-42"));
         assert!(!safe.to_string().contains("opaque-credential"));
+        let diagnostic = json!({"description": "the token opaque-credential"});
+        assert!(
+            !sanitize_semantic_tool_input("get_task_context", &diagnostic)
+                .unwrap()
+                .to_string()
+                .contains("opaque-credential")
+        );
+        assert!(!sanitize_semantic_tool_input(
+            "create_task",
+            &json!({"diagnostic": "token opaque-credential"})
+        )
+        .unwrap()
+        .to_string()
+        .contains("opaque-credential"));
     }
 
     #[test]
