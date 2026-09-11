@@ -25935,9 +25935,9 @@ export function heartbeatService(
 
           let continuationWait = { reason: "execution_recovery", message: "Waiting for execution recovery. Your message is saved." };
           const deferBlockedExecution = async (
-            executionBlocker: NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>,
+            executionBlocker: Awaited<ReturnType<typeof getExecutionBlocker>>,
           ) => {
-            const condition = { recoveryActionId: executionBlocker.recoveryActionId, ...continuationWait };
+            const condition = { recoveryActionId: executionBlocker?.recoveryActionId ?? null, ...continuationWait };
             if (executionWaitRequestId) {
               await tx.update(agentWakeupRequests).set({
                 payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}', ${JSON.stringify(condition)}::jsonb)`,
@@ -25970,7 +25970,7 @@ export function heartbeatService(
                   ...durableReceiptFields,
                   companyId: agent.companyId, agentId, source, triggerDetail,
                   reason: "execution_reconciliation_required",
-                  error: executionBlocker.nextAction,
+                  error: executionBlocker?.nextAction ?? continuationWait.message,
                   payload,
                   requestedByActorType: opts.requestedByActorType ?? null,
                   requestedByActorId: opts.requestedByActorId ?? null,
@@ -26708,7 +26708,7 @@ export function heartbeatService(
             tx,
           );
           if (dailyCapBlock) {
-            if (executionWaitRequestId && executionBlocker) {
+            if (executionWaitRequestId) {
               continuationWait = { reason: dailyCapBlock.reason,
                 message: "The agent has reached its daily limit. Your message is saved until work can resume." };
               return deferBlockedExecution(executionBlocker);
@@ -26753,7 +26753,12 @@ export function heartbeatService(
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
             reason, commentId: wakeCommentId ?? null, successorRunId: explicitContinuationRunId,
           });
-          if (!explicitContinuation && executionBlocker) return deferBlockedExecution(executionBlocker);
+          // Recovery can change while earlier admission gates await I/O. Use
+          // the current blocker, not the snapshot from the start of admission.
+          const remainingExecutionBlocker = await getExecutionBlocker(
+            tx as unknown as Db, issue.companyId, issue.id,
+          );
+          if (remainingExecutionBlocker) return deferBlockedExecution(remainingExecutionBlocker);
           if (explicitContinuation) {
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
@@ -26855,6 +26860,19 @@ export function heartbeatService(
               updatedAt: new Date(),
             })
             .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+          // The receipt that authorized this run is consumed independently of
+          // optional aggregation of other comments. A later blocker may suppress
+          // aggregation, but must never leave this message eligible for replay.
+          if (executionWaitRequestId) {
+            const [consumed] = await tx.update(agentWakeupRequests).set({
+              status: "coalesced", runId: newRun.id, finishedAt: new Date(), updatedAt: new Date(),
+            }).where(and(eq(agentWakeupRequests.id, executionWaitRequestId),
+              eq(agentWakeupRequests.companyId, issue.companyId), eq(agentWakeupRequests.agentId, agentId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            )).returning({ id: agentWakeupRequests.id });
+            if (!consumed) throw conflict("Saved message changed before admission");
+          }
 
           if (adoptedComments.length) {
             await tx
