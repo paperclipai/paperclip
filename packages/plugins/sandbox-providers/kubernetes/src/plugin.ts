@@ -39,6 +39,7 @@ import {
 import { execInPod, execInPodStreaming, wrapCommandWithEnv } from "./pod-exec.js";
 import { performSyncIn, performSyncOut, type PodStreamExec } from "./file-sync.js";
 import { checkLeaseResumable, destroyLeaseResources } from "./lease-lifecycle.js";
+import { baselineEgressPolicyLabel } from "./network-policy.js";
 import {
   appendNetworkEgressDenyHint,
   createScopedNetworkEgressPolicyOrReleaseWorkload,
@@ -342,6 +343,7 @@ const plugin = definePlugin({
       paperclipServerNamespace: PAPERCLIP_SERVER_NAMESPACE,
       serviceAccountAnnotations: config.serviceAccountAnnotations,
       egressMode: config.egressMode,
+      egressPolicy: config.egressPolicy,
       egressAllowFqdns: [...adapterDefaults.allowFqdns, ...config.egressAllowFqdns],
       egressAllowCidrs: config.egressAllowCidrs,
       resourceQuota: DEFAULT_RESOURCE_QUOTA,
@@ -422,7 +424,10 @@ const plugin = definePlugin({
     // defaultEnv (non-secret base, e.g. the inference base URL) is layered first;
     // the process-env secrets named by envKeys override it.
     const adapterEnv = buildAdapterEnv(adapterDefaults);
-    adapterEnv.PAPERCLIP_NETWORK_EGRESS_POLICY = "kubernetes-default-deny";
+    // Advertise the NAMESPACE BASELINE posture the run is governed by. The
+    // task-scoped grant below is additive on top of it, so the agent needs
+    // both values to reason about what it can reach.
+    adapterEnv.PAPERCLIP_NETWORK_EGRESS_POLICY = baselineEgressPolicyLabel(config.egressPolicy);
     adapterEnv.PAPERCLIP_NETWORK_EGRESS_GRANT_PATH = NETWORK_EGRESS_GRANT_PATH;
     adapterEnv.PAPERCLIP_NETWORK_EGRESS_ALLOW_FQDNS = scopedNetworkEgress.allowFqdns.join(",");
     adapterEnv.PAPERCLIP_NETWORK_EGRESS_ALLOW_CIDRS = scopedNetworkEgress.allowCidrs.join(",");

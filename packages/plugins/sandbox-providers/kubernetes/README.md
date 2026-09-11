@@ -70,6 +70,7 @@ Common optional fields:
 | `egressAllowFqdns` | `[]` | Additional FQDNs (beyond adapter defaults like `api.anthropic.com`). |
 | `egressAllowCidrs` | `[]` | Additional CIDRs to allow egress to. |
 | `egressMode` | `"standard"` | `standard` (NetworkPolicy + CIDRs) or `cilium` (CiliumNetworkPolicy + FQDN allow-list). |
+| `egressPolicy` | `"allowlist"` | Namespace baseline posture. `allowlist` restricts egress to the configured FQDNs/CIDRs. `open-internet` additionally allows public IPv4 on TCP 443/80 with private, CGNAT, link-local (cloud IMDS), loopback, this-network, and multicast ranges excluded. Also settable via `PAPERCLIP_K8S_EGRESS_POLICY`. |
 | `runtimeClassName` | (none) | e.g. `kata-fc` for Firecracker-backed microVMs. Cluster must have the RuntimeClass installed. |
 | `serviceAccountAnnotations` | `{}` | Annotations applied to per-tenant ServiceAccount (e.g. IRSA `eks.amazonaws.com/role-arn`). |
 | `jobTtlSecondsAfterFinished` | `900` | Seconds after a Job completes before garbage-collection. |
@@ -93,6 +94,17 @@ Keep provider-level egress defaults narrow, then grant only the destinations a t
 ```
 
 The provider creates a workload-owned policy selected by the task run label, so the additional destinations do not become reachable from other concurrent agent pods. Cilium mode enforces FQDNs directly. Standard NetworkPolicy mode cannot express FQDNs, so an FQDN grant permits public IPv4 TCP 80/443 for that run while excluding private, loopback, link-local, CGNAT, and multicast ranges. Network failures that look policy-related include the grant path in stderr, and the sandbox exposes the effective policy through `PAPERCLIP_NETWORK_EGRESS_*` environment variables.
+
+#### How `egressPolicy` and task-scoped grants compose
+
+The two are different layers and Kubernetes unions them:
+
+- `egressPolicy` is the **namespace baseline**. It is written into the tenant's long-lived `paperclip-egress-allow` NetworkPolicy (or `paperclip-egress-fqdn` CiliumNetworkPolicy), selects every agent pod in the namespace, and lives for as long as the tenant does.
+- A task grant is an **additive, workload-owned policy** selected by `paperclip.io/run-id`, created per run and garbage-collected with its Job or Sandbox.
+
+The grant builder deliberately does not receive `egressPolicy`, so turning the provider baseline to `open-internet` never changes what a per-task grant itself permits: the run's reachability is the union of the two, and the grant stays a truthful record of what that specific task asked for. `PAPERCLIP_NETWORK_EGRESS_POLICY` reports the baseline (`kubernetes-default-deny` or `kubernetes-open-internet`) while `PAPERCLIP_NETWORK_EGRESS_ALLOW_*` report the task grant.
+
+With `egressPolicy: "open-internet"` the baseline already covers public TCP 443/80, so task grants for public hosts become redundant. Keep the baseline on `allowlist` if you want per-task grants to be the only path to the internet.
 
 ## What gets created in your cluster
 
