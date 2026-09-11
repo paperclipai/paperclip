@@ -268,8 +268,17 @@ async function prepareClaudeRemoteManagedHome(
   // Content-addressed sanitized seed (managed cache under the instance root, not
   // a temp dir — reused across runs, so no teardown cleanup).
   const claudeConfigSeedDir = await prepareClaudeConfigSeed(process.env, onLog, input.companyId);
+  // Ship the per-run skill bundle the same way the Claude CLI lane does
+  // (`claude-local/execute.ts`): one `followSymlinks: true` asset, staged
+  // only when the run selected at least one skill. The `followSymlinks` flag
+  // carries a symbolic link's target content into the sandbox, instead of a
+  // dangling link. The engine rewrites the prompt onto the in-sandbox copy
+  // once this asset is staged.
   const stagedRuntime = await input.stage([
     { key: "config-seed", localDir: claudeConfigSeedDir, followSymlinks: true },
+    ...(input.skillsBundleDir
+      ? [{ key: "skills", localDir: input.skillsBundleDir, followSymlinks: true }]
+      : []),
   ]);
 
   const remoteClaudeRuntimeRoot =

@@ -301,6 +301,14 @@ export interface AcpxRemoteManagedHomeContext {
   onLog: AdapterExecutionContext["onLog"];
   onRuntimeProgress: AdapterExecutionContext["onRuntimeProgress"];
   /**
+   * The host directory that holds this run's skill bundle. This field is
+   * `null` when the agent does not support on-demand skills, or when no
+   * skill is selected. A seam that wants the bundle in the sandbox stages it
+   * as an asset, with `followSymlinks: true`. This flag makes a symbolic link
+   * inside the bundle carry its target content, not a dangling link.
+   */
+  skillsBundleDir: string | null;
+  /**
    * Runs the shared workspace+assets staging seam and returns the prepared
    * runtime. The seam passes its per-adapter home `assets` here; the returned
    * `assetDirs`/`runtimeRootDir` are what it remaps the home env var onto.
@@ -1077,6 +1085,14 @@ async function prepareClaudeSkillRuntime(input: {
   identity: Record<string, unknown>;
   promptInstructions: string;
   commandNotes: string[];
+  /**
+   * The host directory that directly holds the materialized skill
+   * directories (`<bundleDir>/<skill-name>/SKILL.md`). This field is `null`
+   * when no skill is selected. A remote run stages this directory into the
+   * sandbox and rewrites the prompt onto the in-sandbox copy. See
+   * `AcpxRemoteManagedHomeContext.skillsBundleDir`.
+   */
+  bundleDir: string | null;
 }> {
   const { allSkills, selectedSkills, desiredSkillNames } = await resolveSelectedRuntimeSkills(input.config, input.moduleDir);
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "claude" });
@@ -1124,6 +1140,7 @@ async function prepareClaudeSkillRuntime(input: {
     commandNotes: selectedSkills.length > 0
       ? [`Materialized ${selectedSkills.length} Paperclip skill(s) for ACPX Claude at ${skillsHome}.`]
       : [],
+    bundleDir: selectedSkills.length > 0 ? skillsHome : null,
   };
 }
 
@@ -1955,6 +1972,12 @@ async function buildRuntime(input: {
   let skillPromptInstructions = "";
   let skillsIdentity: Record<string, unknown> = { mode: "unsupported" };
   const skillCommandNotes: string[] = [];
+  // The host directory a remote run stages as the `skills` asset. The engine
+  // uses it to rewrite `skillPromptInstructions` and `skillsIdentity` onto
+  // the in-sandbox copy, once `stagedRuntime` is known (see the rewrite
+  // below, after `placeWorkspace` returns). This field is `null` for every
+  // non-Claude agent, and for a Claude run with no skill selected.
+  let claudeSkillsBundleDir: string | null = null;
   let paperclipClaudeSettings: PaperclipClaudeSettingsResult | null = null;
   if (acpxAgent === "claude") {
     const preparedSkills = await prepareClaudeSkillRuntime({
@@ -1966,6 +1989,7 @@ async function buildRuntime(input: {
     skillPromptInstructions = preparedSkills.promptInstructions;
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
+    claudeSkillsBundleDir = preparedSkills.bundleDir;
     paperclipClaudeSettings = await writePaperclipClaudeSettings({
       cwd,
       stateDir,
@@ -2231,6 +2255,7 @@ async function buildRuntime(input: {
               env,
               onLog: input.ctx.onLog,
               onRuntimeProgress: input.ctx.onRuntimeProgress,
+              skillsBundleDir: claudeSkillsBundleDir,
               stage,
             });
             return {
@@ -2326,6 +2351,36 @@ async function buildRuntime(input: {
     remoteStagingDispose = placedStaged?.dispose ?? null;
     remoteStagingEnvDelta = placedStaged?.envDelta ?? null;
     sessionStagingLeaseRelease = sandboxSite.stagingLeaseRelease;
+  }
+  // Once the skill bundle is staged, rewrite the prompt and the identity onto
+  // the in-sandbox copy. This code runs here, after `placeWorkspace` resolves
+  // `stagedRuntime`. It runs on every invocation, both a fresh stage and a
+  // compatible resume. It never runs inside the `prepareRemoteManagedHome`
+  // seam, because a compatible resume never calls that seam again.
+  // `skillPromptInstructions` and `skillsIdentity` already fed `fingerprint`
+  // above, with the host-independent identity. So this rewrite never reaches
+  // the fingerprint: it only replaces the host bundle path with the
+  // in-sandbox path, in the local copies used for the returned prompt,
+  // identity, and command notes.
+  if (acpxAgent === "claude" && stagedRuntime && claudeSkillsBundleDir) {
+    const inSandboxSkillsRoot =
+      stagedRuntime.assetDirs.skills ??
+      path.posix.join(
+        stagedRuntime.runtimeRootDir ??
+          path.posix.join(stagedRuntime.workspaceRemoteDir ?? cwd, ".paperclip-runtime", acpxAgent),
+        "skills",
+      );
+    const rebaseToSandbox = (value: string) => value.split(claudeSkillsBundleDir!).join(inSandboxSkillsRoot);
+    skillPromptInstructions = rebaseToSandbox(skillPromptInstructions);
+    skillsIdentity = {
+      ...skillsIdentity,
+      skillRoot: typeof skillsIdentity.skillRoot === "string"
+        ? rebaseToSandbox(skillsIdentity.skillRoot)
+        : skillsIdentity.skillRoot,
+    };
+    for (let i = 0; i < skillCommandNotes.length; i += 1) {
+      skillCommandNotes[i] = rebaseToSandbox(skillCommandNotes[i]!);
+    }
   }
   // Both bridge starts run under one try so a failure at EITHER — including the
   // paperclip callback bridge — fires the same abandon-path cleanup. The
