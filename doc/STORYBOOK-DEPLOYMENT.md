@@ -74,4 +74,6 @@ actionlint .github/workflows/storybook-deploy.yml .github/workflows/storybook-vi
 Dispatch two source branches, approve each deployment, and check their distinct
 branch URLs and each build's `deployment.json`. Redeploy one branch and confirm
 its stable URL now points to the new build while the other branch is unchanged.
-The publisher checks the public build metadata against the selected source SHA.
+The publisher checks the public build metadata against the selected source SHA
+and verifies that the public branch entry points to this exact build. It retries
+brief propagation delays and fails if the branch URL remains stale.

@@ -194,3 +194,24 @@ test('successful publication produces a downloadable Markdown report matching th
   assert.ok(report.includes(d.sha));
   assert.equal(report, summary);
 });
+
+import { verifyStorybook } from '../../.github/scripts/verify-storybook.cjs';
+test('public verification retries a stale stable branch entry until it points to the new build', async () => {
+  const d = storybookDestination(input);
+  let indexReads = 0;
+  await verifyStorybook({ branchUrl: d.url, buildUrl: d.buildUrl, sha: d.sha,
+    sleep: async () => {}, attempts: 2, fetch: async (url) => String(url).endsWith('deployment.json')
+      ? new Response(JSON.stringify({ sha: d.sha }))
+      : new Response(branchIndex(++indexReads === 1 ? d.buildUrl.replace('123-1', '122-1') : d.buildUrl)) });
+  assert.equal(indexReads, 2);
+});
+test('public verification rejects a permanently stale branch URL or wrong source commit', async () => {
+  const d = storybookDestination(input);
+  for (const wrong of ['branch', 'sha']) {
+    await assert.rejects(verifyStorybook({ branchUrl: d.url, buildUrl: d.buildUrl, sha: d.sha,
+      attempts: 1, fetch: async (url) => String(url).endsWith('deployment.json')
+        ? new Response(JSON.stringify({ sha: wrong === 'sha' ? 'b'.repeat(40) : d.sha }))
+        : new Response(branchIndex(wrong === 'branch' ? d.buildUrl.replace('123-1', '122-1') : d.buildUrl)) }),
+    wrong === 'branch' ? /does not point to this build/ : /wrong source commit/);
+  }
+});

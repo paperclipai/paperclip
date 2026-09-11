@@ -153,13 +153,12 @@ jobs:
           STORYBOOK_S3_BUCKET: ${{ vars.STORYBOOK_S3_BUCKET }}
           STORYBOOK_PUBLIC_BASE_URL: ${{ vars.STORYBOOK_PUBLIC_BASE_URL }}
         run: node .github/scripts/publish-storybook.cjs
-      - name: Verify public build metadata
+      - name: Verify public build and stable branch URL
         env:
           BUILD_URL: ${{ steps.deployment.outputs.build_url }}
+          BRANCH_URL: ${{ steps.deployment.outputs.url }}
           SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
-        run: |
-          curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 10 \
-            "${BUILD_URL%index.html}deployment.json" | jq -e --arg sha "$SOURCE_SHA" '.sha == $sha'
+        run: node .github/scripts/verify-storybook.cjs
       - name: Upload deployment links
         if: ${{ !cancelled() && steps.deployment.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

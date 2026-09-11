@@ -165,8 +165,7 @@ See [Storybook deployment setup](STORYBOOK-DEPLOYMENT.md) for the environment,
 repository variables, AWS policies and one-time operator setup.
 
 GitHub requires a new dispatch workflow to exist on the default branch before
-it becomes a manual entry point. Before merging this change, test through
-`storybook-visual.yml --ref codex/storybook-pages -f deploy_preview=true`.
+it becomes a manual entry point.
 
 ## UI Fonts And Screenshots
 
