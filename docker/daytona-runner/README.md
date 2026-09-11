@@ -68,12 +68,15 @@ full Git SHA as `PAPERCLIP_RUNNER_SOURCE_REVISION`.
 Do not bake provider credentials, Paperclip bootstrap tickets, or Daytona
 preview tokens into this image. They remain per-run secret material.
 
-Provider CLI updates are manifest-only changes: repository CI owns the root
-lockfile. The image build resolves the complete workspace manifest graph before
-its frozen install, matching CI when a source commit precedes the lockfile bot.
-The complete resolved lockfile must match `PAPERCLIP_RUNNER_LOCK_SHA256` before
-package installation or lifecycle execution. Review and refresh that digest
-with source dependency changes; registry-time resolution drift fails closed.
+Repository CI owns the root lockfile. Provider images instead install from
+`docker/daytona-runner/provider-dependencies.lock.yaml`, a reviewed frozen lock.
+When any copied workspace manifest changes, regenerate this dedicated lock with
+pnpm 9.15.4 in an isolated manifest checkout seeded from the existing lock;
+review the dependency changes and update `PAPERCLIP_RUNNER_LOCK_SHA256` in both
+Dockerfiles. Keep the root lockfile unchanged. The offline image contract test
+checks every copied manifest and proves that dependency drift is rejected.
+Image builds never resolve dependencies from the registry: the dedicated lock
+must match the pinned digest before installation or lifecycle execution.
 Keep one latest stable CLI installation per provider; refresh exact runtime
 versions and qualification digests together, never install a private older copy
 or download dependencies when a task starts.
