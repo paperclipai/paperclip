@@ -335,8 +335,6 @@ const SKIP_DIRS = new Set([
   ".next",
   "coverage",
   ".paperclip",
-  // Ignored local databases and downloaded acceptance evidence are not guidance.
-  ".paperclip-runtime",
   "tmp",
 ]);
 
