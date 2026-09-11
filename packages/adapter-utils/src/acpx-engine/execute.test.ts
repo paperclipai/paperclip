@@ -5426,13 +5426,13 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
       runner: createLocalSandboxRunner(),
     };
 
-    const { events } = await runExecutor(
+    const { events, sessionInputs } = await runExecutor(
       {
         agent: "codex",
         agentCommand: "node ./fake-acp.js",
         stateDir,
         cwd: localCwd,
-        env: { CODEX_HOME: codexHome },
+        env: { CODEX_HOME: codexHome, OPENAI_API_KEY: "sk-acp-test-key" },
       },
       { authToken: "real-run-jwt", executionTarget },
     );
