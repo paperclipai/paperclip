@@ -20225,7 +20225,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         "@maya prove durable receipt",
       );
       expect(JSON.stringify(timingEvents)).not.toContain(signature);
-      const acceptedRedelivery = await observedRequest(true);
+      // A duplicate redelivery can momentarily contend with the first
+      // delivery's settlement and draw the retryable 503 — that is the
+      // webhook contract (Slack re-sends, the dedup path keeps it
+      // idempotent), not a defect. Retry the way the provider would
+      // instead of asserting an accidental no-contention property; this
+      // exact assertion drew a 503 under CI shard load on 2026-09-10.
+      let acceptedRedelivery = await observedRequest(true);
+      for (
+        let attempt = 0;
+        acceptedRedelivery.status === 503 && attempt < 20;
+        attempt += 1
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        acceptedRedelivery = await observedRequest(true);
+      }
       expect(acceptedRedelivery.status).toBe(200);
       await vi.waitFor(async () => {
         const [delivery] = await db
@@ -48459,21 +48473,28 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .from(issues)
         .where(eq(issues.companyId, fixture.companyId)),
     ).toHaveLength(0);
-    expect(
-      await db
-        .select()
-        .from(chatActions)
-        .where(
-          and(
-            eq(chatActions.endpointId, endpoint.id),
-            eq(chatActions.kind, "provider_effect"),
+    // The ephemeral post is observable before its provider_effect row
+    // settles, so under suite load the third row can still be
+    // mid-settlement when the mock resolves (drew a not-yet-processed row
+    // in CI on 2026-09-10). Wait for the bookkeeping, bounded, like the
+    // durable-receipt paths above do.
+    await vi.waitFor(async () => {
+      expect(
+        await db
+          .select()
+          .from(chatActions)
+          .where(
+            and(
+              eq(chatActions.endpointId, endpoint.id),
+              eq(chatActions.kind, "provider_effect"),
+            ),
           ),
-        ),
-    ).toEqual([
-      expect.objectContaining({ kind: "provider_effect", status: "processed" }),
-      expect.objectContaining({ kind: "provider_effect", status: "processed" }),
-      expect.objectContaining({ kind: "provider_effect", status: "processed" }),
-    ]);
+      ).toEqual([
+        expect.objectContaining({ kind: "provider_effect", status: "processed" }),
+        expect.objectContaining({ kind: "provider_effect", status: "processed" }),
+        expect.objectContaining({ kind: "provider_effect", status: "processed" }),
+      ]);
+    });
   });
 
   it("keeps Telegram start and unknown commands as terse guidance without creating work", async () => {

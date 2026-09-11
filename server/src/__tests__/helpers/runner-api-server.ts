@@ -46,7 +46,25 @@ export async function startRunnerApiTestServer() {
       if (options.connectionScenario !== undefined && !CONNECTION_SCENARIOS.includes(options.connectionScenario)) throw new Error(`Unknown connection eval scenario: ${String(options.connectionScenario)}`);
       // This DB is created inside this helper, never supplied by a caller. Paid
       // paired runs reset it between attempts so modeled IDs and data match.
-      if (options.reset) await db.execute(sql`TRUNCATE companies CASCADE`);
+      // The helper's own app runs background sweeps against this DB, and one
+      // can hold row locks when the reset fires; Postgres then picks a
+      // deadlock victim (observed against TRUNCATE in CI on 2026-09-10). The
+      // loser's transaction rolls back the moment it is chosen, so a short
+      // bounded retry makes the reset deterministic instead of flaky.
+      if (options.reset) {
+        for (let attempt = 0; ; attempt += 1) {
+          try {
+            await db.execute(sql`TRUNCATE companies CASCADE`);
+            break;
+          } catch (error) {
+            const code =
+              (error as { code?: string }).code ??
+              (error as { cause?: { code?: string } }).cause?.code;
+            if (attempt >= 4 || code !== "40P01") throw error;
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+        }
+      }
       const id = (key: string) => {
         if (!options.reset) return randomUUID();
         const hex = createHash("sha256").update(`runner-api-fixture:${key}`).digest("hex");
