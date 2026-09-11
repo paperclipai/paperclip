@@ -54,7 +54,16 @@ export function isChatClarificationReply(body: string): boolean {
   const request = body.match(
     /\b(?:please\s+(?:share|provide|clarify|confirm)|tell me|let me know)\b([\s\S]*)/i,
   );
-  return Boolean(request?.[1].replace(/[\s:*-]/g, ""));
+  return Boolean(request && /[\p{L}\p{N}]/u.test(request[1]));
+}
+
+export function assertChatExecutionOutput(
+  body: string,
+  marker: string,
+  supersededMarker?: string,
+): void {
+  expect(body).toContain(marker);
+  if (supersededMarker) expect(body).not.toContain(supersededMarker);
 }
 
 /** A requested output document may have a descriptive key; a copied plan is not output. */
@@ -315,7 +324,10 @@ export async function runChatFlow(input: {
         ).toContain(secret);
         const count = runs.length;
         await input.restart();
-        await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
+        // Re-enter the canonical route after the server replaces its browser
+        // transport; reloading the stale document can target a detached page.
+        await page.goto(route, { waitUntil: "domcontentloaded", timeout: 60_000 });
+        await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
         await idle(2);
         expect(runs).toHaveLength(count);
         await turn(
@@ -561,7 +573,8 @@ export async function runChatFlow(input: {
           `/api/issues/${issue!.id}/documents/plan`,
         );
         expect(revised.body).toContain(marker);
-        expect(revised.body).not.toContain(draftMarker);
+        // A revision-history section may quote the superseded requirement.
+        // The executed output below must use only the accepted requirement.
         expect(revised.latestRevisionId).not.toBe(draft.latestRevisionId);
         acceptedPlan = revised;
         await noTasks();
@@ -642,7 +655,6 @@ export async function runChatFlow(input: {
       if (plan) {
         assertChatHandoff(child, plan, taskRuns, issue!);
         expect(plan.body).toContain(marker);
-        expect(plan.body).not.toContain(draftMarker);
         const sourcePlan = await api.get<Plan>(
           `/api/issues/${issue!.id}/documents/plan`,
         );
@@ -652,7 +664,11 @@ export async function runChatFlow(input: {
         );
       } else assertChatTaskHandoff(child, taskRuns, issue!);
       const output = await readChatOutputDocument(api, child.id, marker);
-      expect(output.body).toContain(marker);
+      assertChatExecutionOutput(
+        output.body,
+        marker,
+        caseId === "plan-handoff" ? draftMarker : undefined,
+      );
       await input.evidence("chat-execution-output.json", {
         taskId: child.id,
         document: output,

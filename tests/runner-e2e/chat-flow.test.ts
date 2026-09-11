@@ -10,6 +10,7 @@ import {
   readRunningChatLog,
   readChatOutputDocument,
   isChatClarificationReply,
+  assertChatExecutionOutput,
   isResetRun,
   type ChatIssue,
   type ChatRun,
@@ -56,12 +57,19 @@ describe("chat acceptance contracts", () => {
       isChatClarificationReply("Tell me the intended audience and format."),
     ).toBe(true);
     expect(isChatClarificationReply("Please share:")).toBe(false);
+    expect(isChatClarificationReply("Please share.")).toBe(false);
     expect(
       isChatClarificationReply("Asked the user clarifying questions about their club."),
     ).toBe(false);
     expect(
       isChatClarificationReply("I created the task and started writing the welcome note."),
     ).toBe(false);
+  });
+
+  it("rejects superseded plan requirements in executed output, independently of plan history", () => {
+    expect(() => assertChatExecutionOutput("Welcome CHAT123.", "CHAT123", "DRAFT123")).not.toThrow();
+    expect(() => assertChatExecutionOutput("Welcome DRAFT123 and CHAT123.", "CHAT123", "DRAFT123")).toThrow();
+    expect(() => assertChatExecutionOutput("Welcome DRAFT123.", "CHAT123", "DRAFT123")).toThrow();
   });
 
   it("keeps chat markers literal across rich-text and Markdown boundaries", () => {
