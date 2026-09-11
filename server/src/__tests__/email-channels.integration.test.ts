@@ -10,7 +10,7 @@ import type { StorageService } from "../storage/types.js";
 import * as remoteHttp from "../services/remote-http-fetch.js";
 import { MAX_ATTACHMENT_BYTES } from "../attachment-types.js";
 import { Webhook } from "svix";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -22,7 +22,7 @@ import {
   it,
   vi,
 } from "vitest";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
   createDb,
   companies,
@@ -106,6 +106,13 @@ describe("AgentMail durable email pipeline", () => {
     else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = previous;
     rmSync(folder, { recursive: true, force: true });
   });
+  it("can replay the additive email migration without losing existing data", async () => {
+    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0272_light_kate_bishop.sql", import.meta.url), "utf8");
+    await db.execute(sql.raw(migration));
+    await db.execute(sql.raw(migration));
+    expect(await db.select().from(authUsers).where(eq(authUsers.id, "email-board"))).toHaveLength(1);
+  });
+
   async function fixture(mode: "websocket" | "webhook" = "webhook", storage?: StorageService) {
     const companyId = randomUUID(),
       agentId = randomUUID(),
