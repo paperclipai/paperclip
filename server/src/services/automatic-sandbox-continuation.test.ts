@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, createDb, environmentLeases, environments, heartbeatRuns,
   issueComments, issueRecoveryActions, issues, issueThreadInteractions } from "@paperclipai/db";
@@ -88,6 +88,42 @@ const support = await getEmbeddedPostgresTestSupport();
     } finally {
       await heartbeat.drainActiveRunExecutions();
       unregisterServerAdapter(adapterType);
+    }
+  });
+  it("keeps adapter type and config together when settings change after claim", async () => {
+    const f = await seed();
+    const beforeType = "claim_adapter_before", afterType = "claim_adapter_after";
+    const executed: { type: string; marker: unknown }[] = [];
+    for (const type of [beforeType, afterType]) registerServerAdapter({ type,
+      execute: async ({ config }) => { executed.push({ type, marker: config.marker }); return { exitCode: 0, signal: null, timedOut: false }; },
+      testEnvironment: async () => ({ adapterType: type, status: "pass", checks: [], testedAt: new Date().toISOString() }),
+    });
+    const heartbeat = heartbeatService(db);
+    try {
+      await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+      await db.update(agents).set({ adapterType: beforeType, adapterConfig: { marker: "before" } }).where(eq(agents.id, f.agentId));
+      await db.update(heartbeatRuns).set({ status: "queued", errorCode: null, error: null, finishedAt: null }).where(eq(heartbeatRuns.id, f.run.id));
+      // Change settings after the queued claim, before executeRun reads them.
+      await db.execute(sql.raw(`create function recovery_test_adapter_change() returns trigger language plpgsql as $$
+        begin
+          if OLD.status = 'queued' and NEW.status = 'running' and NEW.id = '${f.run.id}'::uuid then
+            update agents set adapter_type = '${afterType}', adapter_config = '{"marker":"after"}'::jsonb where id = '${f.agentId}'::uuid;
+          end if;
+          return NEW;
+        end $$`));
+      await db.execute(sql.raw('create trigger recovery_test_adapter_change after update on heartbeat_runs for each row execute function recovery_test_adapter_change()'));
+      await heartbeat.resumeQueuedRuns();
+      await vi.waitFor(async () => {
+        const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+        expect(saved.status).toBe("succeeded");
+        expect(saved.runnerProfileJson?.adapterDispatch).toEqual({ adapterType: afterType });
+      }, { timeout: 10000 });
+      expect(executed).toEqual([{ type: afterType, marker: "after" }]);
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      await db.execute(sql.raw('drop trigger if exists recovery_test_adapter_change on heartbeat_runs'));
+      await db.execute(sql.raw('drop function if exists recovery_test_adapter_change()'));
+      unregisterServerAdapter(beforeType); unregisterServerAdapter(afterType);
     }
   });
   it("automatically resumes a historical startup failure after exact provider termination", async () => {

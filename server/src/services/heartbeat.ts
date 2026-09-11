@@ -19360,7 +19360,7 @@ export function heartbeatService(
     let providerTraceFinalized = false;
 
     try {
-      let agent = await getAgent(run.agentId);
+      const agent = await getAgent(run.agentId);
       if (!agent) {
         await setRunStatus(runId, "failed", {
           error: "Agent not found",
@@ -19377,8 +19377,21 @@ export function heartbeatService(
       }
 
       const selectedAdapter = (run.runnerProfileJson?.adapterDispatch as Record<string, unknown> | undefined)?.adapterType;
-      if (typeof selectedAdapter === "string" && selectedAdapter !== agent.adapterType) {
-        agent = { ...agent, adapterType: selectedAdapter };
+      if (run.runtimeMode === "legacy" && typeof selectedAdapter === "string" && selectedAdapter !== agent.adapterType) {
+        // Settings can change between claim and preparation. Select type and
+        // config from the same agent snapshot, then persist the actual adapter
+        // before any provisioning. Never combine an old type with new config.
+        await controllerLease.assertOwned();
+        const [selectedRun] = await db.update(heartbeatRuns).set({
+          runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+        }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+          eq(heartbeatRuns.status, "running"), run.controllerBootId
+            ? eq(heartbeatRuns.controllerBootId, legacyControllerBootId) : isNull(heartbeatRuns.controllerBootId))).returning();
+        if (!selectedRun) {
+          executionControl.controller.abort(new LegacyControllerLeaseLostError());
+          executionControl.controller.signal.throwIfAborted();
+        }
+        run = selectedRun;
       }
       const runtime = await ensureRuntimeState(agent);
       const context = parseObject(run.contextSnapshot);
