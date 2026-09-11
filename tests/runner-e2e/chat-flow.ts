@@ -53,6 +53,8 @@ export function isChatClarificationReply(body: string): boolean {
   if (body.includes("?")) return true;
   const request = body.match(
     /\b(?:please\s+(?:share|provide|clarify|confirm)|tell me|let me know)\b([\s\S]*)/i,
+  ) ?? body.match(
+    /\b(?:I|we)(?:'ll|\s+will)?\s+need\s+(?:(?:a|some|the|your|more|following|compact|short|few|additional)\s+){0,4}(?:brief|details|information|context|clarification)\b([\s\S]*)/i,
   );
   return Boolean(request && /[\p{L}\p{N}]/u.test(request[1]));
 }

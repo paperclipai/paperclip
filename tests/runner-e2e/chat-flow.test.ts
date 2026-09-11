@@ -58,6 +58,17 @@ describe("chat acceptance contracts", () => {
     expect(
       isChatClarificationReply("Tell me the intended audience and format."),
     ).toBe(true);
+    expect(
+      isChatClarificationReply(
+        "Thanks — before assigning the welcome-note drafting work, I need a compact brief covering:\n\n- Club and audience: club name and intended readers.\n- Purpose: welcome or next steps.\n- Required content: dates, links, and contacts.\n- Voice: tone and sender.\n- Delivery constraints: format, length, and deadline.\n- Examples or policies: existing notes and approval requirements.",
+      ),
+    ).toBe(true);
+    expect(isChatClarificationReply("I'll need your details about the audience and format.")).toBe(true);
+    expect(isChatClarificationReply("We need some information about the club and intended readers.")).toBe(true);
+    expect(isChatClarificationReply("I needed a compact brief before I assigned the work.")).toBe(false);
+    expect(isChatClarificationReply("I need a compact brief:")).toBe(false);
+    expect(isChatClarificationReply("I need information.")).toBe(false);
+    expect(isChatClarificationReply("I need to create the task and write the note.")).toBe(false);
     expect(isChatClarificationReply("Please share:")).toBe(false);
     expect(isChatClarificationReply("Please share.")).toBe(false);
     expect(
