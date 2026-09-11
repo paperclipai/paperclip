@@ -18,12 +18,14 @@ const buildTargets = [
   {
     name: "@paperclipai/shared",
     output: path.join(rootDir, "packages/shared/dist/index.js"),
+    completion: path.join(rootDir, "packages/shared/dist/.paperclip-build-complete"),
     sourceDir: path.join(rootDir, "packages/shared/src"),
     tsconfig: path.join(rootDir, "packages/shared/tsconfig.json"),
   },
   {
     name: "@paperclipai/plugin-sdk",
     output: path.join(rootDir, "packages/plugins/sdk/dist/index.js"),
+    completion: path.join(rootDir, "packages/plugins/sdk/dist/.paperclip-build-complete"),
     sourceDir: path.join(rootDir, "packages/plugins/sdk/src"),
     tsconfig: path.join(rootDir, "packages/plugins/sdk/tsconfig.json"),
   },
@@ -53,8 +55,9 @@ function newestSourceMtimeMs(sourceDir) {
 }
 
 function needsBuild(target) {
-  if (!fs.existsSync(target.output)) return true;
+  if (!fs.existsSync(target.output) || !fs.existsSync(target.completion)) return true;
   const outputMtime = fs.statSync(target.output).mtimeMs;
+  if (outputMtime > fs.statSync(target.completion).mtimeMs) return true;
   return newestSourceMtimeMs(target.sourceDir) > outputMtime;
 }
 
@@ -157,6 +160,9 @@ async function acquireLock() {
 
 async function build(target) {
   console.log(`[paperclip] Building ${target.name}...`);
+  // A hard kill bypasses cleanup. Only a completed compile may restore this
+  // marker, so recovery never trusts index.js emitted partway through a build.
+  fs.rmSync(target.completion, { force: true });
   const code = await new Promise((resolve, reject) => {
     child = spawn(process.execPath, [tscCliPath, "-p", target.tsconfig], {
       cwd: rootDir,
@@ -176,6 +182,7 @@ async function build(target) {
   // tsc emits index.js before it finishes the package. A failed or interrupted
   // compile must not make the next startup accept that partial build as current.
   if (code !== 0) fs.rmSync(target.output, { force: true });
+  else fs.writeFileSync(target.completion, "complete\n");
   return code;
 }
 

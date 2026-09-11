@@ -129,3 +129,29 @@ test("failed compilation releases the lock and is rebuilt on retry", async (t) =
   assert.equal(retry.code, 0, retry.output);
   assert.equal(fs.existsSync(path.join(f.root, "packages/shared/dist/complete")), true);
 });
+
+test("hard-killed compilation cannot leave partial output accepted on recovery", async (t) => {
+  const f = fixture(t);
+  // First establish valid completion markers, then start a rebuild.
+  assert.equal((await f.launch().done).code, 0);
+  const output = path.join(f.root, "packages/shared/dist/index.js");
+  const complete = path.join(f.root, "packages/shared/dist/complete");
+  fs.unlinkSync(output);
+  fs.unlinkSync(complete);
+  const run = f.launch({ BUILD_DELAY: "10000" });
+  await until(() => fs.existsSync(output));
+  const owner = JSON.parse(fs.readFileSync(path.join(f.lock, fs.readdirSync(f.lock)[0]), "utf8"));
+  run.child.kill("SIGKILL");
+  process.kill(owner.childPid, "SIGKILL");
+  await run.done;
+  await until(() => {
+    try { process.kill(owner.childPid, 0); return false; }
+    catch (error) { return error.code === "ESRCH"; }
+  });
+  // SIGKILL cannot run the fixture compiler's exit hook either.
+  fs.rmSync(path.join(f.root, "compiler-active"), { recursive: true, force: true });
+  const retry = await f.launch().done;
+  assert.equal(retry.code, 0, retry.output);
+  assert.match(retry.output, /Recovered abandoned/);
+  assert.equal(fs.existsSync(complete), true);
+});
