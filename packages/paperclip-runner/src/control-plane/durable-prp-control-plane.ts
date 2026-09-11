@@ -2057,6 +2057,9 @@ export class DurablePrpControlPlane {
       await this.#authResponse(connection, envelope);
       return;
     }
+    // Admit every post-handshake frame against persisted authority before
+    // dispatch, including lease_renew. Renewal cannot revive a revoked or
+    // expired credential or bypass changes to its persisted binding.
     if (
       connection.secureChannel === null ||
       connection.lease === null ||
