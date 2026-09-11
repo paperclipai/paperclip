@@ -4186,7 +4186,17 @@ done
     #[test]
     fn github_credentials_cross_only_the_bounded_provider_environment() {
         assert_eq!(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.len(), 95);
+        assert_eq!(
+            GITHUB_CREDENTIAL_ENVIRONMENT_KEYS
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.len(),
+            "provider environment keys must be unique",
+        );
         for key in [
+            "ZDOTDIR",
+            "BASH_ENV",
             "PAPERCLIP_RUNNER_NETWORK_ACCESS",
             "PAPERCLIP_RUNNER_NETWORK_ROOTS",
             "PAPERCLIP_GITHUB_AUTH_MODE",

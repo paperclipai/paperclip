@@ -89,7 +89,12 @@ describe("staging dependency integrity", () => {
   });
 
   it("checks the same lock in both staging app build contexts", () => {
-    const contexts = workflow.split("      - name: Refresh lockfile for Docker build context").slice(1);
+    const caller = workflow.split("  build-and-push-cloud:")[1].split("  # Moves")[0];
+    expect(caller).toContain("uses: ./.github/workflows/docker-cloud.yml");
+    expect(caller).toContain("staging_artifact_base_url: ${{ inputs.staging_artifact_base_url || '' }}");
+    expect(caller).toContain("staging_lock_sha256: ${{ inputs.staging_lock_sha256 || '' }}");
+    const contexts = [workflow, cloudWorkflow].flatMap((source) =>
+      source.split("      - name: Refresh lockfile for Docker build context").slice(1));
     expect(contexts).toHaveLength(2);
     for (const context of contexts) {
       const refresh = context.split("      - name:")[0];
