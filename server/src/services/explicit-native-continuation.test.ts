@@ -73,6 +73,55 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await admit(f, true)).toBeNull();
   });
 
+  it("ignores late process callbacks without invalidating terminal stop evidence", async () => {
+    const f = await seed();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    expect(await recordNativeLocalProcessStop(db, source)).toBe(true);
+    await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, source.id));
+    expect(await persistHeartbeatRunProcessMetadata(db, source.id, {
+      pid: 999999999, processGroupId: null, startedAt: new Date().toISOString(),
+    })).toBeNull();
+    expect(await hasNativeLocalProcessStop(db, f.companyId, source.id)).toBe(true);
+    expect(await admit(f, true)).toMatchObject({ previousRunId: source.id });
+  });
+
+  it.each(["available", "deleted", "different-author"])("reconsiders saved messages after cleanup resolves the blocker: %s", async state => {
+    const f = await seed();
+    // Keep admission queued so the test never launches a real provider.
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await heartbeatService(db).wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, commentId: f.commentId },
+      contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
+    const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(waiting.payload?.executionWait).toMatchObject({ reason: "process_running" });
+    await db.update(heartbeatRuns).set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    expect(await recordNativeLocalProcessStop(db, stopped)).toBe(true);
+    await db.update(issueRecoveryActions).set({ status: "resolved", evidence: { runId: f.sourceRunId } })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    if (state === "deleted") await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, f.commentId));
+    if (state === "different-author") await db.update(issueComments).set({ authorUserId: "someone-else" }).where(eq(issueComments.id, f.commentId));
+    const makeDue = () => db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, waiting.id));
+    const holdId = randomUUID();
+    await db.insert(issueTreeHolds).values({ id: holdId, companyId: f.companyId, rootIssueId: f.issueId, mode: "pause", status: "active" });
+    await db.insert(issueTreeHoldMembers).values({ companyId: f.companyId, holdId, issueId: f.issueId, depth: 0, issueTitle: "Deploy", issueStatus: "blocked" });
+    await makeDue();
+    await heartbeatService(db).resumeExecutionWaitComments();
+    const [held] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, waiting.id));
+    expect(held.status).toBe("deferred_issue_execution");
+    expect(held.payload?.executionWait).toMatchObject({ reason: "issue_tree_hold_active" });
+    await db.update(issueTreeHolds).set({ status: "released" }).where(eq(issueTreeHolds.id, holdId));
+    await makeDue();
+    await Promise.all([heartbeatService(db).resumeExecutionWaitComments(), heartbeatService(db).resumeExecutionWaitComments()]);
+    const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    expect(runs).toHaveLength(state === "available" ? 1 : 0);
+    const [after] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, waiting.id));
+    expect(after.status).toBe(state === "available" ? "coalesced" : "deferred_issue_execution");
+    if (state === "available") expect(after.runId).toBe(runs[0].id);
+  });
+
   it.each(["live", "remote", "provider_event"])("does not accept invalid local stop proof: %s", async kind => {
     const f = await seed();
     if (kind === "remote") {
