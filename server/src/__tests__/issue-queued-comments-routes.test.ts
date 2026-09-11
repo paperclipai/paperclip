@@ -175,6 +175,27 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     return { companyId, agentId, issueId, runId, wakeId, commentIds };
   }
 
+  it.each(["stale revision", "native run", "different issue"] as const)(
+    "rejects queued interruption for a %s without stopping the run",
+    async (scenario) => {
+      const seeded = await seedQueue();
+      if (scenario !== "native run") {
+        await db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, seeded.agentId));
+        await db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, seeded.runId));
+      }
+      const client = app(seeded.companyId);
+      const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+      if (scenario === "different issue") {
+        await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: randomUUID() } }).where(eq(heartbeatRuns.id, seeded.runId));
+      }
+      await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+        queueId: seeded.wakeId, targetRunId: seeded.runId,
+        revision: scenario === "stale revision" ? "stale" : queue.body.revision,
+      }).expect(409);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]!.status).toBe("running");
+    },
+  );
+
   async function promoteQueue(seeded: Awaited<ReturnType<typeof seedQueue>>) {
     const queueRunId = randomUUID();
     const wake = await db

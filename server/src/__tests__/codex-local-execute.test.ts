@@ -698,6 +698,39 @@ describe("codex execute", () => {
     }
   });
 
+  it.each([true, false])("retries missing resume only before a session starts (started=%s)", async (started) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-resume-stop-"));
+    const commandPath = path.join(root, "codex");
+    const attemptsPath = path.join(root, "attempts");
+    await seedSharedCodexAuth(root);
+    await fs.writeFile(commandPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(attemptsPath)}, "attempt\\n");
+if (process.argv.includes("resume")) {
+  console.error("state db missing rollout path for thread unrelated-old-thread");
+  ${started ? 'console.log(JSON.stringify({ type: "thread.started", thread_id: "existing-session" }));' : ''}
+  process.exitCode = 1;
+} else {
+  console.log(JSON.stringify({ type: "thread.started", thread_id: "fresh-session" }));
+  console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }));
+}
+`, "utf8");
+    await fs.chmod(commandPath, 0o755);
+    try {
+      const result = await execute({
+        runId: `resume-stop-${started}`,
+        agent: { id: "agent-1", companyId: "company-1", name: "Codex", adapterType: "codex_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: "existing-session", sessionParams: null, sessionDisplayId: "existing-session", taskKey: null },
+        config: { engine: "cli", command: commandPath, cwd: root, promptTemplate: "Test resume." },
+        context: {}, onLog: async () => {},
+      });
+      expect((await fs.readFile(attemptsPath, "utf8")).trim().split("\n")).toHaveLength(started ? 1 : 2);
+      expect(result.sessionId).toBe(started ? "existing-session" : "fresh-session");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("classifies mid-turn harness crashes as retryable transient upstream errors", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-harness-crash-"));
     const workspace = path.join(root, "workspace");
