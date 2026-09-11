@@ -50,6 +50,10 @@ successfully verified a real master commit.
 
 ## Timing and rollout
 
+The reusable Runner chaos workflow scopes concurrency to the caller workflow
+and source ref. Cloud readiness and the npm release can verify the same commit
+at the same time. They must not cancel each other's required test job.
+
 Measure the complete path from a master merge to a healthy target running that
 exact commit. Keep readiness and deployment as separate milestones:
 

@@ -14,6 +14,27 @@ function readWorkflow(name) {
   return readFileSync(path.join(repoRoot, ".github/workflows", name), "utf8");
 }
 
+test("chaos verification isolates callers that verify the same source commit", () => {
+  const chaosWorkflow = readWorkflow("runner-chaos-evals.yml");
+  const group = chaosWorkflow.match(/^  group: (.+)$/m)?.[1];
+  assert.ok(group, "chaos verification must define its concurrency group");
+
+  // GitHub supplies the top-level caller's workflow name to reusable calls.
+  const resolveGroup = (caller, ref) => group
+    .replaceAll("${{ github.workflow }}", readWorkflow(caller).match(/^name: (.+)$/m)[1])
+    .replaceAll("${{ inputs.ref || github.ref }}", ref)
+    .toLowerCase();
+  const sha = "a".repeat(40);
+  const callers = ["cloud-readiness.yml", "release.yml", "runner-chaos-evals.yml"];
+  const groups = callers.map((caller) => resolveGroup(caller, sha));
+  assert.equal(new Set(groups).size, callers.length,
+    "Cloud readiness, Release, and standalone evals must not cancel each other");
+  assert.ok(groups.every((value) => !value.includes("${{")), "resolve every group input");
+  assert.notEqual(resolveGroup("cloud-readiness.yml", sha),
+    resolveGroup("cloud-readiness.yml", "b".repeat(40)), "different sources remain independent");
+  assert.match(chaosWorkflow, /cancel-in-progress: true/);
+});
+
 test("release workflow delegates stable and canary verification to the reusable workflow", () => {
   const releaseWorkflow = readWorkflow("release.yml");
 
