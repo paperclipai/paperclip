@@ -215,6 +215,7 @@ const MAX_REMOTE_CHECKPOINT_ENTRIES = 20_000;
 // runner transport's 64 MiB control-plane state bound; ordinary tool output
 // can exceed 2 MiB without invalidating the session identity.
 const NATIVE_CONTROL_PLANE_STATE_MAX_BYTES = 64 * 1024 * 1024;
+const NATIVE_DURABLE_IDENTITY_MAX_BYTES = 2 * 1024 * 1024;
 const NATIVE_RUNNER_STATE_MAX_BYTES = 16 * 1024 * 1024;
 const NATIVE_WARM_CHECKPOINT_MAX_BYTES = 8 * 1024 * 1024;
 const CODEX_HOME_NON_PERSISTENT_ENTRIES = [
