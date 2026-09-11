@@ -339,6 +339,7 @@ interface PendingRequest {
 }
 
 export interface ProcessCodexTransportOptions {
+  workingDirectory?: string;
   command?: string;
   args?: string[];
   environment?: NodeJS.ProcessEnv;
@@ -432,6 +433,7 @@ export class ProcessCodexAppServerTransport implements CodexAppServerTransport {
       options.command ?? "codex",
       options.args ?? ["app-server"],
       {
+        cwd: options.workingDirectory,
         env: options.environment ?? createSanitizedCodexEnvironment(),
         stdio: "pipe",
         detached: this.#processGroup,

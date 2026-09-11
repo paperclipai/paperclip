@@ -75,7 +75,7 @@ describe("connection intent continuation wake contract", () => {
       expect(wakeup).toHaveBeenCalledWith(
         "agent-123",
         expect.objectContaining({
-          idempotencyKey: `interaction:interaction-123:${status}`,
+          idempotencyKey: `connection-intent:interaction-123:${status}`,
           requestedByActorType: "user",
           requestedByActorId: "user-123",
           contextSnapshot: expect.objectContaining({
@@ -89,7 +89,7 @@ describe("connection intent continuation wake contract", () => {
     },
   );
 
-  it.each(["backlog", "todo", "in_review", "done", "blocked", "cancelled"])(
+  it.each(["backlog", "todo", "done", "blocked", "cancelled"])(
     "does not wake a parked or closed %s task",
     async (issueStatus) => {
       const wakeup = vi.fn().mockResolvedValue(undefined);

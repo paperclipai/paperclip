@@ -3,9 +3,10 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import {
   activityLog,
+  agentWakeupRequests,
   agents,
   companies,
   completionContracts,
@@ -14,6 +15,7 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   issueRecoveryActions,
+  issueComments,
   issueWorkProducts,
   issues,
   nativeRunFinalizations,
@@ -26,6 +28,7 @@ import {
 } from "@paperclipai/db";
 import {
   type NativeExecutionInputV1,
+  type NativeExecutionInput,
   type NativeSession,
   type NativeSessionBackend,
   type PersistedNativeSession,
@@ -254,6 +257,88 @@ describe("P6-25 pre-result native session recovery", () => {
 
   afterAll(async () => temporary?.cleanup());
 
+  it("filters durable ownership holds before the bounded resume candidate limit", async () => {
+    const heldRunIds = Array.from(
+      { length: 26 },
+      (_, index) =>
+        `79100000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+    );
+    const eligibleRunId = "79100000-0000-4000-8000-000000000099";
+    const candidateRunIds = [...heldRunIds, eligibleRunId];
+    await db.insert(heartbeatRuns).values(
+      candidateRunIds.map((candidateRunId) => ({
+        id: candidateRunId,
+        companyId,
+        agentId,
+        nativeIssueId: issueId,
+        status: "running",
+        runtimeMode: "native",
+        nativePhase:
+          candidateRunId === eligibleRunId
+            ? "retryable_failure"
+            : "terminal_failure",
+        errorCode:
+          candidateRunId === eligibleRunId
+            ? null
+            : "native_execution_ownership_unverified",
+        runnerProfileJson: {
+          ...persistedProfile,
+          nativeExecutionInput: {
+            ...persistedProfile.nativeExecutionInput,
+            binding: { runId: candidateRunId },
+          },
+          sessionCheckpoint: {
+            ...persistedProfile.sessionCheckpoint,
+            identity: { runId: candidateRunId },
+          },
+        },
+      })),
+    );
+    await db.insert(nativeRunFinalizations).values(
+      candidateRunIds.map((candidateRunId) => ({
+        runId: candidateRunId,
+        companyId,
+        issueId,
+        phase: "retryable_failure",
+        attempt: 1,
+        nextAttemptAt: new Date(0),
+        leaseExpiresAt: new Date(0),
+      })),
+    );
+    try {
+      expect(
+        await claimNativeSessionResumptions({
+          db,
+          runnerInstanceId: "bounded-reaper",
+          runIds: candidateRunIds,
+          limit: 1,
+        }),
+      ).toEqual([
+        {
+          runId: eligibleRunId,
+          leaseOwner: expect.stringContaining("bounded-reaper:resume:"),
+        },
+      ]);
+      const held = await db
+        .select()
+        .from(nativeRunFinalizations)
+        .where(inArray(nativeRunFinalizations.runId, heldRunIds));
+      expect(held).toHaveLength(26);
+      expect(
+        held.every(
+          (row) => row.phase === "retryable_failure" && row.leaseOwner === null,
+        ),
+      ).toBe(true);
+    } finally {
+      await db
+        .delete(nativeRunFinalizations)
+        .where(inArray(nativeRunFinalizations.runId, candidateRunIds));
+      await db
+        .delete(heartbeatRuns)
+        .where(inArray(heartbeatRuns.id, candidateRunIds));
+    }
+  });
+
   it("wins one database lease for the original result-less run without consulting the flag", async () => {
     const results = await Promise.all([
       claimNativeSessionResumptions({ db, runnerInstanceId: "reaper-a", runIds: [runId] }),
@@ -445,450 +530,844 @@ describe("P6-25 pre-result native session recovery", () => {
   });
 });
 
-describe("P6-25 persisted reaper-to-finalization recovery", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
-  let db: ReturnType<typeof createDb>;
-  let staleProviderProcess: ReturnType<typeof spawn> | null = null;
-  const companyId = randomUUID();
-  const agentId = randomUUID();
-  const projectId = randomUUID();
-  const projectWorkspaceId = randomUUID();
-  const executionWorkspaceId = randomUUID();
-  const newerExecutionWorkspaceId = randomUUID();
-  const issueId = randomUUID();
-  const freshIssueId = randomUUID();
-  const runId = randomUUID();
-  const contractId = randomUUID();
-  const workProductId = randomUUID();
-  const sessionId = randomUUID();
-  const runnerInstanceId = randomUUID();
-  const turnId = "provider-active-turn";
-  const providerSessionId = "provider-existing-session";
-  const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
-  const contract = {
-    revision: "phase6-recovery-v1",
-    objective: "Recover the persisted provider turn",
-    criteria: [{ id: "objective", requirement: "Complete through same-run recovery" }],
-  };
-  const contractSha = "phase6-recovery-contract";
-  const evidenceRef = `work_product:${workProductId}`;
-  const result = structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT);
-  result.completionClaim.contractRevision = contract.revision;
-  result.completionClaim.criteria[0]!.evidenceRefs = [evidenceRef];
-  result.evidence = [{ kind: "work_product", ref: evidenceRef }];
-  result.verification[0]!.artifactRef = evidenceRef;
-  result.summary = "Recovered the already-active provider turn.";
-  const terminal = {
-    ...CONTROL_PLANE_CONFORMANCE_TERMINAL,
-    reportedWorkDisposition: result.reportedWorkDisposition,
-  };
-  const execution: NativeExecutionInputV1 = {
-    schema: "paperclip.native-execution-input.v1",
-    binding: { companyId, runId, issueId, agentId, executionWorkspaceId },
-    task: {
-      identifier: "NRR-1",
-      title: "Recover one native heartbeat",
-      description: null,
-      workMode: "standard",
-    },
-    workspace: { cwd: repoRoot, repoUrl: null, repoRef: null, branchName: null },
-    session: { normalizedSessionId: sessionId, driverKind: "codex_app_server", protocolVersion: 1 },
-    provider: { kind: "codex", model: null },
-    completionContract: {
-      id: contractId,
-      sha256: contractSha,
-      schemaVersion: "paperclip.completion-contract.v1",
-      contract,
-    },
-    interactionResponses: [],
-    credentialBindings: [],
-  };
-  const checkpoint: PersistedNativeSession = {
-    backendKind: "mock",
-    sessionId: "driver-existing-session",
-    identity: { companyId, runId, issueId, agentId, sessionId },
-    providerSessionId,
-    cursor: "1",
-    activeTurnId: turnId,
-    pendingRuntimeRequests: [],
-    lineage: [],
-  };
-  const providerTerminalEvent: PrpEvent = {
-    schema: "paperclip.prp.event.v1",
-    sourceEventId: `${runnerInstanceId}:provider-terminal`,
-    sourceSeq: 1,
-    sourceInstanceId: runnerInstanceId,
-    sourceKind: "runner",
-    runId,
-    normalizedSessionId: sessionId,
-    turnId,
-    eventType: "turn.completed",
-    schemaVersion: 1,
-    priority: 0,
-    emittedAt: "2026-08-09T04:30:00.000Z",
-    payload: {},
-  };
-  const openSession = vi.fn(async () => {
-    throw new Error("same-run recovery must not open a second provider session");
-  });
-  const startTurn = vi.fn(async () => ({ turnId: "duplicate-turn" }));
-  const close = vi.fn(async () => undefined);
-  const recoverSession = vi.fn(async (persisted: PersistedNativeSession) => {
-    expect(persisted).toMatchObject({ providerSessionId, activeTurnId: turnId });
-    expect(staleProviderProcess).not.toBeNull();
-    expect(
-      staleProviderProcess!.exitCode !== null ||
-      staleProviderProcess!.signalCode !== null,
-    ).toBe(true);
-    const recoveredSnapshot: PersistedNativeSession = { ...structuredClone(checkpoint), cursor: "2" };
-    const session: NativeSession = {
-      identity: () => structuredClone(checkpoint.identity),
-      async capabilities() {
-        return { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
-      },
-      async *events() { yield providerTerminalEvent; },
-      startTurn,
-      async result() { return { result, terminal, turnId }; },
-      async snapshot() { return structuredClone(recoveredSnapshot); },
-      close,
+describe.each(["unchanged", "newer_active", "stale_idle"] as const)(
+  "P6-25 persisted reaper-to-finalization recovery (%s)",
+  (variant) => {
+    const newerRequest = variant !== "unchanged";
+    const staleIdleCheckpoint = variant === "stale_idle";
+    let temporary: Awaited<
+      ReturnType<typeof startEmbeddedPostgresTestDatabase>
+    > | null = null;
+    let db: ReturnType<typeof createDb>;
+    let staleProviderProcess: ReturnType<typeof spawn> | null = null;
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+    const newerExecutionWorkspaceId = randomUUID();
+    const issueId = randomUUID();
+    const freshIssueId = randomUUID();
+    const runId = randomUUID();
+    const contractId = randomUUID();
+    const workProductId = randomUUID();
+    const sessionId = randomUUID();
+    const runnerInstanceId = randomUUID();
+    const newerCommentId = randomUUID();
+    const newerWakeKey = `newer-comment:${newerCommentId}`;
+    const turnId = "provider-active-turn";
+    const providerSessionId = "provider-existing-session";
+    const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
+    const contract = {
+      revision: "phase6-recovery-v1",
+      objective: "Recover the persisted provider turn",
+      criteria: [
+        { id: "objective", requirement: "Complete through same-run recovery" },
+      ],
     };
-    return { recovered: true, session };
-  });
-  const backend: NativeSessionBackend = {
-    async descriptor() {
-      return {
-        kind: "mock",
-        name: "persisted-recovery-backend",
-        version: "1",
-        capabilities: { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true },
-      };
-    },
-    openSession,
-    recoverSession,
-  };
-
-  beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-reaper-e2e-");
-    db = createDb(temporary.connectionString);
-    await instanceSettingsService(db).updateExperimental({ enableNativeRunner: false });
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Native same-run recovery",
-      issuePrefix: "NRR",
-      status: "active",
-      defaultResponsibleUserId: "responsible-user",
-    });
-    await db.insert(projects).values({ id: projectId, companyId, name: "Recovery project", status: "active" });
-    await db.insert(projectWorkspaces).values({
-      id: projectWorkspaceId,
-      companyId,
-      projectId,
-      name: "Recovery workspace",
-      cwd: repoRoot,
-      isPrimary: true,
-    });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Native recovery agent",
-      adapterType: "paperclip_runner",
-      status: "active",
-      runtimeConfig: {
-        heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
-        nativeRunner: { mode: "native", backend: "codex_app_server", protocolVersion: 1 },
+    const contractSha = "phase6-recovery-contract";
+    const evidenceRef = `work_product:${workProductId}`;
+    const result = structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT);
+    result.completionClaim.contractRevision = contract.revision;
+    result.completionClaim.criteria[0]!.evidenceRefs = [evidenceRef];
+    result.evidence = [{ kind: "work_product", ref: evidenceRef }];
+    result.verification[0]!.artifactRef = evidenceRef;
+    result.summary = "Recovered the already-active provider turn.";
+    const terminal = {
+      ...CONTROL_PLANE_CONFORMANCE_TERMINAL,
+      reportedWorkDisposition: result.reportedWorkDisposition,
+    };
+    const execution: NativeExecutionInputV1 = {
+      schema: "paperclip.native-execution-input.v1",
+      binding: { companyId, runId, issueId, agentId, executionWorkspaceId },
+      task: {
+        identifier: "NRR-1",
+        title: "Recover one native heartbeat",
+        description: null,
+        workMode: "standard",
       },
-    });
-    await db.insert(issues).values({
-      id: issueId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      issueNumber: 1,
-      identifier: "NRR-1",
-      title: "Recover one native heartbeat",
-      status: "in_progress",
-      assigneeAgentId: agentId,
-      workMode: "standard",
-    });
-    await db.insert(executionWorkspaces).values({
-      id: executionWorkspaceId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      sourceIssueId: issueId,
-      mode: "shared_workspace",
-      strategyType: "project_primary",
-      name: "Persisted recovery workspace",
-      status: "active",
-      cwd: repoRoot,
-      providerType: "local_fs",
-    });
-    await db.insert(executionWorkspaces).values({
-      id: newerExecutionWorkspaceId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      sourceIssueId: issueId,
-      mode: "shared_workspace",
-      strategyType: "project_primary",
-      name: "Newer issue workspace",
-      status: "active",
-      cwd: repoRoot,
-      providerType: "local_fs",
-    });
-    await db.update(issues).set({
-      // Simulate a newer run moving the issue-level pointer before the older native run is
-      // recovered. The older run must still restore its own immutable workspace binding.
-      executionWorkspaceId: newerExecutionWorkspaceId,
-      executionWorkspacePreference: "reuse_existing",
-      executionWorkspaceSettings: { mode: "shared_workspace" },
-    }).where(eq(issues.id, issueId));
-    await db.insert(completionContracts).values({
-      id: contractId,
-      companyId,
-      issueId,
-      revision: 1,
-      schemaVersion: "paperclip.completion-contract.v1",
-      policyVersion: "phase6-v1",
-      risk: "standard",
-      completionAuthority: "server_arbiter",
-      incompleteCriteriaPolicy: "preserve_non_terminal",
-      contractJson: contract,
-      canonicalSha256: contractSha,
-      createdByActorType: "system",
-      createdByActorId: "test",
-    });
-    await db.insert(issueWorkProducts).values({
-      id: workProductId,
-      companyId,
-      issueId,
-      type: "artifact",
-      provider: "paperclip",
-      title: "Recovered result evidence",
-      status: "ready_for_review",
-      reviewState: "approved",
-    });
-    await db.insert(heartbeatRuns).values({
-      id: runId,
-      companyId,
-      agentId,
-      nativeIssueId: issueId,
-      status: "running",
-      runtimeMode: "native",
-      runtimeModeResolverVersion: "phase6-v1",
-      runtimeModeReason: "eligible_opt_in",
-      runtimeModeResolvedAt: new Date("2026-08-09T04:00:00.000Z"),
-      runnerProfileJson: {
-        mode: "native",
-        backend: "codex_app_server",
+      workspace: {
+        cwd: repoRoot,
+        repoUrl: null,
+        repoRef: null,
+        branchName: null,
+      },
+      session: {
+        normalizedSessionId: sessionId,
+        driverKind: "codex_app_server",
         protocolVersion: 1,
-        nativeExecutionInput: execution,
-        sessionCheckpoint: checkpoint,
       },
-      runnerInstanceId,
-      nativeSessionId: sessionId,
-      driverKind: "codex_app_server",
-      driverVersion: "phase6-v1",
-      completionContractId: contractId,
-      completionContractSha256: contractSha,
-      nativePhase: "retryable_failure",
-      nativePhaseUpdatedAt: new Date("2026-08-09T04:00:00.000Z"),
-      contextSnapshot: { issueId, taskId: issueId, skipIssueComment: true },
-    });
-    await db.insert(nativeRunFinalizations).values({
+      provider: { kind: "codex", model: null },
+      completionContract: {
+        id: contractId,
+        sha256: contractSha,
+        schemaVersion: "paperclip.completion-contract.v1",
+        contract,
+      },
+      interactionResponses: [],
+      credentialBindings: [],
+    };
+    const checkpoint: PersistedNativeSession = {
+      backendKind: "mock",
+      sessionId: "driver-existing-session",
+      identity: { companyId, runId, issueId, agentId, sessionId },
+      providerSessionId,
+      cursor: "1",
+      activeTurnId: staleIdleCheckpoint ? null : turnId,
+      pendingRuntimeRequests: [],
+      lineage: [],
+    };
+    const providerTerminalEvent: PrpEvent = {
+      schema: "paperclip.prp.event.v1",
+      sourceEventId: `${runnerInstanceId}:provider-terminal`,
+      sourceSeq: 1,
+      sourceInstanceId: runnerInstanceId,
+      sourceKind: "runner",
       runId,
-      companyId,
-      issueId,
-      phase: "retryable_failure",
-      attempt: 1,
-      failureCode: "native_session_interrupted",
-      nextAttemptAt: new Date(0),
+      normalizedSessionId: sessionId,
+      turnId,
+      eventType: "turn.completed",
+      schemaVersion: 1,
+      priority: 0,
+      emittedAt: "2026-08-09T04:30:00.000Z",
+      payload: {},
+    };
+    const openSession = vi.fn(async () => {
+      throw new Error(
+        "same-run recovery must not open a second provider session",
+      );
     });
-  }, 30_000);
-
-  afterAll(async () => {
-    if (
-      staleProviderProcess &&
-      staleProviderProcess.exitCode === null &&
-      staleProviderProcess.signalCode === null
-    ) {
-      staleProviderProcess.kill("SIGKILL");
-    }
-    if (temporary) {
-      await drainHeartbeatRunsToQuiescence(db, heartbeatService(db, {
-        runtimeEnv: { PAPERCLIP_INSTANCE_ID: "phase6-recovery-test" },
-        nativeSessionBackendFactory: () => backend,
-      }));
-      await temporary.cleanup();
-    }
-  });
-
-  it("does not kill an unowned persisted PID, then recovers after it exits while flag-off", async () => {
-    legacyAdapterExecute.mockClear();
-    staleProviderProcess = spawn(
-      process.execPath,
-      ["-e", "setInterval(() => {}, 1_000)"],
-      { stdio: "ignore" },
-    );
-    await once(staleProviderProcess, "spawn");
-    expect(staleProviderProcess.pid).toEqual(expect.any(Number));
-    await db.update(heartbeatRuns).set({
-      processPid: staleProviderProcess.pid!,
-      processStartedAt: new Date("2026-08-09T04:00:00.000Z"),
-    }).where(eq(heartbeatRuns.id, runId));
-    const backendFactory = vi.fn(() => backend);
-    const heartbeat = heartbeatService(db, {
-      runtimeEnv: { PAPERCLIP_INSTANCE_ID: "phase6-recovery-test" },
-      nativeSessionBackendFactory: backendFactory,
+    const startTurn = vi.fn<NativeSession["startTurn"]>(async () => {
+      throw new Error(
+        "recovering old work must not start a replacement provider turn",
+      );
     });
+    const close = vi.fn(async () => undefined);
+    const recoverSession = vi.fn(async (persisted: PersistedNativeSession) => {
+      expect(persisted).toMatchObject({
+        providerSessionId,
+        activeTurnId: staleIdleCheckpoint ? null : turnId,
+      });
+      expect(staleProviderProcess).not.toBeNull();
+      expect(
+        staleProviderProcess!.exitCode !== null ||
+          staleProviderProcess!.signalCode !== null,
+      ).toBe(true);
+      // Model the real launch/checkpoint gap: the durable DB snapshot may still
+      // look idle, while the recovered provider has already started the old turn.
+      const recoveredSnapshot: PersistedNativeSession = {
+        ...structuredClone(checkpoint),
+        cursor: "2",
+        activeTurnId: turnId,
+      };
+      const session: NativeSession = {
+        identity: () => structuredClone(checkpoint.identity),
+        async capabilities() {
+          return {
+            resume: true,
+            typedEvents: true,
+            steering: false,
+            interruption: true,
+            structuredResult: true,
+          };
+        },
+        async *events() {
+          yield providerTerminalEvent;
+        },
+        startTurn,
+        async result() {
+          return { result, terminal, turnId };
+        },
+        async snapshot() {
+          return structuredClone(recoveredSnapshot);
+        },
+        close,
+      };
+      return { recovered: true, session };
+    });
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "persisted-recovery-backend",
+          version: "1",
+          capabilities: {
+            resume: true,
+            typedEvents: true,
+            steering: false,
+            interruption: true,
+            structuredResult: true,
+          },
+        };
+      },
+      openSession,
+      recoverSession,
+    };
 
-    await expect(heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 })).resolves.not.toContain(runId);
-    await heartbeat.drainActiveRunExecutions();
-
-    expect(backendFactory).not.toHaveBeenCalled();
-    expect(recoverSession).not.toHaveBeenCalled();
-    expect(() => process.kill(staleProviderProcess!.pid!, 0)).not.toThrow();
-    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId))).resolves.toEqual([
-      expect.objectContaining({
+    beforeAll(async () => {
+      temporary = await startEmbeddedPostgresTestDatabase(
+        "paperclip-native-reaper-e2e-",
+      );
+      db = createDb(temporary.connectionString);
+      await instanceSettingsService(db).updateExperimental({
+        enableNativeRunner: newerRequest,
+      });
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Native same-run recovery",
+        issuePrefix: "NRR",
+        status: "active",
+        defaultResponsibleUserId: "responsible-user",
+      });
+      await db
+        .insert(projects)
+        .values({
+          id: projectId,
+          companyId,
+          name: "Recovery project",
+          status: "active",
+        });
+      await db.insert(projectWorkspaces).values({
+        id: projectWorkspaceId,
+        companyId,
+        projectId,
+        name: "Recovery workspace",
+        cwd: repoRoot,
+        isPrimary: true,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Native recovery agent",
+        adapterType: "paperclip_runner",
+        // Match the persisted fixture workspace's strategy explicitly. A
+        // metadata-free workspace is not proof of the current config; an actual
+        // strategy change correctly refuses immutable native-input rebinding.
+        adapterConfig: { workspaceStrategy: { type: "project_primary" } },
+        status: "active",
+        runtimeConfig: {
+          heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 },
+          nativeRunner: {
+            mode: "native",
+            backend: "codex_app_server",
+            protocolVersion: 1,
+          },
+        },
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        issueNumber: 1,
+        identifier: "NRR-1",
+        title: "Recover one native heartbeat",
+        status: "in_progress",
+        assigneeAgentId: agentId,
+        workMode: "standard",
+      });
+      await db.insert(executionWorkspaces).values({
+        id: executionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: issueId,
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        name: "Persisted recovery workspace",
+        status: "active",
+        cwd: repoRoot,
+        providerType: "local_fs",
+      });
+      await db.insert(executionWorkspaces).values({
+        id: newerExecutionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        sourceIssueId: issueId,
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        name: "Newer issue workspace",
+        status: "active",
+        cwd: repoRoot,
+        providerType: "local_fs",
+      });
+      await db
+        .update(issues)
+        .set({
+          // Simulate a newer run moving the issue-level pointer before the older native run is
+          // recovered. The older run must still restore its own immutable workspace binding.
+          executionWorkspaceId: newerExecutionWorkspaceId,
+          executionWorkspacePreference: "reuse_existing",
+          executionWorkspaceSettings: { mode: "shared_workspace" },
+        })
+        .where(eq(issues.id, issueId));
+      await db.insert(completionContracts).values({
+        id: contractId,
+        companyId,
+        issueId,
+        revision: 1,
+        schemaVersion: "paperclip.completion-contract.v1",
+        policyVersion: "phase6-v1",
+        risk: "standard",
+        completionAuthority: "server_arbiter",
+        incompleteCriteriaPolicy: "preserve_non_terminal",
+        contractJson: contract,
+        canonicalSha256: contractSha,
+        createdByActorType: "system",
+        createdByActorId: "test",
+      });
+      await db.insert(issueWorkProducts).values({
+        id: workProductId,
+        companyId,
+        issueId,
+        type: "artifact",
+        provider: "paperclip",
+        title: "Recovered result evidence",
+        status: "ready_for_review",
+        reviewState: "approved",
+      });
+      await db.insert(heartbeatRuns).values({
         id: runId,
+        companyId,
+        agentId,
+        nativeIssueId: issueId,
         status: "running",
-        processPid: staleProviderProcess.pid,
-        errorCode: "native_execution_ownership_unverified",
-      }),
-    ]);
-    await expect(db.select().from(nativeRunFinalizations).where(eq(
-      nativeRunFinalizations.runId,
-      runId,
-    ))).resolves.toEqual([
-      expect.objectContaining({
+        runtimeMode: "native",
+        runtimeModeResolverVersion: "phase6-v1",
+        runtimeModeReason: "eligible_opt_in",
+        runtimeModeResolvedAt: new Date("2026-08-09T04:00:00.000Z"),
+        runnerProfileJson: {
+          mode: "native",
+          backend: "codex_app_server",
+          protocolVersion: 1,
+          nativeExecutionInput: execution,
+          sessionCheckpoint: checkpoint,
+        },
+        runnerInstanceId,
+        nativeSessionId: sessionId,
+        driverKind: "codex_app_server",
+        driverVersion: "phase6-v1",
+        completionContractId: contractId,
+        completionContractSha256: contractSha,
+        nativePhase: "retryable_failure",
+        nativePhaseUpdatedAt: new Date("2026-08-09T04:00:00.000Z"),
+        startedAt: new Date("2026-08-09T04:00:00.000Z"),
+        contextSnapshot: { issueId, taskId: issueId, skipIssueComment: true },
+      });
+      await db
+        .update(issues)
+        .set({ executionRunId: runId })
+        .where(eq(issues.id, issueId));
+      await db.insert(nativeRunFinalizations).values({
+        runId,
+        companyId,
+        issueId,
         phase: "retryable_failure",
         attempt: 1,
-        leaseOwner: null,
-      }),
-    ]);
+        failureCode: "native_session_interrupted",
+        nextAttemptAt: new Date(0),
+      });
+      if (newerRequest)
+        await db.insert(issueComments).values({
+          id: newerCommentId,
+          companyId,
+          issueId,
+          authorUserId: "responsible-user",
+          body: "Verify the newest user instruction before completing this task.",
+        });
+    }, 30_000);
 
-    const unrelatedProcessExit = once(staleProviderProcess, "exit");
-    staleProviderProcess.kill("SIGKILL");
-    await unrelatedProcessExit;
-    await db.update(nativeRunFinalizations).set({
-      leaseOwner: null,
-      leaseExpiresAt: null,
-    }).where(eq(nativeRunFinalizations.runId, runId));
-
-    await expect(heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 })).resolves.not.toContain(runId);
-    await heartbeat.drainActiveRunExecutions();
-
-    const recoveryState = {
-      run: await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)),
-      coordinator: await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)),
-    };
-    expect(
-      backendFactory.mock.calls.length,
-      JSON.stringify(recoveryState),
-    ).toBe(1);
-    expect(recoverSession).toHaveBeenCalledOnce();
-    expect(openSession).not.toHaveBeenCalled();
-    expect(startTurn).not.toHaveBeenCalled();
-    expect(close).toHaveBeenCalledOnce();
-    expect(legacyAdapterExecute).not.toHaveBeenCalled();
-
-    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).resolves.toEqual([
-      expect.objectContaining({
-        id: runId,
-        runtimeMode: "native",
-        status: "succeeded",
-        nativePhase: "committed",
-        processPid: null,
-        processGroupId: null,
-        processStartedAt: null,
-      }),
-    ]);
-    await expect(db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId))).resolves.toHaveLength(1);
-    await expect(db.select().from(workAssessments).where(eq(workAssessments.runId, runId))).resolves.toHaveLength(1);
-    const decisions = await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId));
-    expect(decisions).toEqual([
-      expect.objectContaining({ reasonCode: "completion_contract_satisfied", toStatus: "done", applicationState: "applied" }),
-    ]);
-    const effects = await db.select().from(statusDecisionEffects).where(eq(statusDecisionEffects.issueId, issueId));
-    expect(new Set(effects.map((effect) => effect.decisionId))).toEqual(new Set([decisions[0]!.id]));
-    expect(effects.map((effect) => effect.effectKind).sort()).toEqual(["issue_status_projection", "release_checkout"]);
-    await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toEqual([
-      expect.objectContaining({
-        status: "done",
-        statusVersion: 1,
-        lastStatusDecisionId: decisions[0]!.id,
-        executionWorkspaceId: newerExecutionWorkspaceId,
-      }),
-    ]);
-    await expect(db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, companyId)))
-      .resolves.toHaveLength(2);
-    await expect(db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId))).resolves.toEqual([
-      expect.objectContaining({ phase: "committed", resultId: expect.any(String), assessmentId: expect.any(String), decisionId: decisions[0]!.id }),
-    ]);
-    await expect(db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, runId))).resolves.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ eventType: "turn.completed" }),
-        expect.objectContaining({ eventType: "run.result.accepted" }),
-        expect.objectContaining({ eventType: "run.terminal" }),
-      ]),
-    );
-    await expect(db.select().from(activityLog).where(eq(activityLog.entityId, issueId))).resolves.toEqual(
-      expect.arrayContaining([expect.objectContaining({ action: "issue.updated" })]),
-    );
-
-    await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 });
-    await heartbeat.drainActiveRunExecutions();
-    expect(backendFactory).toHaveBeenCalledOnce();
-    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).resolves.toHaveLength(1);
-    await expect(db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId))).resolves.toHaveLength(1);
-    await expect(db.select().from(workAssessments).where(eq(workAssessments.runId, runId))).resolves.toHaveLength(1);
-    await expect(db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId))).resolves.toHaveLength(1);
-
-    // The persisted Paperclip Runner run above remains recoverable while the
-    // flag is off. Switching the agent back to a direct adapter now proves a
-    // fresh run ignores the stale native profile and stays on the legacy path.
-    await db
-      .update(agents)
-      .set({ adapterType: "codex_local" })
-      .where(eq(agents.id, agentId));
-    await db.insert(issues).values({
-      id: freshIssueId,
-      companyId,
-      projectId,
-      projectWorkspaceId,
-      issueNumber: 2,
-      identifier: "NRR-2",
-      title: "Start only after the native kill switch is off",
-      status: "in_progress",
-      assigneeAgentId: agentId,
-      workMode: "standard",
+    afterAll(async () => {
+      if (
+        staleProviderProcess &&
+        staleProviderProcess.exitCode === null &&
+        staleProviderProcess.signalCode === null
+      ) {
+        staleProviderProcess.kill("SIGKILL");
+      }
+      if (temporary) {
+        await drainHeartbeatRunsToQuiescence(
+          db,
+          heartbeatService(db, {
+            runtimeEnv: { PAPERCLIP_INSTANCE_ID: "phase6-recovery-test" },
+            nativeSessionBackendFactory: () => backend,
+          }),
+        );
+        await temporary.cleanup();
+      }
     });
-    const fresh = await heartbeat.wakeup(agentId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: "issue_commented",
-      payload: { issueId: freshIssueId },
-      contextSnapshot: { issueId: freshIssueId, taskId: freshIssueId, skipIssueComment: true },
-    });
-    expect(fresh).not.toBeNull();
-    await drainHeartbeatRunsToQuiescence(db, heartbeat);
-    expect(legacyAdapterExecute).toHaveBeenCalledOnce();
-    await expect(db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fresh!.id))).resolves.toEqual([
-      expect.objectContaining({
-        agentId,
-        runtimeMode: "legacy",
-        runtimeModeReason: "direct_adapter",
-        status: "succeeded",
-      }),
-    ]);
-    await expect(db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fresh!.id))).resolves.toHaveLength(0);
-    await expect(db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fresh!.id))).resolves.toHaveLength(0);
-    await expect(db.select({ runtimeConfig: agents.runtimeConfig }).from(agents).where(eq(agents.id, agentId))).resolves.toEqual([
-      expect.objectContaining({
-        runtimeConfig: expect.objectContaining({
-          nativeRunner: { mode: "native", backend: "codex_app_server", protocolVersion: 1 },
+
+    it("preserves the old provider contract and admits newer direction only in a separate turn", async () => {
+      legacyAdapterExecute.mockClear();
+      staleProviderProcess = spawn(
+        process.execPath,
+        ["-e", "setInterval(() => {}, 1_000)"],
+        { stdio: "ignore" },
+      );
+      await once(staleProviderProcess, "spawn");
+      expect(staleProviderProcess.pid).toEqual(expect.any(Number));
+      await db
+        .update(heartbeatRuns)
+        .set({
+          processPid: staleProviderProcess.pid!,
+          processStartedAt: new Date("2026-08-09T04:00:00.000Z"),
+        })
+        .where(eq(heartbeatRuns.id, runId));
+      const factoryInputs: NativeExecutionInput[] = [];
+      const freshStartTurn = vi.fn<NativeSession["startTurn"]>();
+      const freshBackend = (
+        executionInput: NativeExecutionInput,
+      ): NativeSessionBackend => {
+        const freshRunId = executionInput.binding.runId;
+        const freshTurnId = `new-direction:${freshRunId}`;
+        const freshIdentity = {
+          ...checkpoint.identity,
+          runId: freshRunId,
+          sessionId: executionInput.session.normalizedSessionId,
+        };
+        let releaseStart!: () => void;
+        const started = new Promise<void>((resolve) => {
+          releaseStart = resolve;
+        });
+        let freshResult = structuredClone(result);
+        const session: NativeSession = {
+          identity: () => freshIdentity,
+          capabilities: async () => ({
+            resume: true,
+            typedEvents: true,
+            steering: false,
+            interruption: true,
+            structuredResult: true,
+          }),
+          async *events() {
+            await started;
+            const [freshRun] = await db
+              .select()
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, freshRunId));
+            yield {
+              ...providerTerminalEvent,
+              sourceEventId: `${freshRun.runnerInstanceId}:fresh-terminal`,
+              sourceInstanceId: freshRun.runnerInstanceId!,
+              runId: freshRunId,
+              normalizedSessionId: freshIdentity.sessionId,
+              turnId: freshTurnId,
+            };
+          },
+          async startTurn(input) {
+            freshStartTurn(input);
+            const delivered = JSON.parse(input.message.text);
+            expect(delivered.task.prompt).toContain(
+              "Verify the newest user instruction",
+            );
+            const currentContract =
+              delivered.completionContract as typeof contract;
+            freshResult.completionClaim.contractRevision =
+              currentContract.revision;
+            freshResult.completionClaim.criteria = currentContract.criteria.map(
+              (criterion) => ({
+                ...freshResult.completionClaim.criteria[0]!,
+                criterionId: criterion.id,
+              }),
+            );
+            freshResult.summary =
+              "Completed the separately delivered newer instruction.";
+            releaseStart();
+            return { turnId: freshTurnId };
+          },
+          async result() {
+            return { result: freshResult, terminal, turnId: freshTurnId };
+          },
+          async snapshot() {
+            return {
+              ...checkpoint,
+              identity: freshIdentity,
+              providerSessionId: `fresh:${freshRunId}`,
+              activeTurnId: null,
+              cursor: "0",
+            };
+          },
+          async close() {},
+        };
+        return {
+          async descriptor() {
+            return {
+              ...(await backend.descriptor()),
+              runtimeContextCapabilities: {
+                instructions: "native",
+                skills: "native",
+                mcp: "native",
+              },
+            };
+          },
+          async openSession(input) {
+            expect(input.identity).toEqual(freshIdentity);
+            return session;
+          },
+          async recoverSession() {
+            throw new Error(
+              "newer user cause must not reuse the prior active turn",
+            );
+          },
+        };
+      };
+      const backendFactory = vi.fn((input: NativeExecutionInput) => {
+        factoryInputs.push(structuredClone(input));
+        return input.binding.runId === runId ? backend : freshBackend(input);
+      });
+      const heartbeat = heartbeatService(db, {
+        runtimeEnv: { PAPERCLIP_INSTANCE_ID: "phase6-recovery-test" },
+        nativeSessionBackendFactory: backendFactory,
+      });
+      if (newerRequest) {
+        // Restore the independently admitted receipt that was deferred while the
+        // original provider was running, before this simulated process loss.
+        await db.insert(agentWakeupRequests).values({
+          companyId,
+          agentId,
+          status: "deferred_issue_execution",
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_commented",
+          idempotencyKey: newerWakeKey,
+          requestedByActorType: "user",
+          requestedByActorId: "responsible-user",
+          payload: {
+            issueId,
+            commentId: newerCommentId,
+            _paperclipWakeContext: {
+              issueId,
+              taskId: issueId,
+              commentId: newerCommentId,
+              wakeCommentIds: [newerCommentId],
+              skipIssueComment: true,
+            },
+          },
+        });
+        const [receipt] = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.idempotencyKey, newerWakeKey));
+        expect(receipt.status).toBe("deferred_issue_execution");
+      }
+
+      await expect(
+        heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 }),
+      ).resolves.not.toContain(runId);
+      await heartbeat.drainActiveRunExecutions();
+
+      expect(backendFactory).not.toHaveBeenCalled();
+      expect(recoverSession).not.toHaveBeenCalled();
+      expect(() => process.kill(staleProviderProcess!.pid!, 0)).not.toThrow();
+      await expect(
+        db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          id: runId,
+          status: "running",
+          processPid: staleProviderProcess.pid,
+          errorCode: "native_execution_ownership_unverified",
         }),
-      }),
-    ]);
-  }, 30_000);
-});
+      ]);
+      await expect(
+        db
+          .select()
+          .from(nativeRunFinalizations)
+          .where(eq(nativeRunFinalizations.runId, runId)),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          phase: "retryable_failure",
+          attempt: 1,
+          leaseOwner: null,
+        }),
+      ]);
+
+      const unrelatedProcessExit = once(staleProviderProcess, "exit");
+      staleProviderProcess.kill("SIGKILL");
+      await unrelatedProcessExit;
+      await db
+        .update(nativeRunFinalizations)
+        .set({
+          leaseOwner: null,
+          leaseExpiresAt: null,
+        })
+        .where(eq(nativeRunFinalizations.runId, runId));
+
+      await expect(
+        heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 }),
+      ).resolves.not.toContain(runId);
+      await heartbeat.drainActiveRunExecutions();
+
+      if (newerRequest) {
+        await drainHeartbeatRunsToQuiescence(db, heartbeat);
+        const original = factoryInputs.find(
+          (input) => input.binding.runId === runId,
+        );
+        expect(original?.completionContract).toEqual(
+          execution.completionContract,
+        );
+        expect(original?.task.prompt).toBe(execution.task.title);
+        expect(startTurn).not.toHaveBeenCalled();
+        const [accepted] = await db
+          .select()
+          .from(nativeRunResults)
+          .where(eq(nativeRunResults.runId, runId));
+        expect(accepted?.completionContractId).toBe(contractId);
+        const [receipt] = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.idempotencyKey, newerWakeKey));
+        expect(receipt.payload).toMatchObject({ commentId: newerCommentId });
+        expect(receipt.status).toBe("completed");
+        expect(receipt.runId).not.toBe(runId);
+        expect(freshStartTurn).toHaveBeenCalledOnce();
+        const [freshRun] = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, receipt.runId!));
+        expect(freshRun).toMatchObject({
+          status: "succeeded",
+          nativePhase: "committed",
+        });
+        expect(
+          await db
+            .select()
+            .from(nativeRunResults)
+            .where(eq(nativeRunResults.runId, receipt.runId!)),
+        ).toHaveLength(1);
+        expect(
+          factoryInputs.filter((input) => input.binding.runId === runId),
+        ).toHaveLength(1);
+        await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 });
+        await drainHeartbeatRunsToQuiescence(db, heartbeat);
+        expect(freshStartTurn).toHaveBeenCalledOnce();
+        expect(
+          await db
+            .select()
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.companyId, companyId)),
+        ).toHaveLength(2);
+        return;
+      }
+      const recoveryState = {
+        run: await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, runId)),
+        coordinator: await db
+          .select()
+          .from(nativeRunFinalizations)
+          .where(eq(nativeRunFinalizations.runId, runId)),
+      };
+      expect(
+        backendFactory.mock.calls.length,
+        JSON.stringify(recoveryState),
+      ).toBe(1);
+      expect(recoverSession).toHaveBeenCalledOnce();
+      expect(openSession).not.toHaveBeenCalled();
+      expect(startTurn).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledOnce();
+      expect(legacyAdapterExecute).not.toHaveBeenCalled();
+
+      await expect(
+        db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.companyId, companyId)),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          id: runId,
+          runtimeMode: "native",
+          status: "succeeded",
+          nativePhase: "committed",
+          processPid: null,
+          processGroupId: null,
+          processStartedAt: null,
+        }),
+      ]);
+      await expect(
+        db
+          .select()
+          .from(nativeRunResults)
+          .where(eq(nativeRunResults.runId, runId)),
+      ).resolves.toHaveLength(1);
+      await expect(
+        db
+          .select()
+          .from(workAssessments)
+          .where(eq(workAssessments.runId, runId)),
+      ).resolves.toHaveLength(1);
+      const decisions = await db
+        .select()
+        .from(statusDecisions)
+        .where(eq(statusDecisions.issueId, issueId));
+      expect(decisions).toEqual([
+        expect.objectContaining({
+          reasonCode: "completion_contract_satisfied",
+          toStatus: "done",
+          applicationState: "applied",
+        }),
+      ]);
+      const effects = await db
+        .select()
+        .from(statusDecisionEffects)
+        .where(eq(statusDecisionEffects.issueId, issueId));
+      expect(new Set(effects.map((effect) => effect.decisionId))).toEqual(
+        new Set([decisions[0]!.id]),
+      );
+      expect(effects.map((effect) => effect.effectKind).sort()).toEqual([
+        "issue_status_projection",
+        "release_checkout",
+      ]);
+      await expect(
+        db.select().from(issues).where(eq(issues.id, issueId)),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          status: "done",
+          statusVersion: 1,
+          lastStatusDecisionId: decisions[0]!.id,
+          executionWorkspaceId: newerExecutionWorkspaceId,
+        }),
+      ]);
+      await expect(
+        db
+          .select()
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.companyId, companyId)),
+      ).resolves.toHaveLength(2);
+      await expect(
+        db
+          .select()
+          .from(nativeRunFinalizations)
+          .where(eq(nativeRunFinalizations.runId, runId)),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          phase: "committed",
+          resultId: expect.any(String),
+          assessmentId: expect.any(String),
+          decisionId: decisions[0]!.id,
+        }),
+      ]);
+      await expect(
+        db
+          .select()
+          .from(heartbeatRunEvents)
+          .where(eq(heartbeatRunEvents.runId, runId)),
+      ).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ eventType: "turn.completed" }),
+          expect.objectContaining({ eventType: "run.result.accepted" }),
+          expect.objectContaining({ eventType: "run.terminal" }),
+        ]),
+      );
+      await expect(
+        db.select().from(activityLog).where(eq(activityLog.entityId, issueId)),
+      ).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ action: "issue.updated" }),
+        ]),
+      );
+
+      await heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 });
+      await heartbeat.drainActiveRunExecutions();
+      expect(backendFactory).toHaveBeenCalledOnce();
+      await expect(
+        db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.companyId, companyId)),
+      ).resolves.toHaveLength(1);
+      await expect(
+        db
+          .select()
+          .from(nativeRunResults)
+          .where(eq(nativeRunResults.runId, runId)),
+      ).resolves.toHaveLength(1);
+      await expect(
+        db
+          .select()
+          .from(workAssessments)
+          .where(eq(workAssessments.runId, runId)),
+      ).resolves.toHaveLength(1);
+      await expect(
+        db
+          .select()
+          .from(statusDecisions)
+          .where(eq(statusDecisions.issueId, issueId)),
+      ).resolves.toHaveLength(1);
+
+      // The persisted Paperclip Runner run above remains recoverable while the
+      // flag is off. Switching the agent back to a direct adapter now proves a
+      // fresh run ignores the stale native profile and stays on the legacy path.
+      await db
+        .update(agents)
+        .set({ adapterType: "codex_local" })
+        .where(eq(agents.id, agentId));
+      await db.insert(issues).values({
+        id: freshIssueId,
+        companyId,
+        projectId,
+        projectWorkspaceId,
+        issueNumber: 2,
+        identifier: "NRR-2",
+        title: "Start only after the native kill switch is off",
+        status: "in_progress",
+        assigneeAgentId: agentId,
+        workMode: "standard",
+      });
+      const fresh = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: freshIssueId },
+        contextSnapshot: {
+          issueId: freshIssueId,
+          taskId: freshIssueId,
+          skipIssueComment: true,
+        },
+      });
+      expect(fresh).not.toBeNull();
+      await drainHeartbeatRunsToQuiescence(db, heartbeat);
+      expect(legacyAdapterExecute).toHaveBeenCalledOnce();
+      await expect(
+        db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fresh!.id)),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          agentId,
+          runtimeMode: "legacy",
+          runtimeModeReason: "direct_adapter",
+          status: "succeeded",
+        }),
+      ]);
+      await expect(
+        db
+          .select()
+          .from(nativeRunFinalizations)
+          .where(eq(nativeRunFinalizations.runId, fresh!.id)),
+      ).resolves.toHaveLength(0);
+      await expect(
+        db
+          .select()
+          .from(nativeRunResults)
+          .where(eq(nativeRunResults.runId, fresh!.id)),
+      ).resolves.toHaveLength(0);
+      await expect(
+        db
+          .select({ runtimeConfig: agents.runtimeConfig })
+          .from(agents)
+          .where(eq(agents.id, agentId)),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          runtimeConfig: expect.objectContaining({
+            nativeRunner: {
+              mode: "native",
+              backend: "codex_app_server",
+              protocolVersion: 1,
+            },
+          }),
+        }),
+      ]);
+    }, 30_000);
+  },
+);

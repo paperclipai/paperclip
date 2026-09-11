@@ -9,6 +9,8 @@ export type ConnectionAvailabilityState =
 
 export interface ConnectionSearchResultItem {
   service: string;
+  source?: "catalog" | "configured";
+  reason?: string;
   name: string;
   description: string | null;
   logoUrl: string | null;
@@ -36,11 +38,14 @@ export interface ConnectionRequestResult {
   instruction: string;
 }
 
+/** Safe metadata for selecting a connection; never includes credential or transport configuration. */
+export type ConnectionIntentSetupConnection = Pick<ToolConnection, "id" | "applicationId" | "name" | "status" | "enabled">;
+
 export interface ConnectionIntentSetupOptions {
   version: 1;
   interaction: ConnectionIntentInteraction;
   service: ConnectionSearchResultItem;
-  existingConnections: ToolConnection[];
+  existingConnections: ConnectionIntentSetupConnection[];
   requestedAgentId: string;
 }
 

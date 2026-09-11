@@ -20,6 +20,11 @@ export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "image/jpg",
   "image/webp",
   "image/gif",
+  "audio/mpeg",
+  "audio/mp4",
+  "audio/ogg",
+  "audio/wav",
+  "audio/webm",
   "application/pdf",
   "application/zip",
   "text/markdown",
@@ -90,7 +95,13 @@ export function matchesContentType(contentType: string, allowedPatterns: string[
 }
 
 export function normalizeContentType(contentType: string | null | undefined): string {
-  const normalized = (contentType ?? "").trim().toLowerCase();
+  // Provider APIs commonly return a complete Content-Type header value (for
+  // example Discord uses `text/plain; charset=utf-8`) while Paperclip's
+  // allowlist and persisted asset metadata operate on the MIME essence. MIME
+  // parameters do not change the media type, so normalize them away before
+  // enforcing the allowlist. Invalid/empty essences still fail closed to the
+  // generic binary type.
+  const normalized = (contentType ?? "").split(";", 1)[0]!.trim().toLowerCase();
   return normalized || DEFAULT_ATTACHMENT_CONTENT_TYPE;
 }
 

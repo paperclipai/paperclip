@@ -1,3 +1,5 @@
+import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
+import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -25,10 +27,11 @@ import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { PillGuy } from "../components/onboarding/PillGuy";
+import { getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
-import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { redactCommandText as redactCommandSecretText } from "@paperclipai/adapter-utils";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
@@ -89,6 +92,8 @@ import { Input } from "@/components/ui/input";
 import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import { AgentToolsTab } from "./AgentToolsTab";
+import { AgentChannelsPanel } from "../components/chat/AgentChannelsPanel";
+import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
 import {
   appendCapped,
   LIVE_TRANSCRIPT_RENDER_LIMIT,
@@ -381,6 +386,7 @@ function runMetrics(run: HeartbeatRun) {
 }
 
 export type RunLogChunk = {
+  seq?: number;
   ts: string;
   stream: "stdout" | "stderr" | "system";
   chunk: string;
@@ -760,10 +766,11 @@ export function AgentDetail() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const { enabled: chatConnectorsEnabled, loaded: chatConnectorsLoaded } = useChatConnectorsEnabled();
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
-  const activeView: AgentDetailView = urlRunId ? "run-detail" : parseAgentDetailView(urlTab ?? null);
+  const activeView: AgentDetailView = urlRunId ? "run-detail"
+    : urlTab === "channels" && !chatConnectorsEnabled ? "overview" : parseAgentDetailView(urlTab ?? null);
   const legacyAuditSection = !urlRunId ? agentLegacyAuditSection(urlTab ?? null) : null;
   const legacyView = urlRunId
     ? "runs"
@@ -953,15 +960,16 @@ export function AgentDetail() {
 
   useEffect(() => {
     if (!agent) return;
+    if (!urlRunId && urlTab === "channels") {
+      if (!chatConnectorsLoaded) return;
+      if (!chatConnectorsEnabled) {
+        navigate(agentDetailHref(canonicalAgentRef, "overview"), { replace: true });
+        return;
+      }
+    }
     if (urlRunId) {
       if (routeAgentRef !== canonicalAgentRef) {
         navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
-      }
-      return;
-    }
-    if (!streamlinedUiEnabled) {
-      if (routeAgentRef !== canonicalAgentRef) {
-        navigate(`/agents/${canonicalAgentRef}/${urlTab ?? "dashboard"}`, { replace: true });
       }
       return;
     }
@@ -971,7 +979,7 @@ export function AgentDetail() {
       navigate(agentDetailHref(canonicalAgentRef, canonicalTab), { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, legacyAuditSection, navigate, streamlinedUiEnabled]);
+  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, legacyAuditSection, navigate, chatConnectorsEnabled, chatConnectorsLoaded]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -1149,18 +1157,18 @@ export function AgentDetail() {
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
-  if (streamlinedUiEnabled && !urlRunId && legacyAuditSection) {
+  if (!urlRunId && legacyAuditSection) {
     return <Navigate to={agentScopedAuditHref(agent.id, legacyAuditSection)} replace />;
   }
   if (!urlRunId && !urlTab) {
-    return <Navigate to={streamlinedUiEnabled ? agentDetailHref(canonicalAgentRef) : `/agents/${canonicalAgentRef}/dashboard`} replace />;
+    return <Navigate to={agentDetailHref(canonicalAgentRef)} replace />;
   }
   const isPendingApproval = agent.status === "pending_approval";
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
   const pausedEscalationWarning = !hasInvalidOrgChain ? agent.orgChainHealth?.escalationWarning ?? null : null;
   const showConfigActionBar = (
     activeView === "runtime" || activeView === "instructions" || activeView === "secrets"
-  ) && (configDirty || configSaving);
+  );
   const showLeftAgentNotice = agentMembershipState === "left" && !dismissedLeftAgentIds.has(agent.id);
   const agentMembershipPending =
     membershipMutation.isPending &&
@@ -1171,7 +1179,7 @@ export function AgentDetail() {
   const agentJoinLeavePending = agentMembershipPending && membershipMutation.variables?.starred === undefined;
 
   return (
-    <div className={cn("space-y-6", isMobile && showConfigActionBar && "pb-24")}>
+    <div className={cn("agent-settings-content mx-auto max-w-5xl space-y-8", `agent-settings-${activeView}`)}>
       {showLeftAgentNotice ? (
         <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
           <p className="min-w-0 flex-1">
@@ -1237,27 +1245,23 @@ export function AgentDetail() {
         </div>
       ) : null}
       {/* Header */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-3 min-w-0">
-          <AgentIconPicker
-            value={agent.icon}
-            onChange={(icon) => updateIcon.mutate(icon)}
-          >
-            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
-              <AgentIcon icon={agent.icon} className="h-6 w-6" />
-            </button>
-          </AgentIconPicker>
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center justify-end gap-2">
-              <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
+      <header className="flex flex-wrap items-center justify-between gap-5 border-b border-border pb-6">
+        <div className="flex min-w-0 items-center gap-4">
+          <div role="img" aria-label={`${agent.name} avatar`} className="shrink-0">
+            <PillGuy state="alive" className="size-12" />
+          </div>
+          <div className="min-w-0 space-y-1">
+            <h1 className="truncate text-2xl font-semibold tracking-tight">{agent.name}</h1>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              {agent.adapterType === "claude_local" || agent.adapterType === "codex_local"
+                ? <img src={`/brands/${agent.adapterType === "claude_local" ? "claude" : "codex"}-color.svg`} className="size-4" alt="" />
+                : null}
+              <span>{getAdapterDisplay(agent.adapterType).label}</span><span>·</span>
+              <span>{agent.title || roleLabels[agent.role] || agent.role}</span>
             </div>
-            <p className="text-sm text-muted-foreground truncate">
-              {roleLabels[agent.role] ?? agent.role}
-              {agent.title ? ` - ${agent.title}` : ""}
-            </p>
           </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex flex-wrap items-center gap-2">
           <StarToggle
             size="button"
             starred={agentStarred}
@@ -1274,7 +1278,7 @@ export function AgentDetail() {
             agent={agent}
             companyId={resolvedCompanyId}
             assignLabel="Assign Task"
-            runLabel="Run Heartbeat"
+            showStatus={false}
             canRunWithProviderTrace={canUseProviderTrace}
             actionsDisabled={agentAction.isPending}
             workActionsDisabled={hasInvalidOrgChain}
@@ -1313,7 +1317,7 @@ export function AgentDetail() {
             )}
           </AgentActionButtons>
         </div>
-      </div>
+      </header>
 
       {builtInState && (
         <InlineBanner
@@ -1363,15 +1367,6 @@ export function AgentDetail() {
         />
       )}
 
-      {!streamlinedUiEnabled && !urlRunId ? (
-        <Tabs value={legacyView} onValueChange={handleLegacyTabChange}>
-          <PageTabBar
-            items={LEGACY_AGENT_DETAIL_TABS}
-            value={legacyView}
-            onValueChange={handleLegacyTabChange}
-          />
-        </Tabs>
-      ) : null}
 
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
       {isPendingApproval && (
@@ -1389,57 +1384,10 @@ export function AgentDetail() {
         </div>
       )}
 
-      {/* Floating Save/Cancel (desktop) */}
-      {!isMobile && showConfigActionBar && (
-        <div className="fixed bottom-6 right-6 z-30">
-          <div className="flex items-center gap-2 bg-background/90 backdrop-blur-sm border border-border rounded-lg px-3 py-1.5 shadow-lg">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => cancelConfigActionRef.current?.()}
-              disabled={configSaving}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => saveConfigActionRef.current?.()}
-              disabled={configSaving}
-            >
-              {configSaving ? "Saving…" : "Save"}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Mobile bottom Save/Cancel bar */}
-      {isMobile && showConfigActionBar && (
-        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-border bg-background/95 backdrop-blur-sm">
-          <div
-            className="flex items-center justify-end gap-2 px-3 py-2"
-            style={{ paddingBottom: "max(env(safe-area-inset-bottom), 0.5rem)" }}
-          >
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => cancelConfigActionRef.current?.()}
-              disabled={configSaving}
-            >
-              Cancel
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => saveConfigActionRef.current?.()}
-              disabled={configSaving}
-            >
-              {configSaving ? "Saving…" : "Save"}
-            </Button>
-          </div>
-        </div>
-      )}
+      {activeView !== "run-detail" && activeView !== "channels" && <h2 className="text-xl font-semibold">{activeView === "secrets" ? "Secrets & variables" : AGENT_DETAIL_NAVIGATION.flatMap(section => section.items).find(item => item.value === activeView)?.label}</h2>}
 
       {/* View content */}
-      {activeView === "overview" && (streamlinedUiEnabled || !legacyAuditSection) && (
+      {activeView === "overview" && (
         <AgentOverview
           agent={agent}
           runs={heartbeats ?? []}
@@ -1456,6 +1404,7 @@ export function AgentDetail() {
         <PromptsTab
           agent={agent}
           companyId={resolvedCompanyId ?? undefined}
+          showSaveNotice={false}
           onDirtyChange={setConfigDirty}
           onSaveActionChange={setSaveConfigAction}
           onCancelActionChange={setCancelConfigAction}
@@ -1464,7 +1413,7 @@ export function AgentDetail() {
       )}
 
       {activeView === "runtime" && (
-        <div className="max-w-3xl">
+        <div>
           <ConfigurationTab
             agent={agent}
             companyId={resolvedCompanyId ?? undefined}
@@ -1482,7 +1431,7 @@ export function AgentDetail() {
       )}
 
       {activeView === "secrets" && (
-        <div className="max-w-3xl">
+        <div>
           <ConfigurationTab
             agent={agent}
             companyId={resolvedCompanyId ?? undefined}
@@ -1507,8 +1456,12 @@ export function AgentDetail() {
         <AgentToolsTab agent={agent} companyId={resolvedCompanyId} />
       )}
 
+      {activeView === "channels" && resolvedCompanyId && (
+        <AgentChannelsPanel agentId={agent.id} companyId={resolvedCompanyId} />
+      )}
+
       {activeView === "permissions" && (
-        <div className="max-w-3xl">
+        <div>
           <ConfigurationTab
             agent={agent}
             companyId={resolvedCompanyId ?? undefined}
@@ -1544,33 +1497,14 @@ export function AgentDetail() {
         />
       )}
 
-      {!streamlinedUiEnabled && legacyAuditSection === "runs" && (
-        <RunsTab
-          runs={heartbeats ?? []}
-          companyId={resolvedCompanyId!}
-          agentId={agent.id}
-          agentRouteId={canonicalAgentRef}
-          selectedRunId={null}
-          adapterType={agent.adapterType}
-          adapterConfig={agent.adapterConfig}
-        />
-      )}
-
-      {!streamlinedUiEnabled && legacyAuditSection === "activity" && resolvedCompanyId ? (
-        <AuditFeed companyId={resolvedCompanyId} lockedAgentId={agent.id} />
-      ) : null}
-
-      {!streamlinedUiEnabled && (legacyAuditSection === "costs" || legacyAuditSection === "budgets") ? (
-        <div className="space-y-3">
-          <h3 className="text-lg font-semibold">Agent budget</h3>
-          <p className="text-sm text-muted-foreground">
-            Review this agent&apos;s budget policy and spend in the organization costs view.
-          </p>
-          <Button variant="outline" asChild>
-            <Link to="/costs">Open costs and budgets</Link>
-          </Button>
+      {showConfigActionBar && <footer className="sticky bottom-0 z-10 flex flex-wrap items-center justify-between gap-3 border-t border-border bg-background py-4">
+        <p role="status" className="text-xs text-muted-foreground">{configSaving ? "Saving changes…" : configDirty ? "You have unsaved changes." : ""}</p>
+        <div className="flex gap-2">
+          <Button variant="ghost" disabled={!configDirty || configSaving} onClick={() => cancelConfigActionRef.current?.()}>Discard</Button>
+          <Button disabled={!configDirty || configSaving} onClick={() => {Promise.resolve(saveConfigActionRef.current?.()).catch(() => {});}}>{configSaving ? "Saving…" : "Save changes"}</Button>
         </div>
-      ) : null}
+      </footer>}
+
     </div>
   );
 }
@@ -1936,7 +1870,7 @@ export function syncAgentRouteAfterRename(
   return true;
 }
 
-function AgentRevisionsTab({
+export function AgentRevisionsTab({
   agent,
   companyId,
 }: {
@@ -2004,7 +1938,7 @@ function AgentRevisionsTab({
 
 /* ---- Configuration Tab ---- */
 
-function ConfigurationTab({
+export function ConfigurationTab({
   agent,
   companyId,
   onDirtyChange,
@@ -2036,12 +1970,13 @@ function ConfigurationTab({
   const [awaitingRefreshAfterSave, setAwaitingRefreshAfterSave] = useState(false);
   const lastAgentRef = useRef(agent);
 
+  const catalogProvider = agent.adapterType === "paperclip_runner" ? String(agent.adapterConfig.provider ?? "codex") : undefined;
   const { data: adapterModels } = useQuery({
     queryKey:
       companyId
-        ? queryKeys.agents.adapterModels(companyId, agent.adapterType)
+        ? queryKeys.agents.adapterModels(companyId, agent.adapterType, null, catalogProvider)
         : ["agents", "none", "adapter-models", agent.adapterType],
-    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType),
+    queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType, { provider: catalogProvider }),
     enabled: Boolean(companyId) && content === "runtime",
   });
 
@@ -2123,7 +2058,7 @@ function ConfigurationTab({
             : "Disabled unless explicitly granted.";
 
   return (
-    <div className="space-y-6">
+    <div className="agent-settings-form space-y-6">
       {content !== "permissions" ? <AgentConfigForm
         mode="edit"
         agent={agent}
@@ -2138,13 +2073,13 @@ function ConfigurationTab({
         hideInstructionsFile={hideInstructionsFile}
         content={content === "runtime" ? "configuration" : "secrets"}
         sectionLayout="cards"
+        environmentVariablesPlacement="configuration"
+        compactTestFeedback
+        sectionOrder={["identity", "adapter", "configuration", "environment", "environment-variables", "run-policy"]}
+        sectionTitles={{ adapter: "Adapter", configuration: "Configuration", identity: "Agent identity" }}
         canConfigureProviderTrace={canConfigureProviderTrace}
       /> : null}
-      {content === "runtime" ? (
-        <p className="text-xs text-muted-foreground">
-          Saved adapter config affects the next run. Active runs keep the config they started with, and config changes may start a fresh adapter session.
-        </p>
-      ) : null}
+
 
       {content === "permissions" ? <TrustPresetSection
         permissions={agent.permissions}
@@ -2244,7 +2179,9 @@ export function PromptsTab({
   onSaveActionChange,
   onCancelActionChange,
   onSavingChange,
+  showSaveNotice = true,
 }: {
+  showSaveNotice?: boolean;
   agent: Agent;
   companyId?: string;
   onDirtyChange: (dirty: boolean) => void;
@@ -2624,9 +2561,9 @@ export function PromptsTab({
           ))}
         </div>
       )}
-      <p className="text-xs text-muted-foreground">
+      {showSaveNotice && <p className="text-xs text-muted-foreground">
         Saved instructions affect the next run. Active runs keep the instructions they started with, and instruction changes may start a fresh adapter session.
-      </p>
+      </p>}
 
       <Collapsible defaultOpen={currentMode === "external"}>
         <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors group">
@@ -3356,7 +3293,8 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     },
   });
 
-  const canRetryRun = run.status === "failed" || run.status === "timed_out";
+  const canRetryRun = (run.status === "failed" || run.status === "timed_out")
+    && run.execution?.phase !== "recovery_needed" && !run.execution?.successorRunId;
   const retryPayload = useMemo(() => {
     const payload: Record<string, unknown> = {};
     const context = asRecord(run.contextSnapshot);
@@ -3371,20 +3309,13 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   }, [run.contextSnapshot]);
   const retryRun = useMutation({
     mutationFn: async () => {
-      const result = await agentsApi.wakeup(run.agentId, {
-        source: "on_demand",
-        triggerDetail: "manual",
-        reason: "retry_failed_run",
-        payload: retryPayload,
-      }, run.companyId);
-      if (!("id" in result)) {
-        throw new Error(result.message ?? "Retry was skipped.");
-      }
-      return result;
+      return agentsApi.retryFailedRun(run.agentId, run.id, run.companyId);
     },
     onSuccess: (newRun) => {
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
-      navigate(`/agents/${agentRouteId}/runs/${newRun.id}`);
+      if (newRun.runId)
+        navigate(`/agents/${agentRouteId}/runs/${newRun.runId}`);
+      else if (newRun.issueId) navigate(`/issues/${newRun.issueId}`);
     },
   });
 
@@ -3868,13 +3799,20 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 
 /* ---- Log Viewer ---- */
 
-function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+  const { visible } = usePageVisibility();
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
-  const [logLines, setLogLines] = useState<Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }>>([]);
+  const [logLines, setLogLines] = useState<RunLogChunk[]>([]);
   const [loading, setLoading] = useState(true);
   const [logLoading, setLogLoading] = useState(!!run.logRef);
   const [logError, setLogError] = useState<string | null>(null);
-  const [logOffset, setLogOffset] = useState(0);
+  const [logOffset, setLogOffsetState] = useState(0);
+  const logOffsetRef = useRef(0);
+  const setLogOffset = useCallback((next: number | ((previous: number) => number)) => {
+    logOffsetRef.current = typeof next === "function" ? next(logOffsetRef.current) : next;
+    setLogOffsetState(logOffsetRef.current);
+  }, []);
+  const logMergeRefs = useRef({ seenChunkKeys: new Set<string>(), trimmedSeqFloorByRun: new Map<string, number>() });
   const [hasMoreLog, setHasMoreLog] = useState(false);
   const [loadingMoreLog, setLoadingMoreLog] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
@@ -3901,6 +3839,12 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     return err instanceof ApiError && err.status === 404;
   }
 
+  function appendLogLines(incoming: RunLogChunk[]) {
+    setLogLines((previous) => mergeRunLogChunks(run.id, previous, incoming.map((line) => ({
+      ...line, dedupeKey: `log:${run.id}:${line.ts}:${line.stream}:${line.chunk}`,
+    })), logMergeRefs.current, isLive ? MAX_LIVE_LOG_LINES : Number.POSITIVE_INFINITY).chunks);
+  }
+
   function appendLogContent(content: string, finalize = false) {
     if (!content && !finalize) return;
     const combined = `${pendingLogLineRef.current}${content}`;
@@ -3911,18 +3855,18 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       pendingLogLineRef.current = "";
     }
 
-    const parsed: Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }> = [];
+    const parsed: RunLogChunk[] = [];
     for (const line of split) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown };
+        const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown; seq?: unknown };
         const stream =
           raw.stream === "stderr" || raw.stream === "system" ? raw.stream : "stdout";
         const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
         const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
         if (!chunk) continue;
-        parsed.push({ ts, stream, chunk });
+        parsed.push({ ts, stream, chunk, seq: readChunkSeq(raw.seq) });
       } catch {
         // ignore malformed lines
       }
@@ -3931,9 +3875,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     if (parsed.length > 0) {
       // Live runs stream forever, so cap the retained tail. Terminated runs are
       // paginated by the user via "Load more log" and keep their full history.
-      setLogLines((prev) =>
-        isLive ? appendCapped(prev, parsed, MAX_LIVE_LOG_LINES) : [...prev, ...parsed],
-      );
+      appendLogLines(parsed);
     }
   }
 
@@ -4031,17 +3973,23 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setIsFollowing((prev) => (prev ? prev : true));
   }, [events.length, logLines.length, isLive, getScrollContainer]);
 
-  // Fetch persisted shell log
+  // Reset only when the log source changes, never when visibility changes.
   useEffect(() => {
-    let cancelled = false;
     pendingLogLineRef.current = "";
+    logMergeRefs.current = { seenChunkKeys: new Set(), trimmedSeqFloorByRun: new Map() };
     seenProgressLogLineKeysRef.current = new Set();
     setLogLines([]);
     setLogOffset(0);
     setHasMoreLog(false);
     setLoadingMoreLog(false);
     setLogError(null);
+  }, [run.id, run.logRef, setLogOffset]);
 
+  // Fetch persisted shell log, retaining partial rows and offsets across hides.
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    const offset = logOffsetRef.current;
     if (!run.logRef && !shouldPollShellLog) {
       setLogLoading(false);
       return () => {
@@ -4052,10 +4000,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setLogLoading(true);
     const load = async () => {
       try {
-        const result = await heartbeatsApi.log(run.id, 0, RUN_LOG_PAGE_BYTES);
+        const result = await heartbeatsApi.log(run.id, offset, RUN_LOG_PAGE_BYTES);
         if (cancelled) return;
         appendLogContent(result.content, result.nextOffset === undefined);
-        const next = result.nextOffset ?? result.content.length;
+        const next = result.nextOffset ?? offset + result.content.length;
         setLogOffset(next);
         setHasMoreLog(!shouldPollShellLog && result.nextOffset !== undefined);
       } catch (err) {
@@ -4075,7 +4023,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     return () => {
       cancelled = true;
     };
-  }, [run.id, run.logRef, run.logBytes, shouldPollShellLog]);
+  }, [visible, run.id, run.logRef, run.logBytes, shouldPollShellLog]);
 
   async function loadMorePersistedLog() {
     if (loadingMoreLog || !hasMoreLog) return;
@@ -4096,27 +4044,42 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   // Poll for live updates
   useEffect(() => {
-    if (!isLive || isStreamingConnected) return;
+    if (!visible || !isLive || isStreamingConnected) return;
+    let pending = false;
+    let cancelled = false;
     const interval = setInterval(async () => {
+      if (pending || cancelled || !getPageVisibility().visible) return;
+      pending = true;
       const maxSeq = events.length > 0 ? Math.max(...events.map((e) => e.seq)) : 0;
       try {
         const newEvents = await heartbeatsApi.events(run.id, maxSeq, 100);
+        if (cancelled) return;
         if (newEvents.length > 0) {
           setEvents((prev) => appendCapped(prev, newEvents, MAX_LIVE_EVENTS));
         }
       } catch {
         // ignore polling errors
+      } finally {
+        pending = false;
       }
     }, 2000);
-    return () => clearInterval(interval);
-  }, [run.id, isLive, isStreamingConnected, events]);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [visible, run.id, isLive, isStreamingConnected, events]);
 
   // Poll shell log for running runs
   useEffect(() => {
-    if (!shouldPollShellLog || isStreamingConnected) return;
+    if (!visible || !shouldPollShellLog || isStreamingConnected) return;
+    let pending = false;
+    let cancelled = false;
     const interval = setInterval(async () => {
+      if (pending || cancelled || !getPageVisibility().visible) return;
+      pending = true;
       try {
         const result = await heartbeatsApi.log(run.id, logOffset, 256_000);
+        if (cancelled) return;
         if (result.content) {
           appendLogContent(result.content, result.nextOffset === undefined);
         }
@@ -4128,14 +4091,19 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       } catch (err) {
         if (isRunLogUnavailable(err)) return;
         // ignore polling errors
+      } finally {
+        pending = false;
       }
     }, 2000);
-    return () => clearInterval(interval);
-  }, [run.id, shouldPollShellLog, isStreamingConnected, logOffset]);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [visible, run.id, shouldPollShellLog, isStreamingConnected, logOffset]);
 
   // Stream live updates from websocket (primary path for running runs).
   useEffect(() => {
-    if (!isLive) return;
+    if (!visible || !isLive) return;
 
     let closed = false;
     let reconnectTimer: number | null = null;
@@ -4179,7 +4147,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           const streamRaw = asNonEmptyString(payload.stream);
           const stream = streamRaw === "stderr" || streamRaw === "system" ? streamRaw : "stdout";
           const ts = asNonEmptyString((payload as Record<string, unknown>).ts) ?? event.createdAt;
-          setLogLines((prev) => appendCapped(prev, [{ ts, stream, chunk }], MAX_LIVE_LOG_LINES));
+          appendLogLines([{ ts, stream, chunk, seq: readChunkSeq(payload.seq) }]);
           return;
         }
 
@@ -4189,7 +4157,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           const key = heartbeatProgressLogLineKey(line);
           if (seenProgressLogLineKeysRef.current.has(key)) return;
           seenProgressLogLineKeysRef.current.add(key);
-          setLogLines((prev) => appendCapped(prev, [line], MAX_LIVE_LOG_LINES));
+          appendLogLines([line]);
           return;
         }
 
@@ -4254,7 +4222,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         socket.close(1000, "run_detail_unmount");
       }
     };
-  }, [isLive, run.companyId, run.id, run.agentId]);
+  }, [visible, isLive, run.companyId, run.id, run.agentId]);
 
   const censorUsernameInLogs = useQuery({
     queryKey: queryKeys.instance.generalSettings,
@@ -4480,7 +4448,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
 /* ---- Keys Tab ---- */
 
-function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }) {
+export function KeysTab({ agentId, companyId }: { agentId: string; companyId?: string }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [newKeyName, setNewKeyName] = useState("");

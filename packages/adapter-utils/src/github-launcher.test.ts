@@ -38,6 +38,47 @@ describe("managed GitHub launchers", () => {
     }
   });
 
+  it.each(["broker-offline", "config-unwritable", "capability-rejected"])("keeps real local Git usable when %s", async (failure) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-failure-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed");
+    await mkdir(bin);
+    await exec("git", ["init", root]);
+    await writeFile(path.join(bin, "git"), githubLauncherSource(), { mode: 0o700 });
+    const server = createServer((_req, res) => { res.writeHead(403); res.end(); });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as { port: number };
+    if (failure === "broker-offline") await new Promise<void>(resolve => server.close(() => resolve()));
+    else cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const configRoot = path.join(root, "config");
+    if (failure === "config-unwritable") await writeFile(configRoot, "not a directory");
+    const result = await exec(path.join(bin, "git"), ["status", "--porcelain"], { cwd: root, env: {
+      ...process.env, ...githubBrokerEnvironment({ GH_TOKEN: "host-must-not-leak" }, { url: `http://127.0.0.1:${port}`, token: "private-capability" }),
+      GH_CONFIG_DIR: configRoot, PATH: `${bin}:${process.env.PATH}`,
+    } });
+    expect(result.stderr).toContain(failure === "broker-offline" ? "broker_transport_unavailable" : failure === "config-unwritable" ? "configuration_directory_unavailable" : "capability_rejected");
+    expect(result.stderr).not.toMatch(/host-must-not-leak|private-capability/);
+  });
+
+  it("explains unavailable access while allowing local work without credentials", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-diagnostic-"));
+    cleanups.push(() => rm(root, {recursive:true,force:true}));
+    const bin = path.join(root,"managed"), realBin = path.join(root,"real");
+    await mkdir(bin); await mkdir(realBin);
+    await writeFile(path.join(bin,"gh"), githubLauncherSource(), {mode:0o700});
+    await writeFile(path.join(realBin,"gh"), '#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({token:process.env.GH_TOKEN ?? null}));', {mode:0o700});
+    const server = createServer((_req,res) => {
+      res.setHeader("content-type","application/json");
+      res.end(JSON.stringify({status:"unavailable",reason:"More than one managed GitHub identity matches this run",env:{GH_TOKEN:"must-not-be-used"}}));
+    });
+    await new Promise<void>(resolve => server.listen(0,"127.0.0.1",resolve));
+    cleanups.push(() => new Promise<void>((resolve,reject) => server.close(error => error ? reject(error) : resolve())));
+    const {port} = server.address() as {port:number};
+    const result = await exec(path.join(bin,"gh"), [], {env:{...process.env,...githubBrokerEnvironment({GH_TOKEN:"host-token"},{url:`http://127.0.0.1:${port}`,token:"run-capability"}),PATH:`${bin}:${realBin}:${process.env.PATH}`}});
+    expect(JSON.parse(result.stdout)).toEqual({token:null});
+    expect(result.stderr).toContain("More than one managed GitHub identity matches this run");
+    expect(result.stderr).not.toMatch(/host-token|must-not-be-used|run-capability/);
+  });
   it("captures each command's identity and clears host credentials when the next person has none", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-launcher-test-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));
