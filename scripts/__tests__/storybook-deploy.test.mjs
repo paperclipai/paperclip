@@ -89,7 +89,10 @@ test("workflow keeps branch build read-only and reauthorizes the protected deplo
   const workflow = readFileSync(new URL("../../.github/workflows/storybook-deploy.yml", import.meta.url), "utf8");
   const [build, deploy] = workflow.split("  build:")[1].split("  deploy:");
   assert.doesNotMatch(build, /pages: write|id-token: write|secrets\./);
-  assert.match(build, /persist-credentials: false/);
+  assert.match(build, /permissions: \{\}/);
+  assert.doesNotMatch(build, /actions\/checkout|cache: pnpm/);
+  assert.match(build, /package-manager-cache: false/);
+  assert.match(build, /pnpm install --frozen-lockfile --ignore-scripts/);
   assert.match(deploy, /name: storybook-deploy/);
   assert.match(deploy, /authorize-storybook-deploy.cjs/);
   assert.match(deploy, /name: \$\{\{ needs.build.outputs.artifact_name \}\}/);

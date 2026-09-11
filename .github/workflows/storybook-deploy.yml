@@ -63,6 +63,7 @@ jobs:
 
   build:
     name: Build selected branch Storybook
+    permissions: {}
     needs: authorize
     runs-on: ubuntu-latest
     timeout-minutes: 25
@@ -71,19 +72,23 @@ jobs:
     env:
       STORYBOOK_DISABLE_TELEMETRY: "1"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          # Pin the dispatched commit even if the selected branch advances.
-          ref: ${{ needs.authorize.outputs.sha }}
-          persist-credentials: false
+      - name: Download public source without repository credentials
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://codeload.github.com/paperclipai/paperclip/tar.gz/$SOURCE_SHA" \
+            --output "$RUNNER_TEMP/source.tar.gz"
+          tar -xzf "$RUNNER_TEMP/source.tar.gz" --strip-components=1
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
           version: 9.15.4
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm build-storybook
       - name: Record source and validate output
         id: artifact

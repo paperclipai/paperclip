@@ -151,8 +151,9 @@ before the build and again before deployment, including deployment-only reruns.
 GitHub also requires a CODEOWNER environment approval, so editing authorization
 code on a branch cannot grant AWS access without an authorized reviewer.
 
-The build receives a read-only GitHub token and no AWS credentials or repository
-secrets. The separate publisher uses GitHub OIDC to assume a role limited to
+The build downloads the public source archive with no GitHub token permissions,
+AWS credentials or repository secrets. Dependency caching and install lifecycle
+scripts are disabled. The separate publisher uses GitHub OIDC to assume a role limited to
 `storybook/branches/*`. It treats the build artifact as static files and runs only
 the publisher from the workflow checkout. It cannot delete objects, change AWS
 settings, or overwrite the runner dashboard. The Storybook site itself is public.
