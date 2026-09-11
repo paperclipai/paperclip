@@ -910,6 +910,9 @@ describe("chat prompt policy", () => {
     expect(prompt).toContain("Rejected plan review directive:");
     expect(prompt).toContain("Add CHAT_REVIEW_MARKER and a validation step.");
     expect(prompt).toContain("not approval to implement or hand off execution tasks");
+    expect(prompt).toContain("first GET /api/issues/{issueId}/documents/plan");
+    expect(prompt).toContain("baseRevisionId set to that latestRevisionId");
+    expect(prompt).toContain("Bind the new approval request to the revision returned by the successful update");
     expect(prompt).not.toContain("Accepted chat plan directive:");
     expect(prompt).not.toContain("stale-approved-plan");
   });

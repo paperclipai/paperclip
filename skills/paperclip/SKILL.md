@@ -599,7 +599,7 @@ PUT /api/issues/{issueId}/documents/plan
 }
 ```
 
-If `plan` already exists, fetch the current document first and send its latest `baseRevisionId` when you update it.
+If `plan` already exists, first `GET /api/issues/{issueId}/documents/plan` and read its current body and `latestRevisionId`. Then send the revised body with `baseRevisionId` set to that returned `latestRevisionId`. The GET field is `latestRevisionId`; the PUT field is `baseRevisionId`. Omitting it on an update returns `409`. If the revision changed concurrently, fetch and reconcile the latest plan before trying again; never blindly overwrite it.
 
 ## Key Endpoints (Hot Routes)
 

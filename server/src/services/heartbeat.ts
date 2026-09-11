@@ -7791,6 +7791,7 @@ export function buildPaperclipTaskMarkdown(input: {
         "",
         "Rejected plan review directive:",
         "The user rejected the plan and requested changes. Revise the plan to address their feedback through the existing plan document and review workflow. In Ask mode, discuss the requested changes without mutating documents or tasks. This is not approval to implement or hand off execution tasks. Do not treat the issue's in_progress status as plan approval.",
+        "When revising the plan, first GET /api/issues/{issueId}/documents/plan and read its body and latestRevisionId. PUT the revised document to the same endpoint with baseRevisionId set to that latestRevisionId. An existing document requires this concurrency guard; do not omit it or blindly retry a stale revision. Bind the new approval request to the revision returned by the successful update.",
       );
       if (input.planReview?.reason?.trim()) {
         lines.push("User's requested changes:", fenceTaskText(input.planReview.reason.trim()));
