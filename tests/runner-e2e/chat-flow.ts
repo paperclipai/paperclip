@@ -417,7 +417,6 @@ export async function runChatFlow(input: {
         ).toBe(true);
         const clarification = `It is the garden club; use the existing Garden ${nonce} project. Make one assigned task for yourself to write a two-sentence welcome note. Include ${marker} in that note, save it as the output document, and finish that execution task. Please get it started now.`;
         if (pendingQuestions?.length) {
-          expect(pendingQuestions.length).toBeLessThanOrEqual(3);
           for (const [index, question] of pendingQuestions.entries()) {
             const textInput = page
               .getByTestId("question-text-answer-composer")

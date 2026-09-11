@@ -1876,7 +1876,7 @@ export function renderPaperclipWakePrompt(
       "",
       "Open plan comments to incorporate:",
       "These open plan annotations are user feedback. Resolved annotations were intentionally omitted.",
-      "Read this before revising the plan or creating child issues from an accepted plan.",
+      "Read this before revising the plan or acting on an accepted plan.",
     );
     if (context.latestRevisionNumber || context.latestRevisionId) {
       lines.push(
@@ -1885,6 +1885,9 @@ export function renderPaperclipWakePrompt(
     }
     if (context.interaction) {
       lines.push(`- interaction: ${context.interaction.kind ?? "unknown"} ${context.interaction.status ?? "unknown"}`);
+      if (context.interaction.status === "rejected") {
+        lines.push("The user requested changes to this plan. Revise it using the feedback below; this is not approval to implement or hand off execution tasks. In Ask mode, discuss the requested changes without mutating documents or tasks.");
+      }
       if (context.interaction.result) {
         const result = context.interaction.result;
         lines.push(`- result: ${result.outcome ?? "unknown"}${result.reason ? ` (${result.reason})` : ""}`);

@@ -32,6 +32,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.js";
+import { documentService } from "../services/documents.js";
+import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
   AGENT_CHAT_DIRECTIVE,
@@ -381,6 +383,40 @@ const support = await getEmbeddedPostgresTestSupport();
         await conversationReplay(db, companyId, issue.id, next.id),
       ).not.toContain("Following turn");
     });
+    it("projects the resolved chat plan review into fresh and resumed prompts without replaying old reviews", async () => {
+      const issue = await create();
+      const { document } = await documentService(db).upsertIssueDocument({
+        issueId: issue.id, key: "plan", title: "Plan", format: "markdown", body: "Draft plan",
+      });
+      const [interaction] = await db.insert(issueThreadInteractions).values({
+        companyId, issueId: issue.id, kind: "request_confirmation", status: "rejected",
+        payload: { version: 1, target: { type: "issue_document", key: "plan", documentId: document.id,
+          revisionId: document.latestRevisionId!, revisionNumber: document.latestRevisionNumber } },
+        result: { outcome: "rejected", reason: "Include CHAT_REVIEW_MARKER in the revised plan." },
+      }).returning();
+      const input = { db, companyId, issueSummary: { ...issue, workMode: "planning" },
+        contextSnapshot: { issueId: issue.id, conversationMode: true, interactionId: interaction!.id,
+          interactionKind: "request_confirmation", interactionStatus: "rejected" } };
+      const payload = await buildPaperclipWakePayload(input);
+      expect(payload?.planReviewContext?.interaction).toMatchObject({
+        status: "rejected", acceptedTargetRevision: null,
+        result: { outcome: "rejected", reason: "Include CHAT_REVIEW_MARKER in the revised plan." },
+      });
+      for (const resumedSession of [false, true]) {
+        const prompt = renderPaperclipWakePrompt(payload, { resumedSession });
+        expect(prompt).toContain("request_confirmation rejected");
+        expect(prompt).toContain("Include CHAT_REVIEW_MARKER in the revised plan.");
+        expect(prompt).toContain("not approval to implement or hand off execution tasks");
+        expect(prompt).not.toContain("- accepted target:");
+      }
+      const later = await buildPaperclipWakePayload({ ...input,
+        contextSnapshot: { issueId: issue.id, conversationMode: true } });
+      expect(later?.planReviewContext).toBeNull();
+      // An unrelated confirmation must not cause old plan context to be replayed.
+      await db.update(issueThreadInteractions).set({ payload: { version: 1 } })
+        .where(eq(issueThreadInteractions.id, interaction!.id));
+      expect((await buildPaperclipWakePayload(input))?.planReviewContext).toBeNull();
+    });
     it("keeps concurrent delivery and multiple resets in separate ordered queue entries", async () => {
       const issue = await create();
       const first = await issueService(db).addComment(issue.id, "First", {
@@ -720,6 +756,21 @@ describe("conversation execution wake policy", () => {
 });
 
 describe("chat prompt policy", () => {
+  it.each([true, false])("preserves rejected-plan changes in task markdown (includeDescription=%s)", (includeDescription) => {
+    const prompt = buildPaperclipTaskMarkdown({
+      issue: { id: "chat", title: "Chat", workMode: "planning", conversationAgentId: "agent" },
+      interaction: { kind: "request_confirmation", status: "rejected" },
+      planReview: { status: "rejected", reason: "Add CHAT_REVIEW_MARKER and a validation step." },
+      acceptedPlanContinuation: true,
+      acceptedPlan: { revisionId: "stale-approved-plan" },
+      includeDescription,
+    });
+    expect(prompt).toContain("Rejected plan review directive:");
+    expect(prompt).toContain("Add CHAT_REVIEW_MARKER and a validation step.");
+    expect(prompt).toContain("not approval to implement or hand off execution tasks");
+    expect(prompt).not.toContain("Accepted chat plan directive:");
+    expect(prompt).not.toContain("stale-approved-plan");
+  });
   it.each(["standard", "ask", "planning"])(
     "keeps handoff instructions in %s, including accepted plans and resumes",
     (workMode) => {
