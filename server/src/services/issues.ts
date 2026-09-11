@@ -1765,7 +1765,8 @@ export interface IssueFilters {
   q?: string;
   limit?: number;
   offset?: number;
-  sortField?: "updated";
+  sortField?: "updated" | "id";
+  afterId?: string;
   sortDir?: "asc" | "desc";
   /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
   updatedSince?: string;
@@ -3114,6 +3115,7 @@ function issueListOrderBy(
     sortDir?: IssueFilters["sortDir"];
   },
 ) {
+  if (sortField === "id") return [sortDir === "desc" ? desc(issues.id) : asc(issues.id)];
   const canonicalLastActivityAt = issueCanonicalLastActivityAtExpr(companyId);
   if (sortField === "updated") {
     const activityOrder =
@@ -7878,6 +7880,15 @@ export function issueService(db: Db) {
     addStopRelayCommentIfNeeded,
 
     list: async (companyId: string, filters?: IssueFilters) => {
+      if (filters?.sortField === "id" && filters.attention) {
+        throw unprocessable("ID ordering is not supported for blocked attention lists");
+      }
+      if (filters?.afterId !== undefined && (
+        !isUuidLike(filters.afterId) || filters.sortField !== "id" ||
+        filters.sortDir !== "asc" || (filters.offset ?? 0) !== 0
+      )) {
+        throw unprocessable("afterId requires a UUID, ascending ID order and no offset");
+      }
       if (filters?.attention === "blocked") {
         return listBlockedInboxIssues(db, companyId, {
           ...filters,
@@ -7890,6 +7901,7 @@ export function issueService(db: Db) {
         eq(issues.companyId, companyId),
         visibleIssueCondition(),
       ];
+      if (filters?.afterId) conditions.push(gt(issues.id, filters.afterId));
       const assigneeAgentFilter = parseIssueAssigneeAgentFilter(
         filters?.assigneeAgentId,
       );

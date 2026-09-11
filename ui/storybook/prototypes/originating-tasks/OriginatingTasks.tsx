@@ -193,9 +193,13 @@ function TaskPageData({ children, scenario }: { children: React.ReactNode; scena
         const projectId = url.searchParams.get("projectId");
         const createdFrom = url.searchParams.get("createdFromIssueId");
         const filtered = rows.filter((row) => (!parent || row.parentId === parent) && (!projectId || row.projectId === projectId) && (!createdFrom || (row.originRunId && runSources.get(row.originRunId) === createdFrom)));
+        const afterId = url.searchParams.get("afterId");
+        const ordered = url.searchParams.get("sortField") === "id"
+          ? filtered.sort((a, b) => a.id.localeCompare(b.id)).filter((row) => !afterId || row.id > afterId)
+          : filtered;
         const offset = Number(url.searchParams.get("offset") ?? 0);
         const limit = Number(url.searchParams.get("limit") ?? filtered.length);
-        return Response.json(filtered.slice(offset, offset + limit));
+        return Response.json(ordered.slice(offset, offset + limit));
       }
       return originalFetch(input, init);
     };

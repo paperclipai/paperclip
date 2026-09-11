@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
+import { eq } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { activityLog, agents, companies, createDb, heartbeatRuns, issues, projects } from "@paperclipai/db";
@@ -102,6 +103,29 @@ describePostgres("tasks created from an issue", () => {
       const result = await request(app()).get(`/api/companies/${companyId}/issues`).query({ createdFromIssueId: sourceId, ...(view ? { view } : {}) });
       expect(result.status, JSON.stringify(result.body)).toBe(200);
       expect(new Set(result.body.map((row: { id: string }) => row.id))).toEqual(expected);
+    }
+  });
+
+  it("keeps cursor pages complete when activity changes or an earlier task disappears", async () => {
+    const first = await request(app()).get(`/api/companies/${companyId}/issues`).query({ createdFromIssueId: sourceId, sortField: "id", sortDir: "asc", limit: 2 });
+    expect(first.status).toBe(200);
+    const sortedIds = [...expected].sort();
+    expect(first.body.map((row: { id: string }) => row.id)).toEqual(sortedIds.slice(0, 2));
+    await db.update(issues).set({ updatedAt: new Date("2099-01-01"), priority: "critical" }).where(eq(issues.id, sortedIds.at(-1)!));
+    await db.update(issues).set({ hiddenAt: new Date() }).where(eq(issues.id, sortedIds[0]!));
+    try {
+      const remaining = await request(app()).get(`/api/companies/${companyId}/issues`).query({ createdFromIssueId: sourceId, sortField: "id", sortDir: "asc", afterId: first.body.at(-1).id, limit: 500 });
+      expect(remaining.status).toBe(200);
+      expect(remaining.body.map((row: { id: string }) => row.id)).toEqual(sortedIds.slice(2));
+    } finally {
+      await db.update(issues).set({ hiddenAt: null }).where(eq(issues.id, sortedIds[0]!));
+    }
+  });
+
+  it("rejects cursors without matching ID order", async () => {
+    for (const query of [{ afterId: sourceId }, { afterId: "bad", sortField: "id", sortDir: "asc" }, { afterId: sourceId, sortField: "id", sortDir: "desc" }, { afterId: sourceId, sortField: "id", sortDir: "asc", offset: 2 }]) {
+      const result = await request(app()).get(`/api/companies/${companyId}/issues`).query(query);
+      expect(result.status).toBe(422);
     }
   });
 

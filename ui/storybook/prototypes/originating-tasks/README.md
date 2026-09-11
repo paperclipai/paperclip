@@ -36,6 +36,7 @@ run was provided, including the legacy child helper. Native creation already
 provides its run. No schema migration or runner-mode distinction is needed.
 
 The real issue page queries this projection alongside its existing subtask query.
-Existing company issue-list invalidation refreshes both on task activity. Errors
+Both queries page by immutable task ID with an afterId cursor so task activity
+and removal of earlier rows do not shift later pages. Existing company issue-list invalidation refreshes both on task activity. Errors
 remain visible with a Retry action. Historical rows without either an origin run or attributed creation activity
 cannot be attributed and are not included in project groups.
