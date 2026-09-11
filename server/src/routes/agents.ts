@@ -2768,17 +2768,18 @@ export function agentRoutes(
     };
   }
 
-  // The default CEO instructions assume the core paperclip skills (board
-  // coordination, planning, hiring, memory). Union them into every
-  // skills-capable CEO hire/create so a fresh CEO never starts with an empty
-  // desired-skill set that contradicts its own instructions. Optional role
+  // CEO and board-created onboarding chief-of-staff instructions assume the
+  // core paperclip skills (board coordination, planning, hiring, memory).
+  // Union them into these skills-capable hires/creates so their desired skills
+  // match their instructions. Optional role
   // skills remain removable afterwards. Legacy adapters separately guarantee
   // the Paperclip operational skill as a runtime invariant.
   function defaultRoleSkillSelections(
     role: string | null | undefined,
     adapterType: string,
+    boardOnboardingFirstAgent = false,
   ): AgentDesiredSkillEntry[] | undefined {
-    if (role !== "ceo") return undefined;
+    if (role !== "ceo" && !boardOnboardingFirstAgent) return undefined;
     const adapter = findActiveServerAdapter(adapterType);
     if (!adapter?.listSkills && !adapter?.syncSkills) return undefined;
     return PAPERCLIP_CORE_SKILL_KEYS
@@ -2792,9 +2793,12 @@ export function agentRoutes(
   ): AgentDesiredSkillEntry[] | undefined {
     if (!defaults) return requested;
     if (!requested) return defaults;
-    const merged = new Map(defaults.map((entry) => [entry.key, entry]));
-    // An explicit request wins over a default for the same key (version pins).
-    for (const entry of requested) merged.set(entry.key, entry);
+    // Resolve explicit selections first: aliases can normalize to a default
+    // key later, and the skill resolver keeps the first version selection.
+    const merged = new Map(requested.map((entry) => [entry.key, entry]));
+    for (const entry of defaults) {
+      if (!merged.has(entry.key)) merged.set(entry.key, entry);
+    }
     return Array.from(merged.values());
   }
 
@@ -4221,7 +4225,11 @@ export function agentRoutes(
       requestedAdapterConfig,
       withDefaultRoleSkillSelections(
         normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
-        defaultRoleSkillSelections(hireInput.role, hireInput.adapterType),
+        defaultRoleSkillSelections(
+          hireInput.role,
+          hireInput.adapterType,
+          hireOnboardingFirstAgent === true && req.actor.type === "board",
+        ),
       ),
       "add",
     );
@@ -4500,7 +4508,11 @@ export function agentRoutes(
       requestedAdapterConfig,
       withDefaultRoleSkillSelections(
         normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
-        defaultRoleSkillSelections(createInput.role, createInput.adapterType),
+        defaultRoleSkillSelections(
+          createInput.role,
+          createInput.adapterType,
+          createOnboardingFirstAgent === true && req.actor.type === "board",
+        ),
       ),
       "add",
     );

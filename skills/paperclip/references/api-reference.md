@@ -1,5 +1,7 @@
 # Paperclip API Reference
 
+Fetch `GET /api/openapi.json` for the current request schemas. It is available through the queue and HTTP/2 sandbox bridges.
+
 Detailed reference for the Paperclip control plane API. For the core heartbeat procedure and critical rules, see the main `SKILL.md`.
 
 ---
@@ -865,13 +867,25 @@ POST /api/companies/{companyId}/agent-hires
   "role": "researcher",
   "reportsTo": "{manager-agent-id}",
   "capabilities": "Market research, competitor analysis",
-  "budgetMonthlyCents": 5000
+  "budgetMonthlyCents": 5000,
+  "adapterType": "codex_local",
+  "instructionsBundle": {
+    "entryFile": "AGENTS.md",
+    "files": {
+      "AGENTS.md": "# Marketing Analyst\nResearch markets and competitors. Report findings with sources to your manager. Follow the Paperclip operational skill.\n"
+    }
+  },
+  "runtimeConfig": { "heartbeat": { "enabled": false, "wakeOnDemand": true } }
 }
 ```
 
 If company policy requires approval, the new agent is created as `pending_approval` and a linked `hire_agent` approval is created automatically.
 
-**Do NOT** request hires unless you are a manager or CEO. IC agents should ask their manager.
+Hiring requires `agents:create` permission (including the configured hiring permission for a chief of staff); a structural role such as `general` does not by itself determine authority. If you lack permission, ask your manager. Do not bypass a permission denial.
+
+A direct user request authorizes that hire within the requested scope; formal company approval still applies. A `201` response returns `{ "agent": …, "approval": … }`, not a bare agent. Do not resubmit after success. An identical same-run retry returns `200` with `idempotent: true`; this does not protect changed payloads or later runs. After an uncertain outcome, list the company’s agents and reconcile before retrying.
+
+A confirmed pre-creation validation failure (for example, an invalid `instructionsBundle.files` shape or a rejected retired `adapterConfig.promptTemplate`) creates nothing. Correct those fields under the existing authorization without another confirmation when the hire’s name, responsibilities, and scope are unchanged. This does not authorize retrying permission/approval denials or uncertain failures. Keep the bounded write retry limit. Use `instructionsBundle.files` as a record, never an array. Use `GET /api/openapi.json` to check the current schema.
 Leave timer heartbeats off by default for new hires. Only enable a scheduled heartbeat when the role truly needs recurring timed work or the user explicitly asked for one.
 
 Use `paperclip-create-agent` for the full hiring workflow (reflection + config comparison + prompt drafting).
@@ -884,6 +898,88 @@ If you are the CEO, your first strategic plan must be approved before you can mo
 POST /api/companies/{companyId}/approvals
 { "type": "approve_ceo_strategy", "requestedByAgentId": "{your-agent-id}", "payload": { "plan": "..." } }
 ```
+
+### Questions and waiting for human input
+
+Ask only when missing input materially blocks the request. A direct request or supplied responsibilities do not need another confirmation or an artificial job-category choice.
+
+Use `ask_user_questions` for a short question card. Each question requires `id`, `prompt`, `selectionMode`, and at least one option with `id` and `label`. Do not send `question`/`type: "text"` or an empty options array. Set `resolverPolicy: "human_only"` when the answer must come from the user.
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "ask_user_questions",
+  "idempotencyKey": "questions:{issueId}:responsibility:v1",
+  "title": "Hire responsibility",
+  "resolverPolicy": "human_only",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "questions": [{
+      "id": "responsibility",
+      "prompt": "What should the new agent be responsible for?",
+      "selectionMode": "single",
+      "required": true,
+      "allowOther": true,
+      "options": [
+        { "id": "research", "label": "Research", "description": "Find and summarize information." },
+        { "id": "writing", "label": "Writing", "description": "Draft and edit content." }
+      ]
+    }]
+  }
+}
+```
+
+For an open-ended answer, supply a free-text option (one option is sufficient):
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "ask_user_questions",
+  "idempotencyKey": "questions:{issueId}:responsibility-text:v1",
+  "title": "Hire responsibility",
+  "resolverPolicy": "human_only",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "questions": [{
+      "id": "responsibility",
+      "prompt": "What should the new agent be responsible for?",
+      "selectionMode": "single",
+      "required": true,
+      "options": [{ "id": "describe", "label": "I'll describe it", "freeText": true }]
+    }]
+  }
+}
+```
+
+After verifying the interaction was saved and is pending, record the waiting state:
+
+```json
+PATCH /api/issues/{issueId}
+{
+  "status": "in_review",
+  "comment": "Waiting for your answer in the saved responsibility question card."
+}
+```
+
+The pending interaction supplies the durable waiting path and wakes the assignee when answered. Prose alone does not create that path; if creating the card failed, fix its payload before claiming to wait. Do not invent a blocker or assign an unblock owner of `"user"` or `"board"`. Agents cannot set board/user or other-agent unblock descriptors.
+
+For a real issue dependency, use `blockedByIssueIds`. For an unblock action you actually own, the agent-permitted shape is:
+
+```json
+PATCH /api/issues/{issueId}
+{
+  "status": "blocked",
+  "unblockDescriptor": {
+    "owner": { "agentId": "{your-agent-id}" },
+    "action": "Restore the failed workspace service, verify health, then resume."
+  },
+  "comment": "The workspace service is unavailable; I own restoring it."
+}
+```
+
+Use your authenticated agent ID and keep all references in the same company. This self-owned blocker is not a substitute for a human-input interaction. Recovery remains bounded; repeated failed writes do not justify escalating your permissions.
 
 ### Issue-thread confirmations
 
