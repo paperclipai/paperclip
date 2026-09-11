@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { mkdirSync, unlinkSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -24,6 +25,7 @@ import {
   findSecretLeakInJsonValues,
   findSecretLeakInDirectory,
   isEphemeralCodexRuntimeAuthFile,
+  isEphemeralPostgresPidFile,
   redactText,
   sanitizeJson,
 } from "./redaction.js";
@@ -957,6 +959,74 @@ describe("runner E2E evidence redaction", () => {
     await expect(
       findSecretLeakInDirectory(root, [secret]),
     ).resolves.toMatchObject({ reason: "exact secret value" });
+  });
+
+  it("tolerates only the embedded PostgreSQL PID disappearing during shutdown and keeps scanning", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-postgres-pid-race-"));
+    cleanupDirectories.push(root);
+    const pidFile = path.join(root, "instances", "test", "db", "postmaster.pid");
+    const persistedFile = path.join(path.dirname(pidFile), "z-persisted.bin");
+    await mkdir(path.dirname(pidFile), { recursive: true });
+    await writeFile(pidFile, "1234\n");
+    await writeFile(persistedFile, secret);
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      ignoreFile: (file) => {
+        if (file === pidFile) unlinkSync(file); // Removed after directory enumeration.
+        return false;
+      },
+      allowDisappearedFile: (file) => isEphemeralPostgresPidFile(root, file),
+    })).resolves.toEqual({ file: persistedFile, reason: "exact secret value" });
+    expect(isEphemeralPostgresPidFile(root, path.join(root, "workspace", "postmaster.pid"))).toBe(false);
+    expect(isEphemeralPostgresPidFile(root, path.join(root, "instances", "test", "db", "records.bin"))).toBe(false);
+  });
+
+  it("still detects secrets in an existing PostgreSQL PID file", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-postgres-pid-secret-"));
+    cleanupDirectories.push(root);
+    const pidFile = path.join(root, "instances", "test", "db", "postmaster.pid");
+    await mkdir(path.dirname(pidFile), { recursive: true });
+    await writeFile(pidFile, secret);
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      allowDisappearedFile: (file) => isEphemeralPostgresPidFile(root, file),
+    })).resolves.toEqual({ file: pidFile, reason: "exact secret value" });
+  });
+
+  it("fails when required persisted state disappears during scanning", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-required-file-race-"));
+    cleanupDirectories.push(root);
+    const requiredFile = path.join(root, "records.json");
+    await writeFile(requiredFile, "{}");
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      ignoreFile: (file) => { unlinkSync(file); return false; },
+      allowDisappearedFile: (file) => isEphemeralPostgresPidFile(root, file),
+    })).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("does not suppress other I/O failures for the ephemeral PID path", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-postgres-pid-io-"));
+    cleanupDirectories.push(root);
+    const pidFile = path.join(root, "instances", "test", "db", "postmaster.pid");
+    await mkdir(path.dirname(pidFile), { recursive: true });
+    await writeFile(pidFile, "1234\n");
+    await expect(findSecretLeakInDirectory(root, [secret], {
+      ignoreFile: (file) => { unlinkSync(file); mkdirSync(file); return false; },
+      allowDisappearedFile: (file) => isEphemeralPostgresPidFile(root, file),
+    })).rejects.toMatchObject({ code: "EISDIR" });
+  });
+
+  it("still reports missing mandatory pass evidence", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-required-evidence-"));
+    cleanupDirectories.push(root);
+    const privateDir = path.join(root, "private");
+    await mkdir(privateDir);
+    const packaged = await packageEvidence({
+      privateDir,
+      uploadDir: path.join(root, "upload"),
+      secrets: [secret],
+      expectPassScreenshot: true,
+    });
+    expect(packaged.missing).toContain("result.json");
+    expect(packaged.missing).toContain("final-state.png");
   });
 
   it("can ignore fake key shapes while scanning persisted package state", async () => {
