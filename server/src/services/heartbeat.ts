@@ -481,6 +481,7 @@ import {
   deriveCommentId,
   allowsIssueInteractionWake,
   isResolvedInteractionContinuationWakeContext,
+  verifyAddresseeInteractionWake,
 } from "../modules/run-dispatch/index.js";
 import {
   createWakeQueue,
@@ -16920,8 +16921,38 @@ export function heartbeatService(
     }
     const claimed = queuedCommentClaim
       ? queuedCommentClaim.run
-      : await withChatControlRecoveryGate(run, "claim", async (tx) =>
-          tx
+      : await withChatControlRecoveryGate(run, "claim", async (tx) => {
+          // A named-addressee interaction wake passed the staleness gate on
+          // stored interaction state. Re-read that state inside the claim
+          // transaction so a non-assignee run cannot start after the
+          // interaction was resolved in between. A wake that no longer
+          // verifies stays queued; the next claim attempt cancels it through
+          // the ordinary staleness gate.
+          if (issueId && readNonEmptyString(context.wakeReason) === "interaction_pending") {
+            const issueOwner = await tx
+              .select({ assigneeAgentId: issues.assigneeAgentId })
+              .from(issues)
+              .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+            if (
+              issueOwner &&
+              issueOwner.assigneeAgentId !== run.agentId &&
+              !(await verifyAddresseeInteractionWake(tx, {
+                companyId: run.companyId,
+                issueId,
+                agentId: run.agentId,
+                contextSnapshot: context,
+              }))
+            ) {
+              logger.info(
+                { runId: run.id, issueId, agentId: run.agentId },
+                "claimQueuedRun: addressee interaction is no longer actionable; leaving run queued for the staleness gate",
+              );
+              return null;
+            }
+          }
+          return tx
             .update(heartbeatRuns)
             .set({
               status: "running",
@@ -16936,8 +16967,8 @@ export function heartbeatService(
               ),
             )
             .returning()
-            .then((rows) => rows[0] ?? null),
-        );
+            .then((rows) => rows[0] ?? null);
+        });
     if (!claimed) return null;
 
     publishLiveEvent({
