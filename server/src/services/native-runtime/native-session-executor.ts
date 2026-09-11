@@ -1,3 +1,5 @@
+import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
+import { resolveConnectorAssignments, isConnectorSkill } from "../connector-runtime.js";
 import {
   boundedExecutionCleanup,
   EXECUTION_CONTROL_DEADLINE_MS,
@@ -6648,6 +6650,8 @@ export async function executePaperclipNativeSession(input: {
   db: Db;
   execution: NativeExecutionInput;
   runnerInstanceId: string;
+  /** Configured total turn bound; zero/unset is unlimited. */
+  turnTimeoutMs?: number;
   leaseOwner?: string;
   restartRecovery?: NativeRestartRecoveryClaim;
   onSpawn?: (meta: {
@@ -6668,8 +6672,6 @@ export async function executePaperclipNativeSession(input: {
   onGoalCheckpoint?: (snapshot: PersistedNativeSession) => Promise<void>;
   sessionGoalControl?: NativeSessionGoalControl | null;
   resumeSessionGoalHeartbeat?: boolean;
-  /** Internal test seam; production rolls over five minutes before runnerd's one-hour lease. */
-  goalRolloverAtMs?: number;
   preparationSpans?: NativeRunHistoricalSpan[];
   /** Resolved adapter env; the runner transport applies a provider allowlist before spawn. */
   runnerEnvironment?: NodeJS.ProcessEnv;
@@ -7663,6 +7665,14 @@ async function executePaperclipNativeSessionWithinScope(
             trace,
           })
         : null;
+    const remoteCleanupLease = input.runnerExecutionTarget?.kind === "remote" &&
+        input.runnerExecutionTarget.transport === "sandbox" && input.runnerExecutionTarget.leaseId
+      ? await input.db.select({ provider: environmentLeases.provider, providerLeaseId: environmentLeases.providerLeaseId })
+          .from(environmentLeases).where(and(
+            eq(environmentLeases.companyId, input.execution.binding.companyId),
+            eq(environmentLeases.id, input.runnerExecutionTarget.leaseId),
+          )).then(rows => rows[0])
+      : null;
     nativeSessionExecuteStartedAtMs = Date.now();
     native = await trace.measure(
       "native.session.execute",
@@ -7675,6 +7685,8 @@ async function executePaperclipNativeSessionWithinScope(
         const result = await trace.run(runnerSessionStartupScope, () =>
           executeNativeSession({
             input: runnerExecution,
+            remoteCleanupScope: remoteCleanupLease ? remoteLeaseCleanupScope(remoteCleanupLease) : undefined,
+            turnTimeoutMs: input.turnTimeoutMs,
             backend:
               input.backend ??
               runnerdBackend ??
@@ -9710,7 +9722,11 @@ async function createRunnerdBackendWithinSessionClaim(
     input.db,
     input.execution.binding,
   );
+  const pinnedSkills = new Set("runtimeContext" in input.execution ? input.execution.runtimeContext.skills.map((skill) => skill.key) : []);
+  const connectorAssignments = [...pinnedSkills].some(isConnectorSkill)
+    ? await resolveConnectorAssignments(input.db, input.execution.binding) : [];
   const authority = new PaperclipRunnerToolAuthority(input.db, {
+    connectorAssignments: connectorAssignments.filter((assignment) => pinnedSkills.has(assignment.skillKey)),
     companyId: input.execution.binding.companyId,
     issueId: input.execution.binding.issueId,
     runId: input.execution.binding.runId,

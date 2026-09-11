@@ -53,7 +53,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   issue_thread_interaction: { label: "Decision requested" },
   join_request: { label: "Join request" },
   recovery_action: { label: "Recovery" },
-  productivity_review: { label: "Productivity review" },
+  // Read compatibility for persisted decisions from the retired feature.
+  productivity_review: { label: "Task" },
   blocker_attention: { label: "Blocked dependency" },
   review: { label: "Review" },
   failed_run: { label: "Failed run" },

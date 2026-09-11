@@ -341,9 +341,9 @@
       "mode": "native",
       "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": ["REC-08"], "compatibilityRows": [], "migrationRows": [] },
       "tags": ["supersession", "reconciliation", "deterministic_replay"],
-      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "new_policy_requires_review", "trigger": "authorized_agent" },
-      "expected": { "runStatus": "succeeded", "statusAction": "in_review", "reasonCode": "completion_review_required", "requiredEffects": ["bind_reviewer", "append_superseding_assessment"], "forbiddenEffects": ["mutate_old_decision"], "livePathKind": "review", "preserveClaim": true, "nativeRecords": true, "decisionCount": 2, "maxWakeCount": 1, "maxNotificationCount": 1 },
-      "replay": { "attempts": 2, "sameDecisionDigest": false, "maxSemanticDecisions": 2, "maxDomainEffectsPerKey": 1 }
+      "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "policy_version_changed", "trigger": "authorized_agent" },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "prior_fixture_decision", "requiredEffects": [], "forbiddenEffects": ["mutate_old_decision", "bind_reviewer", "append_superseding_assessment"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
     },
     {
       "id": "legacy-adapter-unchanged",

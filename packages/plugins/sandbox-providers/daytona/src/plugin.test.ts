@@ -1317,13 +1317,38 @@ describe("Daytona sandbox provider plugin", () => {
     expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes a cached stopped handle before granting a termination receipt", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-resumed", state: "stopped" });
+    sandbox.refreshData.mockImplementation(async () => { sandbox.state = "started"; });
+    mockGet.mockResolvedValue(sandbox);
+    await expect(plugin.definition.onEnvironmentReleaseLease?.({
+      driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+      providerLeaseId: sandbox.id, config: { reuseLease: true },
+    })).resolves.toEqual({ providerLeaseId: sandbox.id, state: "stopped" });
+    expect(sandbox.refreshData).toHaveBeenCalled();
+    expect(sandbox.stop).toHaveBeenCalled();
+  });
+
+  it("does not acknowledge termination when both provider stop and delete fail", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-failed-stop", state: "started" });
+    sandbox.stop.mockRejectedValueOnce(new Error("stop failed"));
+    sandbox.delete.mockRejectedValueOnce(new Error("delete failed"));
+    mockGet.mockResolvedValue(sandbox);
+    await expect(plugin.definition.onEnvironmentReleaseLease?.({
+      driverKey: "daytona", companyId: "company-1", environmentId: "env-1",
+      providerLeaseId: sandbox.id, config: { reuseLease: true },
+    })).rejects.toThrow("delete failed");
+  });
+
   it("stops reusable leases and deletes ephemeral leases on release", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const reusable = createMockSandbox({ id: "sandbox-reusable" });
     const ephemeral = createMockSandbox({ id: "sandbox-ephemeral" });
     mockGet.mockResolvedValueOnce(reusable).mockResolvedValueOnce(ephemeral);
 
-    await plugin.definition.onEnvironmentReleaseLease?.({
+    const reusableReceipt = await plugin.definition.onEnvironmentReleaseLease?.({
       driverKey: "daytona",
       companyId: "company-1",
       environmentId: "env-1",
@@ -1333,7 +1358,7 @@ describe("Daytona sandbox provider plugin", () => {
         reuseLease: true,
       },
     });
-    await plugin.definition.onEnvironmentReleaseLease?.({
+    const ephemeralReceipt = await plugin.definition.onEnvironmentReleaseLease?.({
       driverKey: "daytona",
       companyId: "company-1",
       environmentId: "env-1",
@@ -1344,9 +1369,11 @@ describe("Daytona sandbox provider plugin", () => {
       },
     });
 
+    expect(reusableReceipt).toEqual({ providerLeaseId: "sandbox-reusable", state: "stopped" });
+    expect(ephemeralReceipt).toEqual({ providerLeaseId: "sandbox-ephemeral", state: "destroyed" });
     expect(reusable.stop).toHaveBeenCalledWith(300);
     expect(reusable.delete).not.toHaveBeenCalled();
-    expect(ephemeral.delete).toHaveBeenCalledWith(300);
+    expect(ephemeral.delete).toHaveBeenCalledWith(300, true);
   });
 
   it("archives instead of deleting when the lease was acquired with archiveOnRelease", async () => {
@@ -1393,7 +1420,7 @@ describe("Daytona sandbox provider plugin", () => {
 
     expect(sandbox.stop).not.toHaveBeenCalled();
     expect(sandbox.archive).toHaveBeenCalled();
-    expect(sandbox.delete).toHaveBeenCalledWith(300);
+    expect(sandbox.delete).toHaveBeenCalledWith(300, true);
     expect(warnSpy).toHaveBeenCalled();
   });
 
@@ -1652,7 +1679,24 @@ describe("Daytona sandbox provider plugin", () => {
 
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(sessionId));
       // The rest of teardown still ran: the ephemeral sandbox was deleted.
-      expect(sandbox.delete).toHaveBeenCalledWith(300);
+      expect(sandbox.delete).toHaveBeenCalledWith(300, true);
+    });
+
+    it("returns a destroy receipt only after the provider confirms deletion", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox();
+      mockGet.mockResolvedValue(sandbox);
+      let complete!: () => void;
+      sandbox.delete.mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve; }));
+      const release = plugin.definition.onEnvironmentDestroyLease!({ driverKey: "daytona",
+        companyId: "company-1", environmentId: "env-1", providerLeaseId: "sandbox-123",
+        config: { timeoutMs: 300000, reuseLease: false } });
+      let settled = false;
+      void Promise.resolve(release).then(() => { settled = true; });
+      await vi.waitFor(() => expect(sandbox.delete).toHaveBeenCalledWith(300, true));
+      expect(settled).toBe(false);
+      complete();
+      await expect(release).resolves.toEqual({ providerLeaseId: "sandbox-123", state: "destroyed" });
     });
 
     it("clears the session store after delete so no orphan id survives a second teardown", async () => {
