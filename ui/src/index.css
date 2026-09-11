@@ -290,6 +290,7 @@
   --side-panel-tab-label-max-width: var(--sz-100px);
   --side-panel-tab-label-expanded-max-width: calc(var(--side-panel-tab-label-max-width) + var(--sz-18px));
   --side-panel-tab-label-fade-width: var(--sz-32px);
+  --sidebar-nav-action-fade-width: calc(var(--spacing) * 4);
   --side-panel-tab-radius: var(--radius-xl);
   --side-panel-control-radius: var(--radius-xl);
   --side-panel-launcher-width: var(--sz-320px);
@@ -990,6 +991,35 @@
   transition-duration: var(--motion-side-panel-tab);
   transition-timing-function: var(--motion-ease-standard);
 }
+/* Sidebar actions cover the trailing live label without moving row content,
+   fading into the row surface like the task-detail tab close control. */
+.sidebar-action-row {
+  --sidebar-action-surface: var(--sidebar);
+}
+.sidebar-action-row:is(:hover, :focus-within),
+.sidebar-action-row:has(.sidebar-action-link[aria-current="page"]),
+.sidebar-action-row:has(.sidebar-action-menu[data-state="open"]) {
+  --sidebar-action-surface: var(--sidebar-accent);
+}
+.sidebar-action-row:is(:hover, :focus-within) .sidebar-action-link,
+.sidebar-action-row:has(.sidebar-action-menu[data-state="open"]) .sidebar-action-link {
+  background-color: var(--sidebar-accent);
+  color: var(--sidebar-accent-foreground);
+}
+.sidebar-action-menu {
+  isolation: isolate;
+}
+.sidebar-action-menu::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  left: calc(-1 * var(--sidebar-nav-action-fade-width));
+  z-index: -1;
+  border-radius: inherit;
+  background: linear-gradient(to right, transparent, var(--sidebar-action-surface) var(--sidebar-nav-action-fade-width));
+  pointer-events: none;
+}
+
 .side-panel-tab-label-fade,
 .side-panel-tab-label-close-fade[data-truncated="true"],
 [data-appearance="streamlined-task"]:is(:hover, :focus-within) .side-panel-tab-label-close-fade {

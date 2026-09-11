@@ -224,10 +224,11 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
 // independent palette (todo blue, in_progress violet, etc.). `backlog`
 // deliberately keeps --project-none (pre-B5, per user ruling); the
 // priority series and success-rate tints below are not status hues and
-// are left alone.
+// are left alone. Progress uses the mode-aware icon hue so its bar and legend
+// match the task spinner in each theme.
 const statusColors: Record<string, string> = {
   todo: "var(--status-task-todo)",
-  in_progress: "var(--status-task-in_progress)",
+  in_progress: "var(--status-task-icon-in_progress)",
   in_review: "var(--status-task-in_review)",
   done: "var(--status-task-done)",
   blocked: "var(--status-task-blocked)",
