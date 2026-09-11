@@ -213,6 +213,21 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     return queueRunId;
   }
 
+  it("projects the recovery wait reason only while the message is deferred", async () => {
+    const seeded = await seedQueue();
+    const executionWait = { reason: "remote_cleanup", message: "Waiting for the previous environment to stop." };
+    await db.update(agentWakeupRequests).set({
+      payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb) || ${JSON.stringify({ executionWait })}::jsonb`,
+    }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    const waiting = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`);
+    expect(waiting.status).toBe(200);
+    expect(waiting.body.executionWait).toEqual(executionWait);
+    await promoteQueue(seeded);
+    const admitted = await request(app(seeded.companyId)).get(`/api/issues/${seeded.issueId}/queued-comments`);
+    expect(admitted.status).toBe(200);
+    expect(admitted.body.executionWait).toBeUndefined();
+  });
+
   it("returns the authoritative order, preserves full Markdown edits, and rejects stale revisions", async () => {
     const seeded = await seedQueue();
     const initial = await request(app(seeded.companyId))
