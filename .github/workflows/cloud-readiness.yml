@@ -48,6 +48,33 @@ jobs:
           SOURCE_SHA: ${{ github.sha }}
         run: node scripts/cloud-readiness.mjs "$SOURCE_SHA"
 
+  source_verified:
+    # npm canary publication reuses this exact-source verification proof.
+    # Keep it independent of image/migrator availability, and fail closed when
+    # any source check fails, is cancelled, or is skipped.
+    name: Cloud source verified v1
+    needs: [verify]
+    if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Check the source verification consumer
+        run: node --test scripts/cloud-source-verification.test.mjs
+      - name: Record source verification
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          echo "Cloud source verified v1: $SOURCE_SHA" >> "$GITHUB_STEP_SUMMARY"
+
   ready:
     # Versioned consumer contract. Never add always() or continue-on-error:
     # failed, cancelled, or skipped prerequisites must not report readiness.
