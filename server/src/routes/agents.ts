@@ -2472,8 +2472,13 @@ export function agentRoutes(
   // key inherits no Claude credential key at all. That keeps child-wins
   // precedence and rules out the forbidden pairing of the fixed OAuth binding
   // with an ANTHROPIC_API_KEY.
+  //
+  // The hiring agent must belong to the target company. Without that check, an
+  // agent that can create agents in another company could copy its own
+  // company's credential reference into that other company.
   async function applyHiringAgentAuthInheritance(
     req: Request,
+    companyId: string,
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
   ): Promise<{ adapterConfig: Record<string, unknown>; inheritedFixedClaudeOAuthBinding: boolean }> {
@@ -2483,7 +2488,7 @@ export function agentRoutes(
     if (!credentialKeys) return noInheritance;
 
     const parent = await svc.getById(req.actor.agentId);
-    if (!parent || parent.adapterType !== adapterType) return noInheritance;
+    if (!parent || parent.companyId !== companyId || parent.adapterType !== adapterType) return noInheritance;
     const parentEnv = asRecord(asRecord(parent.adapterConfig)?.env);
     if (!parentEnv) return noInheritance;
 
@@ -4263,6 +4268,7 @@ export function agentRoutes(
     const hiredAgentId = randomUUID();
     const authInheritance = await applyHiringAgentAuthInheritance(
       req,
+      companyId,
       hireInput.adapterType,
       applyCreateDefaultsByAdapterType(
         hireInput.adapterType,

@@ -333,6 +333,66 @@ describeEmbeddedPostgres("hired agent provider credential inheritance", () => {
     expect(Object.keys(childEnvOf(res))).toHaveLength(0);
   });
 
+  it("does not inherit a codex_local credential from a hiring agent in another company", async () => {
+    const parentCompanyId = await seedCompany();
+    const targetCompanyId = await seedCompany();
+    const secret = await createCompanySecret(parentCompanyId, "sk-openai-other-company");
+    const parent = await seedParentAgent(parentCompanyId, "codex_local", {
+      OPENAI_API_KEY: secretRef(secret.id),
+    });
+
+    // The actor claims the target company, but the named hiring agent belongs
+    // to a different company. The route must reject the request and must
+    // never copy the other company's credential reference.
+    const res = await hire(agentActor(targetCompanyId, parent.id), targetCompanyId, {
+      name: "Codex Cross-Company Child",
+      role: "engineer",
+      adapterType: "codex_local",
+    });
+
+    expect(res.status).toBe(403);
+    const children = await db.select().from(agents).where(eq(agents.companyId, targetCompanyId));
+    expect(children).toHaveLength(0);
+  });
+
+  it("does not inherit a grok_local credential from a hiring agent in another company", async () => {
+    const parentCompanyId = await seedCompany();
+    const targetCompanyId = await seedCompany();
+    const secret = await createCompanySecret(parentCompanyId, "xai-other-company");
+    const parent = await seedParentAgent(parentCompanyId, "grok_local", {
+      XAI_API_KEY: secretRef(secret.id),
+    });
+
+    const res = await hire(agentActor(targetCompanyId, parent.id), targetCompanyId, {
+      name: "Grok Cross-Company Child",
+      role: "engineer",
+      adapterType: "grok_local",
+    });
+
+    expect(res.status).toBe(403);
+    const children = await db.select().from(agents).where(eq(agents.companyId, targetCompanyId));
+    expect(children).toHaveLength(0);
+  });
+
+  it("does not inherit a claude_local credential, including the fixed OAuth binding, from a hiring agent in another company", async () => {
+    const parentCompanyId = await seedCompany();
+    const targetCompanyId = await seedCompany();
+    const parent = await seedParentAgent(parentCompanyId, "claude_local", {
+      ANTHROPIC_API_KEY: secretRef((await createCompanySecret(parentCompanyId, "ant-other-company")).id),
+      CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_CLAUDE_OAUTH_BINDING, version: 1 },
+    });
+
+    const res = await hire(agentActor(targetCompanyId, parent.id), targetCompanyId, {
+      name: "Claude Cross-Company Child",
+      role: "engineer",
+      adapterType: "claude_local",
+    });
+
+    expect(res.status).toBe(403);
+    const children = await db.select().from(agents).where(eq(agents.companyId, targetCompanyId));
+    expect(children).toHaveLength(0);
+  });
+
   it("carves out a per-agent CODEX_HOME when the child inherits OPENAI_API_KEY", async () => {
     const companyId = await seedCompany();
     const secret = await createCompanySecret(companyId, "sk-openai-isolated");
