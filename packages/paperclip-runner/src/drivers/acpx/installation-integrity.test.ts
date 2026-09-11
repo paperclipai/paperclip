@@ -594,6 +594,9 @@ describe("ACPX installation integrity", () => {
       );
       await (await installation.openCommand()).close();
     },
+    // The real macOS snapshot copies the installed SDK tree; this is an
+    // integrity check, not a five-second startup performance benchmark.
+    60_000,
   );
 
   it.runIf(process.platform === "linux" && process.arch === "x64")(
