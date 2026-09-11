@@ -3135,6 +3135,19 @@ describe("native session same-turn steering", () => {
 });
 
 describe("native warm session supervision", () => {
+  it.each([true, false])("preserves chat reply grace for per-turn providers: chat=%s", async (conversationMode) => {
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      expect(options.semanticResultTerminalGraceMs).toBe(conversationMode ? 30_000 : undefined);
+      return {
+        result: { summary: "Reply completed" },
+        terminal: { runTerminalState: "succeeded" },
+        turnId: "turn-grace", normalizedSessionId: execution.session.normalizedSessionId,
+        providerSessionId: "provider-grace", driverKind: "test", driverVersion: "1",
+        nativeEventCount: 1, highestContiguousSourceSeq: 1,
+      };
+    });
+    await executePaperclipNativeSession({ db: leaseDb(), execution, runnerInstanceId: "runner", conversationMode });
+  });
   it("persists agent-created goal continuity before a per-turn runner settles", async () => {
     const goalCheckpoint = {
       identity: { runId: execution.binding.runId, sessionId: "session" },

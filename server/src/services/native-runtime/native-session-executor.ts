@@ -195,12 +195,11 @@ const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set([
 const NATIVE_SESSION_EXECUTION_LEASE_TTL_MS = 20 * 60_000;
 const NATIVE_SESSION_EXECUTION_LEASE_RENEW_INTERVAL_MS = 5 * 60_000;
 const NATIVE_SESSION_CANCELLATION_CLEANUP_GRACE_MS = 2_000;
-// A reusable provider must publish its terminal suffix before the next run can
-// rotate PRP authority. Remote Codex can take more than the ordinary five-second
-// result grace to flush its final answer over Daytona, so retain the bounded
-// turn long enough to reach a naturally quiescent, reusable state. This adds no
-// delay when the provider terminates normally.
-const NATIVE_WARM_SEMANTIC_RESULT_TERMINAL_GRACE_MS = 30_000;
+// Chat replies and reusable providers need their final output before the next
+// run rotates PRP authority. Streaming answers can take longer than the ordinary
+// five-second result grace, so retain the bounded turn until it is quiescent.
+// This adds no delay when the provider terminates normally.
+const NATIVE_RESPONSE_SEMANTIC_RESULT_TERMINAL_GRACE_MS = 30_000;
 const NATIVE_RUNTIME_REQUEST_RESOLUTION_CACHE_MAX = 256;
 type NativeRuntimeRequestResolution = {
   runId: string;
@@ -4042,6 +4041,8 @@ export async function executePaperclipNativeSession(input: {
   db: Db;
   execution: NativeExecutionInput;
   runnerInstanceId: string;
+  /** Trusted task identity from the heartbeat orchestration. */
+  conversationMode?: boolean;
   leaseOwner?: string;
   restartRecovery?: NativeRestartRecoveryClaim;
   onSpawn?: (meta: {
@@ -4958,9 +4959,9 @@ async function executePaperclipNativeSessionWithinScope(
             sessionGoalControl: input.sessionGoalControl,
             resumeSessionGoalHeartbeat: input.resumeSessionGoalHeartbeat,
             semanticResultTerminalGraceMs:
-              warmSessionId === null
-                ? undefined
-                : NATIVE_WARM_SEMANTIC_RESULT_TERMINAL_GRACE_MS,
+              warmSessionId !== null || input.conversationMode === true
+                ? NATIVE_RESPONSE_SEMANTIC_RESULT_TERMINAL_GRACE_MS
+                : undefined,
             // Every durable runner must finish its bounded suspension before
             // the next run verifies and rotates the saved authority.
             requireSessionCloseBeforeReturn: runnerdBackend !== null,

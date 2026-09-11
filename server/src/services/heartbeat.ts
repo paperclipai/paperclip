@@ -20988,6 +20988,7 @@ export function heartbeatService(
                     executePaperclipNativeSession({
                       db,
                       execution: nativeExecution,
+                      conversationMode: isConversation(issueContext),
                       runnerInstanceId: nativeRunnerInstanceId,
                       leaseOwner: runOptions.nativeLeaseOwner,
                       restartRecovery: runOptions.nativeRestartRecovery,
