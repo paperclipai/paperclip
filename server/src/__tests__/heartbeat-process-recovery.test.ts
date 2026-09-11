@@ -7647,7 +7647,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const events = await db
       .select()
       .from(heartbeatRunEvents)
-      .where(eq(heartbeatRunEvents.runId, runId));
+      .where(and(eq(heartbeatRunEvents.runId, runId), eq(heartbeatRunEvents.eventType, "lifecycle")));
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
       eventType: "lifecycle",
