@@ -105,6 +105,7 @@ test("renders scoped planning wake authority before the Hermes default workflow"
 });
 
 test("renders resume deltas instead of full scoped-wake boilerplate when continuing a session", () => {
+  const wakeComment = "Please add the resume-delta case.";
   const prompt = buildPrompt(baseContext({
     paperclipWake: {
       reason: "issue_commented",
@@ -118,17 +119,103 @@ test("renders resume deltas instead of full scoped-wake boilerplate when continu
       },
       latestCommentId: "comment-2",
       commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
-      comments: [{ id: "comment-2", body: "Please add the resume-delta case.", createdAt: "2026-06-23T00:00:00.000Z" }],
+      comments: [{ id: "comment-2", body: wakeComment, createdAt: "2026-06-23T00:00:00.000Z" }],
       fallbackFetchNeeded: false,
     },
+    paperclipTaskMarkdown: [
+      "Paperclip task context:",
+      '- Issue: "PAP-11750"',
+      "",
+      "Issue description:",
+      "```text",
+      "Full brief already present in the resumed session.",
+      "```",
+      "",
+      "Latest wake comment:",
+      "```text",
+      wakeComment,
+      "```",
+      "",
+      "Use this task context as the current assignment.",
+    ].join("\n"),
+    paperclipTaskMarkdownCompact: [
+      "Paperclip task context:",
+      '- Issue: "PAP-11750"',
+      "",
+      "Latest wake comment:",
+      "```text",
+      wakeComment,
+      "```",
+      "",
+      "Use this task context as the current assignment.",
+    ].join("\n"),
   }), {}, { resumedSession: true });
 
   expect(prompt).toContain("## Paperclip Resume Delta");
   expect(prompt).toContain("You are resuming an existing Paperclip session.");
   expect(prompt).toContain("Focus on the new wake delta below");
-  expect(prompt).toContain("Please add the resume-delta case.");
+  expect(prompt.match(new RegExp(wakeComment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))).toHaveLength(1);
   expect(prompt).toContain("- fallback fetch needed: no");
+  expect(prompt).toContain("Paperclip task context:");
+  expect(prompt).not.toContain("Full brief already present in the resumed session.");
+  expect(prompt).not.toContain("Latest wake comment:");
+  expect(prompt).not.toContain("Paperclip runtime identity:");
+  expect(prompt).not.toContain("Paperclip API guidance:");
   expect(prompt).not.toContain("Before generic repo exploration or boilerplate heartbeat updates");
+});
+
+test("keeps the full task brief for assignment-shaped resumed wakes", () => {
+  const description = "Build the TES-9 dashboard fix.";
+  const wakeComment = "Please preserve the full issue brief while resuming.";
+  const prompt = buildPrompt(baseContext({
+    paperclipWake: {
+      reason: "issue_reopened_via_comment",
+      issue: {
+        id: "issue-1",
+        identifier: "TES-9",
+        title: "Fix Hermes dashboard sessions",
+        description,
+        descriptionTruncated: false,
+        status: "in_progress",
+        priority: "medium",
+        workMode: "standard",
+      },
+      latestCommentId: "comment-reopen",
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },
+      comments: [{ id: "comment-reopen", body: wakeComment, createdAt: "2026-08-14T08:00:00.000Z" }],
+      fallbackFetchNeeded: false,
+    },
+    paperclipTaskMarkdown: [
+      "Paperclip task context:",
+      '- Issue: "TES-9"',
+      "",
+      "Issue description:",
+      "```text",
+      description,
+      "```",
+      "",
+      "Latest wake comment:",
+      "```text",
+      wakeComment,
+      "```",
+      "",
+      "Use this task context as the current assignment.",
+    ].join("\n"),
+    paperclipTaskMarkdownCompact: [
+      "Paperclip task context:",
+      '- Issue: "TES-9"',
+      "- issue description: omitted from this resume delta; fetch the issue if you need the latest brief",
+    ].join("\n"),
+  }), {}, { resumedSession: true });
+
+  expect(prompt).toContain("## Paperclip Resume Delta");
+  expect(prompt).toContain("Paperclip task context:");
+  expect(prompt).toContain("Issue description:");
+  expect(prompt).toContain(description);
+  expect(prompt.match(new RegExp(wakeComment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))).toHaveLength(1);
+  expect(prompt).not.toContain("Latest wake comment:");
+  expect(prompt).not.toContain("- issue description: omitted from this resume delta");
+  expect(prompt).not.toContain("Paperclip runtime identity:");
 });
 
 test("renders comment wake batch guidance without defaulting to a full-thread refetch", () => {

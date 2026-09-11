@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { parseHermesStdoutLine } from "./parse-stdout.js";
+import {
+  createHermesStdoutParser,
+  parseHermesStdoutLine,
+} from "./parse-stdout.js";
 
 const TS = "2026-06-29T12:00:00.000Z";
 
@@ -77,5 +80,51 @@ describe("parseHermesStdoutLine — ANSI stripping", () => {
   it("handles empty lines after ANSI stripping", () => {
     const result = parseHermesStdoutLine("\x1b[0m", TS);
     expect(result).toHaveLength(0);
+  });
+
+  it("keeps session-shaped lines visible as assistant text", () => {
+    expect(
+      parseHermesStdoutLine("session_id: 20260814_144930_03a3ec", TS),
+    ).toEqual([
+      {
+        kind: "assistant",
+        ts: TS,
+        text: "session_id: 20260814_144930_03a3ec",
+      },
+    ]);
+  });
+
+  it("classifies a canonical session line only after matching server confirmation", () => {
+    const parser = createHermesStdoutParser();
+    expect(parser.parseLine("session_id: 20260814_144930_03a3ec", TS)).toEqual([]);
+    expect(parser.parseLine("[hermes] Session: 20260814_144930_03a3ec", TS)).toEqual([
+      {
+        kind: "system",
+        ts: TS,
+        text: "session_id: 20260814_144930_03a3ec",
+      },
+      {
+        kind: "system",
+        ts: TS,
+        text: "[hermes] Session: 20260814_144930_03a3ec",
+      },
+    ]);
+  });
+
+  it("releases an unconfirmed session-shaped line as assistant text", () => {
+    const parser = createHermesStdoutParser();
+    expect(parser.parseLine("session_id: 20260814_144930_03a3ec", TS)).toEqual([]);
+    expect(parser.parseLine("[hermes] Exit code: 0, timed out: false", TS)).toEqual([
+      {
+        kind: "assistant",
+        ts: TS,
+        text: "session_id: 20260814_144930_03a3ec",
+      },
+      {
+        kind: "system",
+        ts: TS,
+        text: "[hermes] Exit code: 0, timed out: false",
+      },
+    ]);
   });
 });
