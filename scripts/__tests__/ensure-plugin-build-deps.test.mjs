@@ -156,16 +156,14 @@ test("hard-killed compilation cannot leave partial output accepted on recovery",
   assert.equal(fs.existsSync(complete), true);
 });
 
-test("rebuilds uncertified direct output once, then reuses the completed build", async (t) => {
+test("rebuilds changed direct output once, then reuses the completed build", async (t) => {
   const f = fixture(t);
   assert.equal((await f.launch().done).code, 0);
   const builds = fs.readFileSync(path.join(f.root, "builds"), "utf8");
   // A successful or interrupted direct tsc invocation updates index.js without
   // changing our marker. Neither can certify that all output was emitted.
-  await sleep(20);
-  const newer = new Date();
   for (const target of ["packages/shared", "packages/plugins/sdk"]) {
-    fs.utimesSync(path.join(f.root, target, "dist/index.js"), newer, newer);
+    fs.appendFileSync(path.join(f.root, target, "dist/index.js"), "// direct build changed output\n");
   }
   const retry = await f.launch().done;
   assert.equal(retry.code, 0, retry.output);
@@ -196,4 +194,31 @@ test("rejects partial output from an interrupted direct compiler", async (t) => 
   const retry = await f.launch().done;
   assert.equal(retry.code, 0, retry.output);
   assert.equal(fs.existsSync(path.join(target, "dist/complete")), true);
+});
+
+test("detects partial output even when all modification times are unchanged", async (t) => {
+  const f = fixture(t);
+  assert.equal((await f.launch().done).code, 0);
+  const target = path.join(f.root, "packages/shared");
+  const output = path.join(target, "dist/index.js");
+  const oldTime = fs.statSync(output).mtime;
+  fs.writeFileSync(output, "// incomplete direct build\n");
+  fs.utimesSync(output, oldTime, oldTime);
+  const retry = await f.launch().done;
+  assert.equal(retry.code, 0, retry.output);
+  assert.equal(fs.readFileSync(output, "utf8"), "export {};\n");
+});
+
+test("reuses identical direct output regardless of its timestamps", async (t) => {
+  const f = fixture(t);
+  assert.equal((await f.launch().done).code, 0);
+  const builds = fs.readFileSync(path.join(f.root, "builds"), "utf8");
+  const output = path.join(f.root, "packages/shared/dist/index.js");
+  fs.writeFileSync(output, fs.readFileSync(output));
+  const newer = new Date(Date.now() + 1000);
+  fs.utimesSync(output, newer, newer);
+  const retry = await f.launch().done;
+  assert.equal(retry.code, 0, retry.output);
+  assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8"), builds);
+  assert.doesNotMatch(retry.output, /Building/);
 });

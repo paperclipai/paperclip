@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -35,32 +35,51 @@ if (!fs.existsSync(tscCliPath)) {
   throw new Error(`TypeScript CLI not found at ${tscCliPath}`);
 }
 
-function newestSourceMtimeMs(sourceDir) {
-  let newest = 0;
-
+function directoryFingerprint(directory, exclude) {
+  const hash = createHash("sha256");
   function visit(dir) {
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
       const entryPath = path.join(dir, entry.name);
+      if (entryPath === exclude) continue;
       if (entry.isDirectory()) {
         visit(entryPath);
-        continue;
+      } else if (entry.isFile()) {
+        const content = fs.readFileSync(entryPath);
+        hash.update(JSON.stringify([path.relative(directory, entryPath), content.length]));
+        hash.update(content);
       }
-      if (!/\.(tsx?|json)$/.test(entry.name)) continue;
-      newest = Math.max(newest, fs.statSync(entryPath).mtimeMs);
     }
   }
+  visit(directory);
+  return hash.digest("hex");
+}
 
-  visit(sourceDir);
-  return newest;
+function sourceFingerprint(target) {
+  const hash = createHash("sha256");
+  hash.update(directoryFingerprint(target.sourceDir));
+  for (const config of [target.tsconfig, path.join(rootDir, "tsconfig.base.json")]) {
+    if (fs.existsSync(config)) hash.update(fs.readFileSync(config));
+  }
+  return hash.digest("hex");
+}
+
+function outputFingerprint(target) {
+  return directoryFingerprint(path.dirname(target.output), target.completion);
 }
 
 function needsBuild(target) {
-  if (!fs.existsSync(target.output) || !fs.existsSync(target.completion)) return true;
-  const outputMtime = fs.statSync(target.output).mtimeMs;
-  // Direct tsc invocations cannot certify completion. Rebuild their output
-  // once through this helper; subsequent startups reuse the refreshed marker.
-  if (outputMtime > fs.statSync(target.completion).mtimeMs) return true;
-  return newestSourceMtimeMs(target.sourceDir) > outputMtime;
+  if (!fs.existsSync(target.output)) return true;
+  try {
+    const completed = JSON.parse(fs.readFileSync(target.completion, "utf8"));
+    // Content fingerprints detect partial direct builds even on filesystems
+    // with coarse timestamps, while identical successful direct builds reuse
+    // the certified output without another compile.
+    return completed.sources !== sourceFingerprint(target)
+      || completed.outputs !== outputFingerprint(target);
+  } catch (error) {
+    if (error.code === "ENOENT" || error instanceof SyntaxError) return true;
+    throw error;
+  }
 }
 
 function allOutputsCurrent() {
@@ -165,6 +184,7 @@ async function build(target) {
   // A hard kill bypasses cleanup. Only a completed compile may restore this
   // marker, so recovery never trusts index.js emitted partway through a build.
   fs.rmSync(target.completion, { force: true });
+  const sources = sourceFingerprint(target);
   const code = await new Promise((resolve, reject) => {
     child = spawn(process.execPath, [tscCliPath, "-p", target.tsconfig], {
       cwd: rootDir,
@@ -184,7 +204,7 @@ async function build(target) {
   // tsc emits index.js before it finishes the package. A failed or interrupted
   // compile must not make the next startup accept that partial build as current.
   if (code !== 0) fs.rmSync(target.output, { force: true });
-  else fs.writeFileSync(target.completion, "complete\n");
+  else fs.writeFileSync(target.completion, JSON.stringify({ sources, outputs: outputFingerprint(target) }) + "\n");
   return code;
 }
 
