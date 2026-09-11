@@ -507,6 +507,37 @@ describe("issue update comment wakeups", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("keeps the normal assignment wake when goal wake deferral is explicitly false", async () => {
+    const existing = makeIssue({ assigneeAgentId: null, assigneeUserId: null, status: "todo" });
+    const updated = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "todo",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+
+    const res = await request(await createApp()).patch(`/api/issues/${existing.id}`).send({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      deferWakeForGoal: false,
+    });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        source: "assignment",
+        reason: "issue_assigned",
+        payload: expect.objectContaining({
+          issueId: existing.id,
+          mutation: "update",
+        }),
+      }),
+    );
+  });
+
   it("wakes the assignee on comment-only issue updates", async () => {
     const existing = makeIssue({
       assigneeAgentId: ASSIGNEE_AGENT_ID,
