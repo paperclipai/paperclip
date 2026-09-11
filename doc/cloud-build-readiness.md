@@ -164,6 +164,31 @@ command does not download packages and can save an empty default-branch cache
 before full install jobs finish. Jobs that install dependencies retain caching.
 
 After deploying this correction, remove any existing empty default-branch entry
-for the current lockfile key. A subsequent master install can then populate it.
-Check the saved archive size and package reuse in install logs; a cache hit alone
-does not prove that the entry contains dependencies.
+for the current lockfile key. List cache IDs, branches, and archive sizes first:
+
+```sh
+gh api --paginate 'repos/paperclipai/paperclip/actions/caches?ref=refs/heads/master&key=node-cache-Linux-x64-pnpm-&per_page=100' \
+  --jq '.actions_caches[] | {id, ref, key, size_in_bytes}'
+```
+
+Match the key and upload size against the cache-creation job's logs. The
+September 11 incident was cache ID `7559920987`, a 216-byte archive. This guarded
+command deletes only that observed entry. It leaves a populated replacement or
+an entry on another branch untouched, and does nothing if the old ID is absent:
+
+```sh
+bad_cache_id=7559920987
+bad_cache_key=node-cache-Linux-x64-pnpm-c3096ecb02a34aaa9782baaadafcb731510e1dba10dd661618c3a2ee91e58fa5
+entries="$(gh api --paginate --slurp 'repos/paperclipai/paperclip/actions/caches?ref=refs/heads/master&per_page=100')"
+if printf '%s\n' "$entries" | jq -e --argjson id "$bad_cache_id" --arg key "$bad_cache_key" '
+  [.[].actions_caches[] | select(.id == $id)] |
+  length == 1 and .[0].ref == "refs/heads/master" and
+  .[0].key == $key and .[0].size_in_bytes == 216
+' >/dev/null; then
+  gh api --method DELETE "repos/paperclipai/paperclip/actions/caches/$bad_cache_id"
+fi
+```
+
+A subsequent master install can populate the missing entry. Check the saved
+archive size and package reuse in install logs; a cache hit alone does not prove
+that the entry contains dependencies.
