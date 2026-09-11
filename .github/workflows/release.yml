@@ -1,5 +1,5 @@
 name: Release
-run-name: ${{ inputs.channel == 'preview' && format('Stack deploy {0} build', inputs.request_id) || 'Release' }}
+run-name: ${{ inputs.channel == 'preview' && format('Stack deploy {0} build', inputs.request_id) || inputs.channel == 'cloud-migrator' && format('Cloud migrator {0}', inputs.source_ref) || 'Release' }}
 
 on:
   push:
@@ -19,14 +19,15 @@ on:
           - beta
           - nightly
           - preview
+          - cloud-migrator
         default: stable
       source_ref:
-        description: Stable source ref, or full immutable SHA for a preview build
+        description: Stable source ref, or full immutable SHA for a preview or cloud migrator build
         required: true
         type: string
         default: master
       request_id:
-        description: (preview) CLI correlation UUID
+        description: (preview/cloud-migrator) Correlation UUID
         type: string
         default: ""
       preview_migrator:
@@ -56,7 +57,7 @@ on:
         default: false
 
 concurrency:
-  group: ${{ inputs.channel == 'preview' && format('preview-{0}', inputs.source_ref) || format('release-{0}-{1}', github.event_name, github.ref) }}
+  group: ${{ (inputs.channel == 'preview' || inputs.channel == 'cloud-migrator') && format('{0}-{1}', inputs.channel, inputs.source_ref) || format('release-{0}-{1}', github.event_name, github.ref) }}
   cancel-in-progress: false
 
 env:
@@ -76,7 +77,7 @@ env:
 jobs:
   plan_preview:
     name: Check preview artifacts
-    if: github.ref == 'refs/heads/master' && github.event_name == 'workflow_dispatch' && inputs.channel == 'preview' && !inputs.dry_run
+    if: github.ref == 'refs/heads/master' && github.event_name == 'workflow_dispatch' && (inputs.channel == 'preview' || inputs.channel == 'cloud-migrator') && !inputs.dry_run
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -96,7 +97,8 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_ref }}
           REQUEST_ID: ${{ inputs.request_id }}
           PREVIEW_MIGRATOR: ${{ inputs.preview_migrator }}
-        run: node scripts/preview-artifacts.mjs plan "$SOURCE_SHA" "$REQUEST_ID" "$PREVIEW_MIGRATOR"
+          PLAN_COMMAND: ${{ inputs.channel == 'cloud-migrator' && 'plan-migrator' || 'plan' }}
+        run: node scripts/preview-artifacts.mjs "$PLAN_COMMAND" "$SOURCE_SHA" "$REQUEST_ID" "$PREVIEW_MIGRATOR"
 
   package_preview:
     name: Build preview migrator
@@ -144,6 +146,12 @@ jobs:
     if: github.ref == 'refs/heads/master' && needs.plan_preview.outputs.packages == 'true' && needs.package_preview.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # A manual preview and a merge-triggered migrator may compile in parallel.
+    # Serialize only publication so they cannot race an immutable npm version,
+    # without making the migrator wait for a preview's separate image build.
+    concurrency:
+      group: preview-package-publish-${{ inputs.source_ref }}
+      cancel-in-progress: false
     # Reuse release.yml's established npm trusted-publisher identity. This job
     # publishes only isolated preview versions; it cannot advance lane tags.
     environment: npm-canary
@@ -260,7 +268,7 @@ jobs:
     name: Verify preview artifacts
     needs: [plan_preview, image_preview, publish_image_preview, package_preview, publish_preview]
     if: >-
-      always() && needs.plan_preview.result == 'success' &&
+      always() && inputs.channel == 'preview' && needs.plan_preview.result == 'success' &&
       (needs.publish_image_preview.result == 'success' || needs.plan_preview.outputs.image == 'false') &&
       (needs.publish_preview.result == 'success' || needs.plan_preview.outputs.packages == 'false')
     runs-on: ubuntu-latest
