@@ -8,6 +8,7 @@ dist-flow-preview/
 packages/paperclip-runner/runner/target/
 ui/storybook-static/
 .env
+.env.upgrade-sh
 *.tsbuildinfo
 drizzle/meta/
 .vite/
