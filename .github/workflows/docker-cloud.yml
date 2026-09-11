@@ -205,6 +205,8 @@ jobs:
           # variant installs from server/package.json's declared version;
           # add another name there when a managed tenant needs it.
           build-args: |
+            USER_UID=1001
+            USER_GID=1001
             CLOUD_BUNDLED_PLUGINS=daytona
             CLOUD_BUNDLED_SERVER_DEPS=@sentry/node
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
@@ -250,6 +252,26 @@ jobs:
             exit 1
           fi
           echo "The pushed image resolves the declared @sentry/node version."
+
+      # Managed hosts run node as 1001:1001. Bake that identity into the image
+      # so usermod does not walk the mounted home on every container start.
+      # Check before the entrypoint can repair a wrongly built identity.
+      - name: Verify cloud runtime user
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build-cloud.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint sh "$IMAGE" -ec '
+            test "$(id -u node)" = 1001
+            test "$(id -g node)" = 1001
+            test "$USER_UID" = 1001
+            test "$USER_GID" = 1001
+          '
+          docker run --rm -e USER_UID=1001 -e USER_GID=1001 "$IMAGE" sh -ec '
+            test "$(id -u)" = 1001
+            test "$(id -g)" = 1001
+            test -w "$PAPERCLIP_HOME"
+          '
 
       # Verify the independently published cloud image without waiting for
       # the self-hosted manifest job. The Sentry check already pulled it.

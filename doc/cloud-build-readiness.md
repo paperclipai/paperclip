@@ -15,6 +15,16 @@ The `Cloud readiness` workflow starts for every master push. Its versioned
   Registry metadata must match the full commit, and the database package must
   pin the matching shared package.
 
+The Cloud workflow builds the image with `USER_UID=1001` and `USER_GID=1001`,
+matching the managed runtime. This avoids a startup user remap, which can walk
+the mounted home and delay health checks. Before publishing the full-SHA tag,
+the workflow checks the baked identity without running the entrypoint, then
+checks the normal entrypoint's effective user and writable home. Volume ownership
+repair still runs when needed. The Dockerfile defaults remain `1000:1000` for
+self-hosted builds, and runtime identity overrides remain supported. The first
+build with the new identity must rebuild layers that depend on the base image;
+later builds can reuse those layers.
+
 Verification and image building run concurrently, outside the full npm release's
 concurrency group. Different commits have independent groups. Source verification
 is initially duplicated with the normal npm release: this spends existing hosted
@@ -49,6 +59,10 @@ can adopt the versioned signal separately after the workflow has landed and
 successfully verified a real master commit.
 
 ## Timing and rollout
+
+The reusable Runner chaos workflow scopes concurrency to the caller workflow
+and source ref. Cloud readiness and the npm release can verify the same commit
+at the same time. They must not cancel each other's required test job.
 
 Measure the complete path from a master merge to a healthy target running that
 exact commit. Keep readiness and deployment as separate milestones:
