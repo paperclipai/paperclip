@@ -5342,7 +5342,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           recordDispositionReport(report);
           if (childStderrState) flushChildStderr(childStderrState);
           // Report every permission request the run never saw settle. Not on
-          // the permission critical path, so this may await its log writes.
+          // the permission critical path. `emitLog` returns `void`, so this
+          // call awaits no log write.
           await permissionObserver?.finalizeRun();
         },
         reproduceResult: async (): Promise<AdapterExecutionResult> => {

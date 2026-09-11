@@ -244,4 +244,55 @@ describe("createAcpPermissionObserver — ledger lifecycle", () => {
     observer.noteToolCallEvent("session-1", { toolCallId: "never-opened", status: "completed" });
     expect(events).toHaveLength(0);
   });
+
+  it("does not open a ledger entry for a request with no tool-call identifier", async () => {
+    const events: PermissionObserverLogEvent[] = [];
+    const observer = createAcpPermissionObserver({
+      emitLog: (event) => events.push(event),
+      permissionMode: "approve-all",
+      transport: "sandbox",
+    });
+    const request = buildRequest({
+      raw: { sessionId: "session-1", toolCall: {}, options: [] } as unknown as AcpPermissionRequest["raw"],
+    });
+    await observer.handlePermissionRequest(request, { signal: new AbortController().signal });
+
+    const observed = events.filter((event) => event.type === "acpx.permission_observed");
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({ toolCallId: "unknown" });
+
+    events.length = 0;
+    await observer.finalizeRun();
+    expect(events).toHaveLength(0);
+  });
+
+  it("does not let two requests with a missing session identifier share one ledger entry", async () => {
+    const events: PermissionObserverLogEvent[] = [];
+    const observer = createAcpPermissionObserver({
+      emitLog: (event) => events.push(event),
+      permissionMode: "approve-all",
+      transport: "sandbox",
+    });
+    const firstRequest = buildRequest({
+      sessionId: undefined as unknown as string,
+      raw: { toolCall: { toolCallId: "tool-1" }, options: [] } as unknown as AcpPermissionRequest["raw"],
+    });
+    const secondRequest = buildRequest({
+      sessionId: undefined as unknown as string,
+      raw: { toolCall: { toolCallId: "tool-2" }, options: [] } as unknown as AcpPermissionRequest["raw"],
+    });
+    await observer.handlePermissionRequest(firstRequest, { signal: new AbortController().signal });
+    await observer.handlePermissionRequest(secondRequest, { signal: new AbortController().signal });
+
+    // Neither request carried a real session identifier, so neither one opened
+    // a ledger entry. A terminal tool_call event for either tool call must
+    // find nothing to settle.
+    observer.noteToolCallEvent(undefined, { toolCallId: "tool-1", status: "completed" });
+    observer.noteToolCallEvent(undefined, { toolCallId: "tool-2", status: "completed" });
+    expect(events.filter((event) => event.type === "acpx.permission_settled")).toHaveLength(0);
+
+    events.length = 0;
+    await observer.finalizeRun();
+    expect(events).toHaveLength(0);
+  });
 });
