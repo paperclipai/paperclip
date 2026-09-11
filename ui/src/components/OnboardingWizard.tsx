@@ -99,6 +99,7 @@ import { buildNewAgentRuntimeConfig } from "../lib/new-agent-runtime-config";
 import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/adapter-codex-local";
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
+import { DEFAULT_AGY_LOCAL_MODEL } from "@paperclipai/adapter-agy-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import {
@@ -1425,6 +1426,10 @@ function OnboardingWizardInner({
       setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
       return;
     }
+    if (next === "agy_local") {
+      setModel(DEFAULT_AGY_LOCAL_MODEL);
+      return;
+    }
     if (next === "gemini_local") {
       setModel(DEFAULT_GEMINI_LOCAL_MODEL);
       return;
@@ -1444,6 +1449,7 @@ function OnboardingWizardInner({
     pi_local: "pi",
     cursor: "agent",
     opencode_local: "opencode",
+    agy_local: "agy",
   };
   const effectiveAdapterCommand =
     command.trim() ||
@@ -1739,15 +1745,17 @@ function OnboardingWizardInner({
       ...defaultCreateValues,
       adapterType,
       model:
-        adapterType === "gemini_local"
-          ? model || DEFAULT_GEMINI_LOCAL_MODEL
-          : adapterType === "kimi_local"
-            ? model || DEFAULT_KIMI_LOCAL_MODEL
-          : adapterType === "cursor"
-            ? model || DEFAULT_CURSOR_LOCAL_MODEL
-            : adapterType === "opencode_local"
-              ? model || DEFAULT_OPENCODE_LOCAL_MODEL
-              : model,
+        adapterType === "agy_local"
+          ? model || DEFAULT_AGY_LOCAL_MODEL
+          : adapterType === "gemini_local"
+            ? model || DEFAULT_GEMINI_LOCAL_MODEL
+            : adapterType === "kimi_local"
+              ? model || DEFAULT_KIMI_LOCAL_MODEL
+            : adapterType === "cursor"
+              ? model || DEFAULT_CURSOR_LOCAL_MODEL
+              : adapterType === "opencode_local"
+                ? model || DEFAULT_OPENCODE_LOCAL_MODEL
+                : model,
       command,
       args,
       url,
@@ -2554,6 +2562,86 @@ function OnboardingWizardInner({
                       }}
                     />
 
+                    {/* The credential switch stands where the adapter
+                        disclosure used to. That disclosure existed to reach the
+                        adapters this step does not offer, and with the row down
+                        to the two that are supported it was a control whose
+                        whole contents were out of scope. The question actually
+                        left on this step is how the two are authenticated, so
+                        that is what the line asks.
+
+                        It names the destination rather than the state, which is
+                        what a sentence has to do where a checkbox does not —
+                        and it is only readable because the tiles' own tags,
+                        directly above, say where you are. */}
+                    <div className="-ml-3 mt-1">
+                      <CredentialModeLink
+                        mode={credentialMode}
+                        onChange={setCredentialMode}
+                      />
+                    </div>
+
+                    <button
+                      type="button"
+                      className="flex items-center gap-1.5 mt-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      onClick={() => setShowMoreAdapters((v) => !v)}
+                    >
+                      <ChevronDown className={cn("h-3 w-3 transition-transform", showMoreAdapters ? "rotate-0" : "-rotate-90")} />
+                      Advanced settings
+                    </button>
+
+                    {showMoreAdapters && (
+                      <div className="grid grid-cols-2 gap-2 mt-2">
+                        {moreAdapters.map((opt) => (
+                           <button
+                             key={opt.type}
+                             disabled={!!opt.comingSoon}
+                             className={cn(
+                               "flex flex-col items-center gap-1.5 rounded-md border p-3 text-xs transition-colors relative",
+                               opt.comingSoon
+                                 ? "border-border opacity-40 cursor-not-allowed"
+                                 : adapterType === opt.type
+                                 ? "border-foreground bg-accent"
+                                 : "border-border hover:bg-accent/50"
+                             )}
+                             onClick={() => {
+                               if (opt.comingSoon) return;
+                               const nextType = opt.type;
+                              setAdapterType(nextType);
+                              if (nextType === "agy_local" && !model) {
+                                setModel(DEFAULT_AGY_LOCAL_MODEL);
+                                return;
+                              }
+                              if (nextType === "gemini_local" && !model) {
+                                setModel(DEFAULT_GEMINI_LOCAL_MODEL);
+                                return;
+                              }
+                              if (nextType === "kimi_local" && !model) {
+                                setModel(DEFAULT_KIMI_LOCAL_MODEL);
+                                return;
+                              }
+                              if (nextType === "cursor" && !model) {
+                                setModel(DEFAULT_CURSOR_LOCAL_MODEL);
+                                return;
+                              }
+                              if (nextType === "opencode_local") {
+                                setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
+                                return;
+                              }
+                              setModel("");
+                            }}
+                          >
+                            <opt.icon className="h-4 w-4" />
+                            <span className="font-medium">{opt.label}</span>
+                            <span className="text-muted-foreground text-(length:--text-nano)">
+                              {opt.comingSoon
+                                ? opt.disabledLabel ?? "Coming soon"
+                                : opt.description}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     {credentialMode === "subscription" && adapterType === "codex_local" && savedKeys.subscriptions.length > 0 && (
                       <div className="mt-5">
                         <SavedProviderKeySelect
