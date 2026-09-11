@@ -90,22 +90,51 @@ function readNonEmptyString(value: unknown) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActivityInput) {
+/**
+ * Resolves the heartbeat run alongside its responsible user.
+ *
+ * The returned `runFound` flag indicates whether the provided `runId` exists in
+ * `heartbeat_runs`. Callers that need to satisfy the FK constraint on
+ * `activity_log.run_id` (a nullable FK to `heartbeat_runs.id`) must use this to
+ * decide whether to persist the run id or null it out. Returning this from the
+ * same lookup that already resolves `responsibleUserId` avoids an extra DB round
+ * trip on the hot path.
+ */
+async function resolveHeartbeatRunForActivity(
+  db: Db,
+  input: LogActivityInput,
+): Promise<{ responsibleUserId: string | null; runFound: boolean }> {
+  const runId = readNonEmptyString(input.runId);
+  if (!runId || !isUuidLike(runId)) return { responsibleUserId: null, runFound: false };
+
+  const run = await db
+    .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, runId)))
+    .then((rows) => rows[0] ?? null);
+
+  if (!run) return { responsibleUserId: null, runFound: false };
+  return { responsibleUserId: readNonEmptyString(run.responsibleUserId), runFound: true };
+}
+
+interface ResolveResponsibleOptions {
+  /** Pre-resolved heartbeat run, used to skip an additional DB lookup. */
+  preResolvedRun?: { responsibleUserId: string | null; runFound: boolean } | null;
+}
+
+export async function resolveResponsibleUserIdForActivity(
+  db: Db,
+  input: LogActivityInput,
+  options: ResolveResponsibleOptions = {},
+) {
   if (input.responsibleUserIdOverride !== undefined) {
     return readNonEmptyString(input.responsibleUserIdOverride);
   }
   if (input.actorType === "user") return readNonEmptyString(input.actorId);
 
-  const runId = readNonEmptyString(input.runId);
-  if (runId && isUuidLike(runId)) {
-    const run = await db
-      .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
-      .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, runId)))
-      .then((rows) => rows[0] ?? null);
-    const runResponsibleUserId = readNonEmptyString(run?.responsibleUserId);
-    if (runResponsibleUserId) return runResponsibleUserId;
-  }
+  const runInfo = options.preResolvedRun ?? (await resolveHeartbeatRunForActivity(db, input));
+  const runResponsibleUserId = runInfo.responsibleUserId;
+  if (runResponsibleUserId) return runResponsibleUserId;
 
   const issueIdCandidate = readNonEmptyString(input.issueId)
     ?? (input.entityType === "issue" ? readNonEmptyString(input.entityId) : null);
@@ -159,7 +188,38 @@ export function publishActivity(publication: ActivityPublication) {
 
 export async function persistActivity(db: Db, input: LogActivityInput) {
   const redactedDetails = await redactActivityDetails(db, input.details ?? null);
-  const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
+
+  // The activity_log.run_id column is a nullable FK to heartbeat_runs.id.
+  // When a caller passes a run id that is not registered (e.g. an out-of-band
+  // JWT or an isolated worktree without a heartbeat-run row), the INSERT would
+  // fail with a FK violation and surface as a false 500 to the client even
+  // when the primary mutation succeeded. Validate the run id here and fall back
+  // to null so the activity row is still recorded.
+  const resolvedRunInfo = await resolveHeartbeatRunForActivity(db, input);
+  const requestedRunId = readNonEmptyString(input.runId);
+  let resolvedRunId: string | null = null;
+  if (requestedRunId && isUuidLike(requestedRunId)) {
+    if (resolvedRunInfo.runFound) {
+      resolvedRunId = requestedRunId;
+    } else {
+      logger.warn(
+        {
+          companyId: input.companyId,
+          action: input.action,
+          entityType: input.entityType,
+          entityId: input.entityId,
+          runId: requestedRunId,
+        },
+        "activity log runId is not registered as heartbeat_run; storing with null run_id",
+      );
+    }
+  }
+
+  const responsibleUserId = await resolveResponsibleUserIdForActivity(
+    db,
+    { ...input, runId: resolvedRunId },
+    { preResolvedRun: resolvedRunInfo },
+  );
   const [activity] = await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -168,7 +228,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId: resolvedRunId,
     responsibleUserId,
     details: redactedDetails,
   }).returning({ id: activityLog.id });
@@ -180,7 +240,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId: resolvedRunId,
     responsibleUserId,
     details: redactedDetails,
   };
@@ -198,7 +258,7 @@ export async function persistActivity(db: Db, input: LogActivityInput) {
         payload: {
           ...redactedDetails,
           agentId: input.agentId ?? null,
-          runId: input.runId ?? null,
+          runId: resolvedRunId,
           responsibleUserId,
         },
       }
