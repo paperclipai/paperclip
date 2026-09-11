@@ -198,19 +198,31 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([]);
   });
 
-  it("fails closed when the persisted run has no source issue", async () => {
+  // A run with no source issue is a scheduled heartbeat, not a broken request:
+  // the run row exists and is owned by this agent, there is simply no issue that
+  // woke it. Refusing here is what made generic heartbeats read-only board-wide.
+  // The two cases above — no run row at all, and an attacker-controlled run id —
+  // are the real fail-closed cases and still are.
+  it("counts, rather than refuses, a run with no source issue", async () => {
     const fake = counterDb(0, { contextSnapshot: {} });
 
-    await expect(observeCrossIssueInfluence(fake.db as never, {
+    const decision = await observeCrossIssueInfluence(fake.db as never, {
       companyId: "22222222-2222-4222-8222-222222222222",
       runId: "11111111-1111-4111-8111-111111111111",
       agentId: "33333333-3333-4333-8333-333333333333",
       targetIssueId: "55555555-5555-4555-8555-555555555555",
       kind: "update",
-    })).rejects.toMatchObject({
-      status: 403,
-      details: { code: "cross_issue_influence_run_context_required" },
     });
-    expect(fake.inserted).toEqual([]);
+
+    // Not exempted (that needs a source issue to match against) — counted, so
+    // the 20-write cap still contains a runaway heartbeat.
+    expect(decision).not.toBeNull();
+    expect(decision?.allowed).toBe(true);
+    expect(decision?.count).toBe(1);
+    expect(fake.inserted).toHaveLength(1);
+    expect(fake.inserted[0]).toMatchObject({
+      action: "issue.cross_issue_influence_observed",
+      details: { sourceIssueId: null },
+    });
   });
 });
