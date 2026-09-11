@@ -738,9 +738,9 @@ describe("runner E2E failure policy", () => {
 });
 
 describe("runner E2E server isolation", () => {
-  it("does not retry a provider rejection explicitly marked nonretryable", () => {
+  it.each(["", "; cleanup: provider failed to start"])("does not retry an explicitly nonretryable provider rejection%s", (suffix) => {
     const failure = classifyFailure(new Error(
-      "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=effective_model_mismatch)",
+      "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=effective_model_mismatch)" + suffix,
     ));
     expect(failure).toBe("permanent_infrastructure");
     expect(shouldRetryFailure(failure)).toBe(false);
