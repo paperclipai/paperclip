@@ -97,6 +97,7 @@ import {
   parseAdapterRegistryEnv,
   reconcileAdapterAvailability,
 } from "./services/adapter-registry-bootstrap.js";
+import { defaultDatabaseBackupMaxAgeHours } from "./services/database-backup-health.js";
 import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-share-client.js";
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { isLoopbackHost, rewriteLoopbackUrlPort } from "./url-utils.js";
@@ -792,7 +793,7 @@ async function startServerWithDatabaseTeardown(
   const databaseBackupMaxAgeHours = Math.max(
     1,
     Number(process.env.PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS) ||
-      Math.max(26, Math.ceil((config.databaseBackupIntervalMinutes / 60) * 2)),
+      defaultDatabaseBackupMaxAgeHours(config.databaseBackupIntervalMinutes),
   );
   const databaseBackupAlertFile =
     process.env.PAPERCLIP_DB_BACKUP_ALERT_FILE ||
