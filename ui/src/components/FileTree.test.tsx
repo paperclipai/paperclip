@@ -88,6 +88,18 @@ describe("FileTree", () => {
     expect(row("docs")?.getAttribute("aria-checked")).toBe("mixed");
   });
 
+  it.each([false, true])("includes empty directories in selection only when enabled (%s)", (includeDirectoriesInSelection) => {
+    act(() => {
+      root.render(<FileTree
+        nodes={[{ name: "empty", path: "empty", kind: "dir", children: [] }]}
+        selectedFile={null} expandedDirs={new Set()} checkedFiles={new Set(["empty"])}
+        onSelectFile={() => {}} onToggleDir={() => {}}
+        includeDirectoriesInSelection={includeDirectoriesInSelection}
+      />);
+    });
+    expect((row("empty")?.querySelector("input") as HTMLInputElement).checked).toBe(includeDirectoriesInSelection);
+  });
+
   it("renders file badges and host-only file extras", () => {
     const nodes = buildFileTree({
       "wiki/very-long-page-slug.md": "",
