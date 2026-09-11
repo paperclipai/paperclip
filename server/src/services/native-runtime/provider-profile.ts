@@ -412,7 +412,7 @@ export function resolvePaperclipRunnerProviderProfile(
     );
   }
   const qualifiedModel = QUALIFIED_ACPX_RUNNER_MODELS[acpxAgent];
-  if (acpxAgent === "codex" && model !== qualifiedModel) {
+  if (acpxAgent !== "claude" && model !== qualifiedModel) {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_model_unqualified",
       `Paperclip Runner ACPX ${acpxAgent} requires exact model ${qualifiedModel}.`,
