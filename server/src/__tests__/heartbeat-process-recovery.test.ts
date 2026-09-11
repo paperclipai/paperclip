@@ -2350,7 +2350,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const f = await seedRunFixture({ agentStatus: "idle", adapterType: "claude_local" });
     await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
     await db.update(heartbeatRuns).set({ runnerProfileJson: {
-      adapterDispatch: { adapterType: "claude_local", phase: "preparing" },
+      adapterDispatch: { adapterType: "claude_local" },
     } }).where(eq(heartbeatRuns.id, f.runId));
     await heartbeatService(db).reapOrphanedRuns();
     const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
