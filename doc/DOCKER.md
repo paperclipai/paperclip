@@ -35,8 +35,8 @@ docker build -t paperclip-local \
 ## Cloud image addresses
 
 The Docker workflow publishes the managed deployment image for Linux AMD64.
-`Docker cloud` starts on each master push independently of the multi-platform
-self-hosted build. Different commits use separate concurrency groups and existing
+`Cloud readiness` starts `Docker cloud` on each master push independently of the
+multi-platform self-hosted build. Different commits use separate concurrency groups and existing
 GitHub-hosted runners, so an older production or cloud build does not hold the
 new commit in a workflow queue. Available GitHub runner capacity still applies.
 Release tags and manual `Docker` dispatches call the same cloud build workflow.
@@ -62,6 +62,10 @@ The full-SHA tag identifies the source commit. It does not certify that source
 tests passed or that a compatible database migrator is available. Deployment
 tooling must still check those prerequisites and pin the resolved image digest;
 a rebuild of the same source can update the tag's digest.
+
+The separate [cloud readiness check](cloud-build-readiness.md) combines source
+verification, successful cloud image checks, and exact-source migrator
+availability. It runs outside the full npm release's concurrency queue.
 
 ## One-liner (build + run)
 
