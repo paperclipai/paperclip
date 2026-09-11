@@ -49,9 +49,11 @@ clears a local run's process identity, after it verifies that its PID and proces
 group are absent. The payload contains only those process IDs. Remote process
 IDs are never checked against the control-plane host.
 
-The server writes `native.process_identity_recorded` when it stores a new native
-process identity. This invalidates any earlier local stop receipt. Continuation
-admission accepts only the latest server-authored event in this pair; provider
+The server writes `native.process_start_requested` before a backend can spawn,
+and `native.process_identity_recorded` when it stores a new native process
+identity. Either invalidates an earlier local stop receipt, including a crash
+before the new PID callback. Continuation admission accepts only the latest
+server-authored event among these three types; provider
 source events cannot supply stop authority. These records stay in the local run
 log and do not add Telemetry or OpenTelemetry data.
 

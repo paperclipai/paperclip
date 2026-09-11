@@ -842,7 +842,7 @@ An operator Stop waits for provider termination. Remote sandbox providers may re
 
 For native conversations, an authenticated user message sent after the previous run finishes can retire its execution recovery holds and start a fresh turn. Hold retirement and the new run are atomic. The previous transcript, tool outcomes, and recovery history remain intact. This starts a new conversation; it does not replay tool calls with unknown outcomes.
 
-Local recovery records a server-authored stop receipt before it clears a verified absent process identity. A later process launch invalidates that receipt. Missing process IDs without a receipt still block admission. Remote execution continues to require termination receipts for every lease.
+Local recovery records a server-authored stop receipt before it clears a verified absent process identity. A new execution request invalidates that receipt before any process can spawn; recording a new process identity also invalidates it. Missing process IDs without a receipt still block admission. Remote execution continues to require termination receipts for every lease.
 
 If cleanup or another execution gate is still pending, the message stays in its existing queue receipt. Startup and periodic scheduling reconsider up to 50 due receipts per pass, at most once per 30 seconds per receipt, without calling a model or resetting recovery attempts. Cleanup callbacks use the same admission path. The issue lock prevents concurrent workers from delivering an adopted or discarded receipt again. The queued-message area shows the current wait reason. Pauses, approvals, budgets, ownership, and external chat authorization remain enforced. A message sent before the run finished does not grant new post-stop authority.
 

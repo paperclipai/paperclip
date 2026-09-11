@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 
+export const PROCESS_START_REQUESTED = "native.process_start_requested";
 export const PROCESS_IDENTITY_RECORDED = "native.process_identity_recorded";
 const LOCAL_PROCESS_STOPPED = "native.local_process_stopped";
 
@@ -51,7 +52,7 @@ export async function hasNativeLocalProcessStop(db: Db, companyId: string, runId
       eq(heartbeatRunEvents.companyId, companyId),
       eq(heartbeatRunEvents.runId, runId),
       isNull(heartbeatRunEvents.sourceEventId),
-      inArray(heartbeatRunEvents.eventType, [PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
+      inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED]),
     ))
     .orderBy(desc(heartbeatRunEvents.seq))
     .limit(1);

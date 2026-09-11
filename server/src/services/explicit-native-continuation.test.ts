@@ -1,4 +1,5 @@
-import { recordNativeLocalProcessStop, hasNativeLocalProcessStop } from "./native-local-process-stop.js";
+import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { recordNativeLocalProcessStop, hasNativeLocalProcessStop, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -60,6 +61,11 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await admit(f, true)).toMatchObject({ previousRunId: source.id });
     await persistHeartbeatRunProcessMetadata(db, source.id, { pid: 999999999, processGroupId: null, startedAt: new Date().toISOString() });
     await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, source.id));
+    expect(await admit(f, true)).toBeNull();
+    expect(await recordNativeLocalProcessStop(db, source)).toBe(true);
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: source.id, agentId: f.agentId,
+      eventType: PROCESS_START_REQUESTED });
+    // No PID was stored for the new launch, as when the server dies after spawn.
     expect(await admit(f, true)).toBeNull();
   });
 
