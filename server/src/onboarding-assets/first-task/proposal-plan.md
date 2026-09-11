@@ -1,0 +1,1 @@
+   - They want one thing done now → treat it like the plan path: write the short `plan` document (goal, approach, what you will produce) and post ONE request_checkbox_confirmation targeting it, with the task itself and any optional follow-up as options.

@@ -12,15 +12,20 @@ import {
   writeFileSync,
 } from "node:fs";
 import { connect, type Socket } from "node:net";
+import nodeFs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
+import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
+import { createCapabilityRunnerdCodexTransport } from "../live/runnerd-codex-transport.js";
 import { validatePrpEvent } from "../protocol/replay-contract.js";
 import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
 import {
   DurablePrpControlPlane,
+  inspectWarmRunTransition,
   spawnRunner,
   type RunnerProcessLaunchSpec,
 } from "./durable-prp-control-plane.js";
@@ -636,6 +641,33 @@ async function upgradeSocket(url: string): Promise<{
   return { socket, reader: new ServerFrameReader(socket) };
 }
 
+it("closes an owned upgraded socket when its peer ends without a WebSocket close frame", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-prp-half-close-"));
+  const core = new DurablePrpControlPlane({
+    stateDirectory: root,
+    identity,
+    expectedRunnerVersion,
+    expectedRunnerDigest,
+  });
+  let socket: Socket | undefined;
+  try {
+    await core.start();
+    ({ socket } = await upgradeSocket(core.connectUrl));
+    let closed = false;
+    socket.once("close", () => {
+      closed = true;
+    });
+    socket.end();
+    await vi.waitFor(() => expect(closed).toBe(true), { timeout: 500 });
+    expect(core.activeRunnerConnectionCount()).toBe(0);
+    expect(core.store.state.commands).toHaveLength(0);
+  } finally {
+    socket?.destroy();
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function sendMaskedJson(socket: Socket, value: unknown): void {
   const payload = Buffer.from(JSON.stringify(value));
   const mask = Buffer.from([0x11, 0x22, 0x33, 0x44]);
@@ -678,6 +710,7 @@ function authHello(
       clientNonce: "client-nonce-test",
       protocolMin: 1,
       protocolMax: 1,
+      warmTransitionVersion: 1,
       ...selectedIdentity,
       runnerVersion: expectedRunnerVersion,
       runnerDigest: expectedRunnerDigest,
@@ -689,10 +722,22 @@ async function authenticate(
   controlPlane: DurablePrpControlPlane,
   token: string,
   selectedIdentity: DurableRecoveryIdentity = identity,
+  runnerDigest = expectedRunnerDigest,
+  warmTransitionId?: string,
+  withoutWarmCapability = false,
+  protocolMax = 1,
 ): Promise<AuthenticatedClient | null> {
   const { socket, reader } = await upgradeSocket(controlPlane.connectUrl);
   const material = credentialMaterial(token);
-  sendMaskedJson(socket, authHello(material.credentialId, selectedIdentity));
+  const hello = authHello(material.credentialId, selectedIdentity);
+  (hello.payload as Record<string, unknown>).protocolMax = protocolMax;
+  (hello.payload as Record<string, unknown>).runnerDigest = runnerDigest;
+  if (warmTransitionId !== undefined)
+    (hello.payload as Record<string, unknown>).warmTransitionId =
+      warmTransitionId;
+  if (withoutWarmCapability)
+    delete (hello.payload as Record<string, unknown>).warmTransitionVersion;
+  sendMaskedJson(socket, hello);
   const challenge = await reader.next();
   if (challenge === null) return null;
   const challengePayload = challenge.payload as Record<string, unknown>;
@@ -714,7 +759,7 @@ async function authenticate(
   ).toString("hex");
   sendMaskedJson(socket, {
     protocol: "paperclip.runner",
-    version: 1,
+    version: challengePayload.selectedVersion,
     kind: "auth_response",
     payload: {
       credentialId: material.credentialId,
@@ -755,6 +800,93 @@ function secureNonce(prefix: "P3C1" | "P3S1", counter: bigint): Buffer {
   return nonce;
 }
 
+it.each([
+  "allow", "reject", "expire", "replace", "stop", "competing_proof",
+] as const)(
+  "holds authenticated command admission until durable ownership settles (%s)",
+  async (outcome) => {
+    const root = mkdtempSync(resolve(tmpdir(), "runner-auth-admission-test-"));
+    let release!: () => void;
+    let reject!: (error: Error) => void;
+    const gate = new Promise<void>((resolveGate, rejectGate) => {
+      release = resolveGate;
+      reject = rejectGate;
+    });
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolveEntered) => {
+      entered = resolveEntered;
+    });
+    let admissions = 0;
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+      beforeAuthenticatedConnection: () => {
+        admissions++;
+        entered();
+        return gate;
+      },
+    });
+    let authenticating: Promise<AuthenticatedClient | null> | undefined;
+    let competing: Promise<AuthenticatedClient | null> | undefined;
+    let client: AuthenticatedClient | null = null;
+    try {
+      await core.start();
+      const command = core.queueCommand("turn.stop", {});
+      const ticket = core.issueBootstrapTicket();
+      const ticketId = credentialMaterial(ticket).credentialId;
+      authenticating = authenticate(core, ticket);
+      await waiting;
+      if (outcome === "competing_proof") {
+        competing = authenticate(core, ticket);
+        await vi.waitFor(() => expect(admissions).toBe(2));
+      }
+      expect(core.store.state.connectionCount).toBe(0);
+      expect(core.store.state.commandDeliveryCounts).toEqual({});
+      expect(core.store.state.tickets[ticketId]!.usedAt).toBeNull();
+      expect(Object.keys(core.store.state.leases)).toHaveLength(0);
+      if (outcome === "expire")
+        core.store.state.tickets[ticketId]!.expiresAtUnixMs = Date.now() - 1;
+      if (outcome === "replace")
+        core.store.state.tickets[ticketId]!.recordId = "changed-record";
+      if (outcome === "stop") await core.stop();
+      if (outcome === "reject") reject(new Error("durable ownership failed"));
+      else release();
+      client = await authenticating;
+      if (outcome === "allow" || outcome === "competing_proof") {
+        expect(client).not.toBeNull();
+        if (competing) expect(await competing).toBeNull();
+        expect(
+          (client!.welcome.payload as Record<string, unknown>).pendingCommands,
+        ).toEqual([
+          expect.objectContaining({
+            commandId: command.commandId,
+            type: "turn.stop",
+          }),
+        ]);
+        expect(core.store.state.connectionCount).toBe(1);
+        expect(core.store.state.commandDeliveryCounts[command.commandId]).toBe(
+          1,
+        );
+      } else {
+        expect(client).toBeNull();
+        expect(core.store.state.connectionCount).toBe(0);
+        expect(core.store.state.commandDeliveryCounts).toEqual({});
+        expect(core.store.state.tickets[ticketId]!.usedAt).toBeNull();
+        expect(Object.keys(core.store.state.leases)).toHaveLength(0);
+      }
+    } finally {
+      release();
+      client?.socket.destroy();
+      await core.stop();
+      await authenticating?.catch(() => undefined);
+      await competing?.catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
 function secureAad(
   client: AuthenticatedClient,
   direction: "client_to_core" | "core_to_client",
@@ -764,6 +896,67 @@ function secureAad(
     `paperclip.runner.secure-frame.v1\0${client.sessionId}\0${direction}\0${counter}`,
   );
 }
+
+it("denies held admission if the previous authenticated owner latches integrity failure", async () => {
+  const root = mkdtempSync(
+    resolve(tmpdir(), "runner-auth-integrity-gate-test-"),
+  );
+  let hold = false;
+  let release!: () => void;
+  const gate = new Promise<void>((resolveGate) => {
+    release = resolveGate;
+  });
+  let entered!: () => void;
+  const waiting = new Promise<void>((resolveEntered) => {
+    entered = resolveEntered;
+  });
+  const integrity = vi.fn();
+  const core = new DurablePrpControlPlane({
+    stateDirectory: root,
+    identity,
+    expectedRunnerVersion,
+    expectedRunnerDigest,
+    onProtocolIntegrityError: integrity,
+    onSemanticToolInput: async () => ({ result: {} }),
+    beforeAuthenticatedConnection: async () => {
+      if (!hold) return;
+      entered();
+      await gate;
+    },
+  });
+  let old: AuthenticatedClient | null = null;
+  let successor: AuthenticatedClient | null = null;
+  let admission: Promise<AuthenticatedClient | null> | undefined;
+  try {
+    await core.start();
+    old = await authenticate(core, core.issueBootstrapTicket());
+    expect(old).not.toBeNull();
+    const command = core.queueCommand("turn.stop", {});
+    const ticket = core.issueBootstrapTicket();
+    const ticketId = credentialMaterial(ticket).credentialId;
+    hold = true;
+    admission = authenticate(core, ticket);
+    await waiting;
+    sendSecure(old!, corruptSemanticInputDigest());
+    expect(await receiveSecure(old!)).toBeNull();
+    expect(integrity).toHaveBeenCalledOnce();
+    release();
+    successor = await admission;
+    expect(successor).toBeNull();
+    expect(core.store.state.connectionCount).toBe(1);
+    expect(core.store.state.tickets[ticketId]!.usedAt).toBeNull();
+    expect(
+      core.store.state.commandDeliveryCounts[command.commandId],
+    ).toBeUndefined();
+  } finally {
+    release();
+    old?.socket.destroy();
+    successor?.socket.destroy();
+    await core.stop();
+    await admission?.catch(() => undefined);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function sendSecure(
   client: AuthenticatedClient,
@@ -877,7 +1070,947 @@ function semanticInputEvent(sourceSeq = 1): Record<string, unknown> {
   };
 }
 
+function corruptSemanticInputDigest(
+  event = semanticInputEvent(),
+): Record<string, unknown> {
+  const payload = (event.payload as Record<string, unknown>).payload as Record<
+    string,
+    unknown
+  >;
+  const semantic = payload.semantic_tool as Record<string, unknown>;
+  (semantic.content as Record<string, unknown>).digest =
+    `sha256:${"0".repeat(64)}`;
+  return event;
+}
+
+it.each(["committed", "rejected"] as const)(
+  "holds explicit maintenance retirement through a closed connection's queued processing (%s)",
+  async (suffixOutcome) => {
+    const root = mkdtempSync(resolve(tmpdir(), "runner-processing-drain-"));
+    const releases: Array<() => void> = [];
+    const gates = [0, 1].map(
+      () => new Promise<void>((release) => releases.push(release)),
+    );
+    const onCommittedEvent = vi.fn(async (event: { sourceSeq: number }) => {
+      await gates[event.sourceSeq - 1];
+      if (event.sourceSeq === 2 && suffixOutcome === "rejected")
+        throw new Error("retained suffix commit rejected");
+    });
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+      onCommittedEvent,
+    });
+    let admittedFrames = 0;
+    const attachWire = core.attachWireConnection.bind(core);
+    const wireSpy = vi
+      .spyOn(core, "attachWireConnection")
+      .mockImplementation((wire) =>
+        attachWire({
+          onJson: (listener) =>
+            wire.onJson((value) => {
+              admittedFrames += 1;
+              listener(value);
+            }),
+          onClose: wire.onClose.bind(wire),
+          close: wire.close.bind(wire),
+          sendJson: wire.sendJson.bind(wire),
+        }),
+      );
+    let client: AuthenticatedClient | null = null;
+    let retirement: Promise<void> | undefined;
+    const retired = vi.fn();
+    try {
+      await core.start();
+      client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      const beforeFrames = admittedFrames;
+      for (const sourceSeq of [1, 2]) {
+        const envelope = semanticInputEvent(sourceSeq);
+        envelope.payload = {
+          ...(envelope.payload as Record<string, unknown>),
+          eventType: "item.delta",
+          priority: 2,
+          payload: { delta: `retained-${sourceSeq}` },
+        };
+        expect(validatePrpEvent(envelope.payload)).toMatchObject({ ok: true });
+        sendSecure(client, envelope);
+      }
+      await vi.waitFor(() => {
+        expect(admittedFrames).toBe(beforeFrames + 2);
+        expect(onCommittedEvent).toHaveBeenCalledTimes(1);
+      });
+      // Both frames have entered the real authenticated processing chain;
+      // socket shutdown does not settle either of their durable callbacks.
+      await core.stop();
+      expect(core.activeRunnerConnectionCount()).toBe(0);
+      retirement = core
+        .drainPendingConnectionProcessing()
+        .then(() => retired());
+      await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+      expect(retired).not.toHaveBeenCalled();
+      expect(core.store.state.ackedSourceSeq).toBe(0);
+
+      releases[0]!();
+      await vi.waitFor(() => expect(onCommittedEvent).toHaveBeenCalledTimes(2));
+      expect(core.store.state.ackedSourceSeq).toBe(1);
+      expect(retired).not.toHaveBeenCalled();
+      releases[1]!();
+      await retirement;
+      expect(retired).toHaveBeenCalledOnce();
+      const stored = JSON.parse(
+        readFileSync(resolve(root, "control-plane-state.json"), "utf8"),
+      );
+      expect(stored.ackedSourceSeq).toBe(suffixOutcome === "committed" ? 2 : 1);
+      expect(
+        stored.committedEvents.map(
+          (event: { sourceSeq: number }) => event.sourceSeq,
+        ),
+      ).toEqual(suffixOutcome === "committed" ? [1, 2] : [1]);
+      expect(stored.commands).toEqual([]);
+    } finally {
+      releases.forEach((release) => release());
+      client?.socket.destroy();
+      await core.stop();
+      await core.drainPendingConnectionProcessing();
+      await vi.waitFor(() => expect(onCommittedEvent).toHaveBeenCalledTimes(2));
+      await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+      await retirement;
+      wireSpy.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it.each([false, true])(
+  "joins held authentication processing after stop without consuming its revoked admission (reopened ingress: %s)",
+  async (reopenedIngress) => {
+    const root = mkdtempSync(
+      resolve(tmpdir(), "runner-auth-processing-drain-"),
+    );
+    let release!: () => void;
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate;
+    });
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolveEntered) => {
+      entered = resolveEntered;
+    });
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+      beforeAuthenticatedConnection: async () => {
+        entered();
+        await gate;
+      },
+    });
+    let authenticating: Promise<AuthenticatedClient | null> | undefined;
+    let drained: Promise<void> | undefined;
+    try {
+      await core.start();
+      const ticket = core.issueBootstrapTicket();
+      const ticketId = credentialMaterial(ticket).credentialId;
+      authenticating = authenticate(core, ticket);
+      await waiting;
+      await core.stop();
+      const settled = vi.fn();
+      drained = core.drainPendingConnectionProcessing().then(() => settled());
+      void drained.catch(() => undefined);
+      await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+      expect(settled).not.toHaveBeenCalled();
+      if (reopenedIngress) await core.start();
+      release();
+      if (reopenedIngress) {
+        await expect(drained).rejects.toThrow("stopped ingress");
+        expect(settled).not.toHaveBeenCalled();
+        await core.stop();
+      } else {
+        await drained;
+        expect(settled).toHaveBeenCalledOnce();
+      }
+      await expect(authenticating).resolves.toBeNull();
+      expect(core.store.state.tickets[ticketId]!.usedAt).toBeNull();
+      expect(core.store.state.leases).toEqual({});
+      expect(core.store.state.connectionCount).toBe(0);
+      expect(core.store.state.commandDeliveryCounts).toEqual({});
+      await expect(
+        core.drainPendingConnectionProcessing(),
+      ).resolves.toBeUndefined();
+    } finally {
+      release();
+      await core.stop();
+      await core.drainPendingConnectionProcessing();
+      await authenticating?.catch(() => undefined);
+      await drained?.catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it("refuses a processing-drain absence claim while local or remote ingress remains admitted", async () => {
+  const root = mkdtempSync(
+    resolve(tmpdir(), "runner-processing-drain-ingress-"),
+  );
+  const core = new DurablePrpControlPlane({
+    stateDirectory: root,
+    identity,
+    expectedRunnerVersion,
+    expectedRunnerDigest,
+  });
+  try {
+    await core.start();
+    await expect(core.drainPendingConnectionProcessing()).rejects.toThrow(
+      "stopped ingress",
+    );
+    await core.stop();
+    let closed = () => {};
+    core.attachWireConnection({
+      onJson: () => {},
+      onClose: (listener) => {
+        closed = () => listener({ message: "closed" });
+      },
+      close: () => closed(),
+      sendJson: () => {},
+    });
+    await expect(core.drainPendingConnectionProcessing()).rejects.toThrow(
+      "stopped ingress",
+    );
+    await core.stop();
+    await expect(
+      core.drainPendingConnectionProcessing(),
+    ).resolves.toBeUndefined();
+  } finally {
+    await core.stop();
+    await core.drainPendingConnectionProcessing();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 describe.sequential("DurablePrpControlPlane", () => {
+  it.each(["pending_first", "all_pending", "completed_first"] as const)(
+    "retains unanswered semantic input across the bounded event window (%s)",
+    async (mode) => {
+      const root = mkdtempSync(
+        resolve(tmpdir(), "paperclip-prp-semantic-window-"),
+      );
+      const onCommittedEvent = vi.fn(async () => undefined);
+      const onSemanticToolInput = vi.fn(
+        async () => new Promise<{ result: unknown }>(() => undefined),
+      );
+      const options = {
+        stateDirectory: root,
+        identity,
+        expectedRunnerVersion,
+        expectedRunnerDigest,
+        onCommittedEvent,
+        onSemanticToolInput,
+      };
+      const core = new DurablePrpControlPlane(options);
+      const eventAt = (sourceSeq: number, semanticInput: boolean) => {
+        const envelope = semanticInputEvent(sourceSeq);
+        const event = envelope.payload as Record<string, unknown>;
+        if (semanticInput) {
+          (
+            (event.payload as Record<string, unknown>).semantic_tool as Record<
+              string,
+              unknown
+            >
+          ).callId = `call-${sourceSeq}`;
+        } else {
+          event.eventType = "harness.diagnostic";
+          event.payload = {};
+        }
+        return {
+          sourceSeq,
+          sourceEventId: String(event.sourceEventId),
+          eventType: String(event.eventType),
+          priority: 0 as const,
+          envelope,
+          deliveryCount: 1,
+          logicalEffectCount: 1 as const,
+        };
+      };
+      core.store.state.committedEvents = Array.from(
+        { length: 4096 },
+        (_, index) => eventAt(index + 1, index === 0 || mode === "all_pending"),
+      );
+      core.store.state.ackedSourceSeq = 4096;
+      if (mode === "completed_first") {
+        const semantic = (
+          (
+            core.store.state.committedEvents[0]!.envelope.payload as Record<
+              string,
+              unknown
+            >
+          ).payload as Record<string, unknown>
+        ).semantic_tool as Record<string, unknown>;
+        const commandId = `command_tool_${createHash("sha256").update(`${identity.runId}\0call-1`).digest("hex").slice(0, 32)}`;
+        core.store.state.commands.push({
+          schema: "paperclip.prp.command.v1",
+          commandId,
+          controllerSeq: 1,
+          type: "semantic_tool.result",
+          issuedAt: new Date().toISOString(),
+          status: "completed",
+          payload: {
+            callId: "call-1",
+            operationId: semantic.operationId,
+            input: semantic.input,
+            sourceEventId: "semantic-event-1",
+            sourceEventType: "semantic_tool.input",
+            correlation: semantic.correlation,
+          },
+          result: {
+            commandId,
+            controllerSeq: 1,
+            commandType: "semantic_tool.result",
+            status: "completed",
+            result: {},
+          },
+        });
+        expect(core.semanticToolResultsSettled()).toBe(true);
+        const completed = core.store.state.commands.pop()!;
+        expect(core.semanticToolResultsSettled()).toBe(false); // Missing/pruned receipt is never completion evidence.
+        core.store.state.commands.push(completed);
+        for (const corruption of [
+          "operation",
+          "run",
+          "source",
+          "receipt",
+        ] as const) {
+          const changed = structuredClone(completed);
+          if (corruption === "operation")
+            changed.payload.operationId = "different_operation";
+          if (corruption === "run")
+            changed.payload.correlation = {
+              ...(changed.payload.correlation as Record<string, unknown>),
+              runId: "different-run",
+            };
+          if (corruption === "source")
+            changed.payload.sourceEventId = "different-event";
+          if (corruption === "receipt")
+            changed.result = {
+              ...(changed.result as Record<string, unknown>),
+              controllerSeq: 2,
+            };
+          core.store.state.commands[0] = changed;
+          expect(core.semanticToolResultsSettled()).toBe(false);
+        }
+        core.store.state.commands[0] = completed;
+      }
+      writeFileSync(core.store.path, JSON.stringify(core.store.state), {
+        mode: 0o600,
+      });
+      try {
+        await core.start();
+        const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+        const before = readFileSync(core.store.path, "utf8");
+        sendSecure(client, eventAt(4097, true).envelope);
+        if (mode === "all_pending") {
+          await expect(receiveSecure(client)).resolves.toBeNull();
+          expect(core.store.state.ackedSourceSeq).toBe(4096);
+          expect(readFileSync(core.store.path, "utf8")).toBe(before);
+          expect(onCommittedEvent).not.toHaveBeenCalled();
+          expect(onSemanticToolInput).not.toHaveBeenCalled();
+        } else {
+          await expect(receiveSecure(client)).resolves.toMatchObject({
+            kind: "ack",
+            payload: { ackedSourceSeq: 4097 },
+          });
+          expect(onCommittedEvent).toHaveBeenCalledTimes(1);
+          expect(
+            core.store.state.committedEvents.some(
+              (event) => event.sourceSeq === 1,
+            ),
+          ).toBe(mode === "pending_first");
+          expect(core.store.state.committedEvents.at(-1)?.sourceSeq).toBe(4097);
+        }
+        expect(core.store.state.committedEvents).toHaveLength(4096);
+        const reopened = new DurablePrpControlPlane(options);
+        expect(reopened.semanticToolResultsSettled()).toBe(false);
+        await reopened.stop();
+      } finally {
+        await core.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
+  it.each([false, true])(
+    "promptly fails the real transport request and notification paths on authenticated bad semantic input (throwing observer: %s)",
+    async (throwingObserver) => {
+      const root = mkdtempSync(
+        resolve(tmpdir(), "paperclip-prp-transport-integrity-"),
+      );
+      let authority: DurablePrpControlPlane | undefined;
+      let launched = false;
+      const diagnostics: string[] = [];
+      // The launcher below is synthetic; use the current executable only as
+      // its artifact identity, without depending on a staged Rust build.
+      const runnerBinary = process.execPath;
+      const runnerDigest = `sha256:${createHash("sha256").update(readFileSync(runnerBinary)).digest("hex")}`;
+      const handler = vi.fn(async () => ({ success: true, contentItems: [] }));
+      const bundle = createCapabilityRunnerdCodexTransport({
+        stateDirectory: root,
+        prpIdentity: identity,
+        runnerBinary,
+        codexCommand: process.execPath,
+        codexArgs: [],
+        sourceCodexHome: null,
+        environment: {},
+        runnerReconnectGraceMs: 900_000,
+        onDiagnostic: (message) => {
+          diagnostics.push(message);
+          if (
+            throwingObserver &&
+            message.includes("native_event_replay_conflict")
+          ) {
+            throw new Error("diagnostic observer failed");
+          }
+        },
+        controlPlaneRegistration: async (core) => {
+          authority = core;
+          await core.start();
+          return { connectUrl: core.connectUrl, release: () => core.stop() };
+        },
+        // Only the runner process is synthetic. Authentication, encrypted frames,
+        // authority validation, transport latching, and both consumers are real.
+        runnerProcessLauncher: () => {
+          launched = true;
+          return {
+            child: { exitCode: null, kill: () => true },
+            completion: new Promise(() => undefined),
+          };
+        },
+      });
+      bundle.transport.setServerRequestHandler(handler);
+      const requestFailure = bundle.transport
+        .request("thread/start", { cwd: tmpdir() })
+        .catch((error: unknown) => error);
+      const notificationFailure = (async () => {
+        for await (const _notification of bundle.transport.notifications()) {
+          // No provider content is expected before startup completes.
+        }
+        return null;
+      })().catch((error: unknown) => error);
+      try {
+        await vi.waitFor(() => expect(launched).toBe(true));
+        const core = authority!;
+        const client = (await authenticate(
+          core,
+          core.issueBootstrapTicket(),
+          identity,
+          runnerDigest,
+        ))!;
+        const event = corruptSemanticInputDigest();
+        const semantic = (
+          (event.payload as Record<string, unknown>).payload as Record<
+            string,
+            unknown
+          >
+        ).semantic_tool as Record<string, unknown>;
+        semantic.input = { summary: "DO-NOT-LEAK-integrity-test" };
+        sendSecure(client, event);
+        await expect(receiveSecure(client)).resolves.toBeNull();
+        const requestError = await requestFailure;
+        expect(requestError).toBeInstanceOf(
+          NativeSessionProtocolIntegrityError,
+        );
+        expect(await notificationFailure).toBe(requestError);
+        await expect(bundle.transport.request("initialize", {})).rejects.toBe(
+          requestError,
+        );
+        expect(handler).not.toHaveBeenCalled();
+        expect(core.store.state.ackedSourceSeq).toBe(0);
+        expect(core.store.state.committedEvents).toEqual([]);
+        expect(diagnostics.join("\n")).not.toContain("DO-NOT-LEAK");
+        expect(
+          diagnostics.filter((message) =>
+            message.includes("native_event_replay_conflict"),
+          ),
+        ).toHaveLength(1);
+      } finally {
+        await bundle.detachControllerForRestart();
+        await authority?.stop();
+        await Promise.allSettled([requestFailure, notificationFailure]);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("latches an authenticated semantic integrity fault without ACK or dispatch and still permits suspension", async () => {
+    const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-integrity-"));
+    const onProtocolIntegrityError = vi.fn();
+    const onCommittedEvent = vi.fn(async () => undefined);
+    const onSemanticToolInput = vi.fn(async () => ({ result: { ok: true } }));
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+      onProtocolIntegrityError,
+      onCommittedEvent,
+      onSemanticToolInput,
+    });
+    try {
+      await core.start();
+      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      sendSecure(client, corruptSemanticInputDigest());
+      await expect(receiveSecure(client)).resolves.toBeNull();
+      expect(onProtocolIntegrityError).toHaveBeenCalledTimes(1);
+      const error = onProtocolIntegrityError.mock.calls[0]![0];
+      expect(error).toBeInstanceOf(NativeSessionProtocolIntegrityError);
+      expect(error).toMatchObject({
+        code: "native_event_replay_conflict",
+        reason: "semantic_input_digest_mismatch",
+        recovery: "operator_required",
+      });
+      expect(core.store.state.ackedSourceSeq).toBe(0);
+      expect(core.store.state.committedEvents).toEqual([]);
+      expect(onCommittedEvent).not.toHaveBeenCalled();
+      expect(onSemanticToolInput).not.toHaveBeenCalled();
+
+      // A reconnect cannot reclassify this owner as healthy, even if it now
+      // supplies valid bytes for the failed sequence. Its callback is one-shot.
+      const replay = (await authenticate(core, client.leaseToken!))!;
+      sendSecure(replay, semanticInputEvent());
+      await expect(receiveSecure(replay)).resolves.toBeNull();
+      expect(onProtocolIntegrityError).toHaveBeenCalledTimes(1);
+      expect(core.store.state.ackedSourceSeq).toBe(0);
+      expect(onCommittedEvent).not.toHaveBeenCalled();
+      expect(onSemanticToolInput).not.toHaveBeenCalled();
+      expect(() =>
+        core.rotateRunIdentity({ ...identity, runId: "other-run" }),
+      ).toThrow(error);
+
+      const suspend = core.queueCommand(
+        "runner.suspend",
+        {},
+        "suspend-after-integrity-fault",
+      );
+      const cleanup = (await authenticate(core, client.leaseToken!))!;
+      expect(cleanup.welcome.payload).toMatchObject({
+        pendingCommands: [
+          expect.objectContaining({ commandId: suspend.commandId }),
+        ],
+      });
+      sendSecure(cleanup, {
+        protocol: "paperclip.runner",
+        version: 1,
+        kind: "command_result",
+        payload: {
+          commandId: suspend.commandId,
+          commandType: suspend.type,
+          controllerSeq: suspend.controllerSeq,
+          status: "completed",
+          result: { suspended: true },
+        },
+      });
+      await expect(receiveSecure(cleanup)).resolves.toMatchObject({
+        kind: "command_result_ack",
+      });
+      expect(core.store.state.commands[0]?.status).toBe("completed");
+      expect(core.store.state.ackedSourceSeq).toBe(0);
+      cleanup.socket.destroy();
+    } finally {
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    "semantic_input_digest_mismatch",
+    "source_event_replay_conflict",
+  ] as const)(
+    "preserves a typed integrity fault from the trusted commit boundary (%s)",
+    async (reason) => {
+      const root = mkdtempSync(
+        resolve(tmpdir(), "paperclip-prp-typed-commit-integrity-"),
+      );
+      const error = new NativeSessionProtocolIntegrityError(reason);
+      const onProtocolIntegrityError = vi.fn();
+      const onCommittedEvent = vi.fn(async () => {
+        throw error;
+      });
+      const onSemanticToolInput = vi.fn(async () => ({ result: { ok: true } }));
+      const core = new DurablePrpControlPlane({
+        stateDirectory: root,
+        identity,
+        expectedRunnerVersion,
+        expectedRunnerDigest,
+        onProtocolIntegrityError,
+        onCommittedEvent,
+        onSemanticToolInput,
+      });
+      try {
+        await core.start();
+        const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+        sendSecure(client, semanticInputEvent());
+        await expect(receiveSecure(client)).resolves.toBeNull();
+        expect(onProtocolIntegrityError).toHaveBeenCalledExactlyOnceWith(error);
+        expect(core.store.state.ackedSourceSeq).toBe(0);
+        expect(onSemanticToolInput).not.toHaveBeenCalled();
+        const retry = (await authenticate(core, client.leaseToken!))!;
+        sendSecure(retry, semanticInputEvent());
+        await expect(receiveSecure(retry)).resolves.toBeNull();
+        expect(onProtocolIntegrityError).toHaveBeenCalledExactlyOnceWith(error);
+        expect(onCommittedEvent).toHaveBeenCalledTimes(1);
+      } finally {
+        await core.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("latches an authenticated replay conflict against exactly committed bytes", async () => {
+    const root = mkdtempSync(
+      resolve(tmpdir(), "paperclip-prp-replay-integrity-"),
+    );
+    const onProtocolIntegrityError = vi.fn();
+    const onCommittedEvent = vi.fn(async () => undefined);
+    const onSemanticToolInput = vi.fn(
+      async () => new Promise<{ result: unknown }>(() => undefined),
+    );
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+      onProtocolIntegrityError,
+      onCommittedEvent,
+      onSemanticToolInput,
+    });
+    try {
+      await core.start();
+      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      sendSecure(client, semanticInputEvent());
+      await expect(receiveSecure(client)).resolves.toMatchObject({
+        kind: "ack",
+        payload: { ackedSourceSeq: 1 },
+      });
+      const changed = semanticInputEvent();
+      const semantic = (
+        (changed.payload as Record<string, unknown>).payload as Record<
+          string,
+          unknown
+        >
+      ).semantic_tool as Record<string, unknown>;
+      semantic.input = { changed: true };
+      (semantic.content as Record<string, unknown>).digest =
+        digestPaperclipSemanticContent(semantic.input);
+      sendSecure(client, changed);
+      await expect(receiveSecure(client)).resolves.toBeNull();
+      expect(onProtocolIntegrityError).toHaveBeenCalledTimes(1);
+      expect(onProtocolIntegrityError.mock.calls[0]![0]).toBeInstanceOf(
+        NativeSessionProtocolIntegrityError,
+      );
+      expect(onProtocolIntegrityError.mock.calls[0]![0]).toMatchObject({
+        reason: "source_event_replay_conflict",
+      });
+      expect(onCommittedEvent).toHaveBeenCalledTimes(1);
+      expect(onSemanticToolInput).toHaveBeenCalledTimes(1);
+      expect(core.store.state.ackedSourceSeq).toBe(1);
+      expect(core.store.state.committedEvents).toHaveLength(1);
+      expect(core.store.state.committedEvents[0]?.envelope).toEqual(
+        semanticInputEvent(),
+      );
+    } finally {
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    "unauthenticated",
+    "envelope_runner",
+    "envelope_environment",
+    "envelope_run",
+    "envelope_session",
+    "envelope_turn",
+    "envelope_item",
+    "event_run",
+    "event_runner",
+    "event_session",
+    "event_turn",
+    "event_item",
+    "source_seq_gap",
+    "semantic_run",
+    "semantic_session",
+    "semantic_turn",
+    "semantic_item",
+    "malformed_semantic",
+  ])(
+    "rejects %s malformed input without poisoning the legitimate owner",
+    async (mismatch) => {
+      const root = mkdtempSync(
+        resolve(tmpdir(), "paperclip-prp-unbound-integrity-"),
+      );
+      const onProtocolIntegrityError = vi.fn();
+      const onCommittedEvent = vi.fn(async () => undefined);
+      const onSemanticToolInput = vi.fn(async () => ({ result: { ok: true } }));
+      const core = new DurablePrpControlPlane({
+        stateDirectory: root,
+        identity,
+        expectedRunnerVersion,
+        expectedRunnerDigest,
+        onProtocolIntegrityError,
+        onCommittedEvent,
+        onSemanticToolInput,
+      });
+      try {
+        await core.start();
+        const event = corruptSemanticInputDigest();
+        const canonical = event.payload as Record<string, unknown>;
+        const semantic = (canonical.payload as Record<string, unknown>)
+          .semantic_tool as Record<string, unknown>;
+        if (mismatch.startsWith("envelope_")) {
+          const key = {
+            envelope_runner: "runnerInstanceId",
+            envelope_environment: "environmentLeaseId",
+            envelope_run: "runId",
+            envelope_session: "normalizedSessionId",
+            envelope_turn: "turnId",
+            envelope_item: "itemId",
+          }[mismatch]!;
+          event[key] = "another-owner";
+        } else if (mismatch.startsWith("event_")) {
+          const key = {
+            event_runner: "sourceInstanceId",
+            event_run: "runId",
+            event_session: "normalizedSessionId",
+            event_turn: "turnId",
+            event_item: "itemId",
+          }[mismatch]!;
+          canonical[key] = "another-owner";
+        } else if (mismatch === "source_seq_gap") canonical.sourceSeq = 2;
+        else if (mismatch === "malformed_semantic") delete semantic.callId;
+        else if (mismatch.startsWith("semantic_")) {
+          const key = {
+            semantic_run: "runId",
+            semantic_session: "normalizedSessionId",
+            semantic_turn: "turnId",
+            semantic_item: "itemId",
+          }[mismatch]!;
+          (semantic.correlation as Record<string, unknown>)[key] =
+            "another-owner";
+        }
+        if (mismatch === "unauthenticated") {
+          const client = await upgradeSocket(core.connectUrl);
+          sendMaskedJson(client.socket, event);
+          await expect(client.reader.next()).resolves.toBeNull();
+        } else {
+          const client = (await authenticate(
+            core,
+            core.issueBootstrapTicket(),
+          ))!;
+          sendSecure(client, event);
+          await expect(receiveSecure(client)).resolves.toBeNull();
+        }
+        expect(onProtocolIntegrityError).not.toHaveBeenCalled();
+        expect(onCommittedEvent).not.toHaveBeenCalled();
+        expect(onSemanticToolInput).not.toHaveBeenCalled();
+        const legitimate = (await authenticate(
+          core,
+          core.issueBootstrapTicket(),
+        ))!;
+        sendSecure(legitimate, semanticInputEvent());
+        await expect(receiveSecure(legitimate)).resolves.toMatchObject({
+          kind: "ack",
+          payload: { ackedSourceSeq: 1 },
+        });
+        expect(onProtocolIntegrityError).not.toHaveBeenCalled();
+        expect(onCommittedEvent).toHaveBeenCalledTimes(1);
+        expect(onSemanticToolInput).toHaveBeenCalledTimes(1);
+        legitimate.socket.destroy();
+      } finally {
+        await core.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("does not dispatch an earlier in-flight commit after a replacement connection proves an integrity fault", async () => {
+    const root = mkdtempSync(
+      resolve(tmpdir(), "paperclip-prp-integrity-commit-race-"),
+    );
+    let releaseCommit!: () => void;
+    const commitBarrier = new Promise<void>((resolveCommit) => {
+      releaseCommit = resolveCommit;
+    });
+    const onCommittedEvent = vi.fn(async () => commitBarrier);
+    const onProtocolIntegrityError = vi.fn();
+    const onSemanticToolInput = vi.fn(async () => ({ result: { ok: true } }));
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+      onCommittedEvent,
+      onProtocolIntegrityError,
+      onSemanticToolInput,
+    });
+    try {
+      await core.start();
+      const first = (await authenticate(core, core.issueBootstrapTicket()))!;
+      sendSecure(first, semanticInputEvent());
+      await vi.waitFor(() => expect(onCommittedEvent).toHaveBeenCalledTimes(1));
+      const replacement = (await authenticate(core, first.leaseToken!))!;
+      sendSecure(replacement, corruptSemanticInputDigest());
+      await expect(receiveSecure(replacement)).resolves.toBeNull();
+      expect(onProtocolIntegrityError).toHaveBeenCalledTimes(1);
+      releaseCommit();
+      await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+      expect(core.store.state.ackedSourceSeq).toBe(0);
+      expect(core.store.state.committedEvents).toEqual([]);
+      expect(onSemanticToolInput).not.toHaveBeenCalled();
+    } finally {
+      releaseCommit();
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not turn a missing semantic handler into an integrity fault", async () => {
+    const root = mkdtempSync(
+      resolve(tmpdir(), "paperclip-prp-integrity-no-handler-"),
+    );
+    const onProtocolIntegrityError = vi.fn();
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+      onProtocolIntegrityError,
+    });
+    try {
+      await core.start();
+      const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+      sendSecure(client, corruptSemanticInputDigest());
+      await expect(receiveSecure(client)).resolves.toBeNull();
+      expect(onProtocolIntegrityError).not.toHaveBeenCalled();
+      expect(core.store.state.ackedSourceSeq).toBe(0);
+    } finally {
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    new Error("database temporarily unavailable"),
+    Object.assign(new Error("untrusted native_event_replay_conflict prose"), {
+      code: "native_event_replay_conflict",
+    }),
+  ])(
+    "keeps a non-typed commit failure retryable on the same authenticated authority (%s)",
+    async (commitFailure) => {
+      const root = mkdtempSync(
+        resolve(tmpdir(), "paperclip-prp-transient-commit-"),
+      );
+      const onProtocolIntegrityError = vi.fn();
+      const onCommittedEvent = vi
+        .fn()
+        .mockRejectedValueOnce(commitFailure)
+        .mockResolvedValue(undefined);
+      const onSemanticToolInput = vi.fn(async () => ({ result: { ok: true } }));
+      const core = new DurablePrpControlPlane({
+        stateDirectory: root,
+        identity,
+        expectedRunnerVersion,
+        expectedRunnerDigest,
+        onProtocolIntegrityError,
+        onCommittedEvent,
+        onSemanticToolInput,
+      });
+      try {
+        await core.start();
+        const first = (await authenticate(core, core.issueBootstrapTicket()))!;
+        sendSecure(first, semanticInputEvent());
+        await expect(receiveSecure(first)).resolves.toBeNull();
+        expect(core.store.state.ackedSourceSeq).toBe(0);
+        expect(onSemanticToolInput).not.toHaveBeenCalled();
+        const retry = (await authenticate(core, first.leaseToken!))!;
+        sendSecure(retry, semanticInputEvent());
+        await expect(receiveSecure(retry)).resolves.toMatchObject({
+          kind: "ack",
+          payload: { ackedSourceSeq: 1 },
+        });
+        expect(onProtocolIntegrityError).not.toHaveBeenCalled();
+        expect(onCommittedEvent).toHaveBeenCalledTimes(2);
+        expect(onSemanticToolInput).toHaveBeenCalledTimes(1);
+        retry.socket.destroy();
+      } finally {
+        await core.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("requires a fresh bootstrap to replace a v1 lease with v2 on the same authority", async () => {
+    const root = mkdtempSync(
+      resolve(tmpdir(), "paperclip-prp-version-bootstrap-"),
+    );
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    const clients: AuthenticatedClient[] = [];
+    try {
+      await core.start();
+      const first = (await authenticate(core, core.issueBootstrapTicket()))!;
+      clients.push(first);
+      expect(first.welcome.version).toBe(1);
+      first.socket.destroy();
+      const reconnect = (await authenticate(
+        core,
+        first.leaseToken!,
+        identity,
+        expectedRunnerDigest,
+        undefined,
+        false,
+        2,
+      ))!;
+      clients.push(reconnect);
+      expect(reconnect.welcome.version).toBe(1);
+      reconnect.socket.destroy();
+      // A replacement process has no in-memory lease. Its owner issues the
+      // normal one-use bootstrap for the unchanged, validated run authority.
+      const freshTicket = core.issueBootstrapTicket();
+      const replacement = (await authenticate(
+        core,
+        freshTicket,
+        identity,
+        expectedRunnerDigest,
+        undefined,
+        false,
+        2,
+      ))!;
+      clients.push(replacement);
+      expect(replacement.welcome.version).toBe(2);
+      expect(core.store.state.identity).toEqual(identity);
+      expect(core.store.state.commands).toEqual([]);
+      expect(core.store.state.committedEvents).toEqual([]);
+      expect(
+        await authenticate(
+          core,
+          freshTicket,
+          identity,
+          expectedRunnerDigest,
+          undefined,
+          false,
+          2,
+        ),
+      ).toBeNull();
+    } finally {
+      for (const client of clients) client.socket.destroy();
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
   it("exchanges a one-use bootstrap for a run-bound reconnect lease", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-auth-"));
     const controlPlane = new DurablePrpControlPlane({
@@ -1167,6 +2300,815 @@ describe.sequential("DurablePrpControlPlane", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("retains an old warm attach result replay lane when its result ACK is lost after core rotation", async () => {
+    const root = mkdtempSync(
+      resolve(tmpdir(), "paperclip-prp-attach-result-ack-loss-"),
+    );
+    const controlPlane = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    const nextIdentity = {
+      ...identity,
+      runId: "00000000-0000-4000-8000-000000000002",
+      turnId: "turn-ack-loss-2",
+      itemId: "item-ack-loss-2",
+    };
+    let client: AuthenticatedClient | null = null;
+    let replay: AuthenticatedClient | null = null;
+    try {
+      await controlPlane.start();
+      client = await authenticate(
+        controlPlane,
+        controlPlane.issueBootstrapTicket(),
+      );
+      expect(client).not.toBeNull();
+      const command = controlPlane.queueCommand(
+        "run.attach",
+        {
+          paperclipNextAuthority: {
+            identity: nextIdentity,
+            connection: {
+              mode: "connect",
+              connectUrl: controlPlane.connectUrl,
+            },
+          },
+        },
+        "command-attach-ack-loss",
+        true,
+      );
+      await expect(receiveSecure(client!)).resolves.toMatchObject({
+        kind: "command",
+      });
+      const leaseToken = client!.leaseToken!;
+      const result = {
+        protocol: "paperclip.runner",
+        version: 1,
+        kind: "command_result",
+        payload: {
+          commandId: command.commandId,
+          commandType: command.type,
+          controllerSeq: command.controllerSeq,
+          status: "completed",
+          result: { attached: true },
+        },
+      };
+      sendSecure(client!, result);
+      await vi.waitFor(() =>
+        expect(controlPlane.store.state.commands[0]?.status).toBe("completed"),
+      );
+      expect(
+        JSON.parse(readFileSync(controlPlane.store.path, "utf8")).commands[0]
+          .result,
+      ).toEqual(result.payload);
+      // The result ACK remains unread on this lost connection. Observing the
+      // result must not delete the old receipt or activate its new identity.
+      controlPlane.rotateRunIdentity(nextIdentity);
+      expect(controlPlane.store.state.identity).toEqual(identity);
+      client!.socket.destroy();
+      replay = await authenticate(controlPlane, leaseToken, identity);
+      expect(
+        replay,
+        "the exact old result must remain replayable until authenticated new activation",
+      ).not.toBeNull();
+      sendSecure(replay!, result);
+      await expect(receiveSecure(replay!)).resolves.toMatchObject({
+        kind: "command_result_ack",
+        payload: {
+          commandId: command.commandId,
+          controllerSeq: command.controllerSeq,
+        },
+      });
+    } finally {
+      client?.socket.destroy();
+      replay?.socket.destroy();
+      await controlPlane.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    "activate",
+    "activate-v2",
+    "foreign-receipt",
+    "foreign-key",
+    "old-event",
+    "bootstrap",
+    "bootstrap-v2",
+    "bootstrap-before-result",
+    "bootstrap-lost-welcome",
+    "revoked-bootstrap",
+    "expired-bootstrap",
+    "revoked-live-peer",
+    "expired-tombstone",
+    "completed-replay",
+    "completed-revoked",
+    "completed-expired",
+    "completed-foreign-key",
+  ] as const)("keeps warm handoff authority closed across %s", async (mode) => {
+    const selectedProtocol = mode.endsWith("-v2") ? 2 : 1;
+    const authenticateVersion: typeof authenticate = (...args) => {
+      args[6] = selectedProtocol;
+      return authenticate(...args);
+    };
+    const root = mkdtempSync(
+      resolve(tmpdir(), "paperclip-prp-attach-transition-"),
+    );
+    let core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    const nextIdentity = {
+      ...identity,
+      runId: "00000000-0000-4000-8000-000000000002",
+      turnId: "turn-transition-2",
+      itemId: "item-transition-2",
+    };
+    let peer: AuthenticatedClient | null = null;
+    let successor: AuthenticatedClient | null = null;
+    try {
+      await core.start();
+      const unusedTicket = core.issueBootstrapTicket();
+      peer = await authenticateVersion(core, core.issueBootstrapTicket());
+      const oldToken = peer!.leaseToken!;
+      const command = core.queueCommand(
+        "run.attach",
+        {
+          paperclipNextAuthority: {
+            identity: nextIdentity,
+            connection: { mode: "connect", connectUrl: core.connectUrl },
+          },
+        },
+        "command-transition",
+        true,
+      );
+      await expect(receiveSecure(peer!)).resolves.toMatchObject({
+        kind: "command",
+      });
+      const beforeResult = readFileSync(core.store.path, "utf8");
+      const result = {
+        commandId: command.commandId,
+        commandType: command.type,
+        controllerSeq: command.controllerSeq,
+        status: "completed",
+        result: { attached: true },
+      };
+      sendSecure(peer!, {
+        protocol: "paperclip.runner",
+        version: selectedProtocol,
+        kind: "command_result",
+        payload: result,
+      });
+      const ack = await receiveSecure(peer!);
+      const receipt = (ack!.payload as Record<string, unknown>)
+        .warmTransition as Record<string, unknown>;
+      const transitionId = receipt.transitionId as string;
+      expect(core.store.state.identity).toEqual(identity);
+      expect(() => core.queueCommand("turn.start", {})).toThrow(
+        "exact cached attachment replay",
+      );
+      expect(() => core.issueBootstrapTicket()).toThrow(
+        "explicit one-use bootstrap",
+      );
+      if (mode === "revoked-live-peer") {
+        core.store.state.leases[
+          core.store.state.warmTransition!.credentialId
+        ]!.revokedAt = new Date().toISOString();
+        sendSecure(peer!, {
+          protocol: "paperclip.runner",
+          version: selectedProtocol,
+          kind: "command_result",
+          payload: result,
+        });
+        expect(await peer!.reader.next()).toBeNull();
+        expect(core.store.state.warmTransition?.phase).toBe("prepared");
+        return;
+      }
+      peer!.socket.destroy();
+      await core.stop();
+      if (mode === "bootstrap-before-result")
+        writeFileSync(core.store.path, beforeResult);
+      core = new DurablePrpControlPlane({
+        stateDirectory: root,
+        identity,
+        expectedRunnerVersion,
+        expectedRunnerDigest,
+      });
+      await core.start();
+      if (mode === "foreign-receipt") {
+        expect(
+          await authenticateVersion(
+            core,
+            oldToken,
+            nextIdentity,
+            expectedRunnerDigest,
+            "f".repeat(64),
+          ),
+        ).toBeNull();
+      } else if (mode === "foreign-key") {
+        expect(
+          await authenticateVersion(
+            core,
+            unusedTicket,
+            nextIdentity,
+            expectedRunnerDigest,
+            transitionId,
+          ),
+        ).toBeNull();
+      } else if (mode === "old-event") {
+        successor = await authenticateVersion(
+          core,
+          oldToken,
+          identity,
+          expectedRunnerDigest,
+          transitionId,
+        );
+        sendSecure(successor!, {
+          protocol: "paperclip.runner",
+          version: selectedProtocol,
+          kind: "event",
+          payload: { sourceSeq: 1 },
+        });
+        expect(await successor!.reader.next()).toBeNull();
+        expect(core.store.state.committedEvents).toEqual([]);
+        expect(core.store.state.identity).toEqual(identity);
+      } else if (mode.includes("bootstrap")) {
+        const { status: _status, result: _result, ...wire } = command;
+        const runnerState = {
+          schema: "paperclip.runner.durable.state.warm-transition.v1",
+          ...identity,
+          ackedSourceSeq: receipt.oldAckedSourceSeq,
+          nextSourceSeq: Number(receipt.oldAckedSourceSeq) + 1,
+          outbox: [],
+          pendingTerminalDelivery: null,
+          warmTransition: {
+            receipt,
+            phase: "prepared",
+            command: { ...wire, deadlineAt: null, precondition: null },
+            result,
+          },
+        };
+        const inspection = {
+          controlPlaneState: core.store.state,
+          runnerState,
+          expectedNewIdentity: nextIdentity,
+          expectedRunnerVersion,
+          expectedRunnerDigest,
+        };
+        const beforeInspection = JSON.stringify([
+          core.store.state,
+          runnerState,
+        ]);
+        expect(inspectWarmRunTransition(inspection)).toMatchObject({
+          receipt,
+          runnerIdentity: identity,
+          controllerIdentity: identity,
+          phase:
+            mode === "bootstrap-before-result" ? "awaiting_result" : "prepared",
+        });
+        expect(JSON.stringify([core.store.state, runnerState])).toBe(
+          beforeInspection,
+        );
+        expect(
+          inspectWarmRunTransition({
+            ...inspection,
+            expectedNewIdentity: identity,
+          }),
+        ).toBeNull();
+        expect(
+          inspectWarmRunTransition({
+            ...inspection,
+            expectedRunnerDigest: `sha256:${"b".repeat(64)}`,
+          }),
+        ).toBeNull();
+        expect(
+          inspectWarmRunTransition({
+            ...inspection,
+            now: Number(receipt.leaseExpiresAtUnixMs),
+          }),
+        ).toBeNull();
+        expect(
+          inspectWarmRunTransition({
+            ...inspection,
+            runnerState: { ...runnerState, outbox: [{}] },
+          }),
+        ).toBeNull();
+        expect(
+          inspectWarmRunTransition({
+            ...inspection,
+            runnerState: { ...runnerState, pendingProviderCleanup: {} },
+          }),
+        ).toBeNull();
+        expect(
+          inspectWarmRunTransition({
+            ...inspection,
+            runnerState: {
+              ...runnerState,
+              warmTransition: {
+                ...runnerState.warmTransition,
+                result: { ...result, status: "failed" },
+              },
+            },
+          }),
+        ).toBeNull();
+        expect(() =>
+          core.issueWarmTransitionBootstrapTicket({
+            transitionId,
+            runnerState: { ...runnerState, runId: nextIdentity.runId },
+          }),
+        ).toThrow("snapshot");
+        const originalLease = structuredClone(
+          Object.values(core.store.state.leases).find(
+            (lease) =>
+              lease.leaseId === receipt.leaseId && lease.revokedAt === null,
+          )!,
+        );
+        if (mode === "revoked-bootstrap") {
+          core.store.state.leases[originalLease.credentialId]!.revokedAt =
+            new Date().toISOString();
+          expect(() =>
+            core.issueWarmTransitionBootstrapTicket({
+              transitionId,
+              runnerState,
+            }),
+          ).toThrow("not authorized");
+        } else if (mode === "expired-bootstrap") {
+          vi.spyOn(Date, "now").mockReturnValue(
+            originalLease.expiresAtUnixMs + 1,
+          );
+          expect(() =>
+            core.issueWarmTransitionBootstrapTicket({
+              transitionId,
+              runnerState,
+            }),
+          ).toThrow("not authorized");
+        } else {
+          let ticket = core.issueWarmTransitionBootstrapTicket({
+            transitionId,
+            runnerState,
+          });
+          if (mode === "bootstrap-before-result") {
+            expect(core.store.state.warmTransition?.phase).toBe(
+              "awaiting_result",
+            );
+            expect(core.getCommand(command.commandId)?.status).toBe("pending");
+            await core.stop();
+            core = new DurablePrpControlPlane({
+              stateDirectory: root,
+              identity,
+              expectedRunnerVersion,
+              expectedRunnerDigest,
+            });
+            await core.start();
+          }
+          if (mode === "bootstrap-lost-welcome") {
+            const attachWire = core.attachWireConnection.bind(core);
+            let dropped = false;
+            const wireSpy = vi
+              .spyOn(core, "attachWireConnection")
+              .mockImplementation((wire) =>
+                attachWire({
+                  onJson: wire.onJson.bind(wire),
+                  onClose: wire.onClose.bind(wire),
+                  close: wire.close.bind(wire),
+                  sendJson: (value) => {
+                    if (
+                      !dropped &&
+                      (value as { schema?: string }).schema ===
+                        "paperclip.runner.secure-frame.v1"
+                    ) {
+                      dropped = true;
+                      wire.close();
+                      return;
+                    }
+                    wire.sendJson(value);
+                  },
+                }),
+              );
+            expect(
+              await authenticateVersion(
+                core,
+                ticket,
+                identity,
+                expectedRunnerDigest,
+                transitionId,
+              ),
+            ).toBeNull();
+            expect(dropped).toBe(true);
+            expect(
+              await authenticateVersion(
+                core,
+                oldToken,
+                identity,
+                expectedRunnerDigest,
+                transitionId,
+              ),
+            ).toBeNull();
+            expect(
+              await authenticateVersion(
+                core,
+                ticket,
+                identity,
+                expectedRunnerDigest,
+                transitionId,
+              ),
+            ).toBeNull();
+            wireSpy.mockRestore();
+            ticket = core.issueWarmTransitionBootstrapTicket({
+              transitionId,
+              runnerState,
+            });
+          }
+          successor = await authenticateVersion(
+            core,
+            ticket,
+            identity,
+            expectedRunnerDigest,
+            transitionId,
+          );
+          expect(successor).not.toBeNull();
+          expect(
+            core.store.state.leases[
+              core.store.state.warmTransition!.credentialId
+            ],
+          ).toMatchObject({
+            leaseId: originalLease.leaseId,
+            expiresAtUnixMs: originalLease.expiresAtUnixMs,
+            revocationEpoch: originalLease.revocationEpoch,
+          });
+          expect(
+            await authenticateVersion(
+              core,
+              oldToken,
+              identity,
+              expectedRunnerDigest,
+              transitionId,
+            ),
+          ).toBeNull();
+          expect(
+            await authenticateVersion(
+              core,
+              ticket,
+              identity,
+              expectedRunnerDigest,
+              transitionId,
+            ),
+          ).toBeNull();
+          if (mode === "bootstrap-before-result")
+            expect(core.getCommand(command.commandId)?.status).toBe("pending");
+          sendSecure(successor!, {
+            protocol: "paperclip.runner",
+            version: selectedProtocol,
+            kind: "command_result",
+            payload: result,
+          });
+          await expect(receiveSecure(successor!)).resolves.toMatchObject({
+            kind: "command_result_ack",
+            payload: { warmTransition: receipt },
+          });
+          expect(core.getCommand(command.commandId)?.status).toBe("completed");
+        }
+      } else {
+        successor = await authenticateVersion(
+          core,
+          oldToken,
+          nextIdentity,
+          expectedRunnerDigest,
+          transitionId,
+        );
+        expect(successor).not.toBeNull();
+        expect(core.store.state.identity).toEqual(nextIdentity);
+        expect(
+          (successor!.welcome.payload as Record<string, unknown>)
+            .pendingCommands,
+        ).toEqual([]);
+        expect(
+          await authenticateVersion(
+            core,
+            oldToken,
+            identity,
+            expectedRunnerDigest,
+            transitionId,
+          ),
+        ).toBeNull();
+        const next = core.queueCommand(
+          "session.snapshot",
+          {},
+          "next-snapshot",
+          true,
+        );
+        expect(
+          core.store.state.commandDeliveryCounts[next.commandId],
+        ).toBeUndefined();
+        sendSecure(successor!, {
+          protocol: "paperclip.runner",
+          version: selectedProtocol,
+          kind: "warm_transition_activated",
+          payload: { transitionId },
+        });
+        await expect(receiveSecure(successor!)).resolves.toMatchObject({
+          kind: "warm_transition_activated_ack",
+          payload: { transitionId },
+        });
+        await vi.waitFor(() =>
+          expect(core.store.state.warmTransition).toBeUndefined(),
+        );
+        expect(core.store.state.schema).toBe(
+          "paperclip.runner.durable.control-plane-state.v1",
+        );
+        await expect(receiveSecure(successor!)).resolves.toMatchObject({
+          kind: "command",
+          payload: { commandId: next.commandId },
+        });
+        if (mode.startsWith("completed-")) {
+          successor!.socket.destroy();
+          const deliveriesBefore =
+            core.store.state.commandDeliveryCounts[next.commandId];
+          if (mode === "completed-revoked") {
+            Object.values(core.store.state.leases).find(
+              (lease) => lease.leaseId === receipt.leaseId,
+            )!.revokedAt = new Date().toISOString();
+          }
+          if (mode === "completed-expired")
+            vi.spyOn(Date, "now").mockReturnValue(
+              Number(receipt.leaseExpiresAtUnixMs),
+            );
+          successor = await authenticateVersion(
+            core,
+            mode === "completed-foreign-key" ? unusedTicket : oldToken,
+            nextIdentity,
+            expectedRunnerDigest,
+            transitionId,
+          );
+          if (mode !== "completed-replay") {
+            expect(successor).toBeNull();
+            expect(core.store.state.commandDeliveryCounts[next.commandId]).toBe(
+              deliveriesBefore,
+            );
+            return;
+          }
+          expect(successor).not.toBeNull();
+          expect(
+            (successor!.welcome.payload as Record<string, unknown>)
+              .pendingCommands,
+          ).toEqual([]);
+          expect(core.store.state.commandDeliveryCounts[next.commandId]).toBe(
+            deliveriesBefore,
+          );
+          sendSecure(successor!, {
+            protocol: "paperclip.runner",
+            version: selectedProtocol,
+            kind: "warm_transition_activated",
+            payload: { transitionId },
+          });
+          await expect(receiveSecure(successor!)).resolves.toMatchObject({
+            kind: "warm_transition_activated_ack",
+            payload: { transitionId },
+          });
+          await expect(receiveSecure(successor!)).resolves.toMatchObject({
+            kind: "command",
+            payload: { commandId: next.commandId },
+          });
+        }
+        if (mode === "expired-tombstone") {
+          vi.spyOn(Date, "now").mockReturnValue(
+            Number(receipt.leaseExpiresAtUnixMs) + 1,
+          );
+          core.issueBootstrapTicket();
+          expect(Object.values(core.store.state.leases)).toHaveLength(0);
+          vi.restoreAllMocks();
+          successor!.socket.destroy();
+          await core.stop();
+          core = new DurablePrpControlPlane({
+            stateDirectory: root,
+            identity: nextIdentity,
+            expectedRunnerVersion,
+            expectedRunnerDigest,
+          });
+          expect(core.getCommand(command.commandId)?.status).toBe("completed");
+        }
+      }
+    } finally {
+      vi.restoreAllMocks();
+      peer?.socket.destroy();
+      successor?.socket.destroy();
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed after a warm receipt rename when parent directory fsync fails", async () => {
+    const root = mkdtempSync(
+      resolve(tmpdir(), "paperclip-prp-transition-fsync-"),
+    );
+    const rootInode = nodeFs.statSync(root).ino;
+    let core = new DurablePrpControlPlane({
+      stateDirectory: root,
+      identity,
+      expectedRunnerVersion,
+      expectedRunnerDigest,
+    });
+    let client: AuthenticatedClient | null = null;
+    let replay: AuthenticatedClient | null = null;
+    let syncSpy: { mockRestore(): void } | undefined;
+    try {
+      await core.start();
+      client = await authenticate(core, core.issueBootstrapTicket());
+      const token = client!.leaseToken!;
+      const command = core.queueCommand(
+        "run.attach",
+        {
+          paperclipNextAuthority: {
+            identity: {
+              ...identity,
+              runId: "fsync-next",
+              turnId: "fsync-turn",
+              itemId: "fsync-item",
+            },
+            connection: { mode: "connect", connectUrl: core.connectUrl },
+          },
+        },
+        "fsync-attach",
+        true,
+      );
+      await receiveSecure(client!);
+      const result = {
+        protocol: "paperclip.runner",
+        version: 1,
+        kind: "command_result",
+        payload: {
+          commandId: command.commandId,
+          commandType: command.type,
+          controllerSeq: command.controllerSeq,
+          status: "completed",
+          result: { attached: true },
+        },
+      };
+      const sync = nodeFs.fsyncSync;
+      let injected = false;
+      syncSpy = vi.spyOn(nodeFs, "fsyncSync").mockImplementation((fd) => {
+        const metadata = nodeFs.fstatSync(fd);
+        if (
+          !injected &&
+          metadata.isDirectory() &&
+          metadata.ino === rootInode &&
+          JSON.parse(readFileSync(core.store.path, "utf8")).warmTransition
+            ?.phase === "prepared"
+        ) {
+          injected = true;
+          throw new Error("fixture parent fsync failure after receipt rename");
+        }
+        sync(fd);
+      });
+      syncBuiltinESMExports();
+      sendSecure(client!, result);
+      expect(await client!.reader.next()).toBeNull();
+      expect(injected).toBe(true);
+      const disk = readFileSync(core.store.path, "utf8");
+      expect(JSON.parse(disk).warmTransition.phase).toBe("prepared");
+      expect(core.store.state.commands[0]?.status).toBe("pending");
+      expect(() => core.queueCommand("turn.start", {})).toThrow(
+        "indeterminate; reload",
+      );
+      expect(() => core.issueBootstrapTicket()).toThrow(
+        "indeterminate; reload",
+      );
+      expect(readFileSync(core.store.path, "utf8")).toBe(disk);
+      syncSpy.mockRestore();
+      syncBuiltinESMExports();
+      await core.stop();
+      core = new DurablePrpControlPlane({
+        stateDirectory: root,
+        identity,
+        expectedRunnerVersion,
+        expectedRunnerDigest,
+      });
+      await core.start();
+      replay = await authenticate(
+        core,
+        token,
+        identity,
+        expectedRunnerDigest,
+        JSON.parse(disk).warmTransition.receipt.transitionId,
+      );
+      sendSecure(replay!, result);
+      await expect(receiveSecure(replay!)).resolves.toMatchObject({
+        kind: "command_result_ack",
+      });
+    } finally {
+      syncSpy?.mockRestore();
+      syncBuiltinESMExports();
+      client?.socket.destroy();
+      replay?.socket.destroy();
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["nonparticipant", "no-capability"] as const)(
+    "rejects a held old authentication proof after warm preparation (%s)",
+    async (mode) => {
+      const root = mkdtempSync(
+        resolve(tmpdir(), "paperclip-prp-transition-held-auth-"),
+      );
+      let release!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>((resolveGate) => {
+        release = resolveGate;
+      });
+      const held = new Promise<void>((resolveHeld) => {
+        entered = resolveHeld;
+      });
+      let armed = false;
+      const core = new DurablePrpControlPlane({
+        stateDirectory: root,
+        identity,
+        expectedRunnerVersion,
+        expectedRunnerDigest,
+        beforeAuthenticatedConnection: async () => {
+          if (armed) {
+            entered();
+            await gate;
+          }
+        },
+      });
+      let first: AuthenticatedClient | null = null;
+      let participant: AuthenticatedClient | null = null;
+      let pending: Promise<AuthenticatedClient | null> | undefined;
+      try {
+        await core.start();
+        first = await authenticate(core, core.issueBootstrapTicket());
+        const unrelatedToken = first!.leaseToken!;
+        first!.socket.destroy();
+        participant = await authenticate(core, core.issueBootstrapTicket());
+        const command = core.queueCommand(
+          "run.attach",
+          {
+            paperclipNextAuthority: {
+              identity: {
+                ...identity,
+                runId: "held-next-run",
+                turnId: "held-next-turn",
+                itemId: "held-next-item",
+              },
+              connection: { mode: "connect", connectUrl: core.connectUrl },
+            },
+          },
+          "held-proof-attach",
+          true,
+        );
+        await receiveSecure(participant!);
+        armed = true;
+        pending = authenticate(
+          core,
+          mode === "nonparticipant" ? unrelatedToken : participant!.leaseToken!,
+          identity,
+          expectedRunnerDigest,
+          undefined,
+          mode === "no-capability",
+        );
+        await held;
+        const result = {
+          protocol: "paperclip.runner",
+          version: 1,
+          kind: "command_result",
+          payload: {
+            commandId: command.commandId,
+            commandType: command.type,
+            controllerSeq: command.controllerSeq,
+            status: "completed",
+            result: { attached: true },
+          },
+        };
+        sendSecure(participant!, result);
+        await expect(receiveSecure(participant!)).resolves.toMatchObject({
+          kind: "command_result_ack",
+        });
+        release();
+        expect(await pending).toBeNull();
+        expect(core.activeRunnerConnectionCount()).toBe(1);
+        sendSecure(participant!, result);
+        await expect(receiveSecure(participant!)).resolves.toMatchObject({
+          kind: "command_result_ack",
+        });
+        expect(core.store.state.identity).toEqual(identity);
+      } finally {
+        release();
+        await pending
+          ?.then((client) => client?.socket.destroy())
+          .catch(() => undefined);
+        first?.socket.destroy();
+        participant?.socket.destroy();
+        await core.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("acknowledges terminal command results after persisting them", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-terminal-ack-"));

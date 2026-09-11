@@ -7,6 +7,7 @@ import { buildRuntimeUsage, summarizeExecutionBilling } from "./billing.js";
 import { runnerExecutionById } from "./catalog.js";
 import { classifyFailure } from "./failure-classifier.js";
 import { runnerE2EServerControlPaths } from "./harness-env.js";
+import { setupConnectionReview } from "./connection-reviews.js";
 import { setupLiveFixtures, type LiveFixtureValues } from "./live-fixtures.js";
 import { evaluateMatcher, type MatcherResult } from "./matchers.js";
 import {
@@ -604,6 +605,7 @@ for (const execution of executions) {
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
     const networkDiagnostics: Array<Record<string, unknown>> = [];
     let fixtures: LiveFixtureValues | undefined;
+    let reviewProvider: Awaited<ReturnType<typeof setupConnectionReview>> | undefined;
     let issue: IssueRecord | undefined;
     let selectedRuns: RunRecord[] = [];
     let runtimeLeases: EnvironmentLeaseRecord[] = [];
@@ -849,6 +851,9 @@ for (const execution of executions) {
         throw new Error(
           "Created fixture company did not return an issue prefix",
         );
+      if (execution.task.flow === "governed_tool_review") {
+        reviewProvider = await setupConnectionReview({ page, api, prefix: issuePrefix, companyId: fixtures.company.id, agentId: fixtures.agent.id, marker });
+      }
       turnSubmissionTimesMs.push(
         await createTaskThroughUi({
           page,
@@ -948,7 +953,24 @@ for (const execution of executions) {
         interactionId: string;
         optionId: string;
       } | null = null;
-      if (execution.task.flow === "plan_revision_acceptance") {
+      if (execution.task.flow === "governed_tool_review") {
+        await expect(page.getByRole("button", { name: "Approve & run", exact: true })).toBeVisible({ timeout: Math.max(1, deadlineAt - Date.now()) });
+        expect(reviewProvider!.invocationCount()).toBe(0);
+        await pollUntil({ label: "governed waiting turn", deadlineAt, load: loadTaskState, accept: state => state.taskRuns.length === 1 && state.taskRuns.every(run => TERMINAL_RUN_STATUSES.has(run.status)) });
+        await captureScreenshot("tool-review-pending", "Connection review awaiting a human", "tool-review-pending.png");
+        await page.getByRole("button", { name: "Dismiss Approve tool action" }).click();
+        await page.getByRole("button", { name: "Review request", exact: true }).click();
+        if (execution.task.toolReviewDecision === "restart") {
+          await restartIsolatedPaperclipServer({ api, requestId: `tool-review-${nonce}`, deadlineAt });
+          await page.reload();
+        }
+        if (execution.task.toolReviewDecision === "always") {
+          await page.getByRole("button", { name: "Approval options", exact: true }).click();
+          await page.getByRole("menuitem", { name: "Always allow", exact: true }).click();
+        } else {
+          await page.getByRole("button", { name: execution.task.toolReviewDecision === "decline" ? "Decline" : "Approve & run", exact: true }).click();
+        }
+      } else if (execution.task.flow === "plan_revision_acceptance") {
         const planMarkers = execution.task.buildPlanMarkers?.(nonce);
         const revisionRequest = execution.task.buildRevisionRequest?.(nonce);
         if (!planMarkers || !revisionRequest) {
@@ -1542,6 +1564,12 @@ for (const execution of executions) {
 
       issue = terminal.currentIssue;
       selectedRuns = terminal.taskRuns;
+      if (reviewProvider) {
+        expect(reviewProvider.invocationCount()).toBe(execution.task.toolReviewDecision === "decline" ? 0 : execution.task.toolReviewDecision === "always" ? 2 : 1);
+        const pending = await api.get<{ actionRequests: unknown[] }>(`/api/companies/${fixtures.company.id}/tools/action-requests?status=pending`);
+        expect(pending.actionRequests).toHaveLength(0);
+        await writeSanitizedJson(snapshotsDir, "connection-review.json", { source: "local MCP fixture", connectionId: reviewProvider.connectionId, providerCalls: reviewProvider.invocationCount(), decision: execution.task.toolReviewDecision, issueId: issue.id }, secrets);
+      }
       if (selectedRuns.length !== execution.task.expectedRunCount) {
         const runLogs = await Promise.all(
           selectedRuns.map(async (candidate) => ({
@@ -2384,6 +2412,7 @@ for (const execution of executions) {
         }
       }
     } finally {
+      await reviewProvider?.close();
       try {
         await writeSanitizedJson(
           snapshotsDir,

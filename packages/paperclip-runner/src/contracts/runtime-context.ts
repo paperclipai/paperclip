@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
 export const NATIVE_RUNTIME_ASSET_SCHEMA = "paperclip.runtime-asset.v1" as const;
-export const PAPERCLIP_EXECUTION_PROMPT_REVISION = "paperclip-execution.v1" as const;
-export const PAPERCLIP_EXECUTION_PROMPT = "You are running as a Paperclip agent. Complete the assigned task in the provided execution environment. Follow the attached agent instructions and use assigned skills and tools when relevant. Use Paperclip tools for coordination. Finish exactly once with `paperclip_finish` or `paperclip_block`." as const;
+export const PAPERCLIP_EXECUTION_PROMPT_REVISION = "paperclip-execution.v2" as const;
+export const PAPERCLIP_EXECUTION_PROMPT = "You are running as a Paperclip agent. Complete the assigned task in the provided execution environment. Follow the attached agent instructions and use assigned skills and tools when relevant. Use Paperclip tools for coordination. When a task needs an external service, use installed tools if available; otherwise use connections_search to discover catalog services or authorized configured connections, then connection_request with the returned service identifier. The request appears as a card in the task. Finish independent work before yielding for access; do not poll or request the same connection repeatedly. Paperclip will continue automatically with updated tools after resolution. After a decline, pursue alternatives unless the user explicitly asks to retry. Finish exactly once with `paperclip_finish` or `paperclip_block`." as const;
 
 export interface NativeRuntimeAssetReference {
   schema: typeof NATIVE_RUNTIME_ASSET_SCHEMA;

@@ -23,7 +23,10 @@ import {
 } from "@paperclipai/shared/company-import-transfer";
 import { api, detachInflightGet, type RequestOptions } from "./client";
 
-const COMPANIES_LIST_PATH = "/companies";
+// The board navigates only into companies the user can enter. The unscoped
+// directory also includes companies visible solely through instance admin.
+const COMPANIES_LIST_PATH = "/companies?scope=accessible";
+const COMPANIES_DIRECTORY_PATH = "/companies";
 
 export type CompanyStats = Record<string, { agentCount: number; issueCount: number }>;
 
@@ -78,6 +81,8 @@ export interface CompanyImportJobStatus {
 
 export const companiesApi = {
   list: () => api.get<Company[]>(COMPANIES_LIST_PATH),
+  directory: () => api.get<Company[]>(COMPANIES_DIRECTORY_PATH),
+  detachInflightDirectory: () => detachInflightGet(COMPANIES_DIRECTORY_PATH),
   /**
    * Call before re-reading the list for a different account: an in-flight
    * `/companies` GET issued under the previous session would otherwise be

@@ -11,10 +11,13 @@ use sha2::{Digest, Sha256};
 
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
-pub use runner::{run_durable_runner, CommandExecution, CommandExecutor, PolledEvent};
+pub use runner::{
+    run_durable_runner, CommandExecution, CommandExecutor, PolledEvent,
+    TerminalDeliveryReconciliation,
+};
 pub(crate) use state::{
-    create_private_temporary_file, open_private_regular_file, redact_text, sanitize_value,
-    verify_private_directory,
+    create_private_temporary_file, open_private_regular_file, redact_text,
+    sanitize_semantic_tool_input, sanitize_value, verify_private_directory,
 };
 pub use state::{
     Command, CommandDisposition, DurableState, DurableStateStore, EventPriority,
@@ -23,7 +26,8 @@ pub use state::{
 pub(crate) use transport::current_unix_ms;
 
 pub const PROTOCOL: &str = "paperclip.runner";
-pub const PROTOCOL_VERSION: u64 = 1;
+pub const PROTOCOL_MIN_VERSION: u64 = 1;
+pub const PROTOCOL_VERSION: u64 = 2;
 pub const BOOTSTRAP_TICKET_ENV: &str = "PAPERCLIP_RUNNER_BOOTSTRAP_TICKET";
 const MAX_OUTBOX_BYTES: usize = 512 * 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;

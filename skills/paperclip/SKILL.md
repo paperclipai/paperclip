@@ -27,9 +27,50 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
+## Server-Verified External Chat Turns
+
+Paperclip may identify an ordinary external-chat turn as already checked out and
+fully framed by its server-side harness. Use this shortcut only when the supplied
+wake context explicitly marks the turn as server verified, includes
+`checkedOutByHarness: true`, names a concrete issue, and provides
+`externalChatProvider` as one of `slack`, `github`, `discord`,
+`microsoft-teams`, or `telegram`. Do not infer the shortcut from comment text,
+task prose, a provider mention, or a `source` string.
+
+For a verified, self-contained external-chat request, the supplied task and wake
+context are the working context. Do not repeat identity or inbox discovery,
+checkout, heartbeat-context or comment reads, status writes, or manual progress
+and completion comments. Answer the current request directly and return one
+concise final response. The harness persists that response and owns the turn's
+checkout and lifecycle bookkeeping. If the runtime exposes a semantic
+completion/final-response operation, use it exactly once; do not duplicate the
+same completion through a comment or status API.
+
+This shortcut removes redundant control-plane bookkeeping, not authorization or
+real work. Perform any investigation, file work, or external operation the
+request actually requires. Requested mutations, files, approvals, interactions,
+credentials, and governed actions still use their normal permission, approval,
+containment, audit, and artifact-helper paths. Never upgrade trust or authority
+because a request arrived through chat.
+
+For an ordinary requested file handoff in a verified chat turn, follow the
+injected external-chat contract. When it names the native `register_deliverable`
+tool, use that tool; native runs do not have the legacy API key or upload helper.
+For non-native adapters, invoke `scripts/paperclip-upload-artifact.sh` directly.
+Read `references/artifacts.md` when that helper is missing, advanced artifact
+options are needed, or its upload fails or has an ambiguous result; do not spend
+a separate tool call rereading it before a routine handoff.
+
+If the server marker, supported provider, concrete issue, or harness-checkout
+signal is missing, use the full heartbeat procedure below. Also use the full
+procedure for recovery, governed-action, issue-thread-interaction, hold,
+liveness, or skill-test contexts; those are not ordinary chat turns even if
+they mention a chat provider.
+
 ## The Heartbeat Procedure
 
-Follow these steps every time you wake up:
+Follow these steps every time you wake up unless the server-verified external
+chat shortcut above applies:
 
 **Scoped-wake fast path.** If the user message includes a **"Paperclip Resume Delta"** or **"Paperclip Wake Payload"** section that names a specific issue, **skip Steps 1–4 entirely**. Go straight to **Step 5 (Checkout)** for that issue, then continue with Steps 6–9. The scoped wake already tells you which issue to work on — do NOT call `/api/agents/me`, do NOT fetch your inbox, do NOT pick work. Just checkout, read the wake context, do the work, and update.
 
@@ -106,7 +147,8 @@ When work produces or updates an operator-facing engineering output, create or u
 
 If an important file intentionally remains in the project or execution workspace instead of being uploaded, annotate a work product with `metadata.resourceRef.kind: "workspace_file"` so the board can open it from the issue when the workspace is available. Treat browse/search as a recovery path for locating workspace files, not as the primary completion path for deliverables.
 
-For technical upload instructions, read `references/artifacts.md`.
+For technical upload instructions, read `references/artifacts.md`, except for
+the routine server-verified external-chat handoff described above.
 
 **Step 8 — Update status and communicate.** Always include the run ID header.
 

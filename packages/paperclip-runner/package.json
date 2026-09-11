@@ -157,7 +157,7 @@
     "verify:rootless": "bash scripts/verify-rootless-linux.sh"
   },
   "dependencies": {
-    "@agentclientprotocol/claude-agent-acp": "0.70.0",
+    "@agentclientprotocol/claude-agent-acp": "0.73.0",
     "@agentclientprotocol/codex-acp": "1.6.2",
     "@openai/codex": "0.153.4",
     "acpx": "0.13.1",
@@ -165,7 +165,8 @@
     "json-schema-to-ts": "^3.1.1",
     "opencode-ai": "1.18.29",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "smol-toml": "^1.4.2"
   },
   "peerDependencies": {
     "react": ">=18",

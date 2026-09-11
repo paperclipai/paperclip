@@ -12,6 +12,8 @@ export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS = 300_000;
 export const PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS = 86_400_000;
 export const PAPERCLIP_RUNNER_DEFAULT_MODELS = {
   codex: "gpt-5.6-sol",
+  acpx: "claude-sonnet-5",
+  opencode: "openrouter/deepseek/deepseek-v4-flash-0731",
 } as const;
 
 export interface PaperclipRunnerPermissionOption<
@@ -170,4 +172,48 @@ export function resolvePaperclipRunnerIdleTimeoutMs(value: unknown): number {
     value <= PAPERCLIP_RUNNER_IDLE_TIMEOUT_MAX_MS
     ? value
     : PAPERCLIP_RUNNER_IDLE_TIMEOUT_DEFAULT_MS;
+}
+
+/** Defaults for converting a local adapter; the operator may override the provider. */
+export function paperclipRunnerTransitionConfig(
+  previousAdapterType: string,
+  previousModel: unknown,
+  providerOverride?: unknown,
+): Record<string, unknown> {
+  const previousProvider =
+    previousAdapterType === "claude_local"
+      ? "acpx"
+      : previousAdapterType === "opencode_local"
+        ? "opencode"
+        : "codex";
+  const provider =
+    providerOverride === "codex" ||
+    providerOverride === "opencode" ||
+    providerOverride === "acpx"
+      ? providerOverride
+      : previousProvider;
+  return {
+    provider,
+    model: resolvePaperclipRunnerModel(
+      provider,
+      provider === previousProvider ? previousModel : undefined,
+    ),
+    ...(provider === "acpx" ? { acpxAgent: "claude" } : {}),
+    [PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider].configKey]:
+      PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES[provider].defaultMode,
+    lifecycleMode: "per_turn",
+  };
+}
+
+/** Old ACPX Codex agent settings use native Codex on their next configuration write. */
+export function normalizeLegacyRunnerProvider(
+  config: Record<string, unknown>,
+): Record<string, unknown> {
+  if (config.provider !== "acpx" || config.acpxAgent !== "codex") return config;
+  const {
+    acpxAgent: _agent,
+    acpxPermissionMode: _permission,
+    ...rest
+  } = config;
+  return { ...rest, provider: "codex", codexPermissionMode: "never" };
 }

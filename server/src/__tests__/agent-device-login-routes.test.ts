@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { lstat, mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -253,6 +253,7 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
         promotionExpiresAt: null,
         finishedAt: null,
         failureReason: null,
+        resultClaim: null,
       });
     },
     async recordLeaseAcquired(input) {
@@ -266,6 +267,7 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
       if (input.failureReason !== undefined) row.failureReason = input.failureReason;
       if (input.finishedAt !== undefined) row.finishedAt = input.finishedAt;
       if (input.promotionExpiresAt !== undefined) row.promotionExpiresAt = input.promotionExpiresAt;
+      if (input.resultClaim !== undefined) row.resultClaim = input.resultClaim;
       if (!isActive(input.status))
         activeSlots.delete(slotKey(row.companyId, row.startedByUserId, row.adapterType));
     },
@@ -276,6 +278,7 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
       if (input.failureReason !== undefined) row.failureReason = input.failureReason;
       if (input.finishedAt !== undefined) row.finishedAt = input.finishedAt;
       if (input.promotionExpiresAt !== undefined) row.promotionExpiresAt = input.promotionExpiresAt;
+      if (input.resultClaim !== undefined) row.resultClaim = input.resultClaim;
       if (!isActive(input.status))
         activeSlots.delete(slotKey(row.companyId, row.startedByUserId, row.adapterType));
       return true;
@@ -908,6 +911,95 @@ describe("adapter device-login routes", () => {
       const status = await request(app).get(`${loginPath(COMPANY_1)}/${first.body.sessionId}`);
       expect(status.body.status).toBe("authenticated");
     });
+  });
+
+  it("an authenticated login's owner read carries the account-binding claim with the identity verdict", async () => {
+    // The claim is non-secret — the opaque company secret id plus whether the
+    // company default home stayed on a DIFFERENT account. The client offers
+    // binding the agent's CODEX_HOME only when the identities differ, which
+    // is the one case where the login cannot take effect through the shared
+    // company home.
+    const instanceRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-login-binding-"));
+    try {
+      vi.stubEnv("PAPERCLIP_HOME", instanceRoot);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      const companyHome = path.join(instanceRoot, "instances", "default", "companies", COMPANY_1, "codex-home");
+      await mkdir(companyHome, { recursive: true });
+      await writeFile(
+        path.join(companyHome, "auth.json"),
+        JSON.stringify({
+          tokens: { id_token: "t", access_token: "t", refresh_token: "t", account_id: "acct-other" },
+        }),
+      );
+      mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValue(
+        "/tmp/paperclip-codex-account-home/acct-default",
+      );
+      const app = await createApp();
+      const started = await request(app).post(loginPath(COMPANY_1)).send({ environmentId: SANDBOX_ENV_1 });
+      expect(started.status, JSON.stringify(started.body)).toBe(201);
+      harness.releaseGate();
+      await vi.waitFor(async () => {
+        const status = await request(app).get(`${loginPath(COMPANY_1)}/${started.body.sessionId}`);
+        expect(status.body.status).toBe("authenticated");
+        expect(status.body.codexAccountBinding).toEqual({
+          secretId: "secret-1",
+          companyIdentityDiffers: true,
+        });
+      });
+      // The claim rides the terminal write, not process memory: a fresh app
+      // over the same durable store (a restart) still serves it, so the
+      // client's bind offer survives the exact window a restart used to
+      // silently lose.
+      const restarted = await createApp();
+      const afterRestart = await request(restarted).get(
+        `${loginPath(COMPANY_1)}/${started.body.sessionId}`,
+      );
+      expect(afterRestart.body.status).toBe("authenticated");
+      expect(afterRestart.body.codexAccountBinding).toEqual({
+        secretId: "secret-1",
+        companyIdentityDiffers: true,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(instanceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("a login for the account the company home already holds reports no identity mismatch", async () => {
+    // Same-account logins take effect through the company-home refresh; the
+    // claim still rides along with `companyIdentityDiffers: false`, and the
+    // client deliberately binds nothing.
+    const instanceRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-login-binding-same-"));
+    try {
+      vi.stubEnv("PAPERCLIP_HOME", instanceRoot);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      const companyHome = path.join(instanceRoot, "instances", "default", "companies", COMPANY_1, "codex-home");
+      await mkdir(companyHome, { recursive: true });
+      await writeFile(
+        path.join(companyHome, "auth.json"),
+        JSON.stringify({
+          tokens: { id_token: "t", access_token: "t", refresh_token: "t", account_id: "acct-default" },
+        }),
+      );
+      mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValue(
+        "/tmp/paperclip-codex-account-home/acct-default",
+      );
+      const app = await createApp();
+      const started = await request(app).post(loginPath(COMPANY_1)).send({ environmentId: SANDBOX_ENV_1 });
+      expect(started.status, JSON.stringify(started.body)).toBe(201);
+      harness.releaseGate();
+      await vi.waitFor(async () => {
+        const status = await request(app).get(`${loginPath(COMPANY_1)}/${started.body.sessionId}`);
+        expect(status.body.status).toBe("authenticated");
+        expect(status.body.codexAccountBinding).toEqual({
+          secretId: "secret-1",
+          companyIdentityDiffers: false,
+        });
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(instanceRoot, { recursive: true, force: true });
+    }
   });
 
   it("fails closed when promotion loses the sole-owner claim", async () => {

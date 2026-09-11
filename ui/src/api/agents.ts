@@ -22,6 +22,7 @@ import type {
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupResponse,
+  ChatFailedRunRetryResponse,
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
@@ -202,10 +203,11 @@ export const agentsApi = {
   adapterModels: (
     companyId: string,
     type: string,
-    options?: { refresh?: boolean; environmentId?: string | null },
+    options?: { refresh?: boolean; environmentId?: string | null; provider?: string },
   ) => {
     const params = new URLSearchParams();
     if (options?.refresh) params.set("refresh", "1");
+    if (options?.provider) params.set("provider", options.provider);
     if (options?.environmentId) params.set("environmentId", options.environmentId);
     const query = params.size > 0 ? `?${params.toString()}` : "";
     return api.get<AdapterModel[]>(
@@ -221,6 +223,7 @@ export const agentsApi = {
     type: string,
     data: {
       adapterConfig: Record<string, unknown>;
+      testCredentials?: Record<string, string>;
       environmentId?: string | null;
     },
   ) =>
@@ -241,6 +244,30 @@ export const agentsApi = {
     data: AgentWakeRequest,
     companyId?: string,
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
+  retryFailedRun: async (
+    id: string,
+    failedRunId: string,
+    companyId: string,
+  ) => {
+    const result = await api.post<
+      AgentWakeupResponse | ChatFailedRunRetryResponse
+    >(agentPath(id, companyId, "/wakeup"), {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "retry_failed_run",
+      failedRunId,
+    });
+    if ("id" in result) return { runId: result.id, issueId: null };
+    if ("actionId" in result) {
+      if (result.status === "failed" || result.status === "cancelled") {
+        throw new Error(
+          "This retry could not start. Open the task to review its current access and recovery state.",
+        );
+      }
+      return { runId: result.runId, issueId: result.issueId };
+    }
+    throw new Error(result.message ?? "Retry was skipped.");
+  },
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   startAdapterAuthLogin: (
