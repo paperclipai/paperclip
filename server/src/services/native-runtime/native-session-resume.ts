@@ -601,6 +601,7 @@ export function buildNativeExecutionWithCheckpoint(input: {
         previousRun: input.previousRun,
         currentExecution: execution,
         executionTargetKind: input.executionTargetKind,
+        requireSameProviderSession: input.requireCheckpoint,
       })
     : null;
   if (checkpoint)
@@ -634,6 +635,28 @@ export class NativeGoalResumeCheckpointUnavailableError extends Error {
   }
 }
 
+/** A Goal-control dispatch may use only an exact, non-replaceable checkpoint. */
+export function nativeGoalResumeCheckpointMatchesExecution(input: {
+  checkpoint: unknown;
+  execution: NativeExecutionInput;
+}): boolean {
+  const checkpoint = record(input.checkpoint);
+  const identity = record(checkpoint.identity);
+  const execution = input.execution;
+  return (
+    typeof checkpoint.sessionId === "string" &&
+    identity.runId === execution.binding.runId &&
+    identity.companyId === execution.binding.companyId &&
+    identity.issueId === execution.binding.issueId &&
+    identity.agentId === execution.binding.agentId &&
+    identity.sessionId === execution.session.normalizedSessionId &&
+    checkpoint.providerRecoveryPolicy !==
+      "allow_replacement_after_governed_wait" &&
+    checkpoint.providerRecoveryPolicy !==
+      "allow_replacement_after_resume_failure"
+  );
+}
+
 /**
  * Rebind a completed prior run's provider checkpoint to a new heartbeat run.
  * The provider/driver session identity is retained, while every per-turn and
@@ -649,6 +672,7 @@ export function rebindNativeSessionCheckpoint(input: {
   };
   currentExecution: NativeExecutionInput;
   executionTargetKind?: NativeToolExecutionTargetKind;
+  requireSameProviderSession?: boolean;
 }): PersistedNativeSession | null {
   const previousProfile = record(input.previousRun.runnerProfileJson);
   if (
@@ -716,12 +740,14 @@ export function rebindNativeSessionCheckpoint(input: {
     rawGoal !== null &&
     rawGoal !== undefined &&
     record(rawGoal).status !== "complete";
-  const providerRecoveryPolicy = hasUnfinishedGoal
+  const providerRecoveryPolicy = input.requireSameProviderSession
     ? ("same_session_only" as const)
-    : priorSemanticResult.reportedWorkDisposition === "yielded" &&
-        priorContinuation.kind === "response_wake"
-      ? ("allow_replacement_after_governed_wait" as const)
-      : ("allow_replacement_after_resume_failure" as const);
+    : hasUnfinishedGoal
+      ? ("same_session_only" as const)
+      : priorSemanticResult.reportedWorkDisposition === "yielded" &&
+          priorContinuation.kind === "response_wake"
+        ? ("allow_replacement_after_governed_wait" as const)
+        : ("allow_replacement_after_resume_failure" as const);
 
   return {
     ...(structuredClone(rawCheckpoint) as unknown as PersistedNativeSession),

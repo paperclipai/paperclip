@@ -39,8 +39,10 @@ import {
   defaultCapabilityRunnerdBinary,
   executeNativeSession,
   parseNativeExecutionInput,
+  type ControlPlanePort,
   type NativeExecutionInput,
   type NativeSession,
+  type NativeSessionBackend,
 } from "../../vendor/paperclip-runner/index.js";
 import {
   runnerPrpWebSocketInternals,
@@ -65,6 +67,7 @@ import {
   NATIVE_TOOL_CONTRACT_FINGERPRINT,
   isUnusedLegacyNativeRetryReplacement,
   NativeGoalResumeCheckpointUnavailableError,
+  nativeGoalResumeCheckpointMatchesExecution,
   nativeExecutionMatchesGoalResumeAnchor,
   nativeToolContractFingerprintForTarget,
   nativeSessionIdForBootstrapPersistence,
@@ -429,9 +432,8 @@ it("wires exact-session recovery and guarded selected identity into heartbeat pe
   expect(source).toContain("resolveNativeTaskSessionResumeSeed({");
   expect(source).toContain("goalResumeAnchor: nativeGoalResumeAnchor,");
   expect(source).toContain("requireCheckpoint: nativeGoalResumeRequired,");
-  expect(source).toContain(
-    '"goal_source_checkpoint_unavailable_or_superseded"',
-  );
+  expect(source).toContain("nativeGoalResumeCheckpointMatchesExecution({");
+  expect(source).toContain("requirePersistedSession: nativeGoalResumeRequired,");
   expect(source).toContain(
     "await prepareNativeSessionBootstrapPersistence(tx,",
   );
@@ -486,7 +488,7 @@ describe("native Goal resume authority", () => {
     });
   });
 
-  it("ignores a later failed rotation in task-session metadata", () => {
+  it("recovers the Goal source after a later failed rotation without provider replacement", async () => {
     const anchor = resolveNativeGoalResumeAnchor({
       goalSourceId: `${runnerInstanceId}:${previousRunId}`,
       companyId,
@@ -497,17 +499,86 @@ describe("native Goal resume authority", () => {
     });
     const failedRotationRunId = randomUUID();
     const failedRotationSessionId = randomUUID();
-    expect(
-      resolveNativeTaskSessionResumeSeed({
-        goalResumeAnchor: anchor,
-        taskSessionLastRunId: failedRotationRunId,
-        taskSessionNormalizedSessionId: failedRotationSessionId,
-        currentRunId,
-      }),
-    ).toEqual({
+    const seed = resolveNativeTaskSessionResumeSeed({
+      goalResumeAnchor: anchor,
+      taskSessionLastRunId: failedRotationRunId,
+      taskSessionNormalizedSessionId: failedRotationSessionId,
+      currentRunId,
+    });
+    expect(seed).toEqual({
       sourceRunId: previousRunId,
       normalizedSessionId,
     });
+
+    const resumed = buildNativeExecutionWithCheckpoint({
+      previousRun: sourceRun(),
+      normalizedSessionId: seed!.normalizedSessionId,
+      requireCheckpoint: true,
+      buildExecution: () =>
+        execution(currentRunId, "/managed-workspace", "standard", {
+          id: managedWorkspaceId,
+        }),
+    });
+    const openSession = vi.fn();
+    const recoverSession = vi.fn(async () => ({
+      recovered: false as const,
+      reason: "the original provider process is unavailable",
+    }));
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "failed-rotation-recovery",
+          version: "1",
+          capabilities: {
+            resume: true,
+            typedEvents: true,
+            steering: false,
+            interruption: true,
+            structuredResult: true,
+          },
+          runtimeContextCapabilities: {
+            instructions: "native",
+            skills: "native",
+            mcp: "native",
+          },
+        };
+      },
+      openSession,
+      recoverSession,
+    };
+    const controlPlane: ControlPlanePort = {
+      async openRun() {
+        throw new Error("a failed exact recovery must not open a new run");
+      },
+      async checkpointSession() {},
+      async appendEvent() {
+        throw new Error("unexpected event");
+      },
+      async replayEvents() {
+        return { events: [], highestContiguousSourceSeq: 0 };
+      },
+      async completeRun() {},
+    };
+
+    await expect(
+      executeNativeSession({
+        input: resumed.execution,
+        backend,
+        persistedSession: resumed.checkpoint,
+        requirePersistedSession: true,
+        sessionGoalControl: {
+          requestId: "goal-edit-after-failed-rotation",
+          action: "edit",
+          tokenBudget: 100_000,
+        },
+        controlPlane,
+        runnerInstanceId,
+        controlPlaneInstanceId: "control-plane-instance",
+      }),
+    ).rejects.toThrow("native_session_recovery_failed");
+    expect(recoverSession).toHaveBeenCalledOnce();
+    expect(openSession).not.toHaveBeenCalled();
   });
 
   it("accepts only a same-run immutable execution input bound to that Goal authority", () => {
@@ -606,6 +677,41 @@ describe("native Goal resume authority", () => {
         buildExecution: () => changedRuntime,
       }),
     ).toThrow(NativeGoalResumeCheckpointUnavailableError);
+  });
+
+  it("rejects a persisted current-run input without an exact non-replaceable checkpoint", () => {
+    const current = execution(
+      currentRunId,
+      "/managed-workspace",
+      "standard",
+      { id: managedWorkspaceId },
+    );
+    const rebound = rebindNativeSessionCheckpoint({
+      previousRun: sourceRun(),
+      currentExecution: current,
+      requireSameProviderSession: true,
+    });
+    expect(
+      nativeGoalResumeCheckpointMatchesExecution({
+        checkpoint: rebound,
+        execution: current,
+      }),
+    ).toBe(true);
+    expect(
+      nativeGoalResumeCheckpointMatchesExecution({
+        checkpoint: null,
+        execution: current,
+      }),
+    ).toBe(false);
+    expect(
+      nativeGoalResumeCheckpointMatchesExecution({
+        checkpoint: {
+          ...rebound,
+          providerRecoveryPolicy: "allow_replacement_after_resume_failure",
+        },
+        execution: current,
+      }),
+    ).toBe(false);
   });
 
   it.each([

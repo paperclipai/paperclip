@@ -194,6 +194,7 @@ import {
   nativeCompletionRequestsForComments,
   NativeCancellationPendingRecoveryError,
   NativeGoalResumeCheckpointUnavailableError,
+  nativeGoalResumeCheckpointMatchesExecution,
   nativeExecutionMatchesGoalResumeAnchor,
   nativeToolContractFingerprintForTarget,
   prepareNativeSessionBootstrapPersistence,
@@ -22028,15 +22029,6 @@ export function heartbeatService(
                   beforeCreatedAt: run.createdAt,
                 })
               : null;
-          if (
-            nativeGoalResumeRequired &&
-            !persistedNativeExecutionInput &&
-            !previousNativeRun
-          ) {
-            throw nativeGoalResumeUnavailable(
-              "goal_source_checkpoint_unavailable_or_superseded",
-            );
-          }
           nativeRunnerInstanceId =
             previousNativeRun?.runnerInstanceId &&
             previousNativeRun.nativeSessionId ===
@@ -22110,6 +22102,7 @@ export function heartbeatService(
                 previousRun: previousNativeRun,
                 currentExecution: nativeExecution,
                 executionTargetKind: executionTarget?.kind ?? "local",
+                requireSameProviderSession: nativeGoalResumeRequired,
               });
             }
             if (nativeExecution.provider.kind === "claude_managed") {
@@ -22326,6 +22319,16 @@ export function heartbeatService(
               nativeRunnerInstanceId = randomUUID();
             }
             nativeSessionId = nativeExecutionWithCheckpoint.normalizedSessionId;
+          }
+          if (
+            nativeGoalResumeRequired &&
+            !nativeGoalResumeCheckpointMatchesExecution({
+              checkpoint:
+                nativeResumeCheckpoint ?? persistedProfile.sessionCheckpoint,
+              execution: nativeExecution,
+            })
+          ) {
+            throw new NativeGoalResumeCheckpointUnavailableError();
           }
           const nativeSandboxLifecycle = resolveNativeSandboxLifecycle({
             adapterType: agent.adapterType,
@@ -22917,6 +22920,7 @@ export function heartbeatService(
                       resumeSessionGoalHeartbeat:
                         context.resumeSessionGoalHeartbeat === true ||
                         completedGoalControl,
+                      requirePersistedSession: nativeGoalResumeRequired,
                       onGoalCheckpoint: async (snapshot) => {
                         if (!taskKey) return;
                         const params =

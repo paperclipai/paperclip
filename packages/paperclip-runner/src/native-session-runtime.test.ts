@@ -1913,6 +1913,60 @@ describe("executeNativeSession recovery", () => {
     expect(openSession).not.toHaveBeenCalled();
   });
 
+  it("does not create a replacement provider session when exact Goal continuity has no checkpoint", async () => {
+    const openSession = vi.fn();
+    const loadSessionCheckpoint = vi.fn(async () => null);
+    const backend: NativeSessionBackend = {
+      async descriptor() {
+        return {
+          kind: "mock",
+          name: "missing-goal-checkpoint",
+          version: "1",
+          capabilities: {
+            resume: true,
+            typedEvents: true,
+            steering: false,
+            interruption: true,
+            structuredResult: true,
+          },
+        };
+      },
+      openSession,
+    };
+    const port: ControlPlanePort = {
+      loadSessionCheckpoint,
+      async openRun() {
+        throw new Error("a checkpoint-less Goal dispatch must not open a run");
+      },
+      async appendEvent() {
+        throw new Error("unexpected event");
+      },
+      async replayEvents() {
+        return { events: [], highestContiguousSourceSeq: 0 };
+      },
+      async completeRun() {},
+    };
+
+    await expect(
+      executeNativeSession({
+        input,
+        backend,
+        controlPlane: port,
+        runnerInstanceId: "runner-recovery",
+        controlPlaneInstanceId: "control-recovery",
+        sessionGoalControl: {
+          requestId: "goal-edit-after-failed-rotation",
+          action: "edit",
+          tokenBudget: 100_000,
+        },
+        requirePersistedSession: true,
+      }),
+    ).rejects.toThrow("native_session_required_checkpoint_missing");
+
+    expect(loadSessionCheckpoint).toHaveBeenCalledOnce();
+    expect(openSession).not.toHaveBeenCalled();
+  });
+
   it("does not admit a fresh run when provider session initialization fails", async () => {
     const providerFailure = new Error("provider initialization failed");
     const openSession = vi.fn(async () => {

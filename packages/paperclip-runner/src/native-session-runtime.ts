@@ -150,6 +150,8 @@ export interface ExecuteNativeSessionOptions {
   onSessionQuarantined?: (reason: string) => Promise<void> | void;
   existingSession?: NativeSession;
   persistedSession?: PersistedNativeSession | null;
+  /** Refuse fresh provider creation when the caller requires exact continuity. */
+  requirePersistedSession?: boolean;
   keepSessionOpen?: boolean;
   /** Apply a structured session-goal control instead of starting an ordinary turn. */
   sessionGoalControl?: NativeSessionGoalControl | null;
@@ -1766,6 +1768,13 @@ export async function executeNativeSession(
       persistedSession.identity.sessionId !== input.session.normalizedSessionId)
   )
     throw new Error("native_session_checkpoint_binding_mismatch");
+  if (
+    options.requirePersistedSession &&
+    !options.existingSession &&
+    !persistedSession
+  ) {
+    throw new Error("native_session_required_checkpoint_missing");
+  }
   const existingIdentity = options.existingSession?.identity() ?? null;
   if (
     existingIdentity &&

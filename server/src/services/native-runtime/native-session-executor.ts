@@ -6633,6 +6633,8 @@ export async function executePaperclipNativeSession(input: {
   onGoalCheckpoint?: (snapshot: PersistedNativeSession) => Promise<void>;
   sessionGoalControl?: NativeSessionGoalControl | null;
   resumeSessionGoalHeartbeat?: boolean;
+  /** Defense in depth for Goal controls that may not create a new provider session. */
+  requirePersistedSession?: boolean;
   /** Internal test seam; production rolls over five minutes before runnerd's one-hour lease. */
   goalRolloverAtMs?: number;
   preparationSpans?: NativeRunHistoricalSpan[];
@@ -7660,6 +7662,7 @@ async function executePaperclipNativeSessionWithinScope(
             keepSessionOpen: warmSessionId !== null,
             sessionGoalControl: input.sessionGoalControl,
             resumeSessionGoalHeartbeat: input.resumeSessionGoalHeartbeat,
+            requirePersistedSession: input.requirePersistedSession,
             // Every durable runner must finish its bounded suspension before
             // the next run verifies and rotates the saved authority.
             requireSessionCloseBeforeReturn: runnerdBackend !== null,
