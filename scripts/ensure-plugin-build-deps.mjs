@@ -57,6 +57,9 @@ function newestSourceMtimeMs(sourceDir) {
 function needsBuild(target) {
   if (!fs.existsSync(target.output) || !fs.existsSync(target.completion)) return true;
   const outputMtime = fs.statSync(target.output).mtimeMs;
+  // Direct tsc invocations cannot certify completion. Rebuild their output
+  // once through this helper; subsequent startups reuse the refreshed marker.
+  if (outputMtime > fs.statSync(target.completion).mtimeMs) return true;
   return newestSourceMtimeMs(target.sourceDir) > outputMtime;
 }
 

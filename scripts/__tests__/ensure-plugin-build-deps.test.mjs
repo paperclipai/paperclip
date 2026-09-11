@@ -156,17 +156,44 @@ test("hard-killed compilation cannot leave partial output accepted on recovery",
   assert.equal(fs.existsSync(complete), true);
 });
 
-test("accepts current output rebuilt by a direct package build", async (t) => {
+test("rebuilds uncertified direct output once, then reuses the completed build", async (t) => {
   const f = fixture(t);
   assert.equal((await f.launch().done).code, 0);
   const builds = fs.readFileSync(path.join(f.root, "builds"), "utf8");
-  // A direct tsc invocation updates index.js without changing our marker.
-  const newer = new Date(Date.now() + 1000);
+  // A successful or interrupted direct tsc invocation updates index.js without
+  // changing our marker. Neither can certify that all output was emitted.
+  await sleep(20);
+  const newer = new Date();
   for (const target of ["packages/shared", "packages/plugins/sdk"]) {
     fs.utimesSync(path.join(f.root, target, "dist/index.js"), newer, newer);
   }
   const retry = await f.launch().done;
   assert.equal(retry.code, 0, retry.output);
-  assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8"), builds);
-  assert.doesNotMatch(retry.output, /Building/);
+  const rebuilt = fs.readFileSync(path.join(f.root, "builds"), "utf8");
+  assert.equal(rebuilt.trim().split("\n").length, builds.trim().split("\n").length + 2);
+  const next = await f.launch().done;
+  assert.equal(next.code, 0, next.output);
+  assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8"), rebuilt);
+  assert.doesNotMatch(next.output, /Building/);
+});
+
+test("rejects partial output from an interrupted direct compiler", async (t) => {
+  const f = fixture(t);
+  assert.equal((await f.launch().done).code, 0);
+  const target = path.join(f.root, "packages/shared");
+  fs.unlinkSync(path.join(target, "dist/complete"));
+  const completionTime = fs.statSync(path.join(target, "dist/.paperclip-build-complete")).mtimeMs;
+  await sleep(20);
+  const compiler = spawn(process.execPath, ["node_modules/typescript/bin/tsc", "-p", path.join(target, "tsconfig.json")], {
+    cwd: f.root, env: { ...process.env, BUILD_DELAY: "10000" }, stdio: "ignore",
+  });
+  const closed = once(compiler, "close");
+  t.after(() => { if (compiler.exitCode === null) compiler.kill("SIGKILL"); });
+  await until(() => fs.statSync(path.join(target, "dist/index.js")).mtimeMs > completionTime);
+  compiler.kill("SIGKILL");
+  await closed;
+  fs.rmSync(path.join(f.root, "compiler-active"), { recursive: true, force: true });
+  const retry = await f.launch().done;
+  assert.equal(retry.code, 0, retry.output);
+  assert.equal(fs.existsSync(path.join(target, "dist/complete")), true);
 });

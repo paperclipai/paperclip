@@ -425,6 +425,8 @@ once they are at least two minutes old. The command remains in the foreground
 after printing its ready URL to serve the instance; use Ctrl-C to stop it.
 Each package gets a completion marker only after a successful build. A hard
 kill leaves that marker absent, so the next startup rebuilds partial output.
+A direct `tsc` build does not update this marker. Source startup rebuilds that
+output once to confirm completion; later startups reuse the completed build.
 
 Claude uses `ANTHROPIC_API_KEY`; Codex uses `OPENAI_API_KEY`; OpenCode uses
 `OPENROUTER_API_KEY` and requires an `openrouter/...` model. `--api-key-env`
