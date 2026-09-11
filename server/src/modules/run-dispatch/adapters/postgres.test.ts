@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -50,6 +51,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
@@ -792,6 +794,10 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     const [resolved] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
     expect(resolved).toMatchObject({ status: "resolved", outcome: "cancelled", evidence: { runId: previousRunId } });
     expect(resolved.evidence.automaticRecovery).toMatchObject({ replay: "conversation_continuation", actionOutcome: "unknown" });
+    await settleUnrecoverableExecutions(db);
+    const audit = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({ companyId, action: "issue.execution_recovery_settled" });
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, previousRunId))).toHaveLength(0);
     // The upgrade does not silently resume historical blocked work.
     expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("blocked");
