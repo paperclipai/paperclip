@@ -21,6 +21,8 @@ export interface ChatIssue {
   parentId?: string | null;
   projectId?: string | null;
   assigneeAgentId?: string | null;
+  scheduledRetry?: unknown;
+  activeRecoveryAction?: unknown;
 }
 export interface ChatRun {
   id: string;
@@ -59,6 +61,19 @@ export function chatRunFailure(
   return failed
     ? `run ${failed.id} ${failed.status}${failed.errorCode ? ` (${failed.errorCode})` : ""}${failed.error ? `: ${failed.error}` : ""}`
     : undefined;
+}
+
+export function chatTaskCompletionFailure(
+  task: ChatIssue,
+  runs: ChatRun[],
+): string | undefined {
+  if (
+    task.scheduledRetry ||
+    task.activeRecoveryAction ||
+    runs.some((run) => ["queued", "running"].includes(run.status))
+  )
+    return undefined;
+  return chatRunFailure(runs);
 }
 
 /** Match the shared question form's durable/native presentation, including custom labels. */
@@ -360,6 +375,12 @@ export async function runChatFlow(input: {
     } else {
       let existingProject: { id: string; name: string } | undefined;
       let acceptedPlan: Plan | undefined;
+      let repositoryCatalogBefore:
+        { repositories: Array<{ id: string; url: string }> } | undefined;
+      const expectedRepositoryUrls = [
+        "https://github.com/octocat/Hello-World",
+        "https://github.com/octocat/Spoon-Knife",
+      ];
       if (caseId === "clarify-reuse") {
         existingProject = await api.post(
           `/api/companies/${f.company.id}/projects`,
@@ -540,6 +561,14 @@ export async function runChatFlow(input: {
           source: await api.get(`/api/issues/${issue!.id}/documents/plan`),
         });
       } else {
+        repositoryCatalogBefore = await api.get(
+          `/api/companies/${f.company.id}/project-repositories`,
+        );
+        expect(
+          repositoryCatalogBefore!.repositories.filter((repository) =>
+            expectedRepositoryUrls.includes(repository.url),
+          ),
+        ).toHaveLength(0);
         await turn(
           `Create a project called Repository Discussion ${nonce} for work spanning https://github.com/octocat/Hello-World and https://github.com/octocat/Spoon-Knife. These existing public repositories are not in our catalog; register both URLs. Then make one assigned task for yourself to write a two-sentence description of the intended project in an output document, containing ${marker}, and complete that task. No code changes or remote repository creation are needed.`,
           2,
@@ -548,13 +577,17 @@ export async function runChatFlow(input: {
       const children = await tasks();
       expect(children).toHaveLength(1);
       const child = children[0]!;
-      await expect
-        .poll(
-          async () =>
-            (await api.get<ChatIssue>(`/api/issues/${child.id}`)).status,
-          { timeout: 240_000 },
-        )
-        .toBe("done");
+      await pollUntil({
+        label: `execution task ${child.id} completes`,
+        deadlineAt: Date.now() + 240_000,
+        intervalMs: 1000,
+        load: async () => ({
+          task: await api.get<ChatIssue>(`/api/issues/${child.id}`),
+          runs: await api.get<ChatRun[]>(`/api/issues/${child.id}/runs`),
+        }),
+        accept: (state) => state.task.status === "done",
+        reject: (state) => chatTaskCompletionFailure(state.task, state.runs),
+      });
       runs = await allRuns();
       input.observe(issue!, runs);
       const plan =
@@ -590,7 +623,7 @@ export async function runChatFlow(input: {
         Array<{
           id: string;
           name: string;
-          workspaces: Array<{ repoUrl?: string }>;
+          workspaces: Array<{ id: string; name: string; repoUrl?: string }>;
         }>
       >(`/api/companies/${f.company.id}/projects`);
       expect(projects).toHaveLength(1);
@@ -605,19 +638,38 @@ export async function runChatFlow(input: {
         ).toHaveCount(1);
         if (caseId === "multi-repository") {
           expect(projects[0]!.workspaces.map((w) => w.repoUrl).sort()).toEqual(
-            [
-              "https://github.com/octocat/Hello-World",
-              "https://github.com/octocat/Spoon-Knife",
-            ].sort(),
+            [...expectedRepositoryUrls].sort(),
           );
+          // URL registration is persisted as project workspaces; the discovery
+          // catalog continues to reflect authorized GitHub connections only.
+          expect(
+            projects[0]!.workspaces.every((workspace) => Boolean(workspace.id)),
+          ).toBe(true);
+          expect(
+            new Set(projects[0]!.workspaces.map((workspace) => workspace.id))
+              .size,
+          ).toBe(2);
+          const persistedProject = await api.get<{
+            workspaces: Array<{ id: string; repoUrl?: string }>;
+          }>(`/api/projects/${projects[0]!.id}`);
+          expect(
+            persistedProject.workspaces.map(({ id, repoUrl }) => ({
+              id,
+              repoUrl,
+            })),
+          ).toEqual(
+            projects[0]!.workspaces.map(({ id, repoUrl }) => ({ id, repoUrl })),
+          );
+          await input.evidence("chat-repository-registration.json", {
+            catalogBefore: repositoryCatalogBefore,
+            projectId: projects[0]!.id,
+            registeredWorkspaces: persistedProject.workspaces,
+          });
           const projectCard = page.getByRole("article", {
             name: /Project created:/,
           });
           // Repository labels may be customized; verify the actual destinations.
-          for (const repositoryUrl of [
-            "https://github.com/octocat/Hello-World",
-            "https://github.com/octocat/Spoon-Knife",
-          ]) {
+          for (const repositoryUrl of expectedRepositoryUrls) {
             await expect(
               projectCard.locator(`a[href="${repositoryUrl}"]`),
             ).toBeVisible();

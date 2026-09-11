@@ -5,6 +5,7 @@ import {
   assertChatTaskHandoff,
   chatQuestionPresentation,
   chatRunFailure,
+  chatTaskCompletionFailure,
   collectChatRunEvidence,
   readRunningChatLog,
   isResetRun,
@@ -182,6 +183,30 @@ describe("chat acceptance contracts", () => {
     await expect(readRunningChatLog(api, "broken")).rejects.toThrow(
       "log returned 500",
     );
+  });
+  it("fails terminal execution errors without preempting active retries or recovery", () => {
+    const failed = {
+      ...run,
+      status: "failed",
+      error: "provider rejected request",
+    };
+    expect(chatTaskCompletionFailure(task, [failed])).toContain(
+      "provider rejected request",
+    );
+    expect(
+      chatTaskCompletionFailure(task, [failed, { ...run, status: "queued" }]),
+    ).toBeUndefined();
+    expect(
+      chatTaskCompletionFailure({ ...task, scheduledRetry: { id: "retry" } }, [
+        failed,
+      ]),
+    ).toBeUndefined();
+    expect(
+      chatTaskCompletionFailure(
+        { ...task, activeRecoveryAction: { id: "recovery" } },
+        [failed],
+      ),
+    ).toBeUndefined();
   });
   it("fails promptly on terminal provider failures while permitting only expected cancellations", () => {
     expect(chatRunFailure([run])).toBeUndefined();
