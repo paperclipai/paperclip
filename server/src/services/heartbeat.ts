@@ -18471,12 +18471,30 @@ export function heartbeatService(
         ))
         .limit(1)
         .then((rows) => rows[0] ?? null);
-      const nullEnvironmentProcessLoss = isNullEnvironmentProcessLoss({
-        usageJson: run.usageJson,
-        processPid: run.processPid,
-        processGroupId: run.processGroupId,
-        hasEnvironmentLease: environmentLease !== null,
-      });
+      // The null-environment retry ladder only fires when no more specific
+      // retry path already owns the run:
+      //   - Monitor-dispatch losses fall through to the legacy
+      //     `process_lost_retry` path (which uses
+      //     monitorDispatchLostWithoutFutureWake to decide whether a future
+      //     wake is already scheduled).
+      //   - Resolved interaction-continuation wakes fall through to the
+      //     plan-approval infrastructure retry.
+      //   - Runs that have already been retried once via the legacy path
+      //     (`processLossRetryCount >= 1`) are not eligible for the bounded
+      //     null-env ladder; the legacy retry count is the de-facto
+      //     "have we already retried?" budget shared with the new ladder.
+      const isMonitorDispatchRun = readNonEmptyString(runContext.wakeReason) === "issue_monitor_due";
+      const alreadyRetriedOnce = (run.processLossRetryCount ?? 0) >= 1;
+      const nullEnvironmentProcessLoss =
+        !isMonitorDispatchRun &&
+        !alreadyRetriedOnce &&
+        !isResolvedInteractionContinuationWakeContext(runContext) &&
+        isNullEnvironmentProcessLoss({
+          usageJson: run.usageJson,
+          processPid: run.processPid,
+          processGroupId: run.processGroupId,
+          hasEnvironmentLease: environmentLease !== null,
+        });
       const shouldRetryLegacyProcessLoss = (run.processLossRetryCount ?? 0) < 1 && (
         (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
         monitorDispatchLostWithoutFutureWake
