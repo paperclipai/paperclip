@@ -1,7 +1,8 @@
 // @vitest-environment node
 
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
 import { AgentStatusBadge, IssueStatusBadge, StatusBadge } from "./StatusBadge";
 import { agentStatusVar, taskStatusVar } from "../lib/status-colors";
 
@@ -65,6 +66,21 @@ describe("AgentStatusBadge", () => {
 });
 
 describe("StatusBadge", () => {
+  afterEach(async () => { await i18n.changeLanguage("en"); });
+
+  it.each([
+    ["waiting", "waiting", "Ожидание"],
+    ["active", "active", "Активен"],
+    ["in_progress", "in progress", "В работе"],
+    ["RAW_unknown-state", "RAW unknown state", "RAW unknown state"],
+  ])("preserves upstream English spelling and raw overrides for %s", async (status, english, russian) => {
+    for (const locale of ["en", "ru", "en"]) {
+      await i18n.changeLanguage(locale);
+      expect(renderToStaticMarkup(<StatusBadge status={status} />)).toContain(`>${locale === "ru" ? russian : english}</span>`);
+      expect(renderToStaticMarkup(<StatusBadge status={status} label="My raw label" />)).toContain(">My raw label</span>");
+    }
+  });
+
   it("uses the graduated brand hues", () => {
     expect(renderToStaticMarkup(<StatusBadge status="todo" />)).toContain("bg-amber-100");
     expect(renderToStaticMarkup(<StatusBadge status="in_progress" />)).toContain("bg-blue-100");

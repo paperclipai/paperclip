@@ -6,6 +6,7 @@ import type { TaskChatMaterializedResourceItem } from "./task-chat-model";
 const DISPLAY_KEYS: Readonly<Record<string, string>> = {
   "Run interrupted": "localizationTaskThread.runInterrupted",
   "Run completed": "localizationTaskThread.runCompleted",
+  "Usage limit reached": "localizationTaskThread.providerUsageLimitReached",
   "create": "localizationTaskRuntime.display.ui_create_aqvqe5",
   "modify": "localizationTaskRuntime.display.ui_modify_1gc94zn",
   "delete": "localizationTaskRuntime.display.ui_delete_ssf22y",
@@ -427,6 +428,8 @@ export function taskThreadMarkerDetailDisplay(value: string): string {
     "The run was interrupted before returning an answer.": "interruptedBefore",
     "The run was interrupted after returning a final response.": "interruptedAfter",
     "Provider output exceeded the safe limit.": "providerLimit",
+    "The provider rejected the selected model. Check the model ID and your account's access, save the agent configuration, then retry. View the run for the provider's full error.": "providerModelRejected",
+    "The model provider has reached its current usage limit. Try again after the limit resets.": "providerUsageLimit",
     "Provider output exceeded the safe limit. Retry scheduled automatically.": "providerLimitRetryScheduled",
     "Provider output exceeded the safe limit. You can retry this message now.": "providerLimitRetryNow",
     "The runner returned no user-facing response.": "noResponse",

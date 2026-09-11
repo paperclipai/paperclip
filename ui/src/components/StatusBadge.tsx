@@ -29,7 +29,8 @@ function sentenceCaseStatus(status: string): string {
 // design-allow(pill-pattern): DECISION-SHEET.md C8 - status badges keep the bespoke WCAG-tuned
 // .status-chip color-mix mechanic and do not wrap the Badge primitive.
 export function StatusBadge({ status, label }: { status: string; label?: string }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const originalLabel = status.replace(/[_-]/g, " ");
   return (
     <span
       className={cn(
@@ -37,7 +38,9 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
         statusBadge[status] ?? statusBadgeDefault
       )}
     >
-      {label ?? t(`status.${status}`, { defaultValue: status.replace(/[_-]/g, " ") })}
+      {label ?? (i18n.resolvedLanguage === "en"
+        ? originalLabel
+        : t(`status.${status}`, { defaultValue: originalLabel }))}
     </span>
   );
 }

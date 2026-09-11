@@ -216,7 +216,7 @@ describe("Projects", () => {
     expect(content.indexOf("Alpha")).toBeLessThan(content.indexOf("Charlie"));
     expect(content.indexOf("Charlie")).toBeLessThan(content.indexOf("Other Projects"));
     expect(content.indexOf("Other Projects")).toBeLessThan(content.indexOf("Bravo"));
-    expect(content).toContain("In Progress");
+    expect(content).toContain("in progress");
   });
 
   it("sorts grouped projects by the selected field", async () => {

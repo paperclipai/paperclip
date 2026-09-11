@@ -147,6 +147,15 @@ describe("chat connector UI contract", () => {
     }
   });
 
+  it("keeps exact audit timestamps available beside localized visible dates", () => {
+    const detail = source("./ChatEndpointDetail.tsx");
+    expect(detail).toContain("dateTime={surface.observedAt}");
+    expect(detail).toContain("title={surface.observedAt}");
+    expect(detail).toContain("dateTime={item.createdAt}");
+    expect(detail).toContain("title={item.createdAt}");
+    expect(detail).toContain("formatDateTime(item.createdAt, { includeSeconds: true })");
+  });
+
   it("states the provider boundary for reconnect and removal", () => {
     const detail = source("./ChatEndpointDetail.tsx");
     const setup = source("./ChatEndpointSetup.tsx");

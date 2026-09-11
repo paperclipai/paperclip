@@ -869,7 +869,7 @@ function Activity({
                   <p className="mt-1 text-xs text-muted-foreground">{t("chatUi.chatEndpointDetail.lastObserved")}{" "}
                     <time
                       dateTime={surface.observedAt}
-                      title={formatDateTime(surface.observedAt, { includeSeconds: true })}
+                      title={surface.observedAt}
                       className="font-mono"
                     >
                       {formatDateTime(surface.observedAt, {
@@ -980,7 +980,7 @@ function Activity({
                     <StatusBadge status={item.status} />
                     <time
                       dateTime={item.createdAt}
-                      title={formatDateTime(item.createdAt, { includeSeconds: true })}
+                      title={item.createdAt}
                       className="font-mono text-xs text-muted-foreground"
                     >
                       {formatDateTime(item.createdAt, { includeSeconds: true })}
