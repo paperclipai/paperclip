@@ -110,6 +110,7 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.prp.command.v1",
   "paperclip.prp.contract_manifest.v1",
   "paperclip.prp.event.v1",
+  "paperclip.prp.event.v2",
   "paperclip.prp.fixture.v1",
   "paperclip.prp.identity.v1",
   "paperclip.prp.semantic_tool.v1",
@@ -194,7 +195,7 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
 // Keep this closed catalog aligned with PRP v1's event.schema.json. These
 // values are public protocol discriminators, but their dotted shape overlaps
 // the deliberately broad JWT heuristic. They are exempt only in the
-// discriminator field of a PRP v1 event envelope; the same string anywhere
+// discriminator field of a supported PRP event envelope; the same string anywhere
 // else remains subject to redaction.
 export const PRP_V1_EVENT_TYPES = new Set([
   "runner.connected",
@@ -302,6 +303,17 @@ export const PRP_V1_EVENT_TYPES = new Set([
   "issue.status.decision.rejected",
   "issue.status.decision.superseded",
   "run.terminal",
+]);
+// V2 removes backpressure and semantic reconciliation, and adds goal events.
+// Exact parity with both protocol schemas is enforced by redaction.test.ts.
+export const PRP_V2_EVENT_TYPES = new Set([
+  ...[...PRP_V1_EVENT_TYPES].filter(
+    (type) => type !== "runner.backpressure" && type !== "semantic_tool.reconciled",
+  ),
+  "session.capabilities.updated",
+  "session.goal.snapshot",
+  "session.goal.updated",
+  "session.goal.cleared",
 ]);
 const NATIVE_RUN_SPAN_SCHEMA = "paperclip.run-performance-span.v1";
 const NATIVE_RUN_SPAN_FIELDS = ["span", "parentSpan"] as const;
@@ -843,10 +855,13 @@ function isKnownPrpEventDiscriminator(
 ): value is string {
   return (
     key === "eventType" &&
-    container.schema === "paperclip.prp.event.v1" &&
-    container.schemaVersion === 1 &&
     typeof value === "string" &&
-    PRP_V1_EVENT_TYPES.has(value)
+    ((container.schema === "paperclip.prp.event.v1" &&
+      container.schemaVersion === 1 &&
+      PRP_V1_EVENT_TYPES.has(value)) ||
+      (container.schema === "paperclip.prp.event.v2" &&
+        container.schemaVersion === 2 &&
+        PRP_V2_EVENT_TYPES.has(value)))
   );
 }
 
