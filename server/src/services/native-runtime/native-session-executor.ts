@@ -6614,6 +6614,8 @@ export async function executePaperclipNativeSession(input: {
   db: Db;
   execution: NativeExecutionInput;
   runnerInstanceId: string;
+  /** Configured total turn bound; zero/unset is unlimited. */
+  turnTimeoutMs?: number;
   leaseOwner?: string;
   restartRecovery?: NativeRestartRecoveryClaim;
   onSpawn?: (meta: {
@@ -6634,8 +6636,6 @@ export async function executePaperclipNativeSession(input: {
   onGoalCheckpoint?: (snapshot: PersistedNativeSession) => Promise<void>;
   sessionGoalControl?: NativeSessionGoalControl | null;
   resumeSessionGoalHeartbeat?: boolean;
-  /** Internal test seam; production rolls over five minutes before runnerd's one-hour lease. */
-  goalRolloverAtMs?: number;
   preparationSpans?: NativeRunHistoricalSpan[];
   /** Resolved adapter env; the runner transport applies a provider allowlist before spawn. */
   runnerEnvironment?: NodeJS.ProcessEnv;
@@ -7631,6 +7631,7 @@ async function executePaperclipNativeSessionWithinScope(
           executeNativeSession({
             input: runnerExecution,
             remoteCleanupScope: remoteCleanupLease ? remoteLeaseCleanupScope(remoteCleanupLease) : undefined,
+            turnTimeoutMs: input.turnTimeoutMs,
             backend:
               input.backend ??
               runnerdBackend ??

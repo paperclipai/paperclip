@@ -3980,6 +3980,58 @@ it("expands coalesced canonical items without dropping strict bindings", () => {
   ]);
 });
 
+it("keeps a quiet active Codex turn in the same process across connection lease expiry", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-renew-active-"));
+  const callsPath = join(stateDirectory, "calls.log");
+  const cores: DurablePrpControlPlane[] = [];
+  const OriginalCore = durableControlPlane.DurablePrpControlPlane;
+  const coreSpy = vi.spyOn(durableControlPlane, "DurablePrpControlPlane")
+    .mockImplementation(function(options: ConstructorParameters<typeof OriginalCore>[0]) {
+      const core = new OriginalCore({ ...options, connectionLeaseTtlMs: 60_000 });
+      cores.push(core);
+      return core;
+    } as unknown as typeof OriginalCore);
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(), codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory, "--hold-turn", "--record-process-start", "--call-log", callsPath),
+    stateDirectory, runnerReconnectGraceMs: 5_000,
+  });
+  try {
+    const opened = await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
+    await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Keep working quietly." }] });
+    const runnerPid = bundle.evidence().runnerPid;
+    const codexPid = bundle.evidence().codexPid;
+    expect(runnerPid).toBeGreaterThan(0);
+    expect(codexPid).toBeGreaterThan(0);
+    const core = cores[0]!;
+    const original = structuredClone(Object.values(core.store.state.leases)[0]!);
+    await vi.waitFor(() => {
+      expect(Date.now()).toBeGreaterThan(original.expiresAtUnixMs + 1_000);
+    }, { timeout: 75_000, interval: 1_000 });
+    const current = Object.values(core.store.state.leases)[0]!;
+    expect(current.expiresAtUnixMs).toBeGreaterThan(original.expiresAtUnixMs);
+    expect(current.leaseId).toBe(original.leaseId);
+    expect(core.store.state.connectionCount).toBe(1);
+    expect(bundle.evidence().runnerPid).toBe(runnerPid);
+    expect(bundle.evidence().codexPid).toBe(codexPid);
+    process.kill(runnerPid!, 0);
+    process.kill(codexPid!, 0);
+    const calls = (await readFile(callsPath, "utf8")).trim().split(/\r?\n/);
+    expect(calls.filter(call => call === "process-start")).toHaveLength(1);
+    expect(calls.filter(call => call === "thread/start")).toHaveLength(1);
+    expect(calls.filter(call => call === "turn/start")).toHaveLength(1);
+    expect(calls).not.toContain("turn/interrupt");
+    expect(calls).not.toContain("thread/resume");
+    const state = JSON.parse(await readFile(join(stateDirectory, "fake-codex-state.json"), "utf8"));
+    expect(state.threadId).toBe(opened.thread.id);
+    expect(state.activeTurnId).toBe("provider-turn-1");
+  } finally {
+    await bundle.transport.close();
+    coreSpy.mockRestore();
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 90_000);
+
 it("runs the lab provider boundary through authenticated durable PRP", async () => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-lab-provider-"));
   const bundle = createCapabilityRunnerdCodexTransport({
