@@ -29,6 +29,7 @@ export function classifyFailure(error: unknown): FailureClass {
   }
   if (PERMANENT.test(message)) return "permanent_infrastructure";
   if (
+    /chat_idle_state_invariant/.test(message) ||
     NON_RETRYABLE_SESSION_CLOSE.test(message) ||
     NON_RETRYABLE_ACPX_SESSION_OPEN.test(message)
   )

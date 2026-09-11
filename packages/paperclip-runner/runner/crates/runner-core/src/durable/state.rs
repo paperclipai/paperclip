@@ -2088,6 +2088,23 @@ fn redact_sensitive_text_values(input: &str) -> String {
                     .any(|delimiter| before.ends_with(delimiter))
         };
         let has_hyphenated_count_lead = token_phrase_has_lead("one-");
+        // An explicitly literal/exact token is a requested text value (for
+        // example an acceptance identifier), not a diagnostic credential pair.
+        // Keep this grammatical exception separate from credential syntax:
+        // assignments, quoted values/keys, CLI and compound keys still redact,
+        // as do the independent Bearer, key-prefix and JWT scanners above.
+        let is_literal_token_reference = key == "token"
+            && !key_is_compound
+            && whitespace_start == start + key.len()
+            && separator > whitespace_start
+            && !has_assignment_separator
+            && bytes[whitespace_start..separator]
+                .iter()
+                .all(|value| matches!(value, b' ' | b'\t'))
+            && quoted_value_start(separator).1.is_none()
+            && ["literal ", "exact "]
+                .iter()
+                .any(|lead| token_phrase_has_lead(lead));
         let is_benign_token_noun_phrase = key == "token"
             && (!key_is_compound || has_hyphenated_count_lead)
             && whitespace_start == start + key.len()
@@ -2150,7 +2167,8 @@ fn redact_sensitive_text_values(input: &str) -> String {
                 || (token_phrase_has_tail("can equal") && token_phrase_has_lead("one ")));
         let has_whitespace_separator = separator > whitespace_start
             && (key != "authorization" || key_is_compound || has_authorization_scheme)
-            && !is_benign_token_noun_phrase;
+            && !is_benign_token_noun_phrase
+            && !is_literal_token_reference;
         if !has_assignment_separator && !has_whitespace_separator {
             continue;
         }
@@ -3157,6 +3175,68 @@ mod tests {
         assert_eq!(sanitized["tokenBudget"], json!(4096));
         assert_eq!(sanitized["tokensUsed"], json!(128));
         assert_eq!(sanitized["accessToken"], json!("[REDACTED]"));
+    }
+
+    #[test]
+    fn semantic_handoff_preserves_literal_acceptance_identifiers() {
+        let description = "The document body must contain the literal token CHAT250ed7e4dc071. No code changes needed.";
+        let plan = "## Plan\n- Include the literal token CHAT250ed7e4dc071 in the document body.\n- Save the output document.";
+        let input = json!({
+            "title": "Write project description",
+            "description": description,
+            "initialPlan": plan,
+            "idempotencyKey": "write-description-1",
+        });
+        assert_eq!(
+            sanitize_semantic_tool_input("create_task", &input).unwrap(),
+            input
+        );
+        for text in [
+            description,
+            plan,
+            "Must include the literal token `CHAT66e7813a4f9d1` somewhere in the text.",
+            "Include the exact token ACCEPTANCE-42 in the final output.",
+        ] {
+            assert_eq!(redact_text(text), text);
+            assert_eq!(
+                sanitize_value(&json!({"body": text})),
+                json!({"body": text})
+            );
+        }
+    }
+
+    #[test]
+    fn literal_token_prose_does_not_exempt_credential_syntax_or_shapes() {
+        for text in [
+            "auth token opaque-credential",
+            "the token opaque-credential",
+            "literal token=opaque-credential",
+            "literal token:opaque-credential",
+            "literal --token opaque-credential",
+            "literal access_token opaque-credential",
+            "literal \"token\" opaque-credential",
+            "literal token \"opaque-credential\"",
+        ] {
+            assert!(!redact_text(text).contains("opaque-credential"), "{text}");
+        }
+        for secret in [
+            "sk-proj-secretvalue123456",
+            "ghp_secretvalue12345678901234567890",
+            "eyJhbGciOiJIUzI1NiJ9.c2VjcmV0LWNsYWlt.signaturesecret",
+        ] {
+            let text = format!("Include the literal token {secret} in the document.");
+            assert!(!redact_text(&text).contains(secret), "{text}");
+        }
+        let input = json!({
+            "description": "Include the literal token ACCEPTANCE-42. Authorization: Bearer opaque-credential",
+            "token": "opaque-credential",
+        });
+        let safe = sanitize_semantic_tool_input("create_task", &input).unwrap();
+        assert!(safe["description"]
+            .as_str()
+            .unwrap()
+            .contains("ACCEPTANCE-42"));
+        assert!(!safe.to_string().contains("opaque-credential"));
     }
 
     #[test]

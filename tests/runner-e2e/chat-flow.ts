@@ -126,6 +126,34 @@ export function chatTaskCompletionFailure(
   return chatRunFailure(runs);
 }
 
+/** Require two settled observations so an in-flight finalization is not a failure. */
+export function createChatIdleFailureDetector(minimumProviderRuns: number) {
+  let priorInconsistentState: string | undefined;
+  return (state: {
+    resolved: boolean;
+    status?: string;
+    conversationState?: string;
+    providerRunCount: number;
+    activeRuns: string[];
+  }): string | undefined => {
+    const inconsistentState =
+      state.resolved &&
+      state.providerRunCount >= minimumProviderRuns &&
+      state.activeRuns.length === 0 &&
+      state.conversationState === "waiting" &&
+      ["blocked", "done", "cancelled"].includes(state.status ?? "")
+        ? `${state.status}:${state.providerRunCount}`
+        : undefined;
+    const stable =
+      inconsistentState !== undefined &&
+      inconsistentState === priorInconsistentState;
+    priorInconsistentState = inconsistentState;
+    return stable
+      ? `chat_idle_state_invariant: conversation is ${state.status} while waiting after ${state.providerRunCount} settled provider runs`
+      : undefined;
+  };
+}
+
 /** Match the shared question form's durable/native presentation, including custom labels. */
 export function chatQuestionPresentation(
   payload: AskUserQuestionsPayload,
@@ -254,6 +282,7 @@ export async function runChatFlow(input: {
         a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
     );
   const idle = async (minimumProviderRuns: number) => {
+    const inconsistentIdle = createChatIdleFailureDetector(minimumProviderRuns);
     await pollUntil({
       label: "chat turn settles to waiting",
       deadlineAt: Date.now() + 240_000,
@@ -274,7 +303,7 @@ export async function runChatFlow(input: {
           failure: chatRunFailure(runs, caseId === "stop-new-resume"),
         };
       },
-      reject: (state) => state.failure,
+      reject: (state) => state.failure ?? inconsistentIdle(state),
       accept: (state) =>
         !state.failure &&
         state.resolved &&

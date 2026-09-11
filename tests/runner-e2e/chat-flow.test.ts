@@ -6,6 +6,7 @@ import {
   chatQuestionPresentation,
   chatRunFailure,
   chatTaskCompletionFailure,
+  createChatIdleFailureDetector,
   collectChatRunEvidence,
   readRunningChatLog,
   readChatOutputDocument,
@@ -19,6 +20,7 @@ import type { RunnerApi } from "./api.js";
 import { chatMarker } from "./chat-cases.js";
 import { runnerMatrix } from "./catalog.js";
 import { isPublicRunnerScreenshotRoute } from "./screenshot-policy.js";
+import { classifyFailure, shouldRetryFailure } from "./failure-classifier.js";
 
 const source: ChatIssue = {
   id: "chat",
@@ -264,6 +266,28 @@ describe("chat acceptance contracts", () => {
         [failed],
       ),
     ).toBeUndefined();
+  });
+  it("fails stable contradictory idle states promptly without paid retries or transient false alarms", () => {
+    const detect = createChatIdleFailureDetector(3);
+    const settled = {
+      resolved: true,
+      status: "blocked",
+      conversationState: "waiting",
+      providerRunCount: 3,
+      activeRuns: [] as string[],
+    };
+    expect(detect(settled)).toBeUndefined();
+    expect(detect({ ...settled, activeRuns: ["running"] })).toBeUndefined();
+    expect(detect(settled)).toBeUndefined();
+    const failure = detect(settled);
+    expect(failure).toContain("chat_idle_state_invariant");
+    expect(classifyFailure(failure)).toBe("candidate_failure");
+    expect(shouldRetryFailure(classifyFailure(failure))).toBe(false);
+    expect(detect({ ...settled, status: "in_review" })).toBeUndefined();
+    expect(detect(settled)).toBeUndefined();
+    expect(detect({ ...settled, providerRunCount: 2 })).toBeUndefined();
+    expect(detect({ ...settled, status: "in_progress" })).toBeUndefined();
+    expect(detect(settled)).toBeUndefined();
   });
   it("fails promptly on terminal provider failures while permitting only expected cancellations", () => {
     expect(chatRunFailure([run])).toBeUndefined();
