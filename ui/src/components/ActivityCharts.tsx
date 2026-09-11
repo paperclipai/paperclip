@@ -20,7 +20,7 @@ function emptyRunDay(date: string): DashboardRunActivityDay {
 }
 
 const runSegmentColors = {
-  succeeded: "var(--hex-10b981)",
+  succeeded: "var(--status-task-icon-done)",
   recovered: "var(--status-task-todo)",
   failed: "var(--hex-ef4444)",
   other: "var(--hex-737373)",
@@ -223,14 +223,14 @@ export function PriorityChart({ issues }: { issues: { priority: string; createdA
 // status vocabulary; badge, row, chart, and log agree). Previously an
 // independent palette (todo blue, in_progress violet, etc.). `backlog`
 // deliberately keeps --project-none (pre-B5, per user ruling); the
-// priority series and success-rate tints below are not status hues and
-// are left alone. Progress uses the mode-aware icon hue so its bar and legend
-// match the task spinner in each theme.
+// priority series and warning/error success-rate tints retain their own hues.
+// Progress and done use the mode-aware icon hues so bars and legends match
+// the task icons in each theme.
 const statusColors: Record<string, string> = {
   todo: "var(--status-task-todo)",
   in_progress: "var(--status-task-icon-in_progress)",
   in_review: "var(--status-task-in_review)",
-  done: "var(--status-task-done)",
+  done: "var(--status-task-icon-done)",
   blocked: "var(--status-task-blocked)",
   cancelled: "var(--status-task-cancelled)",
   backlog: "var(--project-none)",
@@ -310,7 +310,7 @@ export function SuccessRateChart(props: RunChartProps) {
           // rather than dragging it down as failures.
           const effectiveSucceeded = entry.succeeded + entry.recovered;
           const rate = entry.total > 0 ? effectiveSucceeded / entry.total : 0;
-          const color = entry.total === 0 ? undefined : rate >= 0.8 ? "var(--hex-10b981)" : rate >= 0.5 ? "var(--hex-eab308)" : "var(--hex-ef4444)";
+          const color = entry.total === 0 ? undefined : rate >= 0.8 ? "var(--status-task-icon-done)" : rate >= 0.5 ? "var(--hex-eab308)" : "var(--hex-ef4444)";
           return (
             <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${entry.total > 0 ? Math.round(rate * 100) : 0}% (${effectiveSucceeded}/${entry.total})`}>
               {entry.total > 0 ? (
