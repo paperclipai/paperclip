@@ -401,13 +401,7 @@ export function harnessRuntimeInputExpiredOutcome(
 export interface HarnessThreadGoal {
   threadId: string;
   objective: string;
-  status:
-    | "active"
-    | "paused"
-    | "blocked"
-    | "usageLimited"
-    | "budgetLimited"
-    | "complete";
+  status: "active" | "paused" | "blocked" | "limited" | "usageLimited" | "budgetLimited" | "complete";
   tokenBudget: number | null;
   tokensUsed: number;
   timeUsedSeconds: number;
@@ -416,9 +410,15 @@ export interface HarnessThreadGoal {
 }
 
 export type HarnessGoalOperation =
-  | { action: "get" }
-  | { action: "set"; objective: string; tokenBudget?: number | null }
-  | { action: "pause" | "resume" | "clear" };
+  | { action: "get"; requestId?: string }
+  | {
+      action: "set";
+      objective: string;
+      tokenBudget?: number | null;
+      status?: HarnessThreadGoal["status"];
+      requestId?: string;
+    }
+  | { action: "pause" | "resume" | "clear"; requestId?: string };
 
 export interface HarnessThreadLineageEntry {
   threadId: string;
@@ -461,6 +461,8 @@ export type PersistedHarnessProviderIdentity = AcpxSessionIdentity;
 
 export interface PersistedHarnessSession {
   driverKind: string;
+  /** Execution-host startup root, revalidated before a cold provider launch. */
+  workingDirectory?: string;
   driverSessionId: string;
   providerSessionId?: string | null;
   runId?: string;
@@ -468,6 +470,7 @@ export interface PersistedHarnessSession {
   activeTurnId?: string | null;
   semanticResult?: PersistedHarnessSemanticResult | null;
   terminalTurns?: PersistedHarnessTurnTerminal[];
+  codexUsageBaseline?: { baseline: Record<string, number>; latest: Record<string, number> };
   /** A result-less terminal task may spend this fail-closed one-shot recovery allowance. */
   dispositionOnlyRecoveryConsumed?: boolean;
   /** Exact accepted provider turn that spent the disposition-only allowance. */

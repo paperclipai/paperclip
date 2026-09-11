@@ -846,7 +846,35 @@ const codexContinuityProfiles = runnerProfiles.filter((profile) =>
   ["legacy-codex", "runner-codex"].includes(profile.id),
 );
 
+export const connectionReviewSuite: RunnerSuiteFixture = {
+  id: "connection-reviews",
+  label: "Governed Connection Reviews",
+  description: "Opt-in local review, decision, stored execution, and continuation acceptance.",
+  groups: ["local"],
+  profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude", "legacy-codex", "legacy-claude"].includes(profile.id)),
+  environments: [localEnvironment],
+  expectedMatrixSize: 16,
+  tasks: (["approve", "decline", "always", "restart"] as const).map(decision => ({
+    id: `tool-review-${decision}`, label: `Connection review: ${decision}`, groups: [],
+    workMode: "standard", flow: "governed_tool_review", toolReviewDecision: decision,
+    expectedRunCount: 2, attemptTimeoutMs: { local: 12 * 60_000, daytona: 12 * 60_000 },
+    expectedTerminalState: { issue: "done", run: "succeeded" },
+    buildTitle: nonce => `Runner E2E connection review ${decision} ${nonce}`,
+    buildVisibleMarker: nonce => `PAPERCLIP_E2E_REVIEW_DONE_${nonce}`,
+    buildPrompt: nonce => [
+      'Use the installed connection action "List fixture pages" with query "recent". Discover it through the runtime tool gateway. Do not simulate or invent its result.',
+      'It requires human approval. When approval_required is returned, do not retry and do not create another interaction. End the turn waiting for that existing server-owned review; leave this task in_review. Do not claim completion before the decision arrives.',
+      'Approval executes the stored call on the server. Your continuation receives its result; do not repeat that approved call. A decline executes nothing and must be respected.',
+      ...(decision === "always" ? ['After the approved result arrives, call the same action once more with query "changed arguments" to verify the remembered permission.'] : []),
+      `After consuming the real result (or the human decline), finish the task and publish exactly PAPERCLIP_E2E_REVIEW_DONE_${nonce} once as your final task response.`,
+      'For native runners use paperclip_finish. Legacy runners PATCH the task with status done and the final comment. Do not create unrelated work.',
+    ].join("\n"),
+    buildMatchers: (nonce, execution) => terminalMatchers(`PAPERCLIP_E2E_REVIEW_DONE_${nonce}`, execution),
+  })),
+};
+
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
+  ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
   {
     id: "core-compatibility",
     label: "Core Runner Compatibility",
@@ -1111,8 +1139,9 @@ export function validateRunnerCatalog(): MatrixExecution[] {
       );
     }
   }
-  if (matrix.length !== 68)
-    throw new Error(`Expected 68 runner executions; received ${matrix.length}`);
+  const expectedTotal = runnerSuites.reduce((total, suite) => total + suite.expectedMatrixSize, 0);
+  if (matrix.length !== expectedTotal)
+    throw new Error(`Expected ${expectedTotal} runner executions; received ${matrix.length}`);
   return matrix;
 }
 

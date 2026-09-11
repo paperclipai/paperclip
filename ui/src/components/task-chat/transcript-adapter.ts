@@ -376,7 +376,9 @@ function providerActivityItem(
       label: titleCaseKey(key),
       value: clip(
         value,
-        key === "message" || key === "summary" || key === "reason" ? 320 : 160,
+        entry.family === "provider_notice" && (key === "summary" || key === "message")
+          ? 4000
+          : key === "message" || key === "summary" || key === "reason" ? 320 : 160,
       ),
       mono: /(?:id|model|target|reference|url|code|bytes)$/i.test(key),
     });
@@ -938,6 +940,9 @@ export function transcriptToTaskChatItems(
           remainingWork: entry.remainingWork,
           blocker: entry.blocker,
           artifacts: entry.artifacts,
+          ...(entry.acceptedResponseWake
+            ? { acceptedResponseWake: entry.acceptedResponseWake }
+            : {}),
         });
         resetInline();
         break;
@@ -1170,6 +1175,13 @@ export function paperclipRunnerActivityItems(
       case "marker":
         return item.variant === "interrupted";
       case "protocol":
+        // Completion is already represented by task state and the final answer.
+        // Keep its event in the inspector, but omit it from feed rows and counts.
+        if (
+          item.surface === "provider_activity" &&
+          item.family === "tool_execution" &&
+          providerItemDetail(item, "Name") === "paperclip_finish"
+        ) return false;
         if (
           hasAggregateWorkspaceChange &&
           item.surface === "provider_activity" &&
@@ -1225,11 +1237,38 @@ export function paperclipRunnerTimelineItems(
 }
 
 /**
- * Resolve the durable response owned by a Paperclip Runner turn. Provider final
- * text wins when present, followed by a compatible terminal assistant message
- * and then the accepted run-result summary. The caller keeps yielded
- * control-plane waits out of the final-response slot.
+ * A response-wake can answer now while deliberately leaving the task open.
+ * Its marker is derived by the native event projector, never from final prose.
  */
+export function paperclipRunnerAcceptedResponseWake(
+  parsed: readonly TaskChatItem[],
+  runId: string | undefined,
+): TaskChatRunResultItem | undefined {
+  if (!runId) return undefined;
+  const results = parsed.filter(
+    (item): item is TaskChatRunResultItem =>
+      item.kind === "protocol" && item.surface === "run_result",
+  );
+  if (results.length !== 1) return undefined;
+  const result = results[0];
+  if (
+    result.disposition !== "yielded" ||
+    result.acceptedResponseWake?.runId !== runId ||
+    !result.acceptedResponseWake.sourceEventId.trim() ||
+    !result.summary.trim()
+  ) return undefined;
+  if (parsed.some((item) =>
+    item.kind === "protocol" &&
+    item.surface === "runtime_request" && item.status === "pending",
+  )) return undefined;
+  return parsed.some((item) =>
+    item.kind === "protocol" && item.surface === "run_terminal" &&
+    item.id === `${runId}:terminal` && item.runState === "succeeded" &&
+    item.turnState === "completed" && item.disposition === "yielded",
+  ) ? result : undefined;
+}
+
+/** Resolve a terminal reply without presenting ordinary yielded waits as answers. */
 export function paperclipRunnerFinalResponse(
   parsed: readonly TaskChatItem[],
   options?: {
@@ -1249,7 +1288,22 @@ export function paperclipRunnerFinalResponse(
       item.surface === "run_result" &&
       item.disposition === "yielded",
   );
-  if (yielded) return undefined;
+  if (yielded) {
+    const accepted =
+      options?.allowFallback === false
+        ? undefined
+        : paperclipRunnerAcceptedResponseWake(parsed, options?.runId);
+    if (!accepted) return undefined;
+    return {
+      id: `${accepted.id}:final-response`,
+      kind: "message",
+      author: "agent",
+      authorName: options?.agentName,
+      text: accepted.summary.trim(),
+      channel: "final",
+      streaming: false,
+    };
+  }
   for (let index = parsed.length - 1; index >= 0; index -= 1) {
     const item = parsed[index];
     if (

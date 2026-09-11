@@ -195,6 +195,36 @@ describe("TaskSidePanel", () => {
     expect(container.textContent).toContain("Subtasks content: 2");
   });
 
+  it("adds related tasks without children and preserves the selected plan", async () => {
+    fixture.plan = issueDocument("plan", "Plan");
+    fixture.documents = [fixture.plan];
+    await render(panel({
+      showSubtasksTab: true,
+      tasksTab: { count: 0, content: <div>No tasks yet</div> },
+    }));
+    expect(container.querySelector('[data-side-panel-tab-target="subtasks"]')).toBeNull();
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Plan");
+
+    await render(panel({
+      showSubtasksTab: true,
+      tasksTab: { count: 1, content: <div>Cross-project follow-up</div> },
+    }));
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Plan");
+    const tasks = container.querySelector<HTMLButtonElement>('[data-side-panel-tab-target="subtasks"]');
+    expect(tasks?.textContent?.trim()).toBe("Tasks");
+    await act(async () => tasks?.click());
+    expect(container.textContent).toContain("Cross-project follow-up");
+    expect(container.textContent).not.toContain("Subtasks content");
+  });
+
+  it("exposes failed task loading even when no task count is available", async () => {
+    await render(panel({ showSubtasksTab: true, tasksTab: { count: 0, hasError: true, content: <div role="alert">Could not load all tasks.</div> } }));
+    const tasks = container.querySelector<HTMLButtonElement>('[data-side-panel-tab-target="subtasks"]');
+    expect(tasks?.textContent?.trim()).toBe("Tasks");
+    await act(async () => tasks?.click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Could not load all tasks");
+  });
+
   it("inserts Subtasks after Properties when child tasks load later", async () => {
     await render(panel({ childIssues: [], showSubtasksTab: true, streamlinedTabs: true }));
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Open a new tab"]')?.click());

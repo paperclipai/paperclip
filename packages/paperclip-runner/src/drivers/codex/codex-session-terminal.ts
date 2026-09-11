@@ -84,6 +84,7 @@ export function admitResult(
 function finalize(
   state: CodexSessionState,turnStatus: string): void {
     if (state.conversationMode === "direct") return;
+    if (state.currentGoal?.status === "active") return;
     if (state.terminal) return;
     if (state.result === null) {
       state.emit("harness.diagnostic", {

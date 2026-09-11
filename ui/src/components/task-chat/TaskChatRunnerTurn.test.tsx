@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import type { ExecutionProjection } from "@paperclipai/shared";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -40,6 +41,7 @@ describe("TaskChatRunnerTurn", () => {
     ) => void,
     suppressFinal = false,
     continuedAfterSteering = false,
+    execution?: ExecutionProjection,
   ) =>
     act(() =>
       root.render(
@@ -50,6 +52,7 @@ describe("TaskChatRunnerTurn", () => {
               agentName="Runner"
               items={items}
               status={status}
+              execution={execution}
               startedAtMs={Date.now() - 2_000}
               suppressFinal={suppressFinal}
               continuedAfterSteering={continuedAfterSteering}
@@ -140,6 +143,26 @@ describe("TaskChatRunnerTurn", () => {
       false,
     );
   });
+
+  it.each(["reconnecting", "retry_scheduled"] as const)(
+    "keeps the active turn and Thinking tail visible with a %s projection",
+    (phase) => {
+      const execution = { phase } as ExecutionProjection;
+      render([], "running", "run-1", undefined, false, false, execution);
+      expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent)
+        .toContain("Working for");
+      expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent)
+        .toBe("Thinking");
+      render([], "succeeded", "run-1", undefined, false, false, execution);
+      expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent)
+        .toContain("Worked");
+      expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
+      render([], "failed", "run-1", undefined, false, false, execution);
+      expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent)
+        .toContain("Stopped");
+      expect(container.textContent).not.toContain("Reconnecting");
+    },
+  );
 
   it("labels the streaming tail as a continuation after steering", () => {
     render([], "running", "run-1", undefined, false, true);
