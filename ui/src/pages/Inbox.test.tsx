@@ -1416,22 +1416,22 @@ describe("InboxIssueMetaLeading", () => {
     const statusIcon = Array.from(container.querySelectorAll("svg")).find((svg) =>
       (svg.getAttribute("style") ?? "").includes("--status-task-icon"),
     );
-    const liveBadge = container.querySelector('span[class*="px-1.5"][class*="bg-(--status-task-in_progress)/10"]');
+    const liveBadge = container.querySelector('span[class*="px-1.5"][class*="bg-blue-500/10"]');
     const liveBadgeLabel = Array.from(container.querySelectorAll("span")).find(
       // The pill chassis is a Badge (itself a span with textContent "Live");
       // the label is the inner span without the rounded-full chassis class.
       (node) => node.textContent === "Live" && node.className.includes("text-") && !node.className.includes("rounded-full"),
     );
-    const liveDot = container.querySelector('span[class~="bg-(--status-task-in_progress)"]');
+    const liveDot = container.querySelector('span[class*="bg-blue-500"]');
     const pulseRing = container.querySelector('span[class*="animate-pulse"]');
 
     expect(statusIcon).not.toBeUndefined();
     // Status accent stays visible — not neutralized to muted.
     expect(statusIcon?.getAttribute("class") ?? "").not.toContain("!text-muted-foreground");
     expect(liveBadge).not.toBeNull();
-    expect(liveBadge?.className).toContain("bg-(--status-task-in_progress)/10");
+    expect(liveBadge?.className).toContain("bg-blue-500/10");
     expect(liveBadgeLabel).not.toBeNull();
-    expect(liveBadgeLabel?.className).toContain("text-(--status-task-in_progress)");
+    expect(liveBadgeLabel?.className).toContain("text-blue-600");
     expect(liveDot).not.toBeNull();
     expect(pulseRing).not.toBeNull();
 

@@ -149,7 +149,7 @@ export function RoutineSubSidebar({
                 <Icon className="h-4 w-4 shrink-0" />
                 <span className="truncate">{item.label}</span>
                 {showLiveDot ? (
-                  <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-(--status-task-in_progress) motion-safe:animate-pulse" />
+                  <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500 motion-safe:animate-pulse" />
                 ) : dirty ? (
                   <span
                     aria-label="Unsaved changes"

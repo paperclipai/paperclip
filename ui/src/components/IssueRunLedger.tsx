@@ -886,8 +886,8 @@ export function IssueRunLedgerContent({
                     {statusLabel(run.status)}
                   </span>
                   {run.isLive ? (
-                    <span className="inline-flex items-center gap-1 rounded-md border border-(--status-task-in_progress)/30 bg-(--status-task-in_progress)/10 px-1.5 py-0.5 text-(length:--text-micro) text-(--status-task-in_progress)">
-                      <span className="h-1.5 w-1.5 rounded-full bg-(--status-task-in_progress)" />
+                    <span className="inline-flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-1.5 py-0.5 text-(length:--text-micro) text-blue-700 dark:text-blue-300">
+                      <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
                       live
                     </span>
                   ) : null}

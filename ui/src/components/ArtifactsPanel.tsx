@@ -69,7 +69,7 @@ function statusBadge(status: string) {
   switch (status) {
     case "active":
     case "draft":
-      return { label: "In Progress", className: "bg-(--status-task-in_progress)/10 text-(--status-task-in_progress)" };
+      return { label: "In Progress", className: "bg-blue-500/10 text-blue-600 dark:text-blue-400" };
     case "ready_for_review":
       return { label: "For Review", className: "bg-amber-500/10 text-amber-600 dark:text-amber-400" };
     case "approved":
@@ -194,8 +194,8 @@ export function ArtifactsPanel({ taskId, isAgentWorking, openDocKey, openDocTitl
                     {showGenerating ? (
                       <div className="mt-0.5 shrink-0">
                         <span className="relative flex h-4 w-4">
-                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-(--status-task-in_progress) opacity-75" />
-                          <span className="relative inline-flex rounded-full h-4 w-4 bg-(--status-task-in_progress)" />
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                          <span className="relative inline-flex rounded-full h-4 w-4 bg-blue-500" />
                         </span>
                       </div>
                     ) : (
@@ -213,7 +213,7 @@ export function ArtifactsPanel({ taskId, isAgentWorking, openDocKey, openDocTitl
                           {wp.type.replace(/_/g, " ")}
                         </span>
                         {showGenerating ? (
-                          <Badge variant="ghost" className="[&>svg]:size-2.5 text-(length:--text-nano) px-1.5 bg-(--status-task-in_progress)/10 text-(--status-task-in_progress)">
+                          <Badge variant="ghost" className="[&>svg]:size-2.5 text-(length:--text-nano) px-1.5 bg-blue-500/10 text-blue-600 dark:text-blue-400">
                             <Loader2 className="h-2.5 w-2.5 animate-spin" />
                             Generating...
                           </Badge>

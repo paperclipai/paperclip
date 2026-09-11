@@ -3451,10 +3451,10 @@ function ActivePipelineWorkBanner({ activeWork }: { activeWork: PipelineCaseActi
       className="mb-5 flex flex-col gap-3 rounded-lg border border-blue-300 bg-blue-50 px-4 py-4 text-blue-950 dark:border-blue-900/70 dark:bg-blue-950/25 dark:text-blue-100 md:flex-row md:items-center md:justify-between"
     >
       <div className="flex min-w-0 gap-3">
-        <CircleDot className="mt-0.5 h-4 w-4 shrink-0 text-(--status-task-in_progress)" />
+        <CircleDot className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
         <div className="min-w-0">
           <h2 className="flex items-center gap-2 text-sm font-semibold">
-            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-(--status-task-in_progress)" aria-hidden="true" />
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" aria-hidden="true" />
             {title}
           </h2>
           <p className="mt-1 text-sm opacity-85">

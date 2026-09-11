@@ -143,7 +143,7 @@ function LiveWorkGlyph({ status }: { status: WaitingBlockerStatus }) {
   if (status === "running") {
     return (
       <span className="flex h-3.5 w-3.5 items-center justify-center" role="img" aria-label={label}>
-        <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-(--status-task-in_progress)" aria-hidden />
+        <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-blue-400" aria-hidden />
       </span>
     );
   }
@@ -230,7 +230,7 @@ export function TaskChatLiveWorkLinks({
     >
       <div className="flex items-center gap-1.5 font-medium">
         <span className="flex h-3.5 w-3.5 items-center justify-center" aria-hidden>
-          <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-(--status-task-in_progress)" />
+          <span className="h-2.5 w-2.5 animate-pulse rounded-full bg-blue-400" />
         </span>
         {heading}
       </div>

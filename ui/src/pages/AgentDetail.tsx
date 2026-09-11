@@ -143,7 +143,7 @@ import {
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
   failed: { icon: XCircle, color: "text-red-600 dark:text-red-400" },
-  running: { icon: Loader2, color: "text-(--status-task-in_progress)" }, // Gallery feedback r1: running = status blue, not cyan.
+  running: { icon: Loader2, color: "text-blue-600 dark:text-blue-400" }, // Gallery feedback r1: running = status blue, not cyan.
   queued: { icon: Clock, color: "text-yellow-600 dark:text-yellow-400" },
   scheduled_retry: { icon: Clock, color: "text-sky-600 dark:text-sky-400" },
   timed_out: { icon: Timer, color: "text-orange-600 dark:text-orange-400" },
@@ -1306,13 +1306,13 @@ export function AgentDetail() {
             {mobileLiveRun && (
               <Link
                 to={`/agents/${canonicalAgentRef}/runs/${mobileLiveRun.id}`}
-                className="sm:hidden flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-(--status-task-in_progress)/10 hover:bg-(--status-task-in_progress)/20 transition-colors no-underline"
+                className="sm:hidden flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-500/10 hover:bg-blue-500/20 transition-colors no-underline"
               >
                 <span className="relative flex h-2 w-2">
-                  <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-(--status-task-in_progress) opacity-75" />
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-(--status-task-in_progress)" />
+                  <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
                 </span>
-                <span className="text-(length:--text-micro) font-medium text-(--status-task-in_progress)">Live</span>
+                <span className="text-(length:--text-micro) font-medium text-blue-600 dark:text-blue-400">Live</span>
               </Link>
             )}
           </AgentActionButtons>
@@ -1642,8 +1642,8 @@ function LatestRunCard({
           <h3 className="flex items-center gap-2 text-sm font-medium transition-colors hover:text-foreground">
             {isLive && (
               <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-(--status-task-in_progress) opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-(--status-task-in_progress)" />
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
               </span>
             )}
             <span>{isLive ? "Live Run" : "Latest Run"}</span>
@@ -4329,10 +4329,10 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
             </Button>
           )}
           {isLive && (
-            <span className="flex items-center gap-1 text-xs text-(--status-task-in_progress)">
+            <span className="flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400">
               <span className="relative flex h-2 w-2">
-                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-(--status-task-in_progress) opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-(--status-task-in_progress)" />
+                <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
               </span>
               Live
             </span>

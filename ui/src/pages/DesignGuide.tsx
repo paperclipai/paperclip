@@ -1607,10 +1607,10 @@ export function DesignGuide() {
           <div className="text-foreground">[12:00:17] INFO  Reconnected successfully</div>
           <div className="flex items-center gap-1.5">
             <span className="relative flex h-1.5 w-1.5">
-              <span className="absolute inline-flex h-full w-full rounded-full bg-(--status-task-in_progress) animate-pulse" />
-              <span className="inline-flex h-full w-full rounded-full bg-(--status-task-in_progress)" />
+              <span className="absolute inline-flex h-full w-full rounded-full bg-blue-400 animate-pulse" />
+              <span className="inline-flex h-full w-full rounded-full bg-blue-500" />
             </span>
-            <span className="text-(--status-task-in_progress)">Live</span>
+            <span className="text-blue-600 dark:text-blue-400">Live</span>
           </div>
         </div>
       </Section>

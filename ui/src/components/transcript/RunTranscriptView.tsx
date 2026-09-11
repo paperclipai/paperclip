@@ -1442,8 +1442,8 @@ function TranscriptActivityRow({
         <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-300" />
       ) : (
         <span className="relative mt-1 flex h-2.5 w-2.5 shrink-0">
-          <span className="tc-live-ping absolute inline-flex h-full w-full rounded-full bg-(--status-task-in_progress) opacity-70" />
-          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-(--status-task-in_progress)" />
+          <span className="tc-live-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-70" />
+          <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-blue-500" />
         </span>
       )}
       <div className={cn(

@@ -171,11 +171,11 @@
      modes. Values mirror the PAP-75 brand palette (gray inert, blue liveness,
      amber queued, violet review, green done, red blocked). */
   --status-agent-idle: #a8aeb2;
-  --status-agent-running: var(--status-task-in_progress);
+  --status-agent-running: #2563eb;
   --status-agent-paused: #f59e0b;
   --status-agent-error: #dc2626;
   /* Dashboard agent card: translucent running treatment from the Paper design. */
-  --dashboard-run-accent: var(--status-task-in_progress);
+  --dashboard-run-accent: oklch(62.3% 0.214 259.815);
   --dashboard-run-background: color-mix(in oklab, var(--dashboard-run-accent) 4%, transparent);
   --dashboard-run-border: color-mix(in oklab, var(--dashboard-run-accent) 25%, transparent);
   --status-task-backlog: #a8aeb2;
@@ -198,12 +198,12 @@
      `.dark` block below overrides the hues that need a mode-specific value. */
   --status-task-icon-backlog: #52585d;   /* gray darkened — 7.21:1 on paper */
   --status-task-icon-todo: #cc7a00;       /* amber darkened — clears 3:1 */
-  --status-task-icon-in_progress: var(--status-task-in_progress); /* shared liveness hue */
+  --status-task-icon-in_progress: var(--color-blue-600); /* matches nav dots and live labels */
   --status-task-icon-in_review: var(--status-task-in_review);     /* #7c3aed (light) */
   --status-task-icon-done: #16a34a;       /* green darkened — clears 3:1 */
   --status-task-icon-blocked: var(--status-task-blocked);         /* #dc2626 both modes */
   --status-task-icon-cancelled: #52585d;
-  --status-task-icon-in_queue: var(--status-task-icon-in_progress); /* blocked shape, same liveness blue */
+  --status-task-icon-in_queue: var(--status-task-icon-in_progress); /* blocked shape, same mode-aware blue */
 
   --folder-color-indigo: #6366f1;
   --folder-color-violet: #8b5cf6;
@@ -409,10 +409,12 @@
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
-  /* Dark-mode status-icon hues. Progress and blocked retain their shared
-     base hues; in_queue follows the progress icon blue. */
+  /* Dark-mode status-icon hues. The lighter progress blue gives bare glyphs
+     contrast comparable to the neighboring gray, purple, and green icons.
+     Blocked retains its base red; in_queue follows the progress icon blue. */
   --status-task-icon-backlog: #9a958a;
   --status-task-icon-todo: #fbbf24;
+  --status-task-icon-in_progress: var(--color-blue-400); /* matches nav dots and live labels */
   --status-task-icon-in_review: #9474f0;  /* deeper than violet-400, reads purple */
   --status-task-icon-done: #34d06f;
   --status-task-icon-cancelled: #9a958a;
