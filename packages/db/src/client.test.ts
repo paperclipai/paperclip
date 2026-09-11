@@ -1436,6 +1436,7 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
 
       try {
         await sql.unsafe(`
+          DROP TABLE IF EXISTS route_pool_claims, route_decisions, route_rules, execution_profiles CASCADE;
           DROP TABLE IF EXISTS status_decision_effects, status_decisions, work_assessments,
             native_run_finalizations, native_run_results, completion_contracts CASCADE;
           DROP TRIGGER IF EXISTS paperclip_issue_status_version_trigger ON issues;
