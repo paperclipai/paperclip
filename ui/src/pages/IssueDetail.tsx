@@ -1,5 +1,7 @@
 import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
+import { EmailThreadProvider } from "../components/EmailMessageCard";
+import { EmailTaskActivity } from "../components/EmailTaskActivity";
 import { TaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
 import {
   memo,
@@ -92,7 +94,6 @@ import {
   readIssueDetailHeaderSeed,
   withIssueDetailHeaderSeed,
   rememberIssueDetailLocationState,
-  shouldArmIssueDetailInboxQuickArchive,
 } from "../lib/issueDetailBreadcrumb";
 import {
   resolveIssueActiveRun,
@@ -234,7 +235,6 @@ import { ScrollToBottom } from "../components/ScrollToBottom";
 import { StatusIcon } from "../components/StatusIcon";
 import { PriorityIcon } from "../components/PriorityIcon";
 import { SHOW_TASK_PRIORITY_UI } from "../lib/ui-flags";
-import { ProductivityReviewBadge } from "../components/ProductivityReviewBadge";
 import { Identity } from "../components/Identity";
 import {
   PluginSlotMount,
@@ -307,7 +307,6 @@ import {
   Check,
   ChevronRight,
   Copy,
-  Eye,
   EyeOff,
   ScanEye,
   Flag,
@@ -2293,6 +2292,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             hash: scrollLocation.hash,
           }}
         >
+          <EmailThreadProvider companyId={companyId} issueId={issueId}>
           <ThreadComponent
             key={issueId}
             initialHistoryPending={
@@ -2452,6 +2452,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             externalReferences={externalReferences}
             linkCaseReferences={linkCaseReferences}
           />
+          </EmailThreadProvider>
         </TaskChatScrollNavigation.Provider>
       )}
     </div>
@@ -5668,10 +5669,7 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
   const goToInboxShortcutArmedRef = useRef(false);
   const goToInboxShortcutTimeoutRef = useRef<number | null>(null);
   const canQuickArchiveFromInbox =
-    keyboardShortcutsEnabled &&
-    (!streamlinedUiEnabled ||
-      (isFromInbox && shouldArmIssueDetailInboxQuickArchive(location.state))) &&
-    !issue?.hiddenAt;
+    keyboardShortcutsEnabled && !issue?.hiddenAt;
 
   useEffect(() => {
     if (!issue?.id || !canQuickArchiveFromInbox) return;
@@ -6913,21 +6911,6 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
           </Link>
         )}
 
-        {issue.productivityReview ? (
-          <ProductivityReviewBadge review={issue.productivityReview} />
-        ) : null}
-
-        {issue.originKind === "issue_productivity_review" ? (
-          <Badge
-            variant="outline"
-            className="border-amber-500/40 bg-amber-500/10 text-(length:--text-nano) text-amber-700 dark:text-amber-300"
-            title="This task is a productivity review."
-          >
-            <Eye className="h-3 w-3" />
-            Productivity review
-          </Badge>
-        ) : null}
-
         {issue.originKind === "task_watchdog" ? (
           <Badge
             variant="outline"
@@ -7699,7 +7682,7 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
               )}
               {resolvedDetailTab === "chat" ? (
                 <IssueDetailChatTab
-                  threadHeader={taskChatThreadHeader}
+                  threadHeader={<>{taskChatThreadHeader}{instanceExperimentalSettings?.enableChatConnectors && <EmailTaskActivity key={issue.id} companyId={issue.companyId} issueId={issue.id} />}</>}
                   issueBrief={
                     // Suppress the seeded-description bubble for the onboarding first
                     // task: its description is agent instructions, not something the

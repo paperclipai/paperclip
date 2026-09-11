@@ -95,7 +95,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
 
   const paperclipCoreSkill = useMemo(
     () => (companySkills ?? []).find((skill) => skill.key === PAPERCLIP_CORE_SKILL_KEY) ?? null,
-    [companySkills],
+    [companySkills, skillSnapshot],
   );
 
   // Seeded releases (release_id IS NOT NULL) for the paperclip core skill. Only
@@ -230,7 +230,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
   // Library skills → row models (the store's visual language, tuned for rows).
   const libraryRows = useMemo<AgentSkillRowData[]>(
     () =>
-      (companySkills ?? []).map((skill) => ({
+      (companySkills ?? []).filter((skill) => !(skillSnapshot?.entries ?? []).some((entry) => entry.key === skill.key && entry.readOnly)).map((skill) => ({
         key: skill.key,
         name: skill.name,
         icon: {
@@ -251,14 +251,14 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         description: skill.description,
         categories: skill.categories,
       })),
-    [companySkills],
+    [companySkills, skillSnapshot],
   );
 
   // Adapter-detected, user-installed / unmanaged skills → read-only rows.
   const detectedRows = useMemo<AgentSkillRowData[]>(
     () =>
       (skillSnapshot?.entries ?? [])
-        .filter((entry) => isReadOnlyUnmanagedSkillEntry(entry, companySkillKeys))
+        .filter((entry) => (entry.readOnly && entry.desired) || isReadOnlyUnmanagedSkillEntry(entry, companySkillKeys))
         .map((entry) => ({
           key: entry.key,
           name: entry.runtimeName ?? entry.key,
@@ -518,7 +518,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
                     )}
                   />
                   <span className="text-xs font-medium text-muted-foreground">
-                    Detected on adapter (read-only)
+                    Automatic and detected skills (read-only)
                   </span>
                   <span className="text-xs text-muted-foreground/70">{filteredDetected.length}</span>
                 </CollapsibleTrigger>

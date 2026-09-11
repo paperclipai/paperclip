@@ -1054,15 +1054,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         visibleEnvironmentIds: environmentList.map((environment) => environment.id),
       });
       const adapterConfig = buildAdapterConfigForTest(adapterConfigPatch);
+      const agentId = isCreate ? undefined : props.agent.id;
       if (props.compactTestFeedback) {
         const providerAdapter = adapterType === "paperclip_runner"
           ? adapterConfig.provider === "codex" ? "codex_local"
             : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "claude" ? "claude_local"
               : adapterType
           : adapterType;
-        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, environmentId });
+        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, agentId, environmentId });
       }
-      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, environmentId });
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, agentId, environmentId });
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);

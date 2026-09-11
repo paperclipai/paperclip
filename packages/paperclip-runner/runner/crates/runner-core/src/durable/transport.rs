@@ -710,6 +710,7 @@ pub(crate) struct LeaseCredential {
     pub(crate) expires_at_unix_ms: u64,
     pub(crate) revocation_epoch: u64,
     token: Secret,
+    pub(crate) renewal_requested: bool,
 }
 
 impl LeaseCredential {
@@ -734,6 +735,7 @@ pub(crate) struct Welcome {
     pub(crate) acked_source_seq: Option<u64>,
     pub(crate) pending_commands: Vec<Command>,
     pub(crate) warm_transition_version: Option<u64>,
+    pub(crate) lease_renewal_version: Option<u64>,
     pub(crate) warm_transition: Option<Value>,
     pub(crate) warm_transition_phase: Option<String>,
 }
@@ -1259,7 +1261,10 @@ fn validate_challenge(
     match expected_lease {
         Some(lease)
             if challenge.credential_lease_id.as_deref() == Some(lease.lease_id.as_str())
-                && challenge.credential_expires_at_unix_ms == lease.expires_at_unix_ms
+                && (challenge.credential_expires_at_unix_ms == lease.expires_at_unix_ms
+                    || (lease.renewal_requested
+                        && state.warm_transition.is_none()
+                        && challenge.credential_expires_at_unix_ms > lease.expires_at_unix_ms))
                 && challenge.revocation_epoch == lease.revocation_epoch => {}
         None if challenge.credential_lease_id.is_none() => {}
         _ => {
@@ -1369,7 +1374,10 @@ fn validate_welcome(
         .ok_or_else(|| DurableRunnerError::invalid("welcome revocation epoch is required"))?;
     if let Some(expected) = expected_lease {
         if connection_lease_id != expected.lease_id
-            || expires_at_unix_ms != expected.expires_at_unix_ms
+            || (expires_at_unix_ms != expected.expires_at_unix_ms
+                && !(expected.renewal_requested
+                    && state.warm_transition.is_none()
+                    && expires_at_unix_ms > expected.expires_at_unix_ms))
             || revocation_epoch != expected.revocation_epoch
         {
             return Err(DurableRunnerError::invalid(
@@ -1385,6 +1393,7 @@ fn validate_welcome(
                 expires_at_unix_ms,
                 revocation_epoch,
                 token: Secret::new(token),
+                renewal_requested: false,
             })
         }
         None | Some(Value::Null) if credential_kind == "lease" => None,
@@ -1422,6 +1431,9 @@ fn validate_welcome(
         acked_source_seq: payload.get("ackedSourceSeq").and_then(Value::as_u64),
         pending_commands,
         warm_transition_version: payload.get("warmTransitionVersion").and_then(Value::as_u64),
+        lease_renewal_version: payload
+            .get("connectionLeaseRenewalVersion")
+            .and_then(Value::as_u64),
         warm_transition: payload.get("warmTransition").cloned(),
         warm_transition_phase: payload
             .get("warmTransitionPhase")
@@ -2411,6 +2423,15 @@ mod tests {
 
     #[test]
     fn reconnect_replays_unacked_events_and_not_command_effects() {
+        reconnect_without_reexecuting(false);
+    }
+
+    #[test]
+    fn lost_renewal_reply_reconnects_without_restarting_the_provider() {
+        reconnect_without_reexecuting(true);
+    }
+
+    fn reconnect_without_reexecuting(renewal_reply_lost: bool) {
         struct EventExecutor {
             session_open_calls: Arc<AtomicUsize>,
             shutdown_calls: Arc<AtomicUsize>,
@@ -2448,13 +2469,14 @@ mod tests {
         let mut config = config(port);
         config.max_runtime = Duration::from_secs(5);
         let directory = std::env::temp_dir().join(format!(
-            "paperclip-runner-reconnect-fault-{}",
+            "paperclip-runner-reconnect-fault-{}-{renewal_reply_lost}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&directory);
         config.state_dir = directory.clone();
         let state = test_state(&config);
-        let expires = current_unix_ms().unwrap() + 60_000;
+        let mut expires =
+            current_unix_ms().unwrap() + if renewal_reply_lost { 2_000 } else { 60_000 };
         let open_command = json!({
             "schema": "paperclip.prp.command.v1",
             "commandId": "command_open",
@@ -2489,23 +2511,32 @@ mod tests {
                     revocation_epoch: 0,
                 },
             );
-            send_secure(
-                &mut first,
-                &mut first_secure,
-                &server_config,
-                &welcome(
-                    &server_state,
-                    "connection_1",
-                    Some("lease-secret"),
-                    expires,
-                    0,
-                    vec![server_open.clone()],
-                ),
+            let mut greeting = welcome(
+                &server_state,
+                "connection_1",
+                Some("lease-secret"),
+                expires,
+                0,
+                vec![server_open.clone()],
             );
+            if renewal_reply_lost {
+                greeting["payload"]["connectionLeaseRenewalVersion"] = json!(1);
+            }
+            send_secure(&mut first, &mut first_secure, &server_config, &greeting);
             let first_result = receive_secure(&mut first, &mut first_secure, &server_config);
             let first_event = receive_secure(&mut first, &mut first_secure, &server_config);
             assert_eq!(first_result["kind"], "command_result");
             assert_eq!(first_event["kind"], "event");
+            if renewal_reply_lost {
+                let renewal = receive_secure(&mut first, &mut first_secure, &server_config);
+                assert_eq!(renewal["kind"], "lease_renew");
+                assert_eq!(
+                    renewal["payload"]["connectionLeaseExpiresAtUnixMs"],
+                    json!(expires)
+                );
+                // Commit a new expiry but lose the reply before the runner sees it.
+                expires = current_unix_ms().unwrap() + 60_000;
+            }
             drop(first);
 
             let (second_stream, _) = listener.accept().unwrap();

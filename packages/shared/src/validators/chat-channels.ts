@@ -69,7 +69,7 @@ const chatEndpointCredentialsSchema = z
 
 export const createChatEndpointSchema = z
   .object({
-    provider: chatProviderSchema,
+    provider: chatProviderSchema.exclude(["agentmail"]),
     assignedAgentId: z.string().uuid(),
     applicationId: z.string().uuid().optional(),
     name: z.string().trim().min(1).max(160).optional(),
