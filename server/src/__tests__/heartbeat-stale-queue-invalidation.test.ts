@@ -12,6 +12,8 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueRelations,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
@@ -801,6 +803,236 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0);
 
     expect(countExecuteCallsForRun(run!.id)).toBe(1);
+  });
+
+  it("allows generic timer fallback when the agent is the typed in-review participant", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        skipTimerWhenNoActionableWork: true,
+      },
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      title: "Typed review work",
+      status: "in_review",
+      priority: "high",
+      assigneeUserId: "review-owner",
+      executionState: {
+        status: "pending",
+        currentParticipant: { type: "agent", agentId },
+      },
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "timer",
+      triggerDetail: "schedule",
+    });
+
+    expect(run).not.toBeNull();
+    await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0);
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
+  });
+
+  it("allows generic timer fallback for an answered interaction needing finalization", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        intervalSec: 60,
+        skipTimerWhenNoActionableWork: true,
+      },
+    });
+    const issueId = randomUUID();
+    const now = new Date();
+    const priorTimerBaseline = new Date(now.getTime() - 120_000);
+    const resolvedAt = new Date(now.getTime() - 30_000);
+    await db
+      .update(agents)
+      .set({ lastHeartbeatAt: priorTimerBaseline })
+      .where(eq(agents.id, agentId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Answered interaction work",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "answered",
+      payload: {},
+      resolvedAt,
+      resolvedByUserId: "review-owner",
+    });
+
+    expect((await heartbeat.tickTimers(now)).enqueued).toBe(1);
+    const [run] = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(run).toBeDefined();
+    await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0);
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
+  });
+
+  it("allows generic timer fallback for blocked work after its blocker resolves", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        intervalSec: 60,
+        skipTimerWhenNoActionableWork: true,
+      },
+    });
+    const blockedIssueId = randomUUID();
+    const resolvedBlockerId = randomUUID();
+    const now = new Date();
+    const priorTimerBaseline = new Date(now.getTime() - 120_000);
+    await db
+      .update(agents)
+      .set({ lastHeartbeatAt: priorTimerBaseline })
+      .where(eq(agents.id, agentId));
+    await db.insert(issues).values([
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Finalize resolved dependency",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: agentId,
+        updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+      },
+      {
+        id: resolvedBlockerId,
+        companyId,
+        title: "Resolved dependency",
+        status: "done",
+        priority: "high",
+        updatedAt: new Date(now.getTime() - 30_000),
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: resolvedBlockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    expect((await heartbeat.tickTimers(now)).enqueued).toBe(1);
+    const [run] = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(run).toBeDefined();
+    await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0);
+    expect(countExecuteCallsForRun(run!.id)).toBe(1);
+  });
+
+  it("creates one typed liveness incident after bounded deferred-claim retries exhaust", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        intervalSec: 1,
+      },
+    });
+    const sourceIssueId = randomUUID();
+    const runningRunId = randomUUID();
+    const deferredWakeId = randomUUID();
+    const firstTickAt = new Date("2026-09-11T00:00:00.000Z");
+
+    await db
+      .update(agents)
+      .set({
+        createdAt: new Date(firstTickAt.getTime() - 2_000),
+        lastHeartbeatAt: null,
+      })
+      .where(eq(agents.id, agentId));
+    await db.insert(heartbeatRuns).values({
+      id: runningRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: new Date(firstTickAt.getTime() - 1_000),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Deferred source work",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      executionRunId: runningRunId,
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_execution_deferred",
+      payload: {
+        issueId: sourceIssueId,
+        _paperclipWakeContext: { issueId: sourceIssueId, wakeReason: "issue_commented" },
+        _paperclipDeferredEligibility: { expectedAssigneeAgentId: agentId },
+      },
+      status: "deferred_issue_execution",
+      attemptReason: "agent_busy",
+      nextAttemptAt: firstTickAt,
+      claimDeadlineAt: new Date(firstTickAt.getTime() + 2_000),
+    });
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await heartbeat.tickTimers(
+        new Date(firstTickAt.getTime() + attempt * 1_000),
+      );
+      expect(result.skipped).toBe(1);
+    }
+
+    const [deferredAfterExhaustion] = await db
+      .select({
+        retryCount: agentWakeupRequests.retryCount,
+        attemptReason: agentWakeupRequests.attemptReason,
+        lastError: agentWakeupRequests.lastError,
+        nextAttemptAt: agentWakeupRequests.nextAttemptAt,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeId));
+    expect(deferredAfterExhaustion).toMatchObject({
+      retryCount: 3,
+      attemptReason: "agent_busy",
+      lastError: expect.stringContaining("still has an active queued or running run"),
+      nextAttemptAt: expect.any(Date),
+    });
+
+    await heartbeat.tickTimers(new Date(firstTickAt.getTime() + 3_000));
+    const incidents = await db
+      .select({
+        priority: issues.priority,
+        originKind: issues.originKind,
+        originId: issues.originId,
+        parentId: issues.parentId,
+      })
+      .from(issues)
+      .where(eq(issues.parentId, sourceIssueId));
+    expect(incidents).toHaveLength(1);
+    expect(incidents[0]).toMatchObject({
+      priority: "high",
+      originKind: "harness_liveness_escalation",
+      parentId: sourceIssueId,
+    });
+    expect(incidents[0]?.originId).toContain("deferred_wake_retry_exhausted");
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "cancelled", finishedAt: new Date(firstTickAt.getTime() + 4_000) })
+      .where(eq(heartbeatRuns.id, runningRunId));
   });
 
   it("allows legacy generic timer wakes by default when no skip policy is set", async () => {

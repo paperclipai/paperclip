@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "./use-cases.js";
+import {
+  createAdmitWakeBehindIssueExecution,
+  createDrainDueDeferredWake,
+  createReleaseIssueExecution,
+} from "./use-cases.js";
 import type { AdmitWakeBehindIssueExecutionInput } from "./use-cases.js";
 import { WakeQueueApplicationError } from "./types.js";
 import type {
@@ -72,6 +76,11 @@ function wakeCandidate(overrides: Partial<DeferredWakeCandidate> = {}): Deferred
     deferredContextSeed: {},
     deferredCommentIds: [],
     wakeReason: "issue_commented",
+    issueId: ISSUE.id,
+    retryCount: 0,
+    nextAttemptAt: null,
+    claimDeadlineAt: null,
+    expectedAssigneeAgentId: null,
     ...overrides,
   };
 }
@@ -100,6 +109,10 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
   return {
     findInvokableAgent: vi.fn(async () => AGENT),
     findNextDeferredWake: vi.fn(async () => null),
+    findDeferredWakeIssue: vi.fn(async () => ISSUE),
+    hasActiveRunForAgent: vi.fn(async () => false),
+    recordDeferredWakeClaimFailure: vi.fn(async () => 1),
+    supersedeDeferredWake: vi.fn(async () => true),
     getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: [], containedSelfAuthoredComment: false })),
     cancelDeferredWake: vi.fn(async () => true),
     normalizeDeferredWakeCommentIds: vi.fn(async (input) => wakeCandidate({ id: input.wakeId, queuedCommentIds: input.liveCommentIds })),
@@ -133,6 +146,8 @@ function createFakeIssueLock(host: WakeQueueHost, transaction: WakeQueueTransact
       const result = await fn({ primaryIssue: issue, run: RUN }, { host, transaction });
       return { ...result, run: RUN };
     }),
+    withDeferredWakeDrainTransaction: vi.fn(async (_input, fn) =>
+      fn({ host, transaction })),
   };
 }
 
@@ -256,7 +271,7 @@ describe("releaseIssueExecution", () => {
     await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
 
     expect(claimOrder).toEqual(["wake-earliest", "wake-latest"]);
-    expect(transaction.failDeferredWake).toHaveBeenCalledTimes(2);
+    expect(transaction.supersedeDeferredWake).toHaveBeenCalledTimes(2);
   });
 
   it("stops the loop after the first promotion", async () => {
@@ -298,7 +313,9 @@ describe("releaseIssueExecution", () => {
     const result = await releaseIssueExecution({ companyId: "company-1", runId: "run-1", now: new Date() });
 
     expect(transaction.cancelDeferredWake).toHaveBeenCalledTimes(1);
-    expect(transaction.failDeferredWake).toHaveBeenCalledTimes(1);
+    expect(transaction.supersedeDeferredWake).toHaveBeenCalledWith(
+      expect.objectContaining({ attemptReason: "agent_not_invokable" }),
+    );
     expect(transaction.normalizeDeferredWakeCommentIds).toHaveBeenCalledTimes(1);
     expect(findNextDeferredWake).toHaveBeenCalledTimes(3);
     expect(result.outcome.kind).toBe("promoted");
@@ -394,18 +411,30 @@ describe("releaseIssueExecution", () => {
         deferredCommentIds: ["c1"],
         requestedByActorType: "user",
       }),
-      wakeCandidate({ id: "wake-promotes" }),
+      wakeCandidate({
+        id: "wake-promotes",
+        deferredCommentIds: ["c2"],
+        requestedByActorType: "user",
+      }),
     ];
     const findNextDeferredWake = vi.fn(async () => queue.shift() ?? null);
     const claimDeferredWakeForPromotion = vi.fn(async ({ wakeId }: { wakeId: string }) => wakeId !== "wake-lost-race");
     const reopenIssue = vi.fn(async () => null);
-    const transaction = createFakeTransaction({ findNextDeferredWake, claimDeferredWakeForPromotion, reopenIssue });
+    let issueReadCount = 0;
+    const transaction = createFakeTransaction({
+      findNextDeferredWake,
+      claimDeferredWakeForPromotion,
+      reopenIssue,
+      findDeferredWakeIssue: vi.fn(async () => issueReadCount++ === 0 ? doneIssue : ISSUE),
+    });
     const host = createFakeHost();
     const issueLock: IssueLockWriter = {
       withIssueExecutionLock: vi.fn(async (_input, fn) => {
         const result = await fn({ primaryIssue: doneIssue, run: RUN }, { host, transaction });
         return { ...result, run: RUN };
       }),
+      withDeferredWakeDrainTransaction: vi.fn(async (_input, fn) =>
+        fn({ host, transaction })),
     };
     const releaseIssueExecution = createReleaseIssueExecution({ issueLock, recovery: createFakeRecovery() });
 
@@ -506,6 +535,122 @@ describe("releaseIssueExecution", () => {
   });
 });
 
+describe("drainDueDeferredWake", () => {
+  it("promotes due typed-review work through the same atomic claim path", async () => {
+    const reviewIssue: IssueSnapshot = {
+      ...ISSUE,
+      id: "review-issue",
+      status: "in_review",
+      assigneeAgentId: "finishing-agent",
+      executionState: {
+        status: "pending",
+        currentParticipant: { type: "agent", agentId: AGENT.id },
+      },
+    };
+    const findNextDeferredWake = vi.fn(async () =>
+      wakeCandidate({ id: "review-wake", issueId: reviewIssue.id }));
+    const transaction = createFakeTransaction({
+      findNextDeferredWake,
+      findDeferredWakeIssue: vi.fn(async () => reviewIssue),
+    });
+    const issueLock = createFakeIssueLock(createFakeHost(), transaction);
+    const drain = createDrainDueDeferredWake({ issueLock });
+    const now = new Date("2026-09-11T00:02:00.000Z");
+
+    const result = await drain({
+      companyId: RUN.companyId,
+      agentId: AGENT.id,
+      now,
+      retryDelayMs: 60_000,
+    });
+
+    expect(result.outcome.kind).toBe("promoted");
+    expect(findNextDeferredWake).toHaveBeenCalledWith({
+      companyId: RUN.companyId,
+      agentId: AGENT.id,
+      releaseIssueId: null,
+      dueAt: now,
+    });
+    expect(transaction.claimDeferredWakeForPromotion).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists a bounded typed retry when the agent is still busy", async () => {
+    const nextAttemptAt = new Date("2026-09-11T00:03:00.000Z");
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => wakeCandidate()),
+      hasActiveRunForAgent: vi.fn(async () => true),
+      recordDeferredWakeClaimFailure: vi.fn(async () => 3),
+    });
+    const drain = createDrainDueDeferredWake({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction),
+    });
+
+    const result = await drain({
+      companyId: RUN.companyId,
+      agentId: AGENT.id,
+      now: new Date("2026-09-11T00:02:00.000Z"),
+      retryDelayMs: 60_000,
+    });
+
+    expect(result.outcome).toMatchObject({
+      kind: "retry_scheduled",
+      retryCount: 3,
+      exhausted: true,
+      attemptReason: "agent_busy",
+      nextAttemptAt,
+    });
+    expect(transaction.claimDeferredWakeForPromotion).not.toHaveBeenCalled();
+  });
+
+  it("terminally supersedes a due wake after its issue closes", async () => {
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn()
+        .mockResolvedValueOnce(wakeCandidate())
+        .mockResolvedValueOnce(null),
+      findDeferredWakeIssue: vi.fn(async () => ({ ...ISSUE, status: "done" })),
+    });
+    const drain = createDrainDueDeferredWake({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction),
+    });
+
+    const result = await drain({
+      companyId: RUN.companyId,
+      agentId: AGENT.id,
+      now: new Date("2026-09-11T00:02:00.000Z"),
+      retryDelayMs: 60_000,
+    });
+
+    expect(result.outcome.kind).toBe("idle");
+    expect(transaction.supersedeDeferredWake).toHaveBeenCalledWith(
+      expect.objectContaining({ attemptReason: "issue_terminal" }),
+    );
+  });
+
+  it("terminally supersedes a due wake after its issue is reassigned", async () => {
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn()
+        .mockResolvedValueOnce(wakeCandidate({ expectedAssigneeAgentId: "original-agent" }))
+        .mockResolvedValueOnce(null),
+      findDeferredWakeIssue: vi.fn(async () => ({ ...ISSUE, assigneeAgentId: "replacement-agent" })),
+    });
+    const drain = createDrainDueDeferredWake({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction),
+    });
+
+    const result = await drain({
+      companyId: RUN.companyId,
+      agentId: AGENT.id,
+      now: new Date("2026-09-11T00:02:00.000Z"),
+      retryDelayMs: 60_000,
+    });
+
+    expect(result.outcome.kind).toBe("idle");
+    expect(transaction.supersedeDeferredWake).toHaveBeenCalledWith(
+      expect.objectContaining({ attemptReason: "issue_reassigned" }),
+    );
+  });
+});
+
 const ACTIVE_EXECUTION_RUN: WakeAdmissionActiveExecutionRun = {
   id: "active-run-1",
   agentId: "execution-agent",
@@ -533,6 +678,9 @@ function admissionInput(
     source: "on_demand",
     triggerDetail: null,
     payload: { issueId: "issue-1" },
+    nextAttemptAt: new Date("2026-09-11T00:00:15.000Z"),
+    claimDeadlineAt: new Date("2026-09-11T00:02:00.000Z"),
+    expectedAssigneeAgentId: "execution-agent",
     requestedByActorType: "user",
     requestedByActorId: "user-1",
     idempotencyKey: null,
@@ -630,6 +778,9 @@ describe("admitWakeBehindIssueExecution", () => {
           payload: {
             issueId: "issue-1",
             _paperclipWakeContext: contextSnapshot,
+            _paperclipDeferredEligibility: {
+              expectedAssigneeAgentId: "execution-agent",
+            },
           },
         }),
       );

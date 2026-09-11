@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -123,6 +123,7 @@ function toRunSummary(row: HeartbeatRunRow): RunSummary {
 
 function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): DeferredWakeCandidate {
   const payload = parseObject(row.payload);
+  const deferredEligibility = parseObject(payload._paperclipDeferredEligibility);
   const queuedCommentIds = queuedCommentIdsFromWakePayload(payload);
   const deferredContextSeed = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
   const deferredCommentIds = extractWakeCommentIds(deferredContextSeed);
@@ -153,6 +154,11 @@ function toDeferredWakeCandidate(row: typeof agentWakeupRequests.$inferSelect): 
     deferredContextSeed,
     deferredCommentIds,
     wakeReason,
+    issueId: readNonEmptyString(payload.issueId) ?? "",
+    retryCount: row.retryCount,
+    nextAttemptAt: row.nextAttemptAt,
+    claimDeadlineAt: row.claimDeadlineAt,
+    expectedAssigneeAgentId: readNonEmptyString(deferredEligibility.expectedAssigneeAgentId),
   };
 }
 
@@ -170,7 +176,7 @@ function buildHost(_tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
   };
 }
 
-function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, run: HeartbeatRunRow): WakeQueueTransaction {
+function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, run: HeartbeatRunRow | null): WakeQueueTransaction {
   const treeControlSvc = issueTreeControlService(tx);
   const issuesSvc = issueService(tx);
 
@@ -186,7 +192,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       return { id: agent.id, companyId: agent.companyId, name: agent.name, invokable: invokability.invokable };
     },
 
-    async findNextDeferredWake({ companyId, issueId }) {
+    async findNextDeferredWake({ companyId, agentId, releaseIssueId, dueAt }) {
       while (true) {
         const row = await tx
           .select()
@@ -194,8 +200,19 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           .where(
             and(
               eq(agentWakeupRequests.companyId, companyId),
+              releaseIssueId
+                ? or(
+                    eq(agentWakeupRequests.agentId, agentId),
+                    sql`${agentWakeupRequests.payload} ->> 'issueId' = ${releaseIssueId}`,
+                  )
+                : eq(agentWakeupRequests.agentId, agentId),
               eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
-              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+              dueAt
+                ? or(
+                    isNull(agentWakeupRequests.nextAttemptAt),
+                    lte(agentWakeupRequests.nextAttemptAt, dueAt),
+                  )
+                : sql`true`,
             ),
           )
           .orderBy(asc(agentWakeupRequests.requestedAt))
@@ -203,6 +220,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           .then((rows) => rows[0] ?? null);
         if (!row) return null;
         const candidate = toDeferredWakeCandidate(row);
+        if (!candidate.issueId) return candidate;
         try {
           const authorizedFailedChatRetry = await authorizeFailedChatRunRetryWake(
             db,
@@ -212,7 +230,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
               wakeupRequestId: row.id,
               companyId,
               agentId: row.agentId,
-              issueId,
+              issueId: candidate.issueId,
               contextSnapshot: candidate.deferredContextSeed,
             },
           );
@@ -249,6 +267,82 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
             );
         }
       }
+    },
+
+    async findDeferredWakeIssue({ companyId, issueId }) {
+      if (!issueId) return null;
+      return tx
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+        .limit(1)
+        .then((rows) => rows[0] ? toIssueSnapshot(rows[0]) : null);
+    },
+
+    async hasActiveRunForAgent({ companyId, agentId }) {
+      const row = await tx
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, companyId),
+            eq(heartbeatRuns.agentId, agentId),
+            inArray(heartbeatRuns.status, ["queued", "running"]),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      return row !== null;
+    },
+
+    async recordDeferredWakeClaimFailure({ companyId, wakeId, attemptReason, lastError, nextAttemptAt, now }) {
+      const row = await tx
+        .update(agentWakeupRequests)
+        .set({
+          attemptReason,
+          retryCount: sql`${agentWakeupRequests.retryCount} + 1`,
+          lastError,
+          error: lastError,
+          nextAttemptAt,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.id, wakeId),
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+          ),
+        )
+        .returning({ retryCount: agentWakeupRequests.retryCount })
+        .then((rows) => rows[0] ?? null);
+      return row?.retryCount ?? null;
+    },
+
+    async supersedeDeferredWake({ companyId, wakeId, attemptReason, lastError, now }) {
+      const rows = await tx
+        .update(agentWakeupRequests)
+        .set({
+          // Keep the terminal status inside the established wake lifecycle so
+          // partial idempotency indexes release their keys. The typed reason
+          // distinguishes supersession from an ordinary cancellation.
+          status: "cancelled",
+          reason: "issue_execution_superseded",
+          attemptReason,
+          lastError,
+          error: lastError,
+          nextAttemptAt: null,
+          finishedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(agentWakeupRequests.id, wakeId),
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+          ),
+        )
+        .returning({ id: agentWakeupRequests.id });
+      return rows.length > 0;
     },
 
     async getQueuedCommentLiveness({ companyId, issueId, wakeAgentId, finishingRunId, finishingRunAgentId, queuedCommentIds }) {
@@ -372,6 +466,10 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           claimedAt: null,
           finishedAt: null,
           error: null,
+          attemptReason: "claim_succeeded",
+          retryCount: sql`${agentWakeupRequests.retryCount} + 1`,
+          lastError: null,
+          nextAttemptAt: null,
           updatedAt: now,
         })
         .where(
@@ -488,6 +586,9 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async isImmediateRecoverySourceBlocked({ companyId, runId }) {
+      if (!run) {
+        throw new Error("wake-queue: release-only recovery port used by a timer drain");
+      }
       if (companyId !== run.companyId || runId !== run.id) {
         throw new Error(
           "wake-queue: recovery source does not match the locked execution",
@@ -924,6 +1025,11 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         requestedByActorType: input.requestedByActorType,
         requestedByActorId: input.requestedByActorId,
         idempotencyKey: input.idempotencyKey,
+        attemptReason: "agent_busy",
+        retryCount: 0,
+        lastError: null,
+        nextAttemptAt: input.nextAttemptAt,
+        claimDeadlineAt: input.claimDeadlineAt,
       });
     },
   };
@@ -931,6 +1037,16 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
 
 export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAdapterDeps): IssueLockWriter {
   return {
+    async withDeferredWakeDrainTransaction(_input, fn) {
+      return db.transaction(async (rawTx) => {
+        const tx = rawTx as unknown as Db;
+        return fn({
+          host: buildHost(tx, deps),
+          transaction: buildTransaction(tx, deps, db, null),
+        });
+      });
+    },
+
     async withIssueExecutionLock(input, fn): Promise<ReleaseTransactionResult & { run: RunSnapshot }> {
       return db.transaction(async (rawTx) => {
         const tx = rawTx as unknown as Db;

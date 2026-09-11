@@ -38,6 +38,11 @@ export const agentWakeupRequests = pgTable(
     claimedAt: timestamp("claimed_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     error: text("error"),
+    attemptReason: text("attempt_reason"),
+    retryCount: integer("retry_count").notNull().default(0),
+    lastError: text("last_error"),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    claimDeadlineAt: timestamp("claim_deadline_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -85,5 +90,10 @@ export const agentWakeupRequests = pgTable(
       table.companyId,
       sql`(${table.payload} ->> 'issueId')`,
     ),
+    companyAgentDeferredAttemptIdx: index(
+      "agent_wakeup_requests_company_agent_deferred_attempt_idx",
+    )
+      .on(table.companyId, table.agentId, table.requestedAt)
+      .where(sql`${table.status} = 'deferred_issue_execution'`),
   }),
 );

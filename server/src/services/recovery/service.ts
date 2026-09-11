@@ -1056,6 +1056,10 @@ export function recoveryService(
           and(
             eq(agentWakeupRequests.companyId, companyId),
             eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            or(
+              isNull(agentWakeupRequests.claimDeadlineAt),
+              gt(agentWakeupRequests.claimDeadlineAt, new Date()),
+            ),
             sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
             agentId ? eq(agentWakeupRequests.agentId, agentId) : sql`true`,
           ),

@@ -1,5 +1,6 @@
 import type { ReleaseRecoveryBlockedNoticeKind } from "../domain/policy.js";
 import type {
+  DeferredWakeDrainOutcome,
   InvokableAgentSnapshot,
   IssueSnapshot,
   PostCommitEffect,
@@ -79,6 +80,11 @@ export type DeferredWakeCandidate = {
   /** The comment ids the wake's context snapshot carries (a separate set from queuedCommentIds), used for the reopen check. */
   deferredCommentIds: string[];
   wakeReason: string | null;
+  issueId: string;
+  retryCount: number;
+  nextAttemptAt: Date | null;
+  claimDeadlineAt: Date | null;
+  expectedAssigneeAgentId: string | null;
   /** Exact failed-chat retry authority revalidated by the transaction-bound adapter. */
   authorizedFailedChatRetry?: boolean;
 };
@@ -108,7 +114,29 @@ export type PromoteDeferredWakeInput = {
  */
 export interface WakeQueueTransaction {
   findInvokableAgent(input: { companyId: string; agentId: string }): Promise<InvokableAgentSnapshot | null>;
-  findNextDeferredWake(input: { companyId: string; issueId: string }): Promise<DeferredWakeCandidate | null>;
+  findNextDeferredWake(input: {
+    companyId: string;
+    agentId: string;
+    releaseIssueId?: string | null;
+    dueAt?: Date | null;
+  }): Promise<DeferredWakeCandidate | null>;
+  findDeferredWakeIssue(input: { companyId: string; issueId: string }): Promise<IssueSnapshot | null>;
+  hasActiveRunForAgent(input: { companyId: string; agentId: string }): Promise<boolean>;
+  recordDeferredWakeClaimFailure(input: {
+    companyId: string;
+    wakeId: string;
+    attemptReason: string;
+    lastError: string;
+    nextAttemptAt: Date;
+    now: Date;
+  }): Promise<number | null>;
+  supersedeDeferredWake(input: {
+    companyId: string;
+    wakeId: string;
+    attemptReason: string;
+    lastError: string;
+    now: Date;
+  }): Promise<boolean>;
   getQueuedCommentLiveness(input: {
     companyId: string;
     issueId: string;
@@ -228,6 +256,13 @@ export interface IssueLockWriter {
       ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
     ) => Promise<ReleaseTransactionResult>,
   ): Promise<ReleaseTransactionResult & { run: RunSnapshot }>;
+  withDeferredWakeDrainTransaction(
+    input: { companyId: string; agentId: string; now: Date; retryDelayMs: number },
+    fn: (ports: {
+      host: WakeQueueHost;
+      transaction: WakeQueueTransaction;
+    }) => Promise<{ outcome: DeferredWakeDrainOutcome; postCommitEffects: PostCommitEffect[] }>,
+  ): Promise<{ outcome: DeferredWakeDrainOutcome; postCommitEffects: PostCommitEffect[] }>;
 }
 
 export type StrandedAssignedIssueEscalationInput = {
@@ -443,6 +478,8 @@ export interface WakeAdmissionWriter {
       requestedByActorId: string | null;
       idempotencyKey: string | null;
       durableReceipt?: DurableWakeAdmissionReceipt;
+      nextAttemptAt: Date;
+      claimDeadlineAt: Date;
     },
   ): Promise<void>;
 }

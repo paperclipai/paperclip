@@ -67,6 +67,11 @@ function fixture() {
     createdAt: new Date(),
     updatedAt: new Date(),
     error: "PRIVATE error with token",
+    attemptReason: "agent_busy",
+    retryCount: 0,
+    lastError: null,
+    nextAttemptAt: new Date(),
+    claimDeadlineAt: new Date(),
   } satisfies typeof agentWakeupRequests.$inferSelect;
   return { action, receipt };
 }

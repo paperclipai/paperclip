@@ -177,7 +177,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
 
     const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
     const result = await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async (locked, ports) => {
-      const candidate = await ports.transaction.findNextDeferredWake({ companyId, issueId: locked.primaryIssue.id });
+      const candidate = await ports.transaction.findNextDeferredWake({ companyId, agentId: foreignAgentId });
       expect(candidate?.id).toBe(wakeId);
       const agent = await ports.transaction.findInvokableAgent({ companyId, agentId: foreignAgentId });
       expect(agent).toBeNull();
@@ -252,6 +252,47 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     const issueRow = (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
     expect(issueRow?.status).toBe("blocked");
     expect(issueRow?.executionState).toEqual({ phase: "running" });
+  });
+
+  it("records terminal supersession with an established terminal status and typed evidence", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId });
+    const now = new Date("2026-09-11T00:05:00.000Z");
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+
+    await adapter.withDeferredWakeDrainTransaction(
+      { companyId, agentId, now, retryDelayMs: 1_000 },
+      async ({ transaction }) => {
+        expect(await transaction.supersedeDeferredWake({
+          companyId,
+          wakeId,
+          attemptReason: "issue_reassigned",
+          lastError: "Deferred wake superseded because the issue was reassigned",
+          now,
+        })).toBe(true);
+        return { outcome: { kind: "idle" }, postCommitEffects: [] };
+      },
+    );
+
+    const [wakeRow] = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        attemptReason: agentWakeupRequests.attemptReason,
+        lastError: agentWakeupRequests.lastError,
+        finishedAt: agentWakeupRequests.finishedAt,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeId));
+    expect(wakeRow).toEqual({
+      status: "cancelled",
+      reason: "issue_execution_superseded",
+      attemptReason: "issue_reassigned",
+      lastError: "Deferred wake superseded because the issue was reassigned",
+      finishedAt: now,
+    });
   });
 
   // Review defect: the reopen path must carry the company into every read,
@@ -329,6 +370,54 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(issueRow?.executionRunId).toBeNull();
     const wakeRow = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0];
     expect(wakeRow?.status).toBe("cancelled");
+  });
+
+  it("allows exactly one claim across concurrent event and timer drain transactions", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId });
+    const adapterA = createPostgresWakeQueueAdapter(db, stubDeps);
+    const adapterB = createPostgresWakeQueueAdapter(db, stubDeps);
+    let readersReady = 0;
+    let releaseReaders!: () => void;
+    const bothRead = new Promise<void>((resolve) => {
+      releaseReaders = resolve;
+    });
+
+    const attemptClaim = async (adapter: ReturnType<typeof createPostgresWakeQueueAdapter>) => {
+      let claimed = false;
+      await adapter.withDeferredWakeDrainTransaction(
+        { companyId, agentId, now: new Date(), retryDelayMs: 1_000 },
+        async ({ transaction }) => {
+          const candidate = await transaction.findNextDeferredWake({
+            companyId,
+            agentId,
+            dueAt: new Date(),
+          });
+          expect(candidate?.id).toBe(wakeId);
+          readersReady += 1;
+          if (readersReady === 2) releaseReaders();
+          await bothRead;
+          claimed = await transaction.claimDeferredWakeForPromotion({
+            companyId,
+            wakeId,
+            now: new Date(),
+          });
+          return { outcome: { kind: "idle" }, postCommitEffects: [] };
+        },
+      );
+      return claimed;
+    };
+
+    const claims = await Promise.all([attemptClaim(adapterA), attemptClaim(adapterB)]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+
+    const [wakeRow] = await db
+      .select({ status: agentWakeupRequests.status })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeId));
+    expect(wakeRow?.status).toBe("queued");
   });
 
   // `finalizePromotedWake`'s own writes guard against clobbering state a
@@ -588,6 +677,8 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
         requestedByActorType: "system",
         requestedByActorId: null,
         idempotencyKey: null,
+        nextAttemptAt: new Date("2026-09-11T00:00:15.000Z"),
+        claimDeadlineAt: new Date("2026-09-11T00:02:00.000Z"),
       };
 
       await expect(

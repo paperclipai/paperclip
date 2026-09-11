@@ -3950,6 +3950,11 @@ async function listIssueBlockerAttentionMap(
               agentWakeupRequests.status,
               BLOCKER_ATTENTION_ACTIVE_WAKE_STATUSES,
             ),
+            or(
+              ne(agentWakeupRequests.status, "deferred_issue_execution"),
+              isNull(agentWakeupRequests.claimDeadlineAt),
+              gt(agentWakeupRequests.claimDeadlineAt, new Date()),
+            ),
             sql`${agentWakeupRequests.runId} is null`,
             inArray(
               sql<string>`${agentWakeupRequests.payload} ->> 'issueId'`,
@@ -4591,6 +4596,7 @@ async function listIssueReviewAttentionMap(
         status: agentWakeupRequests.status,
         reason: agentWakeupRequests.reason,
         createdAt: agentWakeupRequests.requestedAt,
+        claimDeadlineAt: agentWakeupRequests.claimDeadlineAt,
       })
       .from(agentWakeupRequests)
       .where(
@@ -5675,6 +5681,7 @@ async function listIssueBlockedInboxAttentionMap(
             )`,
             agentId: agentWakeupRequests.agentId,
             status: agentWakeupRequests.status,
+            claimDeadlineAt: agentWakeupRequests.claimDeadlineAt,
           })
           .from(agentWakeupRequests)
           .where(

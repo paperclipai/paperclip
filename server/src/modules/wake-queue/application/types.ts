@@ -86,6 +86,20 @@ export type ReleaseOutcome =
       previousStatus: "todo" | "in_progress" | "in_review";
     };
 
+export type DeferredWakeDrainOutcome =
+  | { kind: "idle" }
+  | { kind: "promoted"; run: RunSummary }
+  | {
+      kind: "retry_scheduled";
+      wakeId: string;
+      issue: IssueSnapshot;
+      retryCount: number;
+      exhausted: boolean;
+      attemptReason: string;
+      lastError: string;
+      nextAttemptAt: Date;
+    };
+
 export type WakeQueueApplicationErrorCode = "responsible_user_unresolved" | "deferred_wake_not_advanced";
 
 export class WakeQueueApplicationError extends Error {

@@ -7,7 +7,11 @@ import {
 } from "./adapters/postgres.js";
 import { createQueuedCommentIssueLockWriter } from "./adapters/queued-comment-postgres.js";
 import type { QueuedCommentQueuePostgresAdapterDeps } from "./adapters/queued-comment-postgres.js";
-import { createAdmitWakeBehindIssueExecution, createReleaseIssueExecution } from "./application/use-cases.js";
+import {
+  createAdmitWakeBehindIssueExecution,
+  createDrainDueDeferredWake,
+  createReleaseIssueExecution,
+} from "./application/use-cases.js";
 import {
   createDiscardQueuedComment,
   createEditQueuedComment,
@@ -35,7 +39,12 @@ export type {
   ReleaseRecoveryBlockedNoticeKind,
   TransactionScope,
 } from "./application/ports.js";
-export type { AdmitWakeBehindIssueExecutionInput, AdmitWakeBehindIssueExecutionResult, ReleaseIssueExecutionInput } from "./application/use-cases.js";
+export type {
+  AdmitWakeBehindIssueExecutionInput,
+  AdmitWakeBehindIssueExecutionResult,
+  DrainDueDeferredWakeInput,
+  ReleaseIssueExecutionInput,
+} from "./application/use-cases.js";
 export {
   QueuedCommentMutationError,
   QueuedCommentMutationForbiddenError,
@@ -95,6 +104,7 @@ export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
 
   return {
     releaseIssueExecution: createReleaseIssueExecution({ issueLock, recovery: deps.recovery }),
+    drainDueDeferredWake: createDrainDueDeferredWake({ issueLock }),
     admitWakeBehindIssueExecution: createAdmitWakeBehindIssueExecution({
       reader: createWakeAdmissionReader(),
       writer: createWakeAdmissionWriter(),

@@ -441,6 +441,7 @@ import {
 } from "./execution-allowlist.js";
 import {
   RECOVERY_ORIGIN_KINDS,
+  buildIssueGraphLivenessIncidentKey,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   RUN_LIVENESS_CONTINUATION_REASON,
@@ -724,6 +725,8 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = [
   "timed_out",
 ] as const;
 const TIMER_ACTIONABLE_ISSUE_STATUSES = ["todo", "in_progress"] as const;
+const DEFERRED_WAKE_EVENT_RETRY_MS = 15_000;
+const DEFERRED_WAKE_MIN_CLAIM_DEADLINE_MS = 30_000;
 export {
   ACTIVE_RUN_OUTPUT_CONTINUE_REARM_MS,
   ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS,
@@ -3501,6 +3504,8 @@ interface WakeupOptions {
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
+  /** Scheduler-owned baseline captured before the timer claim advances lastHeartbeatAt. */
+  timerActionableSince?: Date;
 }
 
 type UsageTotals = {
@@ -16053,17 +16058,66 @@ export function heartbeatService(
     return cancelled;
   }
 
-  async function hasActionableTimerWork(agent: typeof agents.$inferSelect) {
+  async function hasActionableTimerWork(
+    agent: typeof agents.$inferSelect,
+    timerActionableSince?: Date,
+  ) {
+    const priorTimerBaseline = timerActionableSince ?? agent.lastHeartbeatAt ?? agent.createdAt;
     const row = await db
       .select({ id: issues.id })
       .from(issues)
       .where(
         and(
           eq(issues.companyId, agent.companyId),
-          eq(issues.assigneeAgentId, agent.id),
-          isNull(issues.assigneeUserId),
           isNull(issues.hiddenAt),
-          inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
+          or(
+            and(
+              eq(issues.assigneeAgentId, agent.id),
+              isNull(issues.assigneeUserId),
+              inArray(issues.status, [...TIMER_ACTIONABLE_ISSUE_STATUSES]),
+            ),
+            and(
+              eq(issues.status, "in_review"),
+              sql`${issues.executionState} ->> 'status' = 'pending'`,
+              sql`${issues.executionState} -> 'currentParticipant' ->> 'type' = 'agent'`,
+              sql`${issues.executionState} -> 'currentParticipant' ->> 'agentId' = ${agent.id}`,
+            ),
+            and(
+              eq(issues.assigneeAgentId, agent.id),
+              isNull(issues.assigneeUserId),
+              inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+              sql`exists (
+                select 1 from ${issueThreadInteractions} interaction
+                where interaction.company_id = ${issues.companyId}
+                  and interaction.issue_id = ${issues.id}
+                  and interaction.status in ('answered', 'accepted')
+                  and interaction.resolved_at > ${priorTimerBaseline.toISOString()}::timestamptz
+              )`,
+            ),
+            and(
+              eq(issues.assigneeAgentId, agent.id),
+              isNull(issues.assigneeUserId),
+              eq(issues.status, "blocked"),
+              sql`not exists (
+                select 1 from ${issueRelations} blocker_edge
+                join ${issues} blocker on blocker.id = blocker_edge.issue_id
+                where blocker_edge.company_id = ${issues.companyId}
+                  and blocker_edge.related_issue_id = ${issues.id}
+                  and blocker_edge.type = 'blocks'
+                  and blocker.status not in ('done', 'cancelled')
+                  and blocker.hidden_at is null
+              )`,
+              sql`exists (
+                select 1 from ${issueRelations} resolved_edge
+                join ${issues} resolved_blocker on resolved_blocker.id = resolved_edge.issue_id
+                where resolved_edge.company_id = ${issues.companyId}
+                  and resolved_edge.related_issue_id = ${issues.id}
+                  and resolved_edge.type = 'blocks'
+                  and resolved_blocker.status in ('done', 'cancelled')
+                  and resolved_blocker.updated_at > ${priorTimerBaseline.toISOString()}::timestamptz
+              )`,
+            ),
+          ),
         ),
       )
       .limit(1)
@@ -16114,6 +16168,75 @@ export function heartbeatService(
       .then((rows) => rows[0] ?? null);
     if (!claimed) return null;
     return { wasFirstHeartbeat: !agent.lastHeartbeatAt };
+  }
+
+  async function ensureDeferredWakeLivenessIncident(input: {
+    agent: typeof agents.$inferSelect;
+    wakeId: string;
+    issue: WakeQueueIssueSnapshot;
+    retryCount: number;
+    attemptReason: string;
+    lastError: string;
+    nextAttemptAt: Date;
+  }) {
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, input.issue.companyId), eq(issues.id, input.issue.id)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!sourceIssue || sourceIssue.originKind === RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation) return;
+
+    const incidentKey = buildIssueGraphLivenessIncidentKey({
+      companyId: sourceIssue.companyId,
+      issueId: sourceIssue.id,
+      state: "deferred_wake_retry_exhausted",
+      participantAgentId: input.agent.id,
+    });
+    const existing = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, sourceIssue.companyId),
+          eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+          eq(issues.originId, incidentKey),
+          visibleIssueCondition(),
+          notInArray(issues.status, ["done", "cancelled"]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existing) return;
+
+    const ownerAgentId = input.agent.reportsTo ?? input.agent.id;
+    await issuesSvc.create(sourceIssue.companyId, {
+      title: `Recover overdue deferred wake for ${sourceIssue.identifier ?? sourceIssue.id}`,
+      description: [
+        "Paperclip exhausted the bounded timer claim budget for a deferred issue execution.",
+        "",
+        `- Source issue: ${sourceIssue.identifier ?? sourceIssue.id}`,
+        `- Deferred wake: ${input.wakeId}`,
+        `- Responsible agent: ${input.agent.id}`,
+        `- Retry count: ${input.retryCount}`,
+        `- Typed reason: ${input.attemptReason}`,
+        `- Last error: ${input.lastError}`,
+        `- Next attempt: ${input.nextAttemptAt.toISOString()}`,
+        "",
+        "Next action: restore an eligible execution path or resolve the source issue; do not require a founder comment.",
+      ].join("\n"),
+      status: "todo",
+      priority: "high",
+      parentId: sourceIssue.id,
+      projectId: sourceIssue.projectId,
+      goalId: sourceIssue.goalId,
+      assigneeAgentId: ownerAgentId,
+      assigneeUserId: null,
+      originKind: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+      originId: incidentKey,
+      originFingerprint: `deferred_wake:${input.wakeId}`,
+      billingCode: sourceIssue.billingCode,
+    });
   }
 
   function timerClaimWasFirstHeartbeat(
@@ -25104,7 +25227,7 @@ export function heartbeatService(
     if (
       policy.skipTimerWhenNoActionableWork &&
       genericTimerWake &&
-      !(await hasActionableTimerWork(agent))
+      !(await hasActionableTimerWork(agent, opts.timerActionableSince))
     ) {
       await writeSkippedHeartbeatRequest("heartbeat.timer.no_actionable_work", {
         reason:
@@ -26040,6 +26163,14 @@ export function heartbeatService(
                 requestedByActorType: opts.requestedByActorType ?? null,
                 requestedByActorId: opts.requestedByActorId ?? null,
                 idempotencyKey: opts.idempotencyKey ?? null,
+                nextAttemptAt: new Date(Date.now() + DEFERRED_WAKE_EVENT_RETRY_MS),
+                claimDeadlineAt: new Date(
+                  Date.now() + Math.max(
+                    DEFERRED_WAKE_MIN_CLAIM_DEADLINE_MS,
+                    policy.intervalSec * 2_000,
+                  ),
+                ),
+                expectedAssigneeAgentId: issue.assigneeAgentId,
               },
             );
 
@@ -27871,10 +28002,38 @@ export function heartbeatService(
         );
         if (!timerClaim) continue;
 
+        const deferredDrain = await wakeQueue.drainDueDeferredWake({
+          companyId: agent.companyId,
+          agentId: agent.id,
+          now,
+          retryDelayMs: Math.max(1_000, policy.intervalSec * 1_000),
+        });
+        await applyWakeQueuePostCommitEffects(deferredDrain.postCommitEffects);
+        if (deferredDrain.outcome.kind === "promoted") {
+          enqueued += 1;
+          continue;
+        }
+        if (deferredDrain.outcome.kind === "retry_scheduled") {
+          if (deferredDrain.outcome.exhausted) {
+            await ensureDeferredWakeLivenessIncident({
+              agent,
+              wakeId: deferredDrain.outcome.wakeId,
+              issue: deferredDrain.outcome.issue,
+              retryCount: deferredDrain.outcome.retryCount,
+              attemptReason: deferredDrain.outcome.attemptReason,
+              lastError: deferredDrain.outcome.lastError,
+              nextAttemptAt: deferredDrain.outcome.nextAttemptAt,
+            });
+          }
+          skipped += 1;
+          continue;
+        }
+
         const run = await enqueueWakeup(agent.id, {
           source: "timer",
           triggerDetail: "system",
           reason: "heartbeat_timer",
+          timerActionableSince: new Date(baseline),
           requestedByActorType: "system",
           requestedByActorId: "heartbeat_scheduler",
           contextSnapshot: {

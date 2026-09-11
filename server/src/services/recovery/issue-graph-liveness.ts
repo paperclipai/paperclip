@@ -53,6 +53,7 @@ export interface IssueLivenessExecutionPathInput {
   agentId?: string | null;
   status: string;
   createdAt?: Date | string | null;
+  claimDeadlineAt?: Date | string | null;
 }
 
 export interface IssueLivenessWaitingPathInput {
@@ -154,9 +155,17 @@ function hasActiveExecutionPath(
   issueId: string,
   activeRuns: IssueLivenessExecutionPathInput[],
   queuedWakeRequests: IssueLivenessExecutionPathInput[],
+  nowMs: number,
 ) {
   return [...activeRuns, ...queuedWakeRequests].some(
-    (entry) => entry.companyId === companyId && entry.issueId === issueId,
+    (entry) =>
+      entry.companyId === companyId &&
+      entry.issueId === issueId &&
+      !(
+        entry.status === "deferred_issue_execution" &&
+        entry.claimDeadlineAt &&
+        (readDateMs(entry.claimDeadlineAt) ?? 0) <= nowMs
+      ),
   );
 }
 
@@ -231,9 +240,18 @@ export function classifyIssueReviewPaths(
     ? issue.executionState.currentParticipant
     : null;
   const participantAgentId = readPrincipalAgentId(participant);
+  const hasOverdueParticipantWake = (input.queuedWakeRequests ?? []).some(
+    (entry) =>
+      entry.companyId === issue.companyId &&
+      entry.issueId === issue.id &&
+      entry.agentId === participantAgentId &&
+      entry.status === "deferred_issue_execution" &&
+      Boolean(entry.claimDeadlineAt) &&
+      (readDateMs(entry.claimDeadlineAt) ?? 0) <= nowMs,
+  );
   if (participantAgentId) {
     const participantAgent = agentsById.get(participantAgentId);
-    if (participantAgent?.companyId === issue.companyId && isInvokableAgent(participantAgent, agentsById)) {
+    if (!hasOverdueParticipantWake && participantAgent?.companyId === issue.companyId && isInvokableAgent(participantAgent, agentsById)) {
       paths.push({
         kind: "execution_participant",
         ref: participantAgentId,
@@ -263,6 +281,11 @@ export function classifyIssueReviewPaths(
   ) => {
     for (const entry of entries) {
       if (entry.companyId !== issue.companyId || entry.issueId !== issue.id) continue;
+      if (
+        entry.status === "deferred_issue_execution" &&
+        entry.claimDeadlineAt &&
+        (readDateMs(entry.claimDeadlineAt) ?? 0) <= nowMs
+      ) continue;
       paths.push({
         kind,
         ref: entry.id ?? null,
@@ -514,7 +537,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
       hasScheduledIssueMonitorPath(issue, nowMs) ||
-      hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
+      hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests, nowMs) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
       hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
@@ -539,7 +562,35 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     const participantAgentId = readPrincipalAgentId(participant);
     if (participantAgentId) {
       const participantAgent = agentsById.get(participantAgentId);
-      if (isInvokableAgent(participantAgent, agentsById) && participantAgent?.companyId === reviewIssue.companyId) return null;
+      const overdueParticipantWake = queuedWakeRequests.find(
+        (entry) =>
+          entry.companyId === reviewIssue.companyId &&
+          entry.issueId === reviewIssue.id &&
+          entry.agentId === participantAgentId &&
+          entry.status === "deferred_issue_execution" &&
+          Boolean(entry.claimDeadlineAt) &&
+          (readDateMs(entry.claimDeadlineAt) ?? 0) <= nowMs,
+      );
+      if (
+        isInvokableAgent(participantAgent, agentsById) &&
+        participantAgent?.companyId === reviewIssue.companyId &&
+        !overdueParticipantWake
+      ) return null;
+
+      if (overdueParticipantWake) {
+        return finding({
+          issue: source,
+          state: "in_review_without_action_path",
+          reason: `${issueLabel(reviewIssue)} is in review, but its deferred participant wake passed the claim deadline without starting a run.`,
+          dependencyPath,
+          recoveryIssue: reviewIssue,
+          recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+          recommendedOwnerCandidates: ownerCandidates,
+          recommendedAction:
+            `Retry or supersede the overdue deferred wake for ${issueLabel(reviewIssue)}, then restore an explicit review execution path.`,
+          participantAgentId,
+        });
+      }
 
       return finding({
         issue: source,

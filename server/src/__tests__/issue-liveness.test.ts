@@ -566,6 +566,42 @@ describe("issue graph liveness classifier", () => {
     });
   });
 
+  it("classifies a typed review path as stalled after its deferred claim deadline", () => {
+    const reviewIssueId = "review-overdue";
+    const now = new Date("2026-09-11T00:03:00.000Z");
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({
+          id: reviewIssueId,
+          status: "in_review",
+          executionState: {
+            status: "pending",
+            currentParticipant: { type: "agent", agentId: coderId },
+          },
+        }),
+      ],
+      relations: [],
+      agents: [agent(), manager],
+      queuedWakeRequests: [
+        {
+          id: "overdue-wake",
+          companyId,
+          issueId: reviewIssueId,
+          agentId: coderId,
+          status: "deferred_issue_execution",
+          claimDeadlineAt: new Date("2026-09-11T00:02:00.000Z"),
+        },
+      ],
+      now,
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: reviewIssueId,
+      state: "in_review_without_action_path",
+    });
+  });
+
   it("still flags a stalled in_review issue when its blocker has an active run", () => {
     const reviewIssueId = "review-1";
     const activeBlockerId = "active-blocker-1";

@@ -31,7 +31,7 @@ import type {
   WakeQueueHost,
   WakeQueueTransaction,
 } from "./ports.js";
-import type { PostCommitEffect, ReleaseOutcome } from "./types.js";
+import type { DeferredWakeDrainOutcome, PostCommitEffect, ReleaseOutcome, RunSummary } from "./types.js";
 import { WakeQueueApplicationError } from "./types.js";
 
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
@@ -53,6 +53,7 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = new Set([
   "cancelled",
 ]);
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = "stranded_issue_recovery";
+const DEFERRED_WAKE_MAX_CLAIM_ATTEMPTS = 3;
 
 function isExecutionReviewParticipantRecoveryRun(run: Pick<RunSnapshot, "contextSnapshot">): boolean {
   return readNonEmptyString(run.contextSnapshot.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
@@ -79,6 +80,55 @@ function currentAgentParticipant(issue: IssueSnapshot): { agentId: string } | nu
   if (!participant || participant.type !== "agent") return null;
   const agentId = readNonEmptyString(participant.agentId);
   return agentId ? { agentId } : null;
+}
+
+function deferredWakeSupersessionReason(
+  issue: IssueSnapshot,
+  candidate: DeferredWakeCandidate,
+  allowTerminalReopen: boolean,
+): { attemptReason: string; lastError: string } | null {
+  if (issue.hiddenAt) {
+    return { attemptReason: "issue_hidden", lastError: "Deferred wake superseded because the issue is hidden" };
+  }
+  if (issue.status === "done" || issue.status === "cancelled") {
+    const canReopenFromComment =
+      allowTerminalReopen &&
+      candidate.deferredCommentIds.length > 0 &&
+      (candidate.requestedByActorType === "user" || candidate.wakeReason === "issue_reopened_via_comment");
+    return canReopenFromComment
+      ? null
+      : {
+          attemptReason: "issue_terminal",
+          lastError: `Deferred wake superseded because the issue is ${issue.status}`,
+        };
+  }
+  if (issue.status === "backlog") {
+    return {
+      attemptReason: "issue_not_actionable",
+      lastError: "Deferred wake superseded because the issue is in backlog",
+    };
+  }
+  if (issue.status === "in_review") {
+    return currentAgentParticipant(issue)?.agentId === candidate.agentId
+      ? null
+      : {
+          attemptReason: "review_participant_changed",
+          lastError: "Deferred wake superseded because the typed review participant changed",
+        };
+  }
+  if (issue.assigneeUserId) {
+    return {
+      attemptReason: "issue_assigned_to_user",
+      lastError: "Deferred wake superseded because the issue is assigned to a user",
+    };
+  }
+  return candidate.expectedAssigneeAgentId &&
+    issue.assigneeAgentId !== candidate.expectedAssigneeAgentId
+    ? {
+        attemptReason: "issue_reassigned",
+        lastError: "Deferred wake superseded because the issue was reassigned",
+      }
+    : null;
 }
 
 /**
@@ -123,20 +173,26 @@ export type ReleaseIssueExecutionInput = {
 
 type PauseHoldFacts = Awaited<ReturnType<WakeQueueTransaction["getPauseHoldFacts"]>>;
 
-/**
- * Drains the deferred-wake queue for the issue a run just released, in
- * `requestedAt` order, promoting at most one wake. When the queue empties
- * without a promotion, decides the release-recovery outcome. Every read and
- * write happens through `ports`, already bound to the module's own
- * transaction by the caller.
- */
-async function runReleaseDrain(
-  locked: LockedIssueExecution,
+type DeferredDrainResult =
+  | { kind: "promoted"; run: RunSummary; postCommitEffects: PostCommitEffect[] }
+  | Exclude<DeferredWakeDrainOutcome, { kind: "idle" } | { kind: "promoted" }>
+  | null;
+
+/** Drains the oldest deferred request for an agent, across issue boundaries. */
+async function runDeferredWakeDrain(
+  finishingRun: RunSnapshot | null,
   ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
-  input: ReleaseIssueExecutionInput,
-): Promise<ReleaseTransactionResult> {
-  const { run } = locked;
-  const issue = locked.primaryIssue;
+  input: {
+    companyId: string;
+    agentId: string;
+    now: Date;
+    dueAt?: Date | null;
+    releaseIssueId?: string | null;
+    retryDelayMs?: number;
+    checkAgentBusy?: boolean;
+    allowTerminalReopen: boolean;
+  },
+): Promise<DeferredDrainResult> {
   const postCommitEffects: PostCommitEffect[] = [];
 
   // Each `continue` path below leaves the wake row off the
@@ -147,16 +203,86 @@ async function runReleaseDrain(
   const processedWakeIds = new Set<string>();
 
   while (true) {
-    const candidate = await ports.transaction.findNextDeferredWake({ companyId: run.companyId, issueId: issue.id });
+    const candidate = await ports.transaction.findNextDeferredWake({
+      companyId: input.companyId,
+      agentId: input.agentId,
+      releaseIssueId: input.releaseIssueId ?? null,
+      dueAt: input.dueAt ?? null,
+    });
     if (!candidate) break;
     if (processedWakeIds.has(candidate.id)) {
       throw new WakeQueueApplicationError(
         "deferred_wake_not_advanced",
         "Deferred wake queue read the same wake id twice; the row did not leave the deferred status",
-        { companyId: run.companyId, issueId: issue.id, wakeId: candidate.id },
+        { companyId: input.companyId, agentId: input.agentId, wakeId: candidate.id },
       );
     }
     processedWakeIds.add(candidate.id);
+
+    const issue = await ports.transaction.findDeferredWakeIssue({
+      companyId: input.companyId,
+      issueId: candidate.issueId,
+    });
+    if (!issue) {
+      await ports.transaction.supersedeDeferredWake({
+        companyId: input.companyId,
+        wakeId: candidate.id,
+        attemptReason: "issue_missing",
+        lastError: "Deferred wake superseded because its issue no longer exists",
+        now: input.now,
+      });
+      continue;
+    }
+
+    const supersession = deferredWakeSupersessionReason(issue, candidate, input.allowTerminalReopen);
+    if (supersession) {
+      await ports.transaction.supersedeDeferredWake({
+        companyId: input.companyId,
+        wakeId: candidate.id,
+        ...supersession,
+        now: input.now,
+      });
+      continue;
+    }
+
+    if (
+      input.checkAgentBusy &&
+      (await ports.transaction.hasActiveRunForAgent({ companyId: input.companyId, agentId: input.agentId }))
+    ) {
+      const nextAttemptAt = new Date(input.now.getTime() + Math.max(1, input.retryDelayMs ?? 1));
+      const lastError = "Deferred wake claim postponed because the agent still has an active queued or running run";
+      const retryCount = await ports.transaction.recordDeferredWakeClaimFailure({
+        companyId: input.companyId,
+        wakeId: candidate.id,
+        attemptReason: "agent_busy",
+        lastError,
+        nextAttemptAt,
+        now: input.now,
+      });
+      if (retryCount === null) continue;
+      return {
+        kind: "retry_scheduled",
+        wakeId: candidate.id,
+        issue,
+        retryCount,
+        exhausted: retryCount >= DEFERRED_WAKE_MAX_CLAIM_ATTEMPTS,
+        attemptReason: "agent_busy",
+        lastError,
+        nextAttemptAt,
+      };
+    }
+
+    const run: RunSnapshot = finishingRun ?? {
+      id: candidate.id,
+      companyId: input.companyId,
+      agentId: input.agentId,
+      status: "succeeded",
+      runtimeMode: null,
+      errorCode: null,
+      responsibleUserId: null,
+      contextSnapshot: {},
+      configurationIncompletePayload: null,
+    };
 
     let liveness = { liveNonSelfCommentIds: candidate.queuedCommentIds, containedSelfAuthoredComment: false };
     if (
@@ -164,7 +290,7 @@ async function runReleaseDrain(
       candidate.queuedCommentIds.length > 0
     ) {
       liveness = await ports.transaction.getQueuedCommentLiveness({
-        companyId: run.companyId,
+        companyId: input.companyId,
         issueId: issue.id,
         wakeAgentId: candidate.agentId,
         finishingRunId: run.id,
@@ -175,9 +301,9 @@ async function runReleaseDrain(
     // A length mismatch is the only way the lists can differ: the adapter derives `liveNonSelfCommentIds` with `.filter`, so it is always a subsequence of `queuedCommentIds`.
     const liveCommentIdsDiffer = liveness.liveNonSelfCommentIds.length !== candidate.queuedCommentIds.length;
 
-    const deferredAgent = await ports.transaction.findInvokableAgent({ companyId: run.companyId, agentId: candidate.agentId });
+    const deferredAgent = await ports.transaction.findInvokableAgent({ companyId: input.companyId, agentId: candidate.agentId });
     const pauseHold = await ports.transaction.getPauseHoldFacts({
-      companyId: run.companyId,
+      companyId: input.companyId,
       issueId: issue.id,
       wakeAgentId: candidate.agentId,
       deferredContextSeed: candidate.deferredContextSeed,
@@ -197,7 +323,7 @@ async function runReleaseDrain(
       // A `false` result means another writer already moved this row off
       // the deferred status, so the next queue read cannot return it again.
       await ports.transaction.cancelDeferredWake({
-        companyId: run.companyId,
+        companyId: input.companyId,
         wakeId: candidate.id,
         reason: commentAction.selfAuthored
           ? "Deferred wake contained only comments authored by the finishing run"
@@ -210,7 +336,7 @@ async function runReleaseDrain(
     let workingCandidate = candidate;
     if (commentAction.kind === "normalize") {
       const normalized = await ports.transaction.normalizeDeferredWakeCommentIds({
-        companyId: run.companyId,
+        companyId: input.companyId,
         wakeId: candidate.id,
         payload: candidate.payload,
         liveCommentIds: liveness.liveNonSelfCommentIds,
@@ -227,15 +353,22 @@ async function runReleaseDrain(
     });
 
     if (wakeOutcome.kind === "fail_not_invokable") {
-      await ports.transaction.failDeferredWake({ companyId: run.companyId, wakeId: workingCandidate.id, now: input.now });
+      await ports.transaction.supersedeDeferredWake({
+        companyId: input.companyId,
+        wakeId: workingCandidate.id,
+        attemptReason: "agent_not_invokable",
+        lastError: "Deferred wake superseded because the target agent is paused or otherwise not invokable",
+        now: input.now,
+      });
       continue;
     }
 
     if (wakeOutcome.kind === "cancel_pause_hold") {
-      await ports.transaction.cancelDeferredWake({
-        companyId: run.companyId,
+      await ports.transaction.supersedeDeferredWake({
+        companyId: input.companyId,
         wakeId: workingCandidate.id,
-        reason: "Deferred wake suppressed by active subtree pause hold",
+        attemptReason: "issue_paused",
+        lastError: "Deferred wake superseded by an active subtree pause hold",
         now: input.now,
       });
       continue;
@@ -246,10 +379,35 @@ async function runReleaseDrain(
 
     const promoted = await promoteDeferredWake(ports, run, issue, workingCandidate, deferredAgent, pauseHold, postCommitEffects, input);
     if (!promoted) continue;
-    return promoted;
+    if (promoted.outcome.kind !== "promoted") {
+      throw new Error("wake-queue: deferred promotion returned a non-promotion outcome");
+    }
+    return { kind: "promoted", run: promoted.outcome.run, postCommitEffects: promoted.postCommitEffects };
   }
 
-  return runReleaseRecoveryTail(issue, run, ports.host, ports.transaction, input, postCommitEffects);
+  return null;
+}
+
+async function runReleaseDrain(
+  locked: LockedIssueExecution,
+  ports: { host: WakeQueueHost; transaction: WakeQueueTransaction },
+  input: ReleaseIssueExecutionInput,
+): Promise<ReleaseTransactionResult> {
+  const { run, primaryIssue: issue } = locked;
+  const drained = await runDeferredWakeDrain(run, ports, {
+    companyId: run.companyId,
+    agentId: run.agentId,
+    now: input.now,
+    releaseIssueId: issue.id,
+    allowTerminalReopen: true,
+  });
+  if (drained?.kind === "promoted") {
+    return {
+      outcome: { kind: "promoted", run: drained.run },
+      postCommitEffects: drained.postCommitEffects,
+    };
+  }
+  return runReleaseRecoveryTail(issue, run, ports.host, ports.transaction, input, []);
 }
 
 /**
@@ -265,7 +423,7 @@ async function promoteDeferredWake(
   invokableAgent: InvokableAgentSnapshot,
   pauseHold: PauseHoldFacts,
   postCommitEffects: PostCommitEffect[],
-  input: ReleaseIssueExecutionInput,
+  input: { now: Date },
 ): Promise<ReleaseTransactionResult | null> {
   // Claim the wake for promotion before any other write in this branch
   // (design choice: claim first, then reopen). A reopen write, or its
@@ -662,6 +820,9 @@ export type AdmitWakeBehindIssueExecutionInput = {
   requestedByActorType: string | null;
   requestedByActorId: string | null;
   idempotencyKey: string | null;
+  nextAttemptAt: Date;
+  claimDeadlineAt: Date;
+  expectedAssigneeAgentId: string | null;
 };
 
 export type { AdmitWakeBehindIssueExecutionResult };
@@ -822,6 +983,9 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       ...(input.payload ?? {}),
       issueId: input.issueId,
       [DEFERRED_WAKE_CONTEXT_KEY]: input.contextSnapshot,
+      _paperclipDeferredEligibility: {
+        expectedAssigneeAgentId: input.expectedAssigneeAgentId,
+      },
     };
     await deps.writer.insertNewDeferredWake(scope, {
       companyId: input.companyId,
@@ -833,6 +997,8 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       requestedByActorType: input.requestedByActorType,
       requestedByActorId: input.requestedByActorId,
       idempotencyKey: input.idempotencyKey,
+      nextAttemptAt: input.nextAttemptAt,
+      claimDeadlineAt: input.claimDeadlineAt,
     });
     return { kind: "deferred" };
   };
@@ -866,5 +1032,38 @@ export function createReleaseIssueExecution(deps: {
     }
 
     return { outcome: result.outcome, postCommitEffects: result.postCommitEffects };
+  };
+}
+
+export type DrainDueDeferredWakeInput = {
+  companyId: string;
+  agentId: string;
+  now: Date;
+  retryDelayMs: number;
+};
+
+export function createDrainDueDeferredWake(deps: { issueLock: IssueLockWriter }) {
+  return async function drainDueDeferredWake(
+    input: DrainDueDeferredWakeInput,
+  ): Promise<{ outcome: DeferredWakeDrainOutcome; postCommitEffects: PostCommitEffect[] }> {
+    return deps.issueLock.withDeferredWakeDrainTransaction(input, async (ports) => {
+      const drained = await runDeferredWakeDrain(null, ports, {
+        companyId: input.companyId,
+        agentId: input.agentId,
+        now: input.now,
+        dueAt: input.now,
+        retryDelayMs: input.retryDelayMs,
+        checkAgentBusy: true,
+        allowTerminalReopen: false,
+      });
+      if (!drained) return { outcome: { kind: "idle" }, postCommitEffects: [] };
+      if (drained.kind === "promoted") {
+        return {
+          outcome: { kind: "promoted", run: drained.run },
+          postCommitEffects: drained.postCommitEffects,
+        };
+      }
+      return { outcome: drained, postCommitEffects: [] };
+    });
   };
 }
