@@ -486,7 +486,7 @@ export function Dashboard() {
                 <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
                   Recent Activity
                 </h3>
-                <Card className="block py-0 divide-y divide-border overflow-hidden">
+                <Card className="@container block py-0 divide-y divide-border overflow-hidden">
                   {recentActivity.map((event) => (
                     <ActivityRow
                       key={event.id}
@@ -517,28 +517,32 @@ export function Dashboard() {
                     <Link
                       key={issue.id}
                       to={`/issues/${issue.identifier ?? issue.id}`}
-                      className="px-4 py-3 text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit block"
+                      className="dashboard-list-row text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit block"
                     >
-                      <div className="flex items-start gap-2 @xl:items-center @xl:gap-3">
-                        <span className="w-4 shrink-0">
+                      <div className="flex items-start gap-3 @xl:grid @xl:grid-cols-(--dashboard-task-list-columns) @xl:items-baseline">
+                        <span className="flex size-6 shrink-0 items-center justify-center @xl:self-center">
                           <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
                         </span>
-                        <span className="flex min-w-0 flex-1 flex-col gap-1 @xl:flex-row @xl:items-baseline @xl:gap-3">
-                          <span className="line-clamp-2 min-w-0 text-sm @xl:flex-1 @xl:line-clamp-none @xl:truncate" title={issue.title}>
-                            {issue.title}
+                        <span className="flex min-w-0 flex-1 flex-col gap-1 @xl:contents">
+                          <span className="flex h-6 min-w-0 items-center">
+                            <span className="min-w-0 truncate text-sm" title={issue.title}>
+                              {issue.title}
+                            </span>
                           </span>
-                          <span className="flex min-w-0 items-baseline gap-2 @xl:shrink-0 @xl:gap-3">
-                            <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground @xl:w-20">
+                          <span className="flex min-h-6 min-w-0 items-baseline gap-3 @xl:contents">
+                            <span className="w-(--dashboard-list-id-width) shrink-0 truncate font-mono text-(length:--text-micro) text-muted-foreground">
                               {issue.identifier ?? issue.id.slice(0, 8)}
                             </span>
-                            <span className="flex min-w-0 flex-1 items-baseline gap-3 @xl:w-55 @xl:flex-none">
-                              {issue.assigneeAgentId && (() => {
-                                const name = agentName(issue.assigneeAgentId);
-                                return name
-                                  ? <Identity name={name} size="sm" className="max-w-32 self-center" />
-                                  : null;
-                              })()}
-                              <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                            <span className="flex min-w-0 flex-1 items-center gap-3 @xl:contents">
+                              <span className="flex min-w-0 flex-1 items-center @xl:self-center">
+                                {issue.assigneeAgentId && (() => {
+                                  const name = agentName(issue.assigneeAgentId);
+                                  return name
+                                    ? <Identity name={name} size="sm" className="max-w-32" />
+                                    : null;
+                                })()}
+                              </span>
+                              <span className="ml-auto w-(--dashboard-list-time-width) shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground">
                                 {timeAgo(issue.updatedAt)}
                               </span>
                             </span>

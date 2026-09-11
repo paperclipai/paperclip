@@ -178,6 +178,11 @@
   --dashboard-run-accent: oklch(62.3% 0.214 259.815);
   --dashboard-run-background: color-mix(in oklab, var(--dashboard-run-accent) 4%, transparent);
   --dashboard-run-border: color-mix(in oklab, var(--dashboard-run-accent) 25%, transparent);
+  --dashboard-list-leading-width: calc(var(--spacing) * 6);
+  --dashboard-list-id-width: calc(var(--spacing) * 20);
+  --dashboard-list-time-width: calc(var(--spacing) * 16);
+  --dashboard-task-list-columns: var(--dashboard-list-leading-width) minmax(0, 1fr) var(--dashboard-list-id-width) calc(var(--spacing) * 36) var(--dashboard-list-time-width);
+  --dashboard-activity-list-columns: var(--dashboard-list-leading-width) minmax(0, 1fr) var(--dashboard-list-id-width) var(--dashboard-list-time-width);
   --status-task-backlog: #a8aeb2;
   --status-task-todo: #f59e0b;
   --status-task-in_progress: #2563eb;
@@ -1191,6 +1196,12 @@
   [data-slot="popover-content"][data-quicklook][data-state="closed"] {
     animation: none;
   }
+}
+
+/* Shared rhythm for dashboard activity and recent-task rows. */
+.dashboard-list-row {
+  min-height: calc(var(--spacing) * 12);
+  padding: calc(var(--spacing) * 3) calc(var(--spacing) * 4);
 }
 
 /* Dashboard activity row entry motion */
