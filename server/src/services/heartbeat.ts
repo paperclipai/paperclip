@@ -14041,10 +14041,7 @@ export function heartbeatService(
    */
   async function rearmDependencyWaitRetryRun(
     dueRun: typeof heartbeatRuns.$inferSelect,
-    gate: Extract<
-      ScheduledRetryGate,
-      { allowed: false; errorCode: "issue_dependencies_blocked" }
-    >,
+    gate: Extract<ScheduledRetryGate, { allowed: false }>,
     now: Date,
   ) {
     const context = parseObject(dueRun.contextSnapshot);
@@ -25703,8 +25700,8 @@ export function heartbeatService(
     companyId: string;
     agentId: string;
     issueId: string | null;
-    source: WakeupOptions["source"];
-    triggerDetail: WakeupOptions["triggerDetail"];
+    source: NonNullable<WakeupOptions["source"]>;
+    triggerDetail: WakeupOptions["triggerDetail"] | null;
     reason: string | null;
     payload: Record<string, unknown> | null;
     contextSnapshot: Record<string, unknown>;
@@ -25729,7 +25726,10 @@ export function heartbeatService(
    * current guard before a single admitted execution; the intent survives
    * restarts.
    */
-  async function parkSuppressedWakeIntent(dbOrTx: Db, input: SuppressedWakeParkInput) {
+  async function parkSuppressedWakeIntent(
+    dbOrTx: Pick<Db, "select" | "insert" | "update" | "execute">,
+    input: SuppressedWakeParkInput,
+  ) {
     const intentLockKey = [
       "suppressed-wake-park",
       input.companyId,
@@ -26668,7 +26668,7 @@ export function heartbeatService(
           // later identical re-derivations coalesce onto it, and the existing
           // promotion loop re-evaluates the guard and admits the intent once
           // when the blockers resolve.
-          await parkSuppressedWakeIntent(tx as unknown as Db, {
+          await parkSuppressedWakeIntent(tx, {
             cause: "issue_dependencies_blocked",
             companyId: agent.companyId,
             agentId,

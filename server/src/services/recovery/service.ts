@@ -1998,7 +1998,8 @@ export function recoveryService(
           entityId: current.id,
           details: {
             label: "Successful run handoff superseded by an owned durable wait",
-            sourceRunId: input.evidence?.sourceRunId ?? activeRecoveryAction.sourceRunId,
+            sourceRunId: input.evidence?.sourceRunId
+              ?? readNonEmptyString(parseObject(activeRecoveryAction.evidence).sourceRunId),
             correctiveRunId: input.evidence?.correctiveRunId ?? input.latestRun?.id ?? null,
             resolvedBySkipReason: decision.reason,
             resolutionNote: decision.resolutionNote,
