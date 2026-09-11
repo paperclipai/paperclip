@@ -578,6 +578,98 @@ describe("materializePaperclipSkillCopy", () => {
       await fs.rm(root, { recursive: true, force: true });
     }
   });
+
+  it("removes a previously materialized copy when the source root is a symlink", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const realSource = path.join(root, "real-source");
+      const linkedSource = path.join(root, "source-link");
+      const target = path.join(root, "target");
+      await fs.mkdir(realSource, { recursive: true });
+      await fs.writeFile(
+        path.join(realSource, "SKILL.md"),
+        "# skill\n",
+        "utf8",
+      );
+
+      const first = await materializePaperclipSkillCopy(realSource, target);
+      expect(first.copiedFiles).toBe(1);
+
+      await fs.symlink(realSource, linkedSource);
+
+      await expect(
+        materializePaperclipSkillCopy(linkedSource, target),
+      ).rejects.toThrow(/symlink/);
+
+      // A source root refusal must fail closed at the target: the earlier,
+      // ungated copy must not survive it.
+      await expect(fs.stat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("removes a previously materialized copy when the source root is not a directory", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const goodSource = path.join(root, "good-source");
+      const badSource = path.join(root, "not-a-directory.txt");
+      const target = path.join(root, "target");
+      await fs.mkdir(goodSource, { recursive: true });
+      await fs.writeFile(
+        path.join(goodSource, "SKILL.md"),
+        "# skill\n",
+        "utf8",
+      );
+
+      const first = await materializePaperclipSkillCopy(goodSource, target);
+      expect(first.copiedFiles).toBe(1);
+
+      await fs.writeFile(badSource, "not a skill directory\n", "utf8");
+
+      await expect(
+        materializePaperclipSkillCopy(badSource, target),
+      ).rejects.toThrow(/directories/);
+
+      // A source root refusal must fail closed at the target: the earlier,
+      // ungated copy must not survive it.
+      await expect(fs.stat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves the target directory unchanged when the source root is missing", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const source = path.join(root, "source");
+      const missingSource = path.join(root, "missing-source");
+      const target = path.join(root, "target");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      const first = await materializePaperclipSkillCopy(source, target);
+      expect(first.copiedFiles).toBe(1);
+
+      await expect(
+        materializePaperclipSkillCopy(missingSource, target),
+      ).rejects.toThrow(/ENOENT/);
+
+      // A missing source root is a lookup failure, not a refused source, so
+      // the earlier good copy must stay in place.
+      await expect(
+        fs.readFile(path.join(target, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("materializeSelectedPaperclipSkillsIntoDir", () => {

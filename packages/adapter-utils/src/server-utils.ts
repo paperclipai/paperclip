@@ -4440,11 +4440,18 @@ export async function materializePaperclipSkillCopy(
 
   const rootStat = await fs.lstat(sourceRoot);
   if (rootStat.isSymbolicLink()) {
+    // Fail closed at the target, not only here: a refused source root must
+    // not leave a stale, ungated copy from an earlier run in place under
+    // `targetRoot`. A missing source root (`lstat` throws first) and the
+    // self-containment check above report a different problem, so neither
+    // removes the target.
+    await fs.rm(targetRoot, { recursive: true, force: true }).catch(() => {});
     throw new Error(
       "Refusing to materialize a skill root that is itself a symlink.",
     );
   }
   if (!rootStat.isDirectory()) {
+    await fs.rm(targetRoot, { recursive: true, force: true }).catch(() => {});
     throw new Error("Paperclip skills must be directories.");
   }
 
