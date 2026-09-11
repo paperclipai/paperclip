@@ -25520,7 +25520,7 @@ export function heartbeatService(
           );
           if (executionBlocker) {
             const condition = { recoveryActionId: executionBlocker.recoveryActionId };
-            if (!durableRequest && (wakeCommentId || hasInteractionContinuationWakeContext(enrichedContextSnapshot))) {
+            if (durableRequest || wakeCommentId || hasInteractionContinuationWakeContext(enrichedContextSnapshot)) {
               await tx.insert(agentWakeupRequests).values({
                 ...durableReceiptFields,
                 companyId: agent.companyId, agentId, source, triggerDetail, reason,
@@ -26347,6 +26347,9 @@ export function heartbeatService(
             // Dedicated interaction wakes carry their own source and session
             // contract. ID-only adoption must not erase that continuation.
             return (
+              // Durable chat work must keep its receipt, actor, source, and
+              // session contract through normal promotion and authorization.
+              !wake.idempotencyKey?.startsWith("chat-inbound:") &&
               !isInteractionResolutionWakePayload(deferredPayload) &&
               !hasInteractionContinuationWakeContext(deferredContext) &&
               (deferredContext.wakeReason ?? wake.reason) === "issue_commented" &&

@@ -21,6 +21,7 @@ import {
   chatMessageLinks,
   chatPublications,
   issueComments,
+  issueRecoveryActions,
   issues,
   toolApplications,
   toolConnections,
@@ -188,6 +189,50 @@ describe("durable inbound chat scheduler receipts", () => {
       wake,
     };
   }
+
+  async function executionHold(f: { companyId: string; issueId: string; agentId: string }) {
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId: f.companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog",
+      ownerType: "board", returnOwnerAgentId: f.agentId,
+      cause: "legacy_execution_requires_reconciliation", status: "resolved",
+      fingerprint: randomUUID(), evidence: { automaticRecovery: { replay: "blocked" } },
+      nextAction: "Check the stopped execution.",
+    }).returning();
+    return () => db.update(issueRecoveryActions).set({ evidence: {} }).where(eq(issueRecoveryActions.id, action!.id));
+  }
+
+  it("defers held inbound chat exactly once and keeps its authority separate from a generic wake", async () => {
+    const f = await fixture();
+    const clearHold = await executionHold(f);
+    const request = f.request();
+    const wake = () => f.heartbeat.wakeup(f.agentId, {
+      source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: request.commentId },
+      contextSnapshot: { issueId: f.issueId, source: "chat:slack", wakeCommentId: request.commentId },
+      requestedByActorType: "user", requestedByActorId: request.requestedByActorId,
+      durableChatRequest: request,
+    });
+    for (let i = 0; i < 3; i++) expect(await wake()).toBeNull();
+    const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, f.agentId));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({
+      id: request.id, idempotencyKey: request.idempotencyKey, requestedAt: request.requestedAt,
+      status: "deferred_issue_execution", runId: null, requestedByActorId: request.requestedByActorId,
+      payload: { _paperclipWakeContext: { source: "chat:slack", wakeCommentIds: [request.commentId] } },
+    });
+    expect(f.authorize).toHaveBeenCalledTimes(1);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, request.id))).toHaveLength(0);
+    await clearHold();
+    const generic = await f.heartbeat.wakeup(f.agentId, {
+      source: "on_demand", triggerDetail: "manual", reason: "issue_resumed",
+      payload: { issueId: f.issueId }, requestedByActorType: "user", requestedByActorId: "board-user",
+    });
+    expect(generic?.status).toBe("queued");
+    expect(generic?.contextSnapshot?.wakeCommentIds).toBeUndefined();
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, request.id)))[0]).toMatchObject({
+      status: "deferred_issue_execution", runId: null,
+    });
+  });
 
   async function retryFixture(deferred = false) {
     const f = await fixture(deferred);
@@ -438,10 +483,12 @@ describe("durable inbound chat scheduler receipts", () => {
     expect(f.authority).not.toHaveBeenCalled();
   });
 
-  it("cancels a revoked deferred retry without reopening or retargeting its original batch", async () => {
+  it.each([false, true])("cancels a revoked deferred retry without reopening its batch (execution hold=%s)", async (held) => {
     const f = await retryFixture(true);
+    const clearHold = held ? await executionHold(f) : null;
     f.register();
     await f.wake();
+    await clearHold?.();
     f.authority.mockImplementation(async (_tx, input) => {
       if (input.phase === "promotion")
         throw conflict("Current chat access was revoked");
@@ -521,10 +568,12 @@ describe("durable inbound chat scheduler receipts", () => {
     ]);
   });
 
-  it("preserves the exact retry column and comment batch during deferred promotion", async () => {
+  it.each([false, true])("preserves the exact retry column and comment batch during promotion (execution hold=%s)", async (held) => {
     const f = await retryFixture(true);
+    const clearHold = held ? await executionHold(f) : null;
     f.register();
     await f.wake();
+    await clearHold?.();
     // A separate fixture-owned run occupies the agent slot after the issue's
     // predecessor releases it, so this asserts promotion before execution.
     const blockerId = randomUUID();
