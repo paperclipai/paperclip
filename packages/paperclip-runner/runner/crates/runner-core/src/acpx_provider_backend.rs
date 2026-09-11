@@ -1393,11 +1393,11 @@ impl AcpxCommandExecutor {
                     {
                         continue;
                     }
-                    let status = match event_type.as_str() {
-                        "turn.completed" => "succeeded",
-                        "turn.cancelled" => "cancelled",
-                        "turn.interrupted" => "interrupted",
-                        _ => "failed",
+                    let (turn_terminal_state, status) = match event_type.as_str() {
+                        "turn.completed" => ("completed", "succeeded"),
+                        "turn.cancelled" => ("cancelled", "cancelled"),
+                        "turn.interrupted" => ("interrupted", "cancelled"),
+                        _ => ("failed", "failed"),
                     };
                     let disposition = goal_terminal_disposition(
                         state
@@ -1415,7 +1415,9 @@ impl AcpxCommandExecutor {
                         event_type: "run.terminal".to_owned(),
                         priority: EventPriority::P0,
                         payload: json!({
+                            "schema": "paperclip.prp.terminal.v1",
                             "status": status,
+                            "turnTerminalState": turn_terminal_state,
                             "runTerminalState": status,
                             "reportedWorkDisposition": disposition,
                             "provider": "acpx",

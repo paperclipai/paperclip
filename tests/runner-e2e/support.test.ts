@@ -683,6 +683,16 @@ describe("runner E2E run observations", () => {
 });
 
 describe("runner E2E failure policy", () => {
+  it.each([
+    "native_session_close_unrecoverable: provider transport failed",
+    "Provider connection closed: runner did not durably suspend before checkpoint",
+    "native_session_close_unrecoverable: provider transport timed out; runner did not durably suspend before checkpoint",
+  ])("does not retry controller session-close defects: %s", (message) => {
+    const failureClass = classifyFailure(new Error(message));
+    expect(failureClass).toBe("candidate_failure");
+    expect(shouldRetryFailure(failureClass)).toBe(false);
+  });
+
   it("retries only transient infrastructure failures", () => {
     expect(
       classifyFailure(new Error("Daytona preview connection timed out")),

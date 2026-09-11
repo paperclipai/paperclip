@@ -12,6 +12,7 @@ import {
   type ChatRun,
 } from "./chat-flow.js";
 import type { RunnerApi } from "./api.js";
+import { chatMarker } from "./chat-cases.js";
 import { runnerMatrix } from "./catalog.js";
 import { isPublicRunnerScreenshotRoute } from "./screenshot-policy.js";
 
@@ -41,6 +42,16 @@ const run: ChatRun = {
   startedAt: "2026-09-11T10:00:01Z",
 };
 describe("chat acceptance contracts", () => {
+  it("keeps chat markers literal across rich-text and Markdown boundaries", () => {
+    for (const prefix of ["CHAT", "DRAFT", "OLDCONTEXT"] as const) {
+      expect(chatMarker(prefix, "abc123-1")).toBe(`${prefix}abc1231`);
+      expect(chatMarker(prefix, "abc_123-1")).toMatch(/^[a-zA-Z0-9]+$/);
+    }
+    expect(chatMarker("OLDCONTEXT", "one-1")).not.toBe(
+      chatMarker("CHAT", "one-1"),
+    );
+    expect(chatMarker("CHAT", "one-1")).not.toBe(chatMarker("CHAT", "two-1"));
+  });
   it("has exactly six workflows on the four chosen local profiles", () => {
     const matrix = runnerMatrix.filter(
       (cell) => cell.suite.id === "agent-chat",

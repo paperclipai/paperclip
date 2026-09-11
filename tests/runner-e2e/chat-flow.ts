@@ -6,6 +6,7 @@ import type {
 } from "../../packages/shared/src/types/issue.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
+import { chatMarker } from "./chat-cases.js";
 
 // Public API observations only: this driver never fabricates provider results or writes DB state.
 export interface ChatIssue {
@@ -161,6 +162,7 @@ export async function runChatFlow(input: {
   const chatPath = `/api/companies/${f.company.id}/chats/${f.agent.id}`;
   const route = `/${f.company.issuePrefix}/chats/${f.agent.id}`;
   const marker = execution.task.buildVisibleMarker(nonce);
+  const draftMarker = chatMarker("DRAFT", nonce);
   const caseId = execution.task.id;
   let issue: ChatIssue;
   let runs: ChatRun[] = [];
@@ -236,7 +238,7 @@ export async function runChatFlow(input: {
     if (
       ["continuity-restart", "new-session", "stop-new-resume"].includes(caseId)
     ) {
-      const secret = `OLD_CONTEXT_${nonce}`;
+      const secret = chatMarker("OLDCONTEXT", nonce);
       await turn(
         `For this conversation only, remember the phrase ${secret}. Just acknowledge briefly; no project or task is needed.`,
         1,
@@ -442,13 +444,13 @@ export async function runChatFlow(input: {
           .getByText("Plan mode", { exact: true })
           .click();
         await turn(
-          `Let's plan a two-sentence garden club welcome note. Write a plan in the plan panel, with the required phrase DRAFT_${nonce}, and present it for approval. When I approve the final revision, create a suitable repository-free project and an assigned task for yourself, copy the plan into that task, and have it save the note in its output document and finish. Do not create the project or task before approval.`,
+          `Let's plan a two-sentence garden club welcome note. Write a plan in the plan panel, with the required phrase ${draftMarker}, and present it for approval. When I approve the final revision, create a suitable repository-free project and an assigned task for yourself, copy the plan into that task, and have it save the note in its output document and finish. Do not create the project or task before approval.`,
           1,
         );
         const draft = await api.get<Plan>(
           `/api/issues/${issue!.id}/documents/plan`,
         );
-        expect(draft.body).toContain(`DRAFT_${nonce}`);
+        expect(draft.body).toContain(draftMarker);
         await noTasks();
         await input.capture(
           "chat-plan-draft",
@@ -488,7 +490,7 @@ export async function runChatFlow(input: {
           .locator('[contenteditable="true"],textarea')
           .first()
           .fill(
-            `Revise the plan: replace DRAFT_${nonce} with ${marker}. The execution task should save the welcome note in its output document. Present this revised plan for approval; wait for that approval before handing it off as agreed.`,
+            `Revise the plan: replace ${draftMarker} with ${marker}. The execution task should save the welcome note in its output document. Present this revised plan for approval; wait for that approval before handing it off as agreed.`,
           );
         await reviseButton.click();
         await idle(2);
@@ -496,7 +498,7 @@ export async function runChatFlow(input: {
           `/api/issues/${issue!.id}/documents/plan`,
         );
         expect(revised.body).toContain(marker);
-        expect(revised.body).not.toContain(`DRAFT_${nonce}`);
+        expect(revised.body).not.toContain(draftMarker);
         expect(revised.latestRevisionId).not.toBe(draft.latestRevisionId);
         acceptedPlan = revised;
         await noTasks();
@@ -565,7 +567,7 @@ export async function runChatFlow(input: {
       if (plan) {
         assertChatHandoff(child, plan, taskRuns, issue!);
         expect(plan.body).toContain(marker);
-        expect(plan.body).not.toContain(`DRAFT_${nonce}`);
+        expect(plan.body).not.toContain(draftMarker);
         const sourcePlan = await api.get<Plan>(
           `/api/issues/${issue!.id}/documents/plan`,
         );

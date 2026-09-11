@@ -124,6 +124,30 @@ fn opencode_call_count(state_dir: &Path, method: &str) -> usize {
         .count()
 }
 
+fn assert_valid_terminal(payload: &Value) {
+    let schema: Value = serde_json::from_str(include_str!(
+        "../../../../protocol/schemas/terminal.schema.json"
+    ))
+    .unwrap();
+    let stop_reason: Value = serde_json::from_str(include_str!(
+        "../../../../protocol/schemas/stop-reason.schema.json"
+    ))
+    .unwrap();
+    let registry = jsonschema::Registry::new()
+        .add(
+            "https://paperclip.dev/schemas/prp/v1/stop-reason.schema.json",
+            stop_reason,
+        )
+        .unwrap()
+        .prepare()
+        .unwrap();
+    let validator = jsonschema::options()
+        .with_registry(&registry)
+        .build(&schema)
+        .unwrap();
+    validator.validate(payload).unwrap();
+}
+
 fn command(sequence: u64, command_type: &str, payload: Value) -> Command {
     Command {
         schema: "paperclip.prp.command.v1".to_owned(),
@@ -216,6 +240,7 @@ fn preserves_acpx_semantic_disposition_in_the_run_terminal() {
         .iter()
         .find(|event| event.event_type == "run.terminal")
         .expect("ACPX blocked result must become terminal");
+    assert_valid_terminal(&terminal.payload);
     assert_eq!(terminal.payload["runTerminalState"], "succeeded");
     assert_eq!(terminal.payload["reportedWorkDisposition"], "blocked");
 
@@ -360,6 +385,13 @@ fn executes_a_qualified_acpx_profile_through_the_native_selector() {
     assert!(events
         .iter()
         .any(|event| event.event_type == "run.terminal"));
+    assert_valid_terminal(
+        &events
+            .iter()
+            .find(|event| event.event_type == "run.terminal")
+            .unwrap()
+            .payload,
+    );
     // runner.drain must see this exact terminal suffix without polling the
     // provider again. An empty default implementation strands the suffix and
     // makes shared native transport closure fail after a successful reply.
