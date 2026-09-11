@@ -1,3 +1,4 @@
+import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -1057,6 +1058,11 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         }
 
         if (await recordNativeTerminalRecoveryIfNeeded(tx, run, issueRow, input.now)) {
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
+
+        // A release must leave deferred messages intact while replay is held.
+        if (await getExecutionBlocker(tx, issueRow.companyId, issueRow.id)) {
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 

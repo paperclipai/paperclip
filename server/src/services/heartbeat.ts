@@ -1,4 +1,5 @@
 import { getExecutionBlocker } from "./execution-blocker.js";
+import { recordExecutionWait } from "./execution-wait.js";
 import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
@@ -24835,11 +24836,21 @@ export function heartbeatService(
         "agent_debug_setting";
     }
 
+    // Automatic signals are replaceable; user input and interaction delivery
+    // retain distinct durable receipts even when the same gate blocks them.
+    const coalesceExecutionWait =
+      opts.requestedByActorType === "system" &&
+      !durableRequest &&
+      !wakeCommentId &&
+      queuedCommentIdsFromRunContext(enrichedContextSnapshot).length === 0 &&
+      !isInteractionResolutionWakePayload(payload ?? {}) &&
+      !hasInteractionContinuationWakeContext(enrichedContextSnapshot);
     const writeSkippedRequest = async (
       skipReason: string,
       patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
+      waitCondition?: Record<string, unknown>,
     ) => {
-      await db.insert(agentWakeupRequests).values({
+      const request = {
         ...durableReceiptFields,
         companyId: agent.companyId,
         agentId,
@@ -24853,7 +24864,18 @@ export function heartbeatService(
         idempotencyKey: opts.idempotencyKey ?? null,
         finishedAt: new Date(),
         ...patch,
-      });
+      };
+      if (waitCondition && issueId && isUuidLike(issueId)) {
+        const waitIssueId = issueId;
+        return db.transaction(async (tx) => {
+          await tx.execute(sql`select id from issues where id = ${waitIssueId} and company_id = ${agent.companyId} for update`);
+          return recordExecutionWait(tx as unknown as Db, {
+            issueId: waitIssueId, request, condition: waitCondition, coalesce: coalesceExecutionWait,
+          });
+        });
+      }
+      await db.insert(agentWakeupRequests).values(request);
+      return { created: true };
     };
     const writeSkippedHeartbeatRequest = async (
       skipReason: string,
@@ -24893,7 +24915,7 @@ export function heartbeatService(
       }
       await writeSkippedRequest("company.inactive", {
         error: `Wake suppressed because company status is ${companyStatus}`,
-      });
+      }, { companyStatus });
       return null;
     }
 
@@ -25062,7 +25084,9 @@ export function heartbeatService(
       },
     );
     if (budgetBlock) {
-      await writeSkippedRequest("budget.blocked");
+      await writeSkippedRequest("budget.blocked", { error: budgetBlock.reason }, {
+        scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId,
+      });
       throw conflict(budgetBlock.reason, {
         scopeType: budgetBlock.scopeType,
         scopeId: budgetBlock.scopeId,
@@ -25074,7 +25098,7 @@ export function heartbeatService(
       if (opts.requestedByActorType !== "user") {
         await writeSkippedRequest("agent.not_invokable", {
           error: invokability.message,
-        });
+        }, { status: agent.status, reason: invokability.reason });
       }
       throw conflict(invokability.message, {
         status: agent.status,
@@ -25087,11 +25111,11 @@ export function heartbeatService(
     const policy = parseHeartbeatPolicy(agent);
 
     if (source === "timer" && !policy.enabled) {
-      await writeSkippedRequest("heartbeat.disabled");
+      await writeSkippedRequest("heartbeat.disabled", {}, { enabled: false });
       return null;
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
-      await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
+      await writeSkippedRequest("heartbeat.wakeOnDemand.disabled", {}, { wakeOnDemand: false });
       return null;
     }
 
@@ -25131,8 +25155,10 @@ export function heartbeatService(
           });
 
         if (!treeHoldInteractionWake) {
-          await writeSkippedRequest("issue_tree_hold_active");
-          await logActivity(db, {
+          const wait = await writeSkippedRequest("issue_tree_hold_active", {}, {
+            holdId: activePauseHold.holdId,
+          });
+          if (wait.created) await logActivity(db, {
             companyId: agent.companyId,
             actorType: "system",
             actorId: "system",
@@ -25485,6 +25511,51 @@ export function heartbeatService(
             reconciledSourceRunId = sourceRunId;
           }
 
+          // All wake producers share this admission gate. A resolved recovery
+          // action can still prohibit replay; its durable evidence owns the wait.
+          // Reconciliation wakes have already proved their authority above and
+          // must still respect any other effective hold on the same issue.
+          const executionBlocker = await getExecutionBlocker(
+            tx as unknown as Db, issue.companyId, issue.id,
+          );
+          if (executionBlocker) {
+            const condition = { recoveryActionId: executionBlocker.recoveryActionId };
+            if (!durableRequest && (wakeCommentId || hasInteractionContinuationWakeContext(enrichedContextSnapshot))) {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields,
+                companyId: agent.companyId, agentId, source, triggerDetail, reason,
+                payload: withQueuedCommentIdsInWakePayload({
+                  ...payload,
+                  issueId: issue.id,
+                  [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
+                  executionWait: condition,
+                }, [...new Set([
+                  ...queuedCommentIdsFromRunContext(enrichedContextSnapshot),
+                  ...(wakeCommentId ? [wakeCommentId] : []),
+                ])]),
+                status: "deferred_issue_execution",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+              });
+            } else {
+              await recordExecutionWait(tx as unknown as Db, {
+                issueId: issue.id, condition, coalesce: coalesceExecutionWait,
+                request: {
+                  ...durableReceiptFields,
+                  companyId: agent.companyId, agentId, source, triggerDetail,
+                  reason: "execution_reconciliation_required",
+                  error: executionBlocker.nextAction,
+                  payload,
+                  requestedByActorType: opts.requestedByActorType ?? null,
+                  requestedByActorId: opts.requestedByActorId ?? null,
+                  idempotencyKey: opts.idempotencyKey ?? null,
+                },
+              });
+            }
+            return { kind: "deferred" as const };
+          }
+
           const issueStateGuard = opts.issueStateGuard;
           if (
             issueStateGuard &&
@@ -25832,24 +25903,29 @@ export function heartbeatService(
             !dependencyReadiness.isDependencyReady &&
             !blockedInteractionWake
           ) {
-            await tx.insert(agentWakeupRequests).values({
-              ...durableReceiptFields,
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason: "issue_dependencies_blocked",
-              payload: {
-                ...(payload ?? {}),
-                issueId,
-                unresolvedBlockerIssueIds:
-                  dependencyReadiness.unresolvedBlockerIssueIds,
+            await recordExecutionWait(tx as unknown as Db, {
+              issueId: issue.id,
+              coalesce: coalesceExecutionWait,
+              condition: { unresolvedBlockerIssueIds: [...dependencyReadiness.unresolvedBlockerIssueIds].sort() },
+              request: {
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_dependencies_blocked",
+                payload: {
+                  ...(payload ?? {}),
+                  issueId,
+                  unresolvedBlockerIssueIds:
+                    dependencyReadiness.unresolvedBlockerIssueIds,
+                },
+                status: "skipped",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: new Date(),
               },
-              status: "skipped",
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
-              finishedAt: new Date(),
             });
             return { kind: "skipped" as const };
           }

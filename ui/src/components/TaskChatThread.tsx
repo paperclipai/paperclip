@@ -1380,6 +1380,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // Raw summary inputs per turn id, so back-to-back same-agent runs can
     // coalesce into one "Worked" row in the final pass (PAP-362).
     const turnMergeMetaById = new Map<string, SettledTurnMergeMeta>();
+    let previousExecutionWaitKey: string | null = null;
     for (const source of runs) {
       if (!isTerminalRunStatus(source.status)) continue;
       if (liveRun && source.id === liveRun.id) continue;
@@ -1397,6 +1398,38 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         settledRunIds.add(source.id);
         continue;
       }
+      // Historical pre-admission cancellations describe a wait, not failed
+      // work. Collapse repeated observations of that hold, retaining real
+      // execution and any transcript/comment content between wait episodes.
+      const executionWait =
+        source.status === "cancelled" &&
+        !meta?.startedAt &&
+        meta?.errorCode === "execution_reconciliation_required" &&
+        entries.length === 0 &&
+        !lastCommentIdByRun.has(source.id);
+      if (executionWait) {
+        const wait = meta?.resultJson?.executionWait;
+        const waitKey = wait && typeof wait === "object" && "recoveryActionId" in wait
+          ? String(wait.recoveryActionId)
+          : "execution_reconciliation_required";
+        settledRunIds.add(source.id);
+        if (previousExecutionWaitKey !== waitKey) {
+          const id = `${source.id}:execution-wait`;
+          entriesWithFailures.push({
+            ms: toMs(meta?.finishedAt ?? meta?.createdAt),
+            order: 3,
+            id,
+            item: {
+              id, kind: "marker", variant: "interrupted", tone: "neutral",
+              label: "Waiting to resume",
+              detail: "The previous execution needs to be checked before work can continue. See the task’s execution hold for the next action. Individual checks remain in the run history.",
+            },
+          });
+        }
+        previousExecutionWaitKey = waitKey;
+        continue;
+      }
+      previousExecutionWaitKey = null;
       const acceptedSummary = acceptedSemanticResultSummary(meta?.resultJson);
       const parsedSource = transcriptToTaskChatItems(entries, {
         runId: source.id,

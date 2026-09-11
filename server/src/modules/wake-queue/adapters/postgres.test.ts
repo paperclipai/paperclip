@@ -9,6 +9,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueRecoveryActions,
   issues,
 } from "@paperclipai/db";
 import {
@@ -58,6 +59,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     // so the run row must go first.
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
+    await db.delete(issueRecoveryActions);
     await db.delete(issues);
     await db.delete(agents);
     await db.delete(companies);
@@ -160,6 +162,36 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     });
     return id;
   }
+
+  it("leaves deferred work untouched until the effective execution hold clears", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId, status: "blocked" });
+    const runId = await seedRun({ companyId, agentId, contextSnapshot: { issueId }, status: "succeeded" });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId });
+    const [hold] = await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation", status: "resolved",
+      fingerprint: runId, evidence: { automaticRecovery: { replay: "blocked" } },
+      nextAction: "Check the stopped execution.",
+    }).returning();
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    let drainCalls = 0;
+    const drain = async () => {
+      drainCalls++;
+      return { outcome: { kind: "released" as const }, postCommitEffects: [] };
+    };
+    for (let i = 0; i < 3; i++) {
+      expect((await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, drain)).outcome.kind).toBe("released");
+    }
+    expect(drainCalls).toBe(0);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0]).toMatchObject({
+      status: "deferred_issue_execution", runId: null,
+    });
+    await db.update(issueRecoveryActions).set({ evidence: {} }).where(eq(issueRecoveryActions.id, hold!.id));
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, drain);
+    expect(drainCalls).toBe(1);
+  });
 
   // Review test (a): a foreign-company agent id produces the current failed
   // wake status and the current error text, and creates no run.
