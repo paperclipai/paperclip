@@ -190,6 +190,7 @@ export {
   recoveryEngineerIncidents,
   recoveryEngineerIncidentSources,
   recoveryEngineerProcedures,
+  recoveryEngineerProcedureReuses,
   recoveryEngineerVerifications,
 } from "./recovery_engineer.js";
 export {

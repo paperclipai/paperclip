@@ -63,12 +63,23 @@ export const recoveryEngineerResumeInputSchema = z.object({
   sourceIssueId: guid,
 }).strict();
 
+export const recoveryEngineerProcedureReuseInputSchema = z.object({
+  action: z.literal("reuse_procedure"),
+  procedureId: guid,
+  outcome: z.enum(["applied", "succeeded", "failed"]).optional(),
+  evidenceKey: boundedText(200),
+  sourceIssueId: guid.optional(),
+  failureReason: boundedText(20_000).optional(),
+  evidence: z.record(z.string(), z.unknown()).optional(),
+}).strict();
+
 export const recoveryEngineerRecordInputSchema = z.discriminatedUnion("action", [
   recoveryEngineerDiagnoseInputSchema,
   recoveryEngineerProcedureInputSchema,
   recoveryEngineerRepairInputSchema,
   recoveryEngineerVerifyInputSchema,
   recoveryEngineerResumeInputSchema,
+  recoveryEngineerProcedureReuseInputSchema,
 ]);
 
 export const recoveryEngineerProcedureReviewInputSchema = z.object({

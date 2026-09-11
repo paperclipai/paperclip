@@ -14,7 +14,11 @@ import {
 } from "drizzle-orm/pg-core";
 import type {
   RecoveryEngineerClassification,
+  RecoveryEngineerIncidentOutcome,
+  RecoveryEngineerProcedureApplicability,
+  RecoveryEngineerProcedureReuseStatus,
   RecoveryEngineerRepairProjectIds,
+  RecoveryEngineerSourceCloseReason,
 } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
@@ -58,6 +62,13 @@ export const recoveryEngineerIncidents = pgTable(
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     failureFingerprint: text("failure_fingerprint").notNull(),
     status: text("status").notNull().default("suspected"),
+    // Repair outcome, separate from the lifecycle stage in `status`:
+    // `pending` = at least one source generation is still open, `recovered` =
+    // every source generation closed with evidence, `unresolved` = the
+    // incident can no longer claim recovery (superseded, cancelled, stale or
+    // exhausted generations).
+    outcome: text("outcome").$type<RecoveryEngineerIncidentOutcome>().notNull().default("pending"),
+    outcomeUpdatedAt: timestamp("outcome_updated_at", { withTimezone: true }),
     classification: text("classification").$type<RecoveryEngineerClassification>(),
     hypothesis: text("hypothesis"),
     rootCause: text("root_cause"),
@@ -98,6 +109,11 @@ export const recoveryEngineerIncidents = pgTable(
       table.status,
       table.updatedAt,
     ),
+    companyOutcomeIdx: index("recovery_engineer_incidents_company_outcome_idx").on(
+      table.companyId,
+      table.outcome,
+      table.updatedAt,
+    ),
     maintenanceIssueIdx: index("recovery_engineer_incidents_maintenance_issue_idx").on(
       table.companyId,
       table.maintenanceIssueId,
@@ -133,10 +149,27 @@ export const recoveryEngineerIncidentSources = pgTable(
     executionRunId: uuid("execution_run_id"),
     evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull().default({}),
     observedAt: timestamp("observed_at", { withTimezone: true }).notNull().defaultNow(),
+    // A generation is closed either with recovery evidence (original-path or
+    // native closure) or as superseded. `recoveredAt` alone never means "a
+    // continuation was queued": the resume claim/dispatch columns below record
+    // that separately, and recovery evidence names the run that proved the
+    // source path overcame this failure.
     recoveredAt: timestamp("recovered_at", { withTimezone: true }),
+    recoveredRunId: uuid("recovered_run_id"),
+    recoveredEvidence: jsonb("recovered_evidence").$type<Record<string, unknown>>(),
     resumeClaimedAt: timestamp("resume_claimed_at", { withTimezone: true }),
+    // Persisted dispatch intent: the same key is replayed after a crash, so a
+    // restart cannot lose the wake nor mint a duplicate one.
+    resumeIdempotencyKey: text("resume_idempotency_key"),
+    resumeAttemptCount: integer("resume_attempt_count").notNull().default(0),
+    resumeLastAttemptAt: timestamp("resume_last_attempt_at", { withTimezone: true }),
+    resumeDispatchedAt: timestamp("resume_dispatched_at", { withTimezone: true }),
+    resumeFailureReason: text("resume_failure_reason"),
     resumedAt: timestamp("resumed_at", { withTimezone: true }),
     resumedRunId: uuid("resumed_run_id"),
+    supersededAt: timestamp("superseded_at", { withTimezone: true }),
+    supersededReason: text("superseded_reason").$type<RecoveryEngineerSourceCloseReason>(),
+    supersededBySourceId: uuid("superseded_by_source_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -153,6 +186,16 @@ export const recoveryEngineerIncidentSources = pgTable(
       table.incidentId,
       table.observedAt,
       table.id,
+    ),
+    companyOpenSourceIdx: index("recovery_engineer_incident_sources_company_open_idx").on(
+      table.companyId,
+      table.supersededAt,
+      table.recoveredAt,
+      table.resumeClaimedAt,
+    ),
+    closeExclusivityCheck: check(
+      "recovery_engineer_incident_sources_close_exclusivity_check",
+      sql`not (${table.recoveredAt} is not null and ${table.supersededAt} is not null)`,
     ),
   }),
 );
@@ -176,6 +219,14 @@ export const recoveryEngineerProcedures = pgTable(
     repairCommit: text("repair_commit").notNull(),
     failureFingerprint: text("failure_fingerprint").notNull(),
     classification: text("classification").$type<RecoveryEngineerClassification>(),
+    // Context snapshot captured from the evidence run at proposal time. Reuse
+    // re-matches it, so a review of one context never authorizes another.
+    applicability: jsonb("applicability").$type<RecoveryEngineerProcedureApplicability>(),
+    failedReuseCount: integer("failed_reuse_count").notNull().default(0),
+    lastReuseOutcome: text("last_reuse_outcome").$type<RecoveryEngineerProcedureReuseStatus>(),
+    lastReusedAt: timestamp("last_reused_at", { withTimezone: true }),
+    invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+    invalidatedReason: text("invalidated_reason"),
     proposedByAgentId: uuid("proposed_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     proposedByRunId: uuid("proposed_by_run_id"),
     reviewedByUserId: text("reviewed_by_user_id"),
@@ -216,6 +267,10 @@ export const recoveryEngineerVerifications = pgTable(
     reproductionCommand: text("reproduction_command").notNull(),
     reproductionResult: text("reproduction_result").notNull(),
     failureReason: text("failure_reason"),
+    // Set when a later independent review confirms the already-verified repair
+    // commit: the verification is accepted idempotently and attributed to the
+    // fence that already verified the incident, which is never re-attributed.
+    duplicateOfVerificationId: uuid("duplicate_of_verification_id"),
     submittedByAgentId: uuid("submitted_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
     submittedByUserId: text("submitted_by_user_id"),
     submittedAt: timestamp("submitted_at", { withTimezone: true }).notNull().defaultNow(),
@@ -236,6 +291,66 @@ export const recoveryEngineerVerifications = pgTable(
     statusCheck: check(
       "recovery_engineer_verifications_status_check",
       sql`${table.status} in ('pending', 'verified', 'failed')`,
+    ),
+  }),
+);
+
+/**
+ * Durable reuse ledger for reviewed procedures. A procedure is diagnostic data
+ * bound to the context it was reviewed in, never an executable grant: every
+ * application is recorded with the evidence key it was applied against, and a
+ * failed application increments the procedure's failure count so a repeated
+ * failure demands new evidence or a new review instead of a blind retry.
+ */
+export const recoveryEngineerProcedureReuses = pgTable(
+  "recovery_engineer_procedure_reuses",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    incidentId: uuid("incident_id")
+      .notNull()
+      .references(() => recoveryEngineerIncidents.id, { onDelete: "cascade" }),
+    procedureId: uuid("procedure_id")
+      .notNull()
+      .references(() => recoveryEngineerProcedures.id, { onDelete: "cascade" }),
+    sourceIssueId: uuid("source_issue_id").notNull().references(() => issues.id, { onDelete: "cascade" }),
+    sourceGenerationKey: text("source_generation_key").notNull(),
+    failureFingerprint: text("failure_fingerprint").notNull(),
+    evidenceKey: text("evidence_key").notNull(),
+    status: text("status").$type<RecoveryEngineerProcedureReuseStatus>().notNull().default("applied"),
+    refusalReason: text("refusal_reason"),
+    applicability: jsonb("applicability").$type<Record<string, unknown>>().notNull().default({}),
+    evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull().default({}),
+    appliedByAgentId: uuid("applied_by_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    appliedByRunId: uuid("applied_by_run_id"),
+    appliedByUserId: text("applied_by_user_id"),
+    appliedAt: timestamp("applied_at", { withTimezone: true }).notNull().defaultNow(),
+    outcomeAt: timestamp("outcome_at", { withTimezone: true }),
+    outcomeRunId: uuid("outcome_run_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    reuseKeyUq: uniqueIndex("recovery_engineer_procedure_reuses_key_uq").on(
+      table.companyId,
+      table.procedureId,
+      table.incidentId,
+      table.sourceIssueId,
+      table.sourceGenerationKey,
+      table.evidenceKey,
+    ),
+    companyStatusIdx: index("recovery_engineer_procedure_reuses_company_status_idx").on(
+      table.companyId,
+      table.status,
+      table.updatedAt,
+    ),
+    procedureAppliedIdx: index("recovery_engineer_procedure_reuses_procedure_applied_idx").on(
+      table.procedureId,
+      table.appliedAt,
+    ),
+    statusCheck: check(
+      "recovery_engineer_procedure_reuses_status_check",
+      sql`${table.status} in ('applied', 'succeeded', 'failed', 'refused')`,
     ),
   }),
 );

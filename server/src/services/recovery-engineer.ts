@@ -6,10 +6,12 @@ import {
   eq,
   gt,
   inArray,
+  isNotNull,
   isNull,
   lt,
   lte,
   ne,
+  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -31,6 +33,7 @@ import {
   recoveryEngineerIncidents,
   recoveryEngineerIncidentSources,
   recoveryEngineerProcedures,
+  recoveryEngineerProcedureReuses,
   recoveryEngineerVerifications,
 } from "@paperclipai/db";
 import type {
@@ -38,10 +41,15 @@ import type {
   RecoveryEngineerConfig,
   RecoveryEngineerConfigInput,
   RecoveryEngineerDiagnoseInput,
+  RecoveryEngineerIncidentOutcome,
+  RecoveryEngineerProcedureApplicability,
   RecoveryEngineerProcedureInput,
+  RecoveryEngineerProcedureReuseInput,
+  RecoveryEngineerProcedureReuseStatus,
   RecoveryEngineerProcedureReviewInput,
   RecoveryEngineerRepairInput,
   RecoveryEngineerResumeInput,
+  RecoveryEngineerSourceCloseReason,
   RecoveryEngineerVerifyInput,
 } from "@paperclipai/shared";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
@@ -59,9 +67,13 @@ import {
   isOperatorCancelledRun,
 } from "./recovery/service.js";
 import {
-  ACTIVE_INCIDENT_STATUSES,
+  RECOVERY_ENGINEER_FENCED_INCIDENT_STATUSES,
   RECOVERY_ENGINEER_ORIGIN_KINDS,
+  RECOVERY_ENGINEER_PROCEDURE_MAX_FAILED_REUSES,
+  evaluateRecoveryEngineerProcedureApplicability,
   isRecoveryEngineerIssueOrigin,
+  type RecoveryEngineerProcedureApplicabilityContext,
+  type RecoveryEngineerProcedureReuseSummary,
 } from "./recovery-engineer-policy.js";
 import {
   buildBlockedIssueEvidence,
@@ -71,12 +83,30 @@ import { redactSensitiveText } from "../redaction.js";
 
 const INCIDENT_FINGERPRINT_CONSTRAINT = "recovery_engineer_incidents_company_fingerprint_uq";
 const VERIFICATION_RUN_CONSTRAINT = "recovery_engineer_verifications_company_review_run_uq";
+const PROCEDURE_REUSE_CONSTRAINT = "recovery_engineer_procedure_reuses_key_uq";
 const TERMINAL_FAILURE_STATUSES = ["failed", "timed_out"] as const;
 const PARTICIPANT_FAILURE_STATUSES = ["failed", "timed_out", "interrupted", "cancelled"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const LIVE_WAKE_REQUEST_STATUSES = ["queued", "deferred_issue_execution", "claimed"] as const;
 const SWEEP_BATCH_SIZE = 100;
 const INITIAL_SWEEP_LOOKBACK_MS = 24 * 60 * 60 * 1_000;
+// Bounded automatic replay of a claimed resume whose wake never materialized a
+// run (crash between claim and dispatch, or a suppressed wake). Past the cap
+// the generation is superseded and the board owns the next action, so a stuck
+// dispatch can never become an infinite retry loop.
+const RESUME_DISPATCH_MAX_ATTEMPTS = 3;
+const LIFENESS_ADVANCED_STATES = ["advanced", "completed"] as const;
+const ACTIVATION_WAIT_PREFIX = "Activate verified repair commit";
+/** Incident statuses that carry a newer manual/terminal disposition: a
+ * pending-outcome roll-up must never downgrade them back to `resumed`. */
+const RESUME_STAGE_PROTECTED_STATUSES = ["escalated", "gated", "resolved"] as const;
+/** The routine bookkeeping reason for replacing an older generation with a
+ * newer observation of the same issue. */
+const SUPERSEDED_BY_NEWER_GENERATION = "superseded_by_newer_generation";
+/** Incident statuses that cannot act on a newly observed generation of the same
+ * failure: the recurrence is recorded for the board instead of being
+ * re-diagnosed. */
+const RECURRENCE_ESCALATION_STATUSES = ["resolved", "resumed", "gated", "escalated"] as const;
 
 export type RecoveryEngineerActor = {
   actorType: "agent" | "user";
@@ -107,7 +137,16 @@ type IncidentRow = typeof recoveryEngineerIncidents.$inferSelect;
 type ConfigRow = typeof recoveryEngineerConfigs.$inferSelect;
 type IssueRow = typeof issues.$inferSelect;
 type RunRow = typeof heartbeatRuns.$inferSelect;
+type SourceRow = typeof recoveryEngineerIncidentSources.$inferSelect;
+type ProcedureRow = typeof recoveryEngineerProcedures.$inferSelect;
+type ProcedureReuseRow = typeof recoveryEngineerProcedureReuses.$inferSelect;
 type ParticipantRole = "recovery" | "repair" | "reviewer";
+
+/** Persisted dispatch intent for one source generation. Replaying the same key
+ * after a restart converges on the same wake instead of minting a new one. */
+function resumeIdempotencyKeyFor(incidentId: string, sourceId: string) {
+  return `recovery-engineer:resume:${incidentId}:${sourceId}`;
+}
 
 function parseObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -590,6 +629,43 @@ export function recoveryEngineerService(
         .limit(1)
         .then((rows) => rows[0] ?? null);
 
+    // Reviewed procedures are diagnostic aids, so the read carries the
+    // applicability verdict and reuse history for the context that is live
+    // right now: an old review of another context is visible as not applicable
+    // instead of being silently available as a blind retry.
+    const contextSource = await db
+      .select()
+      .from(recoveryEngineerIncidentSources)
+      .where(and(
+        eq(recoveryEngineerIncidentSources.incidentId, resolved.incident.id),
+        isNull(recoveryEngineerIncidentSources.recoveredAt),
+        isNull(recoveryEngineerIncidentSources.supersededAt),
+      ))
+      .orderBy(desc(recoveryEngineerIncidentSources.observedAt), desc(recoveryEngineerIncidentSources.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    const applicabilityContext = await procedureApplicabilityContextForIncident(
+      resolved.incident,
+      contextSource,
+    );
+    const reviewedProcedures = await Promise.all(visibleProcedures.map(async (procedure) => {
+      const reuses = await loadProcedureReuses(procedure.id);
+      return {
+        ...procedure,
+        applicabilityVerdict: evaluateRecoveryEngineerProcedureApplicability({
+          procedure,
+          context: applicabilityContext,
+          evidenceKey: null,
+          reuseHistory: reuses.map((reuse) => ({
+            status: reuse.status,
+            evidenceKey: reuse.evidenceKey,
+            sourceGenerationKey: reuse.sourceGenerationKey,
+          })),
+        }),
+        reuses,
+      };
+    }));
+
     return {
       config: publicConfig(config),
       incident: resolved.incident,
@@ -602,7 +678,7 @@ export function recoveryEngineerService(
         hasMore: sourceHasMore,
         nextCursor: sourceHasMore ? visibleSources.at(-1)?.id ?? null : null,
       },
-      reviewedProcedures: visibleProcedures,
+      reviewedProcedures,
       proceduresPage: {
         limit: input.procedureLimit,
         hasMore: procedureHasMore,
@@ -698,6 +774,706 @@ export function recoveryEngineerService(
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  /**
+   * A live run, or a queued/claimed wake for the issue's next actor, already
+   * owns the next action. A source generation is then held open instead of
+   * being closed over an in-flight path, and the maintenance wait is not
+   * rewritten on top of someone else's queued work.
+   */
+  async function hasLiveExecutionPath(
+    issue: IssueRow,
+    agentId: string | null,
+    options: { excludeRunId?: string | null; dbOrTx?: DbOrTransaction } = {},
+  ) {
+    const dbOrTx = options.dbOrTx ?? db;
+    const liveRun = await dbOrTx
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, issue.companyId),
+        inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),
+        options.excludeRunId ? ne(heartbeatRuns.id, options.excludeRunId) : undefined,
+        or(
+          eq(heartbeatRuns.nativeIssueId, issue.id),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${issue.id}`,
+        ),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (liveRun) return true;
+    if (!agentId) return false;
+    const liveWake = await dbOrTx
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, issue.companyId),
+        eq(agentWakeupRequests.agentId, agentId),
+        inArray(agentWakeupRequests.status, LIVE_WAKE_REQUEST_STATUSES),
+        or(
+          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+          sql`${agentWakeupRequests.payload} ->> 'taskId' = ${issue.id}`,
+          sql`${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${issue.id}`,
+          sql`${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId' = ${issue.id}`,
+        ),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return Boolean(liveWake);
+  }
+
+  /**
+   * Gate vocabulary of the issue as it stands now, for applicability and
+   * dispatch rules. Provider quota is classified from the issue's current run
+   * exactly like admission does, so a provider gate is a gate here too instead
+   * of an unreachable vocabulary entry.
+   */
+  async function sourceGateKind(
+    issue: IssueRow,
+    run: RunRow | null,
+  ): Promise<RecoveryEngineerProcedureApplicabilityContext["gate"]> {
+    if (issue.assigneeUserId) return "owner";
+    if (await hasPendingHumanGate(issue)) return "human";
+    if (await hasUnresolvedDependency(issue)) return "dependency";
+    if (run && classifyAdapterFailureForRecovery(run, new Date())?.kind === "provider_quota") {
+      return "provider";
+    }
+    return "none";
+  }
+
+  /**
+   * The live context a procedure would be applied in: the failure fingerprint
+   * and classification of the incident, the adapter of the run currently
+   * working the source, the activated repair commit, and whether anybody else
+   * holds a gate right now. Recorded with every reuse so a later reader can
+   * see exactly which context authorized (or refused) it.
+   */
+  async function procedureApplicabilityContextForIncident(
+    incident: IncidentRow,
+    source: SourceRow | null,
+  ): Promise<RecoveryEngineerProcedureApplicabilityContext> {
+    const sourceIssue = source
+      ? await db
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.id, source.sourceIssueId),
+          eq(issues.companyId, incident.companyId),
+        ))
+        .then((rows) => rows[0] ?? null)
+      : null;
+    const latestRun = sourceIssue ? await latestIssueRun(sourceIssue) : null;
+    const adapterType = latestRun ? await sourceAgentAdapterType(latestRun) : null;
+    return {
+      failureFingerprint: incident.failureFingerprint,
+      classification: incident.classification,
+      adapterType,
+      gate: sourceIssue ? await sourceGateKind(sourceIssue, latestRun) : "none",
+      // Only an activated repair may authorize a procedure: verified but not
+      // yet installed is still not the context anyone reviewed.
+      activatedRepairCommit: incident.activatedAt ? incident.activatedRepairCommit : null,
+      sourceGenerationKey: source?.generationKey ?? null,
+    };
+  }
+
+  /**
+   * A run counts as evidence about a generation only when it is not the failed
+   * run itself and it is either the dispatched continuation of this generation
+   * or newer than the observation that captured it.
+   */
+  function isPostFailureRunForSource(source: SourceRow, run: RunRow) {
+    if (run.id === source.sourceRunId) return false;
+    if (run.id === source.resumedRunId) return true;
+    const observedAt = source.observedAt?.getTime() ?? 0;
+    const createdAt = run.createdAt?.getTime() ?? 0;
+    return createdAt >= observedAt;
+  }
+
+  /**
+   * The single place a source failure generation stops being open. Recovery is
+   * recorded only with the evidence that proved the original path overcame the
+   * failure; every other close names why this generation left the incident's
+   * scope. Both transitions are conditional on the generation still being open,
+   * so a concurrent evidence/supersession race cannot double-write.
+   */
+  async function closeSourceGeneration(input: {
+    incident: IncidentRow;
+    source: Pick<SourceRow, "id" | "sourceIssueId" | "generationKey">;
+    close:
+      | {
+        kind: "recovered";
+        reason: RecoveryEngineerSourceCloseReason;
+        runId: string | null;
+        evidence: Record<string, unknown>;
+      }
+      | {
+        kind: "superseded";
+        reason: RecoveryEngineerSourceCloseReason;
+        supersededBySourceId?: string | null;
+      };
+  }) {
+    const now = new Date();
+    const closed = await db
+      .update(recoveryEngineerIncidentSources)
+      .set(input.close.kind === "recovered"
+        ? {
+          recoveredAt: now,
+          recoveredRunId: input.close.runId,
+          recoveredEvidence: {
+            reason: input.close.reason,
+            recordedAt: now.toISOString(),
+            ...input.close.evidence,
+          },
+          updatedAt: now,
+        }
+        : {
+          supersededAt: now,
+          supersededReason: input.close.reason,
+          supersededBySourceId: input.close.supersededBySourceId ?? null,
+          updatedAt: now,
+        })
+      .where(and(
+        eq(recoveryEngineerIncidentSources.id, input.source.id),
+        isNull(recoveryEngineerIncidentSources.recoveredAt),
+        isNull(recoveryEngineerIncidentSources.supersededAt),
+      ))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!closed) return null;
+    await logActivity(db, {
+      companyId: input.incident.companyId,
+      actorType: "system",
+      actorId: "recovery_engineer",
+      agentId: null,
+      runId: input.close.kind === "recovered" ? input.close.runId : null,
+      action: input.close.kind === "recovered"
+        ? "recovery_engineer.source_recovered"
+        : "recovery_engineer.source_superseded",
+      entityType: "recovery_engineer_incident",
+      entityId: input.incident.id,
+      details: {
+        incidentId: input.incident.id,
+        sourceId: input.source.id,
+        sourceIssueId: input.source.sourceIssueId,
+        generationKey: input.source.generationKey,
+        reason: input.close.reason,
+        ...(input.close.kind === "recovered" ? { recoveredRunId: input.close.runId } : {}),
+      },
+    });
+    return closed;
+  }
+
+  /**
+   * Resolves the outcome of the newest open generation of one source issue.
+   * Evidence is evaluated before staleness: a newer run that advanced the
+   * original path closes the generation as recovered, a terminal failure of
+   * the dispatched continuation records that the continuation did not overcome
+   * the failure, and an undispatched generation whose status generation or
+   * owner moved on is superseded. Gates and unavailable owners stay pending —
+   * they are real waits owned by someone else, not recovery outcomes.
+   */
+  async function resolveSourceOutcome(input: {
+    incident: IncidentRow;
+    issue: IssueRow;
+    evidenceRun?: RunRow | null;
+  }): Promise<
+    | { kind: "recovered"; sourceId: string; runId: string | null; reason: RecoveryEngineerSourceCloseReason }
+    | { kind: "superseded"; sourceId: string; reason: RecoveryEngineerSourceCloseReason }
+    | { kind: "pending"; sourceId: string; reason: string }
+    | null
+  > {
+    const openSources = await db
+      .select()
+      .from(recoveryEngineerIncidentSources)
+      .where(and(
+        eq(recoveryEngineerIncidentSources.incidentId, input.incident.id),
+        eq(recoveryEngineerIncidentSources.sourceIssueId, input.issue.id),
+        isNull(recoveryEngineerIncidentSources.recoveredAt),
+        isNull(recoveryEngineerIncidentSources.supersededAt),
+      ))
+      .orderBy(desc(recoveryEngineerIncidentSources.observedAt), desc(recoveryEngineerIncidentSources.id));
+    if (openSources.length === 0) return null;
+    const [current, ...olderOpen] = openSources;
+    for (const older of olderOpen) {
+      // Only the newest generation can still be recovered; a newer observation
+      // of the same issue replaced it.
+      await closeSourceGeneration({
+        incident: input.incident,
+        source: older,
+        close: {
+          kind: "superseded",
+          reason: SUPERSEDED_BY_NEWER_GENERATION,
+          supersededBySourceId: current.id,
+        },
+      });
+    }
+
+    const latestRun = await latestIssueRun(input.issue);
+    const evidenceRun = input.evidenceRun ?? latestRun;
+    if (input.issue.status === "done") {
+      const closed = await closeSourceGeneration({
+        incident: input.incident,
+        source: current,
+        close: {
+          kind: "recovered",
+          reason: "source_issue_completed",
+          runId: latestRun?.id ?? null,
+          evidence: {
+            issueStatus: input.issue.status,
+            issueStatusVersion: input.issue.statusVersion,
+            issueUpdatedAt: input.issue.updatedAt.toISOString(),
+            latestRunId: latestRun?.id ?? null,
+            latestRunStatus: latestRun?.status ?? null,
+          },
+        },
+      });
+      return closed
+        ? { kind: "recovered", sourceId: current.id, runId: latestRun?.id ?? null, reason: "source_issue_completed" }
+        : null;
+    }
+    if (input.issue.status === "cancelled") {
+      const closed = await closeSourceGeneration({
+        incident: input.incident,
+        source: current,
+        close: { kind: "superseded", reason: "source_cancelled" },
+      });
+      return closed ? { kind: "superseded", sourceId: current.id, reason: "source_cancelled" } : null;
+    }
+    if (
+      evidenceRun &&
+      evidenceRun.status === "succeeded" &&
+      latestRun?.id === evidenceRun.id &&
+      isPostFailureRunForSource(current, evidenceRun) &&
+      runIssueId(evidenceRun) === input.issue.id &&
+      // The evidence must be tied to this generation's actual advancement: it
+      // is either the continuation we dispatched, or a run that moved the
+      // issue's native status generation forward. A useful-but-unrelated
+      // success on the same issue does not prove this failure was overcome.
+      (
+        evidenceRun.id === current.resumedRunId ||
+        input.issue.statusVersion > current.sourceStatusVersion
+      ) &&
+      LIFENESS_ADVANCED_STATES.includes(evidenceRun.livenessState as never) &&
+      Boolean(evidenceRun.lastUsefulActionAt) &&
+      input.issue.status !== "blocked"
+    ) {
+      const closed = await closeSourceGeneration({
+        incident: input.incident,
+        source: current,
+        close: {
+          kind: "recovered",
+          reason: "original_path_run",
+          runId: evidenceRun.id,
+          evidence: {
+            runId: evidenceRun.id,
+            // Recorded, not required: the failing operation is the source
+            // task's own execution path, so a later owner who actually
+            // finished it still counts as the failure being overcome. Stale
+            // ownership is never restored.
+            executedByAgentId: evidenceRun.agentId,
+            originalOwnerAgentId: current.originalOwnerAgentId,
+            livenessState: evidenceRun.livenessState,
+            lastUsefulActionAt: evidenceRun.lastUsefulActionAt?.toISOString() ?? null,
+            issueStatus: input.issue.status,
+            issueStatusVersion: input.issue.statusVersion,
+            resumedRunId: current.resumedRunId,
+          },
+        },
+      });
+      return closed
+        ? { kind: "recovered", sourceId: current.id, runId: evidenceRun.id, reason: "original_path_run" }
+        : null;
+    }
+
+    if (await hasLiveExecutionPath(input.issue, current.originalOwnerAgentId)) {
+      return { kind: "pending", sourceId: current.id, reason: "live_execution_path" };
+    }
+    if (input.issue.assigneeUserId || !current.originalOwnerAgentId) {
+      const closed = await closeSourceGeneration({
+        incident: input.incident,
+        source: current,
+        close: { kind: "superseded", reason: "source_owner_human" },
+      });
+      return closed ? { kind: "superseded", sourceId: current.id, reason: "source_owner_human" } : null;
+    }
+    if (input.issue.assigneeAgentId !== current.originalOwnerAgentId) {
+      const closed = await closeSourceGeneration({
+        incident: input.incident,
+        source: current,
+        close: { kind: "superseded", reason: "source_owner_changed" },
+      });
+      return closed ? { kind: "superseded", sourceId: current.id, reason: "source_owner_changed" } : null;
+    }
+    if (current.resumedAt) {
+      if (
+        latestRun &&
+        TERMINAL_FAILURE_STATUSES.includes(latestRun.status as never) &&
+        isPostFailureRunForSource(current, latestRun)
+      ) {
+        const closed = await closeSourceGeneration({
+          incident: input.incident,
+          source: current,
+          close: { kind: "superseded", reason: "continuation_failed" },
+        });
+        return closed ? { kind: "superseded", sourceId: current.id, reason: "continuation_failed" } : null;
+      }
+      if (
+        latestRun &&
+        latestRun.status === "succeeded" &&
+        latestRun.id === current.resumedRunId
+      ) {
+        // The continuation ran to completion without advancing the issue: the
+        // failure was not overcome, and nothing else is coming.
+        const closed = await closeSourceGeneration({
+          incident: input.incident,
+          source: current,
+          close: { kind: "superseded", reason: "continuation_without_progress" },
+        });
+        return closed
+          ? { kind: "superseded", sourceId: current.id, reason: "continuation_without_progress" }
+          : null;
+      }
+      return { kind: "pending", sourceId: current.id, reason: "awaiting_recovery_evidence" };
+    }
+    if (
+      input.issue.statusVersion !== current.sourceStatusVersion ||
+      input.issue.status !== current.sourceStatus
+    ) {
+      const gate = await sourceGateKind(input.issue, latestRun);
+      const reason: RecoveryEngineerSourceCloseReason =
+        input.issue.status === "blocked" && gate !== "none"
+          ? "source_gate_changed"
+          : "source_generation_advanced";
+      const closed = await closeSourceGeneration({
+        incident: input.incident,
+        source: current,
+        close: { kind: "superseded", reason },
+      });
+      return closed ? { kind: "superseded", sourceId: current.id, reason } : null;
+    }
+    const gate = await sourceGateKind(input.issue, latestRun);
+    if (gate !== "none") {
+      return { kind: "pending", sourceId: current.id, reason: `${gate}_gate` };
+    }
+    const owner = await db
+      .select()
+      .from(agents)
+      .where(and(
+        eq(agents.id, current.originalOwnerAgentId),
+        eq(agents.companyId, input.incident.companyId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    const invokability = await evaluateAgentInvokabilityFromDb(db, owner);
+    if (!invokability.invokable) {
+      return { kind: "pending", sourceId: current.id, reason: `owner_unavailable:${invokability.reason}` };
+    }
+    return { kind: "pending", sourceId: current.id, reason: "awaiting_dispatch" };
+  }
+
+  /**
+   * The only place the incident rewrites its own maintenance issue. Every mode
+   * is owner-preserving and guarded by a row lock with the guards re-validated
+   * under that lock, so a competing operator decision (takeover, completion,
+   * newer execution generation, live wake) is never overwritten. `close`
+   * completes the maintenance issue once every source generation is recovered;
+   * `board_wait` keeps a board-owned wait and only replaces the descriptor this
+   * flow itself wrote, so a wait someone else set survives untouched.
+   */
+  async function transitionMaintenanceWait(input: {
+    incident: IncidentRow;
+    config: ConfigRow;
+    mode: "close" | "board_wait";
+    action: string;
+  }): Promise<boolean> {
+    if (!input.incident.maintenanceIssueId) return false;
+    const postCommitActivityPublications: ActivityPublication[] = [];
+    const postCommitActions: IssuePostCommitAction[] = [];
+    const transitioned = await db.transaction(async (tx): Promise<{
+      issueId: string;
+      previousStatus: string;
+      nextStatus: string;
+    } | null> => {
+      const issue = await tx
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.id, input.incident.maintenanceIssueId!),
+          eq(issues.companyId, input.incident.companyId),
+        ))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return null;
+      // The outcome recomputed from the sources is the authority for this
+      // transition: a concurrent admission of a newer generation flips it back
+      // to pending without any lock ordering assumptions, and the maintenance
+      // issue must not be completed (or handed to the board) on a stale verdict.
+      const incidentNow = await tx
+        .select({
+          outcome: recoveryEngineerIncidents.outcome,
+          status: recoveryEngineerIncidents.status,
+        })
+        .from(recoveryEngineerIncidents)
+        .where(eq(recoveryEngineerIncidents.id, input.incident.id))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!incidentNow) return null;
+      const requiredOutcome = input.mode === "close" ? "recovered" : "unresolved";
+      if (incidentNow.outcome !== requiredOutcome) return null;
+      if (input.mode === "close") {
+        const openSource = await tx
+          .select({ id: recoveryEngineerIncidentSources.id })
+          .from(recoveryEngineerIncidentSources)
+          .where(and(
+            eq(recoveryEngineerIncidentSources.incidentId, input.incident.id),
+            isNull(recoveryEngineerIncidentSources.recoveredAt),
+            isNull(recoveryEngineerIncidentSources.supersededAt),
+          ))
+          .limit(1);
+        if (openSource.length > 0) return null;
+      }
+      if (["done", "cancelled"].includes(issue.status)) return null;
+      if (issue.assigneeAgentId !== input.config.agentId || issue.assigneeUserId) return null;
+      if (issue.executionState) return null;
+      if (issue.checkoutRunId || issue.executionRunId || issue.executionLockedAt) return null;
+      if (await hasLiveExecutionPath(issue, input.config.agentId, { dbOrTx: tx })) return null;
+      if (input.mode === "board_wait") {
+        const existingAction = issue.unblockDescriptor ? issue.unblockDescriptor.action : null;
+        if (existingAction && !existingAction.startsWith(ACTIVATION_WAIT_PREFIX)) return null;
+        const updated = await issuesSvc.update(issue.id, {
+          status: "blocked",
+          unblockDescriptor: { owner: "board", action: input.action },
+        }, tx, postCommitActivityPublications, postCommitActions);
+        return updated
+          ? { issueId: issue.id, previousStatus: issue.status, nextStatus: updated.status }
+          : null;
+      }
+      let current = issue;
+      if (current.status !== "in_progress") {
+        const promoted = await issuesSvc.update(
+          current.id,
+          { status: "in_progress" },
+          tx,
+          postCommitActivityPublications,
+          postCommitActions,
+        );
+        if (!promoted) return null;
+        current = promoted;
+      }
+      const completed = await issuesSvc.update(
+        current.id,
+        { status: "done" },
+        tx,
+        postCommitActivityPublications,
+        postCommitActions,
+      );
+      return completed
+        ? { issueId: issue.id, previousStatus: issue.status, nextStatus: completed.status }
+        : null;
+    });
+    if (!transitioned) return false;
+    for (const publication of postCommitActivityPublications) publishActivity(publication);
+    await executeIssuePostCommitActions(db, postCommitActions);
+    await logActivity(db, {
+      companyId: input.incident.companyId,
+      actorType: "system",
+      actorId: "recovery_engineer",
+      agentId: null,
+      runId: null,
+      action: input.mode === "close"
+        ? "recovery_engineer.maintenance_closed"
+        : "recovery_engineer.maintenance_wait_refreshed",
+      entityType: "recovery_engineer_incident",
+      entityId: input.incident.id,
+      details: {
+        incidentId: input.incident.id,
+        maintenanceIssueId: transitioned.issueId,
+        previousStatus: transitioned.previousStatus,
+        nextStatus: transitioned.nextStatus,
+      },
+    });
+    return true;
+  }
+
+  /**
+   * The generation that is current for its source issue. Superseding an older
+   * generation when a newer one is observed is routine bookkeeping, so the
+   * roll-up follows the `superseded_by_newer_generation` chain instead of
+   * counting that bookkeeping as a permanent failure.
+   */
+  function currentGenerationFor(sources: readonly SourceRow[], start: SourceRow): SourceRow {
+    let current = start;
+    const visited = new Set<string>([current.id]);
+    for (let hop = 0; hop < 32; hop += 1) {
+      if (!current.supersededAt || current.supersededReason !== SUPERSEDED_BY_NEWER_GENERATION) {
+        return current;
+      }
+      const next = current.supersededBySourceId
+        ? sources.find((row) => row.id === current.supersededBySourceId) ?? null
+        : null;
+      if (!next || visited.has(next.id)) return current;
+      visited.add(next.id);
+      current = next;
+    }
+    return current;
+  }
+
+  /**
+   * Recomputes an incident's outcome from the generations that are current for
+   * their source issues and follows it with the lifecycle status. `recovered`
+   * means every source issue's current generation carries recovery evidence;
+   * routine newer-generation supersession never counts against it. A dispatched
+   * continuation alone never resolves an incident — the maintenance issue is
+   * completed exactly on the recovered transition. The status write is guarded
+   * by the snapshot it was computed from, so a concurrent verification,
+   * escalation, or operator decision is never reverted; on a lost race the
+   * roll-up re-reads and recomputes instead of forcing the stale status.
+   */
+  async function rollUpIncidentOutcome(incidentId: string): Promise<IncidentRow | null> {
+    const readIncident = () => db
+      .select()
+      .from(recoveryEngineerIncidents)
+      .where(eq(recoveryEngineerIncidents.id, incidentId))
+      .then((rows) => rows[0] ?? null);
+    const initial = await readIncident();
+    if (!initial) return null;
+    const sources = await db
+      .select()
+      .from(recoveryEngineerIncidentSources)
+      .where(eq(recoveryEngineerIncidentSources.incidentId, incidentId));
+    if (sources.length === 0) return initial;
+    const open = sources.filter((source) => !source.recoveredAt && !source.supersededAt);
+    const newestByIssue = new Map<string, SourceRow>();
+    for (const source of sources) {
+      const existing = newestByIssue.get(source.sourceIssueId);
+      if (
+        !existing ||
+        source.observedAt.getTime() > existing.observedAt.getTime() ||
+        (source.observedAt.getTime() === existing.observedAt.getTime() && source.id > existing.id)
+      ) {
+        newestByIssue.set(source.sourceIssueId, source);
+      }
+    }
+    const currentGenerations = [...newestByIssue.values()].map((source) =>
+      currentGenerationFor(sources, source));
+    const outcome: RecoveryEngineerIncidentOutcome = open.length > 0
+      ? "pending"
+      : currentGenerations.every((source) => source.recoveredAt)
+        ? "recovered"
+        : "unresolved";
+
+    const now = new Date();
+    let updated: IncidentRow | null = null;
+    for (let attempt = 0; attempt < 3 && !updated; attempt += 1) {
+      const snapshot = attempt === 0 ? initial : await readIncident();
+      if (!snapshot) return null;
+      const nextStatus = outcome === "recovered"
+        ? "resolved"
+        : outcome === "unresolved"
+          ? "gated"
+          : open.length > 0 &&
+              open.every((source) => source.resumedAt) &&
+              !RESUME_STAGE_PROTECTED_STATUSES.includes(snapshot.status as never)
+            ? "resumed"
+            : snapshot.status;
+      const outcomeChanged = outcome !== snapshot.outcome;
+      const statusChanged = nextStatus !== snapshot.status;
+      if (!outcomeChanged && !statusChanged) return snapshot;
+      updated = await db
+        .update(recoveryEngineerIncidents)
+        .set({
+          outcome,
+          ...(statusChanged ? { status: nextStatus } : {}),
+          outcomeUpdatedAt: outcomeChanged ? now : snapshot.outcomeUpdatedAt,
+          updatedAt: now,
+        })
+        .where(and(
+          eq(recoveryEngineerIncidents.id, incidentId),
+          eq(recoveryEngineerIncidents.status, snapshot.status),
+          eq(recoveryEngineerIncidents.outcome, snapshot.outcome),
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    }
+    if (!updated) {
+      // Three lost races in a row: leave the write to the next sweep rather
+      // than forcing a stale status over live work.
+      updated = await readIncident();
+      if (!updated) return null;
+    }
+    const config = await getConfigRow(initial.companyId);
+    if (config) {
+      if (outcome === "recovered") {
+        await transitionMaintenanceWait({
+          incident: updated,
+          config,
+          mode: "close",
+          action: `All source generations of recovery incident ${updated.id} recovered with evidence.`,
+        });
+      } else if (outcome === "unresolved") {
+        const unrecovered = sources
+          .filter((source) => !source.recoveredAt)
+          .map((source) => `${source.sourceIssueId}:${source.supersededReason ?? "open"}`)
+          .join(", ");
+        if (!updated.boardEscalatedAt) {
+          const escalated = await db
+            .update(recoveryEngineerIncidents)
+            .set({
+              boardEscalatedAt: now,
+              boardEscalationReason: "sources_unrecoverable_after_detection",
+              updatedAt: now,
+            })
+            .where(and(
+              eq(recoveryEngineerIncidents.id, incidentId),
+              isNull(recoveryEngineerIncidents.boardEscalatedAt),
+            ))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (escalated) {
+            await logActivity(db, {
+              companyId: initial.companyId,
+              actorType: "system",
+              actorId: "recovery_engineer",
+              agentId: null,
+              runId: null,
+              action: "recovery_engineer.incident_escalated",
+              entityType: "recovery_engineer_incident",
+              entityId: incidentId,
+              details: { reason: "sources_unrecoverable_after_detection", sources: unrecovered },
+            });
+          }
+        }
+        await transitionMaintenanceWait({
+          incident: updated,
+          config,
+          mode: "board_wait",
+          action: `Recovery incident ${updated.id} cannot claim a repair outcome for ${unrecovered}. The failure generation left the incident's scope; decide the source disposition instead of re-running the recovery role to persist status.`,
+        });
+      }
+    }
+    if (outcome !== initial.outcome || updated.status !== initial.status) {
+      await logActivity(db, {
+        companyId: initial.companyId,
+        actorType: "system",
+        actorId: "recovery_engineer",
+        agentId: null,
+        runId: null,
+        action: "recovery_engineer.incident_outcome_recorded",
+        entityType: "recovery_engineer_incident",
+        entityId: incidentId,
+        details: {
+          previousOutcome: initial.outcome,
+          outcome,
+          previousStatus: initial.status,
+          status: updated.status,
+          openSourceCount: open.length,
+          closedSourceCount: sources.length - open.length,
+          currentGenerationCount: currentGenerations.length,
+        },
+      });
+    }
+    return updated;
   }
 
   async function shouldIgnoreSource(input: {
@@ -806,7 +1582,37 @@ export function recoveryEngineerService(
       })
       .returning()
       .then((rows) => rows[0] ?? null);
-    if (source) return { source, created: true };
+    if (source) {
+      // Only the newest generation of an issue stays open per incident: a
+      // newer observation replaces an older pending one, and the older
+      // generation is recorded as superseded rather than silently dropped.
+      const olderOpen = await db
+        .select({
+          id: recoveryEngineerIncidentSources.id,
+          sourceIssueId: recoveryEngineerIncidentSources.sourceIssueId,
+          generationKey: recoveryEngineerIncidentSources.generationKey,
+        })
+        .from(recoveryEngineerIncidentSources)
+        .where(and(
+          eq(recoveryEngineerIncidentSources.incidentId, input.incident.id),
+          eq(recoveryEngineerIncidentSources.sourceIssueId, input.issue.id),
+          ne(recoveryEngineerIncidentSources.id, source.id),
+          isNull(recoveryEngineerIncidentSources.recoveredAt),
+          isNull(recoveryEngineerIncidentSources.supersededAt),
+        ));
+      for (const older of olderOpen) {
+        await closeSourceGeneration({
+          incident: input.incident,
+          source: older,
+          close: {
+            kind: "superseded",
+            reason: SUPERSEDED_BY_NEWER_GENERATION,
+            supersededBySourceId: source.id,
+          },
+        });
+      }
+      return { source, created: true };
+    }
     const existing = await db
       .select()
       .from(recoveryEngineerIncidentSources)
@@ -984,7 +1790,7 @@ export function recoveryEngineerService(
         .for("update")
         .then((rows) => rows[0] ?? null);
       if (!incident || incident.maintenanceIssueId !== scopedIssueId) return null;
-      if (!ACTIVE_INCIDENT_STATUSES.includes(incident.status as never)) return null;
+      if (!RECOVERY_ENGINEER_FENCED_INCIDENT_STATUSES.includes(incident.status as never)) return null;
       const config = await tx
         .select()
         .from(recoveryEngineerConfigs)
@@ -997,41 +1803,12 @@ export function recoveryEngineerService(
       const newest = await latestIssueRun(issue, tx);
       if (newest && newest.id !== run.id) return null;
       // An existing live execution path or a queued wake on the maintenance
-      // issue already owns the next action; recording a wait over it would
-      // overwrite that path.
-      const liveExecutionRun = await tx
-        .select({ id: heartbeatRuns.id })
-        .from(heartbeatRuns)
-        .where(and(
-          eq(heartbeatRuns.companyId, issue.companyId),
-          ne(heartbeatRuns.id, run.id),
-          inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),
-          or(
-            eq(heartbeatRuns.nativeIssueId, issue.id),
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-            sql`${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${issue.id}`,
-          ),
-        ))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      if (liveExecutionRun) return null;
-      const liveWakeRequest = await tx
-        .select({ id: agentWakeupRequests.id })
-        .from(agentWakeupRequests)
-        .where(and(
-          eq(agentWakeupRequests.companyId, issue.companyId),
-          eq(agentWakeupRequests.agentId, run.agentId),
-          inArray(agentWakeupRequests.status, LIVE_WAKE_REQUEST_STATUSES),
-          sql`(
-            ${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}
-            or ${agentWakeupRequests.payload} ->> 'taskId' = ${issue.id}
-            or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${issue.id}
-            or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId' = ${issue.id}
-          )`,
-        ))
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
-      if (liveWakeRequest) return null;
+      // issue already owns the next action (including wakes carrying their
+      // issue linkage in `_paperclipWakeContext`); recording a wait over it
+      // would overwrite that path.
+      if (await hasLiveExecutionPath(issue, run.agentId, { excludeRunId: run.id, dbOrTx: tx })) {
+        return null;
+      }
       const updated = await issuesSvc.update(issue.id, {
         status: "blocked",
         unblockDescriptor: {
@@ -1175,9 +1952,16 @@ export function recoveryEngineerService(
     );
     const current = await findIncident(input.issue.companyId, input.fingerprint) ?? resolved.incident;
     if (current.diagnosisAttemptCount >= 1) {
-      if (["resolved", "resumed"].includes(current.status)) {
+      // The single diagnosis attempt is spent, so a recurring generation is
+      // never re-diagnosed and never opened as a second incident (the
+      // fingerprint is unique per company). When the incident can no longer act
+      // on that generation, the occurrence is recorded once for the board; a
+      // generation observed while repair work is still in flight simply joins
+      // the incident and stays open.
+      if (RECURRENCE_ESCALATION_STATUSES.includes(current.status as never)) {
         await escalateToBoard(current.id, "unchanged_failure_recurred_after_single_attempt", input.run?.id);
       }
+      await rollUpIncidentOutcome(current.id);
       return { incident: current, duplicate: false };
     }
     await claimDiagnosis(current, input.config, maintenance);
@@ -1291,7 +2075,10 @@ export function recoveryEngineerService(
         fingerprint: blockedEvidence.fingerprint,
         summary: blockedEvidence.summary,
         evidence: blockedEvidence.evidence,
-        generationKey: `blocked:${issue.statusVersion}:${issue.updatedAt.toISOString()}`,
+        // The native status generation is the generation of a blocked state. A
+        // cosmetic update (comment, description edit) must not mint a new
+        // generation, so `updatedAt` is deliberately not part of this key.
+        generationKey: `blocked:${issue.statusVersion}`,
       })),
     };
   }
@@ -1305,10 +2092,10 @@ export function recoveryEngineerService(
     const maintenance = await issuesSvc.getById(incident.maintenanceIssueId);
     if (!maintenance || ["done", "cancelled"].includes(maintenance.status)) return;
     if (classification === "already_recovered") {
-      if (maintenance.status === "blocked" || maintenance.status === "todo") {
-        await issuesSvc.update(maintenance.id, { status: "in_progress" });
-      }
-      await issuesSvc.update(maintenance.id, { status: "done" });
+      // Completion for this classification belongs to the outcome roll-up: it
+      // closes the maintenance issue only once every source generation carries
+      // recovery evidence, and leaves a board wait when a generation was
+      // superseded instead.
       return;
     }
     const gate = classification === "human_gate" || classification === "provider_gate";
@@ -1370,10 +2157,66 @@ export function recoveryEngineerService(
       .then((rows) => rows[0] ?? null);
     if (!updated) throw conflict("Diagnosis has already been recorded for this incident");
     if (input.classification === "already_recovered") {
-      await db
-        .update(recoveryEngineerIncidentSources)
-        .set({ recoveredAt: now, updatedAt: now })
-        .where(eq(recoveryEngineerIncidentSources.incidentId, incident.id));
+      // The diagnosis is the evidence for this close: it asserts the source was
+      // already recovered before the incident ran. Every open generation names
+      // the diagnosis run, and the roll-up — not this path — decides whether
+      // the maintenance issue is complete.
+      const openSources = await db
+        .select()
+        .from(recoveryEngineerIncidentSources)
+        .where(and(
+          eq(recoveryEngineerIncidentSources.incidentId, incident.id),
+          isNull(recoveryEngineerIncidentSources.recoveredAt),
+          isNull(recoveryEngineerIncidentSources.supersededAt),
+        ));
+      for (const openSource of openSources) {
+        const sourceIssue = await db
+          .select()
+          .from(issues)
+          .where(and(
+            eq(issues.id, openSource.sourceIssueId),
+            eq(issues.companyId, incident.companyId),
+          ))
+          .then((rows) => rows[0] ?? null);
+        const generationUnchanged = sourceIssue !== null &&
+          sourceIssue.statusVersion === openSource.sourceStatusVersion &&
+          sourceIssue.status === openSource.sourceStatus &&
+          sourceIssue.assigneeAgentId === openSource.originalOwnerAgentId &&
+          sourceIssue.assigneeUserId === null;
+        if (generationUnchanged) {
+          await closeSourceGeneration({
+            incident: updated,
+            source: openSource,
+            close: {
+              kind: "recovered",
+              reason: "diagnosis_already_recovered",
+              runId: updated.diagnosisRunId,
+              evidence: {
+                classification: input.classification,
+                hypothesis: sanitizedHypothesis.slice(0, 2_000),
+                evidenceCount: sanitizedEvidence.length,
+                verifiedVerificationId: updated.verifiedVerificationId,
+                repairCommit: updated.repairCommit,
+              },
+            },
+          });
+          continue;
+        }
+        // A generation the diagnosis cannot attest — it moved on, changed
+        // owner, or gained a gate — is resolved by the same evidence and
+        // staleness rules as every other source instead of being closed as
+        // recovered on the strength of this classification alone.
+        if (sourceIssue) {
+          await resolveSourceOutcome({ incident: updated, issue: sourceIssue });
+        } else {
+          await closeSourceGeneration({
+            incident: updated,
+            source: openSource,
+            close: { kind: "superseded", reason: "source_issue_missing" },
+          });
+        }
+      }
+      await rollUpIncidentOutcome(updated.id);
     }
     await setMaintenanceDisposition(updated, config, input.classification);
     await logActivity(db, {
@@ -1610,6 +2453,28 @@ export function recoveryEngineerService(
     if (!scopedIssueId || !incidentIssueIds.has(scopedIssueId)) {
       throw unprocessable("Procedure evidence run is not bound to this incident");
     }
+    const evidenceAdapterType = await sourceAgentAdapterType(evidenceRun);
+    const evidenceSource = await db
+      .select()
+      .from(recoveryEngineerIncidentSources)
+      .where(and(
+        eq(recoveryEngineerIncidentSources.incidentId, incident.id),
+        eq(recoveryEngineerIncidentSources.sourceIssueId, scopedIssueId),
+      ))
+      .orderBy(desc(recoveryEngineerIncidentSources.observedAt), desc(recoveryEngineerIncidentSources.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    // The context snapshot is what makes a later reuse reviewable: reuse must
+    // re-match the adapter, fingerprint, classification and deployed repair
+    // this procedure was actually reviewed against.
+    const applicability: RecoveryEngineerProcedureApplicability = {
+      adapterType: evidenceAdapterType,
+      failureFingerprint: incident.failureFingerprint,
+      classification: incident.classification,
+      evidenceRunId: evidenceRun.id,
+      sourceGenerationKey: evidenceSource?.generationKey ?? null,
+      sourceStatusVersion: evidenceSource?.sourceStatusVersion ?? null,
+    };
     const procedure = await db
       .insert(recoveryEngineerProcedures)
       .values({
@@ -1626,6 +2491,7 @@ export function recoveryEngineerService(
         repairCommit: input.repairCommit,
         failureFingerprint: incident.failureFingerprint,
         classification: incident.classification,
+        applicability,
         proposedByAgentId: actor.agentId,
         proposedByRunId: actor.runId,
       })
@@ -1847,6 +2713,55 @@ export function recoveryEngineerService(
         .where(eq(recoveryEngineerIncidents.id, incident.id))
         .then((rows) => rows[0] ?? null);
       if (current?.verifiedReviewRunId !== run.id) {
+        if (
+          current?.verifiedAt &&
+          current.repairCommit &&
+          current.repairCommit === verification.repairCommit &&
+          current.verifiedVerificationId
+        ) {
+          // The incident is already verified at this exact repair commit by an
+          // earlier independent review. This later confirmation is accepted
+          // idempotently and attributed to the existing fence: the incident's
+          // attribution, the repair issue status, and every gate stay exactly
+          // as they are.
+          await db
+            .update(recoveryEngineerVerifications)
+            .set({
+              status: "verified",
+              failureReason: null,
+              duplicateOfVerificationId: current.verifiedVerificationId,
+              finalizedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(recoveryEngineerVerifications.id, verification.id),
+              eq(recoveryEngineerVerifications.status, "pending"),
+            ));
+          await logActivity(db, {
+            companyId: incident.companyId,
+            actorType: "agent",
+            actorId: config.reviewerAgentId,
+            agentId: config.reviewerAgentId,
+            runId: run.id,
+            action: "recovery_engineer.verification_duplicate_confirmed",
+            entityType: "recovery_engineer_incident",
+            entityId: incident.id,
+            details: {
+              verificationId: verification.id,
+              incidentId: incident.id,
+              repairCommit: verification.repairCommit,
+              existingVerificationId: current.verifiedVerificationId,
+              existingReviewRunId: current.verifiedReviewRunId,
+            },
+          });
+          return {
+            ...verification,
+            status: "verified",
+            failureReason: null,
+            duplicateOfVerificationId: current.verifiedVerificationId,
+            finalizedAt: now,
+          };
+        }
         await db
           .update(recoveryEngineerVerifications)
           .set({
@@ -2051,37 +2966,12 @@ export function recoveryEngineerService(
     if (issue.checkoutRunId || issue.executionRunId || issue.executionLockedAt) {
       throw conflict("Source issue still has an execution lock; recovery will not disturb live or dirty work");
     }
-    const activeRun = await db
-      .select({ id: heartbeatRuns.id })
-      .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.companyId, issue.companyId),
-        eq(heartbeatRuns.agentId, ownerAgentId),
-        inArray(heartbeatRuns.status, ACTIVE_RUN_STATUSES),
-        or(
-          eq(heartbeatRuns.nativeIssueId, issue.id),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
-          sql`${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${issue.id}`,
-        ),
-      ))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    if (activeRun) throw conflict("Source issue already has an active execution path");
-    const queuedWake = await db
-      .select({ id: agentWakeupRequests.id })
-      .from(agentWakeupRequests)
-      .where(and(
-        eq(agentWakeupRequests.companyId, issue.companyId),
-        eq(agentWakeupRequests.agentId, ownerAgentId),
-        inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"]),
-        or(
-          sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
-          sql`${agentWakeupRequests.payload} ->> 'taskId' = ${issue.id}`,
-        ),
-      ))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    if (queuedWake) throw conflict("Source issue already has a queued or claimed execution path");
+    // One definition of "a live path already owns the next action", shared with
+    // the maintenance wait and the replay re-validation, including wakes that
+    // carry their issue linkage only inside `_paperclipWakeContext`.
+    if (await hasLiveExecutionPath(issue, ownerAgentId)) {
+      throw conflict("Source issue already has an active or queued execution path");
+    }
     if (await hasPendingHumanGate(issue)) {
       throw conflict("Source issue has a pause, approval, interaction, review, or human-owner gate");
     }
@@ -2181,6 +3071,250 @@ export function recoveryEngineerService(
     return updated;
   }
 
+  /**
+   * Dispatches (or replays) the resume of one source generation through the
+   * normal wake path. The persisted claim key makes replay idempotent: an
+   * already-materialized wake or run is adopted instead of duplicated, a crash
+   * between claim and dispatch is recovered by re-enqueueing the same key, and
+   * only a bounded number of attempts is ever spent before the generation is
+   * superseded and the board takes over. Dispatch is not recovery: the source
+   * generation stays open until evidence shows the original path overcame the
+   * failure.
+   */
+  async function dispatchResumeWake(input: {
+    incident: IncidentRow;
+    config: ConfigRow;
+    source: SourceRow;
+    issue: IssueRow;
+    actor: RecoveryEngineerActor | null;
+  }): Promise<{ dispatched: boolean; runId: string | null; attempt: number; reason: string | null }> {
+    const idempotencyKey = input.source.resumeIdempotencyKey ??
+      resumeIdempotencyKeyFor(input.incident.id, input.source.id);
+    const ownerAgentId = input.source.originalOwnerAgentId;
+    if (!ownerAgentId || input.source.originalOwnerUserId) {
+      await closeSourceGeneration({
+        incident: input.incident,
+        source: input.source,
+        close: { kind: "superseded", reason: "source_owner_human" },
+      });
+      await rollUpIncidentOutcome(input.incident.id);
+      return { dispatched: false, runId: null, attempt: input.source.resumeAttemptCount, reason: "owner_not_agent" };
+    }
+    const existingWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, input.incident.companyId),
+        eq(agentWakeupRequests.agentId, ownerAgentId),
+        eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+      ))
+      .orderBy(desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (existingWake && (
+      existingWake.runId ||
+      LIVE_WAKE_REQUEST_STATUSES.includes(existingWake.status as never)
+    )) {
+      // The dispatch already materialized (or still owns a durable queued path):
+      // adopt it instead of minting a second wake for the same decision.
+      const adoptedAt = existingWake.claimedAt ?? existingWake.requestedAt ?? new Date();
+      await db
+        .update(recoveryEngineerIncidentSources)
+        .set({
+          resumeClaimedAt: input.source.resumeClaimedAt ?? adoptedAt,
+          resumeIdempotencyKey: idempotencyKey,
+          resumeDispatchedAt: input.source.resumeDispatchedAt ?? adoptedAt,
+          resumedAt: input.source.resumedAt ?? adoptedAt,
+          resumedRunId: input.source.resumedRunId ?? existingWake.runId ?? null,
+          resumeFailureReason: null,
+          updatedAt: new Date(),
+        })
+        .where(and(
+          eq(recoveryEngineerIncidentSources.id, input.source.id),
+          isNull(recoveryEngineerIncidentSources.recoveredAt),
+          isNull(recoveryEngineerIncidentSources.supersededAt),
+        ));
+      await rollUpIncidentOutcome(input.incident.id);
+      return {
+        dispatched: true,
+        runId: existingWake.runId ?? input.source.resumedRunId ?? null,
+        attempt: input.source.resumeAttemptCount,
+        reason: "adopted_existing_wake",
+      };
+    }
+    if (input.source.resumeAttemptCount >= RESUME_DISPATCH_MAX_ATTEMPTS) {
+      await closeSourceGeneration({
+        incident: input.incident,
+        source: input.source,
+        close: { kind: "superseded", reason: "resume_attempts_exhausted" },
+      });
+      await escalateToBoard(input.incident.id, "verified_resume_attempts_exhausted", input.actor?.runId ?? null);
+      await rollUpIncidentOutcome(input.incident.id);
+      return {
+        dispatched: false,
+        runId: null,
+        attempt: input.source.resumeAttemptCount,
+        reason: "resume_attempts_exhausted",
+      };
+    }
+
+    // A replay the sweep performs later must not wake a stale owner or fight a
+    // path that appeared after the claim, so ownership, liveness and gates are
+    // re-validated against the issue as it stands now before another attempt is
+    // spent. The original owner identity is the contract: a changed owner is
+    // superseded, a live path or gate is merely held (the sweep retries later).
+    const latestRun = await latestIssueRun(input.issue);
+    if (input.issue.assigneeUserId || input.issue.assigneeAgentId !== ownerAgentId) {
+      const reason: RecoveryEngineerSourceCloseReason = input.issue.assigneeUserId
+        ? "source_owner_human"
+        : "source_owner_changed";
+      await closeSourceGeneration({
+        incident: input.incident,
+        source: input.source,
+        close: { kind: "superseded", reason },
+      });
+      await rollUpIncidentOutcome(input.incident.id);
+      return { dispatched: false, runId: null, attempt: input.source.resumeAttemptCount, reason };
+    }
+    if (await hasLiveExecutionPath(input.issue, ownerAgentId)) {
+      return {
+        dispatched: false,
+        runId: null,
+        attempt: input.source.resumeAttemptCount,
+        reason: "live_execution_path",
+      };
+    }
+    const gate = await sourceGateKind(input.issue, latestRun);
+    if (gate !== "none") {
+      return {
+        dispatched: false,
+        runId: null,
+        attempt: input.source.resumeAttemptCount,
+        reason: `${gate}_gate`,
+      };
+    }
+
+    const attempt = input.source.resumeAttemptCount + 1;
+    const attemptAt = new Date();
+    const claimed = await db
+      .update(recoveryEngineerIncidentSources)
+      .set({
+        resumeClaimedAt: input.source.resumeClaimedAt ?? attemptAt,
+        resumeIdempotencyKey: idempotencyKey,
+        resumeAttemptCount: attempt,
+        resumeLastAttemptAt: attemptAt,
+        updatedAt: attemptAt,
+      })
+      .where(and(
+        eq(recoveryEngineerIncidentSources.id, input.source.id),
+        isNull(recoveryEngineerIncidentSources.recoveredAt),
+        isNull(recoveryEngineerIncidentSources.supersededAt),
+      ))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!claimed) {
+      return { dispatched: false, runId: null, attempt, reason: "generation_closed" };
+    }
+
+    let run: RunRow | null = null;
+    let failureReason: string | null = null;
+    try {
+      run = await deps.enqueueWakeup(ownerAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "recovery_engineer_resume",
+        idempotencyKey,
+        payload: {
+          issueId: input.issue.id,
+          incidentId: input.incident.id,
+          sourceId: input.source.id,
+          verificationId: input.incident.verifiedVerificationId,
+          repairCommit: input.incident.repairCommit,
+        },
+        contextSnapshot: {
+          issueId: input.issue.id,
+          taskId: input.issue.id,
+          incidentId: input.incident.id,
+          sourceId: input.source.id,
+          verificationId: input.incident.verifiedVerificationId,
+          repairCommit: input.incident.repairCommit,
+          wakeReason: "recovery_engineer_resume",
+          source: "recovery_engineer.verified_resume",
+          retryOfRunId: input.source.sourceRunId,
+        },
+        requestedByActorType: input.actor?.actorType ?? "system",
+        requestedByActorId: input.actor ? (input.actor.agentId ?? input.actor.userId) : "recovery_engineer",
+      });
+    } catch {
+      failureReason = "resume_enqueue_failed";
+    }
+    if (!run) {
+      const recordedReason = failureReason ?? "resume_not_enqueued";
+      await db
+        .update(recoveryEngineerIncidentSources)
+        .set({ resumeFailureReason: recordedReason, updatedAt: new Date() })
+        .where(eq(recoveryEngineerIncidentSources.id, input.source.id));
+      await escalateToBoard(input.incident.id, recordedReason, input.actor?.runId ?? null);
+      return { dispatched: false, runId: null, attempt, reason: recordedReason };
+    }
+    const dispatchedAt = new Date();
+    await db
+      .update(recoveryEngineerIncidentSources)
+      .set({
+        resumedAt: dispatchedAt,
+        resumedRunId: run.id,
+        resumeDispatchedAt: dispatchedAt,
+        resumeFailureReason: null,
+        updatedAt: dispatchedAt,
+      })
+      .where(and(
+        eq(recoveryEngineerIncidentSources.id, input.source.id),
+        isNull(recoveryEngineerIncidentSources.recoveredAt),
+        isNull(recoveryEngineerIncidentSources.supersededAt),
+      ));
+    await db
+      .update(recoveryEngineerIncidents)
+      .set({
+        resumedSourceIssueId: input.issue.id,
+        resumedRunId: run.id,
+        resumedAt: dispatchedAt,
+        updatedAt: dispatchedAt,
+      })
+      .where(eq(recoveryEngineerIncidents.id, input.incident.id));
+    if (input.issue.status === "blocked") {
+      const gate = await sourceGateKind(input.issue, latestRun);
+      if (gate === "none") {
+        await issuesSvc.update(input.issue.id, { status: "in_progress" });
+      }
+    }
+    await logActivity(db, {
+      companyId: input.incident.companyId,
+      actorType: input.actor?.actorType ?? "system",
+      actorId: input.actor
+        ? (input.actor.agentId ?? input.actor.userId ?? "board")
+        : "recovery_engineer",
+      agentId: input.actor?.agentId ?? null,
+      runId: input.actor?.runId ?? null,
+      action: "recovery_engineer.source_resumed",
+      entityType: "recovery_engineer_incident",
+      entityId: input.incident.id,
+      details: {
+        sourceId: input.source.id,
+        sourceIssueId: input.issue.id,
+        generationKey: input.source.generationKey,
+        originalOwnerAgentId: ownerAgentId,
+        resumedRunId: run.id,
+        resumeAttempt: attempt,
+        automatic: input.actor === null,
+        verificationId: input.incident.verifiedVerificationId,
+        repairCommit: input.incident.repairCommit,
+        outcomePending: true,
+      },
+    });
+    await rollUpIncidentOutcome(input.incident.id);
+    return { dispatched: true, runId: run.id, attempt, reason: null };
+  }
+
   async function resumeSource(
     incident: IncidentRow,
     config: ConfigRow,
@@ -2211,7 +3345,7 @@ export function recoveryEngineerService(
     ) {
       throw conflict("Verified repair has not been activated in the live runtime by the board");
     }
-    const source = await db
+    const newestGeneration = await db
       .select()
       .from(recoveryEngineerIncidentSources)
       .where(and(
@@ -2221,19 +3355,46 @@ export function recoveryEngineerService(
       .orderBy(desc(recoveryEngineerIncidentSources.observedAt), desc(recoveryEngineerIncidentSources.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
-    if (!source) throw unprocessable("Source issue is not linked to this incident");
-    if (source.resumedAt || source.recoveredAt) {
-      throw conflict("This source failure generation has already recovered or resumed");
+    if (!newestGeneration) throw unprocessable("Source issue is not linked to this incident");
+    if (newestGeneration.recoveredAt) {
+      throw conflict("This source failure generation has already recovered");
     }
-    if (source.resumeClaimedAt) {
-      throw conflict("This source failure generation is already being resumed");
+    if (newestGeneration.supersededAt) {
+      throw conflict("This source failure generation is no longer recoverable", {
+        reason: newestGeneration.supersededReason,
+      });
     }
+    const source = newestGeneration;
     const issue = await db
       .select()
       .from(issues)
       .where(and(eq(issues.id, input.sourceIssueId), eq(issues.companyId, incident.companyId)))
       .then((rows) => rows[0] ?? null);
     if (!issue) throw notFound("Source issue not found");
+
+    if (source.resumedAt || source.resumeClaimedAt) {
+      // A dispatch decision already exists for this generation. Replay it
+      // through the persisted key instead of re-validating the generation: the
+      // dispatch itself legitimately moves the issue's status, and replaying is
+      // how a restart between claim and dispatch is recovered without a second
+      // wake.
+      const replay = await dispatchResumeWake({ incident, config, source, issue, actor });
+      if (!replay.dispatched) {
+        throw conflict("Source failure generation was resumed but its dispatch did not complete", {
+          reason: replay.reason,
+          resumeAttempts: replay.attempt,
+        });
+      }
+      return {
+        incident: await findIncident(incident.companyId, incident.failureFingerprint) ?? incident,
+        sourceIssueId: issue.id,
+        sourceId: source.id,
+        resumedRunId: replay.runId,
+        replayed: true,
+        outcomePending: true,
+      };
+    }
+
     if (!source.originalOwnerAgentId || source.originalOwnerUserId) {
       throw conflict("Original source owner is not an invokable agent");
     }
@@ -2243,10 +3404,13 @@ export function recoveryEngineerService(
     ) {
       throw conflict("Source owner changed after failure; recovery will not restore stale ownership");
     }
+    // The generation is the native status generation plus the captured status
+    // and owner. Cosmetic issue updates (comments, description edits) must not
+    // invalidate a source generation, so `updatedAt` is deliberately not part
+    // of this check; every remaining gate is verified separately below.
     if (
       issue.statusVersion !== source.sourceStatusVersion ||
-      issue.status !== source.sourceStatus ||
-      issue.updatedAt.getTime() !== source.sourceUpdatedAt.getTime()
+      issue.status !== source.sourceStatus
     ) {
       throw conflict("Source failure generation changed after detection");
     }
@@ -2271,138 +3435,20 @@ export function recoveryEngineerService(
     }
     await assertNoResumeGates(issue, source.originalOwnerAgentId);
 
-    const resumeClaimedAt = new Date();
-    const claimedSource = await db
-      .update(recoveryEngineerIncidentSources)
-      .set({ resumeClaimedAt, updatedAt: resumeClaimedAt })
-      .where(and(
-        eq(recoveryEngineerIncidentSources.id, source.id),
-        isNull(recoveryEngineerIncidentSources.resumeClaimedAt),
-        isNull(recoveryEngineerIncidentSources.resumedAt),
-        isNull(recoveryEngineerIncidentSources.recoveredAt),
-      ))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    if (!claimedSource) throw conflict("Source failure generation was already resumed concurrently");
-
-    let resumedRun: RunRow | null = null;
-    try {
-      resumedRun = await deps.enqueueWakeup(source.originalOwnerAgentId, {
-        source: "automation",
-        triggerDetail: "system",
-        reason: "recovery_engineer_resume",
-        idempotencyKey: `recovery-engineer:resume:${incident.id}:${source.id}`,
-        payload: {
-          issueId: issue.id,
-          incidentId: incident.id,
-          sourceId: source.id,
-          verificationId: verification.id,
-          repairCommit: verification.repairCommit,
-        },
-        contextSnapshot: {
-          issueId: issue.id,
-          taskId: issue.id,
-          incidentId: incident.id,
-          sourceId: source.id,
-          verificationId: verification.id,
-          repairCommit: verification.repairCommit,
-          wakeReason: "recovery_engineer_resume",
-          source: "recovery_engineer.verified_resume",
-          retryOfRunId: source.sourceRunId,
-        },
-        requestedByActorType: actor.actorType,
-        requestedByActorId: actor.agentId ?? actor.userId,
+    const dispatched = await dispatchResumeWake({ incident, config, source, issue, actor });
+    if (!dispatched.dispatched) {
+      throw conflict("Verified resume was claimed but the guarded wake could not be enqueued", {
+        reason: dispatched.reason,
+        resumeAttempts: dispatched.attempt,
       });
-    } catch {
-      await escalateToBoard(incident.id, "verified_resume_enqueue_failed", actor.runId);
     }
-    if (!resumedRun) {
-      await escalateToBoard(incident.id, "verified_resume_not_enqueued", actor.runId);
-      throw conflict("Verified resume was claimed but the guarded wake could not be enqueued");
-    }
-    if (issue.status === "blocked") {
-      await issuesSvc.update(issue.id, { status: "in_progress" });
-    }
-    const resumedAt = new Date();
-    await db
-      .update(recoveryEngineerIncidentSources)
-      .set({
-        resumedAt,
-        resumedRunId: resumedRun.id,
-        recoveredAt: resumedAt,
-        updatedAt: resumedAt,
-      })
-      .where(eq(recoveryEngineerIncidentSources.id, source.id));
-    await db
-      .update(recoveryEngineerIncidentSources)
-      .set({ recoveredAt: resumedAt, updatedAt: resumedAt })
-      .where(and(
-        eq(recoveryEngineerIncidentSources.incidentId, incident.id),
-        eq(recoveryEngineerIncidentSources.sourceIssueId, issue.id),
-        isNull(recoveryEngineerIncidentSources.recoveredAt),
-      ));
-    const unresolvedSources = await db
-      .select({ id: recoveryEngineerIncidentSources.id })
-      .from(recoveryEngineerIncidentSources)
-      .where(and(
-        eq(recoveryEngineerIncidentSources.incidentId, incident.id),
-        isNull(recoveryEngineerIncidentSources.recoveredAt),
-      ))
-      .limit(1);
-    const allSourcesRecovered = unresolvedSources.length === 0;
-    const rolledUp = await db
-      .update(recoveryEngineerIncidents)
-      .set({
-        status: allSourcesRecovered ? "resumed" : "verified",
-        resumedSourceIssueId: issue.id,
-        resumedRunId: resumedRun.id,
-        resumedAt: allSourcesRecovered ? resumedAt : null,
-        updatedAt: resumedAt,
-      })
-      .where(and(
-        eq(recoveryEngineerIncidents.id, incident.id),
-        eq(recoveryEngineerIncidents.verifiedVerificationId, verification.id),
-      ))
-      .returning()
-      .then((rows) => rows[0] ?? incident);
-
-    if (allSourcesRecovered && incident.maintenanceIssueId) {
-      let maintenance = await issuesSvc.getById(incident.maintenanceIssueId);
-      if (maintenance && maintenance.status === "blocked") {
-        maintenance = await issuesSvc.update(maintenance.id, { status: "in_progress" });
-      }
-      if (maintenance && maintenance.status === "todo") {
-        maintenance = await issuesSvc.update(maintenance.id, { status: "in_progress" });
-      }
-      if (maintenance && maintenance.status === "in_progress") {
-        await issuesSvc.update(maintenance.id, { status: "done" });
-      }
-    }
-    await logActivity(db, {
-      companyId: incident.companyId,
-      actorType: actor.actorType,
-      actorId: actor.agentId ?? actor.userId ?? "board",
-      agentId: actor.agentId,
-      runId: actor.runId,
-      action: "recovery_engineer.source_resumed",
-      entityType: "recovery_engineer_incident",
-      entityId: incident.id,
-      details: {
-        sourceId: source.id,
-        sourceIssueId: issue.id,
-        originalOwnerAgentId: source.originalOwnerAgentId,
-        resumedRunId: resumedRun.id,
-        verificationId: verification.id,
-        repairCommit: verification.repairCommit,
-        allSourcesRecovered,
-      },
-    });
     return {
-      incident: rolledUp,
+      incident: await findIncident(incident.companyId, incident.failureFingerprint) ?? incident,
       sourceIssueId: issue.id,
       sourceId: source.id,
-      resumedRunId: resumedRun.id,
-      allSourcesRecovered,
+      resumedRunId: dispatched.runId,
+      replayed: dispatched.reason === "adopted_existing_wake",
+      outcomePending: true,
     };
   }
 
@@ -2413,9 +3459,19 @@ export function recoveryEngineerService(
       | RecoveryEngineerProcedureInput
       | RecoveryEngineerRepairInput
       | RecoveryEngineerVerifyInput
-      | RecoveryEngineerResumeInput,
+      | RecoveryEngineerResumeInput
+      | RecoveryEngineerProcedureReuseInput,
     actor: RecoveryEngineerActor,
   ) {
+    if (input.action === "reuse_procedure") {
+      const issue = await db
+        .select({ companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+      return recordProcedureReuse(issue.companyId, input, actor);
+    }
     const resolved = await resolveIncidentForIssue(issueId);
     if (!resolved) throw notFound("Recovery incident not found");
     const config = await getConfigRow(resolved.incident.companyId);
@@ -2465,6 +3521,12 @@ export function recoveryEngineerService(
         reviewedByUserId: userId,
         reviewedAt: new Date(),
         updatedAt: new Date(),
+        // A fresh review is a fresh authorization: it clears an invalidation
+        // and the consumed failure budget, while the reuse ledger keeps the
+        // full history for audit.
+        ...(input.status === "reviewed"
+          ? { failedReuseCount: 0, invalidatedAt: null, invalidatedReason: null }
+          : {}),
       })
       .where(and(
         eq(recoveryEngineerProcedures.id, procedureId),
@@ -2486,6 +3548,329 @@ export function recoveryEngineerService(
       details: { incidentId: existing.incidentId, status: input.status },
     });
     return updated;
+  }
+
+  async function loadProcedureReuses(procedureId: string): Promise<ProcedureReuseRow[]> {
+    return db
+      .select()
+      .from(recoveryEngineerProcedureReuses)
+      .where(eq(recoveryEngineerProcedureReuses.procedureId, procedureId))
+      .orderBy(desc(recoveryEngineerProcedureReuses.appliedAt), desc(recoveryEngineerProcedureReuses.id))
+      .limit(50);
+  }
+
+  /**
+   * Applies a recorded reuse outcome to the procedure row. A failure consumes
+   * the procedure's failure budget and invalidates it once the budget is gone,
+   * so a repeated failure demands new evidence or a new review instead of
+   * another replay.
+   */
+  async function applyProcedureReuseOutcome(input: {
+    procedureId: string;
+    status: RecoveryEngineerProcedureReuseStatus;
+    failureReason: string | null;
+  }): Promise<ProcedureRow | null> {
+    const now = new Date();
+    const updated = await db
+      .update(recoveryEngineerProcedures)
+      .set({
+        lastReuseOutcome: input.status,
+        lastReusedAt: now,
+        updatedAt: now,
+        ...(input.status === "failed"
+          ? { failedReuseCount: sql`${recoveryEngineerProcedures.failedReuseCount} + 1` as unknown as number }
+          : {}),
+      })
+      .where(eq(recoveryEngineerProcedures.id, input.procedureId))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    const needsInvalidation = Boolean(
+      updated &&
+      input.status === "failed" &&
+      updated.failedReuseCount >= RECOVERY_ENGINEER_PROCEDURE_MAX_FAILED_REUSES &&
+      updated.invalidatedAt === null,
+    );
+    if (needsInvalidation) {
+      await db
+        .update(recoveryEngineerProcedures)
+        .set({
+          invalidatedAt: now,
+          invalidatedReason: `repeated_reuse_failure:${input.failureReason ?? "unspecified"}`.slice(0, 200),
+          updatedAt: now,
+        })
+        .where(and(
+          eq(recoveryEngineerProcedures.id, input.procedureId),
+          isNull(recoveryEngineerProcedures.invalidatedAt),
+        ));
+    }
+    return updated;
+  }
+
+  /**
+   * Records a procedure reuse against one failure generation. The store is the
+   * only authority: an application is refused unless the reviewed context still
+   * matches, and a terminal outcome may only finalize an application that was
+   * actually recorded — so self-reported success can never enter the ledger
+   * without a verdict, and an application can still be closed after its
+   * generation (or the whole incident) recovered. Nothing here executes any step
+   * of the procedure.
+   */
+  async function recordProcedureReuse(
+    companyId: string,
+    input: RecoveryEngineerProcedureReuseInput,
+    actor: RecoveryEngineerActor,
+  ) {
+    const procedure = await db
+      .select()
+      .from(recoveryEngineerProcedures)
+      .where(and(
+        eq(recoveryEngineerProcedures.id, input.procedureId),
+        eq(recoveryEngineerProcedures.companyId, companyId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!procedure) throw notFound("Recovery procedure not found");
+    const incident = await db
+      .select()
+      .from(recoveryEngineerIncidents)
+      .where(and(
+        eq(recoveryEngineerIncidents.id, procedure.incidentId),
+        eq(recoveryEngineerIncidents.companyId, companyId),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (!incident) throw notFound("Recovery incident not found");
+    const config = await getConfigRow(companyId);
+    if (!config) throw notFound("Recovery engineer is not configured");
+    if (!config.enabled) throw conflict("Recovery engineer is disabled");
+    await assertReadAuthority(actor, config, incident);
+
+    const requestedOutcome = input.outcome ?? "applied";
+    const recordedFor = await db
+      .select()
+      .from(recoveryEngineerProcedureReuses)
+      .where(and(
+        eq(recoveryEngineerProcedureReuses.companyId, companyId),
+        eq(recoveryEngineerProcedureReuses.procedureId, procedure.id),
+        eq(recoveryEngineerProcedureReuses.incidentId, incident.id),
+        eq(recoveryEngineerProcedureReuses.evidenceKey, input.evidenceKey),
+      ))
+      .orderBy(desc(recoveryEngineerProcedureReuses.appliedAt), desc(recoveryEngineerProcedureReuses.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (requestedOutcome === "applied" && recordedFor) {
+      if (recordedFor.status === "applied" || recordedFor.status === "refused") {
+        // Idempotent replay of an application: the ledger row (including its
+        // refusalReason and stored applicability) is the record, so a repeat
+        // never re-evaluates the context or overwrites the original verdict.
+        return {
+          recorded: recordedFor.status === "applied",
+          verdict: {
+            applicable: recordedFor.status === "applied",
+            reason: null,
+            requiresNewEvidence: false,
+          },
+          reuse: recordedFor,
+        };
+      }
+      throw conflict("Procedure reuse for this evidence already has a terminal outcome", {
+        status: recordedFor.status,
+      });
+    }
+    if (requestedOutcome !== "applied") {
+      if (!recordedFor) {
+        throw conflict("No applied procedure reuse exists for this evidence", {
+          procedureId: procedure.id,
+          evidenceKey: input.evidenceKey,
+        });
+      }
+      if (recordedFor.status !== "applied") {
+        if (recordedFor.status === requestedOutcome) {
+          return {
+            recorded: true,
+            verdict: { applicable: true, reason: null, requiresNewEvidence: false },
+            reuse: recordedFor,
+          };
+        }
+        throw conflict("Procedure reuse for this evidence already has a different outcome", {
+          status: recordedFor.status,
+          requestedStatus: requestedOutcome,
+        });
+      }
+      const outcomeAt = new Date();
+      const failureReason = input.failureReason ? redactSensitiveText(input.failureReason) : null;
+      const finalized = await db
+        .update(recoveryEngineerProcedureReuses)
+        .set({
+          status: requestedOutcome,
+          refusalReason: failureReason,
+          evidence: { ...recordedFor.evidence, ...(input.evidence ?? {}) },
+          outcomeAt,
+          outcomeRunId: actor.runId,
+          updatedAt: outcomeAt,
+        })
+        .where(and(
+          eq(recoveryEngineerProcedureReuses.id, recordedFor.id),
+          eq(recoveryEngineerProcedureReuses.status, "applied"),
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!finalized) {
+        throw conflict("Procedure reuse already has a different outcome", {
+          status: requestedOutcome,
+        });
+      }
+      const procedureAfter = await applyProcedureReuseOutcome({
+        procedureId: procedure.id,
+        status: requestedOutcome,
+        failureReason,
+      });
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.agentId ?? actor.userId ?? "board",
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: requestedOutcome === "failed"
+          ? "recovery_engineer.procedure_reuse_failed"
+          : "recovery_engineer.procedure_reuse_succeeded",
+        entityType: "recovery_engineer_procedure",
+        entityId: procedure.id,
+        details: {
+          incidentId: incident.id,
+          reuseId: finalized.id,
+          sourceIssueId: finalized.sourceIssueId,
+          sourceGenerationKey: finalized.sourceGenerationKey,
+          evidenceKey: input.evidenceKey,
+          status: requestedOutcome,
+          failureReason,
+          failedReuseCount: procedureAfter?.failedReuseCount ?? procedure.failedReuseCount,
+        },
+      });
+      return {
+        recorded: true,
+        verdict: { applicable: true, reason: null, requiresNewEvidence: false },
+        reuse: finalized,
+      };
+    }
+
+    const openSources = await db
+      .select()
+      .from(recoveryEngineerIncidentSources)
+      .where(and(
+        eq(recoveryEngineerIncidentSources.incidentId, incident.id),
+        isNull(recoveryEngineerIncidentSources.recoveredAt),
+        isNull(recoveryEngineerIncidentSources.supersededAt),
+      ))
+      .orderBy(desc(recoveryEngineerIncidentSources.observedAt), desc(recoveryEngineerIncidentSources.id));
+    const targetSource = input.sourceIssueId
+      ? openSources.find((source) => source.sourceIssueId === input.sourceIssueId) ?? null
+      : openSources[0] ?? null;
+    if (!targetSource) {
+      throw unprocessable("Source issue has no open failure generation in this incident");
+    }
+    const contextSource = targetSource;
+    const context = await procedureApplicabilityContextForIncident(incident, contextSource);
+    const reuseHistory = (await loadProcedureReuses(procedure.id)).map((reuse) => ({
+      status: reuse.status,
+      evidenceKey: reuse.evidenceKey,
+      sourceGenerationKey: reuse.sourceGenerationKey,
+    } satisfies RecoveryEngineerProcedureReuseSummary));
+    const verdict = evaluateRecoveryEngineerProcedureApplicability({
+      procedure,
+      context,
+      evidenceKey: input.evidenceKey,
+      reuseHistory,
+    });
+    const status: RecoveryEngineerProcedureReuseStatus = verdict.applicable ? "applied" : "refused";
+    // Reuse is bound to the generation that is open right now: the ledger key
+    // can never be pointed at a generation the caller chooses.
+    const generationKey = contextSource.generationKey;
+    const reuseValues: typeof recoveryEngineerProcedureReuses.$inferInsert = {
+      companyId,
+      incidentId: incident.id,
+      procedureId: procedure.id,
+      sourceIssueId: contextSource.sourceIssueId,
+      sourceGenerationKey: generationKey,
+      failureFingerprint: incident.failureFingerprint,
+      evidenceKey: input.evidenceKey,
+      status,
+      refusalReason: verdict.applicable ? null : verdict.reason,
+      applicability: {
+        ...context,
+        verdict: verdict.reason,
+        requiresNewEvidence: verdict.requiresNewEvidence,
+      },
+      evidence: input.evidence ?? {},
+      appliedByAgentId: actor.agentId,
+      appliedByRunId: actor.runId,
+      appliedByUserId: actor.userId,
+      outcomeAt: null,
+      outcomeRunId: null,
+    };
+    const reuse = await db
+      .insert(recoveryEngineerProcedureReuses)
+      .values(reuseValues)
+      .onConflictDoNothing({
+        target: [
+          recoveryEngineerProcedureReuses.companyId,
+          recoveryEngineerProcedureReuses.procedureId,
+          recoveryEngineerProcedureReuses.incidentId,
+          recoveryEngineerProcedureReuses.sourceIssueId,
+          recoveryEngineerProcedureReuses.sourceGenerationKey,
+          recoveryEngineerProcedureReuses.evidenceKey,
+        ],
+      })
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!reuse) {
+      const winner = await db
+        .select()
+        .from(recoveryEngineerProcedureReuses)
+        .where(and(
+          eq(recoveryEngineerProcedureReuses.companyId, companyId),
+          eq(recoveryEngineerProcedureReuses.procedureId, procedure.id),
+          eq(recoveryEngineerProcedureReuses.incidentId, incident.id),
+          eq(recoveryEngineerProcedureReuses.sourceIssueId, contextSource.sourceIssueId),
+          eq(recoveryEngineerProcedureReuses.sourceGenerationKey, generationKey),
+          eq(recoveryEngineerProcedureReuses.evidenceKey, input.evidenceKey),
+        ))
+        .then((rows) => rows[0] ?? null);
+      if (!winner) {
+        throw conflict("Procedure reuse raced a concurrent record and could not be re-read", {
+          constraint: PROCEDURE_REUSE_CONSTRAINT,
+        });
+      }
+      return { recorded: winner.status !== "refused", verdict, reuse: winner };
+    }
+    const procedureAfter = await applyProcedureReuseOutcome({
+      procedureId: procedure.id,
+      status,
+      failureReason: verdict.applicable ? null : verdict.reason,
+    });
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.agentId ?? actor.userId ?? "board",
+      agentId: actor.agentId,
+      runId: actor.runId,
+      action: status === "refused"
+        ? "recovery_engineer.procedure_reuse_refused"
+        : "recovery_engineer.procedure_reuse_recorded",
+      entityType: "recovery_engineer_procedure",
+      entityId: procedure.id,
+      details: {
+        incidentId: incident.id,
+        reuseId: reuse.id,
+        sourceIssueId: contextSource.sourceIssueId,
+        sourceGenerationKey: generationKey,
+        evidenceKey: input.evidenceKey,
+        status,
+        reason: verdict.reason,
+        requiresNewEvidence: verdict.requiresNewEvidence,
+        failedReuseCount: procedureAfter?.failedReuseCount ?? procedure.failedReuseCount,
+      },
+    });
+    return { recorded: status === "applied", verdict, reuse };
   }
 
   async function handleParticipantRun(
@@ -2561,29 +3946,20 @@ export function recoveryEngineerService(
         const participantScoped = linked?.participantScoped ?? false;
         if (linked && config && participantScoped) {
           await handleParticipantRun(linked.incident, config, run, role);
-        } else if (
-          linked &&
-          (
-            ["done", "cancelled"].includes(linked.issue.status) ||
-            (
-              linked.issue.status !== "blocked" &&
-              ["advanced", "completed"].includes(run.livenessState ?? "") &&
-              run.lastUsefulActionAt
-            )
-          )
-        ) {
-          await db
-            .update(recoveryEngineerIncidentSources)
-            .set({ recoveredAt: new Date(), updatedAt: new Date() })
-            .where(and(
-              eq(recoveryEngineerIncidentSources.companyId, run.companyId),
-              eq(recoveryEngineerIncidentSources.sourceIssueId, issueId),
-              or(
-                isNull(recoveryEngineerIncidentSources.sourceRunId),
-                ne(recoveryEngineerIncidentSources.sourceRunId, run.id),
-              ),
-              isNull(recoveryEngineerIncidentSources.recoveredAt),
-            ));
+        } else if (linked) {
+          // A successful run is only evidence, never recovery by itself: the
+          // resolution checks that this exact run is the newest one on the
+          // source issue, newer than the captured failure, and that it actually
+          // advanced the original path. Anything else leaves the generation
+          // open (or supersedes it with a named reason).
+          const transition = await resolveSourceOutcome({
+            incident: linked.incident,
+            issue: linked.issue,
+            evidenceRun: run,
+          });
+          if (transition && transition.kind !== "pending") {
+            await rollUpIncidentOutcome(linked.incident.id);
+          }
         }
       }
       await finalizeVerificationForRun(run);
@@ -2612,6 +3988,159 @@ export function recoveryEngineerService(
       if (await finalizeVerificationForRun(candidate.run)) finalized += 1;
     }
     return finalized;
+  }
+
+  /**
+   * Closes the loop for open source generations: evaluates each pending one
+   * against its current issue/run state and records recovery, supersession, or
+   * a pending real wait. Nothing in this pass dispatches work.
+   */
+  async function reconcileSourceOutcomes(config: ConfigRow) {
+    const rows = await db
+      .select({
+        source: recoveryEngineerIncidentSources,
+        incident: recoveryEngineerIncidents,
+        issue: issues,
+      })
+      .from(recoveryEngineerIncidentSources)
+      .innerJoin(
+        recoveryEngineerIncidents,
+        eq(recoveryEngineerIncidents.id, recoveryEngineerIncidentSources.incidentId),
+      )
+      .innerJoin(issues, eq(issues.id, recoveryEngineerIncidentSources.sourceIssueId))
+      .where(and(
+        eq(recoveryEngineerIncidentSources.companyId, config.companyId),
+        isNull(recoveryEngineerIncidentSources.recoveredAt),
+        isNull(recoveryEngineerIncidentSources.supersededAt),
+        inArray(recoveryEngineerIncidents.status, RECOVERY_ENGINEER_FENCED_INCIDENT_STATUSES),
+      ))
+      .orderBy(asc(recoveryEngineerIncidentSources.observedAt), asc(recoveryEngineerIncidentSources.id))
+      .limit(SWEEP_BATCH_SIZE);
+    let recovered = 0;
+    let superseded = 0;
+    let pending = 0;
+    for (const row of rows) {
+      const transition = await resolveSourceOutcome({
+        incident: row.incident,
+        issue: row.issue,
+      });
+      if (!transition) continue;
+      if (transition.kind === "pending") {
+        pending += 1;
+        continue;
+      }
+      if (transition.kind === "recovered") recovered += 1;
+      else superseded += 1;
+      await rollUpIncidentOutcome(row.incident.id);
+    }
+    return { recovered, superseded, pending, evaluated: rows.length };
+  }
+
+  /**
+   * Replays claimed-but-undispatched resumes. The persisted claim key is the
+   * whole recovery mechanism: a restart before dispatch re-enqueues the same
+   * key, a restart after dispatch adopts the wake that already exists, and the
+   * attempt cap hands the generation to the board instead of looping forever.
+   */
+  async function reconcileSourceDispatches(config: ConfigRow) {
+    const rows = await db
+      .select({ source: recoveryEngineerIncidentSources, incident: recoveryEngineerIncidents })
+      .from(recoveryEngineerIncidentSources)
+      .innerJoin(
+        recoveryEngineerIncidents,
+        eq(recoveryEngineerIncidents.id, recoveryEngineerIncidentSources.incidentId),
+      )
+      .where(and(
+        eq(recoveryEngineerIncidentSources.companyId, config.companyId),
+        isNull(recoveryEngineerIncidentSources.recoveredAt),
+        isNull(recoveryEngineerIncidentSources.supersededAt),
+        isNotNull(recoveryEngineerIncidentSources.resumeClaimedAt),
+        // Replay covers a claim with no dispatch record and a dispatch whose
+        // run never materialized (for example a durable deferred wake). Both
+        // converge on the persisted key: the wake that exists is adopted, and
+        // only a genuinely missing wake costs another bounded attempt.
+        or(
+          isNull(recoveryEngineerIncidentSources.resumedAt),
+          isNull(recoveryEngineerIncidentSources.resumedRunId),
+        ),
+        inArray(recoveryEngineerIncidents.status, RECOVERY_ENGINEER_FENCED_INCIDENT_STATUSES),
+      ))
+      .orderBy(asc(recoveryEngineerIncidentSources.resumeClaimedAt), asc(recoveryEngineerIncidentSources.id))
+      .limit(SWEEP_BATCH_SIZE);
+    let replayed = 0;
+    let adopted = 0;
+    let exhausted = 0;
+    for (const row of rows) {
+      if (
+        !row.incident.activatedAt ||
+        !row.incident.verifiedVerificationId ||
+        row.incident.activatedRepairCommit !== row.incident.repairCommit
+      ) {
+        // A claim without a verified, activated repair is inconsistent state:
+        // never dispatch work from it.
+        continue;
+      }
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.id, row.source.sourceIssueId),
+          eq(issues.companyId, config.companyId),
+        ))
+        .then((rows2) => rows2[0] ?? null);
+      if (!issue) {
+        await closeSourceGeneration({
+          incident: row.incident,
+          source: row.source,
+          close: { kind: "superseded", reason: "source_issue_missing" },
+        });
+        await rollUpIncidentOutcome(row.incident.id);
+        continue;
+      }
+      const dispatched = await dispatchResumeWake({
+        incident: row.incident,
+        config,
+        source: row.source,
+        issue,
+        actor: null,
+      });
+      if (dispatched.reason === "adopted_existing_wake") adopted += 1;
+      else if (dispatched.reason === "resume_attempts_exhausted") exhausted += 1;
+      else if (dispatched.dispatched) replayed += 1;
+    }
+    return { replayed, adopted, exhausted, evaluated: rows.length };
+  }
+
+  /**
+   * Retries the maintenance close for incidents that already reached
+   * `recovered`. The close can legitimately be refused while the participant
+   * run that observed the recovery still holds a live path on the maintenance
+   * issue, so the sweep actualizes it later instead of leaving a recovered
+   * incident with an open maintenance issue.
+   */
+  async function reconcileRecoveredIncidentClosures(config: ConfigRow) {
+    const rows = await db
+      .select({ incident: recoveryEngineerIncidents })
+      .from(recoveryEngineerIncidents)
+      .innerJoin(issues, eq(issues.id, recoveryEngineerIncidents.maintenanceIssueId))
+      .where(and(
+        eq(recoveryEngineerIncidents.companyId, config.companyId),
+        eq(recoveryEngineerIncidents.outcome, "recovered"),
+        notInArray(issues.status, ["done", "cancelled"]),
+      ))
+      .limit(SWEEP_BATCH_SIZE);
+    let closed = 0;
+    for (const row of rows) {
+      if (await transitionMaintenanceWait({
+        incident: row.incident,
+        config,
+        mode: "close",
+        action: `All source generations of recovery incident ${row.incident.id} recovered with evidence.`,
+      })) {
+        closed += 1;
+      }
+    }
+    return { closed };
   }
 
   async function reconcileCompany(config: ConfigRow, now: Date) {
@@ -2651,6 +4180,9 @@ export function recoveryEngineerService(
       if (result.observed) blockedObserved += 1;
     }
     const verificationFinalized = await finalizePendingVerifications(config.companyId);
+    const sourceOutcomes = await reconcileSourceOutcomes(config);
+    const dispatches = await reconcileSourceDispatches(config);
+    const recoveredClosures = await reconcileRecoveredIncidentClosures(config);
 
     const cursors: Date[] = [];
     if (failedRuns.length > SWEEP_BATCH_SIZE) {
@@ -2678,6 +4210,13 @@ export function recoveryEngineerService(
       failedObserved,
       blockedObserved,
       verificationFinalized,
+      sourcesRecovered: sourceOutcomes.recovered,
+      sourcesSuperseded: sourceOutcomes.superseded,
+      sourcesPending: sourceOutcomes.pending,
+      resumesReplayed: dispatches.replayed,
+      resumesAdopted: dispatches.adopted,
+      resumesExhausted: dispatches.exhausted,
+      recoveredClosures: recoveredClosures.closed,
       backlog: cursors.length > 0,
     };
   }
@@ -2711,6 +4250,13 @@ export function recoveryEngineerService(
       failedObserved: results.reduce((total, row) => total + row.failedObserved, 0),
       blockedObserved: results.reduce((total, row) => total + row.blockedObserved, 0),
       verificationFinalized: results.reduce((total, row) => total + row.verificationFinalized, 0),
+      sourcesRecovered: results.reduce((total, row) => total + row.sourcesRecovered, 0),
+      sourcesSuperseded: results.reduce((total, row) => total + row.sourcesSuperseded, 0),
+      sourcesPending: results.reduce((total, row) => total + row.sourcesPending, 0),
+      resumesReplayed: results.reduce((total, row) => total + row.resumesReplayed, 0),
+      resumesAdopted: results.reduce((total, row) => total + row.resumesAdopted, 0),
+      resumesExhausted: results.reduce((total, row) => total + row.resumesExhausted, 0),
+      recoveredClosures: results.reduce((total, row) => total + row.recoveredClosures, 0),
       backlogCompanies: results.filter((row) => row.backlog).length,
     };
   }
@@ -2726,6 +4272,10 @@ export function recoveryEngineerService(
     confirmActivation,
     observeBlockedIssue,
     observeRunTerminal,
+    reconcileIncidentOutcome: rollUpIncidentOutcome,
+    reconcileSourceOutcomes,
+    reconcileSourceDispatches,
+    reconcileRecoveredIncidentClosures,
     finalizePendingVerifications,
     reconcileDue,
   };
