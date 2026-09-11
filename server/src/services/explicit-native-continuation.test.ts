@@ -63,8 +63,22 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(await admit(f, true)).toMatchObject({ previousRunId: f.sourceRunId });
       expect(await hasNativeLocalProcessStop(db, f.companyId, f.sourceRunId)).toBe(false);
       expect(await admit(f)).toMatchObject({ previousRunId: f.sourceRunId });
-      expect(await hasNativeLocalProcessStop(db, f.companyId, f.sourceRunId)).toBe(true);
+      expect(await hasNativeLocalProcessStop(db, f.companyId, f.sourceRunId)).toBe(false);
       expect(await admit(f)).toBeNull();
+
+      const held = await seed();
+      await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, held.sourceRunId));
+      await db.insert(environmentLeases).values({ companyId: held.companyId, heartbeatRunId: held.sourceRunId,
+        environmentId: environment.id, provider: "local", status: "failed", leasePolicy: "ephemeral", releasedAt: new Date() });
+      const [active] = await db.insert(heartbeatRuns).values({ companyId: held.companyId, agentId: held.agentId,
+        nativeIssueId: held.issueId, status: "queued" }).returning();
+      expect(await admit(held)).toBeNull(); // Records the observation but keeps the active-run gate.
+      await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, active.id));
+      verify.mockReturnValueOnce({ fingerprint: "changed", providerProcessIds: [999999998], controllerPid: 999999999 });
+      expect(await admit(held)).toBeNull(); // An old receipt cannot authorize changed state.
+      verify.mockReturnValueOnce(null);
+      expect(await admit(held)).toBeNull(); // Nor can it authorize a now-live provider.
+      expect(await admit(held)).toMatchObject({ previousRunId: held.sourceRunId });
 
       const next = await seed();
       await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, next.sourceRunId));
