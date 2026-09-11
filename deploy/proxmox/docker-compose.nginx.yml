@@ -1,0 +1,16 @@
+services:
+  nginx:
+    image: nginx:1.29-alpine
+    restart: unless-stopped
+    depends_on:
+      paperclip:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      PAPERCLIP_SERVER_NAME: "${PAPERCLIP_SERVER_NAME:?PAPERCLIP_SERVER_NAME must be set for nginx mode}"
+      PAPERCLIP_UPSTREAM: "paperclip:3100"
+    volumes:
+      - ./proxy/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - "${NGINX_CERT_DIR:-/srv/nginx/certs}:/etc/nginx/certs:ro"

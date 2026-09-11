@@ -1,0 +1,4 @@
+{$PAPERCLIP_SERVER_NAME} {
+	encode zstd gzip
+	reverse_proxy {$PAPERCLIP_UPSTREAM}
+}
