@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { connect as netConnect, createServer as netCreateServer, type AddressInfo, type Socket } from "node:net";
 import { gzipSync } from "node:zlib";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { guardedRemoteHttpFetch, type RemoteHttpSocketFactory } from "../services/remote-http-fetch.js";
 
@@ -116,6 +116,31 @@ function rebindingLookup(): { lookup: () => Promise<Array<{ address: string; fam
 }
 
 describe("guarded remote HTTP fetch (PAP-17098 DNS rebinding)", () => {
+  it("runs final authorization after socket verification and before request dispatch", async () => {
+    const upstream = await startServer();
+    const network = routingSocketFactory({ [PUBLIC_ADDRESS]: upstream.port });
+    const finalAuthorization = vi.fn(async () => {
+      expect(network.dialled).toEqual([PUBLIC_ADDRESS]);
+      expect(upstream.requests).toHaveLength(0);
+    });
+
+    const response = await guardedRemoteHttpFetch(
+      `http://${REBIND_HOST}/mcp`,
+      { method: "POST", body: "{}" },
+      {
+        allowPrivateNetwork: false,
+        lookup: async () => [{ address: PUBLIC_ADDRESS, family: 4 }],
+        socketFactory: network.factory,
+        error: guardError,
+        beforeProviderOperation: finalAuthorization,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(finalAuthorization).toHaveBeenCalledTimes(1);
+    expect(upstream.requests).toHaveLength(1);
+  });
+
   it("sends a stable default User-Agent and preserves an explicit caller value", async () => {
     const seen: Array<string | undefined> = [];
     const upstream = await startServer((req, res) => {

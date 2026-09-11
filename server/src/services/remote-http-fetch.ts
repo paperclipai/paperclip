@@ -60,6 +60,8 @@ export type GuardedRemoteHttpFetchOptions = RemoteHttpEndpointGuardOptions & {
    * Platform `fetch`, used only for IP literals, which cannot be rebound.
    */
   unpinnedFetch?: typeof fetch;
+  /** Runs after transport verification, immediately before request dispatch. */
+  beforeProviderOperation?: () => Promise<void>;
 };
 
 /**
@@ -101,6 +103,7 @@ export async function guardedRemoteHttpFetch(
   const platformFetch = options.unpinnedFetch ?? fetch;
   if (literalHost) {
     try {
+      await options.beforeProviderOperation?.();
       return await platformFetch(endpoint.toString(), { ...init, redirect: "manual" });
     } catch (error) {
       if (isDnsResolutionError(error)) {
@@ -155,6 +158,7 @@ async function pinnedRequest(
       signal,
       responseTimeoutMs: options.responseTimeoutMs ?? DEFAULT_RESPONSE_TIMEOUT_MS,
       error: options.error,
+      beforeProviderOperation: options.beforeProviderOperation,
     });
   } catch (error) {
     socket.destroy();
@@ -275,8 +279,20 @@ async function sendRequest(input: {
   signal: AbortSignal | null;
   responseTimeoutMs: number;
   error: RemoteHttpEndpointErrorFactory;
+  beforeProviderOperation?: () => Promise<void>;
 }): Promise<Response> {
-  const { endpoint, hostname, port, useTls, socket, init, signal, responseTimeoutMs, error } = input;
+  const {
+    endpoint,
+    hostname,
+    port,
+    useTls,
+    socket,
+    init,
+    signal,
+    responseTimeoutMs,
+    error,
+    beforeProviderOperation,
+  } = input;
   const headers = new Headers(init.headers);
   const body = readRequestBody(init.body);
   const method = (init.method ?? "GET").toUpperCase();
@@ -298,6 +314,7 @@ async function sendRequest(input: {
   headers.set("host", endpoint.host);
 
   const requestFn = useTls ? httpsRequest : httpRequest;
+  await beforeProviderOperation?.();
   const message = await new Promise<IncomingMessage>((resolve, reject) => {
     const req = requestFn({
       method,

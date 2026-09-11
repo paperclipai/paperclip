@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   canonicalToolArguments,
+  readSignedToolArgumentsPayload,
   readSignedToolArguments,
   resolveToolActionSigningSecret,
   signToolArguments,
@@ -58,6 +59,42 @@ describe("tool content guards", () => {
     expect(() =>
       resolveToolActionSigningSecret({}),
     ).toThrow("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET");
+  });
+
+  it("binds the authorization contract version into the signed envelope", () => {
+    const canonicalArguments = canonicalToolArguments({});
+    const signedArguments = signToolArguments({
+      invocationId: "invocation-versioned",
+      toolName: "mcp.example:run",
+      canonicalArguments,
+      executionOnApprove: true,
+      authorizationVersion: 2,
+      signingSecret,
+    });
+
+    expect(
+      readSignedToolArgumentsPayload({
+        signedArguments,
+        invocationId: "invocation-versioned",
+        toolName: "mcp.example:run",
+        signingSecret,
+      }),
+    ).toMatchObject({
+      arguments: {},
+      executionOnApprove: true,
+      authorizationVersion: 2,
+    });
+    expect(
+      verifyToolArgumentsSignature({
+        signedArguments,
+        invocationId: "invocation-versioned",
+        toolName: "mcp.example:run",
+        canonicalArguments,
+        executionOnApprove: true,
+        authorizationVersion: 1,
+        signingSecret,
+      }),
+    ).toBe(false);
   });
 
   it("redacts sensitive argument values before summarizing them", () => {

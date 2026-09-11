@@ -86,6 +86,7 @@ export function signToolArguments(args: {
   canonicalArguments: string;
   approvalSnapshot?: unknown;
   executionOnApprove?: boolean;
+  authorizationVersion?: number;
   identityContextId?: string;
   signingSecret?: string;
 }) {
@@ -97,6 +98,9 @@ export function signToolArguments(args: {
   if (args.identityContextId) payloadValue.identityContextId = args.identityContextId;
   if (args.executionOnApprove === true) {
     payloadValue.executionOnApprove = true;
+  }
+  if (args.authorizationVersion !== undefined) {
+    payloadValue.authorizationVersion = args.authorizationVersion;
   }
   if (args.approvalSnapshot !== undefined) {
     payloadValue.approvalSnapshot = args.approvalSnapshot;
@@ -113,6 +117,7 @@ export function verifyToolArgumentsSignature(input: {
   canonicalArguments: string;
   approvalSnapshot?: unknown;
   executionOnApprove?: boolean;
+  authorizationVersion?: number;
   identityContextId?: string;
   signingSecret?: string;
 }) {
@@ -134,6 +139,9 @@ export function verifyToolArgumentsSignature(input: {
   if (input.executionOnApprove !== undefined) {
     expectedPayloadValue.executionOnApprove = input.executionOnApprove;
   }
+  if (input.authorizationVersion !== undefined) {
+    expectedPayloadValue.authorizationVersion = input.authorizationVersion;
+  }
   if (input.approvalSnapshot !== undefined) {
     expectedPayloadValue.approvalSnapshot = input.approvalSnapshot;
   }
@@ -150,7 +158,7 @@ export function readSignedToolArgumentsPayload(input: {
   invocationId: string;
   toolName: string;
   signingSecret?: string;
-}): { arguments: unknown; approvalSnapshot?: unknown; executionOnApprove?: boolean; identityContextId?: string } | null {
+}): { arguments: unknown; approvalSnapshot?: unknown; executionOnApprove?: boolean; authorizationVersion?: number; identityContextId?: string } | null {
   if (!input.signedArguments) return null;
   let parsed: { payload?: unknown };
   try {
@@ -165,6 +173,7 @@ export function readSignedToolArgumentsPayload(input: {
     canonicalArguments?: unknown;
     approvalSnapshot?: unknown;
     executionOnApprove?: unknown;
+    authorizationVersion?: unknown;
     identityContextId?: unknown;
   };
   try {
@@ -181,6 +190,10 @@ export function readSignedToolArgumentsPayload(input: {
     canonicalArguments: payload.canonicalArguments,
     approvalSnapshot: payload.approvalSnapshot,
     executionOnApprove: payload.executionOnApprove === true ? true : undefined,
+    authorizationVersion:
+      typeof payload.authorizationVersion === "number"
+        ? payload.authorizationVersion
+        : undefined,
     identityContextId: typeof payload.identityContextId === "string" ? payload.identityContextId : undefined,
     signingSecret: input.signingSecret,
   })) {
@@ -191,6 +204,9 @@ export function readSignedToolArgumentsPayload(input: {
       arguments: JSON.parse(payload.canonicalArguments) as unknown,
       ...(payload.approvalSnapshot !== undefined ? { approvalSnapshot: payload.approvalSnapshot } : {}),
       ...(payload.executionOnApprove === true ? { executionOnApprove: true } : {}),
+      ...(typeof payload.authorizationVersion === "number"
+        ? { authorizationVersion: payload.authorizationVersion }
+        : {}),
       ...(typeof payload.identityContextId === "string" ? { identityContextId: payload.identityContextId } : {}),
     };
   } catch {

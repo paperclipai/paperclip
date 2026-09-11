@@ -1,8 +1,9 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, gt, isNotNull, lte, sql } from "drizzle-orm";
 import {
   issues,
   issueThreadInteractions,
   toolActionRequests,
+  toolCallEvents,
   toolInvocations,
   toolActionDeliveries,
   type Db,
@@ -116,8 +117,6 @@ export async function commitToolActionReview(
         invocation.agentId !== current.requestedByAgentId)
     )
       throw conflict("Tool invocation context does not match");
-    if (current.expiresAt && current.expiresAt <= new Date())
-      throw conflict("This review has expired");
     if (current.interactionId) {
       const payload = interaction?.payload as {
         toolAction?: { actionRequestId?: string; invocationId?: string };
@@ -137,19 +136,92 @@ export async function commitToolActionReview(
       if (interaction.status !== "pending")
         throw conflict("This review has already been resolved");
     }
-    const now = new Date();
     const [updated] = await tx
       .update(toolActionRequests)
       .set({
         status: input.decision,
         resolvedByUserId: input.actor.userId ?? "board",
         decidedByUserId: input.actor.userId ?? "board",
-        decidedAt: now,
-        resolvedAt: now,
-        updatedAt: now,
+        decidedAt: sql`clock_timestamp()`,
+        resolvedAt: sql`clock_timestamp()`,
+        updatedAt: sql`clock_timestamp()`,
       })
-      .where(eq(toolActionRequests.id, current.id))
+      .where(
+        and(
+          eq(toolActionRequests.id, current.id),
+          input.decision === "approved"
+            ? and(
+                isNotNull(toolActionRequests.expiresAt),
+                gt(toolActionRequests.expiresAt, sql`clock_timestamp()`),
+              )
+            : undefined,
+        ),
+      )
       .returning();
+    if (!updated && input.decision === "approved") {
+      const [expired] = await tx
+        .update(toolActionRequests)
+        .set({
+          status: "expired",
+          resolvedAt: sql`clock_timestamp()`,
+          updatedAt: sql`clock_timestamp()`,
+        })
+        .where(
+          and(
+            eq(toolActionRequests.id, current.id),
+            eq(toolActionRequests.status, "pending"),
+            isNotNull(toolActionRequests.expiresAt),
+            lte(toolActionRequests.expiresAt, sql`clock_timestamp()`),
+          ),
+        )
+        .returning();
+      if (!expired) throw conflict("This review has already been resolved");
+      await tx
+        .update(toolInvocations)
+        .set({
+          status: "failed",
+          approvalState: "expired",
+          idempotencyKey: null,
+          errorCode: "action_expired",
+          errorMessage: "The approval request expired before authorization.",
+          completedAt: expired.resolvedAt ?? expired.updatedAt,
+          updatedAt: expired.resolvedAt ?? expired.updatedAt,
+        })
+        .where(eq(toolInvocations.id, current.invocationId));
+      await tx.insert(toolCallEvents).values({
+        companyId: input.companyId,
+        eventType: "approval_resolved",
+        actorType: "user",
+        actorId: input.actor.userId ?? "board",
+        agentId: invocation.agentId,
+        runId: invocation.runId,
+        issueId: invocation.issueId,
+        gatewayId: invocation.gatewayId,
+        gatewayTokenId: invocation.gatewayTokenId,
+        gatewayPublicId: invocation.gatewayPublicId,
+        clientSubjectType: invocation.clientSubjectType,
+        clientSubjectId: invocation.clientSubjectId,
+        clientName: invocation.clientName,
+        mcpSessionId: invocation.mcpSessionId,
+        correlationId: invocation.correlationId,
+        applicationId: invocation.applicationId,
+        connectionId: invocation.connectionId,
+        catalogEntryId: invocation.catalogEntryId,
+        invocationId: invocation.id,
+        actionRequestId: expired.id,
+        toolName: invocation.toolName,
+        decision: "require_approval",
+        outcome: "timeout",
+        reasonCode: "action_expired",
+        metadata: {
+          expiresAt: expired.expiresAt?.toISOString() ?? null,
+          expiredAt: expired.resolvedAt?.toISOString() ?? null,
+        },
+      });
+      return expired;
+    }
+    if (!updated) throw conflict("This review has already been resolved");
+    const now = updated.resolvedAt ?? new Date();
     if (input.rememberAction) {
       if (input.decision !== "approved")
         throw conflict("Only an approval can remember permission");
