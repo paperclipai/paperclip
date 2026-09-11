@@ -365,6 +365,11 @@ export function TaskChatQueuedMessages({
       data-testid="task-chat-queued-messages"
       aria-label="Queued messages"
     >
+      {queue.executionWait && (
+        <div role="status" aria-live="polite" className="px-3 py-1.5 text-xs text-muted-foreground">
+          {queue.executionWait.message}
+        </div>
+      )}
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
