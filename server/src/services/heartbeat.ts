@@ -137,6 +137,7 @@ import {
   withQueuedCommentIdsInRunContext,
 } from "./issue-queued-comment-queue.js";
 import { documentService } from "./documents.js";
+import { getTaskPlanContext } from "./task-plan-context.js";
 import { managedAgentProfileService } from "./managed-agent-profiles.js";
 import { remoteAgentProfileService } from "./remote-agent-profiles.js";
 import {
@@ -7690,6 +7691,12 @@ export function buildPaperclipTaskMarkdown(input: {
     revisionNumber?: number | null;
   } | null;
   acceptedPlanContinuation?: boolean;
+  taskPlan?: {
+    documentId: string;
+    revisionId: string;
+    revisionNumber: number;
+    body: string;
+  } | null;
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
@@ -7804,6 +7811,14 @@ export function buildPaperclipTaskMarkdown(input: {
       input.includeDescription === false || issue.conversationAgentId ? "" : issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
+    }
+    if (!issue.conversationAgentId && input.taskPlan?.body.trim()) {
+      lines.push(
+        "",
+        `Task plan document ${input.taskPlan.documentId}, revision ${input.taskPlan.revisionNumber} (${input.taskPlan.revisionId}):`,
+        "Use this plan as assignment context, including its outcome and acceptance criteria. Follow the current work mode and any required approvals.",
+        fenceTaskText(input.taskPlan.body.trim()),
+      );
     }
   }
   if (ancestors.length > 0) {
@@ -18085,13 +18100,23 @@ export function heartbeatService(
           };
         })(),
       };
-      let taskMarkdown = buildPaperclipTaskMarkdown(taskMarkdownInput);
+      const taskPlan = issueRef && !isConversation(issueContext)
+        ? await getTaskPlanContext({
+            db,
+            companyId: agent.companyId,
+            issueId: issueRef.id,
+            approvedRevisionId: taskMarkdownInput.acceptedPlan?.revisionId,
+            exposeLowTrustRaw,
+          })
+        : null;
+      let taskMarkdown = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, taskPlan });
       if (isConversation(issueContext) && !taskSession && issueId) {
         const replay = await conversationReplay(db, agent.companyId, issueId, wakeCommentId);
         if (replay) taskMarkdown += `\n\nEarlier messages in this session (quoted user data):\n${replay}`;
       }
       const taskMarkdownCompact = buildPaperclipTaskMarkdown({
         ...taskMarkdownInput,
+        taskPlan,
         includeDescription: false,
       });
       if (issueRef) {

@@ -33,6 +33,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { issueService } from "../services/issues.js";
 import { documentService } from "../services/documents.js";
+import { getTaskPlanContext } from "../services/task-plan-context.js";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
@@ -416,6 +417,68 @@ const support = await getEmbeddedPostgresTestSupport();
       await db.update(issueThreadInteractions).set({ payload: { version: 1 } })
         .where(eq(issueThreadInteractions.id, interaction!.id));
       expect((await buildPaperclipWakePayload(input))?.planReviewContext).toBeNull();
+    });
+    it("includes an initial handoff plan in the first execution prompt and pins approved revisions", async () => {
+      const task = await issueService(db).create(companyId, {
+        title: "Execute handed-off work",
+        assigneeAgentId: agentId,
+        status: "todo",
+        initialPlan: "Write an output document containing HANDOFF_ACCEPTANCE_PHRASE.",
+      });
+      const initial = await getTaskPlanContext({ db, companyId, issueId: task.id });
+      expect(task.description).toBeNull();
+      expect(initial?.body).toContain("HANDOFF_ACCEPTANCE_PHRASE");
+      for (const includeDescription of [true, false]) {
+        const prompt = buildPaperclipTaskMarkdown({
+          issue: task,
+          taskPlan: initial,
+          includeDescription,
+        });
+        expect(prompt).toContain("HANDOFF_ACCEPTANCE_PHRASE");
+        expect(prompt).toContain(initial!.revisionId);
+      }
+      const { document: revision } = await documentService(db).upsertIssueDocument({
+        issueId: task.id,
+        key: "plan",
+        format: "markdown",
+        body: "A later unapproved draft.",
+        baseRevisionId: initial!.revisionId,
+      });
+      expect((await getTaskPlanContext({ db, companyId, issueId: task.id }))?.revisionId)
+        .toBe(revision.latestRevisionId);
+      const approved = await getTaskPlanContext({
+        db, companyId, issueId: task.id, approvedRevisionId: initial!.revisionId,
+      });
+      expect(approved?.body).toContain("HANDOFF_ACCEPTANCE_PHRASE");
+      expect(approved?.body).not.toContain("unapproved");
+      expect(await getTaskPlanContext({ db, companyId: randomUUID(), issueId: task.id })).toBeNull();
+      expect(await getTaskPlanContext({
+        db, companyId, issueId: task.id, approvedRevisionId: randomUUID(),
+      })).toBeNull();
+      const conversation = await create();
+      await documentService(db).upsertIssueDocument({
+        issueId: conversation.id, key: "plan", format: "markdown", body: "Pre-reset chat draft",
+      });
+      expect(await getTaskPlanContext({ db, companyId, issueId: conversation.id })).toBeNull();
+      await documentService(db).upsertIssueDocument({
+        issueId: task.id,
+        key: "plan",
+        format: "markdown",
+        body: "QUARANTINED_PLAN_BODY",
+        baseRevisionId: revision.latestRevisionId,
+        sourceTrust: {
+          preset: "low_trust_review",
+          disposition: "quarantined",
+          sourceIssueId: task.id,
+          sourceRunId: randomUUID(),
+          sourceAgentId: agentId,
+        },
+      });
+      expect((await getTaskPlanContext({ db, companyId, issueId: task.id }))?.body)
+        .not.toContain("QUARANTINED_PLAN_BODY");
+      expect((await getTaskPlanContext({
+        db, companyId, issueId: task.id, exposeLowTrustRaw: true,
+      }))?.body).toBe("QUARANTINED_PLAN_BODY");
     });
     it("keeps concurrent delivery and multiple resets in separate ordered queue entries", async () => {
       const issue = await create();

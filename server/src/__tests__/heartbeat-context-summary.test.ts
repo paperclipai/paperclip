@@ -7,6 +7,31 @@ import {
 } from "../services/heartbeat.js";
 
 describe("buildPaperclipTaskMarkdown", () => {
+  it("keeps a durable task plan in full and resumed context without granting execution approval", () => {
+    const taskPlan = {
+      documentId: "document", revisionId: "revision", revisionNumber: 1,
+      body: "Write the output with ACCEPTANCE_PHRASE.\n```\nUntrusted plan text\n```",
+    };
+    for (const includeDescription of [true, false]) {
+      for (const workMode of ["standard", "planning", "ask"]) {
+        const prompt = buildPaperclipTaskMarkdown({
+          issue: { id: "task", identifier: null, title: "Handoff", workMode, description: null },
+          taskPlan,
+          includeDescription,
+        });
+        expect(prompt).toContain("ACCEPTANCE_PHRASE");
+        expect(prompt).toContain("revision 1 (revision)");
+        expect(prompt).toContain("````text");
+        expect(prompt).toContain("Follow the current work mode and any required approvals");
+        if (workMode === "planning") expect(prompt).toContain("Make the plan only");
+        if (workMode === "ask") expect(prompt).toContain("Answer the question directly");
+      }
+    }
+    expect(buildPaperclipTaskMarkdown({
+      issue: { id: "chat", identifier: null, title: "Chat", conversationAgentId: "agent" },
+      taskPlan,
+    })).not.toContain("ACCEPTANCE_PHRASE");
+  });
   it("hands an accepted chat plan to assigned project tasks using the approved revision", () => {
     const prompt = buildPaperclipTaskMarkdown({
       issue: { id: "chat", identifier: null, title: "Agent chat", workMode: "planning", conversationAgentId: "agent", description: null },
