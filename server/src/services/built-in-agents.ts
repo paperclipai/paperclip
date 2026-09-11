@@ -10,6 +10,7 @@ import { syncRoutineVariablesWithTemplate } from "@paperclipai/shared";
 import type { Agent, Approval, CompanySkill, PermissionKey, Routine, RoutineTrigger, RoutineVariable } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import { inheritCompanyCredentialEnv } from "./agent-credential-inheritance.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { agentService } from "./agents.js";
 import { approvalService } from "./approvals.js";
@@ -1655,10 +1656,12 @@ export function builtInAgentService(db: Db) {
     const reportsTo = definition.defaultManager === "single_root_agent"
       ? await findSingleRootManager(companyId)
       : null;
+    const patch = definitionPatch(definition, resolvedInput);
+    patch.adapterConfig = await inheritCompanyCredentialEnv(db, companyId, patch.adapterType, patch.adapterConfig);
     let created: Agent;
     try {
       created = await agentSvc.create(companyId, {
-        ...definitionPatch(definition, resolvedInput),
+        ...patch,
         status: definition.defaultStatus ?? "idle",
         pauseReason: definition.defaultStatus === "paused"
           ? `Built-in ${definition.displayName} is disabled until explicitly configured.`
@@ -1760,10 +1763,12 @@ export function builtInAgentService(db: Db) {
     const reportsTo = definition.defaultManager === "single_root_agent"
       ? await findSingleRootManager(companyId)
       : null;
+    const pendingPatch = definitionPatch(definition, input);
+    pendingPatch.adapterConfig = await inheritCompanyCredentialEnv(db, companyId, pendingPatch.adapterType, pendingPatch.adapterConfig);
     let pending: Agent;
     try {
       pending = await agentSvc.create(companyId, {
-        ...definitionPatch(definition, input),
+        ...pendingPatch,
         status: "pending_approval",
         reportsTo,
         metadata: builtInMetadata(definition),
