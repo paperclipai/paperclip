@@ -139,6 +139,12 @@ the new scoped-folder or repository-checkpoint durability guarantee for old task
 New tasks enter the scoped lifecycle below. Automatic migration of an old task's
 working tree into scoped folders is not performed.
 
+Retained PRP v1 runners continue ordinary native turns without session goals.
+The host checks the authenticated protocol version before probing or changing
+a goal, so an optional v2 request cannot disconnect an older runner or block
+its final suspension and checkpoint. Unauthenticated connections do not provide
+capability evidence.
+
 Version-1 reusable leases obtain their missing task and responsible-user identity
 from company-scoped host run records. Reuse still requires matching agent, task,
 user, environment, workspace, provider, and configuration fingerprint. Missing or
