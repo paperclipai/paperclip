@@ -1064,3 +1064,5 @@ export type {
 } from "./plugin.js";
 export * from "./app-definition.js";
 export * from "./chat-channels.js";
+
+export * from "./email.js";

@@ -493,6 +493,7 @@ export function parseChatProviderLifecycle(
   input: ParseChatProviderLifecycleInput,
 ): ChatProviderLifecycleEffect[] {
   switch (input.provider) {
+    case "agentmail": return [];
     case "slack":
       return parseSlackLifecycle(input);
     case "github":

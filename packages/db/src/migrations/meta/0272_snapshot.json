@@ -1,5 +1,5 @@
 {
-  "id": "c5d38bc0-f3a5-4c7b-bbbe-4acf7b5152bc",
+  "id": "cad9198b-f814-4ed9-b364-e8677eab5c23",
   "prevId": "092c7808-7c68-4c95-82b9-07bc2244fbb8",
   "version": "7",
   "dialect": "postgresql",
@@ -1723,37 +1723,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "attempt_reason": {
-          "name": "attempt_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "retry_count": {
-          "name": "retry_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "last_error": {
-          "name": "last_error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "next_attempt_at": {
-          "name": "next_attempt_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "claim_deadline_at": {
-          "name": "claim_deadline_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -1969,34 +1938,6 @@
           "concurrently": false,
           "method": "btree",
           "with": {}
-        },
-        "agent_wakeup_requests_company_agent_deferred_attempt_idx": {
-          "name": "agent_wakeup_requests_company_agent_deferred_attempt_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "agent_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "requested_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {},
-          "where": "\"agent_wakeup_requests\".\"status\" = 'deferred_issue_execution'"
         }
       },
       "foreignKeys": {
@@ -6263,6 +6204,20 @@
           "primaryKey": false,
           "notNull": true
         },
+        "publication_mode": {
+          "name": "publication_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'automatic'"
+        },
+        "external_execution_policy": {
+          "name": "external_execution_policy",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'restricted'"
+        },
         "assigned_agent_id": {
           "name": "assigned_agent_id",
           "type": "uuid",
@@ -6491,6 +6446,22 @@
           "method": "btree",
           "with": {}
         },
+        "chat_endpoints_agentmail_inbox_uq": {
+          "name": "chat_endpoints_agentmail_inbox_uq",
+          "columns": [
+            {
+              "expression": "bot_external_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"chat_endpoints\".\"provider\" = 'agentmail' and \"chat_endpoints\".\"status\" != 'archived' and \"chat_endpoints\".\"bot_external_id\" is not null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "chat_endpoints_connection_uq": {
           "name": "chat_endpoints_connection_uq",
           "columns": [
@@ -6678,9 +6649,21 @@
       },
       "policies": {},
       "checkConstraints": {
+        "chat_endpoints_publication_mode_check": {
+          "name": "chat_endpoints_publication_mode_check",
+          "value": "\"chat_endpoints\".\"publication_mode\" in ('automatic', 'explicit')"
+        },
+        "chat_endpoints_execution_policy_check": {
+          "name": "chat_endpoints_execution_policy_check",
+          "value": "\"chat_endpoints\".\"external_execution_policy\" in ('restricted', 'agent')"
+        },
+        "chat_endpoints_email_policy_check": {
+          "name": "chat_endpoints_email_policy_check",
+          "value": "\"chat_endpoints\".\"provider\" <> 'agentmail' or (\"chat_endpoints\".\"publication_mode\" = 'explicit' and \"chat_endpoints\".\"external_execution_policy\" = 'agent')"
+        },
         "chat_endpoints_provider_check": {
           "name": "chat_endpoints_provider_check",
-          "value": "\"chat_endpoints\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram')"
+          "value": "\"chat_endpoints\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail')"
         },
         "chat_endpoints_status_check": {
           "name": "chat_endpoints_status_check",
@@ -6865,7 +6848,7 @@
       "checkConstraints": {
         "chat_external_principals_provider_check": {
           "name": "chat_external_principals_provider_check",
-          "value": "\"chat_external_principals\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram')"
+          "value": "\"chat_external_principals\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail')"
         },
         "chat_external_principals_kind_check": {
           "name": "chat_external_principals_kind_check",
@@ -17115,6 +17098,383 @@
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.email_endpoints": {
+      "name": "email_endpoints",
+      "schema": "",
+      "columns": {
+        "endpoint_id": {
+          "name": "endpoint_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "receive_mode": {
+          "name": "receive_mode",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "webhook_id": {
+          "name": "webhook_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "owned_api_key_id": {
+          "name": "owned_api_key_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "activation_at": {
+          "name": "activation_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sync_checkpoint": {
+          "name": "sync_checkpoint",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_sync_at": {
+          "name": "last_sync_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "email_endpoints_company_id_endpoint_id_chat_endpoints_company_id_id_fk": {
+          "name": "email_endpoints_company_id_endpoint_id_chat_endpoints_company_id_id_fk",
+          "tableFrom": "email_endpoints",
+          "tableTo": "chat_endpoints",
+          "columnsFrom": [
+            "company_id",
+            "endpoint_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "email_endpoints_receive_mode_check": {
+          "name": "email_endpoints_receive_mode_check",
+          "value": "\"email_endpoints\".\"receive_mode\" in ('websocket', 'webhook')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.email_messages": {
+      "name": "email_messages",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "endpoint_id": {
+          "name": "endpoint_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_message_id": {
+          "name": "provider_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "envelope": {
+          "name": "envelope",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "text": {
+          "name": "text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "full_text": {
+          "name": "full_text",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "''"
+        },
+        "direction": {
+          "name": "direction",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "automatic": {
+          "name": "automatic",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "attachment_ids": {
+          "name": "attachment_ids",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[]'::jsonb"
+        },
+        "timestamp": {
+          "name": "timestamp",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "email_messages_provider_uq": {
+          "name": "email_messages_provider_uq",
+          "columns": [
+            {
+              "expression": "endpoint_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "email_messages_conversation_idx": {
+          "name": "email_messages_conversation_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "conversation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "timestamp",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "email_messages_company_id_endpoint_id_chat_endpoints_company_id_id_fk": {
+          "name": "email_messages_company_id_endpoint_id_chat_endpoints_company_id_id_fk",
+          "tableFrom": "email_messages",
+          "tableTo": "chat_endpoints",
+          "columnsFrom": [
+            "company_id",
+            "endpoint_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "email_messages_company_id_conversation_id_chat_conversations_company_id_id_fk": {
+          "name": "email_messages_company_id_conversation_id_chat_conversations_company_id_id_fk",
+          "tableFrom": "email_messages",
+          "tableTo": "chat_conversations",
+          "columnsFrom": [
+            "company_id",
+            "conversation_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "email_messages_direction_check": {
+          "name": "email_messages_direction_check",
+          "value": "\"email_messages\".\"direction\" in ('inbound', 'outbound')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.email_sends": {
+      "name": "email_sends",
+      "schema": "",
+      "columns": {
+        "publication_id": {
+          "name": "publication_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "endpoint_id": {
+          "name": "endpoint_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request": {
+          "name": "request",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor": {
+          "name": "actor",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "digest": {
+          "name": "digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'queued'"
+        },
+        "first_attempt_at": {
+          "name": "first_attempt_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "email_sends_pending_idx": {
+          "name": "email_sends_pending_idx",
+          "columns": [
+            {
+              "expression": "endpoint_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "outcome",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"email_sends\".\"outcome\" in ('queued', 'uncertain')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "email_sends_company_id_endpoint_id_chat_endpoints_company_id_id_fk": {
+          "name": "email_sends_company_id_endpoint_id_chat_endpoints_company_id_id_fk",
+          "tableFrom": "email_sends",
+          "tableTo": "chat_endpoints",
+          "columnsFrom": [
+            "company_id",
+            "endpoint_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "email_sends_company_id_publication_id_chat_publications_company_id_id_fk": {
+          "name": "email_sends_company_id_publication_id_chat_publications_company_id_id_fk",
+          "tableFrom": "email_sends",
+          "tableTo": "chat_publications",
+          "columnsFrom": [
+            "company_id",
+            "publication_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "email_sends_outcome_check": {
+          "name": "email_sends_outcome_check",
+          "value": "\"email_sends\".\"outcome\" in ('queued', 'sent', 'delivered', 'failed', 'uncertain')"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.environment_custom_image_setup_sessions": {
@@ -41688,7 +42048,7 @@
         },
         "tool_connections_channel_transport_check": {
           "name": "tool_connections_channel_transport_check",
-          "value": "(\n      (\"tool_connections\".\"connection_purpose\" = 'tool' and \"tool_connections\".\"transport\" <> 'chat_sdk')\n      or\n      (\"tool_connections\".\"connection_purpose\" = 'channel' and \"tool_connections\".\"transport\" = 'chat_sdk')\n    )"
+          "value": "(\n      (\"tool_connections\".\"connection_purpose\" = 'tool' and \"tool_connections\".\"transport\" <> 'chat_sdk')\n      or\n      (\"tool_connections\".\"connection_purpose\" = 'channel' and (\"tool_connections\".\"transport\" = 'chat_sdk' or (\"tool_connections\".\"transport\" = 'rest_api' and \"tool_connections\".\"config\"->>'provider' = 'agentmail')))\n    )"
         },
         "tool_connections_auth_kind_check": {
           "name": "tool_connections_auth_kind_check",

@@ -87,7 +87,7 @@ async function verifyMaterializedAsset(
   }
 }
 
-async function materializeAsset(files: AssetFile[]): Promise<NativeRuntimeAssetReference> {
+export async function materializeAsset(files: AssetFile[]): Promise<NativeRuntimeAssetReference> {
   const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path));
   const manifestFiles = sorted.map((file) => ({ path: safeRelativePath(file.path, "runtime context path"), sha256: sha256(file.content), mode: file.mode & 0o555, size: file.content.byteLength }));
   const totalBytes = manifestFiles.reduce((sum, file) => sum + file.size, 0);

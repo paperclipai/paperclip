@@ -157,6 +157,27 @@ describe("command managed runtime", () => {
     }
   });
 
+  it("reports a missing sandbox file as ENOENT without masking command failures", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-missing-"));
+    try {
+      const { runner } = makeSpawnRunner();
+      const client = createCommandManagedRuntimeClient({ runner, commandCwd: root, timeoutMs: 5000 });
+      const missingPath = path.join(root, "auth.json");
+      await expect(client.readFile(missingPath)).rejects.toMatchObject({ code: "ENOENT", path: missingPath });
+      await writeFile(missingPath, "present");
+      const failedClient = createCommandManagedRuntimeClient({
+        commandCwd: root, timeoutMs: 5000,
+        runner: { ...runner, execute: async (input) => input.args?.some((arg) => arg.startsWith("wc -c"))
+          ? { exitCode: 1, signal: null, timedOut: false, stdout: "", stderr: "transport read failed", pid: null, startedAt: new Date().toISOString() }
+          : runner.execute(input) },
+      });
+      await expect(failedClient.readFile(missingPath)).rejects.toThrow("transport read failed");
+      await expect(client.readFile(missingPath)).resolves.toEqual(Buffer.from("present"));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the runtime overlay out of sandbox workspace sync by default", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-"));
     cleanupDirs.push(rootDir);

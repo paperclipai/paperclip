@@ -177,6 +177,12 @@ const posthogMethod = (key, auth, extra = {}) =>
     { tenantFields: posthogConfigFields(), ...extra },
   );
 const apps = [
+  ["agentmail", "AgentMail", "Give agents email inboxes and handle each conversation as a task.", "communication", "agentmail.to", ["https://console.agentmail.to/*"], {
+    key: "email-agent", label: "Email with an agent", purpose: "channel", provider: "agentmail", transport: "rest_api", auth: "api_key", ownershipModes: ["customer"],
+    whenToUse: "Assign an inbox to an agent and manage email conversations in tasks.", credentialFields: [{ key: "apiKey", label: "AgentMail API key", type: "password", placeholder: "am_…", required: true, secret: true }],
+    guidanceMd: "Connect an AgentMail API key, then create or select an inbox for your agent. WebSocket receiving works without a public URL.",
+    consoleLinks: { keys: "https://console.agentmail.to", docs: "https://docs.agentmail.to/inboxes" }, riskTier: "S3", requiredResourceFilters: ["inbox"]
+  }],
   [
     "zapier",
     "Zapier",
