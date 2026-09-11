@@ -689,6 +689,297 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(revalidated.classification?.state).toBe("live");
   });
 
+  it("clears lastReviewedFingerprint when a reusable watchdog issue is reopened after premature done", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-REOPEN-CLEAR", status: "done" });
+    const childId = await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const stopFingerprint = firstWatchdog!.lastObservedFingerprint!;
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, watchdogIssueId));
+
+    const reviewed = await service.reconcileTaskWatchdogs({ companyId });
+    expect(reviewed).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    const [stamped] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(stamped?.lastReviewedFingerprint).toBe(stopFingerprint);
+
+    // Premature done left the stamp; reopen the reusable watchdog issue for the same fingerprint.
+    await db
+      .update(issues)
+      .set({ status: "in_progress", updatedAt: new Date() })
+      .where(eq(issues.id, watchdogIssueId));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: stamped!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint,
+    });
+    expect(revalidated.allowed).toBe(true);
+    expect(revalidated.classification?.state).toBe("stopped");
+    expect(revalidated.classification?.stopFingerprint).toBe(stopFingerprint);
+
+    const [cleared] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(cleared?.lastReviewedFingerprint).toBeNull();
+    expect(cleared?.lastReviewedStopSnapshot).toBeNull();
+
+    // Same-fingerprint reopen must not re-wake; review stays open on the reusable issue.
+    const afterReopen = await service.reconcileTaskWatchdogs({ companyId });
+    expect(afterReopen).toMatchObject({ checked: 1, triggered: 0 });
+    expect(wakes).toHaveLength(1);
+    void childId;
+  });
+
+  it("clears lastReviewedFingerprint when in_progress reopen has assignee and monitor", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-REOPEN-ASSIGNED-CLEAR", status: "done" });
+    await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const stopFingerprint = firstWatchdog!.lastObservedFingerprint!;
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, watchdogIssueId));
+    await service.reconcileTaskWatchdogs({ companyId });
+
+    await db
+      .update(issues)
+      .set({
+        status: "in_progress",
+        assigneeAgentId: agentId,
+        monitorNextCheckAt: new Date(Date.now() + 60_000),
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, watchdogIssueId));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: firstWatchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint,
+    });
+    expect(revalidated.allowed).toBe(true);
+    expect(revalidated.classification?.state).toBe("stopped");
+
+    const [cleared] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(cleared?.lastReviewedFingerprint).toBeNull();
+    expect(cleared?.lastReviewedStopSnapshot).toBeNull();
+
+    const afterReopen = await service.reconcileTaskWatchdogs({ companyId });
+    expect(afterReopen).toMatchObject({ checked: 1, triggered: 0 });
+    expect(wakes).toHaveLength(1);
+  });
+
+  it("keeps completed-review suppression for an unchanged fingerprint while the watchdog issue stays terminal", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-KEEP-REVIEWED", status: "done" });
+    await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const stopFingerprint = firstWatchdog!.lastObservedFingerprint!;
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: new Date() })
+      .where(eq(issues.id, firstWatchdog!.watchdogIssueId!));
+
+    const reviewed = await service.reconcileTaskWatchdogs({ companyId });
+    expect(reviewed).toMatchObject({ alreadyReviewed: 1 });
+    const again = await service.reconcileTaskWatchdogs({ companyId });
+    expect(again).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    expect(wakes).toHaveLength(1);
+
+    const denied = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: firstWatchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint,
+    });
+    expect(denied.allowed).toBe(false);
+    expect(denied.classification?.state).toBe("already_reviewed");
+  });
+
+  it("keeps completed-review suppression when the reusable watchdog issue is cancelled", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-CANCEL-KEEP-REVIEWED", status: "done" });
+    await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const stopFingerprint = firstWatchdog!.lastObservedFingerprint!;
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    await db
+      .update(issues)
+      .set({ status: "done", updatedAt: new Date() })
+      .where(eq(issues.id, watchdogIssueId));
+
+    const reviewed = await service.reconcileTaskWatchdogs({ companyId });
+    expect(reviewed).toMatchObject({ alreadyReviewed: 1 });
+
+    await db
+      .update(issues)
+      .set({ status: "cancelled", updatedAt: new Date() })
+      .where(eq(issues.id, watchdogIssueId));
+
+    const afterCancel = await service.reconcileTaskWatchdogs({ companyId });
+    expect(afterCancel).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    expect(wakes).toHaveLength(1);
+
+    const [kept] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(kept?.lastReviewedFingerprint).toBe(stopFingerprint);
+
+    const denied = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: firstWatchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint,
+    });
+    expect(denied.allowed).toBe(false);
+    expect(denied.classification?.state).toBe("already_reviewed");
+  });
+
+  it("clears lastReviewedFingerprint when in_review has no review disposition", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-INREVIEW-CLEAR", status: "done" });
+    await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const stopFingerprint = firstWatchdog!.lastObservedFingerprint!;
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, watchdogIssueId));
+    await service.reconcileTaskWatchdogs({ companyId });
+
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeUserId: null,
+        executionState: null,
+        monitorNextCheckAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, watchdogIssueId));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: firstWatchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint,
+    });
+    expect(revalidated.allowed).toBe(true);
+    expect(revalidated.classification?.state).toBe("stopped");
+
+    const [cleared] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(cleared?.lastReviewedFingerprint).toBeNull();
+  });
+
+  it("keeps lastReviewedFingerprint and denies source mutation when in_review has a board review path", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-INREVIEW-KEEP", status: "done" });
+    await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service, wakes } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const stopFingerprint = firstWatchdog!.lastObservedFingerprint!;
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, watchdogIssueId));
+    await service.reconcileTaskWatchdogs({ companyId });
+
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeUserId: "board-reviewer",
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, watchdogIssueId));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: firstWatchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint,
+    });
+    expect(revalidated.allowed).toBe(false);
+    expect(revalidated.classification?.state).toBe("already_reviewed");
+
+    const [kept] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(kept?.lastReviewedFingerprint).toBe(stopFingerprint);
+
+    const after = await service.reconcileTaskWatchdogs({ companyId });
+    expect(after).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    expect(wakes).toHaveLength(1);
+  });
+
+  it("clears lastReviewedFingerprint when in_review is assigned to the watchdog agent without a board review path", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-INREVIEW-AGENT-CLEAR", status: "done" });
+    await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const stopFingerprint = firstWatchdog!.lastObservedFingerprint!;
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    await db.update(issues).set({ status: "done", updatedAt: new Date() }).where(eq(issues.id, watchdogIssueId));
+    await service.reconcileTaskWatchdogs({ companyId });
+
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        assigneeAgentId: agentId,
+        assigneeUserId: null,
+        executionState: null,
+        monitorNextCheckAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(issues.id, watchdogIssueId));
+
+    const revalidated = await service.revalidateMutationScope({
+      kind: "watchdog",
+      watchdogId: firstWatchdog!.id,
+      companyId,
+      watchedIssueId: sourceId,
+      stopFingerprint,
+    });
+    expect(revalidated.allowed).toBe(true);
+    expect(revalidated.classification?.state).toBe("stopped");
+
+    const [cleared] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(cleared?.lastReviewedFingerprint).toBeNull();
+    expect(cleared?.lastReviewedStopSnapshot).toBeNull();
+  });
+
   it("does not raise a stopped-subtree review while a freshly-created assigned issue's first run is starting", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent(companyId);
