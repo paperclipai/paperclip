@@ -302,10 +302,15 @@ export interface AcpxRemoteManagedHomeContext {
   onRuntimeProgress: AdapterExecutionContext["onRuntimeProgress"];
   /**
    * The host directory that holds this run's skill bundle. This field is
-   * `null` when the agent does not support on-demand skills, or when no
-   * skill is selected. A seam that wants the bundle in the sandbox stages it
-   * as an asset, with `followSymlinks: true`. This flag makes a symbolic link
-   * inside the bundle carry its target content, not a dangling link.
+   * `null` when the agent does not support on-demand skills, when no skill
+   * is selected, and when every selected skill fails to materialize.
+   *
+   * A seam stages the bundle as an asset. When the bundle holds an owned
+   * copy with no symbolic link, the seam sets `followSymlinks: false` (see
+   * `claude-local/src/server/acp.ts` for a worked example). The
+   * `followSymlinks: true` value makes the archive step carry a symbolic
+   * link's target content instead of a dangling link. A seam needs that
+   * value only when its own bundle holds symbolic links.
    */
   skillsBundleDir: string | null;
   /**
