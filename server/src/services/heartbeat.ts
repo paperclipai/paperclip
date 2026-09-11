@@ -10038,8 +10038,12 @@ export function heartbeatService(
       seen.add(issueId);
       // Advance the cursor even for invalid evidence so one damaged task cannot
       // starve later requests in this bounded scan. Preserve concurrent edits.
-      await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
-        eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.status, "deferred_issue_execution")));
+      const [claimed] = await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
+        eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        lte(agentWakeupRequests.updatedAt, new Date(Date.now() - 30_000)),
+      )).returning({ id: agentWakeupRequests.id });
+      if (!claimed) continue;
       const sourceId = readNonEmptyString(evidence.runId ?? evidence.sourceRunId);
       if (!sourceId || !isUuidLike(sourceId)) continue;
       const run = await getRun(sourceId);
