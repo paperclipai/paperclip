@@ -1210,11 +1210,11 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
 // Routes and the scheduler construct separate heartbeatService instances, but
 // they must agree on in-process adapter executions when reaping stale runs.
 const activeRunExecutions = new Set<string>();
-// A process adapter's signal exit can race the operator cancellation CAS while
+// A legacy process adapter's signal exit can race the operator cancellation CAS while
 // its owned process group is still being joined. Keep that exit from becoming
 // a successful result (or a competing failure) before Stop settles. This is an
 // in-process ordering barrier, not durable cancellation or provider authority.
-// Other adapters can have independently proven terminal results after a signal.
+// Embedded adapters use their own cancellation control and acknowledgement.
 const processRunCancellationSettlements = new Map<
   string,
   {
@@ -8631,6 +8631,7 @@ async function terminateHeartbeatRunProcess(input: {
   pid: number | null | undefined;
   processGroupId: number | null | undefined;
   graceMs?: number;
+  signal?: NodeJS.Signals;
 }) {
   const pid = input.pid ?? null;
   const processGroupId = input.processGroupId ?? null;
@@ -8649,7 +8650,7 @@ async function terminateHeartbeatRunProcess(input: {
           ? processGroupId
           : null,
     },
-    input.graceMs ? { forceAfterMs: input.graceMs } : undefined,
+    { forceAfterMs: input.graceMs, signal: input.signal },
   );
 }
 
@@ -18577,6 +18578,31 @@ export function heartbeatService(
     await resumeExecutionWaitComments();
     const cutoff = await getWorktreeExecutionCutoff();
 
+    // The cancellation marker is durable intent. Retry while its exact queue
+    // is still deferred, including after a failed cleanup promotion or restart.
+    // Normal admission still checks process ownership, leases, pauses, and scope.
+    const interruptedQueues = await db
+      .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId })
+      .from(agentWakeupRequests)
+      .innerJoin(heartbeatRuns, and(
+        sql`${heartbeatRuns.resultJson}->>'queuedCommentInterruptQueueId' = ${agentWakeupRequests.id}::text`,
+        eq(heartbeatRuns.companyId, agentWakeupRequests.companyId),
+        eq(heartbeatRuns.agentId, agentWakeupRequests.agentId),
+      ))
+      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
+      .where(and(
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        eq(heartbeatRuns.status, "cancelled"),
+        eq(heartbeatRuns.runtimeMode, "legacy"),
+        eq(companies.status, "active"),
+        cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+      ));
+    for (const run of interruptedQueues) {
+      await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true }).catch((err) => {
+        logger.error({ err, runId: run.id }, "failed to retry interrupted comment queue");
+      });
+    }
+
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
@@ -23562,10 +23588,8 @@ export function heartbeatService(
           }
         }
         const processCancellation =
-          agent.adapterType === "process"
-            ? (processRunCancellationSettlements.get(run.id) ??
-              failedProcessRunCancellations.get(run.id))
-            : undefined;
+          processRunCancellationSettlements.get(run.id) ??
+          failedProcessRunCancellations.get(run.id);
         await processCancellation?.settled;
         let outcome: RunSessionOutcome;
         const latestRun = await getRun(run.id);
@@ -23587,7 +23611,7 @@ export function heartbeatService(
         } else if (
           (adapterResult.exitCode ?? 0) === 0 &&
           !adapterResult.errorMessage &&
-          !(agent.adapterType === "process" && adapterResult.signal) &&
+          !adapterResult.signal &&
           !processCancellation?.failed
         ) {
           outcome = "succeeded";
@@ -23784,9 +23808,11 @@ export function heartbeatService(
           // adapter's semantic result, usage, logs, or presentation decision.
           // Only complete the late metadata write when the reconciler chose the
           // same terminal status; a conflicting terminal outcome remains owned
-          // by the path that won the compare-and-set.
+          // by the path that won the compare-and-set. Owned legacy cancellation
+          // likewise keeps the provider session, logs, and usage after Stop wins.
           if (
-            adapterResult.nativeFinalization &&
+            (adapterResult.nativeFinalization ||
+              (processCancellation && !processCancellation.failed && status === "cancelled")) &&
             persistedRunWrite.run?.status === status
           ) {
             persistedRun = await db
@@ -24279,9 +24305,7 @@ export function heartbeatService(
         }
         // A process adapter may throw while its owned Stop is joining the
         // child. Let the cancellation write settle before attempting failure.
-        if (agent.adapterType === "process") {
-          await processRunCancellationSettlements.get(run.id)?.settled;
-        }
+        await processRunCancellationSettlements.get(run.id)?.settled;
         const message = redactCurrentUserText(
           err instanceof Error ? err.message : "Unknown adapter failure",
           await getCurrentUserRedactionOptions(),
@@ -24886,6 +24910,18 @@ export function heartbeatService(
           });
         }
       }
+      // Interrupting a queued message explicitly authorizes the pending queue.
+      // Retry its normal promotion after leases and adapter cleanup have settled;
+      // the earlier terminal write can still have an execution blocker here.
+      if (
+        latestRun?.status === "cancelled" &&
+        latestRun.runtimeMode !== "native" &&
+        readNonEmptyString(latestRun.resultJson?.queuedCommentInterruptQueueId)
+      ) {
+        await releaseIssueExecutionAndPromote(latestRun, { suppressImmediateRecovery: true }).catch((err) => {
+          logger.error({ err, runId: run.id }, "failed to promote interrupted comment queue after cleanup");
+        });
+      }
       activeRunExecutions.delete(run.id);
       // A failed owned Stop remains visible until this exact executor settles,
       // including a graceful exit result arriving after the cancellation error.
@@ -24909,7 +24945,7 @@ export function heartbeatService(
   }
 
   async function releaseIssueExecutionAndPromote(
-    run: typeof heartbeatRuns.$inferSelect,
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
     options: { suppressImmediateRecovery?: boolean } = {},
   ) {
     try {
@@ -27468,8 +27504,8 @@ export function heartbeatService(
     try {
       let releaseProcessCancellation: (() => void) | undefined;
       const processCancellationSettlement =
-        agent?.adapterType === "process" &&
         run.runtimeMode !== "native" &&
+        !control &&
         running
           ? {
               settled: new Promise<void>((resolve) => {
@@ -27528,6 +27564,9 @@ export function heartbeatService(
               await terminateHeartbeatRunProcess({
                 pid: running.child.pid,
                 processGroupId: running.processGroupId,
+                // Codex handles Ctrl-C by cancelling its tool sessions. SIGTERM
+                // can leave commands in their separate process groups alive.
+                signal: !control && agent?.adapterType === "codex_local" ? "SIGINT" : undefined,
                 graceMs: cancellationTerminationGraceMs(
                   running.graceSec,
                   options.terminationGraceMs,
@@ -27585,6 +27624,21 @@ export function heartbeatService(
                     resultJson: {
                       ...persistedCancellationResult,
                       ...(resultJson ?? {}),
+                      // A scheduler placeholder has no process to acknowledge.
+                      // Preserve its normal release policy instead of treating
+                      // it as an operator stop of provider work.
+                      ...(processCancellationSettlement && agent && running && (
+                        (Number.isInteger(running.child.pid) && (running.child.pid ?? 0) > 0) ||
+                        (Number.isInteger(running.processGroupId) && (running.processGroupId ?? 0) > 0)
+                      )
+                        ? mergeRunStopMetadataForAgent(agent, "cancelled", {
+                            resultJson: {
+                              ...resultJson,
+                              executionCancellation: { state: "acknowledged", acknowledgedAt: finishedAt.toISOString() },
+                            },
+                            errorCode, errorMessage: reason,
+                          })
+                        : {}),
                       // The native cancellation helper may have advanced a durable
                       // pending intent to its acknowledged state after `run` was
                       // first read. Never let that stale snapshot overwrite the

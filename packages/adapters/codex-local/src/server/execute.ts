@@ -1546,6 +1546,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (
         sessionId &&
         !initial.proc.timedOut &&
+        !initial.proc.signal &&
+        // A started session can emit stale-rollout warnings for other threads.
+        // After Ctrl-C those warnings must not restart the cancelled turn.
+        !initial.parsed.sessionId &&
         (initial.proc.exitCode ?? 0) !== 0 &&
         isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
       ) {

@@ -6529,6 +6529,31 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/issues/{id}/queued-comments/interrupt",
+  tags: ["issues"],
+  summary: "Interrupt the active legacy run and continue its queued comments",
+  request: {
+    params: z.object({ id: z.string() }),
+    body: jsonBody(
+      z.object({
+        queueId: z.string().min(1),
+        revision: z.string().min(1),
+        targetRunId: z.string().min(1),
+      }),
+    ),
+  },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+  },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/issues/{id}/queued-comments/{commentId}/steer",
   tags: ["issues"],
   summary: "Steer a queued issue comment into the active native run",

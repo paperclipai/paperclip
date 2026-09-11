@@ -52,6 +52,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   listFeedbackVotes: vi.fn(),
   listInteractions: vi.fn(),
   getQueuedComments: vi.fn(),
+  interruptQueuedComments: vi.fn(),
   editQueuedComment: vi.fn(),
   reorderQueuedComments: vi.fn(),
   steerQueuedComment: vi.fn(),
@@ -1320,6 +1321,7 @@ describe("IssueDetail", () => {
         entries: [],
       }),
     );
+    mockIssuesApi.interruptQueuedComments.mockReset().mockResolvedValue(createQueuedCommentQueue());
     mockIssuesApi.editQueuedComment.mockResolvedValue(
       createQueuedCommentQueue(),
     );
@@ -3674,14 +3676,19 @@ describe("IssueDetail", () => {
       body: "Queued run message",
     });
 
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+      targetRunId: "run-queued", protocol: "legacy", steeringDisposition: "unsupported",
+    }));
     await act(async () => {
       await persistedProps.onInterruptQueued(
         persistedComment!.queueTargetRunId!,
       );
     });
 
-    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-queued");
-    mockHeartbeatsApi.cancel.mockClear();
+    expect(mockIssuesApi.interruptQueuedComments).toHaveBeenCalledWith("PAP-1", {
+      queueId: "wake-queue-1", revision: "queue-revision-1", targetRunId: "run-queued",
+    });
+    expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
   });
 
   it("projects a native follow-up into the steering well before the post resolves", async () => {
@@ -3876,15 +3883,16 @@ describe("IssueDetail", () => {
       queueTargetRunId: "run-original",
     });
 
+    mockIssuesApi.getQueuedComments.mockResolvedValue(createQueuedCommentQueue({
+      targetRunId: "run-replacement", protocol: "legacy", steeringDisposition: "unsupported",
+    }));
     await act(async () => {
-      await replacementProps.onInterruptQueued(
+      await expect(replacementProps.onInterruptQueued(
         optimisticComment!.queueTargetRunId!,
-      );
+      )).rejects.toThrow("The queued messages changed");
     });
-    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-original");
-    expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalledWith(
-      "run-replacement",
-    );
+    expect(mockIssuesApi.interruptQueuedComments).not.toHaveBeenCalled();
+    expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
 
     await act(async () => {
       postedComment.resolve(

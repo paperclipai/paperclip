@@ -176,6 +176,9 @@ function buildHost(_tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
 function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, run: HeartbeatRunRow): WakeQueueTransaction {
   const treeControlSvc = issueTreeControlService(tx);
   const issuesSvc = issueService(tx);
+  const interruptQueueId = run.runtimeMode !== "native" && run.status === "cancelled"
+    ? readNonEmptyString(run.resultJson?.queuedCommentInterruptQueueId)
+    : null;
 
   return {
     async findInvokableAgent({ companyId, agentId }): Promise<InvokableAgentSnapshot | null> {
@@ -199,6 +202,8 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
               eq(agentWakeupRequests.companyId, companyId),
               eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
               sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+              interruptQueueId ? eq(agentWakeupRequests.id, interruptQueueId) : undefined,
+              interruptQueueId ? eq(agentWakeupRequests.agentId, run.agentId) : undefined,
             ),
           )
           .orderBy(asc(agentWakeupRequests.requestedAt))
@@ -1000,6 +1005,20 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         const issueRow =
           (contextIssueId ? candidateIssues.find((candidate) => candidate.id === contextIssueId) : candidateIssues[0]) ?? null;
 
+        // A queue interrupt authorizes only its original pending queue. Replays
+        // after dispatch or deleting the final message cannot launch other work.
+        const interruptQueueId = run.runtimeMode !== "native"
+          ? readNonEmptyString(run.resultJson?.queuedCommentInterruptQueueId)
+          : null;
+        const [interruptedQueue] = interruptQueueId && issueRow
+          ? await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+              eq(agentWakeupRequests.id, interruptQueueId),
+              eq(agentWakeupRequests.companyId, run.companyId),
+              eq(agentWakeupRequests.agentId, run.agentId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`${agentWakeupRequests.payload}->>'issueId' = ${issueRow.id}`,
+            )).limit(1)
+          : [];
         const preDrainFacts: PreDrainFacts = {
           issueRowPresent: issueRow !== null,
           executionRunIdMatchesRun: !issueRow || !issueRow.executionRunId || issueRow.executionRunId === run.id,
@@ -1013,7 +1032,9 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           // next explicit wake adopts those messages atomically when it
           // queues a run.
           executionCancellationAcknowledged:
-            run.status === "cancelled" && parseObject(run.resultJson?.executionCancellation).state === "acknowledged",
+            run.status === "cancelled" &&
+            parseObject(run.resultJson?.executionCancellation).state === "acknowledged" &&
+            !interruptedQueue,
         };
         const preDrain = decidePreDrain(preDrainFacts);
 
