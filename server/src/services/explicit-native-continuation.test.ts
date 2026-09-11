@@ -59,8 +59,12 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await hasNativeLocalProcessStop(db, f.companyId, source.id)).toBe(true);
     expect(await hasNativeLocalProcessStop(db, randomUUID(), source.id)).toBe(false);
     expect(await admit(f, true)).toMatchObject({ previousRunId: source.id });
-    await persistHeartbeatRunProcessMetadata(db, source.id, { pid: 999999999, processGroupId: null, startedAt: new Date().toISOString() });
-    await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, source.id));
+    // A real launch records process identity while the run is active. Late
+    // callbacks on a terminal run must not rewrite its completed history.
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, source.id));
+    const launched = await persistHeartbeatRunProcessMetadata(db, source.id, { pid: 999999999, processGroupId: null, startedAt: new Date().toISOString() });
+    expect(launched?.processPid).toBe(999999999);
+    await db.update(heartbeatRuns).set({ processPid: null, status: source.status, finishedAt: source.finishedAt }).where(eq(heartbeatRuns.id, source.id));
     expect(await admit(f, true)).toBeNull();
     expect(await recordNativeLocalProcessStop(db, source)).toBe(true);
     await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: source.id, agentId: f.agentId,
