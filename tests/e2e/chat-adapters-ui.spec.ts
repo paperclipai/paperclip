@@ -17,7 +17,7 @@ import {
  * because those checks require real accounts and publicly reachable ingress.
  */
 
-type Provider = "slack" | "github" | "discord" | "microsoft-teams" | "telegram";
+type Provider = "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "imessage-photon";
 
 const GITHUB_PRIVATE_KEY_FIXTURE =
   "-----BEGIN PRIVATE KEY-----\nlocal-e2e-key\n-----END PRIVATE KEY-----\n";
@@ -125,6 +125,7 @@ const PROVIDER_LIFECYCLE_COPY: Record<
   Provider,
   { reconnect: string; remove: string }
 > = {
+  "imessage-photon": { reconnect: "Reconnect the same dedicated Photon number", remove: "does not delete the Photon project" },
   slack: {
     reconnect:
       "Reconnect verifies or replaces credentials for this same Slack app. It does not reinstall the app or change its workspace or channel membership.",
@@ -547,7 +548,7 @@ async function installChatControlPlaneMock(
         status: "verifying",
         providerAccountId: `account-${provider.provider}`,
         providerAccountLabel: provider.accountLabel,
-        botExternalId: `bot-${provider.provider}`,
+        botExternalId: provider.provider === "imessage-photon" ? "+15555550100" : `bot-${provider.provider}`,
         botUsername: provider.botUsername,
         botLabel: provider.botLabel,
         setup: {
@@ -562,6 +563,10 @@ async function installChatControlPlaneMock(
       return;
     }
 
+    if (pathname === `/api/chat-endpoints/${endpoint.id}/photon/inspect` && method === "POST") {
+      expect(bodyOf(route)).toEqual({projectId:"project-e2e",projectSecret:"photon-test-secret"});
+      await fulfill(route,{projectId:"project-e2e",projectName:"Photon Test",allocation:"dedicated",eligible:true,lines:[{lineId:"line-one",phoneNumber:"+15555550100",eligible:true},{lineId:"line-two",phoneNumber:"+15555550102",eligible:true}]}); return;
+    }
     if (
       pathname === `/api/chat-endpoints/${endpoint.id}/test` &&
       method === "POST"
@@ -681,7 +686,7 @@ async function installChatControlPlaneMock(
             externalConversationId: `external-conversation-${provider.provider}`,
             externalThreadId: `external-thread-${provider.provider}`,
             externalLabel: provider.resourceLabel,
-            externalUrl: provider.externalUrl,
+            externalUrl: provider.provider === "imessage-photon" ? null : provider.externalUrl,
             isDirectMessage: provider.provider === "telegram",
             state: state.conversationState,
             lastPublicationStatus: "published",
@@ -3338,5 +3343,118 @@ test.describe("Exact failed chat run retry", () => {
         ).toBe(false);
       });
     }
+  }
+});
+
+
+test.describe("iMessage Photon setup and management", () => {
+  let seed: Seed;
+  const photon: ProviderCase = {
+    provider: "imessage-photon",
+    slug: "imessage-photon",
+    name: "iMessage Photon",
+    accountLabel: "Photon Test",
+    botLabel: "Maya",
+    botUsername: "+15555550100",
+    resourceLabel: "Family project",
+    secondaryResourceLabel: "Second group",
+    resourceType: "group_chat",
+    externalUrl: "https://app.photon.codes/",
+    setupHeading: /Connect iMessage Photon/,
+    setupButton: "Connect selected number",
+    chatAndTool: false,
+  };
+  test.beforeAll(async ({ request }) => {
+    seed = await seedCompanyAndAgent(request);
+  });
+  for (const theme of ["light", "dark"] as const) {
+    test(`discovers dedicated lines and completes the channel wizard (${theme})`, async ({
+      page,
+    }, testInfo) => {
+      const mock = await installChatControlPlaneMock(page, photon, seed, {
+        enableChatConnectors: true,
+      });
+      await page.addInitScript(
+        (value) => localStorage.setItem("paperclip.theme", value),
+        theme,
+      );
+      await page.goto(`/${seed.prefix}/apps`);
+      const card = page.locator(
+        '[role="listitem"][data-app-slug="imessage-photon"]',
+      );
+      await expect(card).toBeVisible();
+      await card
+        .getByRole("button", { name: "Connect iMessage Photon" })
+        .click();
+      await selectMaya(page);
+      await expectSetupRail(page);
+      await expect(
+        page.getByRole("heading", { name: "Connect iMessage Photon" }),
+      ).toBeVisible();
+      await page.getByLabel("Project ID").fill("project-e2e");
+      await page.getByLabel("Project secret").fill("photon-test-secret");
+      await expect(page.getByLabel("Project secret")).toHaveAttribute(
+        "type",
+        "password",
+      );
+      await page
+        .getByRole("button", { name: "Find dedicated numbers" })
+        .click();
+      await expect(
+        page.getByRole("button", { name: "Connect selected number" }),
+      ).toBeDisabled();
+      await page
+        .getByRole("radio", { name: "+15555550100", exact: true })
+        .focus();
+      await page.keyboard.press("Space");
+      await page
+        .getByRole("button", { name: "Connect selected number" })
+        .click();
+      expect(mock.configuredCredentialKeys).toEqual(["projectSecret"]);
+      await expect(
+        page.getByRole("heading", { name: "Try Maya in iMessage Photon" }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Copy +15555550100" }),
+      ).toBeVisible();
+      await expect(
+        page.getByText("Link your Messages identity", { exact: true }),
+      ).toBeVisible();
+      await page
+        .getByRole("button", { name: "I've sent the test message" })
+        .click();
+      await page.getByRole("tab", { name: "Settings" }).click();
+      await expect(
+        page.getByText(/replies are visible to everyone in that group/),
+      ).toBeVisible();
+      const group = page.getByRole("switch", { name: "Enable Family project" });
+      await expect(group).not.toBeChecked();
+      await group.click();
+      await expect(group).toBeChecked();
+      await page.setViewportSize({ width: 390, height: 844 });
+      await page
+        .getByRole("combobox", { name: "Page section" })
+        .selectOption("activity");
+      await expect(
+        page.getByRole("button", { name: "Pause", exact: true }),
+      ).toBeVisible();
+      await page.screenshot({
+        path: testInfo.outputPath(`photon-${theme}-mobile.png`),
+        fullPage: true,
+      });
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+      ).toBe(true);
+      await page.getByRole("button", { name: "Pause", exact: true }).click();
+      await expect(
+        page.getByRole("button", { name: "Resume", exact: true }),
+      ).toBeVisible();
+      await page.getByRole("button", { name: "Resume", exact: true }).click();
+      await expect(
+        page.getByRole("button", { name: "Pause", exact: true }),
+      ).toBeVisible();
+    });
   }
 });
