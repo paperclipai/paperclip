@@ -2173,8 +2173,8 @@ export function DesignGuide() {
       <Section title="Execution recovery">
         <p className="text-sm text-muted-foreground">
           Recovery runs in the background. Task lists keep their ordinary status without
-          execution badges. The transcript may briefly say Reconnecting, then resumes its
-          normal presentation. Recovery decisions and attempts belong in the run log;
+          execution badges. Active transcript headers keep saying Working during automatic
+          recovery. Recovery decisions and attempts belong in the run log;
           there is no execution status card or reconciliation form.
         </p>
       </Section>

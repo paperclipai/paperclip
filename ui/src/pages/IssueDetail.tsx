@@ -1462,8 +1462,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   });
   const resolvedActiveRun = useMemo(
     () =>
-      resolveIssueActiveRun({ status: issueStatus, executionRunId }, activeRun),
-    [activeRun, executionRunId, issueStatus],
+      resolveIssueActiveRun({ status: issueStatus, executionRunId }, activeRun, liveRuns),
+    [activeRun, executionRunId, issueStatus, liveRuns],
   );
   const assigneeUsesPaperclipRunner = Boolean(
     issueAssigneeAgentId &&

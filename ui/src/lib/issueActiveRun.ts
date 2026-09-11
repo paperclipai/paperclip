@@ -1,5 +1,5 @@
 import type { Issue } from "@paperclipai/shared";
-import type { ActiveRunForIssue } from "../api/heartbeats";
+import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 
 export function shouldTrackIssueActiveRun(
   issue: Pick<Issue, "status" | "executionRunId"> | null | undefined,
@@ -10,6 +10,10 @@ export function shouldTrackIssueActiveRun(
 export function resolveIssueActiveRun(
   issue: Pick<Issue, "status" | "executionRunId"> | null | undefined,
   activeRun: ActiveRunForIssue | null | undefined,
+  liveRuns?: readonly LiveRunForIssue[],
 ): ActiveRunForIssue | null {
-  return shouldTrackIssueActiveRun(issue) ? (activeRun ?? null) : null;
+  if (!shouldTrackIssueActiveRun(issue) || !activeRun) return null;
+  // The active-run query stops polling while the live-run list is populated.
+  // Keep its selected identity, but use the refreshed snapshot for that run.
+  return liveRuns?.find((run) => run.id === activeRun.id) ?? activeRun;
 }

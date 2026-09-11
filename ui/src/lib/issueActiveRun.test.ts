@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Issue } from "@paperclipai/shared";
-import type { ActiveRunForIssue } from "../api/heartbeats";
+import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "./issueActiveRun";
 
 describe("issueActiveRun", () => {
@@ -10,6 +10,27 @@ describe("issueActiveRun", () => {
     status: "todo",
     executionRunId: null,
     ...overrides,
+  });
+
+  it("refreshes the selected run from the polled list after startup confirmation", () => {
+    const issue = makeIssue({ status: "in_progress", executionRunId: "run-1" });
+    const initialRun = {
+      id: "run-1",
+      status: "running",
+      execution: { phase: "reconnecting", label: "Confirming execution" },
+    } as ActiveRunForIssue;
+    const refreshedRun = {
+      ...initialRun,
+      execution: { phase: "working", label: "Working" },
+      currentToolName: "Read file",
+    } as LiveRunForIssue;
+    const otherRun = { ...refreshedRun, id: "run-2" };
+
+    expect(resolveIssueActiveRun(issue, initialRun)).toBe(initialRun);
+    expect(resolveIssueActiveRun(issue, initialRun, [otherRun, refreshedRun])).toBe(refreshedRun);
+    expect(resolveIssueActiveRun(issue, initialRun, [otherRun])).toBe(initialRun);
+    expect(resolveIssueActiveRun(issue, null, [refreshedRun])).toBeNull();
+    expect(resolveIssueActiveRun(makeIssue({ status: "done" }), initialRun, [refreshedRun])).toBeNull();
   });
 
   it("tracks active runs while an issue is still in progress", () => {
