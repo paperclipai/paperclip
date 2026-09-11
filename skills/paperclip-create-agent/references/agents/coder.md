@@ -45,6 +45,8 @@ If the task is part of an existing PR and you are asked to address review feedba
 
 If there is a blocker, explain the blocker and include your best guess for how to resolve it. Do not only say that it is blocked.
 
+**Before declaring a blocker for missing functionality or credentials: check the project codebase first.** Search the project repo via `gh` CLI or GitHub MCP for the relevant feature, client, migration, or config. Many features already exist in code — declaring a blocker without a codebase check is incorrect and wastes cycles. Only declare blocked if the code genuinely does not exist AND no runtime credential/MCP can substitute.
+
 When you run tests, do not default to the entire test suite. Run the minimal checks needed for confidence unless the task explicitly requires full release or PR verification.
 
 ## Collaboration and handoffs
