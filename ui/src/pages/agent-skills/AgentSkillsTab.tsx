@@ -251,7 +251,7 @@ export function AgentSkillsTab({ agent, companyId }: { agent: Agent; companyId?:
         description: skill.description,
         categories: skill.categories,
       })),
-    [companySkills],
+    [companySkills, skillSnapshot],
   );
 
   // Adapter-detected, user-installed / unmanaged skills → read-only rows.
