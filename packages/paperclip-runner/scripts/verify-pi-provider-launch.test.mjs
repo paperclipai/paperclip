@@ -7,7 +7,7 @@ import {join,basename,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 const verifier=fileURLToPath(new URL('./verify-pi-provider-launch.mjs',import.meta.url));
-for(const ignoreTerm of [false,true]) test('Pi qualification waits for process closure before removing HOME (ignore SIGTERM='+ignoreTerm+')',async(t)=>{
+for(const {ignoreTerm, suppressClose} of [{ignoreTerm:false,suppressClose:false},{ignoreTerm:true,suppressClose:false},{ignoreTerm:false,suppressClose:true}]) test('Pi qualification cleans HOME after bounded shutdown (ignore SIGTERM='+ignoreTerm+', suppress close='+suppressClose+')',async(t)=>{
  if(process.platform==='win32'){t.skip('The image verifier uses POSIX process groups');return;}
  const root=await mkdtemp(join(tmpdir(),'pi-qualification-cleanup-test-'));
  try{
@@ -24,6 +24,10 @@ export async function verifyQualifiedAcpxInstallation(){return {openCommand:asyn
  return {spawn:(_args,options)=>{
    child=spawn(${JSON.stringify(process.execPath)},[${JSON.stringify(join(root,'provider.mjs'))}],{...options,stdio:['pipe','pipe','pipe']});
    child.once('close',()=>{closed=true;});
+   if (${suppressClose}) {
+     const once=child.once.bind(child);
+     child.once=(event,listener)=>event==='close'?child:once(event,listener);
+   }
    return child;
  },close:async()=>{assert(closed,'lease was closed before the provider completed its shutdown writes');await writeFile(${JSON.stringify(join(root,'lease-closed'))},String(child.signalCode??child.exitCode));}};
 }};}
@@ -38,7 +42,9 @@ process.on('SIGTERM',()=>{if(${ignoreTerm})return;setTimeout(()=>{fs.mkdirSync(p
   let stdout='',stderr='';child.stdout.on('data',b=>stdout+=b);child.stderr.on('data',b=>stderr+=b);
   const timer=setTimeout(()=>child.kill('SIGKILL'),15000);
   let code;try{code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});}finally{clearTimeout(timer);}
-  assert.equal(code,0,stderr);assert.match(stdout,/Verified Pi ACP/);
+  if(suppressClose){assert.notEqual(code,0);assert.match(stderr,/Pi qualification process did not close after SIGKILL/);}
+  else assert.equal(code,0,stderr);
+  assert.match(stdout,/Verified Pi ACP/);
   if(!ignoreTerm)assert.equal(await readFile(join(root,'shutdown-finished'),'utf8'),'finished');
   assert.equal(await readFile(join(root,'lease-closed'),'utf8'),ignoreTerm?'SIGKILL':'0');
   const home=await readFile(join(root,'home-path'),'utf8');await assert.rejects(readFile(join(home,'.pi','last-write')), {code:'ENOENT'});
