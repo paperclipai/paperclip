@@ -2454,6 +2454,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ],
   );
 
+  const renderBrief = useCallback(
+    () => issueBrief ? <TaskChatDescriptionBubble brief={issueBrief} /> : null,
+    [issueBrief],
+  );
+
   const assignedAgentForNotice = useMemo(() => {
     if (!currentAssigneeValue?.startsWith("agent:")) return null;
     const assigneeAgentId = currentAssigneeValue.slice("agent:".length);
@@ -2707,11 +2712,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                     attachments={attachments}
                     header={threadHeaderWithBlockers}
                     renderInteraction={renderInteraction}
-                    renderBrief={
-                      issueBrief
-                        ? () => <TaskChatDescriptionBubble brief={issueBrief} />
-                        : undefined
-                    }
+                    renderBrief={renderBrief}
                     renderMessageActions={renderMessageActions}
                     renderQueuedAction={renderQueuedAction}
                     onTryAgainNoLiveExecutionPath={
