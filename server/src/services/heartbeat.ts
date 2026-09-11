@@ -49,6 +49,7 @@ import {
   asc,
   desc,
   eq,
+  exists,
   getTableColumns,
   gt,
   gte,
@@ -10017,22 +10018,23 @@ export function heartbeatService(
 
   async function resumeExecutionWaitComments() {
     if ((await getSchedulingSuppression()).suppressed) return;
-    const waits = await db.select({ wake: agentWakeupRequests, evidence: issueRecoveryActions.evidence })
+    const waits = await db.select({ wake: agentWakeupRequests })
       .from(agentWakeupRequests)
       .innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
         sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
         eq(issues.assigneeAgentId, agentWakeupRequests.agentId)))
       .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
-      .innerJoin(issueRecoveryActions, and(eq(issueRecoveryActions.companyId, issues.companyId),
-        eq(issueRecoveryActions.sourceIssueId, issues.id), executionBlockerPredicate()))
-      .where(and(eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      .where(and(exists(db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+        eq(issueRecoveryActions.companyId, issues.companyId), eq(issueRecoveryActions.sourceIssueId, issues.id),
+        executionBlockerPredicate(),
+      ))), eq(agentWakeupRequests.status, "deferred_issue_execution"),
         eq(agentWakeupRequests.requestedByActorType, "user"),
         sql`${agentWakeupRequests.payload}->'executionWait' is not null`,
         lte(agentWakeupRequests.updatedAt, new Date(Date.now() - 30_000)),
         notInArray(issues.status, ["done", "cancelled"])))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
     const seen = new Set<string>();
-    for (const { wake, evidence } of waits) {
+    for (const { wake } of waits) {
       const issueId = String(wake.payload?.issueId);
       if (seen.has(issueId)) continue;
       seen.add(issueId);
@@ -10044,7 +10046,10 @@ export function heartbeatService(
         lte(agentWakeupRequests.updatedAt, new Date(Date.now() - 30_000)),
       )).returning({ id: agentWakeupRequests.id });
       if (!claimed) continue;
-      const sourceId = readNonEmptyString(evidence.runId ?? evidence.sourceRunId);
+      // Match normal admission's deterministic current blocker selection. An
+      // arbitrary historical action must not choose the retry's source run.
+      const blocker = await getExecutionBlocker(db, wake.companyId, issueId);
+      const sourceId = blocker?.runId;
       if (!sourceId || !isUuidLike(sourceId)) continue;
       const run = await getRun(sourceId);
       if (!run || run.companyId !== wake.companyId || run.agentId !== wake.agentId) continue;
