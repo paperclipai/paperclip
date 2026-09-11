@@ -271,6 +271,7 @@ export type AdapterSkillState =
   | "configured"
   | "installed"
   | "missing"
+  | "shared_unlinked"
   | "stale"
   | "external";
 
