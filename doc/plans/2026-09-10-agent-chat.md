@@ -107,3 +107,39 @@ passed (46 tests). Repository typecheck, build, Storybook build, and token gates
 passed. Paid Codex and Claude smoke attempts failed credential preflight because
 `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` were unavailable; the 24-cell matrix is
 registered but has no claimed paid passing coverage from this run.
+
+
+### 2026-09-11: Paid runner regression fixes
+
+The first GitHub campaign exercised all 24 cells and exposed provider-session,
+queue/lifecycle, plan-review, and shared-feed issues. Follow-up work uses focused
+provider-free regressions first, then individual paid cells on disposable
+instances; the running demo remains untouched.
+
+Claude session serialization now retains its MCP server identity. Conversation
+containers ignore dependency and child-completion wakes, while pending questions
+and plan reviews count as durable replies and settle the conversation to waiting.
+Rejected plan feedback is included in both full and resumed prompt assembly;
+acceptance resolves the implicit current-task target and hands off the selected
+plan revision before execution begins.
+
+Native provider handling preserves FIFO events and terminal schema, projects
+committed normal replies into chat, and verifies ownership when a restored ACPX
+session lazily launches its provider during model selection. Linux Codex preflight
+uses an exact executable AppArmor profile and a provider-free sandbox probe. The
+focused GitHub campaign `34638268637` passed native Codex continuity/restart and
+fresh-session reset on both selected cells.
+
+The shared project card hydrates repository links from the authorized project
+record while retaining its original durable creation receipt. Regression coverage
+checks a second repository arriving after creation, reload, and `/new`. Handoff
+fixtures check committed repository workspaces and actual output documents rather
+than assuming URL registration adds an entry to the external connection catalog
+or requiring an unspecified output document key. Failure classification avoids
+paid retries for explicit non-retryable provider-session failures.
+
+All 20 deterministic chat browser scenarios and Storybook build passed after
+these fixes. Focused live checks additionally passed legacy Codex project reuse
+and repository handoff, legacy Claude plan revision/acceptance/handoff, and native
+Claude planning, Stop/reset/resume, fresh sessions, and multiple repositories.
+Final campaign results and broad verification are recorded below when complete.

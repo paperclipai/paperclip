@@ -309,6 +309,12 @@ artifacts. Each cell name links to its exact section in the campaign report.
 The public campaign links become available after the history publisher
 finishes. The artifact links remain available for 30 days.
 
+For a development branch that adds a suite, the trusted default-branch dashboard
+may not yet include that suite's interactive cards. Its published `summary.md`
+and `normalized-results.json` still contain every selected cell. Use those files,
+the GitHub job summary, or `html/index.html` in the merged Playwright artifact
+to inspect branch-only results; an absent dashboard card is not passing coverage.
+
 ### Iterate on a published dashboard without rerunning paid tests
 
 Download and extract the `github-pages` artifact from an existing workflow run,
