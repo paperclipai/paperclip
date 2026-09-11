@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronLeft,
@@ -24,6 +24,7 @@ import {
   useTaskChatComposerTakeoverActions,
 } from "./TaskChatComposerTakeoverContext";
 import { TaskChatRichInput } from "./TaskChatRichInput";
+import { parseCssTimeMs } from "./motion-tokens";
 import { matchSafeQuestionValidationPattern } from "./question-validation-pattern";
 
 type Question = PaperclipQuestionSet["questions"][number];
@@ -108,6 +109,7 @@ function SelectOption({
   recommended,
   selected,
   multiple,
+  confirming = false,
   disabled,
   onClick,
 }: {
@@ -117,6 +119,7 @@ function SelectOption({
   recommended?: boolean;
   selected: boolean;
   multiple: boolean;
+  confirming?: boolean;
   disabled: boolean;
   onClick: () => void;
 }) {
@@ -128,9 +131,9 @@ function SelectOption({
       aria-checked={selected}
       disabled={disabled}
       className={cn(
-        "flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60",
+        "tc-question-option flex w-full items-start gap-2 rounded-md px-2.5 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60",
         selected
-          ? "bg-muted/80"
+          ? "bg-foreground/5"
           : recommended
             ? "bg-muted/50"
             : "hover:bg-muted/40",
@@ -144,6 +147,7 @@ function SelectOption({
         className={cn(
           "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center border",
           multiple ? "rounded-sm" : "rounded-full",
+          confirming && "tc-question-choice-confirm",
           selected
             ? "border-primary bg-primary text-primary-foreground"
             : "border-muted-foreground/50",
@@ -264,6 +268,21 @@ export function QuestionForm({
   const [working, setWorking] = useState<"submit" | "cancel" | null>(null);
   const [inputUploading, setInputUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingAdvance, setPendingAdvance] = useState<{
+    page: number;
+    questionId: string;
+    optionId: string;
+  } | null>(null);
+  const promptRef = useRef<HTMLParagraphElement>(null);
+  const previousPage = useRef(page);
+
+  useEffect(() => {
+    if (previousPage.current !== page) {
+      promptRef.current?.focus();
+      previousPage.current = page;
+    }
+  }, [page]);
+
   const [filters, setFilters] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -277,6 +296,38 @@ export function QuestionForm({
   }, [answers, customActive, draftKey, page]);
 
   const question = questionSet.questions[page];
+  useEffect(() => {
+    if (!pendingAdvance) return;
+    if (
+      disabled ||
+      working ||
+      inputUploading ||
+      pendingAdvance.page !== page ||
+      pendingAdvance.questionId !== question?.id ||
+      page >= questionSet.questions.length - 1
+    ) {
+      setPendingAdvance(null);
+      return;
+    }
+    const duration = getComputedStyle(document.documentElement)
+      .getPropertyValue("--motion-question-confirm")
+      .trim();
+    const durationMs = parseCssTimeMs(duration) || 0;
+    const advance = () => {
+      setPendingAdvance(null);
+      setPage(page + 1);
+    };
+    // With reduced motion (or without CSS), no visual hold is needed.
+    if (durationMs <= 0) {
+      advance();
+      return;
+    }
+    const timer = window.setTimeout(advance, durationMs);
+    return () => window.clearTimeout(timer);
+  }, [
+    pendingAdvance, page, question?.id, questionSet.questions.length,
+    disabled, working, inputUploading,
+  ]);
   const validationErrors = useMemo(
     () =>
       Object.fromEntries(
@@ -316,6 +367,7 @@ export function QuestionForm({
   }
 
   function toggleOption(optionId: string) {
+    if (disabled || working || inputUploading) return;
     const optionIds = multiple
       ? selected.includes(optionId)
         ? selected.filter((candidate) => candidate !== optionId)
@@ -326,14 +378,20 @@ export function QuestionForm({
       selectedOptionIds: optionIds,
       ...(!multiple ? { customText: undefined } : {}),
     };
-    // Picking only selects. Next / Submit answers moves on or sends, so a
-    // click can never start work by itself.
     setAnswers({ ...answers, [question.id]: nextAnswer });
-    if (!multiple)
+    if (!multiple) {
       setCustomActive((current) => ({ ...current, [question.id]: false }));
+      // Briefly confirm the selected choice before moving on. The last page needs an
+      // explicit submit, and custom answers stay open for typing.
+      if (page < questionSet.questions.length - 1) {
+        setError(null);
+        setPendingAdvance({ page, questionId: question.id, optionId });
+      }
+    }
   }
 
   function toggleCustom() {
+    setPendingAdvance(null);
     const active = !isCustomActive;
     setCustomActive((current) => ({ ...current, [question.id]: active }));
     updateAnswer({
@@ -461,10 +519,13 @@ export function QuestionForm({
   }
   return (
     <div
+      key={question.id}
+      className="tc-question-page"
       onKeyDown={(event) => {
         if (
           disabled ||
           working ||
+          event.repeat ||
           question.answerMode === "text" ||
           event.metaKey ||
           event.ctrlKey ||
@@ -508,6 +569,8 @@ export function QuestionForm({
           </p>
         ) : null}
         <p
+          ref={promptRef}
+          tabIndex={-1}
           id={`${id}-${question.id}-prompt`}
           className="text-sm font-medium leading-5 text-foreground"
         >
@@ -572,6 +635,7 @@ export function QuestionForm({
               description={option.description}
               recommended={option.recommended}
               selected={selected.includes(option.id)}
+              confirming={pendingAdvance?.questionId === question.id && pendingAdvance.optionId === option.id}
               multiple={multiple}
               disabled={disabled || working != null}
               onClick={() => toggleOption(option.id)}

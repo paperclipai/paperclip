@@ -1,4 +1,9 @@
+import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
+import { remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
+import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
+import { CONVERSATION_CONTINUATION_POLICY, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
+import { recordExecutionWait } from "./execution-wait.js";
 import {
   legacyExecutionNeedsReconciliation,
   terminalizeLegacyExecution,
@@ -499,7 +504,6 @@ import {
   REVIEW_PATH_RECOVERY_INSTRUCTION,
   reviewPathConsumedRefFromRun,
 } from "./recovery/review-path-recovery.js";
-import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
@@ -9424,7 +9428,18 @@ export function heartbeatService(
   // issue's activity entry.
   async function applyWakeQueuePostCommitEffects(effects: WakeQueuePostCommitEffect[]) {
     for (const effect of effects) {
-      if (effect.kind === "run_queued") {
+      if (effect.kind === "conversation_retry_requested") {
+        const [source] = await db.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, effect.companyId), eq(heartbeatRuns.id, effect.runId),
+        ));
+        const agent = source ? await getAgent(source.agentId) : null;
+        if (source && agent && agent.companyId === source.companyId) {
+          await scheduleBoundedRetryForRun(source, agent, effect.reviewParticipant ? {
+            retryReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON,
+            wakeReason: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON,
+          } : undefined);
+        }
+      } else if (effect.kind === "run_queued") {
         publishLiveEvent({
           companyId: effect.run.companyId,
           type: "heartbeat.run.queued",
@@ -9716,7 +9731,6 @@ export function heartbeatService(
     return interaction.id;
   }
 
-  const productivityReviews = productivityReviewService(db, { enqueueWakeup });
   const taskWatchdogs = taskWatchdogService(db, { enqueueWakeup });
   let unsafeTextProjectionPromise: Promise<boolean> | null = null;
 
@@ -9862,7 +9876,19 @@ export function heartbeatService(
         );
         return { closed: 0, busy: 0, failed: 1 };
       });
-      if (closeResult.busy > 0 || closeResult.failed > 0) {
+      // A failed remote checkpoint cannot veto destruction of the isolated
+      // sandbox after the run stopped. Provider destruction supplies the exit
+      // proof; it does not turn the interrupted checkpoint into a success.
+      const remoteLeases = closeResult.failed > 0 && leaseOwnerRun &&
+          ["cancelled", "failed", "timed_out", "interrupted"].includes(leaseOwnerRun.status)
+        ? await db.select({ provider: environmentLeases.provider }).from(environmentLeases).where(and(
+            eq(environmentLeases.companyId, input.companyId),
+            eq(environmentLeases.heartbeatRunId, input.runId),
+          ))
+        : [];
+      const canDestroyRemote = remoteLeases.length > 0 &&
+        remoteLeases.every(lease => lease.provider && lease.provider !== "local");
+      if (closeResult.busy > 0 || (closeResult.failed > 0 && !canDestroyRemote)) {
         logger.warn(
           { runId: input.runId, warmNativeSessions: closeResult },
           "deferred environment lease destruction until warm native sessions close",
@@ -9896,6 +9922,76 @@ export function heartbeatService(
         },
         "failed to release environment lease for heartbeat run",
       );
+    }
+    await acknowledgeRemoteStop(input.runId, input.companyId);
+  }
+
+  async function acknowledgeRemoteStop(runId: string, companyId: string) {
+    // The provider receipt arrives after adapter settlement. A remote ACP child
+    // has no host PID, so only this target-aware boundary can acknowledge Stop.
+    const stopped = await getRun(runId);
+    if (stopped?.runtimeMode === "native") {
+      const scopes = await stoppedRemoteCleanupScopes(db, companyId, runId);
+      for (const remoteCleanupScope of scopes ?? []) {
+        completeTerminatedRemoteNativeSessionCleanup({ companyId, runId, remoteCleanupScope });
+      }
+    }
+    if (stopped?.runtimeMode === "legacy" && stopped.status === "cancelled" &&
+        parseObject(stopped.resultJson?.executionCancellation).state === "requested" &&
+        await runUsedConversationAdapter(db, stopped) &&
+        await remoteExecutionHasStopped(db, companyId, runId)) {
+      await db.update(heartbeatRuns).set({
+        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
+          executionCancellation: { ...parseObject(stopped.resultJson?.executionCancellation),
+            state: "acknowledged", acknowledgedAt: new Date().toISOString(),
+            proof: "provider_termination_receipt" },
+          conversationContinuation: CONVERSATION_CONTINUATION_POLICY,
+        })}::jsonb`,
+        updatedAt: new Date(),
+      }).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "cancelled")));
+    }
+  }
+
+  async function resumeRemoteStopComments(run: typeof heartbeatRuns.$inferSelect) {
+    if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id) ||
+        !(await remoteExecutionHasStopped(db, run.companyId, run.id))) return;
+    const issueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
+    if (!issueId) return;
+    const legacyContinuation = run.runtimeMode === "legacy" && run.status === "cancelled" &&
+      hasConversationContinuationPolicy((await getRun(run.id))?.resultJson) &&
+      !(await getExecutionBlocker(db, run.companyId, issueId));
+    if (run.runtimeMode !== "native" && !legacyContinuation) return;
+    const pending = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
+      eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      eq(agentWakeupRequests.requestedByActorType, "user"),
+      sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+    )).orderBy(asc(agentWakeupRequests.requestedAt));
+    for (const wake of pending) {
+      const payload = parseObject(wake.payload);
+      const context = parseObject(payload[DEFERRED_WAKE_CONTEXT_KEY]);
+      const commentId = deriveCommentId(context, payload);
+      if (legacyContinuation) {
+        if (!commentId || !run.finishedAt || !wake.requestedByActorId ||
+            !["issue_commented", "issue_reopened_via_comment"].includes(wake.reason ?? "")) continue;
+        const [comment] = await db.select().from(issueComments).where(and(
+          eq(issueComments.companyId, run.companyId), eq(issueComments.issueId, issueId),
+          sql`${issueComments.id}::text = ${commentId}`, eq(issueComments.authorType, "user"),
+          eq(issueComments.authorUserId, wake.requestedByActorId), isNull(issueComments.deletedAt),
+          isNull(issueComments.createdByRunId), gt(issueComments.createdAt, run.finishedAt),
+        ));
+        if (!comment?.body.trim()) continue;
+      } else if (!await admitExplicitNativeContinuation({ db, companyId: run.companyId, issueId,
+        agentId: run.agentId, actorType: wake.requestedByActorType, actorId: wake.requestedByActorId,
+        reason: wake.reason, commentId, successorRunId: randomUUID(), dryRun: true })) continue;
+      // Re-enter ordinary admission with the original user's authority. It
+      // atomically adopts the deferred comments and still applies every gate.
+      await enqueueWakeup(run.agentId, { source: wake.source as WakeupOptions["source"], triggerDetail: (wake.triggerDetail ?? undefined) as WakeupOptions["triggerDetail"],
+        reason: wake.reason, payload, contextSnapshot: context,
+        requestedByActorType: "user", requestedByActorId: wake.requestedByActorId,
+        idempotencyKey: `remote-stop-comment:${run.id}:${wake.id}` });
+      break;
     }
   }
 
@@ -12502,29 +12598,6 @@ export function heartbeatService(
             projectId: issue.projectId,
           })
         : null;
-    if (issue) {
-      const productivityHold =
-        await productivityReviews.isProductivityReviewContinuationHoldActive({
-          companyId: issue.companyId,
-          issueId: issue.id,
-          agentId: run.agentId,
-        });
-      if (productivityHold.held) {
-        await setRunStatus(run.id, run.status, {
-          livenessReason: `${run.livenessReason ?? "Run ended without concrete progress"}; continuation held by productivity review ${productivityHold.reviewIdentifier ?? productivityHold.reviewIssueId}`,
-        });
-        await productivityReviews.recordContinuationHold({
-          companyId: issue.companyId,
-          issueId: issue.id,
-          runId: run.id,
-          agentId: run.agentId,
-          reviewIssueId: productivityHold.reviewIssueId,
-          trigger: productivityHold.trigger,
-          reason: productivityHold.reason,
-        });
-        return;
-      }
-    }
 
     const nextAttempt = readContinuationAttempt(run.continuationAttempt) + 1;
     const idempotencyKey = issue
@@ -14476,7 +14549,7 @@ export function heartbeatService(
         restartSuspendedRunIds.push(run.id);
         continue;
       }
-      const message = `Interrupted by graceful server shutdown (${signal}); recovery requires verified provider continuity`;
+      const message = `Interrupted by graceful server shutdown (${signal})`;
       const running = runningProcesses.get(run.id);
       try {
         if (run.runtimeMode === "native") {
@@ -14514,6 +14587,7 @@ export function heartbeatService(
           errorCode: "server_shutdown_interrupted",
           signal,
           resultJson: mergeRunStopMetadataForAgent(agent, "interrupted", {
+            conversationContinuationEligible: await runUsedConversationAdapter(db, run),
             resultJson: persistedCancellationResult,
             errorCode: "server_shutdown_interrupted",
             errorMessage: message,
@@ -14736,6 +14810,7 @@ export function heartbeatService(
         : baseSchedule;
 
     const requiresIssueGate =
+      hasConversationContinuationPolicy(run.resultJson) ||
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
       retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON;
     if (requiresIssueGate) {
@@ -15183,6 +15258,8 @@ export function heartbeatService(
             status: "scheduled_retry",
             wakeupRequestId: wakeupRequest.id,
             contextSnapshot: retryContextSnapshot,
+            ...(hasConversationContinuationPolicy(run.resultJson)
+              ? { resultJson: { conversationContinuation: CONVERSATION_CONTINUATION_POLICY } } : {}),
             responsibleUserId,
             sessionIdBefore: sessionBefore,
             retryOfRunId: run.id,
@@ -15306,6 +15383,7 @@ export function heartbeatService(
             .update(issues)
             .set({
               executionRunId: scheduledRun.id,
+              checkoutRunId: sql`case when ${issues.checkoutRunId} = ${run.id} then null else ${issues.checkoutRunId} end`,
               executionAgentNameKey: normalizeAgentNameKey(agent.name),
               executionLockedAt: now,
               ...(detachWorkspaceFromIssue
@@ -17339,6 +17417,7 @@ export function heartbeatService(
     outcome: "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out",
     options?: {
       resultJson?: Record<string, unknown> | null;
+      conversationContinuationEligible?: boolean;
       errorCode?: string | null;
       errorMessage?: string | null;
     },
@@ -17350,10 +17429,17 @@ export function heartbeatService(
       errorCode: options?.errorCode ?? null,
       errorMessage: options?.errorMessage ?? null,
     });
-    return mergeHeartbeatRunStopMetadata(
+    const result = mergeHeartbeatRunStopMetadata(
       options?.resultJson ?? null,
       stopMetadata,
     );
+    const cancellationAcknowledged =
+      parseObject(result?.executionCancellation).state === "acknowledged";
+    return options?.conversationContinuationEligible !== false && outcome !== "succeeded" &&
+      (outcome !== "cancelled" || cancellationAcknowledged) &&
+      isConversationAdapter(agent.adapterType)
+      ? { ...result, conversationContinuation: CONVERSATION_CONTINUATION_POLICY }
+      : result;
   }
 
   function countValue(value: unknown) {
@@ -17816,15 +17902,16 @@ export function heartbeatService(
       try {
         if (useRecordedTeardown) {
           // Tear the sandbox down from the recorded provider config and the
-          // cleanup-authorized secret versions. The teardown returns no value
-          // and throws on failure, so the sweep releases the lease itself.
-          await environmentRuntime.retryPendingSandboxTeardown({
+          // cleanup-authorized secret versions. Preserve any provider receipt;
+          // a completed retry must grant the same evidence as initial cleanup.
+          const receipt = await environmentRuntime.retryPendingSandboxTeardown({
             environment,
             lease,
           });
           await environmentsSvc.releaseLease(lease.id, "expired", {
             cleanupStatus: "success",
             failureReason: "pending_cleanup_retry",
+            remoteExecutionTermination: remoteTerminationReceipt(lease, receipt),
           });
           destroyed += 1;
         } else if (environment) {
@@ -17860,6 +17947,15 @@ export function heartbeatService(
           },
           "pending_cleanup lease retry failed",
         );
+      }
+      if (lease.heartbeatRunId) {
+        // Delivery failure must not revert successful provider cleanup. A new
+        // message can still use the persisted receipt on its next admission.
+        await (async () => {
+          await acknowledgeRemoteStop(lease.heartbeatRunId!, lease.companyId);
+          const run = await getRun(lease.heartbeatRunId!);
+          if (run) await resumeRemoteStopComments(run);
+        })().catch(() => logger.warn({ leaseId: lease.id }, "could not reconsider messages after cleanup retry"));
       }
     }
 
@@ -18372,6 +18468,7 @@ export function heartbeatService(
           (!!run.processPid || !!run.processGroupId)) ||
           monitorDispatchLostWithoutFutureWake);
       const baseMessage = buildProcessLossMessage(run);
+      const conversationContinuationEligible = await runUsedConversationAdapter(db, run);
 
       const failureWrite = await setRunStatusFromLive(
         run.id,
@@ -18386,6 +18483,7 @@ export function heartbeatService(
               { adapterType, adapterConfig },
               "failed",
               {
+                conversationContinuationEligible,
                 resultJson: parseObject(run.resultJson),
                 errorCode: "process_lost",
                 errorMessage: shouldRetry
@@ -18715,16 +18813,6 @@ export function heartbeatService(
     companyId?: string;
   }) {
     return recovery.scanSilentActiveRuns({
-      ...opts,
-      issueCreatedAtGte: await getWorktreeExecutionCutoff(),
-    });
-  }
-
-  async function reconcileProductivityReviews(opts?: {
-    now?: Date;
-    companyId?: string;
-  }) {
-    return productivityReviews.reconcileProductivityReviews({
       ...opts,
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
     });
@@ -24818,6 +24906,9 @@ export function heartbeatService(
         !nativeWorkspaceFinalizeScheduled &&
         !shutdownInProgress
       ) {
+        if (latestRun) await resumeRemoteStopComments(latestRun).catch(err => {
+          logger.warn({ err, runId: run.id }, "failed to resume user messages after remote Stop");
+        });
         await startNextQueuedRunForAgent(run.agentId);
       }
     }
@@ -24962,11 +25053,21 @@ export function heartbeatService(
         "agent_debug_setting";
     }
 
+    // Automatic signals are replaceable; user input and interaction delivery
+    // retain distinct durable receipts even when the same gate blocks them.
+    const coalesceExecutionWait =
+      opts.requestedByActorType === "system" &&
+      !durableRequest &&
+      !wakeCommentId &&
+      queuedCommentIdsFromRunContext(enrichedContextSnapshot).length === 0 &&
+      !isInteractionResolutionWakePayload(payload ?? {}) &&
+      !hasInteractionContinuationWakeContext(enrichedContextSnapshot);
     const writeSkippedRequest = async (
       skipReason: string,
       patch: Partial<typeof agentWakeupRequests.$inferInsert> = {},
+      waitCondition?: Record<string, unknown>,
     ) => {
-      await db.insert(agentWakeupRequests).values({
+      const request = {
         ...durableReceiptFields,
         companyId: agent.companyId,
         agentId,
@@ -24980,7 +25081,18 @@ export function heartbeatService(
         idempotencyKey: opts.idempotencyKey ?? null,
         finishedAt: new Date(),
         ...patch,
-      });
+      };
+      if (waitCondition && issueId && isUuidLike(issueId)) {
+        const waitIssueId = issueId;
+        return db.transaction(async (tx) => {
+          await tx.execute(sql`select id from issues where id = ${waitIssueId} and company_id = ${agent.companyId} for update`);
+          return recordExecutionWait(tx as unknown as Db, {
+            issueId: waitIssueId, request, condition: waitCondition, coalesce: coalesceExecutionWait,
+          });
+        });
+      }
+      await db.insert(agentWakeupRequests).values(request);
+      return { created: true };
     };
     const writeSkippedHeartbeatRequest = async (
       skipReason: string,
@@ -25020,7 +25132,7 @@ export function heartbeatService(
       }
       await writeSkippedRequest("company.inactive", {
         error: `Wake suppressed because company status is ${companyStatus}`,
-      });
+      }, { companyStatus });
       return null;
     }
 
@@ -25189,7 +25301,9 @@ export function heartbeatService(
       },
     );
     if (budgetBlock) {
-      await writeSkippedRequest("budget.blocked");
+      await writeSkippedRequest("budget.blocked", { error: budgetBlock.reason }, {
+        scopeType: budgetBlock.scopeType, scopeId: budgetBlock.scopeId,
+      });
       throw conflict(budgetBlock.reason, {
         scopeType: budgetBlock.scopeType,
         scopeId: budgetBlock.scopeId,
@@ -25201,7 +25315,7 @@ export function heartbeatService(
       if (opts.requestedByActorType !== "user") {
         await writeSkippedRequest("agent.not_invokable", {
           error: invokability.message,
-        });
+        }, { status: agent.status, reason: invokability.reason });
       }
       throw conflict(invokability.message, {
         status: agent.status,
@@ -25214,11 +25328,11 @@ export function heartbeatService(
     const policy = parseHeartbeatPolicy(agent);
 
     if (source === "timer" && !policy.enabled) {
-      await writeSkippedRequest("heartbeat.disabled");
+      await writeSkippedRequest("heartbeat.disabled", {}, { enabled: false });
       return null;
     }
     if (source !== "timer" && !policy.wakeOnDemand) {
-      await writeSkippedRequest("heartbeat.wakeOnDemand.disabled");
+      await writeSkippedRequest("heartbeat.wakeOnDemand.disabled", {}, { wakeOnDemand: false });
       return null;
     }
 
@@ -25258,8 +25372,10 @@ export function heartbeatService(
           });
 
         if (!treeHoldInteractionWake) {
-          await writeSkippedRequest("issue_tree_hold_active");
-          await logActivity(db, {
+          const wait = await writeSkippedRequest("issue_tree_hold_active", {}, {
+            holdId: activePauseHold.holdId,
+          });
+          if (wait.created) await logActivity(db, {
             companyId: agent.companyId,
             actorType: "system",
             actorId: "system",
@@ -25612,6 +25728,58 @@ export function heartbeatService(
             reconciledSourceRunId = sourceRunId;
           }
 
+          const deferBlockedExecution = async (
+            executionBlocker: NonNullable<Awaited<ReturnType<typeof getExecutionBlocker>>>,
+          ) => {
+            const condition = { recoveryActionId: executionBlocker.recoveryActionId };
+            if (durableRequest || wakeCommentId || hasInteractionContinuationWakeContext(enrichedContextSnapshot)) {
+              await tx.insert(agentWakeupRequests).values({
+                ...durableReceiptFields,
+                companyId: agent.companyId, agentId, source, triggerDetail, reason,
+                payload: withQueuedCommentIdsInWakePayload({
+                  ...payload,
+                  issueId: issue.id,
+                  [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
+                  executionWait: condition,
+                }, [...new Set([
+                  ...queuedCommentIdsFromRunContext(enrichedContextSnapshot),
+                  ...(wakeCommentId ? [wakeCommentId] : []),
+                ])]),
+                status: "deferred_issue_execution",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+              });
+            } else {
+              await recordExecutionWait(tx as unknown as Db, {
+                issueId: issue.id, condition, coalesce: coalesceExecutionWait,
+                request: {
+                  ...durableReceiptFields,
+                  companyId: agent.companyId, agentId, source, triggerDetail,
+                  reason: "execution_reconciliation_required",
+                  error: executionBlocker.nextAction,
+                  payload,
+                  requestedByActorType: opts.requestedByActorType ?? null,
+                  requestedByActorId: opts.requestedByActorId ?? null,
+                  idempotencyKey: opts.idempotencyKey ?? null,
+                },
+              });
+            }
+            return { kind: "deferred" as const };
+          };
+          const explicitContinuationRunId = randomUUID();
+          const executionBlocker = await getExecutionBlocker(
+            tx as unknown as Db, issue.companyId, issue.id,
+          );
+          // Prove eligibility without retiring the hold. Later gates can still
+          // decline this wake; hold retirement and successor creation stay atomic.
+          if (executionBlocker && !(await admitExplicitNativeContinuation({
+            db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
+            agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
+            reason, commentId: wakeCommentId ?? null, successorRunId: explicitContinuationRunId,
+            dryRun: true,
+          }))) return deferBlockedExecution(executionBlocker);
+
           const issueStateGuard = opts.issueStateGuard;
           if (
             issueStateGuard &&
@@ -25959,24 +26127,29 @@ export function heartbeatService(
             !dependencyReadiness.isDependencyReady &&
             !blockedInteractionWake
           ) {
-            await tx.insert(agentWakeupRequests).values({
-              ...durableReceiptFields,
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason: "issue_dependencies_blocked",
-              payload: {
-                ...(payload ?? {}),
-                issueId,
-                unresolvedBlockerIssueIds:
-                  dependencyReadiness.unresolvedBlockerIssueIds,
+            await recordExecutionWait(tx as unknown as Db, {
+              issueId: issue.id,
+              coalesce: coalesceExecutionWait,
+              condition: { unresolvedBlockerIssueIds: [...dependencyReadiness.unresolvedBlockerIssueIds].sort() },
+              request: {
+                ...durableReceiptFields,
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_dependencies_blocked",
+                payload: {
+                  ...(payload ?? {}),
+                  issueId,
+                  unresolvedBlockerIssueIds:
+                    dependencyReadiness.unresolvedBlockerIssueIds,
+                },
+                status: "skipped",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                finishedAt: new Date(),
               },
-              status: "skipped",
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
-              finishedAt: new Date(),
             });
             return { kind: "skipped" as const };
           }
@@ -26364,6 +26537,18 @@ export function heartbeatService(
             return { kind: "skipped" as const };
           }
 
+          const explicitContinuation = await admitExplicitNativeContinuation({
+            db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
+            agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
+            reason, commentId: wakeCommentId ?? null, successorRunId: explicitContinuationRunId,
+          });
+          if (!explicitContinuation && executionBlocker) return deferBlockedExecution(executionBlocker);
+          if (explicitContinuation) {
+            enrichedContextSnapshot.forceFreshSession = true;
+            enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
+            enrichedContextSnapshot.explicitUserContinuation = explicitContinuation;
+          }
+
           const wakeupRequest = await tx
             .insert(agentWakeupRequests)
             .values({
@@ -26406,6 +26591,9 @@ export function heartbeatService(
             // Dedicated interaction wakes carry their own source and session
             // contract. ID-only adoption must not erase that continuation.
             return (
+              // Durable chat work must keep its receipt, actor, source, and
+              // session contract through normal promotion and authorization.
+              !wake.idempotencyKey?.startsWith("chat-inbound:") &&
               !isInteractionResolutionWakePayload(deferredPayload) &&
               !hasInteractionContinuationWakeContext(deferredContext) &&
               (deferredContext.wakeReason ?? wake.reason) === "issue_commented" &&
@@ -26423,6 +26611,7 @@ export function heartbeatService(
           const newRun = await tx
             .insert(heartbeatRuns)
             .values({
+              ...(explicitContinuation ? { id: explicitContinuationRunId } : {}),
               companyId: agent.companyId,
               agentId,
               invocationSource: source,
@@ -26439,7 +26628,7 @@ export function heartbeatService(
                     adoptedCommentIds,
                   )
                 : enrichedContextSnapshot,
-              sessionIdBefore: sessionBefore,
+              sessionIdBefore: explicitContinuation ? null : sessionBefore,
               continuationAttempt,
               ...(reconciledSourceRunId
                 ? { retryOfRunId: reconciledSourceRunId }
@@ -27932,14 +28121,13 @@ export function heartbeatService(
     terminalizeRunOnLeaseRelease,
 
     releaseEnvironmentLeasesForRun,
+    resumeRemoteStopComments,
 
     sweepStaleIssueLocks,
 
     reconcileResolvedDependencyWakes,
 
     scanSilentActiveRuns,
-
-    reconcileProductivityReviews,
 
     reconcileTaskWatchdogs,
 

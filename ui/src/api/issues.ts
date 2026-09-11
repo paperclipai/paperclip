@@ -96,6 +96,7 @@ export type IssueListFilters = {
   originKindPrefix?: string;
   originId?: string;
   descendantOf?: string;
+  createdFromIssueId?: string;
   includeRoutineExecutions?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
@@ -104,7 +105,8 @@ export type IssueListFilters = {
   q?: string;
   limit?: number;
   offset?: number;
-  sortField?: "updated";
+  sortField?: "updated" | "id";
+  afterId?: string;
   sortDir?: "asc" | "desc";
 };
 
@@ -135,6 +137,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
     params.set("originKindPrefix", filters.originKindPrefix);
   if (filters?.originId) params.set("originId", filters.originId);
   if (filters?.descendantOf) params.set("descendantOf", filters.descendantOf);
+  if (filters?.createdFromIssueId) params.set("createdFromIssueId", filters.createdFromIssueId);
   if (filters?.includeRoutineExecutions)
     params.set("includeRoutineExecutions", "true");
   if (filters?.includeBlockedBy) params.set("includeBlockedBy", "true");
@@ -151,10 +154,23 @@ function issueListSearchParams(filters?: IssueListFilters) {
     params.set("offset", String(filters.offset));
   if (filters?.sortField) params.set("sortField", filters.sortField);
   if (filters?.sortDir) params.set("sortDir", filters.sortDir);
+  if (filters?.afterId) params.set("afterId", filters.afterId);
   return params;
 }
 
 export const issuesApi = {
+  /** Fetch every page for bounded task-detail relations, not just the default first page. */
+  listAll: async (companyId: string, filters: Omit<IssueListFilters, "limit" | "offset" | "sortField" | "sortDir" | "afterId" | "attention">, options?: RequestOptions): Promise<Issue[]> => {
+    const pageSize = 500;
+    const tasks = new Map<string, Issue>();
+    let afterId: string | undefined;
+    for (;;) {
+      const page = await issuesApi.list(companyId, { ...filters, limit: pageSize, sortField: "id", sortDir: "asc", afterId }, options);
+      for (const task of page) tasks.set(task.id, task);
+      if (page.length < pageSize) return [...tasks.values()];
+      afterId = page[page.length - 1]!.id;
+    }
+  },
   list: (
     companyId: string,
     filters?: IssueListFilters,

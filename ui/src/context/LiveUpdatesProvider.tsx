@@ -1,3 +1,4 @@
+import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import {
   createContext,
   useCallback,
@@ -1261,6 +1262,10 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
+    if (action === "issue.tree_hold_created" || action === "issue.tree_hold_released" || action === "issue.updated") {
+      // An ancestor hold or reparenting changes descendants' effective pause.
+      queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state"] });
+    }
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.list(companyId),
     });
@@ -1787,6 +1792,8 @@ export const __liveUpdatesTestUtils = {
 };
 
 export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
+  const { visible } = usePageVisibility();
+  const wasHidden = useRef(!visible);
   const { selectedCompanyId, selectedCompany } = useCompany();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
@@ -1853,7 +1860,17 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   }, [currentUserId]);
 
   useEffect(() => {
+    if (!visible) {
+      wasHidden.current = true;
+      invalidationBatcher.dispose();
+      return;
+    }
     if (!canConnectSocket || !liveCompanyId) return;
+    if (wasHidden.current) {
+      wasHidden.current = false;
+      // Reconcile events missed while hidden, including completed runs/issues.
+      void queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false });
+    }
 
     let closed = false;
     let reconnectAttempt = 0;
@@ -1905,6 +1922,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       };
 
       nextSocket.onmessage = (message) => {
+        if (!getPageVisibility().visible) return;
         const raw = typeof message.data === "string" ? message.data : "";
         if (!raw) return;
 
@@ -1961,6 +1979,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       closeSocketQuietly(activeSocket, "provider_unmount");
     };
   }, [
+    visible,
+    invalidationBatcher,
+    queryClient,
     coalescingClient,
     liveCompanyId,
     pushToast,

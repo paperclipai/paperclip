@@ -448,8 +448,14 @@ it.each([
       expect(runnerPid).toBeGreaterThan(0);
       expect(providerPid).toBeGreaterThan(0);
       await bundle.detachControllerForRestart();
-      process.kill(-runnerPid, "SIGKILL");
-      process.kill(-providerPid, "SIGKILL");
+      // The provider can exit when its runner dies. An already-gone process
+      // group satisfies teardown; still fail on other signal errors and join below.
+      for (const pid of [runnerPid, providerPid]) {
+        try { process.kill(-pid, "SIGKILL"); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        }
+      }
       await vi.waitFor(() => {
         expect(dead(runnerPid)).toBe(true);
         expect(dead(providerPid)).toBe(true);

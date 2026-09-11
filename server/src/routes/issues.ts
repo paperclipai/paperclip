@@ -3013,9 +3013,6 @@ function toCompactIssue(issue: any): CompactIssue {
     ...(issue.blockedInboxAttention !== undefined
       ? { blockedInboxAttention: issue.blockedInboxAttention }
       : {}),
-    ...(issue.productivityReview
-      ? { productivityReview: issue.productivityReview }
-      : {}),
     ...(issue.scheduledRetry ? { scheduledRetry: issue.scheduledRetry } : {}),
     ...(issue.liveDescendantCount !== undefined
       ? { liveDescendantCount: issue.liveDescendantCount }
@@ -6347,6 +6344,23 @@ export function issueRoutes(
     return false;
   }
 
+  async function assertBoardCommentNotPaused(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+  ) {
+    // Agents may still finish reporting an interrupted run. New operator
+    // messages must not enter the paused-conversation triage wake path.
+    if (req.actor.type !== "board") return true;
+    const hold = await treeControlSvc.getActivePauseHoldGate(issue.companyId, issue.id);
+    if (!hold) return true;
+    res.status(409).json({
+      error: "Task is paused. Resume it before sending a message.",
+      details: { issueId: issue.id, holdId: hold.holdId, rootIssueId: hold.rootIssueId },
+    });
+    return false;
+  }
+
   async function assertExplicitResumeIntentAllowed(
     req: Request,
     res: Response,
@@ -7830,10 +7844,10 @@ export function issueRoutes(
       res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }
-    if (sortField !== undefined && sortField !== "updated") {
+    if (sortField !== undefined && sortField !== "updated" && sortField !== "id") {
       res
         .status(400)
-        .json({ error: "sortField must be 'updated' when provided" });
+        .json({ error: "sortField must be 'updated' or 'id' when provided" });
       return;
     }
     if (sortDir !== undefined && sortDir !== "asc" && sortDir !== "desc") {
@@ -7903,6 +7917,7 @@ export function issueRoutes(
       parentId: (req.query.parentId ?? req.query.parentIssueId) as
         string | undefined,
       descendantOf: req.query.descendantOf as string | undefined,
+      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
@@ -7927,7 +7942,8 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
       limit,
       offset,
-      sortField: sortField === "updated" ? "updated" : undefined,
+      sortField: sortField === "updated" || sortField === "id" ? sortField : undefined,
+      afterId: req.query.afterId as string | undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
     };
@@ -8126,6 +8142,7 @@ export function issueRoutes(
       parentId: (req.query.parentId ?? req.query.parentIssueId) as
         string | undefined,
       descendantOf: req.query.descendantOf as string | undefined,
+      createdFromIssueId: req.query.createdFromIssueId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
       originKindPrefix: req.query.originKindPrefix as string | undefined,
@@ -8361,7 +8378,6 @@ export function issueRoutes(
       relations,
       blockerAttention,
       reviewAttention,
-      productivityReview,
       scheduledRetry,
       attachments,
       continuationSummary,
@@ -8378,9 +8394,6 @@ export function issueRoutes(
         .then((map) => map.get(issue.id) ?? null),
       svc
         .listReviewAttention(issue.companyId, [issue])
-        .then((map) => map.get(issue.id) ?? null),
-      svc
-        .listProductivityReviews(issue.companyId, [issue.id])
         .then((map) => map.get(issue.id) ?? null),
       svc.getCurrentScheduledRetry(issue.id),
       svc.listAttachments(issue.id),
@@ -8445,7 +8458,6 @@ export function issueRoutes(
         workMode: issue.workMode,
         ...(blockerAttention ? { blockerAttention } : {}),
         ...(reviewAttention ? { reviewAttention } : {}),
-        productivityReview,
         scheduledRetry,
         activeRecoveryAction: revalidatedActiveRecoveryAction,
         priority: issue.priority,
@@ -8688,7 +8700,6 @@ export function issueRoutes(
       relations,
       blockerAttention,
       reviewAttention,
-      productivityReview,
       referenceSummary,
       successfulRunHandoffStates,
       scheduledRetry,
@@ -8707,9 +8718,6 @@ export function issueRoutes(
         .then((map) => map.get(issue.id) ?? null),
       svc
         .listReviewAttention(issue.companyId, [issue])
-        .then((map) => map.get(issue.id) ?? null),
-      svc
-        .listProductivityReviews(issue.companyId, [issue.id])
         .then((map) => map.get(issue.id) ?? null),
       issueReferencesSvc.listIssueReferenceSummary(issue.id),
       listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
@@ -8754,7 +8762,6 @@ export function issueRoutes(
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),
       ...(reviewAttention ? { reviewAttention } : {}),
-      productivityReview,
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       executionBlocker: await getExecutionBlocker(db, issue.companyId, issue.id),
       scheduledRetry,
@@ -12598,6 +12605,7 @@ export function issueRoutes(
         { allowVisibleIssueWrite: true },
       );
       if (!issueMutationAccess) return;
+      if (req.body.comment && !(await assertBoardCommentNotPaused(req, res, existing))) return;
       const issueMutationAuthorizationReason =
         req.actor.type === "agent"
           ? issueWriteAuthorizationReason(
@@ -16930,6 +16938,7 @@ export function issueRoutes(
         issue,
       );
       if (!commentAccessDecision) return;
+      if (!(await assertBoardCommentNotPaused(req, res, issue))) return;
       const commentAuthorizationReason = issueWriteAuthorizationReason(
         req,
         commentAccessDecision,

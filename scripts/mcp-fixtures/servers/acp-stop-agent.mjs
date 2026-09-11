@@ -22,7 +22,7 @@ async function request(message) {
       return { sessionId };
     }
     case 'session/load':
-      if (fs.readFileSync(`${root}/session`, 'utf8') !== message.params.sessionId) throw Error('Unknown session');
+      if (!fs.existsSync(`${root}/session`) || fs.readFileSync(`${root}/session`, 'utf8') !== message.params.sessionId) throw Error('Unknown session');
       return {};
     case 'session/prompt': {
       fs.appendFileSync(`${root}/prompts`, `${JSON.stringify(message.params)}\n`);

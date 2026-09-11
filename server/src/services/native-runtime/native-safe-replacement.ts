@@ -316,8 +316,16 @@ export async function reconcileSafeNativeReplacements(
           return false;
         const successorRunId = randomUUID();
         const dueAt = new Date(now.getTime() + 30_000);
+        const predecessorContext = { ...record(run.contextSnapshot) };
+        // History comes from the failed source run. Consumed wake fields must
+        // not grant this automatic retry fresh comment/resume authority.
+        for (const key of [
+          "explicitUserContinuation", "wakeCommentId", "wakeCommentIds", "commentId",
+          "commentIds", "latestCommentId", "resumeIntent", "followUpRequested",
+          "paperclipWake", "paperclipWakeComment", "paperclipTaskMarkdown", "paperclipTaskMarkdownCompact",
+        ]) delete predecessorContext[key];
         const context = {
-          ...record(run.contextSnapshot),
+          ...predecessorContext,
           issueId: task.id,
           retryOfRunId: run.id,
           wakeReason: NATIVE_SAFE_REPLACEMENT_REASON,

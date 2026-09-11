@@ -125,6 +125,34 @@ export function completeRetainedNativeSessionCleanup(
   return matches.length;
 }
 
+/** Control-plane-only cleanup boundary after the environment provider confirmed
+ * termination of the exact remote resource for this run. This retires process
+ * ownership, not checkpoints, action outcomes, or authorization to run again.
+ * An in-flight close must settle first: it must never reach a reused sandbox.
+ */
+export function completeTerminatedRemoteNativeSessionCleanup(binding: {
+  companyId: string;
+  runId: string;
+  remoteCleanupScope: string;
+}): boolean {
+  if (!binding.remoteCleanupScope) return false;
+  const matches = [...quarantinedSessionCleanups].filter(({ session, domain }) => {
+    const identity = session.identity();
+    // Domains are created internally from company, backend kind/name, and the
+    // optional remote resource. Local domains have no fourth element.
+    const [, , , remoteCleanupScope] = JSON.parse(domain) as string[];
+    return identity.companyId === binding.companyId && identity.runId === binding.runId &&
+      remoteCleanupScope === binding.remoteCleanupScope;
+  });
+  if (matches.some(entry => entry.attempt || entry.recovery)) return false;
+  for (const entry of matches) {
+    if (entry.timer) clearTimeout(entry.timer);
+    entry.timer = null;
+    quarantinedSessionCleanups.delete(entry);
+  }
+  return true;
+}
+
 export interface NativeSessionGoalControl {
   requestId: string;
   action: "create" | "edit" | "replace" | "pause" | "resume" | "clear";
@@ -138,6 +166,9 @@ export interface ExecuteNativeSessionOptions {
   controlPlane: ControlPlanePort;
   runnerInstanceId: string;
   controlPlaneInstanceId: string;
+  /** Trusted provider resource identity: independent remote sandboxes must not
+   * inherit each other's process-cleanup gates. Omit for local backends. */
+  remoteCleanupScope?: string;
   timeoutMs?: number;
   /** Abort admission while waiting for prior cleanup in the same domain. */
   signal?: AbortSignal;
@@ -1739,6 +1770,7 @@ export async function executeNativeSession(
     input.binding.companyId,
     descriptor.kind,
     descriptor.name,
+    ...(options.remoteCleanupScope ? [options.remoteCleanupScope] : []),
   ]);
   await retryQuarantinedSessionCleanups(cleanupDomain, options.signal);
   if ("runtimeContext" in input) {

@@ -1133,7 +1133,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
           };
         }
         if (method === "environmentDestroyLease") {
-          return undefined;
+          return { providerLeaseId: "plugin-lease-1", state: "destroyed" };
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
@@ -1165,6 +1165,9 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     expect(leaseRows).toHaveLength(1);
     expect(leaseRows[0]?.status).toBe("expired");
     expect(leaseRows[0]?.cleanupStatus).toBe("success");
+    expect(leaseRows[0]?.metadata?.remoteExecutionTermination).toMatchObject({
+      companyId, runId, leaseId: leaseRows[0]!.id, providerLeaseId: "plugin-lease-1", state: "destroyed",
+    });
 
     // The acquire provisioned the remote plugin sandbox, so it destroys the
     // sandbox on the rejection. Without this teardown the rejected insert leaks a
@@ -3014,7 +3017,12 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
     const lease = await environmentService(db).getLeaseById(orphan.id);
-    await runtimeWithPlugin.retryPendingSandboxTeardown({ environment: null, lease: lease! });
+    vi.mocked(workerManager.call).mockImplementationOnce(async (_pluginId, _method, args: any) => {
+      destroyConfigs.push(args.config);
+      return { providerLeaseId: args.providerLeaseId, state: "destroyed" };
+    });
+    await expect(runtimeWithPlugin.retryPendingSandboxTeardown({ environment: null, lease: lease! }))
+      .resolves.toEqual({ providerLeaseId: orphan.providerLeaseId, state: "destroyed" });
     expect(destroyConfigs).toHaveLength(1);
     // The recorded secret ref resolved to the old credential, and the resolved
     // value reached the provider teardown instead of the secret ref.
@@ -6218,7 +6226,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       isRunning: vi.fn((id: string) => id === pluginId),
       call: vi.fn(async (_pluginId: string, method: string) => {
         if (method === "environmentDestroyLease") {
-          return undefined;
+          return { providerLeaseId: reusableLease.providerLeaseId, state: "destroyed" };
         }
         throw new Error(`Unexpected plugin method: ${method}`);
       }),
@@ -6245,6 +6253,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       status: "expired",
       failureReason: "environment_deleted",
       cleanupStatus: "success",
+      metadata: { remoteExecutionTermination: { schema: "paperclip.remote-termination.v1",
+        leaseId: reusableLease.id, runId, providerLeaseId: reusableLease.providerLeaseId, state: "destroyed" } },
     });
   });
 

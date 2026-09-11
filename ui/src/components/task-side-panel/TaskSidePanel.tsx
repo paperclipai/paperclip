@@ -94,6 +94,8 @@ export interface TaskSidePanelProps {
   onRequestClose?: () => void;
   streamlinedTabs?: boolean;
   showSubtasksTab?: boolean;
+  /** Optional related-work projection; the host still owns tab layout and state. */
+  tasksTab?: { count: number; content: ReactNode; hasError?: boolean };
 }
 
 const EMPTY_ISSUE_DOCUMENTS: IssueDocument[] = [];
@@ -223,6 +225,7 @@ export function TaskSidePanel({
   onRequestClose,
   streamlinedTabs = false,
   showSubtasksTab = false,
+  tasksTab,
 }: TaskSidePanelProps) {
   const handleScroll = useScrollbarWhileScrolling();
   const viewer = useTaskSidePanelFileRouting();
@@ -232,7 +235,9 @@ export function TaskSidePanel({
   const restoredRef = useRef(
     readTaskSidePanelState(accountScope, issue.companyId, issue.id, fileTabsEnabled),
   );
-  const initialSubtasksAvailableRef = useRef(showSubtasksTab && childIssues.length > 0);
+  const taskCount = tasksTab?.count ?? childIssues.length;
+  const taskLabel = tasksTab ? "Tasks" : "Subtasks";
+  const initialSubtasksAvailableRef = useRef(showSubtasksTab && (taskCount > 0 || tasksTab?.hasError === true));
   const subtasksDismissedRef = useRef(
     restoredRef.current?.userInteracted === true
       && restoredRef.current.state.tabs.length === 0,
@@ -271,7 +276,7 @@ export function TaskSidePanel({
   }, [accountScope, issue.companyId, issue.id, launcherOpen]);
   const controller = useSidePanelTabs<TaskSidePanelTabPayload>({ initialState, onStateChange: persist });
   const activeTab = controller.tabs.find((tab) => tab.id === controller.activeTabId) ?? null;
-  const subtasksAvailable = showSubtasksTab && childIssues.length > 0;
+  const subtasksAvailable = showSubtasksTab && (taskCount > 0 || tasksTab?.hasError === true);
   const hasSubtasksTab = controller.tabs.some((tab) => tab.id === "subtasks");
 
   useEffect(() => {
@@ -452,18 +457,18 @@ export function TaskSidePanel({
     return {
       id: tab.id,
       type: tab.type,
-      label: document ? documentDisplayTitle(document) : tab.label,
-      ariaLabel: tab.payload.kind === "subtasks" ? "Subtasks" : tab.ariaLabel,
+      label: tab.payload.kind === "subtasks" && tasksTab ? "Tasks" : document ? documentDisplayTitle(document) : tab.label,
+      ariaLabel: tab.payload.kind === "subtasks" ? taskLabel : tab.ariaLabel,
       closable: true,
       contentMode: tab.contentMode,
       icon: tabIcon(tab),
     };
-  }), [controller.tabs, documentByKey]);
+  }), [controller.tabs, documentByKey, taskCount, taskLabel, tasksTab]);
 
   const launcherSections = useMemo<SidePanelLauncherSection[]>(() => {
     const primary: SidePanelLauncherItem[] = [
       { id: "properties", label: "Properties", icon: <SlidersHorizontal />, alreadyOpen: controller.tabs.some((tab) => tab.id === "properties") },
-      ...(subtasksAvailable ? [{ id: "subtasks", label: "Subtasks", description: `${childIssues.length} total`, icon: <ListTree />, alreadyOpen: controller.tabs.some((tab) => tab.id === "subtasks") }] : []),
+      ...(subtasksAvailable ? [{ id: "subtasks", label: taskLabel, description: tasksTab?.hasError ? "Could not load all tasks" : `${taskCount} total`, icon: <ListTree />, alreadyOpen: controller.tabs.some((tab) => tab.id === "subtasks") }] : []),
       { id: "artifacts", label: "Artifacts", icon: <Box />, alreadyOpen: controller.tabs.some((tab) => tab.id === "artifacts") },
     ];
     if (fileTabsEnabled) {
@@ -513,7 +518,7 @@ export function TaskSidePanel({
       });
     }
     return sections;
-  }, [childIssues.length, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable]);
+  }, [taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable]);
 
   function selectLauncherItem(item: SidePanelLauncherItem) {
     markInteracted();
@@ -610,7 +615,7 @@ export function TaskSidePanel({
       />
     );
   } else if (activeTab.payload.kind === "subtasks") {
-    content = (
+    content = tasksTab?.content ?? (
       <TaskDetailSubtasksPanel
         items={childIssues}
         onAddSubtask={onAddSubIssue}

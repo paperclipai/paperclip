@@ -19,6 +19,8 @@ const mockTreeControlService = vi.hoisted(() => ({
 
 const mockReplayBlocks = vi.hoisted(() => vi.fn());
 const mockReplayWhere = vi.hoisted(() => vi.fn());
+const mockExecutionBlocker = vi.hoisted(() => vi.fn());
+vi.mock("../services/execution-blocker.js", () => ({ getExecutionBlocker: mockExecutionBlocker }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -47,7 +49,7 @@ async function createApp(actor: Record<string, unknown>) {
   const query = {
     from: () => query,
     innerJoin: () => query,
-    where: (predicate: unknown) => { mockReplayWhere(predicate); return query; },
+    where: (predicate: unknown) => { mockReplayWhere(predicate); return mockReplayBlocks(); },
     limit: mockReplayBlocks,
   };
   app.use("/api", issueTreeControlRoutes({ select: () => query } as any));
@@ -59,6 +61,7 @@ describe("issue tree control routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockReplayBlocks.mockResolvedValue([]);
+    mockExecutionBlocker.mockResolvedValue(null);
     mockTreeControlService.getHold.mockResolvedValue(null);
     mockIssueService.getById.mockResolvedValue({
       id: "11111111-1111-4111-8111-111111111111",
@@ -229,7 +232,9 @@ describe("issue tree control routes", () => {
       mode: "pause",
       members: [{ issueId: rootId }],
     });
-    mockReplayBlocks.mockResolvedValue([{ identifier: "TEST-1" }]);
+    mockReplayBlocks.mockResolvedValue([{ id: rootId, identifier: "TEST-1" }]);
+    mockExecutionBlocker.mockResolvedValue({ nextAction: "Resume without waking agents until the previous execution stops.",
+      recoveryActionId: null, cause: "execution_owner_active", runId: "previous-run", agentId: "agent-1" });
     const app = await createApp({
       type: "board",
       userId: "user-1",

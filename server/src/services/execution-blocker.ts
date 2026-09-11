@@ -1,4 +1,5 @@
-import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, not, or, sql } from "drizzle-orm";
+import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { z } from "zod";
 import { heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { EXECUTION_RECONCILIATION_CAUSES, type ExecutionBlocker } from "@paperclipai/shared";
@@ -6,6 +7,7 @@ import { EXECUTION_RECONCILIATION_CAUSES, type ExecutionBlocker } from "@papercl
 /** Resolved recovery bookkeeping can still carry an effective no-replay hold. */
 export function executionBlockerPredicate() {
   return and(
+    not(conversationRecoveryActionPredicate()!),
     inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
     or(inArray(issueRecoveryActions.status, ["active", "escalated"]),
       sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`),
@@ -13,6 +15,8 @@ export function executionBlockerPredicate() {
 }
 
 export async function getExecutionBlocker(db: Db, companyId: string, issueId: string): Promise<ExecutionBlocker | null> {
+  const ownership = await getConversationOwnershipBlocker(db, companyId, issueId);
+  if (ownership) return { ...ownership, recoveryActionId: null };
   const [action] = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId),
     eq(issueRecoveryActions.sourceIssueId, issueId),

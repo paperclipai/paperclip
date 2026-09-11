@@ -17094,6 +17094,28 @@ describeEmbeddedPostgres("tool access service", () => {
         lastHealthAt: new Date(0),
       })
       .returning();
+    const [pluginApplication] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `paperclip_plugin:fixture-${randomUUID()}`,
+      name: "Plugin placeholder",
+      type: "paperclip_plugin",
+      status: "active",
+      metadata: { source: "plugin_backfill" },
+    }).returning();
+    const [pluginConnection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: pluginApplication!.id,
+      name: "Plugin placeholder",
+      uid: `plugin-${randomUUID()}`,
+      connectionKind: "managed",
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      config: { type: "paperclip_plugin" },
+      transportConfig: { type: "paperclip_plugin" },
+      healthStatus: "ok",
+      healthCheckedAt: null,
+    }).returning();
     const connection = await service.createConnection(company.id, {
       name: "Swept remote",
       transport: "mcp_remote",
@@ -17102,7 +17124,7 @@ describeEmbeddedPostgres("tool access service", () => {
       status: "active",
     });
 
-    const sweep = await service.sweepConnectionHealth({ staleAfterMs: 0 });
+    const sweep = await service.sweepConnectionHealth({ staleAfterMs: 0, limit: 1 });
     const [updatedConnection] = await db
       .select()
       .from(toolConnections)
@@ -17111,6 +17133,10 @@ describeEmbeddedPostgres("tool access service", () => {
       .select()
       .from(toolConnections)
       .where(eq(toolConnections.id, chatConnection!.id));
+
+    const [untouchedPlugin] = await db.select().from(toolConnections)
+      .where(eq(toolConnections.id, pluginConnection!.id));
+    expect(untouchedPlugin).toMatchObject({ enabled: true, healthStatus: "ok", healthCheckedAt: null });
 
     expect(sweep).toMatchObject({
       checked: 1,

@@ -78,6 +78,7 @@ describe("useLiveRunTranscripts", () => {
   const OriginalWebSocket = globalThis.WebSocket;
 
   beforeEach(() => {
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     FakeWebSocket.instances = [];
     useQueryMock.mockClear();
     logMock.mockReset();
@@ -88,6 +89,45 @@ describe("useLiveRunTranscripts", () => {
 
   afterEach(() => {
     globalThis.WebSocket = OriginalWebSocket;
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("pauses hidden-tab reads and resumes at the retained log offset", async () => {
+    vi.useFakeTimers();
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
+    logMock.mockResolvedValue({ runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 42 });
+    const runs = [{ id: "run-1", status: "running", adapterType: "codex_local" }];
+    function Harness() {
+      useLiveRunTranscripts({ companyId: "company-1", runs, enableRealtimeUpdates: false });
+      return null;
+    }
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<Harness />));
+      await act(async () => vi.advanceTimersByTimeAsync(10_000));
+      expect(logMock).not.toHaveBeenCalled();
+      expect(FakeWebSocket.instances).toHaveLength(0);
+      await act(async () => {
+        visibility.mockReturnValue("visible");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(logMock).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        visibility.mockReturnValue("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await act(async () => vi.advanceTimersByTimeAsync(10_000));
+      expect(logMock).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        visibility.mockReturnValue("visible");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      expect(logMock).toHaveBeenLastCalledWith("run-1", 42, 256_000, expect.anything());
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 
   it("waits for a connecting socket to open before closing it during cleanup", async () => {

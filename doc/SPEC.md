@@ -176,6 +176,11 @@ When a task originates from a cross-team request, track the **depth** as an inte
 
 #### Billing Codes
 
+Task detail keeps hierarchy separate from creation provenance: the Tasks tab shows
+all subtasks and, independently, work created from the current task grouped by
+project or No project. A created subtask may appear in both sections. Creation
+provenance follows the originating run equally for legacy and native runners.
+
 Tasks carry a **billing code** so that token spend during execution can be attributed upstream to the requesting task/agent. When Agent A asks Agent B to do work, the cost of B's work is tracked against A's request. This enables cost attribution across the org.
 
 ### Open Questions
@@ -543,3 +548,10 @@ Things Paperclip explicitly does **not** do:
 7. **Atomic ownership.** Single assignee per task. Atomic checkout prevents conflicts.
 8. **Progressive deployment.** Trivial to start local, straightforward to scale to hosted.
 9. **Extensible core.** Clean boundaries so plugins can add capabilities (Adapters, knowledge base, revenue tracking) without modifying core.
+
+### Paused task messages
+
+A paused task takes over the composer with an amber notice and a Resume action.
+Operators must release the effective task or ancestor pause before sending a new
+message. The draft stays intact. This applies to both task interfaces and to
+board comment API requests; an agent may still report interrupted work.

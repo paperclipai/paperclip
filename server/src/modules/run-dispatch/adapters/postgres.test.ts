@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
   companies,
   createDb,
@@ -21,6 +22,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createPostgresRunDispatchAdapter } from "./postgres.js";
+import { settleUnrecoverableExecutions } from "../../../services/execution-recovery-resolution.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 
 // Proves the DB-to-facts mapping this adapter owns for each state the two
@@ -49,6 +51,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(issueDocuments);
     await db.delete(documentRevisions);
     await db.delete(documents);
@@ -768,6 +771,59 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     expect(await getExecutionBlocker(db, randomUUID(), issueId)).toBeNull();
     const adapter = createPostgresRunDispatchAdapter(db);
     await expect(adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() })).resolves.toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+  });
+
+  it.each(["active", "resolved"])("allows a new message through a historical %s interruption hold", async status => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    await db.update(agents).set({ adapterType: "process" }).where(eq(agents.id, agentId));
+    const issueId = randomUUID(), previousRunId = randomUUID(), runId = randomUUID();
+    await seedIssue({ companyId, issueId, status: "blocked", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values([
+      { id: previousRunId, companyId, agentId, status: "interrupted", errorCode: "server_shutdown_interrupted", contextSnapshot: { issueId } },
+      { id: runId, companyId, agentId, status: "queued", contextSnapshot: { issueId, wakeReason: "issue_commented" } },
+    ]);
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId: previousRunId,
+      seq: 1, eventType: "adapter.invoke", payload: { adapterType: "codex_local" } });
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "active_run_watchdog", ownerType: "board", cause: "legacy_execution_requires_reconciliation", status,
+      evidence: { runId: previousRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+      fingerprint: previousRunId, nextAction: "Automatic recovery stopped.",
+    }).returning();
+    expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
+    const adapter = createPostgresRunDispatchAdapter(db);
+    expect(await adapter.cancelStaleQueuedRun({ companyId, runId, expectedStatus: "queued", now: new Date() })).toMatchObject({ outcome: "not_stale" });
+    await settleUnrecoverableExecutions(db);
+    const [resolved] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    expect(resolved).toMatchObject({ status: "resolved", outcome: "cancelled", evidence: { runId: previousRunId } });
+    expect(resolved.evidence.automaticRecovery).toMatchObject({ replay: "conversation_continuation", actionOutcome: "unknown" });
+    await settleUnrecoverableExecutions(db);
+    const audit = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(audit).toHaveLength(1);
+    expect(audit[0]).toMatchObject({ companyId, action: "issue.execution_recovery_settled" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, previousRunId))).toHaveLength(0);
+    // The upgrade does not silently resume historical blocked work.
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("blocked");
+  });
+
+  it.each(["process", "http", null])("keeps a historical %s hold after switching to a conversation adapter", async historicalAdapter => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    await db.update(agents).set({ adapterType: "codex_local" }).where(eq(agents.id, agentId));
+    const issueId = randomUUID(), previousRunId = randomUUID();
+    await seedIssue({ companyId, issueId, status: "blocked", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: previousRunId, companyId, agentId,
+      status: "interrupted", errorCode: "server_shutdown_interrupted", contextSnapshot: { issueId } });
+    if (historicalAdapter) await db.insert(heartbeatRunEvents).values({ companyId, agentId, runId: previousRunId,
+      seq: 1, eventType: "adapter.invoke", payload: { adapterType: historicalAdapter } });
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "active_run_watchdog", ownerType: "board", cause: "legacy_execution_requires_reconciliation", status: "active",
+      evidence: { runId: previousRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+      fingerprint: previousRunId, nextAction: "Inspect previous execution.",
+    }).returning();
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ recoveryActionId: action!.id });
+    await settleUnrecoverableExecutions(db);
+    expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ recoveryActionId: action!.id });
+    const [retained] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id));
+    expect(retained.evidence.automaticRecovery).toMatchObject({ replay: "blocked", actionOutcome: "unknown" });
   });
 
   it("links the stopped run's agent instead of its return owner, within the same company", async () => {

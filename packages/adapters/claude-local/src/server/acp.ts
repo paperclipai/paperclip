@@ -268,8 +268,21 @@ async function prepareClaudeRemoteManagedHome(
   // Content-addressed sanitized seed (managed cache under the instance root, not
   // a temp dir — reused across runs, so no teardown cleanup).
   const claudeConfigSeedDir = await prepareClaudeConfigSeed(process.env, onLog, input.companyId);
+  // Ship the per-run skill bundle, staged only when the run selected at
+  // least one skill. The bundle directory holds a plain copy of each
+  // selected skill's files (`materializePaperclipSkillCopy` never copies a
+  // symbolic link, at the root or at any depth). So the bundle asset stages
+  // with `followSymlinks: false`: staging never needs to carry a symbolic
+  // link's target content, and refusing to follow one stops a link planted
+  // in the bundle directory after materialization (for example by a
+  // concurrent writer) from pulling an arbitrary host file into the sandbox.
+  // The engine rewrites the prompt onto the in-sandbox copy once this asset
+  // is staged.
   const stagedRuntime = await input.stage([
     { key: "config-seed", localDir: claudeConfigSeedDir, followSymlinks: true },
+    ...(input.skillsBundleDir
+      ? [{ key: "skills", localDir: input.skillsBundleDir, followSymlinks: false }]
+      : []),
   ]);
 
   const remoteClaudeRuntimeRoot =

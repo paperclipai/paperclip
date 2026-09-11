@@ -10,7 +10,7 @@ async function json(response: APIResponse) {
 }
 
 for (const { unfinishedWrite, pause } of [{ unfinishedWrite: false, pause: false }, { unfinishedWrite: true, pause: false }, { unfinishedWrite: false, pause: true }]) {
-  test(`embedded ACP Stop: ${unfinishedWrite ? "unknown action stays visibly blocked" : pause ? "composer pause requires Resume before continuation" : "go continues the same session with queued input"}`, async ({ page, request }) => {
+  test(`embedded ACP Stop: ${unfinishedWrite ? "unknown action continues without replaying the write" : pause ? "composer pause requires Resume before continuation" : "go continues the same session with queued input"}`, async ({ page, request }) => {
     test.setTimeout(120_000);
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-stop-browser-"));
     const company = await json(await request.post("/api/companies", { data: { name: `ACP Stop ${Date.now()}` } }));
@@ -53,44 +53,36 @@ for (const { unfinishedWrite, pause } of [{ unfinishedWrite: false, pause: false
       expect(stopped.resultJson.executionCancellation.state).toBe("acknowledged");
       const writesAtStop = unfinishedWrite ? await readFile(path.join(root, "writes"), "utf8") : null;
       await page.reload();
-      if (unfinishedWrite) await expect(page.getByText("Work cannot start.", { exact: false })).toBeVisible();
-      await editor.fill("go");
-      await page.getByRole("button", { name: "Send", exact: true }).click();
       if (pause) {
-        await expect(page.getByText("Task is paused.", { exact: true })).toBeVisible();
-        await expect(page.getByText("Task remains paused. Use Resume work to continue.", { exact: false })).toBeVisible();
-        await expect.poll(async () => (await json(await request.get(`/api/issues/${issue.id}/live-runs`))).length).toBe(0);
-        const pausedPrompts = (await readFile(path.join(root, "prompts"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
-        expect(pausedPrompts).toHaveLength(2);
-        expect(JSON.stringify(pausedPrompts[1])).toContain("execution scope: respond or triage the human comment");
+        await expect(page.getByTestId("paused-composer-takeover")).toBeVisible();
+        await expect(editor).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "Send", exact: true })).toHaveCount(0);
+        const rejected = await request.post(`/api/issues/${issue.id}/comments`, { data: { body: "go" } });
+        expect(rejected.status()).toBe(409);
+        expect((await readFile(path.join(root, "prompts"), "utf8")).trim().split("\n")).toHaveLength(1);
         expect(await readFile(path.join(root, "completed"), "utf8").catch(() => "")).toBe("");
-        await page.getByRole("button", { name: "Resume work", exact: true }).click();
+        await page.getByRole("button", { name: "Resume task", exact: true }).click();
         const dialog = page.getByRole("dialog");
         await dialog.getByRole("checkbox").check();
         await dialog.getByRole("button", { name: "Resume work", exact: true }).click();
-      }
-      if (unfinishedWrite) {
-        await expect(page.getByText("Couldn't start", { exact: false })).toBeVisible();
-        expect((await json(await request.get(`/api/issues/${issue.id}`))).executionBlocker).toBeTruthy();
-        await page.waitForTimeout(1000);
-        expect(await readFile(path.join(root, "writes"), "utf8")).toBe(writesAtStop);
-        expect((await readFile(path.join(root, "prompts"), "utf8")).trim().split("\n")).toHaveLength(1);
       } else {
-        await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible({ timeout: 30_000 });
-        await expect.poll(async () => (await json(await request.get(`/api/issues/${issue.id}/live-runs`))).length).toBe(0);
-        const prompts = (await readFile(path.join(root, "prompts"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
-        expect(prompts).toHaveLength(pause ? 3 : 2);
-        expect(new Set(prompts.map(prompt => prompt.sessionId)).size).toBe(1);
-        // Paused conversation already delivered the request into this same
-        // provider session; Resume legitimately sends only its next delta.
-        const continuationPrompts = pause ? prompts.slice(1) : [prompts.at(-1)];
-        expect(JSON.stringify(continuationPrompts)).toContain("List my recent Drive files.");
-        expect(JSON.stringify(continuationPrompts)).toContain("go");
-        expect(await readFile(path.join(root, "completed"), "utf8")).toBe("follow-up\n");
-        const completedIssue = await json(await request.get(`/api/issues/${issue.id}`));
-        expect(completedIssue.executionBlocker).toBeNull();
-        expect(completedIssue.status).toBe("done");
+        await editor.fill("go");
+        await page.getByRole("button", { name: "Send", exact: true }).click();
       }
+      await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible({ timeout: 30_000 });
+      await expect.poll(async () => (await json(await request.get(`/api/issues/${issue.id}/live-runs`))).length).toBe(0);
+      const prompts = (await readFile(path.join(root, "prompts"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+      expect(prompts).toHaveLength(2);
+      expect(new Set(prompts.map(prompt => prompt.sessionId)).size).toBe(1);
+      // Resume delivers the queued follow-up in the same provider session.
+      const continuationPrompts = pause ? prompts.slice(1) : [prompts.at(-1)];
+      expect(JSON.stringify(continuationPrompts)).toContain("List my recent Drive files.");
+      if (!pause) expect(JSON.stringify(continuationPrompts)).toContain("go");
+      expect(await readFile(path.join(root, "completed"), "utf8")).toBe("follow-up\n");
+      const completedIssue = await json(await request.get(`/api/issues/${issue.id}`));
+      expect(completedIssue.executionBlocker).toBeNull();
+      expect(completedIssue.status).toBe("done");
+      if (unfinishedWrite) expect(await readFile(path.join(root, "writes"), "utf8")).toBe(writesAtStop);
       await expect(page.getByRole("dialog")).toHaveCount(0);
     } finally {
       await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });

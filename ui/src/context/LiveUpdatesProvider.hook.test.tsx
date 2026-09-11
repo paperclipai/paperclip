@@ -181,6 +181,24 @@ describe("LiveUpdatesProvider socket run notification scope", () => {
     })));
   }
 
+  it("disconnects while hidden and reconciles active queries once on return", async () => {
+    await receiveStatus({ runId: "child-run", agentId: "child-agent", status: "running" });
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    await reactAct(async () => {
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(sockets[0].onmessage).toBeNull();
+    invalidate.mockClear();
+    await reactAct(async () => {
+      visibility.mockReturnValue("visible");
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await vi.waitFor(() => expect(sockets).toHaveLength(2));
+    expect(invalidate).toHaveBeenCalledExactlyOnceWith({ type: "active" }, { cancelRefetch: false });
+  });
+
   it.each(["parent-agent", "child-agent"])("shows an unrelated retryable failure without issueId for %s", async (agentId) => {
     // Match the retryable broadcast from execution-status-delivery.ts: it has
     // exact run identity but deliberately omits issueId and provider output.

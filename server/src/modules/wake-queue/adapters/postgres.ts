@@ -1,3 +1,4 @@
+import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, inArray, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -11,6 +12,7 @@ import {
   issues,
   nativeRunFinalizations,
 } from "@paperclipai/db";
+import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { legacyExecutionNeedsReconciliation } from "../../../services/legacy-execution-recovery.js";
 import {
   authorizeFailedChatRunRetryWake,
@@ -84,6 +86,7 @@ function toRunSnapshot(row: HeartbeatRunRow): RunSnapshot {
     agentId: row.agentId,
     status: row.status,
     runtimeMode: row.runtimeMode,
+    conversationContinuation: row.runtimeMode === "legacy" && hasConversationContinuationPolicy(row.resultJson),
     errorCode: row.errorCode,
     responsibleUserId: row.responsibleUserId,
     contextSnapshot: parseObject(row.contextSnapshot),
@@ -1198,7 +1201,18 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
-        const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot };
+        // A release must leave deferred messages intact while execution is held.
+        // The finishing conversation may still own its lease until finally cleanup.
+        // Allow only bounded retry planning in that case; admission stays gated.
+        const executionBlocker = await getExecutionBlocker(tx, issueRow.companyId, issueRow.id);
+        const recoveryOnly = Boolean(executionBlocker &&
+          executionBlocker.cause === "execution_owner_active" && executionBlocker.runId === run.id &&
+          runSnapshot.conversationContinuation && ["failed", "timed_out", "interrupted"].includes(run.status));
+        if (executionBlocker && !recoveryOnly) {
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
+
+        const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot, recoveryOnly };
         const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
         return { ...result, run: runSnapshot };
       });

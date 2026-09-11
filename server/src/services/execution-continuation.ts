@@ -9,6 +9,7 @@ import {
 } from "@paperclipai/db";
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
+import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v)
@@ -208,7 +209,7 @@ export async function buildExecutionContinuation(input: {
       row.authorType === "user" && !row.createdByRunId && !row.deleted && row.body.trim().length > 0,
   );
   const priorRuns = await db
-    .select({ id: heartbeatRuns.id, result: heartbeatRuns.resultJson })
+    .select({ id: heartbeatRuns.id, result: heartbeatRuns.resultJson, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, runtimeMode: heartbeatRuns.runtimeMode })
     .from(heartbeatRuns)
     .where(
       and(
@@ -249,7 +250,31 @@ export async function buildExecutionContinuation(input: {
         eq(issueRecoveryActions.status, "resolved"),
       ),
     );
+  const lastTerminal = priorRuns.findLast((run) =>
+    ["succeeded", "failed", "timed_out", "interrupted", "cancelled"].includes(run.status) &&
+    !(run.status === "cancelled" && run.errorCode === "execution_reconciliation_required"),
+  );
+  const explicitContinuation = object(input.context.explicitUserContinuation);
+  const explicitUserSource = string(explicitContinuation.previousRunId);
+  if (explicitUserSource) {
+    const predecessor = priorRuns.find(run => run.id === explicitUserSource &&
+      run.runtimeMode === "native" && ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status));
+    const authorization = reconciliations.map(row => object(row.evidence.explicitUserContinuation))
+      .find(value => value.previousRunId === explicitUserSource &&
+        value.commentId === explicitContinuation.commentId &&
+        priorRuns.some(run => run.id === value.runId) &&
+        rows.some(comment => comment.id === value.commentId &&
+          comment.authorType === "user" && comment.authorUserId === value.actorId &&
+          !comment.createdByRunId && !comment.deletedAt));
+    if (!predecessor || !authorization || explicitUserSource !== sourceRunId)
+      throw new Error("continuation_user_authorization_missing");
+  }
+  const interruptedRunId = explicitUserSource ?? (lastTerminal && lastTerminal.status !== "succeeded" &&
+    (hasConversationContinuationPolicy(lastTerminal.result) ||
+      lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
+    ? lastTerminal.id : undefined);
   return {
+    ...(interruptedRunId ? { interruptedRunId } : {}),
     ...(resumeDelta ? { resumeDelta } : {}),
     recoveryOutcomes: reconciliations
       .filter((row) => row.evidence.executionReconciliation)

@@ -5812,7 +5812,9 @@ fn durable_descendant_lineage_survives_capacity_and_provider_restoration() {
             json!({"text": "Read test context."}),
         ))
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // Persisting 300 descendant notifications can exceed five seconds while
+    // the other provider tests contend for disk and CPU on a shared runner.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     let mut completed = false;
     let mut children = std::collections::BTreeSet::new();
     while std::time::Instant::now() < deadline && !completed {
@@ -5830,7 +5832,11 @@ fn durable_descendant_lineage_survives_capacity_and_provider_restoration() {
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    assert!(completed);
+    assert!(
+        completed,
+        "descendant run did not complete; observed {} of 300 children",
+        children.len()
+    );
     assert_eq!(children.len(), 300);
     first.shutdown().unwrap();
     drop(first);

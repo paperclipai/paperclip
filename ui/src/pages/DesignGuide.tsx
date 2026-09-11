@@ -1,8 +1,10 @@
+import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKeySelect";
 import { RepositoryEditor } from "@/components/RepositoryEditor";
+import { TaskChatRunnerActivityGroup } from "@/components/task-chat/TaskChatRunnerActivityGroup";
 import { TaskChatMarker } from "@/components/task-chat/TaskChatMarker";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
-import { TaskPauseNotice, TaskTreeControlDialog, TaskTreeControlMenuItems } from "@/components/TaskTreeControls";
+import { TaskTreeControlDialog, TaskTreeControlMenuItems } from "@/components/TaskTreeControls";
 import { useState } from "react";
 import { ServicesList } from "./apps/app-detail/ServicesPanel";
 import { ComposioProvenanceChip } from "./apps/ComposioProvenanceChip";
@@ -463,9 +465,8 @@ function TaskExecutionControlsExample() {
         onCancel={() => setDialogMode("cancel")} onRestore={() => setDialogMode("restore")} />
     </div>
     <p className="text-sm text-muted-foreground">{running ? "Running: type to switch Stop to Send." : "Paused: resume from the menu."}</p>
-    {!running ? <TaskPauseNotice scope="subtree" onResume={() => setDialogMode("resume")} /> : null}
     {!running ? <TaskChatMarker item={{ id: "design-cancelled", kind: "marker", variant: "interrupted", tone: "neutral", label: "Run cancelled", detail: "The run was cancelled before returning an answer.", collapsible: true }} /> : null}
-    <TaskChatComposer onAdd={async () => {}} workMode="standard" stopScope="subtree" onStop={running ? async () => setRunning(false) : undefined} />
+    <TaskChatComposer pause={!running ? { scope: "subtree", onResume: () => setDialogMode("resume") } : null} onAdd={async () => {}} workMode="standard" stopScope="subtree" onStop={running ? async () => setRunning(false) : undefined} />
     <TaskTreeControlDialog open={dialogMode !== null} onOpenChange={(open) => { if (!open) setDialogMode(null); }}
       mode={dialogMode ?? "cancel"} scope="subtree" affectedCount={3} affectedAgentCount={2} loading={false} pending={false} valid
       wakeAgents={wake} onWakeAgentsChange={setWake} onRetry={() => {}}
@@ -624,6 +625,13 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TYPOGRAPHY                                                   */}
       {/* ============================================================ */}
+      <Section title="Runner activity">
+        <TaskChatRunnerActivityGroup item={{ id: "design-runner-activity", kind: "activity_phase", active: true, summary: "", interstitial: { id: "design-runner-commentary", kind: "message", author: "agent", text: "I’ll inspect the activity feed and check the layout.", interstitial: true }, items: [
+          { id: "design-runner-read", kind: "tool", name: "read", target: "TaskChatRunnerTurn.tsx", status: "completed", detail: "Found the activity groups." },
+          { id: "design-runner-check", kind: "tool", name: "exec_command", target: "pnpm check:token-gates", status: "in_progress" },
+        ] }} />
+      </Section>
+
       <Section title="Typography">
         <div className="space-y-3">
           <h2 className="text-xl font-bold">Page Title — text-xl font-bold</h2>
@@ -2171,11 +2179,31 @@ export function DesignGuide() {
         <EnvironmentVariablesEditorShowcase />
       </Section>
 
+      <Section title="Tasks created from a task">
+        <SubSection title="Subtasks and created work are independent">
+          <div className="max-w-xl">
+            <TaskDetailTasksPanel
+              subtasks={[DESIGN_GUIDE_TASK]}
+              createdTasks={[
+                { ...DESIGN_GUIDE_TASK, projectId: "design-board", project: { id: "design-board", name: "Board UI" } as Issue["project"] },
+                { ...DESIGN_GUIDE_TASK, id: "design-followup", identifier: "PAP-428", title: "Write release notes", status: "todo", projectId: null },
+              ]}
+              projects={[]}
+            />
+          </div>
+        </SubSection>
+        <SubSection title="Empty, loading and failed">
+          <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} />
+          <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} isLoading />
+          <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} hasError onRetry={() => {}} />
+        </SubSection>
+      </Section>
+
       <Section title="Execution recovery">
         <p className="text-sm text-muted-foreground">
           Recovery runs in the background. Task lists keep their ordinary status without
-          execution badges. The transcript may briefly say Reconnecting, then resumes its
-          normal presentation. Recovery decisions and attempts belong in the run log;
+          execution badges. Active transcript headers keep saying Working during automatic
+          recovery. Recovery decisions and attempts belong in the run log;
           there is no execution status card or reconciliation form.
         </p>
       </Section>

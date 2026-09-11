@@ -29,6 +29,15 @@ describe("issuesApi.list", () => {
     mockApi.patch.mockResolvedValue({});
   });
 
+  it("fetches all pages of tasks created from the source without filtering parentage", async () => {
+    const firstPage = Array.from({ length: 500 }, (_, index) => ({ id: `task-${index}` }));
+    mockApi.get.mockResolvedValueOnce(firstPage).mockResolvedValueOnce([{ id: "last-task" }]);
+    const result = await issuesApi.listAll("company-1", { createdFromIssueId: "source-1" });
+    expect(result).toHaveLength(501);
+    expect(mockApi.get).toHaveBeenNthCalledWith(1, "/companies/company-1/issues?createdFromIssueId=source-1&limit=500&sortField=id&sortDir=asc");
+    expect(mockApi.get).toHaveBeenNthCalledWith(2, "/companies/company-1/issues?createdFromIssueId=source-1&limit=500&sortField=id&sortDir=asc&afterId=task-499");
+  });
+
   it("passes parentId through to the company issues endpoint", async () => {
     await issuesApi.list("company-1", {
       parentId: "issue-parent-1",

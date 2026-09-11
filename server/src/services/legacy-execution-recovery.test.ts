@@ -29,3 +29,12 @@ it("retains the hold until the provider actually acknowledges cancellation", () 
     ...stopped.resultJson, executionCancellation: { state: "requested" },
   } })).toBe(true);
 });
+
+ it("continues a conversation without requiring receipts, even after automatic attempts are exhausted", () => {
+  for (const status of ["failed", "timed_out", "interrupted", "cancelled"]) {
+    expect(legacyExecutionNeedsReconciliation({
+      runtimeMode: "legacy", status, errorCode: "process_lost", scheduledRetryAttempt: 2,
+      resultJson: { conversationContinuation: "continue_conversation_v1" },
+    })).toBe(false);
+  }
+});

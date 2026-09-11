@@ -1,35 +1,19 @@
-import { useRef, useState, type ComponentType, type SVGProps } from "react";
+import { useRef } from "react";
 import type { ExecutionProjection } from "@paperclipai/shared";
-import { Brain, OctagonX } from "lucide-react";
-import { MarkdownBody } from "@/components/MarkdownBody";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { cn } from "@/lib/utils";
 import type {
   TaskChatItem,
   TaskChatMessageItem,
-  TaskChatMarkerItem,
-  TaskChatProtocolItem,
-  TaskChatProviderActivityItem,
   TaskChatRuntimeRequestDecision,
   TaskChatRuntimeRequestItem,
-  TaskChatThinkingItem,
-  TaskChatToolItem,
 } from "./task-chat-model";
 import { TaskChatAgentIdentity, TaskChatBubble } from "./TaskChatBubble";
 import { TaskChatBubbleActions } from "./TaskChatBubbleActions";
 import { formatTaskChatTimestamp } from "./task-chat-adapter";
-import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
-import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
+import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
-import { TaskChatThinking } from "./TaskChatThinking";
-import { TaskChatToolCard } from "./TaskChatToolCard";
-import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
-import {
-  protocolActivityIsRunning,
-  protocolActivityLabel,
-  protocolActivityPresentation,
-} from "./task-chat-activity-presentation";
 import {
   buildTurnTimelineRows,
   isTerminalRunStatus,
@@ -37,26 +21,6 @@ import {
   paperclipRunnerFinalResponse,
   paperclipRunnerTimelineItems,
 } from "./transcript-adapter";
-import { toolTaxonomy } from "./tool-taxonomy";
-
-function lastOf<T extends TaskChatItem>(
-  items: readonly TaskChatItem[],
-  predicate: (item: TaskChatItem) => item is T,
-): T | undefined {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
-    if (predicate(item)) return item;
-  }
-  return undefined;
-}
-
-function isHeadlineProtocolActivity(
-  item: TaskChatItem,
-): item is TaskChatProtocolItem {
-  return (
-    item.kind === "protocol" && protocolActivityPresentation(item) !== null
-  );
-}
 
 function currentActivityStatusItems(
   items: readonly TaskChatItem[],
@@ -79,131 +43,6 @@ function currentActivityStatusItems(
   return items.slice(boundaryIndex + 1);
 }
 
-type FoldedNarration =
-  | { kind: "commentary"; item: TaskChatMessageItem; order: number }
-  | {
-      kind: "reasoning";
-      item: TaskChatThinkingItem;
-      line: string | null;
-      lineIndex: number;
-      order: number;
-    };
-
-function latestFoldedNarration(
-  items: readonly TaskChatItem[],
-): FoldedNarration | null {
-  let latest: FoldedNarration | null = null;
-  for (const [index, item] of items.entries()) {
-    const order =
-      item.kind === "message" || item.kind === "thinking"
-        ? (item.transcriptIndex ?? index)
-        : -1;
-    if (item.kind === "message" && item.interstitial && item.text.trim()) {
-      if (!latest || order >= latest.order)
-        latest = { kind: "commentary", item, order };
-      continue;
-    }
-    if (item.kind !== "thinking") continue;
-    let lineIndex = -1;
-    for (
-      let candidate = item.lines.length - 1;
-      candidate >= 0;
-      candidate -= 1
-    ) {
-      if (item.lines[candidate]?.trim()) {
-        lineIndex = candidate;
-        break;
-      }
-    }
-    if (!latest || order >= latest.order) {
-      latest = {
-        kind: "reasoning",
-        item,
-        line: lineIndex < 0 ? null : item.lines[lineIndex]!.trim(),
-        lineIndex,
-        order,
-      };
-    }
-  }
-  return latest;
-}
-
-function FoldedReasoningTicker({
-  logicalKey,
-  text,
-}: {
-  logicalKey: string;
-  text: string;
-}) {
-  const [ticker, setTicker] = useState({
-    logicalKey,
-    motionKey: 0,
-    current: text,
-    exiting: null as string | null,
-  });
-  if (ticker.logicalKey !== logicalKey) {
-    setTicker({
-      logicalKey,
-      motionKey: ticker.motionKey + 1,
-      current: text,
-      exiting: ticker.current,
-    });
-  } else if (ticker.current !== text) {
-    // Token fragments update the mounted line. Only a new logical line moves
-    // the ticker, so streaming text does not restart the animation per token.
-    setTicker({ ...ticker, current: text });
-  }
-
-  return (
-    <div
-      className="flex min-w-0 gap-2 px-1 py-1.5"
-      data-testid="task-chat-reasoning-ticker"
-    >
-      <div className="flex shrink-0 items-center">
-        <Brain className="h-3.5 w-3.5 text-muted-foreground/50" aria-hidden />
-      </div>
-      <div className="relative h-5 min-w-0 flex-1 overflow-hidden">
-        {ticker.exiting !== null ? (
-          <span
-            key={`out-${ticker.motionKey}`}
-            className="cot-line-exit absolute inset-x-0 truncate text-(length:--text-compact) italic leading-5 text-muted-foreground"
-            onAnimationEnd={() =>
-              setTicker((current) => ({ ...current, exiting: null }))
-            }
-          >
-            {ticker.exiting}
-          </span>
-        ) : null}
-        <span
-          key={`in-${ticker.motionKey}`}
-          className={cn(
-            "absolute inset-x-0 truncate text-(length:--text-compact) italic leading-5 text-muted-foreground",
-            ticker.motionKey > 0 && "cot-line-enter",
-          )}
-          aria-live="polite"
-          aria-atomic="true"
-        >
-          {ticker.current}
-        </span>
-      </div>
-    </div>
-  );
-}
-
-function FoldedLiveNarration({
-  narration,
-}: {
-  narration: Extract<FoldedNarration, { kind: "reasoning" }>;
-}) {
-  if (!narration.line) return null;
-  return (
-    <FoldedReasoningTicker
-      logicalKey={`${narration.item.id}:${narration.lineIndex}`}
-      text={narration.line}
-    />
-  );
-}
-
 function formatCompactDuration(ms: number | null): string | null {
   if (ms == null || !Number.isFinite(ms)) return null;
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
@@ -222,83 +61,13 @@ function terminalStatusFailed(status: string): boolean {
   );
 }
 
-function RunnerActivityTimeline({ items }: { items: readonly TaskChatItem[] }) {
-  if (items.length === 0) return null;
-  return (
-    <div className="relative ml-4 min-w-0 pl-6">
-      <span
-        className="absolute inset-y-1 left-0 w-px bg-border/70"
-        aria-hidden
-        data-testid="task-chat-runner-activity-rail"
-      />
-      <ol
-        className="flex min-w-0 flex-col gap-2 py-1"
-        aria-label="Run activity"
-        data-testid="task-chat-runner-activity-list"
-      >
-        {items.map((item, index) => (
-          <li className="min-w-0" key={item.id} data-activity-item-id={item.id}>
-            {item.kind === "message" ? (
-              <div
-                className="min-w-0 px-1 text-sm text-foreground/90"
-                data-testid="task-chat-activity-commentary"
-              >
-                <MarkdownBody softBreaks linkIssueReferences>
-                  {item.text}
-                </MarkdownBody>
-              </div>
-            ) : item.kind === "thinking" ? (
-              <TaskChatThinking
-                item={item}
-                active={Boolean(item.streaming) && index === items.length - 1}
-                defaultOpen={false}
-                rowClassName="mx-0 px-0"
-              />
-            ) : item.kind === "tool" ? (
-              <TaskChatToolCard item={item} />
-            ) : item.kind === "usage" ? (
-              <TaskChatUsageReadout item={item} />
-            ) : item.kind === "marker" ? (
-              <RunnerActivityMarker item={item} />
-            ) : item.kind === "protocol" ? (
-              <TaskChatProtocolActivityRow item={item} />
-            ) : null}
-          </li>
-        ))}
-      </ol>
-    </div>
-  );
-}
-
-function RunnerActivityMarker({ item }: { item: TaskChatMarkerItem }) {
-  return (
-    <div className="flex min-h-6 min-w-0 items-center gap-2 py-1 text-xs text-destructive">
-      <span className="flex w-5 shrink-0 items-center justify-center">
-        <OctagonX
-          className="h-3.5 w-3.5 shrink-0"
-          aria-hidden
-          data-testid="task-chat-marker-icon"
-        />
-      </span>
-      <span className="shrink-0 font-medium">{item.label}</span>
-      {item.detail ? (
-        <span className="min-w-0 truncate text-muted-foreground">
-          {item.detail}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
 function RunnerTurnStatus({
   status,
-  execution,
   startedAtMs,
   finishedAtMs,
   continuedAfterSteering = false,
 }: {
   status: string;
-  execution?: ExecutionProjection | null;
   startedAtMs: number | null;
   finishedAtMs?: number | null;
   continuedAfterSteering?: boolean;
@@ -315,9 +84,8 @@ function RunnerTurnStatus({
   const elapsed = formatCompactDuration(elapsedMs);
 
   const failed = terminalStatusFailed(status);
-  const reconnecting = execution?.phase === "reconnecting" || execution?.phase === "retry_scheduled";
-  const label = reconnecting ? "Reconnecting…" : (terminal ? (failed ? "Stopped" : "Worked") : "Working");
-  const semanticLabel = reconnecting ? label : terminal
+  const label = terminal ? (failed ? "Stopped" : "Worked") : "Working";
+  const semanticLabel = terminal
     ? elapsed
       ? `${label} ${failed ? "after" : "for"} ${elapsed}`
       : label
@@ -339,90 +107,11 @@ function RunnerTurnStatus({
   );
 }
 
-function RunnerCurrentActivityTail({
-  items,
-  status,
-}: {
-  items: readonly TaskChatItem[];
-  status: string;
-}) {
+function RunnerCurrentActivityTail({ status }: { status: string }) {
   if (isTerminalRunStatus(status)) return null;
-  const activity = lastOf<
-    TaskChatThinkingItem | TaskChatToolItem | TaskChatProtocolItem
-  >(
-    items,
-    (
-      item,
-    ): item is TaskChatThinkingItem | TaskChatToolItem | TaskChatProtocolItem =>
-      item.kind === "thinking" ||
-      item.kind === "tool" ||
-      isHeadlineProtocolActivity(item),
-  );
-
-  let Icon: ComponentType<SVGProps<SVGSVGElement>> | null = null;
-  let label = "Thinking";
-  let detail: string | undefined;
-  let family: string | undefined;
-  let active = true;
-  if (activity?.kind === "tool") {
-    const taxonomy = toolTaxonomy(activity.rawName ?? activity.name);
-    Icon = taxonomy.icon;
-    label = taxonomy.verbLabel;
-    detail = activity.target;
-    active = activity.status === "pending" || activity.status === "in_progress";
-  } else if (activity?.kind === "protocol") {
-    const presentation = protocolActivityPresentation(activity);
-    if (presentation) {
-      Icon = presentation.icon;
-      label = protocolActivityLabel(activity, presentation);
-      detail = presentation.detail;
-      active = protocolActivityIsRunning(activity);
-      family =
-        activity.surface === "provider_activity"
-          ? activity.family
-          : activity.surface;
-    }
-  }
-
-  return (
-    <div
-      className="mt-2 flex min-h-8 min-w-0 items-center gap-2 px-1 py-1 text-xs text-muted-foreground"
-      data-testid="task-chat-current-activity"
-      data-activity-family={family}
-      data-turn-position="tail"
-    >
-      {Icon ? (
-        <span className="flex w-5 shrink-0 items-center justify-center">
-          <Icon
-            className={cn(
-              "h-3.5 w-3.5 shrink-0",
-              active && "text-(--status-agent-running)",
-            )}
-            aria-hidden
-            data-testid="task-chat-current-activity-icon"
-          />
-        </span>
-      ) : null}
-      <span className="flex min-w-0 flex-1 items-baseline gap-2">
-        <span
-          className={cn(
-            "shrink-0 font-normal",
-            active && "shimmer-text shimmer-text-muted",
-          )}
-          aria-live="polite"
-          aria-atomic="true"
-          data-testid="task-chat-current-activity-label"
-        >
-          {label}
-        </span>
-        {detail ? (
-          <span className="min-w-0 truncate font-mono text-(length:--text-micro)">
-            {detail}
-          </span>
-        ) : null}
-      </span>
-    </div>
-  );
+  return <div className="mt-2 flex min-h-8 min-w-0 items-center gap-2 px-1 py-1 text-xs text-muted-foreground" data-testid="task-chat-current-activity" data-turn-position="tail">
+    <span className="shimmer-text shimmer-text-muted" aria-live="polite" data-testid="task-chat-current-activity-label">Thinking</span>
+  </div>;
 }
 
 export function TaskChatRunnerTurn({
@@ -431,7 +120,6 @@ export function TaskChatRunnerTurn({
   agentIcon,
   items,
   status,
-  execution,
   startedAtMs,
   finishedAtMs,
   activityUnavailable = false,
@@ -459,8 +147,6 @@ export function TaskChatRunnerTurn({
   ) => void | Promise<void>;
 }) {
   const terminal = isTerminalRunStatus(status);
-  const narration = latestFoldedNarration(items);
-  const currentActivityItems = currentActivityStatusItems(items);
   const yielded = items.some(
     (item) =>
       item.kind === "protocol" &&
@@ -507,6 +193,7 @@ export function TaskChatRunnerTurn({
   }
   const final = finalRef.current.item;
   const timelineItems = paperclipRunnerTimelineItems(items);
+  const currentActivityItems = currentActivityStatusItems(timelineItems);
   const timelineRows = buildTurnTimelineRows(
     omitProgressRepeatedByResponse(timelineItems, final?.text),
     !terminal,
@@ -530,23 +217,14 @@ export function TaskChatRunnerTurn({
         ) : null}
         <RunnerTurnStatus
           status={status}
-          execution={execution}
           startedAtMs={startedAtMs}
           finishedAtMs={finishedAtMs}
           continuedAfterSteering={continuedAfterSteering}
         />
       </div>
-      {!terminal && narration?.kind === "reasoning" && !final ? (
-        <div
-          className="flex min-w-0 flex-col py-1"
-          data-testid="task-chat-live-narration"
-        >
-          <FoldedLiveNarration narration={narration} />
-        </div>
-      ) : null}
       {activityUnavailable ? (
         <div
-          className="px-1 py-1 text-xs text-destructive"
+          className="px-1 py-1 text-xs text-muted-foreground"
           role="status"
           data-testid="task-chat-activity-unavailable"
         >
@@ -567,16 +245,7 @@ export function TaskChatRunnerTurn({
               data-thread-anchor={row.id}
             >
               {row.kind === "activity_phase" ? (
-                <TaskChatActivityPhase
-                  item={row}
-                  appearance="runner"
-                  autoOpen={false}
-                  childrenClassName="pl-0"
-                  renderChild={() => null}
-                  renderChildren={(children) => (
-                    <RunnerActivityTimeline items={children} />
-                  )}
-                />
+                <TaskChatRunnerActivityGroup item={row} />
               ) : row.kind === "plan_document" ? (
                 <TaskChatPlanPreviewCard
                   source={{ kind: "saved", document: row.document }}
@@ -609,7 +278,7 @@ export function TaskChatRunnerTurn({
           />
         </div>
       ) : null}
-      {!final && (!execution || execution.phase === "working") ? <RunnerCurrentActivityTail items={currentActivityItems} status={status} /> : null}
+      {!final && currentActivityItems.length === 0 ? <RunnerCurrentActivityTail status={status} /> : null}
     </div>
   );
 }
