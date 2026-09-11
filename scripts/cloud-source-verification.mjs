@@ -55,9 +55,9 @@ export async function readSourceVerification(sha, api) {
     if (!trustedRun(current, sha, workflow.id) || current.run_attempt !== run.run_attempt) return undefined;
     return { sha, runId: run.id, attempt: run.run_attempt, jobId: job.id };
   }
-  if (job?.status === "completed" || run.status === "completed") {
-    throw new Error(`Cloud source verification did not pass for ${sha} (run ${run.id}, attempt ${run.run_attempt}). Rerun Cloud readiness before retrying the release.`);
-  }
+  // A completed attempt without a passing job is not terminal: a rerun of the
+  // Cloud readiness workflow may already be in progress. Return undefined so
+  // waitForSourceVerification keeps polling and catches the next attempt.
   return undefined;
 }
 

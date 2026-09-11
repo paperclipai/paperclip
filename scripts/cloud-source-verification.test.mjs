@@ -57,13 +57,13 @@ test("a newer pending run cannot fall back to an older successful run", async ()
   assert.equal(await readSourceVerification(sha, api), undefined);
 });
 
-test("job identities and terminal failures fail closed", async () => {
+test("a job that does not pass leaves the proof pending for the outer loop to retry", async () => {
   for (const overrides of [
     { head_sha: "b".repeat(40) }, { run_id: 999 }, { run_attempt: 1 },
     { conclusion: "failure" }, { conclusion: "cancelled" }, { conclusion: "skipped" },
   ]) {
     const { api } = fixture({ jobs: [{ ...baseJob, ...overrides }] });
-    await assert.rejects(readSourceVerification(sha, api), /did not pass/);
+    assert.equal(await readSourceVerification(sha, api), undefined, JSON.stringify(overrides));
   }
 });
 
@@ -74,7 +74,10 @@ test("a rerun racing the jobs read cannot reuse the previous attempt", async () 
 
 test("the versioned proof must exist and be unique", async () => {
   for (const jobs of [[], [{ ...baseJob, name: "Cloud deployable v1" }]]) {
-    await assert.rejects(readSourceVerification(sha, fixture({ runs: [{ ...baseRun, status: "completed" }], jobs }).api), /did not pass/);
+    assert.equal(
+      await readSourceVerification(sha, fixture({ runs: [{ ...baseRun, status: "completed" }], jobs }).api),
+      undefined,
+    );
   }
   await assert.rejects(readSourceVerification(sha, fixture({ jobs: [baseJob, baseJob] }).api), /ambiguous/);
 });
@@ -116,6 +119,33 @@ test("pending verification succeeds when its exact job completes", async () => {
   });
   assert.equal(proof.sha, sha);
   assert.equal(time, 30);
+});
+
+test("a failed attempt does not block polling: a subsequent rerun that succeeds is detected", async () => {
+  let time = 0;
+  let poll = 0;
+  const failedRun = { ...baseRun, run_attempt: 1, status: "completed", conclusion: "failure" };
+  const successRun = { ...baseRun, run_attempt: 2 };
+  const failedJob = { ...baseJob, run_attempt: 1, status: "completed", conclusion: "failure" };
+  const proof = await waitForSourceVerification(sha, {
+    api: async (path) => {
+      if (path.endsWith("/workflows/cloud-readiness.yml")) return workflow;
+      if (path.includes("/workflows/123/runs?")) {
+        poll += 1;
+        return { total_count: 1, workflow_runs: [poll === 1 ? failedRun : successRun] };
+      }
+      if (path.includes("/attempts/1/jobs?")) return { jobs: [failedJob] };
+      if (path.includes("/attempts/2/jobs?")) return { jobs: [baseJob] };
+      if (path.endsWith("/runs/456")) return successRun;
+      throw new Error(`Unexpected path: ${path}`);
+    },
+    now: () => time,
+    sleep: async (ms) => { time += ms; },
+    timeoutMs: 60_000, intervalMs: 30_000, log: () => {},
+  });
+  assert.equal(proof.sha, sha);
+  assert.equal(proof.attempt, 2);
+  assert.equal(time, 30_000);
 });
 
 test("malformed source refs are rejected before any request", async () => {
