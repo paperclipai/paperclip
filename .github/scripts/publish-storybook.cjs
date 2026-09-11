@@ -35,7 +35,10 @@ const indexFile = path.join(process.env.RUNNER_TEMP, 'storybook-branch-index.htm
 fs.writeFileSync(indexFile, branchIndex(destination.buildUrl));
 aws(['s3', 'cp', indexFile, `s3://${destination.bucket}/${destination.prefix}/index.html`,
   '--content-type', 'text/html; charset=utf-8', '--cache-control', 'no-cache,max-age=0,must-revalidate', '--only-show-errors']);
-if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `url=${destination.url}\nbuild_url=${destination.buildUrl}\n`);
-if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
-  `[Branch Storybook](${destination.url})\n\n[This build](${destination.buildUrl})\n\nCommit: \`${destination.sha}\`\n`);
+const report = `[Branch Storybook](${destination.url})\n\n[This build](${destination.buildUrl})\n\nCommit: \`${destination.sha}\`\n`;
+const reportPath = path.join(process.env.RUNNER_TEMP, 'storybook-deployment.md');
+fs.writeFileSync(reportPath, report);
+if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT,
+  `url=${destination.url}\nbuild_url=${destination.buildUrl}\nreport_path=${reportPath}\n`);
+if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, report);
 console.log(JSON.stringify(destination));

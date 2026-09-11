@@ -155,3 +155,11 @@ jobs:
         run: |
           curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 10 \
             "${BUILD_URL%index.html}deployment.json" | jq -e --arg sha "$SOURCE_SHA" '.sha == $sha'
+      - name: Upload deployment links
+        if: ${{ !cancelled() && steps.deployment.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: storybook-deployment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.deployment.outputs.report_path }}
+          if-no-files-found: error
+          retention-days: 30

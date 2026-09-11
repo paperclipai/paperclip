@@ -129,7 +129,9 @@ gh workflow run storybook-visual.yml --ref master -f deploy_preview=true -f bran
 ```
 
 Approve the `storybook-deploy` environment as a CODEOWNER. The workflow summary
-links the **stable branch URL** and **this build**. Different branches have
+links the **stable branch URL** and **this build**. The run also uploads a
+`storybook-deployment-<run-id>-<attempt>` artifact containing
+`storybook-deployment.md` with both links and the source commit. Different branches have
 different URLs; publishing one never replaces another. Redeploying the same
 branch updates its stable URL only after all files for the new build are uploaded.
 Previous build links keep working. The branch entry preserves Storybook query

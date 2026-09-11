@@ -151,8 +151,14 @@ function publishFixture(options = {}) {
   } });
   let uploads = [];
   try { uploads = readFileSync(path.join(dir, 'uploads'), 'utf8').trim().split('\n').map(JSON.parse); } catch {}
+  let report = '';
+  let summary = '';
+  if (result.status === 0) {
+    report = readFileSync(path.join(dir, 'storybook-deployment.md'), 'utf8');
+    summary = readFileSync(path.join(dir, 'summary'), 'utf8');
+  }
   rmSync(dir, { recursive: true, force: true });
-  return { result, uploads };
+  return { result, uploads, report, summary };
 }
 test('publisher uploads a complete build then updates only that branch entry', () => {
   const { result, uploads } = publishFixture();
@@ -174,4 +180,14 @@ test('artifact symlinks fail before any upload', () => {
   const { result, uploads } = publishFixture({ symlink: true });
   assert.notEqual(result.status, 0);
   assert.equal(uploads.length, 0);
+});
+
+test('successful publication produces a downloadable Markdown report matching the run summary', () => {
+  const { result, report, summary } = publishFixture();
+  assert.equal(result.status, 0, result.stderr);
+  const d = storybookDestination(input);
+  assert.ok(report.includes(`[Branch Storybook](${d.url})`));
+  assert.ok(report.includes(`[This build](${d.buildUrl})`));
+  assert.ok(report.includes(d.sha));
+  assert.equal(report, summary);
 });
