@@ -750,8 +750,6 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBE
 const NULL_ENVIRONMENT_PROCESS_LOSS_RETRY_REASON = "retry_transient_environment_failure";
 const NULL_ENVIRONMENT_PROCESS_LOSS_WAKE_REASON = "process_lost_environment_retry";
 const NULL_ENVIRONMENT_PROCESS_LOSS_RETRY_DELAYS_MS = [60_000, 180_000, 540_000] as const;
-export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
-export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 3;
 const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set(["accepted", "answered", "rejected"]);
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
@@ -18496,11 +18494,11 @@ export function heartbeatService(
           hasEnvironmentLease: environmentLease !== null,
         });
       const shouldRetryLegacyProcessLoss = (run.processLossRetryCount ?? 0) < 1 && (
-        (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
+        (tracksLegacyLocalChild && (!!run.processPid || !!run.processGroupId)) ||
         monitorDispatchLostWithoutFutureWake
       );
       const shouldRetry = nullEnvironmentProcessLoss || shouldRetryLegacyProcessLoss;
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const baseMessage = buildProcessLossMessage(run);
       const allocationDiagnostic = nullEnvironmentProcessLoss
         ? {
             phase: "environment_selection",
@@ -18515,16 +18513,7 @@ export function heartbeatService(
       const allocationDiagnosticLine = allocationDiagnostic
         ? `[environment-allocation] ${allocationDiagnostic.phase}:${allocationDiagnostic.reasonCode}`
         : null;
-      const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
-        ? {
-          kind: "orphaned_process_group_cleanup",
-          stopped: true,
-          stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
-          reason: UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
-          processPid: run.processPid ?? null,
-          processGroupId: run.processGroupId ?? null,
-        }
-        : null;
+      const unmanagedBackgroundTaskEvidence = null;
 
       let finalizedRun = await setRunStatus(run.id, "failed", {
         error: shouldRetry
@@ -18626,7 +18615,7 @@ export function heartbeatService(
         payload: {
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
-          ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
+          ...(allocationDiagnostic ? { environmentAllocationDiagnostic: allocationDiagnostic } : {}),
           ...(allocationDiagnostic ? { environmentAllocationDiagnostic: allocationDiagnostic } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
