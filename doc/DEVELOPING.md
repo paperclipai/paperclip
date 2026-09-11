@@ -119,8 +119,9 @@ Linux screenshot or Storybook capture jobs should not install host Inter package
 or inject external font CSS to make Paperclip text render correctly.
 
 Font assets live in Vite's public directory so `pnpm --filter @paperclipai/ui build`
-emits them under `ui/dist/fonts/`. The server package copies the same output into
-`server/ui-dist/fonts/` through `scripts/prepare-server-ui-dist.sh`.
+emits them under `ui/dist/fonts/`. Server package preparation runs
+`scripts/prepare-server-package-assets.sh`, which copies the UI output into
+`server/ui-dist/` and the repository skills into `server/skills/` before staging.
 
 Inspect or stop the current repo's managed dev runner:
 

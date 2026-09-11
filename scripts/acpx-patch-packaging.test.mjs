@@ -40,6 +40,10 @@ const dbPackage = JSON.parse(
 const releaseScript = await readFile(new URL("./release.sh", import.meta.url), "utf8");
 const releaseLib = await readFile(new URL("./release-lib.sh", import.meta.url), "utf8");
 const buildNpmScript = await readFile(new URL("./build-npm.sh", import.meta.url), "utf8");
+const prepareServerPackageAssetsScript = await readFile(
+  new URL("./prepare-server-package-assets.sh", import.meta.url),
+  "utf8",
+);
 const acpxRuntimePatch = await readFile(
   new URL("../patches/acpx@0.13.1.patch", import.meta.url),
   "utf8",
@@ -423,6 +427,21 @@ test("bundled package dry runs preview without querying published versions", () 
 test("npm builds use corepack instead of requiring a global pnpm", () => {
   assert.match(buildNpmScript, /corepack pnpm -r typecheck/);
   assert.doesNotMatch(buildNpmScript, /^\s*pnpm -r typecheck/m);
+});
+
+test("server release packaging prepares every generated manifest entry", () => {
+  assert.match(
+    releaseScript,
+    /bash "\$REPO_ROOT\/scripts\/prepare-server-package-assets\.sh"/,
+  );
+  assert.match(
+    prepareServerPackageAssetsScript,
+    /bash "\$REPO_ROOT\/scripts\/prepare-server-ui-dist\.sh"/,
+  );
+  assert.match(
+    prepareServerPackageAssetsScript,
+    /cp -r "\$REPO_ROOT\/skills" "\$SERVER_SKILLS"/,
+  );
 });
 
 

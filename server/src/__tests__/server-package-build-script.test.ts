@@ -21,9 +21,13 @@ describe("server package build script", () => {
       scripts?: Record<string, string>;
     };
 
-    expect(packageJson.scripts?.prepack).toBe(
-      "pnpm run prepare:ui-dist && pnpm run build",
+    expect(packageJson.scripts?.["prepare:package-assets"]).toBe(
+      "bash ../scripts/prepare-server-package-assets.sh",
     );
+    expect(packageJson.scripts?.prepack).toBe(
+      "pnpm run prepare:package-assets && pnpm run build",
+    );
+    expect(packageJson.scripts?.postpack).toBe("rm -rf ui-dist skills");
   });
 
   it("copies static runtime asset directories into dist", () => {
