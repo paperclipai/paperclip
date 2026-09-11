@@ -198,7 +198,7 @@
      `.dark` block below overrides the hues that need a mode-specific value. */
   --status-task-icon-backlog: #52585d;   /* gray darkened — 7.21:1 on paper */
   --status-task-icon-todo: #cc7a00;       /* amber darkened — clears 3:1 */
-  --status-task-icon-in_progress: var(--status-task-in_progress); /* #2563eb on light surfaces */
+  --status-task-icon-in_progress: var(--color-blue-600); /* matches nav dots and live labels */
   --status-task-icon-in_review: var(--status-task-in_review);     /* #7c3aed (light) */
   --status-task-icon-done: #16a34a;       /* green darkened — clears 3:1 */
   --status-task-icon-blocked: var(--status-task-blocked);         /* #dc2626 both modes */
@@ -414,7 +414,7 @@
      Blocked retains its base red; in_queue follows the progress icon blue. */
   --status-task-icon-backlog: #9a958a;
   --status-task-icon-todo: #fbbf24;
-  --status-task-icon-in_progress: #60a5fa; /* ~7:1 on the dark background */
+  --status-task-icon-in_progress: var(--color-blue-400); /* matches nav dots and live labels */
   --status-task-icon-in_review: #9474f0;  /* deeper than violet-400, reads purple */
   --status-task-icon-done: #34d06f;
   --status-task-icon-cancelled: #9a958a;
