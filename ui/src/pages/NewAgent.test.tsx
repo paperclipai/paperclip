@@ -39,6 +39,11 @@ const state = vi.hoisted(() => ({
   navigate: vi.fn(),
   openNewIssue: vi.fn(),
 }));
+const managedApi = vi.hoisted(() => ({
+  list: vi.fn(async () => ({ currentUserId: "user-1", connections: [] })),
+  create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
+}));
+vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
 vi.mock("@/api/agents", () => ({ agentsApi: api }));
 vi.mock("@/api/environments", () => ({ environmentsApi: envApi }));
 vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: settings }));
@@ -287,9 +292,9 @@ describe("New agent setup", () => {
     expect(api.hire.mock.calls[0][1].adapterConfig.apiKey).toMatchObject({ type: "secret_ref", secretId: "org-secret-1" });
     expect(JSON.stringify(api.hire.mock.calls)).not.toContain("hermes-test-key");
   });
-  it("shows Grok login guidance and hides ignored Kimi and OpenCode effort controls", async () => {
+  it("uses the shared Grok connection flow and hides ignored Kimi and OpenCode effort controls", async () => {
     await render("grok_local");
-    expect(container.textContent).toContain("grok login");
+    expect(container.textContent).toContain("Connect Atlas to Grok");
     await render("opencode_local");
     expect(container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
   });
@@ -374,16 +379,20 @@ describe("New agent setup", () => {
     ["codex_local", "codex", "OpenAI", "OPENAI_API_KEY"],
     ["paperclip_runner", "claude", "Claude", "ANTHROPIC_API_KEY"],
     ["paperclip_runner", "codex", "OpenAI", "OPENAI_API_KEY"],
-  ])("stores %s %s API credentials only when finishing", async (adapter, runner, provider, key) => {
+  ])("stores %s %s as a reusable connection before hiring", async (adapter, runner, provider, key) => {
     await render(adapter, runner);
     await click("Use API key insteadUse subscription insteadUse API key instead");
     await click(provider + "API");
     await fill("API key", "connection-key");
     await click("Connect");
-    expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({ [key]: "connection-key" });
+    const binding = { provider: key === "ANTHROPIC_API_KEY" ? "anthropic" : "openai", method: "api_key", mode: "responsible_user" };
+    expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ apiKey: "connection-key", provider: binding.provider }));
+    expect(api.testEnvironment.mock.calls[0][2].testCredentials).toEqual({});
+    expect(api.testEnvironment.mock.calls[0][2].aiConnection).toEqual(binding);
     expect(secrets.createUserSecretDefinition).not.toHaveBeenCalled();
     await click("Finish setup");
-    expect(api.hire.mock.calls[0][1].adapterConfig.env[key].type).toBe("user_secret_ref");
+    expect(api.hire.mock.calls[0][1].runtimeConfig.aiConnection).toEqual(binding);
+    expect(managedApi.create).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(api.hire.mock.calls)).not.toContain("connection-key");
   });
   it.each([

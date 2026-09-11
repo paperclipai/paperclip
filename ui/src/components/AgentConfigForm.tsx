@@ -1,3 +1,5 @@
+import { AiConnectionField } from "./ai-connections/AiConnectionField";
+import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { testAgentSetup } from "@/lib/test-agent-setup";
 import { RuntimeTestCard } from "./RuntimeTestCard";
 import { useState, useEffect, useRef, useMemo, useCallback, Children, isValidElement, type ReactNode } from "react";
@@ -44,7 +46,7 @@ import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
 import { copyTextToClipboard } from "../lib/clipboard";
 import {
   connectSourceName,
-  OnboardingLoginCard,
+  ProviderSubscriptionCard,
   OnboardingCardField,
   OnboardingLoginCodeRow,
   type AdapterLoginChrome,
@@ -1060,9 +1062,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "claude" ? "claude_local"
               : adapterType
           : adapterType;
-        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, environmentId });
+        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, environmentId, ...(!isCreate ? { agentId: props.agent.id, aiConnection: aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection).data } : {}) });
       }
-      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, environmentId });
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, environmentId, ...(!isCreate ? { agentId: props.agent.id, aiConnection: aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection).data } : {}) });
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
@@ -1138,6 +1140,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     environmentCapabilities?.sandboxProviders?.[effectiveLoginProvider]?.supportsLoginPty === true;
   const loginNeedsPty = adapterCaps.login != null;
   const showAdapterLogin =
+    (isCreate || !((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection)) &&
     adapterSupportsSandboxLogin &&
     effectiveLoginEnvironment?.driver === "sandbox" &&
     Boolean(effectiveLoginEnvironmentId) &&
@@ -1639,6 +1642,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               />
             </Field>
           )}
+
+          {!isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={adapterType === "paperclip_runner" ? eff("adapterConfig", "provider", config.provider) === "codex" ? "codex_local" : eff("adapterConfig", "provider", config.provider) === "opencode" ? "opencode_local" : eff("adapterConfig", "provider", config.provider) === "acpx" && eff("adapterConfig", "acpxAgent", config.acpxAgent) === "claude" ? "claude_local" : adapterType : adapterType}
+            value={aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
+            model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
+            onChange={binding => mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding })} />}
 
           {showInlineAdapterTestEnvironmentFeedback && !props.compactTestFeedback && (testActionError || testEnvironment.error) && (
             <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
@@ -2242,6 +2250,7 @@ export type AdapterLoginDescriptor = {
 // correctly, and the first thing to rot would have been the timeout and
 // cleanup paths, which are the ones nobody exercises by hand.
 export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
+  aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   onStored?: (storedSessionId: string) => void;
   onApplyStored?: () => void;
   // Applies the non-secret Codex account-binding claim from an authenticated
@@ -2260,7 +2269,7 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   // The login reached its success state. Onboarding advances on this, which is
   // why the `onboarding` chrome draws no success state of its own — the screen
   // it would appear on is already gone.
-  onConnected?: () => void;
+  onConnected?: (sessionId?: string) => void;
   // The pasted code went to the server. Fires as the submit starts rather than
   // when the login finishes, so a caller can show the work the moment the
   // customer has done their part: the round trip to `onConnected` is a poll
@@ -2325,6 +2334,7 @@ function DisplayedCodeLoginPanel({
   onConnected,
   onAccountBinding,
   chrome = "panel",
+  aiConnection,
   onPromptReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -2349,7 +2359,7 @@ function DisplayedCodeLoginPanel({
   const resumedRef = useRef(false);
 
   const startLogin = useMutation({
-    mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId }),
+    mutationFn: () => agentsApi.startAdapterAuthLogin(companyId, adapterType, { environmentId, aiConnection }),
     onSuccess: (session) => {
       resumedRef.current = false;
       setStartError(null);
@@ -2388,7 +2398,10 @@ function DisplayedCodeLoginPanel({
     queryKey: ["adapter-login-active-session", companyId, adapterType],
     queryFn: async () => {
       try {
-        return await agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType);
+        const active = await agentsApi.getActiveAdapterAuthLoginSession(companyId, adapterType);
+        if (!active) return null;
+        if ((aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new Error("Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
+        return active;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
         throw error;
@@ -2530,7 +2543,7 @@ function DisplayedCodeLoginPanel({
   useEffect(() => {
     if (status !== "authenticated" || connectedRef.current) return;
     connectedRef.current = true;
-    onConnectedRef.current?.();
+    onConnectedRef.current?.(sessionId ?? undefined);
   }, [status]);
 
   // Drive the account-binding hand-off as a visible state machine, not a
@@ -2582,24 +2595,11 @@ function DisplayedCodeLoginPanel({
   if (chrome === "onboarding") {
     const failed = isTerminal && status && status !== "authenticated";
     return (
-      <OnboardingLoginCard
+      <ProviderSubscriptionCard
         loading={!prompt && !startError && !failed}
-        instruction={
-          <>
-            {/* The same destination as the step's own button. Two ways to one
-                link: the button for the customer following the flow, the anchor
-                for anyone finishing in another browser. */}
-            <a
-              href={prompt?.url}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="underline underline-offset-2 hover:text-foreground"
-            >
-              Sign in to {connectSourceName(adapterType)}
-            </a>
-            {" by providing the authorization code below"}
-          </>
-        }
+        providerName={connectSourceName(adapterType)}
+        authorizationUrl={prompt?.url}
+        mode="displayed_code"
       >
         {startError ? (
           <p role="alert" className="pl-2 text-xs text-destructive">
@@ -2616,7 +2616,7 @@ function DisplayedCodeLoginPanel({
         ) : (
           <OnboardingLoginCodeRow code={prompt?.code ?? ""} autoCopy />
         )}
-      </OnboardingLoginCard>
+      </ProviderSubscriptionCard>
     );
   }
 
@@ -2816,6 +2816,7 @@ function SubmittedBrowserCodeLoginPanel({
   onCodeSubmitted,
   onSubmitFailed,
   chrome = "panel",
+  aiConnection,
   onPromptReady,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -2903,10 +2904,11 @@ function SubmittedBrowserCodeLoginPanel({
     mutationFn: () =>
       agentsApi.startClaudeSetupTokenLogin(companyId, {
         environmentId,
+        aiConnection,
         // When the owner already has a stored token, the login rotates it under
         // the captured version, so a replacement login never conflicts with an
         // existing value. Without a stored token the login is a first write.
-        ...(storedToken
+        ...(storedToken && !aiConnection
           ? {
               overwrite: {
                 expectedSecretId: storedToken.secretId,
@@ -2980,7 +2982,10 @@ function SubmittedBrowserCodeLoginPanel({
     queryKey: ["claude-setup-token-active-session", companyId],
     queryFn: async () => {
       try {
-        return await agentsApi.getActiveClaudeSetupTokenLoginSession(companyId);
+        const active = await agentsApi.getActiveClaudeSetupTokenLoginSession(companyId);
+        if (!active) return null;
+        if ((aiConnection && active.environmentId !== environmentId) || Boolean(active.aiConnection) !== Boolean(aiConnection) || (aiConnection && (active.aiConnection?.provider !== aiConnection.provider || active.aiConnection?.method !== aiConnection.method || active.aiConnection?.connectionId !== aiConnection.connectionId || active.aiConnection?.ownership !== aiConnection.ownership || active.aiConnection?.allAgents !== aiConnection.allAgents || JSON.stringify(active.aiConnection?.agentIds) !== JSON.stringify(aiConnection.agentIds)))) throw new Error("Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
+        return active;
       } catch (error) {
         if (error instanceof ApiError && error.status === 404) return null;
         throw error;
@@ -3300,7 +3305,7 @@ function SubmittedBrowserCodeLoginPanel({
   useEffect(() => {
     if (!isStored || connectedRef.current) return;
     connectedRef.current = true;
-    onConnectedRef.current?.();
+    onConnectedRef.current?.(sessionId ?? undefined);
   }, [isStored]);
 
   // The other end of `onCodeSubmitted`. Any of these after a submit means the
@@ -3324,21 +3329,11 @@ function SubmittedBrowserCodeLoginPanel({
   if (chrome === "onboarding") {
     const failedNow = isFailure || timedOut;
     return (
-      <OnboardingLoginCard
+      <ProviderSubscriptionCard
         loading={!authorizationUrl && !startError && !failedNow}
-        instruction={
-          <>
-            <a
-              href={authorizationUrl ?? undefined}
-              target="_blank"
-              rel="noreferrer noopener"
-              className="underline underline-offset-2 hover:text-foreground"
-            >
-              Sign in to {connectSourceName(adapterType)}
-            </a>
-            {" then come back and enter authorization code"}
-          </>
-        }
+        providerName={connectSourceName(adapterType)}
+        authorizationUrl={authorizationUrl ?? undefined}
+        mode="submitted_code"
       >
         {/* The plain-HTTP advisory survives the redesign. It is the one thing on
             this card not about getting the login done, and dropping it to keep
@@ -3374,7 +3369,7 @@ function SubmittedBrowserCodeLoginPanel({
             disabled={submitCode.isPending || isCompleting || codeSubmitted}
           />
         )}
-      </OnboardingLoginCard>
+      </ProviderSubscriptionCard>
     );
   }
 

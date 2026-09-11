@@ -6,13 +6,17 @@ import { agentsApi } from "../api/agents";
  * the adapter's existing read-only CLI hello probe before calling setup connected. */
 export async function testAgentSetup(input: {
   companyId: string;
+  agentId?: string;
   adapterType: string;
   providerAdapter: string;
   adapterConfig: Record<string, unknown>;
+  aiConnection?: import("@paperclipai/shared").AiConnectionBinding;
   testCredentials?: Record<string, string>;
   environmentId: string | null;
 }): Promise<AdapterEnvironmentTestResult> {
   const payload = {
+    ...(input.agentId ? { agentId: input.agentId } : {}),
+    ...(input.aiConnection ? { aiConnection: input.aiConnection } : {}),
     adapterConfig: input.adapterConfig,
     ...(input.testCredentials ? { testCredentials: input.testCredentials } : {}),
     environmentId: input.environmentId,

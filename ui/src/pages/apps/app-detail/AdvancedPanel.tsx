@@ -141,12 +141,14 @@ export function ReconnectCard({
   connection,
   galleryEntry,
   onReconnected,
+  onReconnect,
   canReconnect = true,
   reconnectUnavailableMessage,
 }: {
   connection: ToolConnection;
   galleryEntry: AppDefinition | null;
   onReconnected: () => void;
+  onReconnect?: () => void;
   canReconnect?: boolean;
   reconnectUnavailableMessage?: string;
 }) {
@@ -216,6 +218,8 @@ export function ReconnectCard({
           <p className="text-sm text-amber-800 dark:text-amber-200">
             {reconnectUnavailableMessage ?? "You don't have permission to reconnect this identity."}
           </p>
+        ) : onReconnect ? (
+          <Button size="sm" variant="outline" onClick={onReconnect}>Reconnect</Button>
         ) : managedByVercel && !oauth ? (
           <div className="flex items-center gap-2">
             <Button type="button" size="sm" variant="outline" asChild>

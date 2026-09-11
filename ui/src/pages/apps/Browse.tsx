@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { ManagedAiConnectionRow } from "@/components/ai-connections/ManagedAiConnectionDetails";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -19,6 +20,7 @@ import {
   getAppDefinitionForUrl,
   getAppStoreDefinition,
   isToolConnectionAttentionHealth,
+  aiSubscriptionNeedsIsolatedLogin,
 } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
@@ -174,7 +176,7 @@ function connectionState(connection: ToolConnection): ConnectionState {
       message: "Agents can’t use this account right now.",
     };
   }
-  if (isToolConnectionAttentionHealth(connection.healthStatus)) {
+  if ((connection.connectionPurpose === "ai" && (connection.healthStatus !== "ok" || aiSubscriptionNeedsIsolatedLogin(connection.config))) || isToolConnectionAttentionHealth(connection.healthStatus)) {
     return {
       kind: "attention",
       label: "Needs attention",
@@ -265,7 +267,7 @@ function accountActionHref(
  * surface. Connected providers sort first and expand in place to show every
  * account; unconnected providers retain the same catalog setup flows.
  */
-export function Browse() {
+export function Browse({ renderAccountDetails = (connection) => connection.connectionPurpose === "ai" ? <ManagedAiConnectionRow connection={connection} /> : null }: { renderAccountDetails?: (connection: ToolConnection) => ReactNode } = {}) {
   const navigate = useNavigate();
   const preselectedChatAgentId =
     typeof window === "undefined"
@@ -674,6 +676,7 @@ export function Browse() {
         <div className="space-y-3" role="list" aria-label="Connector list">
           {visibleRows.map((row) => (
             <ConnectorCard
+              renderAccountDetails={renderAccountDetails}
               key={row.key}
               row={row}
               allConnections={connectionsQuery.data?.connections ?? []}
@@ -738,6 +741,7 @@ export function Browse() {
 }
 
 function ConnectorCard({
+  renderAccountDetails,
   row,
   allConnections,
   userProfileById,
@@ -746,6 +750,7 @@ function ConnectorCard({
   preselectedAgentId,
   chatConnectorsEnabled,
 }: {
+  renderAccountDetails?: (connection: ToolConnection) => ReactNode;
   row: ConnectorRowModel;
   allConnections: ToolConnection[];
   userProfileById: ReadonlyMap<string, ConnectionOwnerProfile>;
@@ -803,6 +808,7 @@ function ConnectorCard({
         <div className="divide-y divide-border border-t border-border">
           {row.connections.map((connection) => (
             <ConnectionAccountRow
+              details={renderAccountDetails?.(connection)}
               key={connection.id}
               row={row}
               connection={connection}
@@ -883,12 +889,14 @@ function ConnectorCard({
 }
 
 function ConnectionAccountRow({
+  details,
   row,
   connection,
   owner,
   onNavigate,
   onRemove,
 }: {
+  details?: ReactNode;
   row: ConnectorRowModel;
   connection: ToolConnection;
   owner: ConnectionOwnerProfile | null;
@@ -916,6 +924,7 @@ function ConnectionAccountRow({
           >
             {accountName}
           </button>
+          {details}
           {state.message ? (
             <div
               className={

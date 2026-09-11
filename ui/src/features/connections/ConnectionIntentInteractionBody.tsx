@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
@@ -23,18 +23,21 @@ import {
 import {
   ConnectionSetupFlow,
   type ConnectionSetupCompletion,
+  type ConnectionSetupFlowProps,
 } from "./ConnectionSetupFlow";
 
 export interface ConnectionIntentInteractionBodyProps {
   interaction: ConnectionIntentInteraction;
   currentUserId?: string | null;
   addresseeLabel: string;
+  renderSetup?: (props: ConnectionSetupFlowProps) => ReactNode;
 }
 
 export function ConnectionIntentInteractionBody({
   interaction,
   currentUserId,
   addresseeLabel,
+  renderSetup,
 }: ConnectionIntentInteractionBodyProps) {
   const [open, setOpen] = useState(false);
   const focusTargetRef = useRef<HTMLDivElement>(null);
@@ -142,6 +145,21 @@ export function ConnectionIntentInteractionBody({
     }
     completeMutation.mutate(completion.connectionId);
   };
+
+  const setupProps: ConnectionSetupFlowProps | null = setupQuery.data ? {
+    host: "dialog",
+    serviceSlug: interaction.payload.serviceSlug.startsWith("connection:") ? undefined : interaction.payload.serviceSlug,
+    configuredConnection: interaction.payload.serviceSlug.startsWith("connection:") ? setupQuery.data.existingConnections[0] : undefined,
+    requestedAgentId: setupQuery.data.requestedAgentId,
+    aiConnection: setupQuery.data.aiConnection,
+    interactionId: interaction.id,
+    existingConnections: setupQuery.data.existingConnections,
+    onUseExisting: async (connectionId) => { await completeMutation.mutateAsync(connectionId); },
+    onComplete: (completion) => { void finishNewConnection(completion); },
+    onOAuthDeclined: () => declineMutation.mutate(),
+    onPhaseChange: handlePhaseChange,
+    onCancel: () => setOpen(false),
+  } : null;
 
   const resultOutcome = interaction.result?.outcome;
   const status =
@@ -321,24 +339,8 @@ export function ConnectionIntentInteractionBody({
                     Try again
                   </Button>
                 </div>
-              ) : setupQuery.data ? (
-                <ConnectionSetupFlow
-                  host="dialog"
-                  serviceSlug={interaction.payload.serviceSlug.startsWith("connection:") ? undefined : interaction.payload.serviceSlug}
-                  configuredConnection={interaction.payload.serviceSlug.startsWith("connection:") ? setupQuery.data.existingConnections[0] : undefined}
-                  requestedAgentId={setupQuery.data.requestedAgentId}
-                  interactionId={interaction.id}
-                  existingConnections={setupQuery.data.existingConnections}
-                  onUseExisting={async (connectionId) => {
-                    await completeMutation.mutateAsync(connectionId);
-                  }}
-                  onComplete={(completion) => {
-                    void finishNewConnection(completion);
-                  }}
-                  onOAuthDeclined={() => declineMutation.mutate()}
-                  onPhaseChange={handlePhaseChange}
-                  onCancel={() => setOpen(false)}
-                />
+              ) : setupProps ? (
+                renderSetup ? renderSetup(setupProps) : <ConnectionSetupFlow {...setupProps} />
               ) : null}
             </DialogContent>
           </Dialog>

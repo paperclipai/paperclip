@@ -49,6 +49,7 @@ export type AdapterLoginChrome = "panel" | "onboarding";
 export const CONNECT_SOURCE_NAMES: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "OpenAI",
+  grok_local: "Grok",
 };
 
 /** The provider name for a source, falling back to the type when unlisted. */
@@ -170,9 +171,12 @@ function LoginCardCopyButton({
   const [copied, setCopied] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    },
+    [],
+  );
 
   return (
     <Button
@@ -224,9 +228,12 @@ export function OnboardingLoginCodeRow({
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const autoCopiedRef = useRef(false);
 
-  useEffect(() => () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-  }, []);
+  useEffect(
+    () => () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    },
+    [],
+  );
 
   useEffect(() => {
     // An empty code is not a code. The row renders before the server's one-time
@@ -261,7 +268,10 @@ export function OnboardingLoginCodeRow({
           // the code is readable, but the claim waits for the rest of the card
           // to stop moving — see COPIED_REVEAL_DELAY_MS.
           if (timeoutRef.current) clearTimeout(timeoutRef.current);
-          timeoutRef.current = setTimeout(() => setCopied(true), COPIED_REVEAL_DELAY_MS);
+          timeoutRef.current = setTimeout(
+            () => setCopied(true),
+            COPIED_REVEAL_DELAY_MS,
+          );
         })
         .catch(() => {
           // Refused. The listener gives it another go when the document comes
@@ -282,7 +292,9 @@ export function OnboardingLoginCodeRow({
 
   return (
     <div className="flex h-(--sz-44px) items-center gap-2 rounded-lg bg-muted px-4">
-      <span className="min-w-0 flex-1 truncate text-sm text-foreground">{code}</span>
+      <span className="min-w-0 flex-1 truncate text-sm text-foreground">
+        {code}
+      </span>
       <AnimatePresence initial={false}>
         {copied && (
           <motion.span
@@ -399,4 +411,78 @@ export function OnboardingCardField({
       className={onboardingCardInputClass}
     />
   );
+}
+
+/** Shared authentication presentation. Hosts retain their existing session lifecycle. */
+export function ProviderSubscriptionCard({
+  providerName,
+  authorizationUrl,
+  mode,
+  loading,
+  children,
+}: {
+  providerName: string;
+  authorizationUrl?: string;
+  mode: "submitted_code" | "displayed_code";
+  loading?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <OnboardingLoginCard
+      loading={loading}
+      instruction={
+        <>
+          <a
+            href={authorizationUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="underline underline-offset-2 hover:text-foreground"
+          >
+            Sign in to {providerName}
+          </a>
+          {mode === "submitted_code"
+            ? " then come back and enter authorization code"
+            : " by providing the authorization code below"}
+        </>
+      }
+    >
+      {children}
+    </OnboardingLoginCard>
+  );
+}
+
+export function ProviderApiKeyCard({
+  providerName,
+  ...field
+}: Omit<Parameters<typeof OnboardingCardField>[0], "masked" | "label"> & {
+  providerName: string;
+}) {
+  return (
+    <OnboardingLoginCard
+      instruction={`Provide your ${providerName} API key to connect`}
+    >
+      <OnboardingCardField {...field} label="API key" masked />
+    </OnboardingLoginCard>
+  );
+}
+
+/** Shared instructions for local subscription setup in every authentication host. */
+export function LocalProviderLoginInstructions({ adapterType, login }: {
+  adapterType: string;
+  login?: { command?: string; preparing: boolean; error: string | null; retry: () => void };
+}) {
+  const provider = adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
+  const isolated = adapterType === "codex_local" || adapterType === "grok_local";
+  const command = isolated ? login?.command : "claude auth login";
+  return <div className="space-y-3 text-sm text-muted-foreground">
+    <p>{isolated ? `Sign in to ${provider} for this connection on the machine running Paperclip. Your existing terminal login stays separate.` : `Connect uses your local ${provider} account on the machine running Paperclip.`}</p>
+    <p>To sign in or use a different account, run this in a terminal on that machine, finish signing in in your browser, then return here and click Connect.</p>
+    {command && <div className="flex items-start gap-2 rounded-md border bg-muted p-3 text-foreground">
+      <pre className="min-w-0 flex-1 overflow-x-auto font-mono"><code>{command}</code></pre>
+      <LoginCardCopyButton value={command} label="Copy sign-in command" />
+    </div>}
+    {login?.preparing && <p role="status">Preparing local sign-in…</p>}
+    {login?.error && <p role="alert">{login.error}</p>}
+    {isolated && login && !login.preparing && <button type="button" className="underline underline-offset-4" onClick={login.retry}>Start sign-in again</button>}
+  </div>;
 }
