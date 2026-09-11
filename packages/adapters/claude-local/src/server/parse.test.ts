@@ -253,6 +253,20 @@ describe("isClaudeTransientUpstreamError", () => {
     ).toBe(true);
   });
 
+  it("classifies org-level subscription-access-disabled as provider quota", () => {
+    expect(
+      isClaudeProviderQuotaError({
+        errorMessage: "Your organization has disabled Claude subscription access for Claude Code",
+      }),
+    ).toBe(true);
+    // Wrapped in the standard run-failed prefix as persisted by the adapter
+    expect(
+      isClaudeProviderQuotaError({
+        stderr: "Claude run failed: subtype=success: Your organization has disabled Claude subscription access for Claude Code",
+      }),
+    ).toBe(true);
+  });
+
   it("does not classify login/auth failures as transient", () => {
     expect(
       isClaudeTransientUpstreamError({

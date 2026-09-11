@@ -93,6 +93,20 @@ describe("classifyAdapterFailureForRecovery", () => {
     })).toEqual({ kind: "configuration_incomplete" });
   });
 
+  it("classifies subscription-disabled errors as provider_quota", () => {
+    const now = new Date("2026-09-11T10:00:00.000Z");
+    const classification = classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "Your organization has disabled Claude subscription access for Claude Code",
+      resultJson: null,
+    }, now);
+    expect(classification).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      parsedResetTime: false,
+    });
+  });
+
   it("ignores quota-like text from non-adapter failures", () => {
     expect(classifyAdapterFailureForRecovery({
       errorCode: "timeout",
