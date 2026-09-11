@@ -78,6 +78,9 @@ describe("cloud image bundled plugins", () => {
   });
 
   it("publishes the cloud image in its own job with no needs coupling", () => {
+    const caller = workflow.split("  build-and-push-cloud:")[1]?.split("  promote_canary_channel:")[0];
+    expect(caller, "tag and manual builds must call the cloud workflow").toContain("uses: ./.github/workflows/docker-cloud.yml");
+    expect(caller, "the reusable caller must also remain independent of production").not.toMatch(/^\s*needs:/m);
     // The reusable cloud workflow owns its job and SHA concurrency group.
     // Production publication must not gate, delay, or skip the cloud build.
     const jobsSection = cloudWorkflow.slice(cloudWorkflow.indexOf("\njobs:\n"));
