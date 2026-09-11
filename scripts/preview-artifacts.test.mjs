@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { planArtifacts } from "./preview-artifacts.mjs";
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { execFileSync, spawnSync } from "node:child_process";
-import { previewManifest, assertMetadata, validateRequest, versionFor, tarManifest, packageExists, imageExists, publishPreview, publishImage, planArtifacts } from "./preview-artifacts.mjs";
+import { previewManifest, assertMetadata, validateRequest, versionFor, tarManifest, packageExists, imageExists, publishPreview, publishImage } from "./preview-artifacts.mjs";
 
 const sha = "a".repeat(40);
 const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
