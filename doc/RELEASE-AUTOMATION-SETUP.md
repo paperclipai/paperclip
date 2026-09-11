@@ -363,7 +363,7 @@ See [GitHub cache access restrictions](https://docs.github.com/en/actions/refere
 ## Chat integration test shards
 
 Release verification runs the large chat integration file on three independent
-runners. Four other server shards cover every remaining general server file.
+runners. Five other server shards cover every remaining general server file.
 The ordinary local test command and trusted PR workflow keep their complete
 `general-server` group. Each chat case shuts down its services, pauses its own
 still-active endpoints, and retires its active/waiting conversations after
@@ -385,5 +385,9 @@ pnpm test:run:general -- --group general-chat --shard-index 0 --shard-count 3
 Use indexes 0, 1, and 2 to run the complete chat suite. The CLI validates that
 each shard has work and that collection includes usable source locations. A
 Vitest collection or filtering change fails verification instead of dropping
-tests. Splitting adds two release-verification jobs and repeats collection and
+tests. Splitting adds three release-verification jobs and repeats collection and
 fixture setup; it does not make a single test faster.
+
+The file-duration manifest also records the native Codex Runner integration
+suite's measured import and execution cost, so the existing file balancer
+accounts for it in both ordinary PR and release verification.

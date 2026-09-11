@@ -270,9 +270,9 @@ test("the real shard partition is duration-balanced", () => {
 
 test("release server shards plus the dedicated chat file cover the original server group exactly", () => {
   const full = dryRunJson(["--mode", "general", "--group", "general-server", "--shard-index", "0", "--shard-count", "1"]);
-  const shards = Array.from({ length: 4 }, (_, index) => dryRunJson([
+  const shards = Array.from({ length: 5 }, (_, index) => dryRunJson([
     "--mode", "general", "--group", "general-server-without-chat",
-    "--shard-index", String(index), "--shard-count", "4",
+    "--shard-index", String(index), "--shard-count", "5",
   ]));
   const files = shards.flatMap((shard) => shard.selectedGeneralServerSuites);
   const chat = "server/src/__tests__/chat-channels.integration.test.ts";

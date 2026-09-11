@@ -59,24 +59,28 @@ jobs:
       matrix:
         include:
           # Split the long chat file by collected test locations, and balance
-          # the remaining server files across four runners. Normal PR/local
+          # the remaining server files across five runners. Normal PR/local
           # invocations retain their complete general-server group.
           - group: general-server-without-chat
-            group_label: server (1/4)
+            group_label: server (1/5)
             shard_index: 0
-            shard_count: 4
+            shard_count: 5
           - group: general-server-without-chat
-            group_label: server (2/4)
+            group_label: server (2/5)
             shard_index: 1
-            shard_count: 4
+            shard_count: 5
           - group: general-server-without-chat
-            group_label: server (3/4)
+            group_label: server (3/5)
             shard_index: 2
-            shard_count: 4
+            shard_count: 5
           - group: general-server-without-chat
-            group_label: server (4/4)
+            group_label: server (4/5)
             shard_index: 3
-            shard_count: 4
+            shard_count: 5
+          - group: general-server-without-chat
+            group_label: server (5/5)
+            shard_index: 4
+            shard_count: 5
           - group: general-chat
             group_label: chat (1/3)
             shard_index: 0
