@@ -328,11 +328,50 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     const running = first.sweepPendingCleanupLeases();
     await started.promise;
     try {
+      await db.update(environmentLeases).set({
+        metadata: sql`${environmentLeases.metadata} || ${JSON.stringify({ pendingCleanupRetryAfterMs: Date.now() - 1 })}::jsonb`,
+      }).where(eq(environmentLeases.id, leaseId));
       await second.sweepPendingCleanupLeases();
       expect(teardown).toHaveBeenCalledTimes(1);
       const [saved] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
       expect(saved.metadata?.pendingCleanupInFlight).toBe(true);
     } finally { finish(); await running; }
+  });
+
+  it("renews cleanup ownership while the provider remains blocked", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const leaseId = await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(0) });
+    const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+    const service = heartbeatService(db, { environmentRuntime: { retryPendingSandboxTeardown: async () => {
+      started.resolve(); await finish.promise;
+    } } as unknown as HeartbeatEnvironmentRuntime });
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    const running = service.sweepPendingCleanupLeases();
+    await started.promise;
+    try {
+      await db.update(environmentLeases).set({ metadata: sql`${environmentLeases.metadata} || '{"pendingCleanupRetryAfterMs":1}'::jsonb` }).where(eq(environmentLeases.id, leaseId));
+      await vi.advanceTimersByTimeAsync(30000);
+      await vi.waitFor(async () => expect((await readMetadata(leaseId))?.pendingCleanupRetryAfterMs).toBeGreaterThan(Date.now() + 14 * 60_000));
+    } finally { finish.resolve(); await running; vi.useRealTimers(); }
+  });
+
+  it.each([false, true])("ignores a superseded cleanup completion (throws: %s)", async throws => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const leaseId = await insertOrphanEphemeralLease({ companyId, environmentId, updatedAt: new Date(0) });
+    const started = Promise.withResolvers<void>(), finish = Promise.withResolvers<void>();
+    const service = heartbeatService(db, { environmentRuntime: { retryPendingSandboxTeardown: async () => {
+      started.resolve(); await finish.promise; if (throws) throw new Error("old attempt failed");
+    } } as unknown as HeartbeatEnvironmentRuntime });
+    const running = service.sweepPendingCleanupLeases();
+    await started.promise;
+    try {
+      await db.update(environmentLeases).set({ status: "expired", cleanupStatus: "success",
+        metadata: { pendingCleanupAttemptId: "newer-attempt", remoteExecutionTermination: { proof: "newer-receipt" } },
+      }).where(eq(environmentLeases.id, leaseId));
+    } finally { finish.resolve(); await running; }
+    const [saved] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+    expect(saved.status).toBe("expired");
+    expect(saved.metadata?.remoteExecutionTermination).toEqual({ proof: "newer-receipt" });
   });
 
   // Two sweep ticks can overlap. Without an atomic claim, both read the same

@@ -970,3 +970,5 @@ in-flight deadline. It retries after restart, waits at least 30 seconds between
 failed attempts, and slows to 30 minutes after five failures. It reports that
 operator attention is needed at that threshold, while automatic cleanup continues.
 Provider outages never convert a live sandbox into an abandoned manual task.
+
+A live cleanup attempt renews its durable claim every 30 seconds. Another sweep in the same controller cannot overlap it, even if the deadline passes. Completion writes require the current attempt identity. After controller loss, cleanup can repeat destruction of the exact quarantined provider resource; providers must make that operation idempotent. A timeout or claim expiry does not prove termination.
