@@ -120,13 +120,13 @@ describe("cached file selection and retained trash", () => {
     expect(checkbox("a.txt")).not.toBeNull();
     expect(deleted).toEqual([]);
   });
-  it("refreshes partial successes and leaves only failed files selected for retry", async () => {
+  it.each([["a.txt", "b.txt"], ["b.txt", "a.txt"]])("refreshes partial successes when selected in order %s, %s", async (first, second) => {
     const operate = api.operation.getMockImplementation()!;
     api.operation.mockImplementation(async (target, operation) => {
       if (operation.path === "b.txt") throw new Error("Storage unavailable");
       return operate(target, operation);
     });
-    await click(checkbox("a.txt")); await click(checkbox("b.txt"));
+    await click(checkbox(first)); await click(checkbox(second));
     await click(button("Move 2 files to trash")!);
     expect(checkbox("a.txt")).toBeNull();
     expect(checkbox("b.txt").checked).toBe(true);
