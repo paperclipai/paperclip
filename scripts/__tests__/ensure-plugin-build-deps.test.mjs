@@ -155,3 +155,18 @@ test("hard-killed compilation cannot leave partial output accepted on recovery",
   assert.match(retry.output, /Recovered abandoned/);
   assert.equal(fs.existsSync(complete), true);
 });
+
+test("accepts current output rebuilt by a direct package build", async (t) => {
+  const f = fixture(t);
+  assert.equal((await f.launch().done).code, 0);
+  const builds = fs.readFileSync(path.join(f.root, "builds"), "utf8");
+  // A direct tsc invocation updates index.js without changing our marker.
+  const newer = new Date(Date.now() + 1000);
+  for (const target of ["packages/shared", "packages/plugins/sdk"]) {
+    fs.utimesSync(path.join(f.root, target, "dist/index.js"), newer, newer);
+  }
+  const retry = await f.launch().done;
+  assert.equal(retry.code, 0, retry.output);
+  assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8"), builds);
+  assert.doesNotMatch(retry.output, /Building/);
+});

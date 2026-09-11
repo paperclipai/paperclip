@@ -57,7 +57,6 @@ function newestSourceMtimeMs(sourceDir) {
 function needsBuild(target) {
   if (!fs.existsSync(target.output) || !fs.existsSync(target.completion)) return true;
   const outputMtime = fs.statSync(target.output).mtimeMs;
-  if (outputMtime > fs.statSync(target.completion).mtimeMs) return true;
   return newestSourceMtimeMs(target.sourceDir) > outputMtime;
 }
 
