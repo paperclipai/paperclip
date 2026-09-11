@@ -13,7 +13,7 @@ const repoAdaptersDir = path.resolve(__moduleDir, "../../adapters");
 // materializes an owned, admission-gated copy (never a symlink), so the
 // asset must always set `followSymlinks: false`. This list is exhaustive:
 // `git grep -n 'key: "skills"'` across `packages/adapters` must return
-// exactly these sites (PAP-6284).
+// exactly these sites.
 const SKILLS_STAGING_SITES = [
   "claude-local/src/server/execute.ts",
   "cursor-local/src/server/execute.ts",
