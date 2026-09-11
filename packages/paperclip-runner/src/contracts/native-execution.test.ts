@@ -235,7 +235,7 @@ describe("NativeExecutionInputV1", () => {
           contextBucket: "paperclip-agentcore-context",
           contextPrefix: "paperclip/runtime",
           contextKmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/test",
-          qualificationRevision: "aws-agentcore-harness-v1",
+          qualificationRevision: "aws-agentcore-harness-context-v2",
           eventExpiryDays: 90,
         },
         maxEstimatedSessionCostUsd: 1,
@@ -326,6 +326,13 @@ describe("NativeExecutionInputV1", () => {
         lifecyclePolicy: { mode: "warm", idleTimeoutMs: 0 },
       },
     })).toThrow("positive integer");
+    expect(() => parseNativeExecutionInput({
+      ...input,
+      session: {
+        ...input.session,
+        lifecyclePolicy: { mode: "warm", idleTimeoutMs: 86_400_001 },
+      },
+    })).toThrow("no greater than 86400000");
   });
 });
 

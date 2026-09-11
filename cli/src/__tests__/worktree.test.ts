@@ -5,6 +5,8 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { eq } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
+import { migrate } from "drizzle-orm/postgres-js/migrator";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import {
   agents,
@@ -13,6 +15,8 @@ import {
   companies,
   companyMemberships,
   createDb,
+  closeRegisteredClients,
+  ensurePostgresDatabase,
   executionWorkspaces,
   inspectMigrations,
   issueComments,
@@ -1471,10 +1475,12 @@ describe("worktree helpers", () => {
     const repoRoot = path.join(tempRoot, "repo");
     const originalCwd = process.cwd();
     const originalJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
+    const originalToolActionSigningSecret = process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET;
 
     try {
       fs.mkdirSync(repoRoot, { recursive: true });
       process.env.PAPERCLIP_AGENT_JWT_SECRET = "worktree-shared-secret";
+      process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = "worktree-tool-action-secret";
       process.chdir(repoRoot);
 
       await worktreeInitCommand({
@@ -1486,6 +1492,7 @@ describe("worktree helpers", () => {
       const envPath = path.join(repoRoot, ".paperclip", ".env");
       const envContents = fs.readFileSync(envPath, "utf8");
       expect(envContents).toContain("PAPERCLIP_AGENT_JWT_SECRET=worktree-shared-secret");
+      expect(envContents).toContain("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=worktree-tool-action-secret");
       expect(envContents).toContain("PAPERCLIP_WORKTREE_NAME=repo");
       expect(envContents).toMatch(/PAPERCLIP_WORKTREE_COLOR=\"#[0-9a-f]{6}\"/);
     } finally {
@@ -1494,6 +1501,11 @@ describe("worktree helpers", () => {
         delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
       } else {
         process.env.PAPERCLIP_AGENT_JWT_SECRET = originalJwtSecret;
+      }
+      if (originalToolActionSigningSecret === undefined) {
+        delete process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET;
+      } else {
+        process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = originalToolActionSigningSecret;
       }
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
@@ -1636,17 +1648,32 @@ describe("worktree helpers", () => {
       const sourceEnvPath = path.join(sourceConfigDir, ".env");
       const sourceKeyPath = path.join(sourceConfigDir, "secrets", "master.key");
       const worktreeHome = path.join(tempRoot, ".paperclip-worktrees");
-      const sourceDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-auth-source-");
-      onTestFinished(() => sourceDb.cleanup());
-
-      await seedValidWorktreeSource(sourceDb.connectionString);
+      const sourceCluster = await startEmbeddedPostgresTestDatabase("paperclip-worktree-auth-source-");
+      const sourceUrl = new URL(sourceCluster.connectionString);
+      sourceUrl.pathname = "/lagging_source";
+      const sourceDb = { connectionString: sourceUrl.toString() };
+      onTestFinished(async () => {
+        await closeRegisteredClients(sourceDb.connectionString);
+        await sourceCluster.cleanup();
+      });
+      await ensurePostgresDatabase(sourceCluster.connectionString, "lagging_source");
+      // A lagging source must also have the prior schema. Deleting only the
+      // newest receipt from a fully migrated schema relied on that particular
+      // migration being idempotent and breaks when the new migration creates a
+      // table. Build the actual all-but-last schema before shuffling its history.
+      const migrationsRoot = new URL("../../../packages/db/src/migrations/", import.meta.url);
+      const journal = JSON.parse(fs.readFileSync(new URL("meta/_journal.json", migrationsRoot), "utf8"));
+      const priorEntries = journal.entries.slice(0, -1);
+      const priorMigrations = path.join(tempRoot, "prior-migrations");
+      fs.mkdirSync(path.join(priorMigrations, "meta"), { recursive: true });
+      fs.writeFileSync(path.join(priorMigrations, "meta", "_journal.json"), JSON.stringify({ ...journal, entries: priorEntries }));
+      for (const entry of priorEntries) {
+        fs.copyFileSync(new URL(`${entry.tag}.sql`, migrationsRoot), path.join(priorMigrations, `${entry.tag}.sql`));
+      }
       const sourceDbClient = createDb(sourceDb.connectionString);
+      await migrate(drizzle(sourceDbClient.$client), { migrationsFolder: priorMigrations });
+      await seedValidWorktreeSource(sourceDb.connectionString);
       await sourceDbClient.$client.unsafe(`
-        DELETE FROM "drizzle"."__drizzle_migrations"
-        WHERE "id" = (
-          SELECT max("id") FROM "drizzle"."__drizzle_migrations"
-        );
-
         WITH pair AS (
           SELECT
             array_agg("id" ORDER BY "id" DESC) AS ids,

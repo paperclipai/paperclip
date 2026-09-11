@@ -13,6 +13,7 @@ export { getConfigSchema } from "./config-schema.js";
 export {
   reconcileManagedCodexHome,
   isManagedCodexHomePath,
+  resolveManagedCodexHomeDir,
   evaluateCodexCredentialReadiness,
   type ReconcileManagedCodexHomeInput,
   type ReconcileManagedCodexHomeResult,
@@ -40,7 +41,16 @@ export {
   type CredentialReadinessResult,
   type PromoteDeviceLoginCredentialInput,
   type PromoteDeviceLoginCredentialOutcome,
+  type PromoteDeviceLoginCredentialResult,
 } from "./adapter-auth-promotion.js";
+export {
+  withCodexAccountHomePromotionLock,
+  withAccountHomeSecretMutationLock,
+  assertAccountHomeCacheDirStillValid,
+  resolveCodexAuthCacheDir,
+  isCodexAuthCachePath,
+  readSubscriptionAccountId,
+} from "./codex-auth-cache.js";
 export { parseCodexJsonl, isCodexHarnessCrash, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
 export {
   getQuotaWindows,

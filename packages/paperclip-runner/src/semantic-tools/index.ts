@@ -5,3 +5,8 @@ export * from "./receipts.js";
 export * from "./redaction.js";
 export * from "./runner-authorized-tools.js";
 export * from "./types.js";
+export * from "./catalog.js";
+export * from "./policy.js";
+export * from "./provider-neutral.js";
+export * from "./paperclip-discovery.js";
+export * from "./paperclip-dispatcher.js";

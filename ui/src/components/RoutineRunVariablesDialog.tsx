@@ -323,15 +323,17 @@ export function RoutineRunVariablesDialog({
   }, []);
 
   const handleWorkspaceDraftChange = useCallback((
-    data: Record<string, unknown>,
+    data: Record<string, unknown> | null,
     meta: { canSave: boolean; workspaceBranchName?: string | null },
   ) => {
-    setWorkspaceConfig((current) => applyWorkspaceDraft(current, data));
+    if (data) {
+      setWorkspaceConfig((current) => applyWorkspaceDraft(current, data));
+    }
     setWorkspaceConfigValid((current) => (current === meta.canSave ? current : meta.canSave));
     setWorkspaceBranchName((current) => {
       const defaultWorkspaceBranchName = defaultExecutionWorkspace?.branchName ?? null;
       const next = meta.workspaceBranchName
-        ?? (data.executionWorkspaceId === defaultExecutionWorkspace?.id ? defaultWorkspaceBranchName : null)
+        ?? (data?.executionWorkspaceId === defaultExecutionWorkspace?.id ? defaultWorkspaceBranchName : null)
         ?? null;
       return current === next ? current : next;
     });

@@ -11,6 +11,7 @@ import {
   issueComments,
   issueRelations,
   issues,
+  nativeRunFinalizations,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -21,6 +22,7 @@ const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
 import { heartbeatService } from "../services/heartbeat.ts";
+import { recoveryService } from "../services/recovery/service.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -43,6 +45,8 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
   }, 20_000);
 
   afterEach(async () => {
+    mockTelemetryClient.track.mockClear();
+    await db.delete(nativeRunFinalizations);
     await db.delete(issueComments);
     await db.delete(issueRelations);
     await db.delete(activityLog);
@@ -175,6 +179,45 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     expect(row).toEqual({ checkoutRunId: runningRunId, executionRunId: runningRunId });
   });
 
+  it("does not terminalize a session-goal control run solely because its issue is done", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const issueId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          resumeIntent: true,
+          goalControlRequestId: randomUUID(),
+          runnerGoalControl: { action: "clear" },
+        },
+      })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Completed goal awaiting clear",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+
+    const result = await heartbeatService(db).sweepStaleIssueLocks();
+
+    expect(result.terminalizedRunIds).toEqual([]);
+    expect(result.cleared).toBe(0);
+    await expect(
+      db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runningRunId))
+        .then((rows) => rows[0]?.status),
+    ).resolves.toBe("running");
+  });
+
   it("does not clear when checkoutRunId is terminal but executionRunId is still running", async () => {
     const { companyId, agentId, failedRunId, runningRunId } = await seed();
     const issueId = randomUUID();
@@ -276,6 +319,107 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(heartbeatRunEvents.runId, runningRunId))
       .then((rows) => rows[0]);
     expect(event?.message).toContain("process and sandbox gone");
+
+    // The recovery sweep's own terminal write must emit exactly one
+    // agent.task_run event for the run it just terminalized. The write
+    // never awaits the emission, so wait for it here instead of asserting
+    // it fired synchronously.
+    await vi.waitFor(() => {
+      expect(mockTelemetryClient.track).toHaveBeenCalledTimes(1);
+    });
+    expect(mockTelemetryClient.track).toHaveBeenCalledWith(
+      "agent.task_run",
+      expect.objectContaining({ agent_id: agentId, state: "interrupted" }),
+    );
+  });
+
+  it("preserves a process-less native run while same-run resumption owns its retry", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Native same-run retry remains live",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        runtimeMode: "native",
+        nativeIssueId: issueId,
+        nativePhase: "retryable_failure",
+        processPid: 2_000_000_000,
+      })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(nativeRunFinalizations).values({
+      runId: runningRunId,
+      companyId,
+      issueId,
+      phase: "retryable_failure",
+      attempt: 1,
+      nextAttemptAt: new Date(Date.now() + 30_000),
+    });
+
+    const result = await heartbeatService(db).sweepStaleIssueLocks();
+
+    expect(result).toEqual({ cleared: 0, issueIds: [], terminalizedRunIds: [] });
+    await expect(db.select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId)))
+      .resolves.toEqual([{ status: "running" }]);
+    await expect(db.select({
+      checkoutRunId: issues.checkoutRunId,
+      executionRunId: issues.executionRunId,
+    }).from(issues).where(eq(issues.id, issueId)))
+      .resolves.toEqual([{ checkoutRunId: runningRunId, executionRunId: runningRunId }]);
+  });
+
+  it("preserves a process-less run while its in-process execution is still finalizing", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Native finalization remains live",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        runtimeMode: "native",
+        processPid: 2_000_000_000,
+      })
+      .where(eq(heartbeatRuns.id, runningRunId));
+
+    const result = await recoveryService(db, {
+      enqueueWakeup: vi.fn(),
+      liveRunExecutions: new Set([runningRunId]),
+    }).sweepStaleIssueLocks();
+
+    expect(result).toEqual({
+      cleared: 0,
+      issueIds: [],
+      terminalizedRunIds: [],
+    });
+    await expect(db.select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runningRunId)))
+      .resolves.toEqual([{ status: "running" }]);
+    await expect(db.select({
+      checkoutRunId: issues.checkoutRunId,
+      executionRunId: issues.executionRunId,
+    }).from(issues).where(eq(issues.id, issueId)))
+      .resolves.toEqual([{ checkoutRunId: runningRunId, executionRunId: runningRunId }]);
   });
 
   it("terminalizes a running run whose issue is terminal, even while the process stays alive (reuse-lease path)", async () => {
@@ -331,6 +475,16 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(heartbeatRunEvents.runId, runningRunId))
       .then((rows) => rows[0]);
     expect(event?.message).toContain("issue reached a terminal status");
+
+    // The terminal write never awaits the telemetry emission, so wait for
+    // it here instead of asserting it fired synchronously.
+    await vi.waitFor(() => {
+      expect(mockTelemetryClient.track).toHaveBeenCalledTimes(1);
+    });
+    expect(mockTelemetryClient.track).toHaveBeenCalledWith(
+      "agent.task_run",
+      expect.objectContaining({ agent_id: agentId, state: "succeeded" }),
+    );
   });
 
   it("terminalizes a running run to cancelled when its issue is cancelled (reuse-lease path)", async () => {
@@ -363,6 +517,16 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(heartbeatRuns.id, runningRunId))
       .then((rows) => rows[0]?.status);
     expect(runStatus).toBe("cancelled");
+
+    // The terminal write never awaits the telemetry emission, so wait for
+    // it here instead of asserting it fired synchronously.
+    await vi.waitFor(() => {
+      expect(mockTelemetryClient.track).toHaveBeenCalledTimes(1);
+    });
+    expect(mockTelemetryClient.track).toHaveBeenCalledWith(
+      "agent.task_run",
+      expect.objectContaining({ agent_id: agentId, state: "cancelled" }),
+    );
   });
 
   it("does not terminalize a running run whose process is alive and whose issue is not terminal", async () => {
@@ -397,6 +561,100 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       .where(eq(heartbeatRuns.id, runningRunId))
       .then((rows) => rows[0]?.status);
     expect(runStatus).toBe("running");
+
+    // No terminal write happened, so no telemetry event fires.
+    expect(mockTelemetryClient.track).not.toHaveBeenCalled();
+  });
+
+  it("does not terminalize or clear issue locks when an ownership hold arrives after the sweep snapshot", async () => {
+    const { companyId, agentId, runningRunId } = await seed();
+    const issueId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        runtimeMode: "native",
+        nativeIssueId: issueId,
+        processPid: process.pid,
+      })
+      .where(eq(heartbeatRuns.id, runningRunId));
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Ownership hold races stale issue-lock recovery",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      checkoutRunId: runningRunId,
+      executionRunId: runningRunId,
+      executionLockedAt: new Date(),
+    });
+
+    let releaseTerminalWrite!: () => void;
+    const terminalWriteReleased = new Promise<void>((resolve) => {
+      releaseTerminalWrite = resolve;
+    });
+    let terminalWriteReached!: () => void;
+    const atTerminalWrite = new Promise<void>((resolve) => {
+      terminalWriteReached = resolve;
+    });
+    const sweep = recoveryService(db, {
+      enqueueWakeup: vi.fn(),
+      beforeOrphanedRunTerminalWrite: async (runId) => {
+        if (runId !== runningRunId) return;
+        terminalWriteReached();
+        await terminalWriteReleased;
+      },
+    }).sweepStaleIssueLocks();
+
+    try {
+      await atTerminalWrite;
+      await db
+        .update(heartbeatRuns)
+        .set({
+          nativePhase: "terminal_failure",
+          errorCode: "native_execution_ownership_unverified",
+        })
+        .where(eq(heartbeatRuns.id, runningRunId));
+    } finally {
+      releaseTerminalWrite();
+    }
+
+    await expect(sweep).resolves.toEqual({
+      cleared: 0,
+      issueIds: [],
+      terminalizedRunIds: [],
+    });
+    await expect(
+      db
+        .select({
+          status: heartbeatRuns.status,
+          nativePhase: heartbeatRuns.nativePhase,
+          errorCode: heartbeatRuns.errorCode,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runningRunId)),
+    ).resolves.toEqual([
+      {
+        status: "running",
+        nativePhase: "terminal_failure",
+        errorCode: "native_execution_ownership_unverified",
+      },
+    ]);
+    await expect(
+      db
+        .select({
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, issueId)),
+    ).resolves.toEqual([
+      {
+        checkoutRunId: runningRunId,
+        executionRunId: runningRunId,
+      },
+    ]);
+    expect(mockTelemetryClient.track).not.toHaveBeenCalled();
   });
 
   it("does not terminalize a live run that a terminal issue and an active issue both reference", async () => {
@@ -549,13 +807,9 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
     // Make only the audit-event insert fail. The run update commits the
     // terminal status first, so the audit write is best-effort. The sweep must
     // catch the failure and still clear the lock.
-    const realInsert = db.insert.bind(db);
-    const insertSpy = vi.spyOn(db, "insert").mockImplementation((table) => {
-      if (table === heartbeatRunEvents) {
-        throw new Error("simulated audit write failure");
-      }
-      return realInsert(table);
-    });
+    const transactionSpy = vi
+      .spyOn(db, "transaction")
+      .mockRejectedValueOnce(new Error("simulated audit write failure"));
 
     try {
       const heartbeat = heartbeatService(db);
@@ -564,7 +818,7 @@ describeEmbeddedPostgres("recovery sweepStaleIssueLocks", () => {
       expect(result.terminalizedRunIds).toEqual([runningRunId]);
       expect(result.cleared).toBe(1);
     } finally {
-      insertSpy.mockRestore();
+      transactionSpy.mockRestore();
     }
 
     // The run reached its terminal status even though the audit write failed.

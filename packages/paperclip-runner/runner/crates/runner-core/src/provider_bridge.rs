@@ -30,6 +30,7 @@ pub(crate) const MAX_PENDING_CALLS: usize = 4_096;
 // cannot replay an old call ID after crossing a turn boundary. At the bound,
 // the backend must reap the idle process before it rotates this ledger.
 const MAX_DURABLE_CALL_RECEIPTS: usize = 4_096;
+pub(crate) const MAX_COMPLETION_SUMMARY_CHARS: usize = 12_000;
 const MAX_SETTLED_CALL_IDS: usize = 65_536;
 // Retain the legacy serialized filter shape for recovery compatibility. New
 // state never inserts probabilistic identities. A recovered non-empty filter
@@ -38,6 +39,8 @@ const MAX_SETTLED_CALL_IDS: usize = 65_536;
 const REPLAY_FILTER_WORDS: usize = 32_768;
 const ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE: &str =
     "durable provider tool receipt limit reached for the active turn";
+const COMPLETION_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_finish arguments. Required fields: reportedWorkDisposition, summary, completionClaim, evidence, and verification. When reportedWorkDisposition is yielded, continuation must include kind=response_wake, summary, and idempotencyKey.";
+const BLOCK_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_block arguments. Required fields: reportedWorkDisposition=blocked, summary, completionClaim, evidence, verification, and blocker. blocker must include reasonCode, owner, unblockAction, and scope.";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -218,11 +221,29 @@ pub struct ProviderToolBridge {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProviderBridgeError(String);
+pub struct ProviderBridgeError {
+    message: String,
+    safe_provider_message: Option<&'static str>,
+}
 
 impl ProviderBridgeError {
     fn invalid(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self {
+            message: message.into(),
+            safe_provider_message: None,
+        }
+    }
+
+    fn input_schema_validation(operation_id: &str) -> Self {
+        let safe_provider_message = match operation_id {
+            "paperclip_finish" => Some(COMPLETION_INPUT_SCHEMA_HINT),
+            "paperclip_block" => Some(BLOCK_INPUT_SCHEMA_HINT),
+            _ => None,
+        };
+        Self {
+            message: format!("provider arguments for {operation_id} failed JSON Schema validation"),
+            safe_provider_message,
+        }
     }
 
     fn active_turn_receipt_limit() -> Self {
@@ -230,13 +251,17 @@ impl ProviderBridgeError {
     }
 
     pub fn is_active_turn_receipt_limit(&self) -> bool {
-        self.0 == ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE
+        self.message == ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE
+    }
+
+    pub fn safe_provider_message(&self) -> Option<&'static str> {
+        self.safe_provider_message
     }
 }
 
 impl Display for ProviderBridgeError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
+        formatter.write_str(&self.message)
     }
 }
 
@@ -520,6 +545,20 @@ impl ProviderToolBridge {
         Ok(())
     }
 
+    /// Start a receipt epoch after the process that owned the previous epoch
+    /// has been reaped and a replacement provider generation is established.
+    /// Providers that continue in the same process must retain their durable
+    /// call-ID tombstones through ordinary `prepare_turn` transitions.
+    pub(crate) fn prepare_turn_after_provider_restart(
+        &mut self,
+    ) -> Result<(), ProviderBridgeError> {
+        self.prepare_turn()?;
+        self.settled_call_ids.clear();
+        self.settled_call_filter = DurableReplayFilter::default();
+        self.durable_run_receipt_limit_reached = false;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn retained_result_bytes_for_test(&self) -> usize {
         self.retained_result_bytes
@@ -550,6 +589,10 @@ impl ProviderToolBridge {
         self.completed.contains_key(call_id) || self.has_settled_call_id(call_id)
     }
 
+    pub(crate) fn has_call_receipt(&self, call_id: &str) -> bool {
+        self.pending.contains_key(call_id) || self.has_completed_call(call_id)
+    }
+
     pub fn begin_call(
         &mut self,
         call_id: String,
@@ -569,9 +612,17 @@ impl ProviderToolBridge {
             ))
         })?;
         if !validator.is_valid(&input) {
-            return Err(ProviderBridgeError::invalid(format!(
-                "provider arguments for {operation_id} failed JSON Schema validation"
-            )));
+            return Err(ProviderBridgeError::input_schema_validation(&operation_id));
+        }
+        if matches!(
+            operation_id.as_str(),
+            "paperclip_finish" | "paperclip_block"
+        ) && input
+            .get("summary")
+            .and_then(Value::as_str)
+            .is_some_and(|summary| summary.chars().count() > MAX_COMPLETION_SUMMARY_CHARS)
+        {
+            return Err(ProviderBridgeError::input_schema_validation(&operation_id));
         }
         bounded_json(&input, MAX_TOOL_VALUE_BYTES, "provider tool input")?;
         let call = PendingToolCall {
@@ -1420,6 +1471,57 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn completion_bridge() -> ProviderToolBridge {
+        let operation = AuthorizedTool {
+            operation_id: "paperclip_finish".to_owned(),
+            version: 1,
+            description: "Report the completed turn.".to_owned(),
+            input_schema: json!({
+                "type": "object",
+                "required": ["summary"],
+                "properties": {"summary": {"type": "string"}},
+            }),
+            response_schema: json!({"type": "object"}),
+        };
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        bridge
+    }
+
+    #[test]
+    fn completion_summary_enforces_the_canonical_unicode_character_limit() {
+        let mut within_limit = completion_bridge();
+        within_limit
+            .begin_call(
+                "call-within-limit".to_owned(),
+                "paperclip_finish".to_owned(),
+                json!({"summary": "🛰".repeat(MAX_COMPLETION_SUMMARY_CHARS)}),
+            )
+            .unwrap();
+
+        let mut over_limit = completion_bridge();
+        let error = over_limit
+            .begin_call(
+                "call-over-limit".to_owned(),
+                "paperclip_finish".to_owned(),
+                json!({"summary": "🛰".repeat(MAX_COMPLETION_SUMMARY_CHARS + 1)}),
+            )
+            .expect_err("an over-limit completion summary must fail before durable emission");
+        assert_eq!(
+            error.safe_provider_message(),
+            Some(COMPLETION_INPUT_SCHEMA_HINT)
+        );
+        assert!(!over_limit.has_call_receipt("call-over-limit"));
+    }
+
     #[test]
     fn canonical_number_uses_decimal_notation_at_javascript_lower_boundary() {
         for encoded in ["1e-6", "0.000001"] {
@@ -1462,6 +1564,37 @@ mod tests {
             retained_result_entry_bytes(&call_id, &completed).unwrap()
                 <= pending_result_reserve_bytes(&call).unwrap()
         );
+    }
+
+    #[test]
+    fn cross_bridge_receipt_lookup_reserves_pending_call_ids() {
+        let operation = AuthorizedTool {
+            operation_id: "get_task_context".to_owned(),
+            version: 1,
+            description: "Read the active task context.".to_owned(),
+            input_schema: json!({"type": "object"}),
+            response_schema: json!({"type": "object"}),
+        };
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+
+        assert!(!bridge.has_call_receipt("shared-call"));
+        bridge
+            .begin_call(
+                "shared-call".to_owned(),
+                "get_task_context".to_owned(),
+                json!({}),
+            )
+            .unwrap();
+        assert!(bridge.has_call_receipt("shared-call"));
     }
 
     #[test]

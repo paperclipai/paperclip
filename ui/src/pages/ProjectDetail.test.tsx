@@ -246,6 +246,28 @@ describe("ProjectDetail", () => {
     });
   });
 
+  it("keeps Timeline out of the project task-list controls", async () => {
+    mockLocation.pathname = "/projects/project-1/issues";
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProjectDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const props = mockIssuesList.mock.calls.at(-1)?.[0];
+    expect(props).toEqual(expect.objectContaining({ projectId: "project-1" }));
+    expect(props).not.toHaveProperty("projectTimelineHref");
+  });
+
   describe("plugin detail-tab deep links", () => {
     const PLUGIN_TAB = "plugin:paperclipai.plugin-llm-wiki:project-knowledge";
     const knowledgeSlot = {

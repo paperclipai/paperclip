@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
@@ -43,6 +43,7 @@ export function ConnectionIntentInteractionBody({
     currentUserId && interaction.addresseeUserId === currentUserId,
   );
   const isPending = interaction.status === "pending";
+  const focusTargetId = `connection-intent-focus-target-${interaction.id}`;
 
   const invalidateTask = async (
     updatedInteraction?: ConnectionIntentInteraction,
@@ -67,15 +68,38 @@ export function ConnectionIntentInteractionBody({
     ]);
   };
   const returnFocusToCard = () => {
-    window.requestAnimationFrame(() => focusTargetRef.current?.focus());
+    // Completing an intent can move it from the composer takeover to the
+    // durable timeline. That replaces this component instance, so its ref can
+    // be cleared before focus restoration runs. Retry for a few paint frames
+    // and resolve the stable interaction-specific target from the new host.
+    const focusCurrentTarget = (remainingAttempts: number) => {
+      window.requestAnimationFrame(() => {
+        const target =
+          document.getElementById(focusTargetId) ?? focusTargetRef.current;
+        target?.focus();
+        if (remainingAttempts > 1) {
+          focusCurrentTarget(remainingAttempts - 1);
+        }
+      });
+    };
+    focusCurrentTarget(3);
   };
 
   const setupQuery = useQuery({
     queryKey: ["connection-intent", interaction.id, "setup-options"],
     queryFn: () => connectionIntentsApi.setupOptions(interaction.id),
-    enabled: open && isAddressee && isPending,
-    refetchInterval: open && isPending ? 2_000 : false,
+    enabled: isAddressee && isPending,
+    refetchInterval: isPending && (open || interaction.payload.phase === "authorizing") ? 2_000 : false,
   });
+
+  useEffect(() => {
+    const current = setupQuery.data?.interaction;
+    if (current && current.status !== "pending" && isPending) {
+      void invalidateTask(current);
+      setOpen(false);
+      returnFocusToCard();
+    }
+  }, [setupQuery.data?.interaction, isPending]);
 
   const completeMutation = useMutation({
     mutationFn: (connectionId: string) =>
@@ -108,7 +132,10 @@ export function ConnectionIntentInteractionBody({
 
   const finishNewConnection = async (completion: ConnectionSetupCompletion) => {
     if (completion.resolvedByCallback) {
-      await invalidateTask();
+      // A browser message cannot establish authorization. Read the durable result.
+      const verified = await setupQuery.refetch();
+      if (verified.data?.interaction.status !== "accepted") return;
+      await invalidateTask(verified.data.interaction);
       setOpen(false);
       returnFocusToCard();
       return;
@@ -139,7 +166,7 @@ export function ConnectionIntentInteractionBody({
                   : "Connection request expired",
               body:
                 resultOutcome === "superseded"
-                  ? "A newer run requested this connection. Use the latest card instead."
+                  ? "This request was replaced. Use the latest connection card instead."
                   : "This request is no longer active.",
             }
           : null;
@@ -148,6 +175,7 @@ export function ConnectionIntentInteractionBody({
   if (status && StatusIcon) {
     return (
       <div
+        id={focusTargetId}
         ref={focusTargetRef}
         tabIndex={-1}
         data-testid="connection-intent-focus-target"
@@ -169,6 +197,7 @@ export function ConnectionIntentInteractionBody({
   if (!isAddressee) {
     return (
       <div
+        id={focusTargetId}
         ref={focusTargetRef}
         tabIndex={-1}
         data-testid="connection-intent-focus-target"
@@ -197,6 +226,7 @@ export function ConnectionIntentInteractionBody({
 
   return (
     <div
+      id={focusTargetId}
       ref={focusTargetRef}
       tabIndex={-1}
       data-testid="connection-intent-focus-target"
@@ -229,20 +259,28 @@ export function ConnectionIntentInteractionBody({
           </p>
         ) : null}
 
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-4 flex flex-wrap justify-end gap-2">
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={declineMutation.isPending || authorizing}
+            onClick={() => declineMutation.mutate()}
+          >
+            Not now
+          </Button>
           <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
-              <Button type="button" disabled={authorizing}>
+              <Button type="button">
                 {authorizing ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   <Plug className="h-4 w-4" />
                 )}
                 {authorizing
-                  ? "Authorizing…"
+                  ? "Continue setup"
                   : needsRetry
                     ? "Try again"
-                    : "Connect / Use existing"}
+                    : setupQuery.data?.existingConnections.length ? "Connect / Use existing" : "Connect"}
               </Button>
             </DialogTrigger>
             <DialogContent
@@ -286,7 +324,8 @@ export function ConnectionIntentInteractionBody({
               ) : setupQuery.data ? (
                 <ConnectionSetupFlow
                   host="dialog"
-                  serviceSlug={interaction.payload.serviceSlug}
+                  serviceSlug={interaction.payload.serviceSlug.startsWith("connection:") ? undefined : interaction.payload.serviceSlug}
+                  configuredConnection={interaction.payload.serviceSlug.startsWith("connection:") ? setupQuery.data.existingConnections[0] : undefined}
                   requestedAgentId={setupQuery.data.requestedAgentId}
                   interactionId={interaction.id}
                   existingConnections={setupQuery.data.existingConnections}
@@ -303,14 +342,6 @@ export function ConnectionIntentInteractionBody({
               ) : null}
             </DialogContent>
           </Dialog>
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={declineMutation.isPending || authorizing}
-            onClick={() => declineMutation.mutate()}
-          >
-            Not now
-          </Button>
         </div>
 
         {completeMutation.isError ||

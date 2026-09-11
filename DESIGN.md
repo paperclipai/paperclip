@@ -35,6 +35,16 @@ Existing tiers already in index.css (~80+ tokens) — extraction maps to these o
 7. **Words are part of the system.** One name per concept across the entire UI — the canonical term is *task* (never *issue* or *ticket* in copy, labels, or empty states). Buttons name the action ("Approve hire," not "Submit"). Errors say what happened and what to do. Empty states say what to do first. **Note:** enforcing the task rename is a visible change and is explicitly OUT of the zero-visual-change extraction run; it happens in its own follow-up run.
 8. **Agent-modifiable by design.** The system must be changeable via instructions: single token source, lint rules that enforce it, and this document kept current. A correct change should be expressible as "edit tokens + run checks," not "visit 40 files."
 
+## Contextual feedback
+
+Do not show a toast for task or run state already visible on the current screen.
+This includes descendant runs represented by the open subtree. Show local action
+results in place; keep failures actionable inline. Notifications for other work
+remain useful. Expected cancellation is neutral gray, not an error. A paused task replaces the composer with an amber takeover. It says “Task is
+paused.” and “Resume this task to send a message.” with a “Resume task” action.
+Subtrees use “Subtree is paused.” and “Resume subtree.” The takeover cannot be
+dismissed, retains drafts, and hides message inputs until the pause is released.
+
 ## Enforcement (what "compliant" means for the extraction run)
 
 - **Zero visual change is proven, not promised:** Storybook visual snapshots are baselined before any refactor, and all snapshots match baseline after it. A change that alters rendered output must be intentional and human-approved.

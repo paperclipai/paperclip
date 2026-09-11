@@ -29,6 +29,9 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.released": "released",
   "issue.comment_added": "commented on",
   "issue.comment_cancelled": "cancelled a queued comment on",
+  "issue.queued_comment_edited": "edited a queued comment on",
+  "issue.queued_comments_reordered": "reordered queued comments on",
+  "issue.queued_comment_discarded": "discarded a queued comment on",
   "issue.comment_deleted": "deleted a comment on",
   "issue.attachment_added": "attached file to",
   "issue.attachment_removed": "removed attachment from",
@@ -80,6 +83,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.thread_interaction_answered": "answered the request on",
   "issue.thread_interaction_withdrawn": "withdrew the request on",
   "issue.thread_interaction_cancelled": "cancelled the request on",
+  "issue.thread_interaction_skipped": "skipped the request on",
   "issue.thread_interaction_expired": "expired the request on",
   "issue.thread_interaction_item_verdicts_submitted": "submitted verdicts on",
   "issue.stalled_review_decided": "recorded a review verdict on",
@@ -97,6 +101,23 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "company.reactivated": "reactivated",
   "company.budget_updated": "updated budget for",
   "audit.exported": "exported the agent audit log for",
+  "tool_app.connected": "connected",
+  "tool_app.oauth_connected": "connected credentials for",
+  "tool_app.oauth_failed": "failed to connect credentials for",
+  "tool_app.oauth_access_finalized": "finished credential access for",
+  "tool_app.finished": "finished setup for",
+  "tool_app.reconnected": "reconnected",
+  "tool_connection.created": "created",
+  "tool_connection.updated": "updated",
+  "tool_connection.archived": "removed",
+  "tool_connection.catalog_refresh": "refreshed actions for",
+  "tool_connection.installs_synced": "changed agent installs for",
+  "tool_connection.install_access_extended": "extended agent access for",
+  "tool_connection.grant_audience_replaced": "changed human access for",
+  "tool_connection.grant_added": "added credentials to",
+  "tool_connection.grant_revoked": "revoked credentials from",
+  "tool_connection.grant_delegated": "delegated credentials for",
+  "tool_connection.grant_delegation_revoked": "revoked credential delegation for",
 };
 
 const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
@@ -106,6 +127,9 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.released": "released the issue",
   "issue.comment_added": "added a comment",
   "issue.comment_cancelled": "cancelled a queued comment",
+  "issue.queued_comment_edited": "edited a queued comment",
+  "issue.queued_comments_reordered": "reordered queued comments",
+  "issue.queued_comment_discarded": "discarded a queued comment",
   "issue.comment_deleted": "deleted a comment",
   "issue.feedback_vote_saved": "saved feedback on an AI output",
   "issue.attachment_added": "added an attachment",
@@ -153,6 +177,7 @@ const ISSUE_ACTIVITY_LABELS: Record<string, string> = {
   "issue.thread_interaction_answered": "answered the request",
   "issue.thread_interaction_withdrawn": "withdrew the request",
   "issue.thread_interaction_cancelled": "cancelled the request",
+  "issue.thread_interaction_skipped": "skipped the request",
   "issue.thread_interaction_expired": "expired the request",
   "issue.thread_interaction_item_verdicts_submitted": "submitted verdicts on the request",
   "issue.stalled_review_decided": "recorded a review verdict",
@@ -412,6 +437,23 @@ export function formatActivityVerb(
   details?: Record<string, unknown> | null,
   options: ActivityFormatOptions = {},
 ): string {
+  if (action.startsWith("tool_gateway.")) {
+    const rawTool = typeof details?.tool === "string"
+      ? details.tool
+      : typeof details?.upstreamToolName === "string"
+        ? details.upstreamToolName
+        : "an app action";
+    const tool = rawTool.replace(/[._-]+/g, " ");
+    const isTest = details?.source === "test";
+    if (action === "tool_gateway.call_completed") return `${isTest ? "tested" : "used"} ${tool} on`;
+    if (action === "tool_gateway.call_allowed") return `${isTest ? "started a test of" : "was allowed to use"} ${tool} on`;
+    if (action === "tool_gateway.call_denied") return `was blocked from using ${tool} on`;
+    if (action === "tool_gateway.approval_requested") return `asked to use ${tool} on`;
+    if (action === "tool_gateway.session_created") return "opened an app session for";
+    if (action === "tool_gateway.session_rejected") return "was blocked from opening an app session for";
+    if (action === "tool_gateway.discovery") return "discovered app actions for";
+  }
+
   if (action === "issue.updated") {
     const issueUpdatedVerb = formatIssueUpdatedVerb(details);
     if (issueUpdatedVerb) return issueUpdatedVerb;

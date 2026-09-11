@@ -16,10 +16,11 @@ const ALL_PROVIDER_METHODS = [
   "environmentSyncIn",
   "environmentSyncOut",
   "duplexChannelOpen",
+  "environmentRunnerIngressEndpoint",
 ];
 
 describe("general capability classifier", () => {
-  it("returns the eight Boolean fields for a full sandbox declaration input", () => {
+  it("returns every Boolean field for a full sandbox declaration input", () => {
     // A sandbox provider that verifies every prerequisite verb and declares every
     // capability resolves the whole eight-field set to true. The classifier reads
     // the sandbox driver's static support definition, so it names no driver.
@@ -34,6 +35,7 @@ describe("general capability classifier", () => {
         incrementalSessionOutput: true,
         concurrentSyncOperations: true,
         duplexCommandStream: true,
+        runnerWebSocketIngress: true,
       },
       supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT.sandbox.supportedCapabilities,
     });
@@ -66,7 +68,7 @@ describe("general capability classifier", () => {
     expect(effective.reusableLeases).toBe(false);
   });
 
-  it("default rule two: the three opt-in fields deny by default without a declaration", () => {
+  it("default rule two: opt-in fields deny by default without a declaration", () => {
     // The opt-in fields are behavioral guarantees. An absent declaration denies
     // them even when the worker verifies the prerequisite verb.
     const effective = classifyEnvironmentCapabilities({
@@ -96,6 +98,7 @@ describe("general capability classifier", () => {
           incrementalSessionOutput: true,
           concurrentSyncOperations: true,
           duplexCommandStream: true,
+          runnerWebSocketIngress: true,
         },
         supportedCapabilities: ENVIRONMENT_DRIVER_CAPABILITY_SUPPORT[driver].supportedCapabilities,
       });

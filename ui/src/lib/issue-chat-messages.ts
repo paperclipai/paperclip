@@ -1,3 +1,4 @@
+import type { ExecutionProjection } from "@paperclipai/shared";
 import type {
   ReasoningMessagePart,
   TextMessagePart,
@@ -36,9 +37,16 @@ export interface IssueChatComment extends IssueComment {
   queueTargetRunId?: string | null;
   queueReason?: "hold" | "active_run" | "other";
   followUpRequested?: boolean;
+  /** Causal conversation slot: the run that actually consumed this input. */
+  consumedByRunId?: string | null;
+  /** Same-turn PRP steering acknowledgement for this human input. */
+  steeredIntoRunId?: string | null;
+  conversationAnchorAt?: Date | string | null;
+  conversationAnchorSequence?: number;
 }
 
 export interface IssueChatLinkedRun {
+  execution?: ExecutionProjection | null;
   runId: string;
   runtimeMode?: "legacy" | "native";
   status: string;
@@ -51,6 +59,8 @@ export interface IssueChatLinkedRun {
   hasStoredOutput?: boolean;
   logBytes?: number | null;
   errorCode?: string | null;
+  scheduledRetryAt?: string | null;
+  nextAction?: string | null;
   resultJson?: Record<string, unknown> | null;
 }
 
@@ -66,7 +76,13 @@ export interface IssueChatTranscriptEntry {
     | "stderr"
     | "system"
     | "stdout"
-    | "diff";
+    | "diff"
+    | "provider_activity"
+    | "workspace_change"
+    | "workspace_file_reference"
+    | "runtime_request"
+    | "run_result"
+    | "run_terminal";
   ts: string;
   text?: string;
   delta?: boolean;
@@ -85,6 +101,12 @@ export interface IssueChatTranscriptEntry {
   cachedTokens?: number;
   costUsd?: number;
   changeType?: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation";
+  family?: "plan" | "tool_execution" | "research" | "delegation" | "model_identity" | "context" | "artifact" | "review" | "hook" | "memory" | "safety" | "terminal" | "wait" | "provider_notice";
+  eventType?: string;
+  status?: "running" | "completed" | "failed" | "interrupted" | "informational" | "pending" | "resolved" | "expired" | "cancelled";
+  title?: string;
+  summary?: string;
+  payload?: Record<string, unknown>;
 }
 
 const ISSUE_CHAT_TRANSCRIPT_MAX_VISIBLE_ENTRIES = 30;
@@ -424,7 +446,15 @@ function isIssueChatRenderableTranscriptEntry(entry: IssueChatTranscriptEntry) {
   return entry.kind !== "init"
     && entry.kind !== "stderr"
     && entry.kind !== "stdout"
-    && entry.kind !== "system";
+    && entry.kind !== "system"
+    // The classic task interface intentionally remains unchanged. Structured
+    // PRP surfaces are rendered by TaskChatThread and remain available in run
+    // details when the classic interface is enabled.
+    && entry.kind !== "workspace_change"
+    && entry.kind !== "workspace_file_reference"
+    && entry.kind !== "runtime_request"
+    && entry.kind !== "run_result"
+    && entry.kind !== "run_terminal";
 }
 
 function compactIssueChatTranscript(
@@ -720,6 +750,7 @@ function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): Se
       entry.kind === "tool_call" ||
       entry.kind === "tool_result" ||
       entry.kind === "diff" ||
+      entry.kind === "provider_activity" ||
       (entry.kind === "result" && ((entry.isError && !!entry.errors?.length) || !!entry.text));
     const isText = entry.kind === "assistant" && !!entry.text;
 
@@ -813,6 +844,7 @@ function createHistoricalRunMessage(run: IssueChatLinkedRun, agentMap?: Map<stri
         runAgentId: run.agentId,
         runAgentName: agentName,
         runStatus: run.status,
+      execution: run.execution,
         runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
       },
     },
@@ -850,6 +882,7 @@ function createHistoricalTranscriptMessage(args: {
       runAgentId: run.agentId,
       runAgentName: agentName,
       runStatus: run.status,
+      execution: run.execution,
       runOperatorInterrupted: isOperatorInterruptedRun(run.resultJson, run.errorCode),
       notices,
       waitingText,
@@ -896,6 +929,26 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
       orderedParts.push({ type: "text", text: entry.text });
       continue;
     }
+    if (entry.kind === "provider_activity") {
+      const toolCallId = `provider-activity-${index}`;
+      const args = normalizeToolArgs({
+        family: entry.family ?? "provider_notice",
+        eventType: entry.eventType ?? "provider.notice.recorded",
+        status: entry.status ?? "informational",
+        title: entry.title ?? "Provider activity",
+        summary: entry.summary ?? "",
+        payload: entry.payload ?? {},
+      });
+      orderedParts.push({
+        type: "tool-call",
+        toolCallId,
+        toolName: "paperclip_provider_activity",
+        args,
+        argsText: "",
+        ...(entry.status === "running" ? {} : { result: { status: entry.status ?? "informational" } }),
+      });
+      continue;
+    }
     if (entry.kind === "thinking" && entry.text) {
       orderedParts.push({ type: "reasoning", text: entry.text });
       continue;
@@ -924,13 +977,17 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
     if (entry.kind === "tool_result") {
       const toolCallId = entry.toolUseId || `tool-result-${index}`;
       const existing = toolParts.get(toolCallId);
+      const existingResult = typeof existing?.result === "string" ? existing.result : "";
+      const result = entry.delta
+        ? `${existingResult}${entry.content ?? ""}`
+        : (entry.content || existingResult);
       const nextPart: ToolCallMessagePart<JsonObject, unknown> = {
         type: "tool-call",
         toolCallId,
         toolName: existing?.toolName || entry.toolName || "tool",
         args: existing?.args ?? {},
         argsText: existing?.argsText ?? "",
-        result: entry.content ?? "",
+        result,
         isError: entry.isError === true,
       };
       if (existing) {
@@ -1068,6 +1125,7 @@ function createLiveRunMessage(args: {
       runAgentId: run.agentId,
       runAgentName: run.agentName,
       runStatus: run.status,
+      execution: run.execution,
       adapterType: run.adapterType,
       notices,
       waitingText,

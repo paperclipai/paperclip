@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { HarnessDriver, HarnessSession, PersistedHarnessSession } from "../contracts/harness-driver.js";
 import type { PrpEvent, PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
+import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
 
 const result: PrpStructuredRunResult = {
@@ -30,6 +31,7 @@ const providerIdentity = {
   workspaceDigest: "sha256:workspace",
   requestedModel: "claude-sonnet-4-20250514",
   effectiveModel: "claude-sonnet-4-20250514",
+  providerLifetimeFenceCandidates: [60_001, 60_002, 60_003] as const,
 };
 
 function prpEvent(sourceSeq: number, eventType: PrpEvent["eventType"], payload: Record<string, unknown>): PrpEvent {
@@ -95,6 +97,32 @@ const driver: HarnessDriver = {
 };
 
 describe("HarnessDriverBackend", () => {
+  it("retains Codex accounting and startup state through a serialized native checkpoint", async () => {
+    const fields = { workingDirectory: "/workspace/selected", codexUsageBaseline: {
+      baseline: { inputTokens: 100, outputTokens: 20 },
+      latest: { inputTokens: 150, outputTokens: 35 },
+    } };
+    class RecoveryFieldsSession extends FakeHarnessSession {
+      override async snapshot(): Promise<PersistedHarnessSession> {
+        return { ...(await super.snapshot()), ...fields, semanticResult: undefined, activeTurnId: null };
+      }
+    }
+    const original = new HarnessDriverBackend({ ...driver, openSession: async () => new RecoveryFieldsSession() });
+    const session = await original.openSession({ identity: {
+      runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    }, workingDirectory: fields.workingDirectory });
+    const checkpoint = JSON.parse(JSON.stringify(await session.snapshot()));
+    expect(checkpoint).toMatchObject(fields);
+    const recover = vi.fn(async (_snapshot: PersistedHarnessSession) => ({ recovered: true, session: new RecoveryFieldsSession() }));
+    const restarted = new HarnessDriverBackend({ ...driver, recoverSession: recover });
+    const restored = await restarted.recoverSession(checkpoint, { signal: new AbortController().signal });
+    expect(restored.recovered).toBe(true);
+    expect(recover.mock.calls[0]![0]).toMatchObject(fields);
+    expect(await restored.session!.snapshot()).toMatchObject(fields);
+    checkpoint.codexUsageBaseline.latest.inputTokens = 999;
+    expect(recover.mock.calls[0]![0].codexUsageBaseline!.latest.inputTokens).toBe(150);
+  });
+
   it("rejects and closes a provider session without a durable provider identity", async () => {
     let closed = false;
     class MissingProviderIdentitySession extends FakeHarnessSession {
@@ -445,6 +473,242 @@ describe("HarnessDriverBackend", () => {
     expect(session.identity()).toEqual({ ...originalIdentity, runId: "run-2" });
   });
 
+  it("restores a persisted terminal before the recovered stream is consumed", async () => {
+    const recoveryDriver: HarnessDriver = {
+      ...driver,
+      async recoverSession() {
+        return { recovered: true, session: new FakeHarnessSession() };
+      },
+    };
+    const backend = new HarnessDriverBackend(recoveryDriver);
+    const terminal = {
+      schema: "paperclip.prp.terminal.v1" as const,
+      turnTerminalState: "completed" as const,
+      runTerminalState: "succeeded" as const,
+      reportedWorkDisposition: "done" as const,
+    };
+    const recovery = await backend.recoverSession({
+      backendKind: "runner",
+      driverKind: "fake",
+      sessionId: "driver-1",
+      providerSessionId: "provider-1",
+      identity: {
+        runId: "run-terminal-recovery",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+      semanticResult: result,
+      terminal,
+      activeTurnId: "turn-1",
+      terminalTurns: [
+        { turnId: "turn-1", fingerprint: "terminal-fingerprint" },
+      ],
+    }, {
+      signal: new AbortController().signal,
+    });
+
+    expect(recovery).toMatchObject({ recovered: true });
+    await expect(recovery.session!.snapshot()).resolves.toMatchObject({
+      semanticResult: result,
+      terminal,
+    });
+    await expect(recovery.session!.result()).resolves.toEqual({
+      result,
+      terminal,
+      turnId: "turn-1",
+    });
+  });
+
+  it("reconstructs a missing top-level terminal from a completed semantic turn", async () => {
+    const recoveryDriver: HarnessDriver = {
+      ...driver,
+      async recoverSession() {
+        return { recovered: true, session: new FakeHarnessSession() };
+      },
+    };
+    const backend = new HarnessDriverBackend(recoveryDriver);
+    const semanticFingerprint = canonicalTestJson(result);
+    const recovery = await backend.recoverSession({
+      backendKind: "runner",
+      driverKind: "fake",
+      sessionId: "driver-1",
+      providerSessionId: "provider-1",
+      identity: {
+        runId: "run-terminal-inference",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+      semanticResult: result,
+      terminal: null,
+      activeTurnId: null,
+      terminalTurns: [
+        {
+          turnId: "turn-1",
+          fingerprint: JSON.stringify({
+            status: "completed",
+            semanticResult: semanticFingerprint,
+          }),
+        },
+      ],
+    }, {
+      signal: new AbortController().signal,
+    });
+
+    expect(recovery).toMatchObject({ recovered: true });
+    await expect(recovery.session!.result()).resolves.toEqual({
+      result,
+      terminal: {
+        schema: "paperclip.prp.terminal.v1",
+        turnTerminalState: "completed",
+        runTerminalState: "succeeded",
+        reportedWorkDisposition: "done",
+      },
+      turnId: "turn-1",
+    });
+  });
+
+  it("does not pair a recovered semantic result with another turn's terminal", async () => {
+    let recoveredPersisted: PersistedHarnessSession | null = null;
+    class RecoveredHarnessSession extends FakeHarnessSession {
+      override async snapshot(): Promise<PersistedHarnessSession> {
+        if (recoveredPersisted === null) throw new Error("missing recovered snapshot");
+        return structuredClone(recoveredPersisted);
+      }
+    }
+    const recoveryDriver: HarnessDriver = {
+      ...driver,
+      async recoverSession(snapshot) {
+        recoveredPersisted = snapshot;
+        return { recovered: true, session: new RecoveredHarnessSession() };
+      },
+    };
+    const backend = new HarnessDriverBackend(recoveryDriver);
+    const semanticFingerprint = canonicalTestJson(result);
+    const recovery = await backend.recoverSession({
+      backendKind: "runner",
+      driverKind: "fake",
+      sessionId: "driver-1",
+      providerSessionId: "provider-1",
+      identity: {
+        runId: "run-cross-turn-terminal",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+      semanticResult: result,
+      terminal: {
+        schema: "paperclip.prp.terminal.v1",
+        turnTerminalState: "cancelled",
+        runTerminalState: "cancelled",
+        reportedWorkDisposition: "yielded",
+      },
+      activeTurnId: null,
+      terminalTurns: [
+        {
+          turnId: "turn-with-result",
+          fingerprint: JSON.stringify({
+            status: "completed",
+            semanticResult: semanticFingerprint,
+          }),
+        },
+        {
+          turnId: "later-cancelled-turn",
+          fingerprint: JSON.stringify({ status: "cancelled" }),
+        },
+      ],
+    }, {
+      signal: new AbortController().signal,
+    });
+
+    expect(recovery).toMatchObject({ recovered: true });
+    await expect(recovery.session!.result()).resolves.toEqual({
+      result,
+      terminal: {
+        schema: "paperclip.prp.terminal.v1",
+        turnTerminalState: "completed",
+        runTerminalState: "succeeded",
+        reportedWorkDisposition: "done",
+      },
+      turnId: "turn-with-result",
+    });
+  });
+
+  it("rejects oversized terminal history before inspecting the semantic result", async () => {
+    const recoverSession = vi.fn(async () => ({
+      recovered: true,
+      session: new FakeHarnessSession(),
+    }));
+    const backend = new HarnessDriverBackend({ ...driver, recoverSession });
+    const inaccessibleResult = new Proxy(result, {
+      ownKeys() {
+        throw new Error("semantic result must not be inspected");
+      },
+    });
+
+    await expect(backend.recoverSession({
+      backendKind: "runner",
+      driverKind: "fake",
+      sessionId: "driver-1",
+      providerSessionId: "provider-1",
+      identity: {
+        runId: "run-oversized-terminals",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+      semanticResult: inaccessibleResult,
+      terminalTurns: Array.from({ length: 4_097 }, (_, index) => ({
+        turnId: `turn-${index}`,
+        fingerprint: "terminal",
+      })),
+    }, {
+      signal: new AbortController().signal,
+    })).resolves.toEqual({
+      recovered: false,
+      reason: "persisted harness terminal history exceeds its recovery limit",
+    });
+    expect(recoverSession).not.toHaveBeenCalled();
+  });
+
+  it("rejects an oversized semantic result before canonicalization", async () => {
+    const recoverSession = vi.fn(async () => ({
+      recovered: true,
+      session: new FakeHarnessSession(),
+    }));
+    const backend = new HarnessDriverBackend({ ...driver, recoverSession });
+
+    await expect(backend.recoverSession({
+      backendKind: "runner",
+      driverKind: "fake",
+      sessionId: "driver-1",
+      providerSessionId: "provider-1",
+      identity: {
+        runId: "run-oversized-semantic-result",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+      semanticResult: {
+        ...result,
+        summary: "x".repeat(8 * 1024 * 1024),
+      },
+      terminalTurns: [],
+    }, {
+      signal: new AbortController().signal,
+    })).resolves.toEqual({
+      recovered: false,
+      reason: "persisted harness semantic result exceeds its recovery limit",
+    });
+    expect(recoverSession).not.toHaveBeenCalled();
+  });
+
   it("delegates native runtime-request resolutions to the harness session", async () => {
     runtimeResolutions.length = 0;
     const backend = new HarnessDriverBackend(driver);
@@ -472,6 +736,129 @@ describe("HarnessDriverBackend", () => {
         resolution: { action: "accept_for_session" },
       },
     ]);
+  });
+
+  it.each(["typed", "typed-snapshot", "lookalike", "generic"] as const)(
+    "only a typed integrity fault forbids pending-input fallback: %s",
+    async (kind) => {
+      const typed = kind === "typed" || kind === "typed-snapshot";
+      const fault = typed
+        ? new NativeSessionProtocolIntegrityError(
+            "semantic_input_digest_mismatch",
+          )
+        : kind === "lookalike"
+          ? Object.assign(new Error("native_event_replay_conflict"), {
+              code: "native_event_replay_conflict",
+              reason: "semantic_input_digest_mismatch",
+            })
+          : new Error("provider transport lost");
+      class PendingInputSession extends FakeHarnessSession {
+        override async *events() {
+          yield prpEvent(1, "runtime_request.created", {
+            request: {
+              schema: "paperclip.runtime_request.v2",
+              requestKind: "runtime",
+              requestId: "input-1",
+              type: "input",
+              status: "pending",
+              turnId: "turn-1",
+              itemId: "input-1",
+              input: {
+                schema: "paperclip.question_set.v1",
+                questions: [
+                  {
+                    id: "color",
+                    prompt: "Which color?",
+                    required: true,
+                    answerMode: "text",
+                  },
+                ],
+              },
+            },
+          });
+          throw kind === "typed-snapshot"
+            ? new Error("ordinary stream failure")
+            : fault;
+        }
+        override async snapshot(): Promise<PersistedHarnessSession> {
+          if (kind === "typed-snapshot") throw fault;
+          return super.snapshot();
+        }
+      }
+      const session = await new HarnessDriverBackend({
+        ...driver,
+        openSession: async () => new PendingInputSession(),
+      }).openSession({
+        identity: {
+          runId: "run-1",
+          sessionId: "session-1",
+          companyId: "company-1",
+          issueId: "issue-1",
+          agentId: "agent-1",
+        },
+        workingDirectory: "/workspace",
+      });
+      const events: PrpEvent[] = [];
+      const consumed = (async () => {
+        for await (const event of session.events()) events.push(event);
+      })();
+      if (typed) {
+        await expect(consumed).rejects.toBe(fault);
+        expect(events.map((event) => event.eventType)).toEqual([
+          "runtime_request.created",
+        ]);
+        await expect(session.result()).rejects.toBe(fault);
+        await expect(session.snapshot()).rejects.toBe(fault);
+      } else {
+        await consumed;
+        expect(events.map((event) => event.eventType)).toEqual([
+          "runtime_request.created",
+          "runtime_request.expired",
+          "turn.interrupted",
+        ]);
+      }
+      await session.close({ reason: "fixture complete" });
+    },
+  );
+
+  it("never exposes an earlier terminal result after a later typed integrity fault", async () => {
+    const fault = new NativeSessionProtocolIntegrityError(
+      "semantic_input_digest_mismatch",
+    );
+    class TerminalThenIntegrityFailure extends FakeHarnessSession {
+      goal = vi.fn(async () => null);
+      steer = vi.fn(async () => ({ correlationId: "blocked-steer" }));
+      override async *events() {
+        yield* super.events();
+        throw fault;
+      }
+    }
+    const harness = new TerminalThenIntegrityFailure();
+    const session = await new HarnessDriverBackend({
+      ...driver,
+      openSession: async () => harness,
+    }).openSession({
+      identity: {
+        runId: "run-1",
+        sessionId: "session-1",
+        companyId: "company-1",
+        issueId: "issue-1",
+        agentId: "agent-1",
+      },
+      workingDirectory: "/workspace",
+    });
+    const iterator = session.events()[Symbol.asyncIterator]();
+    await iterator.next();
+    await iterator.next();
+    await expect(iterator.next()).rejects.toBe(fault);
+    await expect(session.result()).rejects.toBe(fault);
+    await expect(session.snapshot()).rejects.toBe(fault);
+    await expect(Promise.resolve().then(() => session.goal!({ action: "get" }))).rejects.toBe(fault);
+    await expect(Promise.resolve().then(() => session.steer!({ turnId: "turn-1", message: { role: "user", text: "must not send" } }))).rejects.toBe(fault);
+    await expect(Promise.resolve().then(() => session.resolveRuntimeRequest!({ requestId: "request-1", turnId: "turn-1", resolution: { type: "input", answers: [] } as never }))).rejects.toBe(fault);
+    expect(harness.goal).not.toHaveBeenCalled();
+    expect(harness.steer).not.toHaveBeenCalled();
+    await session.close({ reason: "fixture complete" });
   });
 
   it("emits one non-replayable input expiration and terminal wait after provider loss", async () => {
@@ -580,3 +967,17 @@ describe("HarnessDriverBackend", () => {
     await expect(iterator.next()).rejects.toThrow("provider stopped after cancellation");
   });
 });
+
+function canonicalTestJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalTestJson).join(",")}]`;
+  }
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalTestJson(record[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "undefined";
+}

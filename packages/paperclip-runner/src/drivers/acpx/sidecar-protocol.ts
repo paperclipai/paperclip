@@ -2,8 +2,10 @@ import type { QualifiedAcpxAgent } from "./qualified-profiles.js";
 import type { NativeRuntimeContextSnapshot } from "../../contracts/runtime-context.js";
 import type { NativeAcpxPermissionMode } from "../../contracts/native-execution.js";
 import {
+  classifyGeneratedAcpxToolOperation,
   GENERATED_ACPX_SIDECAR_COMMANDS,
   GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+  type GeneratedAcpxToolOperation,
   type GeneratedAcpxSidecarCommand,
   type GeneratedAcpxSidecarEventType,
 } from "./generated-sidecar-contract.js";
@@ -62,6 +64,7 @@ export interface AcpxExpectedSessionIdentity {
   requestedModel: string;
   effectiveModel: string;
   permissionMode?: NativeAcpxPermissionMode;
+  providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 
 export function parseAcpxSidecarRequest(value: unknown): AcpxSidecarRequest {
@@ -114,24 +117,141 @@ export function parseAcpxSidecarRequest(value: unknown): AcpxSidecarRequest {
 export function boundedSidecarValue(
   value: unknown,
   maxBytes = 64 * 1024,
+  overflowFallback?: Record<string, unknown>,
 ): Record<string, unknown> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
     throw new Error("ACPX sidecar value limit must be a positive integer");
   }
+  const omitted = (reason: string): Record<string, unknown> => {
+    const marker = { omitted: true, reason };
+    if (overflowFallback === undefined) return marker;
+    try {
+      const serialized = stringifyAcpxSidecarFrame({
+        ...overflowFallback,
+        ...marker,
+      });
+      if (Buffer.byteLength(serialized) <= maxBytes) {
+        const parsed = JSON.parse(serialized);
+        if (typeof parsed === "object" && parsed !== null) {
+          return parsed as Record<string, unknown>;
+        }
+      }
+    } catch {
+      // Fall through to the bounded type-less marker when even the caller's
+      // minimal identity cannot be serialized safely.
+    }
+    return marker;
+  };
   try {
-    const serialized = JSON.stringify(value);
+    const serialized = stringifyAcpxSidecarFrame(value);
     if (!serialized || Buffer.byteLength(serialized) > maxBytes) {
-      return { omitted: true, reason: "payload_limit" };
+      return omitted("payload_limit");
     }
     const parsed = JSON.parse(serialized);
     return typeof parsed === "object" &&
       parsed !== null &&
       !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>)
-      : { omitted: true, reason: "object_required" };
+      : omitted("object_required");
   } catch {
-    return { omitted: true, reason: "serialization_failed" };
+    return omitted("serialization_failed");
   }
+}
+
+/**
+ * Replaces isolated UTF-16 surrogates with a Unicode scalar value. JavaScript
+ * can retain those code units and JSON.stringify emits them as escapes, while
+ * Rust's serde_json correctly rejects them as invalid JSON strings.
+ */
+export function safeSidecarText(value: string): string {
+  const safe: string[] = [];
+  for (const codePoint of value) safe.push(safeSidecarCodePoint(codePoint));
+  return safe.join("");
+}
+
+/**
+ * Serializes a frame without emitting string values or property names that
+ * Rust cannot decode. The initial round trip preserves JSON.stringify's
+ * ordinary toJSON, omission, and number semantics before keys are rebuilt.
+ */
+export function stringifyAcpxSidecarFrame(value: unknown): string {
+  const serialized = JSON.stringify(value);
+  if (!serialized) throw new Error("ACPX sidecar frame is not serializable");
+  return JSON.stringify(safeSidecarJsonValue(JSON.parse(serialized)));
+}
+
+function safeSidecarJsonValue(value: unknown): unknown {
+  if (typeof value === "string") return safeSidecarText(value);
+  if (Array.isArray(value)) return value.map(safeSidecarJsonValue);
+  if (value === null || typeof value !== "object") return value;
+
+  const safe = Object.create(null) as Record<string, unknown>;
+  for (const [key, candidate] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
+    const safeKey = safeSidecarText(key);
+    if (Object.hasOwn(safe, safeKey)) {
+      throw new Error(
+        "ACPX sidecar frame has colliding Unicode property names",
+      );
+    }
+    safe[safeKey] = safeSidecarJsonValue(candidate);
+  }
+  return safe;
+}
+
+/**
+ * Bounds provider text by Unicode scalar count so the emitted UTF-8 frame and
+ * runner-core's `str::chars` admission check observe the same value. Provider
+ * strings may also contain an isolated UTF-16 surrogate; replace it rather
+ * than emitting a JSON escape that Rust cannot decode as a string.
+ */
+export function boundedSidecarText(
+  value: string,
+  maxCodePoints: number,
+): string {
+  if (!Number.isSafeInteger(maxCodePoints) || maxCodePoints < 0) {
+    throw new Error("ACPX sidecar text limit must be a non-negative integer");
+  }
+  const bounded: string[] = [];
+  for (const codePoint of value) {
+    if (bounded.length >= maxCodePoints) break;
+    bounded.push(safeSidecarCodePoint(codePoint));
+  }
+  return bounded.join("");
+}
+
+/**
+ * Classifies the complete provider value before retaining a bounded display
+ * copy. `toolOperation` is the sidecar's classification authority when the
+ * provider token lies beyond the retained prefix; older frames can continue
+ * to be classified from `kind` and `title` by runner-core.
+ */
+export function frameAcpxToolClassification(
+  toolKind: unknown,
+  boundedToolTitle: unknown,
+): {
+  kind: string | null;
+  toolOperation: GeneratedAcpxToolOperation;
+} {
+  const toolOperation = classifyGeneratedAcpxToolOperation(
+    toolKind,
+    boundedToolTitle,
+  );
+  return {
+    kind:
+      typeof toolKind === "string"
+        ? boundedSidecarText(toolKind, 4_000)
+        : null,
+    toolOperation,
+  };
+}
+
+function safeSidecarCodePoint(codePoint: string): string {
+  const codeUnit = codePoint.charCodeAt(0);
+  return codePoint.length === 1 && codeUnit >= 0xd800 && codeUnit <= 0xdfff
+    ? "\uFFFD"
+    : codePoint;
 }
 
 export function sanitizeAcpxPlanEntries(value: unknown): Array<{

@@ -17,5 +17,10 @@ export function enqueueSerialInput(
       // Diagnostics must not poison the queue or skip later input frames.
     }
   };
-  return pending.catch(reportError).then(operation).catch(reportError);
+  return pending
+    .then(operation, (error) => {
+      reportError(error);
+      return operation();
+    })
+    .catch(reportError);
 }

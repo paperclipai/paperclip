@@ -1,12 +1,13 @@
 /**
- * Public test-only surface for deterministic fixtures and conformance kits.
+ * Public test-only surface for deterministic adapters and conformance kits.
  *
- * Production consumers import the package root. Tests import this explicit
- * subpath so Node-only fixture loading and comparison helpers cannot become an
- * accidental production dependency.
+ * Production Paperclip code imports the package root. Tests, Paperclip Evals,
+ * and other conformance consumers import this explicit subpath so test helpers
+ * never become an accidental runtime dependency.
  */
 export * from "./index.js";
 export * from "./conformance/control-plane-port.js";
+export * from "./conformance/capability-semantic-conformance.js";
 export * from "./conformance/harness-driver.js";
 export * from "./conformance/semantic-conformance.js";
 export * from "./mock-core/deterministic-harness-driver.js";

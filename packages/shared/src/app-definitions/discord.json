@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "slug": "discord",
+  "name": "Discord",
+  "description": "Let people start and continue Paperclip work with an agent from Discord.",
+  "categories": [
+    "communication"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/discord.svg"
+  },
+  "urlPatterns": [
+    "https://discord.com/*"
+  ],
+  "methods": [
+    {
+      "key": "chat-agent",
+      "label": "Chat with an agent",
+      "purpose": "channel",
+      "provider": "discord",
+      "transport": "chat_sdk",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Let people in Discord start and continue work with one Paperclip agent.",
+      "credentialFields": [
+        {
+          "key": "botToken",
+          "label": "Bot token",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste the Discord bot token",
+          "secret": true
+        },
+        {
+          "key": "applicationId",
+          "label": "Application ID",
+          "type": "text",
+          "required": true,
+          "placeholder": "123456789012345678",
+          "secret": false
+        },
+        {
+          "key": "guildId",
+          "label": "Server ID",
+          "type": "text",
+          "required": true,
+          "placeholder": "123456789012345678",
+          "secret": false
+        }
+      ],
+      "guidanceMd": "Create one dedicated Discord application and bot, enable the Message Content intent, install it in one server with the documented bot permissions, then connect its bot token, Application ID, and server ID. Paperclip starts one Discord thread per root bot mention and keeps the linked Paperclip task authoritative.",
+      "consoleLinks": {
+        "register": "https://discord.com/developers/applications",
+        "docs": "https://discord.com/developers/docs/quick-start/getting-started"
+      },
+      "riskTier": "S3",
+      "requiredResourceFilters": [
+        "channel"
+      ]
+    }
+  ]
+}

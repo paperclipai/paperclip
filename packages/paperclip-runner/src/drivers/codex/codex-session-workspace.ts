@@ -1,4 +1,8 @@
-import { parseCodexTurnDiff, type ParsedCodexTurnDiffFile } from "./codex-turn-diff.js";
+import {
+  parseCodexTurnDiff,
+  summarizeCodexTurnDiff,
+  type ParsedCodexTurnDiffFile,
+} from "./codex-turn-diff.js";
 import { boundedCodexWorkspaceStat as boundedWorkspaceStat, codexWorkspaceRelativePath as workspaceRelativePath } from "./codex-thread-normalization.js";
 import type { CodexSessionState } from "./codex-session-state.js";
 import { record, text } from "./codex-driver-values.js";
@@ -10,9 +14,9 @@ export function recordWorkspaceChanges(
     complete: boolean,
   ): void {
     const changes = Array.isArray(value) ? value : [];
-    const files = changes
+    const files: ParsedCodexTurnDiffFile[] = changes
       .slice(0, 2_000)
-      .flatMap((candidate): Record<string, unknown>[] => {
+      .flatMap((candidate): ParsedCodexTurnDiffFile[] => {
         const change = record(candidate);
         const path = text(change.path).replaceAll("\\", "/");
         if (!path || path.startsWith("/") || path.split("/").includes(".."))
@@ -26,7 +30,7 @@ export function recordWorkspaceChanges(
         const update = record(kindRecord.update ?? change.update);
         const previousPath =
           text(update.move_path, text(update.movePath)) || null;
-        const operation = previousPath
+        const operation: ParsedCodexTurnDiffFile["operation"] = previousPath
           ? "rename"
           : kindText.toLowerCase().includes("add")
             ? "create"
@@ -58,9 +62,6 @@ export function recordWorkspaceChanges(
         ];
       });
     if (files.length === 0) return;
-    const unknown = files.some(
-      (file) => file.additions === null || file.deletions === null,
-    );
     const payload = {
       schema: "paperclip.workspace.diff.v1",
       changeSetId: `${turnId}:workspace`,
@@ -70,15 +71,7 @@ export function recordWorkspaceChanges(
       source: "harness_reported",
       complete,
       files,
-      totals: {
-        files: files.length,
-        additions: unknown
-          ? null
-          : files.reduce((sum, file) => sum + Number(file.additions), 0),
-        deletions: unknown
-          ? null
-          : files.reduce((sum, file) => sum + Number(file.deletions), 0),
-      },
+      totals: summarizeCodexTurnDiff(files),
       patchArtifactRef: null,
     };
     state.workspaceChangesByTurn.set(turnId, payload);
@@ -166,9 +159,6 @@ function recordWorkspaceSnapshot(
       JSON.stringify(record(previous).files) === JSON.stringify(files) &&
       record(previous).patchArtifactRef === patchArtifactRef
     ) return;
-    const unknown = files.some(
-      (file) => file.additions === null || file.deletions === null,
-    );
     const priorRevision = Number(record(previous).revision ?? 0);
     const incomingRevision =
       typeof requestedRevision === "number" &&
@@ -183,15 +173,7 @@ function recordWorkspaceSnapshot(
       source: "harness_reported",
       complete: false,
       files,
-      totals: {
-        files: files.length,
-        additions: unknown
-          ? null
-          : files.reduce((sum, file) => sum + Number(file.additions), 0),
-        deletions: unknown
-          ? null
-          : files.reduce((sum, file) => sum + Number(file.deletions), 0),
-      },
+      totals: summarizeCodexTurnDiff(files),
       patchArtifactRef,
     };
     state.workspaceChangesByTurn.set(turnId, payload);

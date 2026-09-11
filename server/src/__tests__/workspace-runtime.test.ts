@@ -4401,6 +4401,59 @@ describe("ensureRuntimeServicesForRun", () => {
     expect(services).toEqual([]);
   });
 
+  it("enables UI dev middleware by default for managed Paperclip worktree runtimes", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-ui-dev-"));
+    const workspace = buildWorkspace(workspaceRoot);
+    const serviceScript =
+      "const http=require('node:http');"
+      + "http.createServer((req,res)=>{"
+      + "if(req.url==='/api/health'){res.setHeader('content-type','application/json');"
+      + "res.end(JSON.stringify({status:'ok'}));return;}"
+      + "res.end(process.env.PAPERCLIP_UI_DEV_MIDDLEWARE||'missing');"
+      + "}).listen(Number(process.env.PORT),'127.0.0.1');";
+
+    try {
+      const [runtime] = await startRuntimeServicesForWorkspaceControl({
+        actor: { id: "agent-1", name: "Codex Coder", companyId: "company-1" },
+        issue: null,
+        workspace,
+        executionWorkspaceId: "execution-workspace-ui-dev",
+        config: {
+          workspaceRuntime: {
+            services: [{
+              name: "paperclip-dev",
+              command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(serviceScript)}`,
+              port: { type: "auto" },
+              readiness: {
+                type: "http",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+                timeoutSec: 10,
+                intervalMs: 100,
+              },
+              expose: {
+                type: "url",
+                urlTemplate: "http://127.0.0.1:{{port}}",
+              },
+              lifecycle: "shared",
+              reuseScope: "execution_workspace",
+              stopPolicy: { type: "manual" },
+            }],
+          },
+        },
+        adapterEnv: {},
+      });
+
+      await expect(fetch(`${runtime!.url}/ui-mode`).then((response) => response.text()))
+        .resolves.toBe("true");
+    } finally {
+      await stopRuntimeServicesForExecutionWorkspace({
+        executionWorkspaceId: "execution-workspace-ui-dev",
+        workspaceCwd: workspaceRoot,
+      });
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
   it("injects isolated browser callback origins into separate worktree runtimes", async () => {
     const firstRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-origin-first-"));
     const secondRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-origin-second-"));
@@ -7684,7 +7737,13 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     const reservePort = async () => {
       for (let attempt = 0; attempt < 100; attempt += 1) {
         const probe = net.createServer();
-        await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+        // macOS can allocate an entire ephemeral range above 55535. Pick a
+        // bounded candidate so the test's HMR companion remains a valid port.
+        await new Promise<void>((resolve) => {
+          probe.once("error", () => resolve());
+          probe.listen(20_000 + Math.floor(Math.random() * 20_000), "127.0.0.1", resolve);
+        });
+        if (!probe.listening) continue;
         const address = probe.address();
         const port = typeof address === "object" && address ? address.port : null;
         await new Promise<void>((resolve, reject) => {
@@ -8025,7 +8084,13 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     const reservePort = async () => {
       for (let attempt = 0; attempt < 100; attempt += 1) {
         const probe = net.createServer();
-        await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+        // macOS can allocate an entire ephemeral range above 55535. Pick a
+        // bounded candidate so the test's HMR companion remains a valid port.
+        await new Promise<void>((resolve) => {
+          probe.once("error", () => resolve());
+          probe.listen(20_000 + Math.floor(Math.random() * 20_000), "127.0.0.1", resolve);
+        });
+        if (!probe.listening) continue;
         const address = probe.address();
         const candidate = typeof address === "object" && address ? address.port : null;
         await new Promise<void>((resolve, reject) => {

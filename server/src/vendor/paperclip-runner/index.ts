@@ -22,9 +22,39 @@ export type {
   PaperclipRunnerAuthorizedToolSet,
   PaperclipQuestionSet,
   PaperclipRuntimeInputRequest,
+  CompleteControlPlaneRunInput,
+  ControlPlanePort,
+  HarnessRuntimeRequestKind,
+  HarnessRuntimeRequestResolution,
+  NativeAcpxAgent,
+  NativeAcpxPermissionMode,
+  NativeCodexApprovalPolicy,
+  NativeExecutionInput,
+  NativeExecutionInputV4,
+  NativeInteractionResponseEnvelope,
+  NativeOpenCodePermissionMode,
+  NativePlanningContext,
+  NativeRunEvent,
+  NativeRunResult,
+  NativeRuntimeAssetReference,
+  NativeRuntimeContextSnapshot,
+  NativeSession,
+  NativeSessionBackend,
+  NativeSessionGoalControl,
+  OpenControlPlaneRunInput,
+  PersistedNativeSession,
   PrpEvent,
+  PrpIgnoredAttentionRequest,
+  PrpNormalizedAttentionRequest,
   PrpStructuredRunResult,
   PrpTerminalState,
+  PrpVerificationReasonCode,
+  PrpWireConnection,
+  ReplayControlPlaneEventsInput,
+  RunnerProcessHandle,
+  RunnerProcessLaunchSpec,
+  StrictCompletionContractInput,
+  TransportCloseReason,
 } from "@paperclipai/paperclip-runner";
 export type DurablePrpControlPlane =
   import("@paperclipai/paperclip-runner").DurablePrpControlPlane;
@@ -35,14 +65,60 @@ const sourceUrl = new URL(
   "../../../../packages/paperclip-runner/src/index.ts",
   import.meta.url,
 );
-const runner = await import(sourceUrl.href) as RunnerModule;
+const runner = (await import(sourceUrl.href)) as RunnerModule;
 
 export const DurablePrpControlPlane = runner.DurablePrpControlPlane;
+export const inspectWarmRunTransition = runner.inspectWarmRunTransition;
+export const readRunnerdArtifactBinding = runner.readRunnerdArtifactBinding;
+export const NativeSessionCleanupQuarantinedError =
+  runner.NativeSessionCleanupQuarantinedError;
+export const NativeSessionProtocolIntegrityError =
+  runner.NativeSessionProtocolIntegrityError;
 export const PaperclipSemanticDispatcher = runner.PaperclipSemanticDispatcher;
+export const CAPABILITY_SEMANTIC_TOOL_CATALOG =
+  runner.CAPABILITY_SEMANTIC_TOOL_CATALOG;
+export const HarnessRuntimeRequestResolutionError =
+  runner.HarnessRuntimeRequestResolutionError;
+export const NATIVE_RUNTIME_ASSET_SCHEMA = runner.NATIVE_RUNTIME_ASSET_SCHEMA;
+export const PAPERCLIP_EXECUTION_PROMPT = runner.PAPERCLIP_EXECUTION_PROMPT;
+export const PAPERCLIP_EXECUTION_PROMPT_REVISION =
+  runner.PAPERCLIP_EXECUTION_PROMPT_REVISION;
+export const acpxRuntimeSessionDirectoryName =
+  runner.acpxRuntimeSessionDirectoryName;
+export const canonicalNativeRuntimeContextDigest =
+  runner.canonicalNativeRuntimeContextDigest;
+export const createNativeSessionBackend = runner.createNativeSessionBackend;
 export const createPaperclipRunnerAuthorizedToolSet =
   runner.createPaperclipRunnerAuthorizedToolSet;
+export const createRunnerdCodexTransport: (
+  options?: import("@paperclipai/paperclip-runner").RunnerdCodexTransportOptions,
+) => import("@paperclipai/paperclip-runner").RunnerdCodexTransport =
+  runner.createRunnerdCodexTransport;
+export const defaultCapabilityRunnerdBinary =
+  runner.defaultCapabilityRunnerdBinary;
+export const executeNativeSession = runner.executeNativeSession;
+export const applyNativeSessionGoalControl =
+  runner.applyNativeSessionGoalControl;
+export const completeRetainedNativeSessionCleanup = runner.completeRetainedNativeSessionCleanup;
+export const settleRetainedRunnerdSession = runner.settleRetainedRunnerdSession;
+export const retainedRunnerdMaintenanceIsIdle =
+  runner.retainedRunnerdMaintenanceIsIdle;
+export const drainRetainedRunnerdMaintenanceOperations =
+  runner.drainRetainedRunnerdMaintenanceOperations;
+export const nativeRuntimePromptDigest = runner.nativeRuntimePromptDigest;
+export const normalizePrpResultSignals = runner.normalizePrpResultSignals;
+export const parseCodexTurnDiff = runner.parseCodexTurnDiff;
+export const parseHarnessRuntimeRequestResolution =
+  runner.parseHarnessRuntimeRequestResolution;
+export const parseNativeExecutionInput = runner.parseNativeExecutionInput;
+export const parseNativeRuntimeContext = runner.parseNativeRuntimeContext;
 export const parsePaperclipQuestionSet = runner.parsePaperclipQuestionSet;
-export const parsePaperclipQuestionResponse = runner.parsePaperclipQuestionResponse;
+export const parsePaperclipQuestionResponse =
+  runner.parsePaperclipQuestionResponse;
+export const resolveQualifiedAcpxProfile = runner.resolveQualifiedAcpxProfile;
+export const resolveSourceCodexHome = runner.resolveSourceCodexHome;
 export const validatePrpEvent = runner.validatePrpEvent;
 export const validatePrpStructuredRunResult =
   runner.validatePrpStructuredRunResult;
+
+export const NativeProviderTerminalFailure = runner.NativeProviderTerminalFailure;

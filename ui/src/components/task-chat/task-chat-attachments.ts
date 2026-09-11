@@ -15,6 +15,7 @@ import {
   File as FileIcon,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import type { IssueAttachment } from "@paperclipai/shared";
 
 export interface FileKind {
   icon: LucideIcon;
@@ -89,9 +90,53 @@ export function isImageFilename(name: string): boolean {
   return IMAGE_EXTENSIONS.has(extensionOf(name));
 }
 
+type AttachmentRecord = Pick<
+  IssueAttachment,
+  | "id"
+  | "contentPath"
+  | "openPath"
+  | "downloadPath"
+  | "contentType"
+  | "byteSize"
+  | "originalFilename"
+>;
+
+function normalizedContentType(contentType: string | undefined): string {
+  return (contentType ?? "").toLowerCase().split(";")[0]?.trim() ?? "";
+}
+
+/** MIME type is authoritative; filenames remain a fallback for legacy refs. */
+export function isImageAttachment(ref: AttachmentRef): boolean {
+  const contentType = normalizedContentType(ref.contentType);
+  if (contentType.startsWith("image/")) return true;
+  if (contentType && contentType !== "application/octet-stream") return false;
+  return isImageFilename(ref.name) || isImageFilename(ref.url.split("?")[0]);
+}
+
 /** Kind icon + short label for a filename; unknown extensions get File/"File". */
 export function fileKindForName(name: string): FileKind {
   return KIND_BY_EXTENSION[extensionOf(name)] ?? { icon: FileIcon, label: "File" };
+}
+
+export function fileKindForAttachment(ref: AttachmentRef): FileKind {
+  const byName = fileKindForName(ref.name);
+  if (byName.label !== "File") return byName;
+
+  const contentType = normalizedContentType(ref.contentType);
+  if (contentType === "application/pdf") return { icon: FileText, label: "PDF" };
+  if (contentType === "application/json" || contentType.endsWith("+json")) {
+    return { icon: FileCode, label: "JSON" };
+  }
+  if (contentType === "text/csv" || contentType === "application/csv") {
+    return { icon: FileSpreadsheet, label: "CSV" };
+  }
+  if (contentType.startsWith("text/")) return { icon: FileText, label: "Text" };
+  if (contentType.startsWith("audio/")) return { icon: FileAudio, label: "Audio" };
+  if (contentType.startsWith("video/")) return { icon: FileVideo, label: "Video" };
+  if (contentType.includes("zip") || contentType.includes("archive")) {
+    return { icon: FileArchive, label: "Archive" };
+  }
+  return byName;
 }
 
 /** "2.4 MB"-style size for chip descriptions (same tiers as IssueChatThread). */
@@ -105,6 +150,45 @@ export function formatFileSize(bytes: number | undefined): string {
 export interface AttachmentRef {
   name: string;
   url: string;
+  id?: string;
+  contentType?: string;
+  byteSize?: number;
+  openPath?: string;
+  downloadPath?: string;
+}
+
+function attachmentIdFromUrl(url: string): string | null {
+  return /\/api\/(?:attachments|assets)\/([^/?]+)\/content/.exec(url)?.[1] ?? null;
+}
+
+export function hydrateAttachmentRefs(
+  refs: AttachmentRef[],
+  attachments: AttachmentRecord[],
+): AttachmentRef[] {
+  const byId = new Map(attachments.map((attachment) => [attachment.id, attachment]));
+  const byPath = new Map(
+    attachments.flatMap((attachment) => [
+      [attachment.contentPath, attachment] as const,
+      ...(attachment.openPath ? [[attachment.openPath, attachment] as const] : []),
+    ]),
+  );
+
+  return refs.map((ref) => {
+    const cleanUrl = ref.url.split("?")[0];
+    const record =
+      byPath.get(cleanUrl) ??
+      byId.get(attachmentIdFromUrl(ref.url) ?? "");
+    if (!record) return ref;
+    return {
+      ...ref,
+      id: record.id,
+      name: record.originalFilename?.trim() || ref.name,
+      contentType: record.contentType,
+      byteSize: record.byteSize,
+      openPath: record.openPath,
+      downloadPath: record.downloadPath,
+    };
+  });
 }
 
 /**
@@ -118,21 +202,41 @@ const ATTACHMENT_LINK_RE =
 /** Markdown image embeds (`![name](url)`), same escaped-label grammar. */
 const IMAGE_EMBED_RE = /!\[((?:\\.|[^\]\\])*)\]\(([^()\s]+)\)/g;
 
+function isStandaloneImageEmbedLine(line: string): boolean {
+  return (
+    line.replace(IMAGE_EMBED_RE, "").trim().length === 0 && line.trim().length > 0
+  );
+}
+
 /**
- * Every image embedded in a message body, in document order, deduped by URL.
+ * Images on standalone lines, in document order, deduped by URL. Images woven
+ * into prose stay inline so they are not also duplicated in the media strip.
  * Feeds the bubble's lightbox: the refs become the gallery items and the
  * clicked <img> src picks the initial index.
  */
 export function extractImageRefs(body: string): AttachmentRef[] {
   const refs: AttachmentRef[] = [];
   const seen = new Set<string>();
-  for (const match of body.matchAll(IMAGE_EMBED_RE)) {
-    const [, name, url] = match;
-    if (seen.has(url)) continue;
-    seen.add(url);
-    refs.push({ name: name.replace(/\\([[\]])/g, "$1"), url });
+  for (const line of body.split("\n")) {
+    if (!isStandaloneImageEmbedLine(line)) continue;
+    for (const match of line.matchAll(IMAGE_EMBED_RE)) {
+      const [, name, url] = match;
+      if (seen.has(url)) continue;
+      seen.add(url);
+      refs.push({ name: name.replace(/\\([[\]])/g, "$1"), url });
+    }
   }
   return refs;
+}
+
+/** Remove standalone image-embed lines after promoting them to the media strip. */
+export function stripStandaloneImageEmbeds(body: string): string {
+  return body
+    .split("\n")
+    .filter((line) => !isStandaloneImageEmbedLine(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 export interface ExtractedAttachmentRefs {
@@ -152,7 +256,6 @@ export function extractAttachmentRefs(body: string): ExtractedAttachmentRefs {
   const seen = new Set<string>();
   for (const match of body.matchAll(ATTACHMENT_LINK_RE)) {
     const [, name, url] = match;
-    if (isImageFilename(name) || isImageFilename(url.split("?")[0])) continue;
     if (seen.has(url)) continue;
     seen.add(url);
     refs.push({ name: name.replace(/\\([[\]])/g, "$1"), url });

@@ -103,7 +103,6 @@ import {
 } from "./process-activity-monitor.js";
 import {
   createCodexAcpExecutor,
-  formatCodexAcpFallbackMessage,
   resolveCodexExecutionEngineForRun,
 } from "./acp.js";
 
@@ -568,20 +567,20 @@ export async function ensureCodexSkillsInjected(
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const engineSelection = await resolveCodexExecutionEngineForRun(ctx);
-  if (engineSelection.engine === "acp") {
-    try {
-      return await executeCodexAcp(ctx);
-    } catch (err) {
-      if (engineSelection.explicit) throw err;
-      const reason = err instanceof Error ? err.message : String(err);
-      await ctx.onLog(
-        "stderr",
-        formatCodexAcpFallbackMessage(`Codex ACP startup failed: ${reason}`),
-      );
-    }
+  if (engineSelection.unavailableReason) {
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorCode: "adapter_engine_unavailable",
+      errorMessage: engineSelection.unavailableReason,
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+    };
   }
-  if (!engineSelection.explicit && engineSelection.fallbackReason) {
-    await ctx.onLog("stderr", formatCodexAcpFallbackMessage(engineSelection.fallbackReason));
+  if (engineSelection.engine === "acp") {
+    return executeCodexAcp(ctx);
   }
 
   const { runId, agent, runtime, config, context, onLog, onMeta, onEvent, onSpawn, authToken } = ctx;
@@ -1206,6 +1205,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         {
           resumeSessionId,
           skipGitRepoCheck: executionTargetIsSandbox,
+          networkAccess: env.PAPERCLIP_RUNNER_NETWORK_ACCESS !== "disabled",
         },
       );
       const args = execArgs.args;
@@ -1526,6 +1526,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       };
     };
 
+    let executionError: unknown = null;
     try {
       const initial = await runAttempt(sessionId);
       if (
@@ -1539,22 +1540,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
         );
         const retry = await runAttempt(null);
-        return toResult(retry, true, true);
+        const retryResult = toResult(retry, true, true);
+        if (retryResult.errorMessage) {
+          executionError = new Error(retryResult.errorMessage);
+        }
+        return retryResult;
       }
 
-      return toResult(initial, false, false);
+      const result = toResult(initial, false, false);
+      if (result.errorMessage) {
+        executionError = new Error(result.errorMessage);
+      }
+      return result;
+    } catch (error) {
+      executionError = error;
+      throw error;
     } finally {
       if (paperclipBridge) {
         await paperclipBridge.stop();
       }
       if (restoreRemoteWorkspace) {
-        // This teardown runs in a `finally`, so a throw here replaces the
-        // already-computed run result (`return toResult(...)`) and turns a
-        // successful Codex run into a failure. The workspace restore — and the
-        // host credential copy-back inside it — is a best-effort teardown step.
-        // Keep it rejection-safe: log a fault loudly and keep the pending
-        // result. The host copy-back installs the credential on disk before any
-        // diagnostic log runs, so it is already durable when this block returns.
         try {
           await onLog(
             "stdout",
@@ -1570,6 +1575,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
               )}: ${error instanceof Error ? error.message : String(error)}\n`,
             ),
           ).catch(() => undefined);
+          // A provider failure remains the primary outcome. When provider work
+          // succeeded, however, silently accepting a failed copy-back can lose
+          // the only workspace edits before a replacement sandbox starts.
+          if (executionError === null) throw error;
         }
       }
     }

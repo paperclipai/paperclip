@@ -168,7 +168,10 @@ function buildWakeEnv(ctx: AdapterExecutionContext, configEnv: Record<string, st
   }
 
   delete env.CURSOR_API_KEY;
-  return env;
+  // Cursor rejects the entire request when any envVars value is empty.
+  // Paperclip may use empty values to unset optional host credentials; remote
+  // workers do not inherit those host variables, so omit the empty entries.
+  return Object.fromEntries(Object.entries(env).filter(([, value]) => value.length > 0));
 }
 
 async function buildInstructionsPrefix(
@@ -591,7 +594,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       clearSession: false,
     };
   } catch (err) {
-    const reason = formatRunError(err);
+    const error = formatRunError(err);
+    const reason = !model && error.includes("[invalid_model]")
+      ? `${error} Cursor rejected its configured default model. Choose an available default at https://cursor.com/dashboard/cloud-agents or set this agent's model explicitly.`
+      : error.includes("Failed to determine repository default branch")
+        ? `${error} Verify that Cursor's GitHub integration can access ${repoUrl} at https://cursor.com/dashboard/cloud-agents. If the repository has no default branch, configure a starting branch for this agent.`
+        : error;
     if (run) {
       await onLog("stdout", eventLine({
         type: "cursor_cloud.result",

@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   ACPX_SIDECAR_MAX_FRAME_BYTES,
+  boundedSidecarText,
   boundedSidecarValue,
+  frameAcpxToolClassification,
   parseAcpxSidecarRequest,
+  safeSidecarText,
   sanitizeAcpxPlanEntries,
+  stringifyAcpxSidecarFrame,
 } from "./sidecar-protocol.js";
 
 describe("ACPX sidecar request parsing", () => {
@@ -76,6 +80,95 @@ describe("ACPX sidecar request parsing", () => {
       omitted: true,
       reason: "object_required",
     });
+  });
+
+  it("bounds tool text on Unicode scalar boundaries", () => {
+    const prefix = "x".repeat(3_999);
+    const title = boundedSidecarText(`${prefix}🚀write`, 4_000);
+
+    expect([...title]).toHaveLength(4_000);
+    expect(title).toBe(`${prefix}🚀`);
+    expect(
+      boundedSidecarValue({ type: "tool_call", title }, 128 * 1024),
+    ).toEqual({ type: "tool_call", title });
+    expect(boundedSidecarText(`safe\ud83d`, 10)).toBe("safe\uFFFD");
+  });
+
+  it("classifies an oversized tool kind before retaining its bounded frame value", () => {
+    const classification = frameAcpxToolClassification(
+      `${"x".repeat(128 * 1024)}\ud800WRITE`,
+      "Provider tool",
+    );
+    const payload = boundedSidecarValue(
+      {
+        type: "tool_call",
+        toolCallId: "tool-oversized-kind",
+        title: "Provider tool",
+        ...classification,
+        locations: [],
+      },
+      128 * 1024,
+    );
+
+    expect(payload).toMatchObject({
+      type: "tool_call",
+      kind: "x".repeat(4_000),
+      toolOperation: "edit",
+    });
+    expect(payload).not.toHaveProperty("omitted");
+    expect(stringifyAcpxSidecarFrame(payload)).not.toMatch(
+      /\\ud[89ab][0-9a-f]{2}|\\ud[c-f][0-9a-f]{2}/iu,
+    );
+  });
+
+  it("preserves a bounded tool-call identity when aggregate fields overflow", () => {
+    const identity = {
+      type: "tool_call",
+      toolCallId: "tool-aggregate-overflow",
+      title: "Write",
+      kind: "write",
+      toolOperation: "edit",
+    };
+
+    expect(
+      boundedSidecarValue(
+        { ...identity, locations: [{ path: "x".repeat(140 * 1024) }] },
+        128 * 1024,
+        identity,
+      ),
+    ).toEqual({
+      ...identity,
+      omitted: true,
+      reason: "payload_limit",
+    });
+  });
+
+  it("emits only Rust-decodable Unicode scalar values in sidecar frames", () => {
+    const frame = stringifyAcpxSidecarFrame({
+      payload: {
+        toolCallId: `call-\ud800`,
+        kind: `wr\udfffite`,
+        status: `pend\ud800ing`,
+        input: {
+          [`nested-\ud800`]: { [`result-\udfff`]: "retained" },
+        },
+      },
+    });
+
+    expect(frame).not.toMatch(/\\ud[89ab][0-9a-f]{2}|\\ud[c-f][0-9a-f]{2}/iu);
+    expect(JSON.parse(frame)).toEqual({
+      payload: {
+        toolCallId: "call-\uFFFD",
+        kind: "wr\uFFFDite",
+        status: "pend\uFFFDing",
+        input: {
+          "nested-\uFFFD": { "result-\uFFFD": "retained" },
+        },
+      },
+    });
+    expect(safeSidecarText(`read\ud83d🚀\udc00write`)).toBe(
+      "read\uFFFD🚀\uFFFDwrite",
+    );
   });
 });
 

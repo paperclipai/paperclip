@@ -1928,6 +1928,71 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("grants hire authority through the persisted new-agent default", async () => {
+    const company = await createCompany(db, "DefaultHire");
+    // The service create path persists the create-context default
+    // (canCreateAgents: true for standard trust); enforcement reads it back.
+    const actorAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      permissions: { canCreateAgents: true, canCreateSkills: true },
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_jwt" },
+      action: "agents:create",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: true,
+      reason: "allow_legacy_agent_creator",
+    });
+  });
+
+  it("keeps legacy rows without an explicit canCreateAgents fail-closed", async () => {
+    const company = await createCompany(db, "LegacyRowFailClosed");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer", permissions: {} });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_jwt" },
+      action: "agents:create",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+  });
+
+  it("denies agent creation for a low-trust boundary even with explicit canCreateAgents", async () => {
+    const company = await createCompany(db, "LowTrustHireDenied");
+    const project = await createProject(db, company.id, "Contained");
+    const actorAgent = await createAgent(db, company.id, {
+      permissions: {
+        canCreateAgents: true,
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            projectIds: [project.id],
+          },
+        },
+      },
+    });
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_jwt" },
+      action: "agents:create",
+      resource: { type: "company", companyId: company.id },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_low_trust_boundary",
+    });
+  });
+
   it("denies active-checkout management outside the CEO caller company scope", async () => {
     const sourceCompany = await createCompany(db, "CheckoutSource");
     const targetCompany = await createCompany(db, "CheckoutTarget");

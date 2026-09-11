@@ -28,6 +28,7 @@ import {
   type PluginManagedProjectDeclaration,
   type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
+import { unprocessable } from "../errors.js";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -401,6 +402,31 @@ async function attachListMetrics(
 }
 
 /** Sync the project_goals join table for a single project. */
+/**
+ * Every goal a project links to must exist and belong to the same company.
+ * Without this check a nonexistent id only dies at the projects.goal_id
+ * foreign key — an opaque 500 the caller retries (observed live
+ * 2026-09-03: four identical retries of one bad id) — and a goal from
+ * another company would link silently, because the foreign key proves
+ * existence, not ownership.
+ */
+async function assertGoalsBelongToCompany(db: Db, companyId: string, goalIds: string[]): Promise<void> {
+  if (goalIds.length === 0) return;
+  const unique = [...new Set(goalIds)];
+  const found = await db
+    .select({ id: goals.id })
+    .from(goals)
+    .where(and(eq(goals.companyId, companyId), inArray(goals.id, unique)));
+  const foundIds = new Set(found.map((row) => row.id));
+  const unknown = unique.filter((goalId) => !foundIds.has(goalId));
+  if (unknown.length > 0) {
+    throw unprocessable(
+      `Unknown goal id(s) for this company: ${unknown.join(", ")}`,
+      { unknownGoalIds: unknown },
+    );
+  }
+}
+
 async function syncGoalLinks(db: Db, projectId: string, companyId: string, goalIds: string[]) {
   // Delete existing links
   await db.delete(projectGoals).where(eq(projectGoals.projectId, projectId));
@@ -547,6 +573,7 @@ export function projectService(db: Db) {
   ): Promise<ProjectWithGoals> => {
     const { goalIds: inputGoalIds, ...projectData } = data;
     const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
+    if (ids && ids.length > 0) await assertGoalsBelongToCompany(db, companyId, ids);
 
     // Note: color is intentionally NOT auto-assigned. New projects default to
     // `color = null` (neutral gray) unless an explicit color is supplied. See PAP-68.
@@ -558,7 +585,11 @@ export function projectService(db: Db) {
     projectData.name = resolveProjectNameForUniqueShortname(projectData.name, existingProjects);
 
     // Also write goalId to the legacy column (first goal or null)
-    const legacyGoalId = ids && ids.length > 0 ? ids[0] : projectData.goalId ?? null;
+    // The resolved set is canonical for persistence as well as validation:
+    // falling back to the raw legacy field here would write an id that
+    // skipped validation whenever `goalIds: []` and `goalId` arrive
+    // together (goalIds wins resolution, mirroring the update path).
+    const legacyGoalId = ids?.[0] ?? null;
 
     const row = await db
       .insert(projects)
@@ -780,6 +811,52 @@ export function projectService(db: Db) {
       };
     },
 
+    createWithRepositories: async (companyId: string, data: Parameters<typeof createProject>[1], repositories: import("@paperclipai/shared").ProjectRepository[]): Promise<ProjectWithGoals> => {
+      return db.transaction(async (tx) => {
+        const service = projectService(tx as unknown as Db);
+        const project = await service.create(companyId, data);
+        for (const repo of repositories) {
+          await service.createWorkspace(project.id, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id } });
+        }
+        return (await service.getById(project.id))!;
+      });
+    },
+
+    replaceRepositories: async (projectId: string, repositories: import("@paperclipai/shared").ProjectRepository[]): Promise<ProjectWithGoals | null> => {
+      return db.transaction(async (tx) => {
+        const [project] = await tx.select().from(projects).where(eq(projects.id, projectId)).for("update");
+        if (!project) return null;
+        const service = projectService(tx as unknown as Db);
+        const existing = await service.listWorkspaces(projectId);
+        const ids = new Set(repositories.map((repo) => repo.id));
+        for (const workspace of existing) {
+          const repoId = workspace.metadata?.githubRepositoryId;
+          if (typeof repoId === "string" && !ids.has(repoId)) {
+            // Keep local/runtime workspace configuration when detaching source.
+            if (workspace.cwd || workspace.remoteWorkspaceRef) {
+              const { githubRepositoryId: _id, ...metadata } = workspace.metadata!;
+              await service.updateWorkspace(projectId, workspace.id, { repoUrl: null, metadata });
+            } else await service.removeWorkspace(projectId, workspace.id);
+          }
+        }
+        for (const repo of repositories) {
+          const retained = existing.find((workspace) => workspace.metadata?.githubRepositoryId === repo.id);
+          if (retained) {
+            if (retained.repoUrl !== repo.url || retained.name !== repo.fullName) {
+              await service.updateWorkspace(projectId, retained.id, { name: repo.fullName, repoUrl: repo.url });
+            }
+            continue;
+          }
+          const legacy = existing.find((workspace) => !workspace.metadata?.githubRepositoryId && workspace.repoUrl?.replace(/\.git$/, "").replace(/\/$/, "").toLowerCase() === repo.url.toLowerCase());
+          if (legacy) {
+            await service.updateWorkspace(projectId, legacy.id, { metadata: { ...legacy.metadata, githubRepositoryId: repo.id } });
+          } else await service.createWorkspace(projectId, { name: repo.fullName, repoUrl: repo.url, metadata: { githubRepositoryId: repo.id } });
+        }
+        await tx.update(projects).set({ updatedAt: new Date() }).where(eq(projects.id, projectId));
+        return service.getById(projectId);
+      });
+    },
+
     create: createProject,
 
     update: async (
@@ -794,6 +871,9 @@ export function projectService(db: Db) {
         .where(eq(projects.id, id))
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
+      if (ids && ids.length > 0) {
+        await assertGoalsBelongToCompany(db, existingProject.companyId, ids);
+      }
 
       if (projectData.name !== undefined) {
         const existingShortname = normalizeProjectUrlKey(existingProject.name);

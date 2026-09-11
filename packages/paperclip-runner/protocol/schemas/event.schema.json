@@ -24,8 +24,8 @@
     "sourceKind": { "enum": ["runner", "control_plane"] },
     "runId": { "type": "string", "minLength": 1, "maxLength": 160 },
     "normalizedSessionId": { "type": "string", "minLength": 1, "maxLength": 160 },
-    "turnId": { "type": "string", "minLength": 1, "maxLength": 160 },
-    "itemId": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "turnId": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "itemId": { "type": "string", "minLength": 1, "maxLength": 240 },
     "eventType": {
       "enum": [
         "runner.connected", "runner.reconnected", "runner.reconciled", "runner.disconnected", "runner.draining", "runner.backpressure", "runner.suspending", "runner.suspended", "runner.stopped", "runner.diagnostic",

@@ -2,6 +2,7 @@ import type {
   HarnessRuntimeRequest,
   HarnessRuntimeRequestResolution,
   HarnessThreadLineageEntry,
+  PersistedHarnessProviderIdentity,
   PersistedHarnessSession,
 } from "../../contracts/harness-driver.js";
 import type {
@@ -9,6 +10,7 @@ import type {
   CodexTaskEnvelope,
 } from "../../contracts/codex.js";
 import type { CodexAppServerTransport } from "./app-server-transport.js";
+import type { CodexWorkingDirectoryAuthority } from "./codex-boundaries.js";
 import type { CodexQuestionResponseContext } from "./codex-question-adapter.js";
 
 export interface CodexAppServerDriverOptions {
@@ -28,6 +30,13 @@ export interface CodexAppServerDriverOptions {
   includeCollaborationModeInstructions?: boolean;
   transportFactory?: (context?: {
     providerRecoveryPolicy?: PersistedHarnessSession["providerRecoveryPolicy"];
+    persistedSession?: Pick<
+      PersistedHarnessSession,
+      | "driverSessionId"
+      | "providerSessionId"
+      | "providerIdentity"
+      | "activeTurnId"
+    >;
   }) => CodexAppServerTransport;
   /** Additional control-plane tools exposed to the provider for this run. */
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];
@@ -40,6 +49,8 @@ export interface CodexAppServerDriverOptions {
     arguments: unknown;
   }) => Promise<unknown>;
   environment?: NodeJS.ProcessEnv;
+  /** Filesystem that authoritatively admits the workspace path. */
+  workingDirectoryAuthority?: CodexWorkingDirectoryAuthority;
   now?: () => Date;
   runnerInstanceId?: string;
   onDiagnostic?: (message: string) => void;
@@ -60,6 +71,15 @@ export interface CodexAppServerDriverOptions {
     goals: boolean;
     threadLineage: boolean;
   }>;
+  /** Provider-neutral goal metadata for transports exposing a compatible goal lifecycle. */
+  goalCapability?: {
+    actions: readonly ("set" | "pause" | "resume" | "clear")[];
+    autonomousUpdates: boolean;
+    persistentAcrossResume: boolean;
+    maxObjectiveChars: number;
+    tokenBudgetControl: boolean;
+    usageReporting: boolean;
+  };
   /** Provider-specific identity retained when the Codex protocol facade is backed by runnerd. */
   driverIdentity?: {
     kind: string;
@@ -74,6 +94,11 @@ export type CodexCapabilities = Required<
   NonNullable<CodexAppServerDriverOptions["capabilities"]>
 >;
 
+export type CodexGoalAvailability =
+  | "available"
+  | "unsupported"
+  | "policy_disabled";
+
 export type SemanticResultAdmission = "committed" | "identical" | "conflict";
 
 export interface TerminalReplayConflict {
@@ -84,6 +109,7 @@ export interface TerminalReplayConflict {
 export interface OpenedCodexThread {
   threadId: string;
   providerSessionId: string | null;
+  providerIdentity?: PersistedHarnessProviderIdentity;
   collaborationMode: Record<string, unknown> | null;
   context: CodexModelContextSnapshot;
   lineage: HarnessThreadLineageEntry;

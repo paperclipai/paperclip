@@ -6,7 +6,6 @@ import type { ToolConnectionOwnership } from "./types/tool-access.js";
 export const CONNECTABLE_APP_SLUGS = new Set([
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
   "zapier",
-  "github",
   "slack",
   "notion",
   "posthog",
@@ -23,6 +22,10 @@ export const CONNECTABLE_APP_SLUGS = new Set([
   "google-chat",
   "google-people",
   "google-workspace-search",
+  "github",
+  "discord",
+  "microsoft-teams",
+  "telegram",
 ]);
 
 export const CONNECTABLE_APP_DEFINITIONS = APP_DEFINITIONS.filter((app) =>
@@ -45,7 +48,6 @@ export const APP_STORE_HIDDEN_SLUGS = new Set([
   "context7",
   "egnyte",
   "embat",
-  "github",
   "kernel",
   "local-falcon",
   "make",
@@ -55,7 +57,6 @@ export const APP_STORE_HIDDEN_SLUGS = new Set([
   "razorpay",
   "sanity",
   "similarweb",
-  "slack",
   "ticket-tailor",
   "ticktick",
   "xero",
@@ -123,10 +124,24 @@ export function getAvailableConnectionMethods(app: AppDefinition): ConnectionMet
 export function getRecommendedConnectionMethod(
   methods: readonly ConnectionMethodDef[],
 ): ConnectionMethodDef | null {
-  return methods.find((method) => {
+  const recommendedCapability = (candidates: readonly ConnectionMethodDef[]) => candidates.find((method) => {
     const capabilityKey = method.capabilityProfile?.key;
     return capabilityKey === "write" || capabilityKey === "draft";
-  }) ?? methods[0] ?? null;
+  });
+  const managedMethods = methods.filter((method) =>
+    method.oauthStrategy === "paperclip_cloud_connector"
+    || method.oauthStrategy === "paperclip_id_connector"
+  );
+
+  // When a managed pilot advertises only read access, defaulting to a
+  // customer-owned write method would turn the available one-click path into
+  // an OAuth client setup form. Capability-specific callers pass only the
+  // selected group, so explicit write/draft choices keep their own fallback.
+  return recommendedCapability(managedMethods)
+    ?? managedMethods[0]
+    ?? recommendedCapability(methods)
+    ?? methods[0]
+    ?? null;
 }
 
 export function getAvailableConnectionMethod(
@@ -141,7 +156,7 @@ export function getAvailableConnectionMethod(
 
 export function connectionMethodSupportsAutomaticOAuth(method: ConnectionMethodDef | null | undefined): boolean {
   return method?.auth === "oauth" && (
-    method.oauthStrategy === "paperclip_id_connector"
+    (method.oauthStrategy === "paperclip_cloud_connector" || method.oauthStrategy === "paperclip_id_connector")
     || method.ownershipModes.includes("dcr")
   );
 }
@@ -224,12 +239,15 @@ export function resolveConnectionMethodServerUrl(
 }
 
 export function recommendedDefaultsForApp(app: AppDefinition, methodKey?: string | null): Record<string, unknown> {
-  const normalizedMethodKey = app.slug === "gmail" && methodKey === "paperclip-id-oauth" ? "paperclip-draft" : methodKey;
-  const method = normalizedMethodKey
-    ? app.methods.find((candidate) => candidate.key === normalizedMethodKey) ?? null
-    : getAvailableConnectionMethod(app, null);
+  // Keep the parameters in the public contract: callers resolve defaults for a
+  // concrete app/method even though the initial policy is now uniform. This is
+  // an open default, not an approval bypass: connection finalization remains a
+  // configure-authorized, audited operation, and Ask first stays available as
+  // an operator-selected policy for any action after the connection is made.
+  void app;
+  void methodKey;
   return {
     access: "all_agents",
-    askFirstRiskLevels: method && method.riskTier !== "S1" ? ["write", "destructive"] : [],
+    askFirstRiskLevels: [],
   };
 }

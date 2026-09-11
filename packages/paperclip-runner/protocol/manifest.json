@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.prp.contract_manifest.v1",
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "fixtureVersion": 1,
   "generatedFrom": [
     "protocol/schemas",
@@ -8,9 +8,19 @@
   ],
   "schemas": [
     {
+      "path": "schemas/capabilities-v2.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v2/capabilities.schema.json",
+      "sha256": "9c4771e778f20a0deab6702d0c0f2f5fbab29a60c56a5a78d9ce5290df1728cd"
+    },
+    {
       "path": "schemas/capabilities.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/capabilities.schema.json",
       "sha256": "e62a80328e5edde136b35463033280922ac2220575a83046b07fe034d233db88"
+    },
+    {
+      "path": "schemas/command-v2.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v2/command.schema.json",
+      "sha256": "06bb3b3b0b420119007494c64e64a736fd5d58cb68d04ced843ada00c54668be"
     },
     {
       "path": "schemas/command.schema.json",
@@ -28,19 +38,29 @@
       "sha256": "96f78846dffc4a8300184751b9943214506f32ee1f393c6c0c453b666cf12d59"
     },
     {
+      "path": "schemas/event-v2.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v2/event.schema.json",
+      "sha256": "d7528ee2a46ad20de831fd4ee4a0a51e8325a9855fed5a9b8c428dcebc39cc11"
+    },
+    {
       "path": "schemas/event.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/event.schema.json",
-      "sha256": "e9827a7c31f004ae91388964a96b4ddf6ab40b85f29bf3922683d5dcf64f2559"
+      "sha256": "d48916630976ff7e850b6e2d7d94131761fda322f5d8a05212651ec46b0db19d"
     },
     {
       "path": "schemas/fixture.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/fixture.schema.json",
-      "sha256": "8ac87c2d8c639981277b5f72b9757a95badf85ff482d11596e4c63e01c616cba"
+      "sha256": "186caa4a8fa00964f9a76e3714563bcb2c606eee434cef97a5077dd06f3c6aa5"
     },
     {
       "path": "schemas/identity.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/identity.schema.json",
       "sha256": "8a8a1943f14c739284daa241c5189f3b8026c050472c4f9909897456da506f48"
+    },
+    {
+      "path": "schemas/native-execution.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v1/native-execution.schema.json",
+      "sha256": "7894a809005354c5abdf81d5333a094750c8267473cd426a2c1bcccda41e0214"
     },
     {
       "path": "schemas/provider-descriptor.schema.json",
@@ -65,12 +85,12 @@
     {
       "path": "schemas/question-set.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/question-set.schema.json",
-      "sha256": "3bda40311ae3153bbf9d4a8c59f716680e17d711a4db3570193963918359751c"
+      "sha256": "42b5441a3d388851dacb6e4500dfd4a17d878eded2e724228078b647e7440d3f"
     },
     {
       "path": "schemas/request.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/request.schema.json",
-      "sha256": "bd41f01c00eddc1b635d3131a7183ddb616ff8fe68d5e348ddd9593a674c8d8e"
+      "sha256": "c8d00e10150c90963f19641c075f50da7f67617dd817f41b356287ad85c53f2b"
     },
     {
       "path": "schemas/result.schema.json",
@@ -81,6 +101,11 @@
       "path": "schemas/semantic-tool.schema.json",
       "id": "https://paperclip.dev/schemas/prp/v1/semantic-tool.schema.json",
       "sha256": "72dba6b17be1358160633e2ac430002b8be1ab311a236289a942cb05b21385da"
+    },
+    {
+      "path": "schemas/session-goal.schema.json",
+      "id": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json",
+      "sha256": "26b36add3657b42e6c3d40895a75a7b5093c70261072fa761f53f6784175320c"
     },
     {
       "path": "schemas/stop-reason.schema.json",
@@ -134,6 +159,12 @@
       "compatibilityCase": "canonical"
     },
     {
+      "path": "fixtures/evals/native-execution-seeded.json",
+      "sha256": "89641b73df452a5d03502bc151a81a68387ece129c8826e0572800c3b1c5265c",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
       "path": "fixtures/local-runner/scripts/duplicate-terminal.json",
       "sha256": "56928a21318ea4b390c65fb34f0d3114760619d79301f4d535391a8566b693ab",
       "expectation": "accept",
@@ -176,14 +207,38 @@
       "compatibilityCase": "canonical"
     },
     {
+      "path": "fixtures/provider-boundary/local-integrity.json",
+      "sha256": "ca3d3eaddd80320b273f48e68f7562f63b1f03152901154ace5ef26232c24f4f",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/questions/acpx.json",
+      "sha256": "6f1b65d5168b39f4bc821e778901bf077b1df10495f4bc1217b515eca4a339e4",
+      "expectation": "accept",
+      "compatibilityCase": "acpx-structured-input"
+    },
+    {
       "path": "fixtures/questions/codex.json",
-      "sha256": "ad673b6f9d70b74b53656e622d15fad1a66430f39d62b9ef71479d194a198bd6",
+      "sha256": "a02a862b008d8327b4665bbde8ae3b73ad1f8dca7891072b0839b0e84b5920fa",
       "expectation": "accept",
       "compatibilityCase": "codex-structured-input"
     },
     {
+      "path": "fixtures/questions/opencode.json",
+      "sha256": "7e5f753d04321f78a38a4362b2a4c7aeacbb4736d4db72a699f23c245884da72",
+      "expectation": "accept",
+      "compatibilityCase": "opencode-structured-input"
+    },
+    {
+      "path": "fixtures/replay/budget-cost-stop-reason.json",
+      "sha256": "94569a73860fc0e1dfde003bc3db1126f4000325b82ed0e397a805c8cea0ca85",
+      "expectation": "accept",
+      "compatibilityCase": "canonical"
+    },
+    {
       "path": "fixtures/replay/duplicate-event.json",
-      "sha256": "779c146966d2825ffcde88bfff8b1fb238c162d40c578980ad3bd1a7def405d7",
+      "sha256": "ea94f163048111118ed2c81d9940196e5560455a047266cdc092f6f64e3cfaff",
       "expectation": "accept",
       "compatibilityCase": "canonical"
     },
@@ -192,6 +247,18 @@
       "sha256": "59281021b6ff11e4765213043580fc91eca8a02bedb3fe0c012bef9ad807da12",
       "expectation": "accept",
       "compatibilityCase": "canonical"
+    },
+    {
+      "path": "fixtures/replay/golden/budget-cost-stop-reason.snapshot.json",
+      "sha256": "20de46a47b3cffdaefca0d8fab9bf67eaf94953e1ed85e5d9635f31bc9487927",
+      "expectation": "accept",
+      "compatibilityCase": "deterministic-replay-oracle"
+    },
+    {
+      "path": "fixtures/replay/golden/budget-cost-stop-reason.summary.json",
+      "sha256": "4c5c1a2a68e38655746b81940b45b77fa74142a1d0cb80c9c8045ca4643b0d94",
+      "expectation": "accept",
+      "compatibilityCase": "deterministic-replay-oracle"
     },
     {
       "path": "fixtures/replay/golden/duplicate-event.snapshot.json",
@@ -387,7 +454,7 @@
     },
     {
       "path": "fixtures/replay/unsupported-required-version.json",
-      "sha256": "60ac964d2cf49dc80ada0cb9c946b25952f3e2be10719801d3f2f8bd98d27699",
+      "sha256": "c7fc47b1e537c8e051353235aa0415521c627c3e90ac681a053b85c9aa5bf8e8",
       "expectation": "reject",
       "compatibilityCase": "unknown-required-version"
     }

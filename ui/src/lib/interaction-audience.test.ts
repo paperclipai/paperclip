@@ -172,7 +172,7 @@ describe("describeInteractionAudience", () => {
     expect(audience.label).toBe("Addressed");
   });
 
-  it("lets human_only win over a named addressee", () => {
+  it("keeps named ownership visible while human_only controls authorization", () => {
     const audience = describeInteractionAudience({
       interaction: confirmation({
         addresseeAgentId: "agent-release",
@@ -182,8 +182,9 @@ describe("describeInteractionAudience", () => {
       addresseeLabel: "ReleaseBot",
     });
     expect(audience.summary).toBe(
-      "Only a person on the board can respond — agents cannot resolve this card.",
+      "Assigned to ReleaseBot. Only a person on the board can respond — agents cannot resolve this card.",
     );
+    expect(audience.shortSummary).toBe("Assigned to ReleaseBot · board only");
     expect(audience.label).toBe("Human only");
   });
 
