@@ -296,10 +296,26 @@ jobs:
           retention-days: 30
 
   verify_canary:
-    if: github.event_name == 'push'
-    uses: ./.github/workflows/release-verify.yml
-    with:
-      ref: ${{ github.sha }}
+    name: Reuse exact-source verification
+    if: github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+      - name: Require successful source checks for this exact master push
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: node scripts/cloud-source-verification.mjs "$SOURCE_SHA"
 
   publish_canary:
     if: github.event_name == 'push'
