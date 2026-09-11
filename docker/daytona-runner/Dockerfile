@@ -29,7 +29,7 @@ COPY cli/package.json ./cli/package.json
 # The complete resolved lock (including transitive integrity hashes) is reviewed.
 # Reject registry-time drift BEFORE installing packages or running lifecycle code.
 # Refresh this digest together with source/provider dependency changes.
-ARG PAPERCLIP_RUNNER_LOCK_SHA256=84409576c7cbd2bec50b535c6df6acf3691bdec7c7697e6c50b2fb834b56f203
+ARG PAPERCLIP_RUNNER_LOCK_SHA256=21aa3df50da53c338660b9f5f2611e9d46c896ad05c0e7a9976185ebce340f52
 RUN printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
     && sha256sum -c /tmp/provider-lock.sha256 \
     && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'
@@ -39,7 +39,7 @@ RUN pnpm --filter @paperclipai/paperclip-runner build:typescript \
     && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
       node packages/paperclip-runner/scripts/assemble-provider-pack.mjs /provider-pack \
     && node packages/paperclip-runner/scripts/verify-pi-provider-launch.mjs /provider-pack \
-    && PATH=/provider-pack/node_modules/.bin:$PATH sh -ec 'for cli in node acpx claude-agent-acp codex-acp pi-acp pi claude codex opencode; do test -x "/provider-pack/node_modules/.bin/$cli"; done; test "$(acpx --version)" = "0.13.1"; test "$(claude-agent-acp --version)" = "0.70.0"; test "$(codex-acp --version)" = "@agentclientprotocol/codex-acp 1.6.2"' \
+    && PATH=/provider-pack/node_modules/.bin:$PATH sh -ec 'for cli in node acpx claude-agent-acp codex-acp pi-acp pi claude codex opencode; do test -x "/provider-pack/node_modules/.bin/$cli"; done; test "$(acpx --version)" = "0.13.1"; test "$(claude-agent-acp --version)" = "0.73.0"; test "$(codex-acp --version)" = "@agentclientprotocol/codex-acp 1.6.2"' \
     && node --input-type=module -e "import {verifyProviderPack} from './packages/paperclip-runner/scripts/provider-pack-integrity.mjs'; verifyProviderPack('/provider-pack', {revision: '${PAPERCLIP_RUNNER_SOURCE_REVISION}', lockSha256: '${PAPERCLIP_RUNNER_LOCK_SHA256}'});"
 
 # The trusted qualification entry exports the identical canonical provider stage.

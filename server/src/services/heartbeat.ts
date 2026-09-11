@@ -22097,8 +22097,9 @@ export function heartbeatService(
           // recovery existed. Only an entirely unused replacement row may
           // inherit its source checkpoint; any process/provider evidence on the
           // replacement makes the ownership ambiguous and therefore ineligible.
+          const legacyRetrySourceRunId = run.retryOfRunId;
           const legacyRetrySource =
-            !sandboxWorkFolders?.identityChanged && run.retryOfRunId && !isFailedChatRunRetry
+            !sandboxWorkFolders?.identityChanged && legacyRetrySourceRunId && !isFailedChatRunRetry
               ? await measureSandboxOperation("heartbeat.db.select.from.where.limit.then", { operationIndex: 121 }, async () => (db
                   .select({
                     id: heartbeatRuns.id,
@@ -22113,7 +22114,7 @@ export function heartbeatService(
                   .from(heartbeatRuns)
                   .where(
                     and(
-                      eq(heartbeatRuns.id, run.retryOfRunId),
+                      eq(heartbeatRuns.id, legacyRetrySourceRunId),
                       eq(heartbeatRuns.companyId, agent.companyId),
                       eq(heartbeatRuns.agentId, agent.id),
                     ),
@@ -23004,8 +23005,9 @@ export function heartbeatService(
             // A hard restart replays the heartbeat context, not a new user
             // action. Do not repeat a completed create/replace/edit (which
             // could reactivate or clear a goal that finished while detached).
+            const goalControlRequestId = sessionGoalControl?.requestId;
             const completedGoalControl =
-              sessionGoalControl !== null &&
+              goalControlRequestId !== undefined &&
               taskKey !== null &&
               (await measureSandboxOperation("heartbeat.is_runner_goal_action_completed", { operationIndex: 152 }, async () => (isRunnerGoalActionCompleted(
                 db,
@@ -23014,7 +23016,7 @@ export function heartbeatService(
                   agentId: agent.id,
                   issueId: taskKey,
                 },
-                sessionGoalControl.requestId,
+                goalControlRequestId,
               ))));
             if (completedGoalControl) sessionGoalControl = null;
             const nativeDispatchAtMs = Date.now();
@@ -24014,6 +24016,7 @@ export function heartbeatService(
                   issueId,
                   runId: livenessRun.id,
                 })));
+              const resolvedText = resolved.text;
               const comment = await measureSandboxOperation("heartbeat.issues_svc.add_comment", { operationIndex: 210 }, async () => (issuesSvc.addComment(
                 issueId,
                 resolvedText,
@@ -24904,7 +24907,8 @@ export function heartbeatService(
           latestRun &&
           isHeartbeatRunTerminalStatus(latestRun.status)
         ) {
-          await measureSandboxOperation("heartbeat.cleanup_git_hub_operation_launchers.catch", { operationIndex: 284 }, async () => (cleanupGitHubOperationLaunchers(githubLauncherLocation).catch(
+          const completedLauncherLocation = githubLauncherLocation;
+          await measureSandboxOperation("heartbeat.cleanup_git_hub_operation_launchers.catch", { operationIndex: 284 }, async () => (cleanupGitHubOperationLaunchers(completedLauncherLocation).catch(
             (err) => {
               logger.warn(
                 { err, runId: run.id },

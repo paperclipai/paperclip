@@ -141,7 +141,10 @@ async function main() {
       }
       }
     } else { diagnostic('capability_missing'); }
-    } catch (error) { diagnostic(error && error.credentialCategory === 'denied' ? 'capability_rejected' : 'broker_transport_unavailable'); }
+    } catch (error) {
+      if (program === 'gh') throw error;
+      diagnostic(error && error.credentialCategory === 'denied' ? 'capability_rejected' : 'broker_transport_unavailable');
+    }
   }
   // Only this invocation and its children inherit the captured credential.
   // Its Git children use the real binary, so steering cannot split a gh operation.
@@ -156,7 +159,12 @@ async function main() {
   child.once('error', () => { process.stderr.write('Paperclip: GitHub command could not start.\n'); process.exitCode = 1; });
   child.once('exit', (code, signal) => { process.exitCode = code === null ? 128 : code; });
 }
-main().catch(() => { process.stderr.write('Paperclip: GitHub launcher_setup_failed.\n'); process.exitCode = 1; });
+main().catch((error) => {
+  const category = ['timeout', 'unavailable', 'denied', 'invalidresponse'].includes(error && error.credentialCategory)
+    ? error.credentialCategory : 'unavailable';
+  process.stderr.write('Paperclip: GitHub credential context unavailable (' + category + '); retry this operation.\n');
+  process.exitCode = 1;
+});
 `;
 }
 
