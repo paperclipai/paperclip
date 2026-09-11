@@ -1,4 +1,5 @@
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
+import { legacyControllerBootId, legacyControllerClaim, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
@@ -16911,6 +16912,7 @@ export function heartbeatService(
                   .update(heartbeatRuns)
                   .set({
                     status: "running",
+                    ...legacyControllerClaim(run.runtimeMode),
                     responsibleUserId,
                     startedAt: lockedRun.startedAt ?? claimedAt,
                     updatedAt: claimedAt,
@@ -17007,6 +17009,7 @@ export function heartbeatService(
                 .update(heartbeatRuns)
                 .set({
                   status: "running",
+                    ...legacyControllerClaim(run.runtimeMode),
                   responsibleUserId,
                   startedAt: lockedRun.startedAt ?? claimedAt,
                   contextSnapshot: withQueuedCommentIdsInRunContext(
@@ -17073,6 +17076,7 @@ export function heartbeatService(
             .update(heartbeatRuns)
             .set({
               status: "running",
+                    ...legacyControllerClaim(run.runtimeMode),
               responsibleUserId,
               startedAt: run.startedAt ?? claimedAt,
               updatedAt: claimedAt,
@@ -18343,6 +18347,7 @@ export function heartbeatService(
       }
       if (resumedRunIds.has(run.id)) continue;
       if (locallyTracked) continue;
+      if (await hasLiveLegacyController(db, run)) continue;
 
       // Apply staleness threshold to avoid false positives
       if (staleThresholdMs > 0) {
@@ -18414,6 +18419,7 @@ export function heartbeatService(
         ((tracksLegacyLocalChild &&
           (!!run.processPid || !!run.processGroupId)) ||
           monitorDispatchLostWithoutFutureWake);
+      if (!(await revokeExpiredLegacyController(db, run))) continue;
       const baseMessage = buildProcessLossMessage(run);
       const conversationContinuationEligible = await runUsedConversationAdapter(db, run);
 
@@ -19222,8 +19228,11 @@ export function heartbeatService(
       }
     }
 
+    if (run.runtimeMode === "legacy" && run.controllerBootId &&
+        run.controllerBootId !== legacyControllerBootId) return;
     activeRunExecutions.add(run.id);
     const executionControl = createAdapterExecutionControl();
+    const controllerLease = watchLegacyControllerLease(db, run, executionControl.controller);
     let runScratch: HeartbeatRunScratch | null = null;
     let githubLauncherLocation:
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
@@ -21039,6 +21048,7 @@ export function heartbeatService(
         ReturnType<typeof envOrchestrator.acquireForRun>
       >;
       try {
+        await controllerLease.assertOwned();
         acquiredEnvironment = await envOrchestrator.acquireForRun({
           companyId: agent.companyId,
           selectedEnvironmentId,
@@ -21050,6 +21060,7 @@ export function heartbeatService(
           persistedExecutionWorkspace,
           executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
         });
+        await controllerLease.assertOwned();
         nativeRunnerPreparationSpans.push({
           name: "environment.acquire",
           parentName: "task.run",
@@ -21189,6 +21200,7 @@ export function heartbeatService(
       ): Promise<
         { dispatched: true; resultPromise: Promise<T> } | { dispatched: false }
       > => {
+        await controllerLease.assertOwned("dispatching");
         // Recheck after workspace/credential preparation, immediately before the
         // provider handoff. Never hold validation locks while adapter code runs.
         await authorizeFailedChatRetryExecution();
@@ -22570,6 +22582,7 @@ export function heartbeatService(
               })
               .onConflictDoNothing();
           });
+          controllerLease.stop();
           nativeWorkspaceSync = await prepareNativeWorkspaceSync({
             db,
             runId: run.id,
@@ -24849,6 +24862,7 @@ export function heartbeatService(
           });
         }
       }
+      controllerLease.stop();
       activeRunExecutions.delete(run.id);
       // A failed owned Stop remains visible until this exact executor settles,
       // including a graceful exit result arriving after the cancellation error.

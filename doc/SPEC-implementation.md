@@ -1261,6 +1261,11 @@ Scheduler must skip invocation when:
 - an existing run is active
 - hard budget limit has been hit
 
+Legacy execution records a renewable controller lease when claiming a queued run,
+before provisioning. A live lease protects the run during overlapping service
+deployments. An expired controller loses dispatch authority; a recovery worker
+must establish that the previous execution stopped before starting a successor.
+
 ## 11.7 Durable agent session goals
 
 Runner Protocol v2 negotiates a required `sessionGoals` capability and typed

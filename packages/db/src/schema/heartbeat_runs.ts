@@ -67,6 +67,10 @@ export const heartbeatRuns = pgTable(
     stderrExcerpt: text("stderr_excerpt"),
     errorCode: text("error_code"),
     externalRunId: text("external_run_id"),
+    // Legacy controller lease. A PID alone is not an identity across containers.
+    controllerBootId: uuid("controller_boot_id"),
+    controllerLeaseExpiresAt: timestamp("controller_lease_expires_at", { withTimezone: true }),
+    executionStage: text("execution_stage"),
     processPid: integer("process_pid"),
     processGroupId: integer("process_group_id"),
     processStartedAt: timestamp("process_started_at", { withTimezone: true }),
