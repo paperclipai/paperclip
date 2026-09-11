@@ -4,7 +4,7 @@ import { remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteClean
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
-import { CONVERSATION_CONTINUATION_POLICY, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
+import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
 import {
   legacyExecutionNeedsReconciliation,
@@ -3493,6 +3493,8 @@ function normalizeMaxConcurrentRuns(value: unknown) {
 }
 
 interface WakeupOptions {
+  /** Exact failed run selected by an authenticated board Retry request. */
+  failedRunId?: string | null;
   durableChatRequest?: DurableChatWakeupRequest;
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -16911,6 +16913,7 @@ export function heartbeatService(
                   .update(heartbeatRuns)
                   .set({
                     status: "running",
+                    runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
                     responsibleUserId,
                     startedAt: lockedRun.startedAt ?? claimedAt,
                     updatedAt: claimedAt,
@@ -17007,6 +17010,7 @@ export function heartbeatService(
                 .update(heartbeatRuns)
                 .set({
                   status: "running",
+                  runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
                   responsibleUserId,
                   startedAt: lockedRun.startedAt ?? claimedAt,
                   contextSnapshot: withQueuedCommentIdsInRunContext(
@@ -17073,6 +17077,7 @@ export function heartbeatService(
             .update(heartbeatRuns)
             .set({
               status: "running",
+              runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
               responsibleUserId,
               startedAt: run.startedAt ?? claimedAt,
               updatedAt: claimedAt,
@@ -17635,12 +17640,14 @@ export function heartbeatService(
   async function claimPendingCleanupRetryAttempt(
     leaseId: string,
     expectedAttempts: number,
+    manualAttempt?: { previousId: unknown },
   ): Promise<boolean> {
     const now = new Date();
     const claimed = await db
       .update(environmentLeases)
       .set({
-        metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}], to_jsonb(${expectedAttempts + 1}::int), true)`,
+        metadata: sql`jsonb_set(${pendingCleanupMetadataObjectSql()}, array[${PENDING_CLEANUP_ATTEMPTS_METADATA_KEY}], to_jsonb(${expectedAttempts + 1}::int), true)
+          || ${JSON.stringify(manualAttempt ? { pendingCleanupManualAttemptId: randomUUID() } : {})}::jsonb`,
         lastUsedAt: now,
         updatedAt: now,
       })
@@ -17649,6 +17656,7 @@ export function heartbeatService(
           eq(environmentLeases.id, leaseId),
           eq(environmentLeases.status, "pending_cleanup"),
           sql`${pendingCleanupAttemptsSql()} = ${expectedAttempts}`,
+          manualAttempt ? sql`coalesce(${environmentLeases.metadata}->'pendingCleanupManualAttemptId', 'null'::jsonb) is not distinct from ${JSON.stringify(manualAttempt.previousId ?? null)}::jsonb` : undefined,
         ),
       )
       .returning({ id: environmentLeases.id });
@@ -17718,6 +17726,8 @@ export function heartbeatService(
   // cap and then stops the retries for that lease.
   async function sweepPendingCleanupLeases(opts?: {
     backoffMs?: number;
+    /** One user-requested cleanup attempt for this failed run only. */
+    explicitRetry?: { companyId: string; runId: string; actorId: string };
   }): Promise<{
     swept: number;
     destroyed: number;
@@ -17733,7 +17743,7 @@ export function heartbeatService(
     // `pending_cleanup` row lands once the database recovers. The flush runs
     // before the read below, so this same tick tears down a freshly-landed row.
     try {
-      const flushed = await environmentRuntime.flushDeferredOrphanCleanups?.();
+      const flushed = opts?.explicitRetry ? null : await environmentRuntime.flushDeferredOrphanCleanups?.();
       if (flushed && (flushed.recovered > 0 || flushed.pending > 0)) {
         logger.info(
           { recovered: flushed.recovered, pending: flushed.pending },
@@ -17756,6 +17766,8 @@ export function heartbeatService(
       .where(
         and(
           eq(environmentLeases.status, "pending_cleanup"),
+          opts?.explicitRetry ? eq(environmentLeases.companyId, opts.explicitRetry.companyId) : undefined,
+          opts?.explicitRetry ? eq(environmentLeases.heartbeatRunId, opts.explicitRetry.runId) : undefined,
           backoffMs > 0 ? lte(environmentLeases.updatedAt, cutoff) : undefined,
         ),
       )
@@ -17768,7 +17780,7 @@ export function heartbeatService(
       const metadata = { ...(row.metadata ?? {}) } as Record<string, unknown>;
       const attempts = readPendingCleanupRetryAttempts(metadata);
 
-      if (attempts >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP) {
+      if (attempts >= PENDING_CLEANUP_SWEEP_ATTEMPT_CAP && !opts?.explicitRetry) {
         capped += 1;
         // Warn once, then leave the lease for manual cleanup. The atomic claim
         // keeps the warning to one log line even when two sweeps overlap.
@@ -17839,8 +17851,14 @@ export function heartbeatService(
       // never tears the same sandbox down twice or exceeds the attempt cap. The
       // claim records the attempt before the retry, so a thrown driver error
       // still counts against the cap.
-      const claimed = await claimPendingCleanupRetryAttempt(row.id, attempts);
+      const claimed = await claimPendingCleanupRetryAttempt(row.id, attempts,
+        opts?.explicitRetry ? { previousId: metadata.pendingCleanupManualAttemptId } : undefined);
       if (!claimed) continue;
+      if (opts?.explicitRetry) await logActivity(db, {
+        companyId: row.companyId, actorType: "user", actorId: opts.explicitRetry.actorId,
+        action: "environment_lease.cleanup_retried", entityType: "environment_lease", entityId: row.id,
+        runId: opts.explicitRetry.runId, details: { attempt: attempts + 1, reason: "retry_failed_run" },
+      });
 
       try {
         if (useRecordedTeardown) {
@@ -19266,6 +19284,13 @@ export function heartbeatService(
         return;
       }
 
+      // The claimed adapter identity is immutable recovery evidence. Do not
+      // execute a newly selected adapter under a previous adapter's claim.
+      const selectedAdapter = claimedAdapterType(run);
+      if (selectedAdapter && selectedAdapter !== agent.adapterType) {
+        throw new Error("Agent adapter changed during startup; start a new turn with the updated agent.");
+      }
+
       const runtime = await ensureRuntimeState(agent);
       const context = parseObject(run.contextSnapshot);
       const authorizeFailedChatRetryExecution = () =>
@@ -19754,6 +19779,7 @@ export function heartbeatService(
               companyId: agent.companyId,
               issueId: issueRef.id,
               agentId: agent.id,
+              runId: run.id,
               context,
               previousContextRunId: taskSession?.lastRunId,
               summary: safeContinuationSummary?.body ?? null,
@@ -22603,12 +22629,12 @@ export function heartbeatService(
                 nativeRuntimeResolution.resolverVersion,
               runtimeModeReason: nativeRuntimeResolution.reason,
               runtimeModeResolvedAt: run.runtimeModeResolvedAt ?? new Date(),
-              // Preserve only this row's server-owned admission field at the
-              // atomic write, never an input or previous runner's profile.
-              runnerProfileJson: sql`case when ${heartbeatRuns.runnerProfileJson} ? ${CHAT_CONTROL_RECOVERY_ADMISSION_KEY}
-                then ${JSON.stringify(providerTraceRequested ? { providerTrace: { mode: "raw", traceId: providerTraceCapture?.metadata.id ?? null, maxBytes: PROVIDER_TRACE_MAX_BYTES } } : {})}::jsonb
-                  || jsonb_build_object(${CHAT_CONTROL_RECOVERY_ADMISSION_KEY}::text, ${heartbeatRuns.runnerProfileJson} -> ${CHAT_CONTROL_RECOVERY_ADMISSION_KEY})
-                else ${JSON.stringify(providerTraceRequested ? { providerTrace: { mode: "raw", traceId: providerTraceCapture?.metadata.id ?? null, maxBytes: PROVIDER_TRACE_MAX_BYTES } } : null)}::jsonb end`,
+              // Preserve server-owned admission and dispatch evidence on this
+              // row; never copy another run's execution profile.
+              runnerProfileJson: sql`jsonb_strip_nulls(jsonb_build_object(
+                ${CHAT_CONTROL_RECOVERY_ADMISSION_KEY}::text, ${heartbeatRuns.runnerProfileJson}->${CHAT_CONTROL_RECOVERY_ADMISSION_KEY},
+                'adapterDispatch', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'
+              )) || ${JSON.stringify(providerTraceRequested ? { providerTrace: { mode: "raw", traceId: providerTraceCapture?.metadata.id ?? null, maxBytes: PROVIDER_TRACE_MAX_BYTES } } : {})}::jsonb`,
               updatedAt: new Date(),
             })
             .where(eq(heartbeatRuns.id, run.id));
@@ -24953,6 +24979,26 @@ export function heartbeatService(
       }
     }
 
+    if (opts.failedRunId) {
+      const failed = await getRun(opts.failedRunId);
+      if (opts.requestedByActorType !== "user" || !opts.requestedByActorId ||
+          reason !== "retry_failed_run" || source !== "on_demand" || triggerDetail !== "manual" ||
+          !failed || failed.companyId !== agent.companyId || failed.agentId !== agentId ||
+          !["failed", "timed_out"].includes(failed.status) ||
+          (failed.nativeIssueId ?? readNonEmptyString(failed.contextSnapshot?.issueId)) !== issueId) {
+        throw conflict("The selected failed run cannot be retried for this task.");
+      }
+      if (!activeRunExecutions.has(failed.id) && !adapterExecutionControls.has(failed.id)) {
+        await sweepPendingCleanupLeases({ explicitRetry: {
+          companyId: failed.companyId, runId: failed.id, actorId: opts.requestedByActorId,
+        } });
+      }
+      if (isConversationAdapter(agent.adapterType) || agent.adapterType === "paperclip_runner") {
+        enrichedContextSnapshot.previousRunId = failed.id;
+        enrichedContextSnapshot.forceFreshSession = true;
+      }
+    }
+
     const durableRequest = opts.durableChatRequest;
     if (durableRequest) {
       assertDurableChatWakeupRequest(durableRequest, {
@@ -25608,6 +25654,17 @@ export function heartbeatService(
             return { kind: "skipped" as const };
           }
 
+          if (opts.failedRunId) {
+            // The issue lock makes double-clicks and network retries adopt the
+            // same successor, including after it has already finished.
+            const [previousRetry] = await tx.select().from(heartbeatRuns).where(and(
+              eq(heartbeatRuns.companyId, issue.companyId), eq(heartbeatRuns.agentId, agentId),
+              eq(heartbeatRuns.retryOfRunId, opts.failedRunId),
+              sql`${heartbeatRuns.contextSnapshot}->>'wakeReason' = 'retry_failed_run'`,
+            )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
+            if (previousRetry) return { kind: "replayed" as const, run: previousRetry };
+          }
+
           let reconciledSourceRunId: string | null = null;
           if (executionReconciliationWake) {
             const actionId = readNonEmptyString(
@@ -25771,7 +25828,7 @@ export function heartbeatService(
           if (executionBlocker && !(await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
-            reason, commentId: wakeCommentId ?? null, successorRunId: explicitContinuationRunId,
+            reason, commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
             dryRun: true,
             onBlocked: (reason, message) => { continuationWait = { reason, message }; },
           }))) return deferBlockedExecution(executionBlocker);
@@ -26533,7 +26590,7 @@ export function heartbeatService(
           const explicitContinuation = await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
-            reason, commentId: wakeCommentId ?? null, successorRunId: explicitContinuationRunId,
+            reason, commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
           });
           if (!explicitContinuation && executionBlocker) return deferBlockedExecution(executionBlocker);
           if (explicitContinuation) {
@@ -26614,7 +26671,7 @@ export function heartbeatService(
               wakeupRequestId: wakeupRequest.id,
               retryOfRunId: failedChatRetry
                 ? durableRequest!.failedRunRetry!.failedRunId
-                : automaticParentRunId,
+                : opts.failedRunId ?? automaticParentRunId,
               contextSnapshot: adoptedComments.length
                 ? withQueuedCommentIdsInRunContext(
                     enrichedContextSnapshot,

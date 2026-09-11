@@ -19,8 +19,15 @@ export function hasConversationContinuationPolicy(result: Record<string, unknown
   return result?.conversationContinuation === CONVERSATION_CONTINUATION_POLICY;
 }
 
+/** Persisted by the server when it claims the run, before remote provisioning. */
+export function claimedAdapterType(run: Pick<typeof heartbeatRuns.$inferSelect, "runnerProfileJson">): string | null {
+  const dispatch = run.runnerProfileJson?.adapterDispatch as Record<string, unknown> | undefined;
+  return typeof dispatch?.adapterType === "string" ? dispatch.adapterType : null;
+}
+
 function conversationRunPredicate() {
   return or(
+    inArray(sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType'`, [...CONVERSATION_ADAPTER_TYPES]),
     sql`${heartbeatRuns.resultJson}->>'conversationContinuation' = ${CONVERSATION_CONTINUATION_POLICY}`,
     sql`exists (
       select 1 from ${heartbeatRunEvents}
@@ -35,6 +42,8 @@ function conversationRunPredicate() {
 /** Recovery must not infer the old adapter from the agent's mutable settings. */
 export async function runUsedConversationAdapter(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
   if (hasConversationContinuationPolicy(run.resultJson)) return true;
+  const selected = claimedAdapterType(run);
+  if (selected) return isConversationAdapter(selected);
   const [invocation] = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents)
     .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
       eq(heartbeatRunEvents.eventType, "adapter.invoke")))
@@ -85,7 +94,9 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
   const activeLease = sql`exists (select 1 from ${environmentLeases}
     where ${environmentLeases.companyId} = "heartbeat_runs"."company_id"
       and ${environmentLeases.heartbeatRunId} = "heartbeat_runs"."id"
-      and ${environmentLeases.releasedAt} is null)`;
+      and (${environmentLeases.releasedAt} is null
+        or ${environmentLeases.status} = 'pending_cleanup'
+        or ${environmentLeases.cleanupStatus} = 'failed'))`;
   const candidates = await db.select({ run: heartbeatRuns, activeLease }).from(heartbeatRuns)
     .where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
