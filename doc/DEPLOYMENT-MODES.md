@@ -106,10 +106,12 @@ Examples:
 ```sh
 pnpm paperclipai onboard --yes
 npx paperclipai onboard --yes --bind lan
-npx paperclipai run --bind tailnet
+npx paperclipai configure --section server
 ```
 
-`configure --section server` follows the same interactive behavior.
+The reachability and authentication choices made during onboarding are saved in the instance `config.json`. A later `paperclipai run` reads that saved configuration, including when a background service starts Paperclip without reachability flags. You do not need to repeat a Tailnet or authenticated/private selection on every start. Use `configure --section server` when you want to reconfigure the saved setting.
+
+`configure --section server` follows the same interactive behavior and saves the updated server configuration.
 
 ## 5. Doctor UX Contract
 
