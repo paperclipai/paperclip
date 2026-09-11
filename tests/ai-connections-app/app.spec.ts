@@ -74,6 +74,18 @@ test("legacy adoption and inline account cancellation preserve the agent configu
   expect(after.runtimeConfig).toEqual(agent.runtimeConfig);
 });
 
+
+test("ordinary Anthropic setup keeps the existing tool method available", async ({ page }) => {
+  await page.goto(`/${prefix}/apps/connect?source=anthropic`);
+  await page.getByRole("button", { name: /^(Save and continue|Continue)$/ }).click();
+  await expect(page.getByText("How do you want to connect?", { exact: true })).toBeVisible();
+  await page.getByRole("radio", { name: "Use an API key", exact: true }).click();
+  await expect(page.getByLabel("Your Anthropic key", { exact: true })).toBeVisible();
+  await expect(page.getByRole("radiogroup", { name: "Connect your model provider" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Cancel", exact: true }).first().click();
+  await expect(page).toHaveURL(new RegExp(`/${prefix}/apps$`));
+});
+
 for (const [provider, label] of [["anthropic", "Claude"], ["openai", "OpenAI"]]) {
   test(`Connections reuses the agent provider step for ${label}`, async ({ page }, testInfo) => {
     await page.goto(`/${prefix}/apps/connect?source=${provider}&method=ai-subscription`);
