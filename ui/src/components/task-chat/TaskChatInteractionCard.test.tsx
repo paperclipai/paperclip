@@ -14,6 +14,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   expiredSecretProposalInteraction,
   pendingAskUserQuestionsInteraction,
+  pendingDecisionQuestionInteraction,
   pendingRequestCheckboxConfirmationInteraction,
   pendingRequestItemVerdictsInteraction,
 } from "@/fixtures/issueThreadInteractionFixtures";
@@ -458,6 +459,127 @@ describe("TaskChatInteractionCard", () => {
       { questionId: "collapse-depth", optionIds: ["visible-root"] },
       { questionId: "post-submit-summary", optionIds: ["answers-inline"] },
     ]);
+  });
+
+  it("renders a decision interview accessibly in the composer surface", () => {
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard
+              item={interactionItem(pendingDecisionQuestionInteraction)}
+              presentation="takeover"
+              onSubmitInteractionAnswers={vi.fn()}
+            />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+
+    const group = container.querySelector('[role="radiogroup"]');
+    expect(group).not.toBeNull();
+    expect(group?.getAttribute("aria-labelledby")).toBe(
+      "interaction-questions-decision-rollout-path-prompt",
+    );
+
+    // The recommendation is stated in text and bound to the option group, so a
+    // screen reader hears the advice without relying on the badge alone.
+    const advisedBy = group?.getAttribute("aria-describedby");
+    expect(advisedBy).toBe(
+      "interaction-questions-decision-rollout-path-recommendation",
+    );
+    const note = container.querySelector(`#${advisedBy}`);
+    expect(note?.textContent).toContain("Recommended: Stage first");
+    expect(note?.textContent).toContain("canary window");
+
+    const options = Array.from(container.querySelectorAll('[role="radio"]'));
+    expect(options).toHaveLength(2);
+    expect(options.map((option) => option.getAttribute("aria-checked"))).toEqual([
+      "false",
+      "false",
+    ]);
+    const recommendedOption = options.find((option) =>
+      option.textContent?.includes("Stage first"),
+    );
+    expect(recommendedOption?.getAttribute("data-recommended")).toBe("true");
+    expect(recommendedOption?.textContent).toContain("Recommended");
+    const otherOption = options.find((option) =>
+      option.textContent?.includes("All customers now"),
+    );
+    expect(otherOption?.getAttribute("data-recommended")).toBe("false");
+    expect(otherOption?.textContent).not.toContain("Recommended");
+
+    // A decision records a prepared option id, so the card never offers the
+    // free-form fallback that the server would have to reject.
+    expect(container.querySelector('[data-testid="question-other-answer-composer"]')).toBeNull();
+    expect(
+      Array.from(container.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Other",
+      ),
+    ).toBe(false);
+    expect(container.querySelector("textarea")).toBeNull();
+  });
+
+  it("confirms a decision explicitly and submits the selected option once", async () => {
+    const submit = vi.fn();
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard
+              item={interactionItem(pendingDecisionQuestionInteraction)}
+              presentation="takeover"
+              onSubmitInteractionAnswers={submit}
+            />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+
+    const optionButtons = () => Array.from(container.querySelectorAll("button"));
+    const recommended = optionButtons().find((button) =>
+      button.textContent?.includes("Stage first"),
+    );
+    await act(async () => recommended?.click());
+
+    // Picking the recommended option does not submit it for the responder.
+    expect(submit).not.toHaveBeenCalled();
+    expect(recommended?.getAttribute("aria-checked")).toBe("true");
+
+    const confirm = optionButtons().find(
+      (button) => button.textContent?.trim() === "Confirm decision",
+    );
+    expect(confirm).not.toBeNull();
+    await act(async () => confirm?.click());
+
+    expect(submit).toHaveBeenCalledOnce();
+    expect(submit.mock.calls[0]?.[1]).toEqual([
+      { questionId: "rollout-path", optionIds: ["stage-first"] },
+    ]);
+  });
+
+  it("keeps information questions on their automatic submit path", async () => {
+    const submit = vi.fn();
+    flushSync(() => {
+      root.render(
+        <TooltipProvider>
+          <ThemeProvider>
+            <TaskChatInteractionCard
+              item={interactionItem(pendingAskUserQuestionsInteraction)}
+              presentation="takeover"
+              onSubmitInteractionAnswers={submit}
+            />
+          </ThemeProvider>
+        </TooltipProvider>,
+      );
+    });
+
+    const firstAnswer = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Only collapse hidden descendants"),
+    );
+    await act(async () => firstAnswer?.click());
+    expect(container.textContent).toContain("2 of 2");
+    expect(submit).not.toHaveBeenCalled();
   });
 
   it("collapses answered questions to one expandable timeline row", () => {

@@ -539,6 +539,7 @@ function parseQuestionSet(value: unknown): PaperclipQuestionSet | null {
       id: text(option.id, `option-${optionIndex + 1}`).slice(0, 160),
       label: text(option.label, `Option ${optionIndex + 1}`).slice(0, 1_000),
       ...(nullableText(option.description) ? { description: text(option.description).slice(0, 4_000) } : {}),
+      ...(option.recommended === true ? { recommended: true } : {}),
     }));
     const customAnswer = record(question.customAnswer);
     const validation = record(question.textValidation);
@@ -553,6 +554,12 @@ function parseQuestionSet(value: unknown): PaperclipQuestionSet | null {
       ...(nullableText(question.helpText) ? { helpText: text(question.helpText).slice(0, 4_000) } : {}),
       required: question.required === true,
       answerMode,
+      ...(question.intent === "decision" || question.intent === "information"
+        ? { intent: question.intent }
+        : {}),
+      ...(nullableText(question.recommendationRationale)
+        ? { recommendationRationale: text(question.recommendationRationale).slice(0, 4_000) }
+        : {}),
       ...(answerMode !== "text" ? { options } : {}),
       ...(customAnswer.enabled === true ? { customAnswer: {
         enabled: true as const,

@@ -59,6 +59,14 @@ export type IssueThreadInteractionResolverAudienceInput = {
     | IssueThreadInteractionResolverRestriction
     | null;
   governedAction?: boolean;
+  /**
+   * True when the stored payload carries a question with `intent: "decision"`.
+   * Unlike `governedAction`, which is a property of the card's effect, this is
+   * derived from the payload itself so a row written before the decision
+   * contract (whose frozen policy may say `anyone`) still cannot be resolved by
+   * an agent.
+   */
+  storedDecisionQuestion?: boolean;
 };
 
 export type IssueThreadInteractionResolverAudienceDecision =
@@ -168,6 +176,7 @@ export function evaluateIssueThreadInteractionResolverAudience(
     || additionalRestriction?.policy === "not_creator";
   const humanOnly =
     Boolean(input.governedAction)
+    || Boolean(input.storedDecisionQuestion)
     || persistedPolicy === "human_only"
     || additionalRestriction?.policy === "human_only";
   const effectiveResolverPolicy: IssueThreadInteractionCanonicalResolverPolicy = humanOnly
@@ -251,7 +260,9 @@ export function evaluateIssueThreadInteractionResolverAudience(
       effectiveResolverPolicy,
       status: 403,
       code: "interaction_human_only",
-      message: "This issue-thread interaction is human-only",
+      message: input.storedDecisionQuestion
+        ? "This issue-thread interaction records a decision, which only a person can make"
+        : "This issue-thread interaction is human-only",
     };
   }
 

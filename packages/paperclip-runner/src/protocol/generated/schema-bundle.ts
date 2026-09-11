@@ -2536,6 +2536,18 @@ export const questionSetSchema = {
             "text"
           ]
         },
+        "intent": {
+          "enum": [
+            "decision",
+            "information"
+          ],
+          "description": "decision marks a consequential human choice: distinct pre-made options, exactly one recommended option, a recommendationRationale, and no custom answer."
+        },
+        "recommendationRationale": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "Why the recommended option is recommended, and what each choice does. Required for decision intent; presentation only, never consent."
+        },
         "options": {
           "type": "array",
           "maxItems": 128,
@@ -2598,6 +2610,41 @@ export const questionSetSchema = {
               "options": {
                 "type": "array",
                 "minItems": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "intent": {
+                "const": "decision"
+              }
+            },
+            "required": [
+              "intent"
+            ]
+          },
+          "then": {
+            "required": [
+              "recommendationRationale"
+            ],
+            "properties": {
+              "required": {
+                "const": true
+              },
+              "answerMode": {
+                "const": "single_select"
+              },
+              "recommendationRationale": {
+                "type": "string",
+                "minLength": 1
+              },
+              "customAnswer": false,
+              "options": {
+                "type": "array",
+                "minItems": 2,
+                "description": "Decision options must have distinct labels and exactly one recommended option; that count is enforced by the runtime contract parser."
               }
             }
           }

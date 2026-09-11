@@ -297,6 +297,239 @@ describe("issue thread interaction schemas", () => {
     })).toThrow("text questions cannot define options");
   });
 
+  it("accepts a recommended decision question and keeps information questions free", () => {
+    const parsed = createIssueThreadInteractionSchema.parse({
+      kind: "ask_user_questions",
+      resolverPolicy: "human_only",
+      payload: {
+        version: 1,
+        title: "Confirm the rollout path",
+        questions: [
+          {
+            id: "rollout",
+            prompt: "Ship the migration to all customers today?",
+            selectionMode: "single",
+            required: true,
+            intent: "decision",
+            recommendationRationale:
+              "Staging is recommended because the canary window is still open and the rollback is one command.",
+            options: [
+              { id: "staging", label: "Stage first", recommended: true },
+              { id: "all-customers", label: "All customers now" },
+            ],
+          },
+          {
+            id: "notes",
+            prompt: "Anything else the release captain should know?",
+            selectionMode: "single",
+            allowOther: true,
+            options: [
+              { id: "free-text", label: "I'll describe it", freeText: true },
+            ],
+          },
+        ],
+      },
+    });
+    expect(parsed.kind).toBe("ask_user_questions");
+    if (parsed.kind !== "ask_user_questions") return;
+    expect(parsed.payload.questions[0]).toMatchObject({
+      intent: "decision",
+      options: [
+        { id: "staging", recommended: true },
+        { id: "all-customers" },
+      ],
+    });
+    // Information questions keep their free-text affordances untouched.
+    expect(parsed.payload.questions[1].intent).toBeUndefined();
+    expect(parsed.payload.questions[1].allowOther).toBe(true);
+    expect(parsed.payload.questions[1].options[0].freeText).toBe(true);
+  });
+
+  const invalidDecisionQuestions: Array<{
+    name: string;
+    question: Record<string, unknown>;
+    message: RegExp;
+  }> = [
+    {
+      name: "no recommended option",
+      question: {
+        selectionMode: "single",
+        required: true,
+        intent: "decision",
+        recommendationRationale: "Staging is safer.",
+        options: [
+          { id: "staging", label: "Stage first" },
+          { id: "all-customers", label: "All customers now" },
+        ],
+      },
+      message: /exactly one option with recommended/,
+    },
+    {
+      name: "two recommended options",
+      question: {
+        selectionMode: "single",
+        required: true,
+        intent: "decision",
+        recommendationRationale: "Both are fine.",
+        options: [
+          { id: "staging", label: "Stage first", recommended: true },
+          { id: "all-customers", label: "All customers now", recommended: true },
+        ],
+      },
+      message: /At most one option may be recommended/,
+    },
+    {
+      name: "no rationale",
+      question: {
+        selectionMode: "single",
+        required: true,
+        intent: "decision",
+        options: [
+          { id: "staging", label: "Stage first", recommended: true },
+          { id: "all-customers", label: "All customers now" },
+        ],
+      },
+      message: /require recommendationRationale/,
+    },
+    {
+      name: "free-form fallback",
+      question: {
+        selectionMode: "single",
+        required: true,
+        intent: "decision",
+        allowOther: true,
+        recommendationRationale: "Staging is safer.",
+        options: [
+          { id: "staging", label: "Stage first", recommended: true },
+          { id: "all-customers", label: "All customers now" },
+        ],
+      },
+      message: /cannot enable allowOther/,
+    },
+    {
+      name: "multi-select decision",
+      question: {
+        selectionMode: "multi",
+        required: true,
+        intent: "decision",
+        recommendationRationale: "Staging is safer.",
+        options: [
+          { id: "staging", label: "Stage first", recommended: true },
+          { id: "all-customers", label: "All customers now" },
+        ],
+      },
+      message: /must be single-select/,
+    },
+    {
+      name: "duplicate decision labels",
+      question: {
+        selectionMode: "single",
+        required: true,
+        intent: "decision",
+        recommendationRationale: "Staging is safer.",
+        options: [
+          { id: "staging", label: "Stage first", recommended: true },
+          { id: "all-customers", label: " stage   FIRST " },
+        ],
+      },
+      message: /distinct labels/,
+    },
+    {
+      name: "free-text option",
+      question: {
+        selectionMode: "single",
+        required: true,
+        intent: "decision",
+        recommendationRationale: "Staging is safer.",
+        options: [
+          { id: "staging", label: "Stage first", recommended: true },
+          { id: "describe", label: "I'll describe it", freeText: true },
+        ],
+      },
+      message: /cannot use free-text options/,
+    },
+    {
+      name: "optional decision",
+      question: {
+        selectionMode: "single",
+        required: false,
+        intent: "decision",
+        recommendationRationale: "Staging is safer.",
+        options: [
+          { id: "staging", label: "Stage first", recommended: true },
+          { id: "all-customers", label: "All customers now" },
+        ],
+      },
+      message: /must set required: true/,
+    },
+  ];
+
+  it.each(invalidDecisionQuestions)(
+    "rejects a decision question with $name",
+    ({ question, message }) => {
+      expect(() => createIssueThreadInteractionSchema.parse({
+        kind: "ask_user_questions",
+        resolverPolicy: "human_only",
+        payload: {
+          version: 1,
+          questions: [
+            {
+              id: "rollout",
+              prompt: "Ship the migration to all customers today?",
+              ...question,
+            },
+          ],
+        },
+      })).toThrow(message);
+    },
+  );
+
+  it("refuses to let a plain comment stand in for a decision", () => {
+    const result = createIssueThreadInteractionSchema.safeParse({
+      kind: "ask_user_questions",
+      resolverPolicy: "human_only",
+      payload: {
+        version: 1,
+        supersedeOnUserComment: true,
+        questions: [
+          {
+            id: "rollout",
+            prompt: "Ship the migration to all customers today?",
+            selectionMode: "single",
+            required: true,
+            intent: "decision",
+            recommendationRationale: "Staging is safer.",
+            options: [
+              { id: "staging", label: "Stage first", recommended: true },
+              { id: "all-customers", label: "All customers now" },
+            ],
+          },
+        ],
+      },
+    });
+    expect(result.success).toBe(false);
+
+    // The same flag is still valid for an information-only form.
+    expect(createIssueThreadInteractionSchema.parse({
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        supersedeOnUserComment: true,
+        questions: [
+          {
+            id: "notes",
+            prompt: "Anything else the release captain should know?",
+            selectionMode: "single",
+            options: [{ id: "none", label: "Nothing to add" }],
+          },
+        ],
+      },
+    })).toMatchObject({
+      kind: "ask_user_questions",
+      payload: { supersedeOnUserComment: true },
+    });
+  });
+
   it("rejects unsafe request_confirmation target hrefs", () => {
     const base = {
       kind: "request_confirmation",

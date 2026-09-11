@@ -218,6 +218,24 @@ describe("describeInteractionAudience", () => {
     );
   });
 
+  it("explains a decision-interview clamp", () => {
+    const audience = describeInteractionAudience({
+      interaction: confirmation({
+        requestedResolverPolicy: "anyone",
+        effectiveResolverPolicy: "human_only",
+        effectiveResolverPolicySource: "decision_question",
+      }),
+    });
+    expect(audience.policy).toBe("human_only");
+    expect(audience.summary).toBe(
+      "Only a person on the board can respond — agents cannot resolve this card.",
+    );
+    expect(audience.narrowedBy).toBe("decision_question");
+    expect(audience.narrowedNote).toBe(
+      "This card asks for a decision, so it stays human-only whatever audience was requested.",
+    );
+  });
+
   it("explains a company cap using both audience labels", () => {
     const audience = describeInteractionAudience({
       interaction: confirmation({

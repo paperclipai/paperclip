@@ -104,6 +104,9 @@ function toInteractionPayload(questionSet: PaperclipQuestionSet, runtimeRequestI
         id: option.id,
         label: option.label,
         ...(option.description ? { description: option.description } : {}),
+        // Mirror the recommendation so the classic issue-thread card shows the
+        // same advice as the canonical task-chat form. Presentation only.
+        ...(option.recommended === true ? { recommended: true } : {}),
       }));
       if (question.answerMode === "text") {
         options.push({
@@ -131,6 +134,10 @@ function toInteractionPayload(questionSet: PaperclipQuestionSet, runtimeRequestI
         selectionMode: question.answerMode === "multi_select" ? "multi" as const : "single" as const,
         required: question.required,
         allowOther: question.answerMode === "text" || question.customAnswer?.enabled === true,
+        ...(question.intent ? { intent: question.intent } : {}),
+        ...(question.recommendationRationale
+          ? { recommendationRationale: question.recommendationRationale }
+          : {}),
         options,
       };
     }),

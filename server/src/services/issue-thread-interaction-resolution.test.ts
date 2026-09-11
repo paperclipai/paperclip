@@ -153,6 +153,29 @@ describe("issue-thread interaction resolver audience", () => {
     expect(decision).toMatchObject({ allowed: false, code: "interaction_governed_action_denied" });
   });
 
+  it("keeps a stored decision human-only even when its frozen policy is open", () => {
+    // Rows written before the decision contract carry `anyone`; the payload is
+    // still the authority, so an agent cannot answer the decision.
+    const agentDecision = evaluateIssueThreadInteractionResolverAudience({
+      actor: agent,
+      interaction: interaction({ effectiveResolverPolicy: "anyone" }),
+      storedDecisionQuestion: true,
+    });
+    expect(agentDecision).toMatchObject({
+      allowed: false,
+      effectiveResolverPolicy: "human_only",
+      status: 403,
+      code: "interaction_human_only",
+    });
+
+    const userDecision = evaluateIssueThreadInteractionResolverAudience({
+      actor: { type: "user", userId: "alice" },
+      interaction: interaction({ effectiveResolverPolicy: "anyone" }),
+      storedDecisionQuestion: true,
+    });
+    expect(userDecision).toMatchObject({ allowed: true, effectiveResolverPolicy: "human_only" });
+  });
+
   it("preserves legacy inherited board_or_agents creator separation", () => {
     const decision = evaluateIssueThreadInteractionResolverAudience({
       actor: agent,

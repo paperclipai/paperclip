@@ -908,7 +908,7 @@ POST /api/issues/{issueId}/interactions
 Resolver governance:
 
 - **Omit `resolverPolicy` for a normal interaction.** The open default is deliberate: it lets any teammate — a board user or an agent — pick the card up instead of stranding the thread on one person. Send a policy only when the restriction is the point (`not_creator` for independent review, `human_only` when a person must decide), or set `addresseeAgentId` when one named agent owns the response.
-- Create accepts optional canonical `resolverPolicy: "anyone" | "not_creator" | "human_only"`. Every interaction kind defaults to `anyone` when omitted. Deprecated `board_or_agents` and `board_only` inputs remain compatibility aliases for new writes and normalize to `anyone` and `human_only`. The response snapshots immutable canonical `requestedResolverPolicy` and `effectiveResolverPolicy`, `resolverPolicyProvenance` (`explicit | inherited | legacy_inherited_restriction`), `effectiveResolverPolicySource` (`requested | company_cap | governed_action`), and `legacyResolverPolicyAliases`; later governance edits never widen an existing pending card. `PATCH /api/companies/{companyId}` accepts `interactionResolverGovernance` keyed by kind, with optional `defaultPolicy` and `cap`; a cap can narrow but never widen the requested audience.
+- Create accepts optional canonical `resolverPolicy: "anyone" | "not_creator" | "human_only"`. Every interaction kind defaults to `anyone` when omitted; a question with `intent: "decision"` is the exception and clamps to `human_only` (see [Structured questions and decision interviews](#structured-questions-and-decision-interviews)). Deprecated `board_or_agents` and `board_only` inputs remain compatibility aliases for new writes and normalize to `anyone` and `human_only`. The response snapshots immutable canonical `requestedResolverPolicy` and `effectiveResolverPolicy`, `resolverPolicyProvenance` (`explicit | inherited | legacy_inherited_restriction`), `effectiveResolverPolicySource` (`requested | company_cap | governed_action | decision_question`), and `legacyResolverPolicyAliases`; later governance edits never widen an existing pending card. `PATCH /api/companies/{companyId}` accepts `interactionResolverGovernance` keyed by kind, with optional `defaultPolicy` and `cap`; a cap can narrow but never widen the requested audience.
 - Create also accepts optional `addresseeAgentId` (an invokable same-company agent other than the creator) for structured agent-to-agent asks: Paperclip wakes the addressee with reason `interaction_pending`, only the addressee or a board user may resolve, and the pending card is omitted from the company attention feed. Not allowed with `request_confirmation.payload.toolAction` (`400`).
 - Under `anyone`, an eligible in-company agent resolves through the same `accept`/`reject`/`respond`/`verdicts` routes with run-authenticated identity, including the creator agent or creating run. `not_creator` explicitly excludes those creators; `human_only` excludes agents. Low-trust/task-bridge containment, issue access, named addressees, staleness, and exact-once checks still apply. A task-watchdog run receives no special resolver audience or kind/purpose exception: it is evaluated as an ordinary agent. `payload.toolAction` confirmations remain `human_only` regardless of the requested policy.
 - Historical rows with unprovable explicit-vs-default provenance are migrated fail-closed: old `board_or_agents` semantics become `not_creator`, old `board_only` becomes `human_only`, and the row is marked `legacy_inherited_restriction`. Resolved outcomes and attribution are not rewritten.
@@ -922,6 +922,78 @@ Rules:
 - Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
 - A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names the response needed and the effective audience.
 - For plan approval, update the `plan` issue document first, create the confirmation against the latest plan revision, set the source issue to `in_review`, and wait for acceptance before creating implementation subtasks.
+
+### Structured questions and decision interviews
+
+Use `ask_user_questions` for a short structured form. Each question is single- or multi-select, and the responder answers the whole form once through `POST /api/issues/{issueId}/interactions/{interactionId}/respond`.
+
+A question is either **information** (`"intent": "information"`, the default) or a **decision** (`"intent": "decision"`). Information questions keep every free-text affordance, because a typed answer is often the right control. Decision questions are the consequential ones where a person has to own the outcome — use them instead of asking for approval in prose, and never for a question whose answer is just data you need.
+
+Create a decision interview:
+
+```json
+POST /api/issues/{issueId}/interactions
+{
+  "kind": "ask_user_questions",
+  "idempotencyKey": "questions:{issueId}:rollout-path:{runId}",
+  "title": "Decide the rollout path",
+  "continuationPolicy": "wake_assignee",
+  "payload": {
+    "version": 1,
+    "title": "Which rollout path should the migration take?",
+    "questions": [
+      {
+        "id": "rollout-path",
+        "prompt": "Ship the migration to all customers today?",
+        "helpText": "This decision gates the release window that closes tonight.",
+        "selectionMode": "single",
+        "required": true,
+        "intent": "decision",
+        "recommendationRationale": "Staging is recommended because the canary window is still open and the rollback is one command.",
+        "options": [
+          { "id": "stage-first", "label": "Stage first", "description": "Run the migration in staging for one hour first.", "recommended": true },
+          { "id": "all-customers", "label": "All customers now", "description": "Skip staging and migrate production directly." }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Question field reference:
+
+| Field | Type | Notes |
+| ----- | ---- | ----- |
+| `id` | string | Stable id, unique per interaction. Reuse it when re-creating the same interview so drafts and idempotency keep working. |
+| `prompt` | string | The question. |
+| `helpText` | string \| null | Context the responder needs to decide. |
+| `selectionMode` | `"single" \| "multi"` | Decisions must be `"single"`; use `request_checkbox_confirmation` for multi-select decisions. |
+| `required` | boolean | Decisions must be `true`. |
+| `intent` | `"decision" \| "information"` | Defaults to `"information"`. |
+| `recommendationRationale` | string \| null | Required for decisions: why the recommended option is recommended, and what each choice does. |
+| `allowOther` | boolean | Legacy free-form fallback. Must not be `true` on a decision question. |
+| `options[].recommended` | boolean | Marks the recommended option. Presentation only: it never preselects and never counts as consent. Decisions need exactly one. |
+| `options[].freeText` | boolean | First-class "I'll describe it" option. At most one per question. Not allowed on decision questions: the recorded answer must name a prepared option id. |
+
+Decision-contract rules (a create returns `422` when one is broken):
+
+- Exactly one option has `"recommended": true`, and `recommendationRationale` is non-empty. The rationale is what makes the recommendation auditable; a bare "recommended" badge is not enough.
+- At least two options with distinct labels, `selectionMode: "single"`, `required: true`.
+- No free-form fallback (`allowOther: true`, a `freeText` option, or `customAnswer` in the canonical `questionSet` form): a typed answer cannot be recorded as the decision, because the stored answer must name a prepared option id. Declare the extra choice as an explicit option, and ask an information question when the answer really is free text.
+- A decision is read from **either** presentation: `payload.questionSet` (the canonical form the cards prefer) or the mirrored `payload.questions`. When both carry the question, both must declare `intent: "decision"`, and the mirror must offer exactly the options `questionSet` displays — otherwise the card would show a choice the stored answer cannot record, and the create returns `422` (`interaction_decision_intent_mismatch`, `interaction_decision_option_mismatch`, `interaction_decision_option_unmirrored`, `interaction_decision_question_unmirrored`). The same payload-derived rule is re-checked when a card is answered, superseded by a comment, or resolved, so an interaction written before this contract stays human-only and can never be resolved by a generic comment.
+- `supersedeOnUserComment` must not be `true`. Decision cards default to `false`, so a later plain comment expires nothing and never reads as implicit consent.
+- `resolverPolicy` is `human_only` — omitting it is fine and inherits `human_only`; an explicit `anyone` or `not_creator` is rejected with `422`. The stored `effectiveResolverPolicySource` is `decision_question` so an audit can see the audience was required, not requested.
+
+Answering:
+
+```json
+POST /api/issues/{issueId}/interactions/{interactionId}/respond
+{ "answers": [ { "questionId": "rollout-path", "optionIds": ["stage-first"], "otherText": "Stage it, then watch the error rate for an hour." } ] }
+```
+
+- A decision is answered by selecting one of its options. `optionIds` must contain that option's id; `otherText` is supplementary rationale only, and a free-text-only answer is rejected with `422`.
+- Answers are persisted with the interaction result and delivered once to the agent that asked. The card shows the recommendation beside the options and leaves every option unselected until the responder picks one.
+- A resolved question card records a response only. Acting on the decision — deploy, spend, merge, hire — re-runs its own authorization and approval checks.
 
 ### Checkbox confirmations
 

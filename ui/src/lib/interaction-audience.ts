@@ -88,6 +88,7 @@ export type InteractionAudienceNarrowing =
   | "requested"
   | "company_cap"
   | "governed_action"
+  | "decision_question"
   | "addressee"
   | "legacy_restriction";
 
@@ -221,23 +222,27 @@ export function describeResolverAudience({
   // fully described by `summary`.
   const narrowedNote = source === "governed_action"
     ? "This card runs a governed action, so it stays human-only whatever audience was requested."
-    : source === "company_cap"
-      ? `Organization interaction governance narrowed this from ${RESOLVER_POLICY_LABELS[requestedPolicy]} to ${RESOLVER_POLICY_LABELS[policy]}.`
-      : provenance === "legacy_inherited_restriction"
-        ? "Created before Anyone became the default, so it stays restricted. A new card would be open."
-        : null;
+    : source === "decision_question"
+      ? "This card asks for a decision, so it stays human-only whatever audience was requested."
+      : source === "company_cap"
+        ? `Organization interaction governance narrowed this from ${RESOLVER_POLICY_LABELS[requestedPolicy]} to ${RESOLVER_POLICY_LABELS[policy]}.`
+        : provenance === "legacy_inherited_restriction"
+          ? "Created before Anyone became the default, so it stays restricted. A new card would be open."
+          : null;
 
   const narrowedBy: InteractionAudienceNarrowing | null = source === "governed_action"
     ? "governed_action"
-    : source === "company_cap"
-      ? "company_cap"
-      : provenance === "legacy_inherited_restriction"
-        ? "legacy_restriction"
-        : policy !== "anyone"
-          ? "requested"
-          : hasAddressee
-            ? "addressee"
-            : null;
+    : source === "decision_question"
+      ? "decision_question"
+      : source === "company_cap"
+        ? "company_cap"
+        : provenance === "legacy_inherited_restriction"
+          ? "legacy_restriction"
+          : policy !== "anyone"
+            ? "requested"
+            : hasAddressee
+              ? "addressee"
+              : null;
 
   return {
     policy,

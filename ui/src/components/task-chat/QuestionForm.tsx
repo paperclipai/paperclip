@@ -25,6 +25,10 @@ import {
   questionResponseToDraftAnswers,
   useQuestionDraftPersistence,
 } from "@/lib/interaction-question-draft";
+import {
+  describeQuestionRecommendation,
+  isDecisionQuestion,
+} from "@/lib/issue-thread-interactions";
 import { cn } from "@/lib/utils";
 import {
   TaskChatComposerTakeoverControls,
@@ -337,6 +341,13 @@ export function QuestionForm({
   }, [answers, customActive, draftKey, page, questionDraft]);
 
   const question = questionSet.questions[page];
+  const recommendation = question
+    ? describeQuestionRecommendation(question)
+    : null;
+  // A decision is confirmed, not inferred. Single-select questions normally
+  // advance or submit on click; for a decision the responder keeps the explicit
+  // confirm step so a mis-click cannot submit consent.
+  const decisionQuestion = question != null && isDecisionQuestion(question);
   const validationErrors = useMemo(
     () =>
       Object.fromEntries(
@@ -361,6 +372,9 @@ export function QuestionForm({
   const multiple = question.answerMode === "multi_select";
   const allowsCustom =
     question.answerMode !== "text" &&
+    // A decision is recorded as a prepared option id, so the free-form path is
+    // not offered — offering it would submit an answer the server must reject.
+    !decisionQuestion &&
     (question.customAnswer?.enabled === true || implicitCustomAnswer);
   const isCustomActive = customActive[question.id] === true;
   const optionFilter = filters[question.id]?.trim().toLowerCase() ?? "";
@@ -390,6 +404,9 @@ export function QuestionForm({
     setAnswers(nextAnswers);
     if (!multiple) {
       setCustomActive((current) => ({ ...current, [question.id]: false }));
+      // A decision stays on the card until the responder confirms it with the
+      // submit button; the recommendation never submits on their behalf.
+      if (decisionQuestion) return;
       if (page < questionSet.questions.length - 1) setPage(page + 1);
       else void submit(nextAnswers);
     }
@@ -465,6 +482,7 @@ export function QuestionForm({
   const isLastPage = page === questionSet.questions.length - 1;
   const showQuestionActionButton =
     multiple ||
+    decisionQuestion ||
     (isLastPage && (question.answerMode !== "single_select" || isCustomActive));
   const showActionRow = Boolean(
     takeoverActions?.skipButton || onCancel || showQuestionActionButton,
@@ -594,7 +612,21 @@ export function QuestionForm({
           className="mt-3 grid gap-1.5"
           role={multiple ? "group" : "radiogroup"}
           aria-labelledby={`${id}-${question.id}-prompt`}
+          aria-describedby={
+            recommendation ? `${id}-${question.id}-recommendation` : undefined
+          }
         >
+          {recommendation ? (
+            <p
+              id={`${id}-${question.id}-recommendation`}
+              className="text-xs leading-4 text-muted-foreground"
+            >
+              <span className="font-medium text-foreground">
+                Recommended: {recommendation.optionLabel}
+              </span>
+              {recommendation.rationale ? ` — ${recommendation.rationale}` : null}
+            </p>
+          ) : null}
           {(question.options?.length ?? 0) > 8 ? (
             <label className="relative mb-1 block">
               <Search
@@ -721,7 +753,8 @@ export function QuestionForm({
               {working === "submit" ? (
                 <Loader2 aria-hidden className="h-4 w-4 animate-spin" />
               ) : null}
-              {questionSet.submitLabel ?? "Submit answers"}
+              {questionSet.submitLabel
+                ?? (decisionQuestion ? "Confirm decision" : "Submit answers")}
             </Button>
           ) : null}
         </div>

@@ -1138,8 +1138,23 @@ export interface AskUserQuestionsQuestionOption {
    * free-text affordance.
    */
   freeText?: boolean;
+  /**
+   * Marks the option the author recommends. A recommendation is presentation
+   * only: it never preselects, never counts as consent, and a decision question
+   * always requires the responder's own selection. Mirrors
+   * `PaperclipQuestionSetOption.recommended` so recovered harness questions and
+   * native questions share one convention.
+   */
+  recommended?: boolean;
 }
 
+/**
+ * A question either collects information (free text is often the right
+ * control) or asks for one consequential decision. Decision intent opts into
+ * the stricter contract: pre-made distinct options, exactly one recommended
+ * option, an explicit `recommendationRationale`, and no free-form fallback that
+ * could be mistaken for consent.
+ */
 export interface AskUserQuestionsQuestion {
   id: string;
   prompt: string;
@@ -1148,6 +1163,10 @@ export interface AskUserQuestionsQuestion {
   required?: boolean;
   /** False suppresses the legacy free-form fallback for closed select sets. */
   allowOther?: boolean;
+  /** Defaults to "information" when omitted. */
+  intent?: "decision" | "information";
+  /** Required, explicit explanation of the recommended option for decision intent. */
+  recommendationRationale?: string | null;
   options: AskUserQuestionsQuestionOption[];
 }
 
@@ -1172,6 +1191,10 @@ export interface PaperclipQuestionSetQuestion {
   required: boolean;
   answerMode: "single_select" | "multi_select" | "text";
   options?: PaperclipQuestionSetOption[];
+  /** Defaults to "information" when omitted. */
+  intent?: "decision" | "information";
+  /** Explicit explanation required when `intent` is "decision" and one option is recommended. */
+  recommendationRationale?: string;
   customAnswer?: {
     enabled: true;
     label?: string;

@@ -391,6 +391,51 @@ export const rejectedSuggestedTasksInteraction = createSuggestTasksInteraction({
 export const pendingAskUserQuestionsInteraction = createAskUserQuestionsInteraction({});
 
 /**
+ * A pending decision interview: one consequential question with two pre-made
+ * options, one of which is recommended and never preselected. The card is
+ * person-only (`human_only`) because the answer is a decision, not information.
+ */
+export const pendingDecisionQuestionInteraction = createAskUserQuestionsInteraction({
+  id: "interaction-questions-decision",
+  title: "Decide the rollout path",
+  summary:
+    "One decision is waiting: how to roll the migration out. Staging is suggested, but the card decides nothing until a person picks an option.",
+  resolverPolicy: "human_only",
+  resolverPolicyProvenance: "explicit",
+  effectiveResolverPolicySource: "decision_question",
+  payload: {
+    version: 1,
+    title: "Which rollout path should the migration take?",
+    submitLabel: "Confirm decision",
+    questions: [
+      {
+        id: "rollout-path",
+        prompt: "Ship the migration to all customers today?",
+        helpText: "This decision gates the release window that closes tonight.",
+        selectionMode: "single",
+        required: true,
+        intent: "decision",
+        recommendationRationale:
+          "Staging is recommended because the canary window is still open and the rollback is one command.",
+        options: [
+          {
+            id: "stage-first",
+            label: "Stage first",
+            description: "Run the migration in staging for one hour first.",
+            recommended: true,
+          },
+          {
+            id: "all-customers",
+            label: "All customers now",
+            description: "Skip staging and migrate production directly.",
+          },
+        ],
+      },
+    ],
+  },
+});
+
+/**
  * A pending question whose last option is a first-class free-text choice
  * (`freeText: true`). Selecting it reveals an inline text field instead of
  * acting as a dead radio, and the built-in "Other" link is suppressed

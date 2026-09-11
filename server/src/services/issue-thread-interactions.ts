@@ -414,6 +414,12 @@ export function resolveInteractionPolicy(args: {
   governance: InteractionResolverGovernance;
   hasToolAction: boolean;
   hasSecretProposal?: boolean;
+  /**
+   * True when the payload asks a question with `intent: "decision"`. A
+   * consequential decision is a human gate, so its effective audience is
+   * clamped to person-only no matter what default the caller inherited.
+   */
+  hasDecisionQuestion?: boolean;
 }) {
   const kindGovernance = args.governance[args.kind];
   const requestedPolicyInput = args.requested
@@ -428,6 +434,9 @@ export function resolveInteractionPolicy(args: {
   if (args.hasToolAction || args.hasSecretProposal) {
     effectiveResolverPolicy = "human_only";
     effectiveResolverPolicySource = "governed_action";
+  } else if (args.hasDecisionQuestion === true) {
+    effectiveResolverPolicy = "human_only";
+    effectiveResolverPolicySource = "decision_question";
   } else if (kindGovernance?.cap) {
     const cap = normalizeIssueThreadInteractionResolverPolicy(kindGovernance.cap);
     if (RESOLVER_POLICY_RESTRICTION_RANK[cap] > RESOLVER_POLICY_RESTRICTION_RANK[effectiveResolverPolicy]) {
@@ -467,6 +476,17 @@ function assertInteractionResolutionAllowed(current: IssueThreadInteractionRow, 
         ("toolAction" in current.payload && current.payload.toolAction !== undefined)
         || ("secretProposal" in current.payload && current.payload.secretProposal !== undefined)
       ),
+    // Read from the stored payload, not the create-time policy: a row written
+    // before the decision contract existed still cannot be resolved by an agent,
+    // even if its frozen `effectiveResolverPolicy` says otherwise.
+    storedDecisionQuestion:
+      current.kind === "ask_user_questions"
+      && current.payload !== null
+      && typeof current.payload === "object"
+      && askUserQuestionsHasDecisionQuestion(current.payload as {
+        questions?: readonly { id: string; intent?: "decision" | "information" }[];
+        questionSet?: { questions: readonly { id: string; intent?: "decision" | "information" }[] } | null;
+      }),
   });
 }
 
@@ -818,19 +838,194 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   return Boolean(args.issue.assigneeUserId);
 }
 
-function shouldSupersedeInteractionOnUserComment(interaction: UserCommentSupersedableInteraction) {
+/**
+ * The fields the comment-supersede rule reads. Typed structurally so the rule
+ * can be exercised without casting a partial interaction, and so a decision is
+ * recognized from whichever presentation the stored payload carries.
+ */
+type UserCommentSupersedeSubject = { kind: "connection_intent" } | {
+  kind: Exclude<UserCommentSupersedableKind, "connection_intent">;
+  payload: {
+    supersedeOnUserComment?: boolean | null;
+    questions?: readonly { id: string; intent?: "decision" | "information" }[];
+    questionSet?: { questions: readonly { id: string; intent?: "decision" | "information" }[] } | null;
+  };
+};
+
+/** Exported for the decision fail-closed regression tests. */
+export function shouldSupersedeInteractionOnUserComment(interaction: UserCommentSupersedeSubject) {
   if (interaction.kind === "connection_intent") return true;
+  // A decision is answered by its responder, never by a plain comment. Read the
+  // stored payload (not just its create-time default) so a row whose canonical
+  // presentation or mirror says "decision" stays unsuperseded.
+  if (interaction.kind === "ask_user_questions" && askUserQuestionsHasDecisionQuestion(interaction.payload)) {
+    return false;
+  }
   return interaction.payload.supersedeOnUserComment === true;
 }
 
-function normalizeCreateInteractionInput(input: CreateIssueThreadInteraction): CreateIssueThreadInteraction {
+/**
+ * A decision question is enforced from the stored payload, and either
+ * presentation can declare it: the native mirror (`questions`) is what the
+ * responder's answer is validated against, while `questionSet` is the canonical
+ * presentation the cards prefer. Reading only one of them lets a payload hide a
+ * decision from the guard that the other shape shows the human — the exact
+ * bypass this helper exists to close. Fail closed: if either says "decision",
+ * it is one.
+ */
+export function askUserQuestionsHasDecisionQuestion(payload: {
+  questions?: readonly { id: string; intent?: "decision" | "information" }[];
+  questionSet?: { questions: readonly { id: string; intent?: "decision" | "information" }[] } | null;
+}): boolean {
+  return Boolean(
+    payload.questions?.some((question) => question.intent === "decision")
+    || payload.questionSet?.questions.some((question) => question.intent === "decision"),
+  );
+}
+
+/** Per-question form of {@link askUserQuestionsHasDecisionQuestion}. */
+function isDecisionUserQuestion(
+  payload: {
+    questions?: readonly { id: string; intent?: "decision" | "information" }[];
+    questionSet?: { questions: readonly { id: string; intent?: "decision" | "information" }[] } | null;
+  },
+  questionId: string,
+): boolean {
+  const mirror = payload.questions?.find((question) => question.id === questionId);
+  const canonical = payload.questionSet?.questions.find((question) => question.id === questionId);
+  return mirror?.intent === "decision" || canonical?.intent === "decision";
+}
+
+/**
+ * A question with `intent: "decision"` is a consequential human gate, so the
+ * create path forces `human_only` and rejects an explicitly wider audience
+ * instead of silently trusting it. Omitting `resolverPolicy` stays allowed: the
+ * MCP/CLI call sites cannot express a policy, and the clamp makes the card
+ * person-only anyway. Exported for the focused policy tests.
+ *
+ * Typed against the schema's *input* shape: this is a raw create-request
+ * policy, and the parsed shape only differs by the defaults the schema would
+ * have filled in.
+ */
+export function resolveDecisionQuestionCreatePolicy(
+  input: z.input<typeof createIssueThreadInteractionSchema>,
+): {
+  hasDecisionQuestion: boolean;
+  requestedResolverPolicy: IssueThreadInteractionResolverPolicy | undefined;
+} {
+  if (input.kind !== "ask_user_questions") {
+    return { hasDecisionQuestion: false, requestedResolverPolicy: input.resolverPolicy };
+  }
+  const hasDecisionQuestion = askUserQuestionsHasDecisionQuestion(input.payload);
+  if (!hasDecisionQuestion) {
+    return { hasDecisionQuestion: false, requestedResolverPolicy: input.resolverPolicy };
+  }
+
+  // The two presentations must agree *when both present the same question*. The
+  // cards render the canonical `questionSet` when it exists while the answer is
+  // validated against the mirror, so a disagreement would let an author show one
+  // thing and enforce another. `questionSet` itself is optional: a native
+  // payload may legitimately carry only the mirror, in which case the mirror is
+  // the sole presentation and no counterpart check applies.
+  const mirrorById = new Map(input.payload.questions.map((question) => [question.id, question] as const));
+  const canonicalById = new Map(
+    (input.payload.questionSet?.questions ?? []).map((question) => [question.id, question] as const),
+  );
+  // A decision the canonical presentation asks for must exist in the mirror,
+  // because the mirror is what the stored answer is validated against.
+  for (const [questionId, canonicalQuestion] of canonicalById) {
+    if (canonicalQuestion.intent !== "decision") continue;
+    const mirrorQuestion = mirrorById.get(questionId);
+    if (!mirrorQuestion) {
+      throw unprocessable(
+        `Question ${questionId} is a decision in questionSet but has no matching question: a decision must be mirrored so the responder's answer can record it`,
+        { code: "interaction_decision_question_unmirrored", questionId },
+      );
+    }
+    if (mirrorQuestion.intent !== "decision") {
+      throw unprocessable(
+        `Question ${questionId} is a decision in questionSet but not in questions: both presentations must declare intent "decision"`,
+        { code: "interaction_decision_intent_mismatch", questionId },
+      );
+    }
+    const canonicalOptionIds = new Set((canonicalQuestion.options ?? []).map((option) => option.id));
+    const recommendedOption = (canonicalQuestion.options ?? []).find((option) => option.recommended === true);
+    const mirrorOptionIds = new Set(mirrorQuestion.options.map((option) => option.id));
+    if (recommendedOption && !mirrorOptionIds.has(recommendedOption.id)) {
+      throw unprocessable(
+        `Question ${questionId} recommends option ${recommendedOption.id} which is missing from its mirrored options: a decision must be answered by a displayed option`,
+        { code: "interaction_decision_option_unmirrored", questionId },
+      );
+    }
+    // A decision is answered by option id, so the mirror and the displayed
+    // canonical set must offer exactly the same choices.
+    const mirroredWithoutCanonical = [...mirrorOptionIds].filter(
+      (optionId) => !canonicalOptionIds.has(optionId),
+    );
+    const canonicalWithoutMirror = [...canonicalOptionIds].filter(
+      (optionId) => !mirrorOptionIds.has(optionId),
+    );
+    if (mirroredWithoutCanonical.length > 0 || canonicalWithoutMirror.length > 0) {
+      throw unprocessable(
+        `Question ${questionId} must mirror exactly the options questionSet displays (mirror-only: ${mirroredWithoutCanonical.join(", ") || "none"}; display-only: ${canonicalWithoutMirror.join(", ") || "none"}): a decision answer must name a displayed option`,
+        { code: "interaction_decision_option_mismatch", questionId },
+      );
+    }
+  }
+  // Consumer evidence for the rule below: the task-chat card's
+  // `questionSetForInteraction` returns `payload.questionSet` wholesale when it
+  // exists, so a mirror question the canonical set omits is never rendered in
+  // that surface — while the server would still enforce it as a decision. The
+  // classic issue-thread card renders `payload.questions`, which is why the
+  // mirror-only shape stays legal when no canonical set exists at all.
+  for (const [questionId, mirrorQuestion] of mirrorById) {
+    if (mirrorQuestion.intent !== "decision") continue;
+    const canonicalQuestion = canonicalById.get(questionId);
+    if (canonicalQuestion?.intent === "decision") continue;
+    if (!canonicalQuestion) {
+      if (!input.payload.questionSet) continue;
+      throw unprocessable(
+        `Question ${questionId} is a decision in questions but is missing from questionSet: the canonical presentation is what the task-chat card renders, so the choice would be invisible`,
+        { code: "interaction_decision_question_unmirrored", questionId },
+      );
+    }
+    throw unprocessable(
+      `Question ${questionId} is a decision in questions but not in questionSet: both presentations must declare intent "decision"`,
+      { code: "interaction_decision_intent_mismatch", questionId },
+    );
+  }
+
+  if (
+    input.resolverPolicy !== undefined
+    && input.resolverPolicy !== "human_only"
+    && input.resolverPolicy !== "board_only"
+  ) {
+    throw unprocessable(
+      "Interaction contains a question with intent \"decision\" and must use resolverPolicy \"human_only\": a consequential decision cannot be resolved by an agent. Remove the explicit resolverPolicy to inherit human-only, or set it to \"human_only\".",
+      { code: "interaction_decision_requires_human_only" },
+    );
+  }
+  return { hasDecisionQuestion: true, requestedResolverPolicy: "human_only" };
+}
+
+/**
+ * Per-kind create defaults. Exported so the decision contract (which must never
+ * default to a comment-supersede path) is testable without a database.
+ */
+export function normalizeCreateInteractionInput(input: CreateIssueThreadInteraction): CreateIssueThreadInteraction {
   switch (input.kind) {
     case "ask_user_questions":
       return {
         ...input,
         payload: {
           ...input.payload,
-          supersedeOnUserComment: input.payload.supersedeOnUserComment ?? true,
+          // A decision is answered only by an explicit selection. Defaulting
+          // `supersedeOnUserComment` to true would let a later plain comment
+          // expire the card, which reads as implicit consent for a gate nobody
+          // actually answered.
+          supersedeOnUserComment:
+            input.payload.supersedeOnUserComment
+            ?? !input.payload.questions.some((question) => question.intent === "decision"),
         },
       };
     case "request_confirmation":
@@ -1496,8 +1691,15 @@ function resolveRequestItemVerdictSubmissions(args: {
   };
 }
 
-function normalizeQuestionAnswers(args: {
+/**
+ * Validate one `respond` payload against the immutable question set. Exported
+ * because the decision rule here — a decision is only answered by selecting a
+ * prepared option — is the boundary that keeps free-form text from being
+ * recorded as consent.
+ */
+export function normalizeQuestionAnswers(args: {
   questions: AskUserQuestionsInteraction["payload"]["questions"];
+  questionSet?: AskUserQuestionsInteraction["payload"]["questionSet"];
   answers: RespondIssueThreadInteraction["answers"];
 }) {
   const questionById = new Map(args.questions.map((question) => [question.id, question] as const));
@@ -1514,9 +1716,28 @@ function normalizeQuestionAnswers(args: {
 
     const uniqueOptionIds = [...new Set(answer.optionIds)];
     const validOptionIds = new Set(question.options.map((option) => option.id));
+    // A legacy row can pair a mirror and a canonical set that disagree. When it
+    // asks for a decision, the recorded choice must be one both presentations
+    // offer, so the answer stays the choice the responder actually saw.
+    const decision = isDecisionUserQuestion(
+      { questions: args.questions, questionSet: args.questionSet },
+      question.id,
+    );
+    const canonicalQuestion = args.questionSet?.questions.find(
+      (candidate) => candidate.id === question.id,
+    );
+    const displayedOptionIds = new Set(
+      decision ? (canonicalQuestion?.options ?? []).map((option) => option.id) : [],
+    );
     for (const optionId of uniqueOptionIds) {
       if (!validOptionIds.has(optionId)) {
         throw unprocessable(`Unknown optionId for question ${answer.questionId}: ${optionId}`);
+      }
+      if (decision && displayedOptionIds.size > 0 && !displayedOptionIds.has(optionId)) {
+        throw unprocessable(
+          `Option ${optionId} is not one of the choices question ${answer.questionId} displays`,
+          { code: "interaction_decision_option_not_displayed", questionId: answer.questionId },
+        );
       }
     }
 
@@ -1539,6 +1760,21 @@ function normalizeQuestionAnswers(args: {
       && (!answer || (answer.optionIds.length === 0 && !answer.otherText))
     ) {
       throw unprocessable(`Question ${question.id} requires an answer`);
+    }
+    // A decision records one prepared choice a person made. Free text alone
+    // (the legacy `allowOther` fallback) is not a decision, and treating it as
+    // one would turn an ordinary comment into consent nobody gave. Read both
+    // stored presentations so a row that only declares the decision in its
+    // canonical set still fails closed.
+    if (
+      isDecisionUserQuestion({ questions: args.questions, questionSet: args.questionSet }, question.id)
+      && answer
+      && answer.optionIds.length === 0
+    ) {
+      throw unprocessable(
+        `Question ${question.id} asks for a decision and must select one of its options`,
+        { code: "interaction_decision_option_required", questionId: question.id },
+      );
     }
   }
 
@@ -2810,6 +3046,11 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       const data = normalizeCreateInteractionInput(createIssueThreadInteractionSchema.parse(input));
       const usedDeprecatedResolverPolicyAlias =
         data.resolverPolicy === "board_or_agents" || data.resolverPolicy === "board_only";
+      // A decision question is a human gate: the card records one prepared
+      // choice that a person made, so a wider audience is rejected instead of
+      // silently clamped, and the requested policy is forced to human_only.
+      const { hasDecisionQuestion, requestedResolverPolicy } =
+        resolveDecisionQuestionCreatePolicy(data);
       const governance = await db
         .select({ interactionResolverGovernance: companies.interactionResolverGovernance })
         .from(companies)
@@ -2817,10 +3058,11 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         .then((rows) => rows[0]?.interactionResolverGovernance ?? {});
       const policy = resolveInteractionPolicy({
         kind: data.kind,
-        requested: data.resolverPolicy,
+        requested: requestedResolverPolicy,
         governance,
         hasToolAction: data.kind === "request_confirmation" && data.payload.toolAction !== undefined,
         hasSecretProposal: data.kind === "request_confirmation" && data.payload.secretProposal !== undefined,
+        hasDecisionQuestion,
       });
       const normalizedData = { ...data, resolverPolicy: policy.requestedResolverPolicy };
 
@@ -3969,6 +4211,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       const interaction = hydrateInteraction(current) as AskUserQuestionsInteraction;
       const normalizedAnswers = normalizeQuestionAnswers({
         questions: interaction.payload.questions,
+        questionSet: interaction.payload.questionSet,
         answers: input.answers,
       });
 

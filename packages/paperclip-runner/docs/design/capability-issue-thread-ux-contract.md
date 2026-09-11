@@ -166,7 +166,10 @@ options, labels, and validation — never as markdown asking the user to type an
 Kinds and their answer controls:
 
 - `questions` (ask_user_questions): typed form — per-question control (radio/select/short
-  text), one submit.
+  text), one submit. A question with `intent: "decision"` renders its recommended option with a
+  "Recommended" badge and its `recommendationRationale` as visible text bound to the option
+  group; no option is preselected, and the responder confirms the decision with an explicit
+  submit instead of a single click.
 - `confirmation` (request_confirmation): target summary + Accept / Reject buttons; reject
   reason textarea when the payload requires it. **Revision-bound**: the card shows the target
   (`plan · r4`) and links the exact revision.

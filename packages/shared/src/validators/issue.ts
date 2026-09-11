@@ -877,17 +877,149 @@ export const askUserQuestionsQuestionOptionSchema = z.object({
     .describe(
       "When true, selecting this option reveals an inline text field; the typed value is returned as the question's otherText. Use this for a real \"I'll describe it\" choice instead of authoring a dead option that does nothing. At most one free-text option per question.",
     ),
+  recommended: z
+    .boolean()
+    .optional()
+    .describe(
+      "Marks the option the author recommends. Presentation only: it never preselects and never counts as consent. A decision question requires exactly one recommended option plus its recommendationRationale.",
+    ),
 });
 
-export const askUserQuestionsQuestionSchema = z.object({
+const askUserQuestionsQuestionIntentSchema = z.enum(["decision", "information"]);
+
+function normalizedOptionLabel(label: string): string {
+  return label.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+const askUserQuestionsQuestionBaseSchema = z.object({
   id: z.string().trim().min(1).max(160),
   prompt: z.string().trim().min(1).max(4000),
   helpText: z.string().trim().max(4000).nullable().optional(),
   selectionMode: z.enum(["single", "multi"]),
   required: z.boolean().optional(),
   allowOther: z.boolean().optional(),
+  intent: askUserQuestionsQuestionIntentSchema.optional()
+    .describe(
+      "Defaults to \"information\". Use \"decision\" for a consequential choice a person must own; that intent requires distinct pre-made options, exactly one recommended option, and a recommendationRationale.",
+    ),
+  recommendationRationale: z.string().trim().max(4000).nullable().optional()
+    .describe(
+      "Explicit explanation of the recommended option and what each choice does. Required for decision intent; presentation only, never consent.",
+    ),
   options: z.array(askUserQuestionsQuestionOptionSchema).min(1).max(129),
 });
+
+/**
+ * Decision intent carries the stricter authoring contract: pre-made distinct
+ * options, exactly one recommendation with an explicit rationale, and no
+ * free-form fallback that a later comment could be mistaken for consent.
+ * Information questions keep their free-text affordances unchanged.
+ */
+function refineAskUserQuestionsQuestion(
+  value: z.infer<typeof askUserQuestionsQuestionBaseSchema>,
+  ctx: z.RefinementCtx,
+) {
+  const recommendedIndexes: number[] = [];
+  for (const [optionIndex, option] of value.options.entries()) {
+    if (option.recommended === true) recommendedIndexes.push(optionIndex);
+  }
+  if (recommendedIndexes.length > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "At most one option may be recommended",
+      path: ["options", recommendedIndexes[1], "recommended"],
+    });
+  }
+
+  const rationale = value.recommendationRationale?.trim() ?? "";
+  const isDecision = value.intent === "decision";
+  const isSingleSelect = value.selectionMode === "single";
+  const recommended = recommendedIndexes.length === 1;
+
+  if (!isDecision) {
+    if (rationale && !recommended) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "recommendationRationale requires exactly one option with recommended: true",
+        path: ["recommendationRationale"],
+      });
+    }
+    return;
+  }
+
+  if (!isSingleSelect) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "Decision questions must be single-select so the answer names one chosen option; use request_checkbox_confirmation for multi-select decisions",
+      path: ["selectionMode"],
+    });
+  }
+  if (value.options.length < 2) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Decision questions require at least two distinct options",
+      path: ["options"],
+    });
+  }
+  const labels = new Set<string>();
+  for (const [optionIndex, option] of value.options.entries()) {
+    const label = normalizedOptionLabel(option.label);
+    if (labels.has(label)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Decision options must have distinct labels",
+        path: ["options", optionIndex, "label"],
+      });
+    }
+    labels.add(label);
+  }
+  if (!recommended) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Decision questions require exactly one option with recommended: true",
+      path: ["options"],
+    });
+  }
+  if (!rationale) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "Decision questions require recommendationRationale: state why the recommended option is recommended and what each choice does",
+      path: ["recommendationRationale"],
+    });
+  }
+  if (value.required !== true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "Decision questions must set required: true so an unanswered submit cannot look like a recorded decision",
+      path: ["required"],
+    });
+  }
+  if (value.allowOther === true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "Decision questions cannot enable allowOther: a free-form answer must not be recorded as the decision. Declare the extra choice as an explicit option instead",
+      path: ["allowOther"],
+    });
+  }
+  for (const [optionIndex, option] of value.options.entries()) {
+    if (option.freeText === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "Decision questions cannot use free-text options: the recorded answer must name a prepared option id. Ask an information question when the answer is typed text.",
+        path: ["options", optionIndex, "freeText"],
+      });
+    }
+  }
+}
+
+export const askUserQuestionsQuestionSchema = askUserQuestionsQuestionBaseSchema.superRefine(
+  refineAskUserQuestionsQuestion,
+);
 
 const paperclipQuestionOptionSchema = z.object({
   id: z.string().min(1).max(160),
@@ -903,6 +1035,8 @@ const paperclipQuestionSchema = z.object({
   helpText: z.string().max(4000).optional(),
   required: z.boolean(),
   answerMode: z.enum(["single_select", "multi_select", "text"]),
+  intent: askUserQuestionsQuestionIntentSchema.optional(),
+  recommendationRationale: z.string().max(4000).optional(),
   options: z.array(paperclipQuestionOptionSchema).max(128).optional(),
   customAnswer: z.object({
     enabled: z.literal(true),
@@ -952,6 +1086,76 @@ const paperclipQuestionSchema = z.object({
   if (new Set(optionIds).size !== optionIds.length) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "option ids must be unique", path: ["options"] });
   }
+
+  // A decision in the canonical presentation carries the same contract as a
+  // native decision question: distinct pre-made options, one recommendation
+  // with an explicit rationale, and no free-form path that could be recorded
+  // as consent without naming a prepared choice.
+  const recommendedCount = value.options?.filter((option) => option.recommended === true).length ?? 0;
+  if (recommendedCount > 1) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "at most one option may be recommended", path: ["options"] });
+  }
+  const rationale = value.recommendationRationale?.trim() ?? "";
+  if (value.intent !== "decision") {
+    if (rationale && recommendedCount !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "recommendationRationale requires exactly one option with recommended: true",
+        path: ["recommendationRationale"],
+      });
+    }
+    return;
+  }
+  if (value.answerMode !== "single_select") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "decision questions must use single_select so the answer names one chosen option",
+      path: ["answerMode"],
+    });
+  }
+  if ((value.options?.length ?? 0) < 2) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "decision questions require at least two options", path: ["options"] });
+  }
+  const labels = new Set<string>();
+  for (const [optionIndex, option] of (value.options ?? []).entries()) {
+    const label = normalizedOptionLabel(option.label);
+    if (labels.has(label)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "decision options must have distinct labels",
+        path: ["options", optionIndex, "label"],
+      });
+    }
+    labels.add(label);
+  }
+  if (recommendedCount !== 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "decision questions require exactly one option with recommended: true",
+      path: ["options"],
+    });
+  }
+  if (!rationale) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "decision questions require recommendationRationale",
+      path: ["recommendationRationale"],
+    });
+  }
+  if (value.required !== true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "decision questions must set required: true",
+      path: ["required"],
+    });
+  }
+  if (value.customAnswer?.enabled === true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "decision questions cannot enable customAnswer; declare the extra choice as an explicit option",
+      path: ["customAnswer"],
+    });
+  }
 });
 
 export const paperclipQuestionSetPayloadSchema = z.object({
@@ -978,6 +1182,21 @@ export const askUserQuestionsPayloadSchema = z.object({
   /** Stable correlation for draft handoff from a live runtime request. */
   runtimeRequestId: z.string().trim().min(1).max(255).nullable().optional(),
 }).superRefine((value, ctx) => {
+  // A plain board/user comment must never stand in for a consequential
+  // decision. Information questions keep the default supersede behavior.
+  if (value.supersedeOnUserComment === true) {
+    for (const [questionIndex, question] of value.questions.entries()) {
+      if (question.intent !== "decision") continue;
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "supersedeOnUserComment must be false when a question has intent \"decision\": a generic comment must not resolve a decision. Omit it (it defaults to false for decisions) or set it to false.",
+        path: ["supersedeOnUserComment"],
+      });
+      break;
+    }
+  }
+
   const seenQuestionIds = new Set<string>();
   for (const [questionIndex, question] of value.questions.entries()) {
     if (seenQuestionIds.has(question.id)) {

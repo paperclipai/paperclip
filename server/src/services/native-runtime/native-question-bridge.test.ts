@@ -268,6 +268,65 @@ describeEmbeddedPostgres("native question bridge", () => {
     release();
   });
 
+  it("mirrors a decision recommendation and refuses a free-text-only decision answer", async () => {
+    await seed();
+    const event = runtimeRequestEvent();
+    const request = ((event.payload as Record<string, unknown>).request as Record<string, unknown>);
+    request.input = {
+      schema: "paperclip.question_set.v1",
+      title: "Rollout",
+      questions: [{
+        id: "rollout",
+        prompt: "Ship the migration to all customers today?",
+        required: true,
+        answerMode: "single_select",
+        intent: "decision",
+        recommendationRationale:
+          "Staging is recommended because the canary window is still open.",
+        options: [
+          { id: "stage-first", label: "Stage first", recommended: true },
+          { id: "all-customers", label: "All customers now" },
+        ],
+      }],
+    };
+
+    const interaction = await projectNativeRuntimeRequest({
+      db,
+      binding: binding(),
+      event,
+    });
+
+    expect(interaction).toMatchObject({
+      kind: "ask_user_questions",
+      effectiveResolverPolicy: "human_only",
+      effectiveResolverPolicySource: "decision_question",
+      payload: {
+        supersedeOnUserComment: false,
+        questions: [{
+          id: "rollout",
+          intent: "decision",
+          recommendationRationale:
+            "Staging is recommended because the canary window is still open.",
+          options: [
+            { id: "stage-first", label: "Stage first", recommended: true },
+            { id: "all-customers", label: "All customers now" },
+          ],
+        }],
+      },
+    });
+
+    validateNativeQuestionResponseInput(interaction!, {
+      answers: [{ questionId: "rollout", optionIds: ["stage-first"] }],
+    });
+    expect(() => validateNativeQuestionResponseInput(interaction!, {
+      answers: [{
+        questionId: "rollout",
+        optionIds: [],
+        otherText: "Ship it everywhere",
+      }],
+    })).toThrow();
+  });
+
   it("binds projection to the persisted native run and ignores legacy delivery", async () => {
     await seed();
     const mismatched = runtimeRequestEvent();

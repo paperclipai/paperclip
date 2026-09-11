@@ -13,6 +13,7 @@ import { TooltipProvider } from "./ui/tooltip";
 import {
   pendingAskUserQuestionsInteraction,
   pendingAskUserQuestionsWithFreeTextOption,
+  pendingDecisionQuestionInteraction,
   commentExpiredAskUserQuestionsInteraction,
   commentExpiredRequestConfirmationInteraction,
   declinedToolActionInteraction,
@@ -352,6 +353,65 @@ describe("IssueThreadInteractionCard", () => {
 
     expect(host.childElementCount).toBeGreaterThan(0);
     expect(host.querySelectorAll('[role="radio"]').length).toBeGreaterThan(0);
+  });
+
+  it("shows a decision recommendation without selecting it for the responder", () => {
+    const host = renderCard({
+      interaction: pendingDecisionQuestionInteraction,
+      onSubmitInteractionAnswers: vi.fn(),
+    });
+
+    expect(host.textContent).toContain("Decide the rollout path");
+    expect(host.textContent).toContain("Recommended: Stage first");
+    expect(host.textContent).toContain("canary window");
+    expect(
+      host.querySelector("#interaction-questions-decision-rollout-path-recommendation"),
+    ).not.toBeNull();
+
+    const options = Array.from(host.querySelectorAll('[role="radio"]'));
+    const recommended = options.find((option) =>
+      option.textContent?.includes("Stage first"),
+    );
+    expect(recommended?.getAttribute("data-recommended")).toBe("true");
+    expect(recommended?.textContent).toContain("Recommended");
+    // Advice is not consent: nothing arrives pre-answered.
+    expect(options.every((option) => option.getAttribute("aria-checked") === "false"))
+      .toBe(true);
+    expect(Array.from(host.querySelectorAll("textarea"))).toHaveLength(0);
+    // No free-form fallback on a decision: the answer names a prepared option.
+    expect(
+      Array.from(host.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Other",
+      ),
+    ).toBe(false);
+  });
+
+  it("submits the chosen decision option exactly once", async () => {
+    const submit = vi.fn().mockResolvedValue(undefined);
+    const host = renderCard({
+      interaction: pendingDecisionQuestionInteraction,
+      onSubmitInteractionAnswers: submit,
+    });
+
+    const recommended = Array.from(host.querySelectorAll('[role="radio"]')).find(
+      (option) => option.textContent?.includes("Stage first"),
+    );
+    await act(() => {
+      recommended?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(submit).not.toHaveBeenCalled();
+
+    const confirm = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Confirm decision",
+    );
+    await act(() => {
+      confirm?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(submit).toHaveBeenCalledOnce();
+    expect(submit.mock.calls[0]?.[1]).toEqual([
+      { questionId: "rollout-path", optionIds: ["stage-first"] },
+    ]);
   });
 
   it("keeps a closed native select set closed while preserving direct-question defaults", () => {

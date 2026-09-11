@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { IssueChatThread } from "@/components/IssueChatThread";
 import { IssueThreadInteractionCard } from "@/components/IssueThreadInteractionCard";
+import { TaskChatInteractionCard } from "@/components/task-chat/TaskChatInteractionCard";
 import {
   Card,
   CardContent,
@@ -50,6 +51,7 @@ import {
   pendingRequestItemVerdictsInteraction,
   supersededRequestItemVerdictsInteraction,
   pendingAskUserQuestionsInteraction,
+  pendingDecisionQuestionInteraction,
   pendingRequestCheckboxConfirmationInteraction,
   pendingRequestConfirmationInteraction,
   pendingSuggestedTasksInteraction,
@@ -265,6 +267,34 @@ function InteractiveAskUserQuestionsCard() {
       }
     />
   );
+}
+
+function InteractiveDecisionCard({ compact = false }: { compact?: boolean }) {
+  const [interaction, setInteraction] = useState<AskUserQuestionsInteraction>(
+    pendingDecisionQuestionInteraction,
+  );
+  const cardProps = {
+    agentMap: storybookAgentMap,
+    currentUserId: issueThreadInteractionFixtureMeta.currentUserId,
+    userLabelMap: boardUserLabels,
+    onSubmitInteractionAnswers: (
+      _interaction: AskUserQuestionsInteraction,
+      answers: AskUserQuestionsAnswer[],
+    ) => setInteraction({
+      ...interaction,
+      status: "answered",
+      resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+      resolvedAt: new Date(),
+      result: { version: 1, answers },
+    }),
+  };
+  return compact ? (
+    <TaskChatInteractionCard
+      item={{ id: interaction.id, kind: "interaction", interaction }}
+      presentation="takeover"
+      {...cardProps}
+    />
+  ) : <IssueThreadInteractionCard interaction={interaction} {...cardProps} />;
 }
 
 function InteractiveRequestConfirmationCard() {
@@ -507,6 +537,14 @@ export const AskUserQuestionsPending: Story = {
       </ScenarioCard>
     </StoryFrame>
   ),
+};
+
+export const RecommendedDecision: Story = {
+  render: () => <StoryFrame><InteractiveDecisionCard /></StoryFrame>,
+};
+
+export const RecommendedDecisionTaskChat: Story = {
+  render: () => <StoryFrame><InteractiveDecisionCard compact /></StoryFrame>,
 };
 
 export const AskUserQuestionsAnswered: Story = {

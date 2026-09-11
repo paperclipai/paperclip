@@ -131,6 +131,469 @@ describe("issueThreadInteractionService", () => {
     });
   });
 
+  it("clamps decision questions to human-only even when a wider default is inherited", async () => {
+    const { resolveInteractionPolicy } = await import("./issue-thread-interactions.js");
+    expect(resolveInteractionPolicy({
+      kind: "ask_user_questions",
+      requested: undefined,
+      governance: { ask_user_questions: { defaultPolicy: "anyone" } },
+      hasToolAction: false,
+      hasDecisionQuestion: true,
+    })).toEqual({
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "inherited",
+      effectiveResolverPolicySource: "decision_question",
+    });
+    expect(resolveInteractionPolicy({
+      kind: "ask_user_questions",
+      requested: "human_only",
+      governance: {},
+      hasToolAction: false,
+      hasDecisionQuestion: true,
+    })).toEqual({
+      requestedResolverPolicy: "human_only",
+      effectiveResolverPolicy: "human_only",
+      resolverPolicyProvenance: "explicit",
+      effectiveResolverPolicySource: "decision_question",
+    });
+  });
+
+  it("leaves information-only question audiences untouched", async () => {
+    const { resolveInteractionPolicy } = await import("./issue-thread-interactions.js");
+    expect(resolveInteractionPolicy({
+      kind: "ask_user_questions",
+      requested: undefined,
+      governance: {},
+      hasToolAction: false,
+      hasDecisionQuestion: false,
+    })).toEqual({
+      requestedResolverPolicy: "anyone",
+      effectiveResolverPolicy: "anyone",
+      resolverPolicyProvenance: "inherited",
+      effectiveResolverPolicySource: "requested",
+    });
+  });
+
+  const decisionPayload = {
+    version: 1 as const,
+    questions: [
+      {
+        id: "rollout",
+        prompt: "Ship the change to all customers today?",
+        selectionMode: "single" as const,
+        required: true,
+        intent: "decision" as const,
+        recommendationRationale:
+          "Staging is recommended because the migration is reversible there and the canary window is still open.",
+        options: [
+          { id: "staging", label: "Stage first", recommended: true },
+          { id: "all-customers", label: "All customers now" },
+        ],
+      },
+    ],
+  };
+
+  it("requires human_only for a decision question and accepts an omitted policy", async () => {
+    const { resolveDecisionQuestionCreatePolicy } = await import("./issue-thread-interactions.js");
+    expect(resolveDecisionQuestionCreatePolicy({
+      kind: "ask_user_questions",
+      payload: decisionPayload,
+    })).toEqual({ hasDecisionQuestion: true, requestedResolverPolicy: "human_only" });
+    expect(resolveDecisionQuestionCreatePolicy({
+      kind: "ask_user_questions",
+      resolverPolicy: "human_only",
+      payload: decisionPayload,
+    })).toEqual({ hasDecisionQuestion: true, requestedResolverPolicy: "human_only" });
+
+    expect(() => resolveDecisionQuestionCreatePolicy({
+      kind: "ask_user_questions",
+      resolverPolicy: "anyone",
+      payload: decisionPayload,
+    })).toThrow(/human_only/);
+    expect(() => resolveDecisionQuestionCreatePolicy({
+      kind: "ask_user_questions",
+      resolverPolicy: "not_creator",
+      payload: decisionPayload,
+    })).toThrow(/human_only/);
+
+    // An information interview keeps whatever audience its author asked for.
+    expect(resolveDecisionQuestionCreatePolicy({
+      kind: "ask_user_questions",
+      resolverPolicy: "not_creator",
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "notes",
+            prompt: "Anything the reviewer should know?",
+            selectionMode: "single",
+            required: false,
+            options: [{ id: "none", label: "Nothing to add" }],
+          },
+        ],
+      },
+    })).toEqual({ hasDecisionQuestion: false, requestedResolverPolicy: "not_creator" });
+  });
+
+  it("does not let a plain comment supersede a pending decision", async () => {
+    const { normalizeCreateInteractionInput } = await import("./issue-thread-interactions.js");
+    // `normalizeCreateInteractionInput` takes the parsed create shape, so these
+    // fixtures carry the schema's `continuationPolicy` default explicitly.
+    const normalized = normalizeCreateInteractionInput({
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: decisionPayload,
+    });
+    expect(normalized.kind).toBe("ask_user_questions");
+    if (normalized.kind !== "ask_user_questions") return;
+    expect(normalized.payload.supersedeOnUserComment).toBe(false);
+
+    // Information forms keep the historical comment-supersede default.
+    const information = normalizeCreateInteractionInput({
+      kind: "ask_user_questions",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "notes",
+            prompt: "Anything the reviewer should know?",
+            selectionMode: "single",
+            options: [{ id: "none", label: "Nothing to add" }],
+          },
+        ],
+      },
+    });
+    if (information.kind !== "ask_user_questions") return;
+    expect(information.payload.supersedeOnUserComment).toBe(true);
+  });
+
+  // The bypass this guards against: a payload that shows a decision in the
+  // canonical presentation (which the cards prefer) while the mirror — the
+  // shape the create guard used to read — stays silent, then asks for an open
+  // audience and comment-supersede.
+  const canonicalDecisionOnlyPayload = {
+    version: 1 as const,
+    supersedeOnUserComment: true,
+    questions: [
+      {
+        id: "rollout",
+        prompt: "Ship the migration to all customers today?",
+        selectionMode: "single" as const,
+        required: true,
+        options: [
+          { id: "staging", label: "Stage first" },
+          { id: "all-customers", label: "All customers now" },
+        ],
+      },
+    ],
+    questionSet: {
+      schema: "paperclip.question_set.v1" as const,
+      questions: [
+        {
+          id: "rollout",
+          prompt: "Ship the migration to all customers today?",
+          required: true,
+          answerMode: "single_select" as const,
+          intent: "decision" as const,
+          recommendationRationale: "Staging is safer while the canary window is open.",
+          options: [
+            { id: "staging", label: "Stage first", recommended: true },
+            { id: "all-customers", label: "All customers now" },
+          ],
+        },
+      ],
+    },
+  };
+
+  it("reads a decision from either stored presentation and fails closed on a mismatch", async () => {
+    const { askUserQuestionsHasDecisionQuestion, resolveDecisionQuestionCreatePolicy } =
+      await import("./issue-thread-interactions.js");
+
+    expect(askUserQuestionsHasDecisionQuestion({
+      questions: [{ id: "rollout", intent: "information" }],
+      questionSet: canonicalDecisionOnlyPayload.questionSet,
+    })).toBe(true);
+
+    // Canonical says decision, mirror stays silent, wider audience requested:
+    // rejected on the mismatch, before the audience is even considered.
+    expect(() => resolveDecisionQuestionCreatePolicy({
+      kind: "ask_user_questions",
+      resolverPolicy: "anyone",
+      payload: canonicalDecisionOnlyPayload,
+    })).toThrow(/must declare intent "decision"/);
+
+    // A canonical decision with no mirrored question cannot be answered.
+    expect(() => resolveDecisionQuestionCreatePolicy({
+      kind: "ask_user_questions",
+      payload: {
+        ...canonicalDecisionOnlyPayload,
+        questions: [{
+          id: "other",
+          prompt: "Something else",
+          selectionMode: "single" as const,
+          options: [{ id: "a", label: "A" }],
+        }],
+      },
+    })).toThrow(/has no matching question/);
+
+    // The recommended option must be one the responder can actually select.
+    expect(() => resolveDecisionQuestionCreatePolicy({
+      kind: "ask_user_questions",
+      payload: {
+        ...canonicalDecisionOnlyPayload,
+        questions: [
+          {
+            id: "rollout",
+            prompt: "Ship the migration to all customers today?",
+            selectionMode: "single" as const,
+            required: true,
+            intent: "decision" as const,
+            recommendationRationale: "Staging is safer while the canary window is open.",
+            options: [
+              { id: "all-customers", label: "All customers now" },
+              { id: "later", label: "Later" },
+            ],
+          },
+        ],
+      },
+    })).toThrow(/recommends option staging which is missing/);
+
+    // The mirror may not offer a choice the card never displays: a decision
+    // answer must name a displayed option id.
+    expect(() => resolveDecisionQuestionCreatePolicy({
+      kind: "ask_user_questions",
+      payload: {
+        ...canonicalDecisionOnlyPayload,
+        questions: [
+          {
+            id: "rollout",
+            prompt: "Ship the migration to all customers today?",
+            selectionMode: "single" as const,
+            required: true,
+            intent: "decision" as const,
+            recommendationRationale: "Staging is safer while the canary window is open.",
+            options: [
+              { id: "staging", label: "Stage first" },
+              { id: "all-customers", label: "All customers now" },
+              { id: "hidden", label: "Hidden choice" },
+            ],
+          },
+        ],
+      },
+    })).toThrow(/must mirror exactly the options/);
+  });
+
+  it("rejects the reverse mismatch where only the mirror declares the decision", async () => {
+    const { resolveDecisionQuestionCreatePolicy } = await import("./issue-thread-interactions.js");
+    const informationCanonical = {
+      schema: "paperclip.question_set.v1" as const,
+      questions: [
+        {
+          id: "rollout",
+          prompt: "Ship the migration to all customers today?",
+          required: true,
+          answerMode: "single_select" as const,
+          options: [
+            { id: "staging", label: "Stage first" },
+            { id: "all-customers", label: "All customers now" },
+          ],
+        },
+      ],
+    };
+
+    // Mirror says decision, canonical presents the same question as information:
+    // the card would render an information form while the server enforced a
+    // decision.
+    expect(() => resolveDecisionQuestionCreatePolicy({
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: decisionPayload.questions,
+        questionSet: informationCanonical,
+      },
+    })).toThrow(/is a decision in questions but not in questionSet/);
+  });
+
+  it("accepts a mirror-only decision only when no canonical set is present", async () => {
+    const { resolveDecisionQuestionCreatePolicy } = await import("./issue-thread-interactions.js");
+
+    // The original API: no `questionSet` at all. The mirror is the only
+    // presentation, and the task-chat card synthesizes its set from the mirror.
+    expect(resolveDecisionQuestionCreatePolicy({
+      kind: "ask_user_questions",
+      payload: decisionPayload,
+    })).toEqual({ hasDecisionQuestion: true, requestedResolverPolicy: "human_only" });
+
+    // A present questionSet is authoritative for display (`questionSetForInteraction`
+    // returns it wholesale), so a decision it omits would be invisible in the
+    // task-chat card while the server still enforced it.
+    expect(() => resolveDecisionQuestionCreatePolicy({
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: decisionPayload.questions,
+        questionSet: {
+          schema: "paperclip.question_set.v1" as const,
+          questions: [
+            {
+              id: "notes",
+              prompt: "Anything else the release captain should know?",
+              required: false,
+              answerMode: "single_select" as const,
+              options: [{ id: "none", label: "Nothing to add" }],
+            },
+          ],
+        },
+      },
+    })).toThrow(/is missing from questionSet/);
+  });
+
+  it("keeps a stored decision human-only even when its frozen policy is open", async () => {
+    const { shouldSupersedeInteractionOnUserComment, normalizeQuestionAnswers } =
+      await import("./issue-thread-interactions.js");
+
+    // A row written before the contract: open policy, comment-supersede on,
+    // decision only in the canonical presentation.
+    expect(shouldSupersedeInteractionOnUserComment({
+      kind: "ask_user_questions",
+      payload: canonicalDecisionOnlyPayload,
+    })).toBe(false);
+
+    expect(() => normalizeQuestionAnswers({
+      questions: canonicalDecisionOnlyPayload.questions,
+      questionSet: canonicalDecisionOnlyPayload.questionSet,
+      answers: [{
+        questionId: "rollout",
+        optionIds: [],
+        otherText: "Go ahead, ship it everywhere",
+      }],
+    })).toThrow(/must select one of its options/);
+
+    // The same row still accepts a prepared choice from the mirror.
+    expect(normalizeQuestionAnswers({
+      questions: canonicalDecisionOnlyPayload.questions,
+      questionSet: canonicalDecisionOnlyPayload.questionSet,
+      answers: [{ questionId: "rollout", optionIds: ["staging"] }],
+    })).toEqual([{ questionId: "rollout", optionIds: ["staging"] }]);
+  });
+
+  it("refuses a decision choice the card never displayed on a legacy mismatched row", async () => {
+    const { normalizeQuestionAnswers } = await import("./issue-thread-interactions.js");
+    // A row written before the parity contract: the mirror still offers
+    // "all-customers", but the canonical presentation the card renders only
+    // offers "staging".
+    const mirrorQuestions = decisionPayload.questions;
+    const canonicalSet = {
+      schema: "paperclip.question_set.v1" as const,
+      questions: [
+        {
+          id: "rollout",
+          prompt: "Ship the migration to all customers today?",
+          required: true,
+          answerMode: "single_select" as const,
+          intent: "decision" as const,
+          recommendationRationale: "Staging is safer while the canary window is open.",
+          options: [{ id: "staging", label: "Stage first", recommended: true }],
+        },
+      ],
+    };
+
+    expect(() => normalizeQuestionAnswers({
+      questions: mirrorQuestions,
+      questionSet: canonicalSet,
+      answers: [{ questionId: "rollout", optionIds: ["all-customers"] }],
+    })).toThrow(/not one of the choices/);
+
+    expect(normalizeQuestionAnswers({
+      questions: mirrorQuestions,
+      questionSet: canonicalSet,
+      answers: [{ questionId: "rollout", optionIds: ["staging"] }],
+    })).toEqual([{ questionId: "rollout", optionIds: ["staging"] }]);
+
+    // An information question keeps the mirror as its contract: the canonical
+    // presentation may omit an option without stranding a valid answer.
+    expect(normalizeQuestionAnswers({
+      questions: [{
+        id: "notes",
+        prompt: "Anything else the release captain should know?",
+        selectionMode: "single",
+        required: true,
+        intent: "information",
+        options: [
+          { id: "none", label: "Nothing to add" },
+          { id: "follow-up", label: "I'll follow up in a comment" },
+        ],
+      }],
+      questionSet: {
+        schema: "paperclip.question_set.v1" as const,
+        questions: [{
+          id: "notes",
+          prompt: "Anything else the release captain should know?",
+          required: true,
+          answerMode: "single_select" as const,
+          intent: "information" as const,
+          options: [{ id: "none", label: "Nothing to add" }],
+        }],
+      },
+      answers: [{ questionId: "notes", optionIds: ["follow-up"] }],
+    })).toEqual([{ questionId: "notes", optionIds: ["follow-up"] }]);
+  });
+
+  it("records a decision only from a selected option, never from free text alone", async () => {
+    const { normalizeQuestionAnswers } = await import("./issue-thread-interactions.js");
+    const questions = decisionPayload.questions;
+
+    expect(normalizeQuestionAnswers({
+      questions,
+      answers: [{ questionId: "rollout", optionIds: ["staging"] }],
+    })).toEqual([{ questionId: "rollout", optionIds: ["staging"] }]);
+
+    expect(normalizeQuestionAnswers({
+      questions,
+      answers: [{
+        questionId: "rollout",
+        optionIds: ["staging"],
+        otherText: "Stage it, then watch the error rate for an hour.",
+      }],
+    })).toEqual([{
+      questionId: "rollout",
+      optionIds: ["staging"],
+      otherText: "Stage it, then watch the error rate for an hour.",
+    }]);
+
+    expect(() => normalizeQuestionAnswers({
+      questions,
+      answers: [{
+        questionId: "rollout",
+        optionIds: [],
+        otherText: "Go ahead, ship it everywhere",
+      }],
+    })).toThrow(/must select one of its options/);
+
+    // A text-only information question still accepts a typed answer.
+    expect(normalizeQuestionAnswers({
+      questions: [{
+        id: "environment",
+        prompt: "Where should this deploy?",
+        selectionMode: "single",
+        required: true,
+        intent: "information",
+        options: [{ id: "staging", label: "Staging" }],
+      }],
+      answers: [{
+        questionId: "environment",
+        optionIds: [],
+        otherText: "A region we have not listed yet",
+      }],
+    })).toEqual([{
+      questionId: "environment",
+      optionIds: [],
+      otherText: "A region we have not listed yet",
+    }]);
+  });
+
   it("create reuses an existing interaction for the same idempotency key", async () => {
     const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
 

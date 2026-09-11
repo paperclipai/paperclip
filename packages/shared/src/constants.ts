@@ -309,6 +309,13 @@ export const ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES = [
   "requested",
   "company_cap",
   "governed_action",
+  /**
+   * A question with `intent: "decision"` is a consequential human decision, so
+   * the effective audience is clamped to `human_only` regardless of the
+   * requested default. Recorded separately from `governed_action` so audits see
+   * why the card is person-only instead of assuming the requester asked for it.
+   */
+  "decision_question",
 ] as const;
 export type IssueThreadInteractionEffectiveResolverPolicySource =
   (typeof ISSUE_THREAD_INTERACTION_EFFECTIVE_RESOLVER_POLICY_SOURCES)[number];

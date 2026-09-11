@@ -7,6 +7,8 @@ import {
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
   countSuggestedTaskNodes,
+  describeQuestionRecommendation,
+  getAskUserQuestionRecommendation,
   getCheckboxConfirmationSelectedLabels,
   getItemVerdictProgress,
   getRequestConfirmationTargetHref,
@@ -431,6 +433,119 @@ describe("issue thread interaction helpers", () => {
     });
 
     expect(labels).toEqual(["Option 2", "Option 1", "Other: A written answer"]);
+  });
+
+  it("describes a recommendation without ever preselecting it", () => {
+    const advice = describeQuestionRecommendation({
+      intent: "decision",
+      recommendationRationale:
+        "Staging is recommended because the canary window is still open.",
+      options: [
+        { id: "stage-first", label: "Stage first", recommended: true },
+        { id: "all-customers", label: "All customers now" },
+      ],
+    });
+
+    expect(advice).toEqual({
+      optionId: "stage-first",
+      optionLabel: "Stage first",
+      rationale: "Staging is recommended because the canary window is still open.",
+      isDecision: true,
+    });
+    // Advice is presentation metadata only; there is no selected-option state to
+    // inherit, so a recommendation can never arrive pre-answered.
+    expect(Object.keys(advice ?? {})).toEqual([
+      "optionId",
+      "optionLabel",
+      "rationale",
+      "isDecision",
+    ]);
+    expect(describeQuestionRecommendation({
+      options: [{ id: "a", label: "A" }, { id: "b", label: "B" }],
+    })).toBeNull();
+  });
+
+  it("prefers the recovered canonical presentation for a native question", () => {
+    const interaction = {
+      kind: "ask_user_questions",
+      payload: {
+        version: 1,
+        questions: [
+          {
+            id: "rollout-path",
+            prompt: "Which rollout path?",
+            selectionMode: "single",
+            options: [
+              { id: "stage-first", label: "Stage first" },
+              { id: "all-customers", label: "All customers now" },
+            ],
+          },
+        ],
+        questionSet: {
+          schema: "paperclip.question_set.v1",
+          questions: [
+            {
+              id: "rollout-path",
+              prompt: "Which rollout path?",
+              required: true,
+              answerMode: "single_select",
+              intent: "decision",
+              recommendationRationale: "Staging keeps the rollback to one command.",
+              options: [
+                { id: "stage-first", label: "Stage first", recommended: true },
+                { id: "all-customers", label: "All customers now" },
+              ],
+            },
+          ],
+        },
+      },
+    } as unknown as AskUserQuestionsInteraction;
+
+    expect(
+      getAskUserQuestionRecommendation(interaction, interaction.payload.questions[0]),
+    ).toEqual({
+      optionId: "stage-first",
+      optionLabel: "Stage first",
+      rationale: "Staging keeps the rollback to one command.",
+      isDecision: true,
+    });
+
+    // A native question that never had a canonical presentation still renders
+    // the recommendation its own payload carries.
+    expect(getAskUserQuestionRecommendation(
+      {
+        ...interaction,
+        payload: {
+          ...interaction.payload,
+          questionSet: undefined,
+          questions: [
+            {
+              ...interaction.payload.questions[0],
+              intent: "decision",
+              recommendationRationale: "Staging keeps the rollback to one command.",
+              options: [
+                { id: "stage-first", label: "Stage first", recommended: true },
+                { id: "all-customers", label: "All customers now" },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        ...interaction.payload.questions[0],
+        intent: "decision",
+        recommendationRationale: "Staging keeps the rollback to one command.",
+        options: [
+          { id: "stage-first", label: "Stage first", recommended: true },
+          { id: "all-customers", label: "All customers now" },
+        ],
+      },
+    )).toEqual({
+      optionId: "stage-first",
+      optionLabel: "Stage first",
+      rationale: "Staging keeps the rollback to one command.",
+      isDecision: true,
+    });
   });
 });
 

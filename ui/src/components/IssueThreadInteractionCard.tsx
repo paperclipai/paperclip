@@ -9,9 +9,11 @@ import {
   buildSuggestedTaskTree,
   collectSuggestedTaskClientKeys,
   countSuggestedTaskNodes,
+  getAskUserQuestionRecommendation,
   getCheckboxConfirmationSelectedLabels,
   getItemVerdictProgress,
   getQuestionAnswerLabels,
+  isAskUserQuestionDecision,
   shouldHideInteractionCard,
   normalizeRequestConfirmationTargetHref,
   type AskUserQuestionsAnswer,
@@ -1027,6 +1029,7 @@ function QuestionOptionButton({
   id,
   label,
   description,
+  recommended = false,
   selected,
   selectionMode,
   onClick,
@@ -1034,6 +1037,7 @@ function QuestionOptionButton({
   id: string;
   label: string;
   description?: string | null;
+  recommended?: boolean;
   selected: boolean;
   selectionMode: "single" | "multi";
   onClick: () => void;
@@ -1047,18 +1051,26 @@ function QuestionOptionButton({
         "w-full rounded-sm border px-4 py-3 text-left transition-colors outline-none focus-visible:border-ring focus-visible:ring-(length:--rad-3) focus-visible:ring-ring/50",
         selected
           ? "border-sky-500/80 bg-sky-500/10 text-sky-950 dark:border-sky-400/80 dark:bg-sky-400/15 dark:text-sky-50"
-          : "border-border/70 bg-transparent text-foreground hover:border-sky-500/70 hover:bg-sky-500/10 dark:hover:border-sky-400/70 dark:hover:bg-sky-400/10",
+          : recommended
+            ? "border-border/70 bg-muted/40 text-foreground hover:border-sky-500/70 hover:bg-sky-500/10 dark:hover:border-sky-400/70 dark:hover:bg-sky-400/10"
+            : "border-border/70 bg-transparent text-foreground hover:border-sky-500/70 hover:bg-sky-500/10 dark:hover:border-sky-400/70 dark:hover:bg-sky-400/10",
       )}
       id={id}
+      data-recommended={recommended ? "true" : "false"}
       onClick={onClick}
     >
       <div
         className={cn(
-          "text-sm font-medium",
+          "flex flex-wrap items-center gap-2 text-sm font-medium",
           selected ? "text-sky-950 dark:text-sky-50" : "text-foreground",
         )}
       >
-        {label}
+        <span>{label}</span>
+        {recommended ? (
+          <span className="rounded-sm bg-background/70 px-1.5 py-0.5 text-(length:--text-micro) font-medium text-muted-foreground">
+            Recommended
+          </span>
+        ) : null}
       </div>
       {description ? (
         <div
@@ -1333,6 +1345,16 @@ function AskUserQuestionsCard({
             const hasFreeTextOption = question.options.some(
               (option) => option.freeText === true,
             );
+            const recommendation = getAskUserQuestionRecommendation(
+              interaction,
+              question,
+            );
+            // A decision is recorded as a prepared option id; the free-text
+            // fallback would submit an answer the server has to reject.
+            const decisionQuestion = isAskUserQuestionDecision(
+              interaction,
+              question,
+            );
             return (
             <div
               key={question.id}
@@ -1367,9 +1389,31 @@ function AskUserQuestionsCard({
                   className="grid gap-3"
                   role={question.selectionMode === "single" ? "radiogroup" : "group"}
                   aria-labelledby={`${interaction.id}-${question.id}-prompt`}
+                  aria-describedby={
+                    recommendation
+                      ? `${interaction.id}-${question.id}-recommendation`
+                      : undefined
+                  }
                 >
+                  {recommendation ? (
+                    <p
+                      id={`${interaction.id}-${question.id}-recommendation`}
+                      className="text-sm leading-6 text-muted-foreground"
+                    >
+                      <span className="font-medium text-foreground">
+                        Recommended: {recommendation.optionLabel}
+                      </span>
+                      {recommendation.rationale
+                        ? ` — ${recommendation.rationale}`
+                        : null}
+                    </p>
+                  ) : null}
                   {question.options.map((option) => {
                     const isFreeText = option.freeText === true;
+                    // Rows written before decision questions barred free-text
+                    // options: rendering it would submit an answer the server
+                    // must reject, so the option is not drawn.
+                    if (isFreeText && decisionQuestion) return null;
                     const optionSelected = isFreeText
                       ? otherActiveQuestions[question.id] === true
                       : (draftAnswers[question.id] ?? []).includes(option.id);
@@ -1379,6 +1423,9 @@ function AskUserQuestionsCard({
                           id={`${interaction.id}-${question.id}-${option.id}`}
                           label={option.label}
                           description={option.description}
+                          recommended={
+                            recommendation?.optionId === option.id
+                          }
                           selected={optionSelected}
                           selectionMode={question.selectionMode}
                           onClick={() =>
@@ -1408,7 +1455,7 @@ function AskUserQuestionsCard({
                  * free-text option so the card never shows two ways to type an
                  * answer (PAP-419).
                  */}
-                {hasFreeTextOption || question.allowOther === false ? null : (
+                {hasFreeTextOption || question.allowOther === false || decisionQuestion ? null : (
                   <>
                     <button
                       type="button"

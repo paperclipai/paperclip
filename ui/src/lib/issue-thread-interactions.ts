@@ -504,6 +504,84 @@ export function getQuestionAnswerLabels(args: {
   return labels;
 }
 
+/** The author's advice for one question, as both question surfaces render it. */
+export interface QuestionRecommendationAdvice {
+  /** Option the author recommends. Never preselected: the responder chooses. */
+  optionId: string;
+  optionLabel: string;
+  /** Explicit explanation shown beside the options, when the author supplied one. */
+  rationale: string | null;
+  /** True when the question asks for a consequential decision. */
+  isDecision: boolean;
+}
+
+/** A decision question records one prepared choice a person made. */
+export function isDecisionQuestion(question: {
+  intent?: "decision" | "information";
+}): boolean {
+  return question.intent === "decision";
+}
+
+/**
+ * Recommendation advice for one question, or null when it recommends nothing.
+ * Presentation only — the recommended option is never selected for the
+ * responder, because an interview is only evidence when they answered it.
+ */
+export function describeQuestionRecommendation(question: {
+  options?: readonly { id: string; label: string; recommended?: boolean }[];
+  intent?: "decision" | "information";
+  recommendationRationale?: string | null;
+}): QuestionRecommendationAdvice | null {
+  const recommended = (question.options ?? []).find(
+    (option) => option.recommended === true,
+  );
+  if (!recommended) return null;
+  const rationale = question.recommendationRationale?.trim();
+  return {
+    optionId: recommended.id,
+    optionLabel: recommended.label,
+    rationale: rationale ? rationale : null,
+    isDecision: isDecisionQuestion(question),
+  };
+}
+
+/**
+ * True when a native question asks for a consequential decision, preferring the
+ * recovered canonical presentation's intent. Both question surfaces use this so
+ * a decision renders the same way whether it was authored natively or projected
+ * from a runtime request.
+ */
+export function isAskUserQuestionDecision(
+  interaction: AskUserQuestionsInteraction,
+  question: AskUserQuestionsQuestion,
+): boolean {
+  const canonical = interaction.payload.questionSet?.questions.find(
+    (candidate) => candidate.id === question.id,
+  );
+  return isDecisionQuestion(canonical ?? question);
+}
+
+/**
+ * Recommendation advice for one native question, preferring the recovered
+ * canonical presentation (`payload.questionSet`) because it is the exact
+ * provider-neutral contract; the native mirror is the fallback for cards whose
+ * payload predates a field.
+ */
+export function getAskUserQuestionRecommendation(
+  interaction: AskUserQuestionsInteraction,
+  question: AskUserQuestionsQuestion,
+): QuestionRecommendationAdvice | null {
+  const canonical = interaction.payload.questionSet?.questions.find(
+    (candidate) => candidate.id === question.id,
+  );
+  return describeQuestionRecommendation({
+    options: canonical?.options?.length ? canonical.options : question.options,
+    intent: canonical?.intent ?? question.intent,
+    recommendationRationale:
+      canonical?.recommendationRationale ?? question.recommendationRationale,
+  });
+}
+
 /**
  * A single `ask_user_questions` question is degenerate when it offers *no way at
  * all* to answer — hiding it therefore strands nothing the user could have

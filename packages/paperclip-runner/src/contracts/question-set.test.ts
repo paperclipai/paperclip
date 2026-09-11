@@ -88,4 +88,76 @@ describe("Paperclip question-set contract", () => {
       },
     })).toThrow(/at most 20/);
   });
+
+  const decisionQuestionSet = {
+    schema: PAPERCLIP_QUESTION_SET_SCHEMA,
+    title: "Confirm the rollout",
+    questions: [
+      {
+        id: "rollout",
+        prompt: "Ship the migration to all customers today?",
+        required: true,
+        answerMode: "single_select" as const,
+        intent: "decision" as const,
+        recommendationRationale:
+          "Staging is recommended because the canary window is still open and the rollback is one command.",
+        options: [
+          { id: "staging", label: "Stage first", recommended: true },
+          { id: "all-customers", label: "All customers now" },
+        ],
+      },
+    ],
+  };
+
+  it("round-trips a recommended decision question", () => {
+    expect(parsePaperclipQuestionSet(decisionQuestionSet)).toEqual(decisionQuestionSet);
+    expect(() => parsePaperclipQuestionResponse(decisionQuestionSet, {
+      schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
+      answers: { rollout: { selectedOptionIds: ["staging"] } },
+    })).not.toThrow();
+  });
+
+  it("refuses a decision question with no recommendation or rationale", () => {
+    expect(() => parsePaperclipQuestionSet({
+      ...decisionQuestionSet,
+      questions: [{
+        ...decisionQuestionSet.questions[0],
+        recommendationRationale: undefined,
+      }],
+    })).toThrow(/recommendationRationale/);
+    expect(() => parsePaperclipQuestionSet({
+      ...decisionQuestionSet,
+      questions: [{
+        ...decisionQuestionSet.questions[0],
+        options: [
+          { id: "staging", label: "Stage first", recommended: true },
+          { id: "all-customers", label: "All customers now", recommended: true },
+        ],
+      }],
+    })).toThrow(/at most one option may be recommended/);
+    expect(() => parsePaperclipQuestionSet({
+      ...decisionQuestionSet,
+      questions: [{
+        ...decisionQuestionSet.questions[0],
+        customAnswer: { enabled: true as const },
+      }],
+    })).toThrow(/custom answer/);
+  });
+
+  it("refuses a decision answered only with free text", () => {
+    expect(() => parsePaperclipQuestionResponse(decisionQuestionSet, {
+      schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
+      answers: { rollout: { customText: "Ship it everywhere" } },
+    })).toThrow();
+    expect(() => parsePaperclipQuestionResponse(decisionQuestionSet, {
+      schema: PAPERCLIP_QUESTION_RESPONSE_SCHEMA,
+      answers: { rollout: { selectedOptionIds: [] } },
+    })).toThrow();
+  });
+
+  it("keeps information questions conversational", () => {
+    const parsed = parsePaperclipQuestionSet(questionSet);
+    expect(parsed).toEqual(questionSet);
+    expect(parsed.questions[0].intent).toBeUndefined();
+  });
 });

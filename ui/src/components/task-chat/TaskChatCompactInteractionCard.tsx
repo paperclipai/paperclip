@@ -670,12 +670,20 @@ function questionSetForInteraction(
           question.selectionMode === "multi"
             ? ("multi_select" as const)
             : ("single_select" as const),
+        // A native decision question keeps its stricter intent and the
+        // explanation for its recommendation, so the form renders the same
+        // advice the classic card shows.
+        ...(question.intent ? { intent: question.intent } : {}),
+        ...(question.recommendationRationale
+          ? { recommendationRationale: question.recommendationRationale }
+          : {}),
         options: question.options
           .filter((option) => option.freeText !== true)
           .map((option) => ({
             id: option.id,
             label: option.label,
             ...(option.description ? { description: option.description } : {}),
+            ...(option.recommended === true ? { recommended: true } : {}),
           })),
         ...(freeText
           ? {

@@ -33,6 +33,16 @@ export interface PaperclipQuestion {
   helpText?: string;
   required: boolean;
   answerMode: PaperclipQuestionAnswerMode;
+  /**
+   * `"decision"` marks a consequential choice a person must own. It opts into
+   * the stricter authoring contract: distinct pre-made options, exactly one
+   * `recommended` option, a `recommendationRationale`, and no `customAnswer`
+   * path that could record an unselected free-form answer as consent. Omitted
+   * or `"information"` keeps today's conversational behavior.
+   */
+  intent?: "decision" | "information";
+  /** Why the recommended option is recommended, and what each choice does. */
+  recommendationRationale?: string;
   options?: PaperclipQuestionOption[];
   customAnswer?: PaperclipQuestionCustomAnswer;
   textValidation?: PaperclipQuestionTextValidation;
@@ -145,6 +155,15 @@ export function parsePaperclipQuestionSet(value: unknown): PaperclipQuestionSet 
     const id = requiredText(question.id, `${path}/id`, 160);
     if (questionIds.has(id)) throw new PaperclipQuestionValidationError(`${path}/id`, "must be unique");
     questionIds.add(id);
+    const intentValue = question.intent;
+    if (intentValue !== undefined && intentValue !== "decision" && intentValue !== "information") {
+      throw new PaperclipQuestionValidationError(`${path}/intent`, "must be decision or information");
+    }
+    const intent = intentValue as "decision" | "information" | undefined;
+    const recommendationRationale = optionalText(
+      question.recommendationRationale,
+      `${path}/recommendationRationale`,
+    );
     const answerMode = question.answerMode;
     if (answerMode !== "single_select" && answerMode !== "multi_select" && answerMode !== "text") {
       throw new PaperclipQuestionValidationError(`${path}/answerMode`, "must be single_select, multi_select, or text");
@@ -241,6 +260,61 @@ export function parsePaperclipQuestionSet(value: unknown): PaperclipQuestionSet 
         }
       }
     }
+    const recommendedOptions = (options ?? []).filter((option) => option.recommended === true);
+    if (recommendedOptions.length > 1) {
+      throw new PaperclipQuestionValidationError(`${path}/options`, "at most one option may be recommended");
+    }
+    const rationale = recommendationRationale?.trim() ?? "";
+    if (intent !== "decision") {
+      if (rationale && recommendedOptions.length !== 1) {
+        throw new PaperclipQuestionValidationError(
+          `${path}/recommendationRationale`,
+          "requires exactly one option with recommended: true",
+        );
+      }
+    } else {
+      if (answerMode !== "single_select") {
+        throw new PaperclipQuestionValidationError(
+          `${path}/answerMode`,
+          "decision questions must use single_select so the answer names one chosen option",
+        );
+      }
+      if ((options?.length ?? 0) < 2) {
+        throw new PaperclipQuestionValidationError(`${path}/options`, "decision questions require at least two options");
+      }
+      const labels = new Set<string>();
+      for (const [optionIndex, option] of (options ?? []).entries()) {
+        const label = option.label.trim().replace(/\s+/g, " ").toLowerCase();
+        if (labels.has(label)) {
+          throw new PaperclipQuestionValidationError(
+            `${path}/options/${optionIndex}/label`,
+            "decision options must have distinct labels",
+          );
+        }
+        labels.add(label);
+      }
+      if (recommendedOptions.length !== 1) {
+        throw new PaperclipQuestionValidationError(
+          `${path}/options`,
+          "decision questions require exactly one option with recommended: true",
+        );
+      }
+      if (!rationale) {
+        throw new PaperclipQuestionValidationError(
+          `${path}/recommendationRationale`,
+          "decision questions require an explanation of the recommended option",
+        );
+      }
+      if (customAnswer !== undefined) {
+        throw new PaperclipQuestionValidationError(
+          `${path}/customAnswer`,
+          "decision questions cannot enable a custom answer; declare the extra choice as an explicit option",
+        );
+      }
+      if (question.required !== true) {
+        throw new PaperclipQuestionValidationError(`${path}/required`, "decision questions must set required: true");
+      }
+    }
     return {
       id,
       ...(optionalText(question.header, `${path}/header`, 1_000) !== undefined
@@ -252,6 +326,8 @@ export function parsePaperclipQuestionSet(value: unknown): PaperclipQuestionSet 
         : {}),
       required: question.required,
       answerMode,
+      ...(intent !== undefined ? { intent } : {}),
+      ...(recommendationRationale !== undefined ? { recommendationRationale } : {}),
       ...(options !== undefined ? { options } : {}),
       ...(customAnswer !== undefined ? { customAnswer } : {}),
       ...(textValidation !== undefined ? { textValidation } : {}),
@@ -339,6 +415,12 @@ export function parsePaperclipQuestionResponse(
       ...(customText !== undefined ? { customText } : {}),
     };
     if (question.required && !answerHasValue(parsed)) throw new PaperclipQuestionValidationError(path, "is required");
+    if (question.intent === "decision" && (parsed.selectedOptionIds?.length ?? 0) === 0) {
+      throw new PaperclipQuestionValidationError(
+        path,
+        "asks for a decision and must select one of its options",
+      );
+    }
     const boundedText = question.answerMode === "text" ? parsed.text : parsed.customText;
     if (boundedText !== undefined) {
       const validation = question.textValidation;
