@@ -51,9 +51,15 @@ describe("TelemetryClient runtime event gate", () => {
     const { client, stateFactory } = makeClient();
 
     client.track(
-      // @ts-expect-error -- proposed-telemetry(PAP-2411): fixture proposal not in generated schema
-      "skill_studio.skill_created",
-      { sharing_scope: "team" },
+      // @ts-expect-error -- proposed-telemetry(https://github.com/paperclipai/paperclip/issues/9566): fixture proposal not in generated schema
+      "skill.created",
+      {
+        skill_id: "skill-1",
+        creation_source: "blank",
+        sharing_scope: "company",
+        category_count: 1,
+        file_count: 1,
+      },
     );
 
     await client.flush();
