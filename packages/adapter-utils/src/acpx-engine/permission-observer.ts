@@ -136,11 +136,12 @@ export interface PermissionObserverLogEvent {
 
 export interface AcpPermissionObserverOptions {
   /**
-   * Starts the durable log write. The observer never awaits this on the
-   * permission critical path — call it and return, do not `await` it inside
-   * `handlePermissionRequest`.
+   * Starts the durable log write and returns a promise for it. The observer
+   * never awaits this promise on the permission critical path — call it and
+   * return, do not `await` it inside `handlePermissionRequest`. The observer
+   * still tracks the promise so `finalizeRun` can wait for it later.
    */
-  emitLog: (event: PermissionObserverLogEvent) => void;
+  emitLog: (event: PermissionObserverLogEvent) => Promise<void> | void;
   /** The engine's effective permission mode for this run. */
   permissionMode: unknown;
   /** The run's execution transport. */
@@ -166,9 +167,12 @@ export interface AcpPermissionObserver {
    */
   noteToolCallEvent: (sessionId: string | undefined, event: PermissionObserverToolCallEvent) => void;
   /**
-   * Emit one `acpx.permission_unsettled` event per entry still open. Call
-   * this once, at run finalization. Not on the permission critical path.
-   * `emitLog` returns `void`, so this call awaits no log write.
+   * Emit one `acpx.permission_unsettled` event per entry still open, then
+   * wait for every log write this observer started — including a write
+   * still in flight from an earlier `handlePermissionRequest` or
+   * `noteToolCallEvent` call — to finish. Call this once, at run
+   * finalization. A caller that awaits this method sees every one of the
+   * observer's log writes land before it returns.
    */
   finalizeRun: () => Promise<void>;
 }
@@ -190,6 +194,26 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
   let suppressedSettledEvents = 0;
   let suppressedUnsettledEvents = 0;
   let hasFinalized = false;
+
+  // Every write `emitLog` starts stays in this set until it settles. A write
+  // started from the permission critical path (`handlePermissionRequest`,
+  // `noteToolCallEvent`) is never awaited there, so it can still be pending
+  // when `finalizeRun` runs. `finalizeRun` drains this whole set before it
+  // returns, so a caller that awaits `finalizeRun` never sees it resolve
+  // before every queued write, including its own unsettled and truncation
+  // records, has reached the log sink.
+  const pendingWrites = new Set<Promise<void>>();
+
+  const queueLog = (event: PermissionObserverLogEvent): void => {
+    const write = (async () => {
+      await options.emitLog(event);
+    })().catch(() => {
+      // The log sink is diagnostic only; a write failure must never surface
+      // into the permission critical path or into `finalizeRun`.
+    });
+    pendingWrites.add(write);
+    void write.finally(() => pendingWrites.delete(write));
+  };
 
   const ledgerKey = (sessionId: string, toolCallId: string) => sessionId + "\u0000" + toolCallId;
 
@@ -226,7 +250,7 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
       // an agent cannot refill the budget by settling old requests.
       if (observedEventCount < MAX_OBSERVED_EVENTS) {
         observedEventCount += 1;
-        options.emitLog({
+        queueLog({
           type: "acpx.permission_observed",
           sessionId,
           toolCallId,
@@ -268,7 +292,7 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
       ledger.delete(key);
       if (settledEventCount < MAX_SETTLED_EVENTS) {
         settledEventCount += 1;
-        options.emitLog({
+        queueLog({
           type: "acpx.permission_settled",
           sessionId: entry.sessionId,
           toolCallId: entry.toolCallId,
@@ -296,7 +320,7 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
     for (const entry of openEntries) {
       if (unsettledEventCount < MAX_UNSETTLED_EVENTS) {
         unsettledEventCount += 1;
-        options.emitLog({
+        queueLog({
           type: "acpx.permission_unsettled",
           sessionId: entry.sessionId,
           toolCallId: entry.toolCallId,
@@ -317,7 +341,7 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
       suppressedSettledEvents > 0 ||
       suppressedUnsettledEvents > 0
     ) {
-      options.emitLog({
+      queueLog({
         type: "acpx.permission_observer_truncated",
         suppressedLedgerEntries,
         suppressedObservedEvents,
@@ -325,6 +349,10 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
         suppressedUnsettledEvents,
       });
     }
+    // Wait for every write this observer started, including a write still in
+    // flight from an earlier call, so the caller sees every record reach the
+    // log sink before this method returns.
+    await Promise.allSettled([...pendingWrites]);
   };
 
   return { handlePermissionRequest, noteToolCallEvent, finalizeRun };

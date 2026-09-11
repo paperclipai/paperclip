@@ -4124,11 +4124,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           transport: !observedExecutionTarget || observedExecutionTarget.kind === "local"
             ? "local"
             : observedExecutionTarget.transport,
-          emitLog: (payload) => {
-            // Fire-and-forget: the observer's caller must not await a log
-            // write on the permission critical path.
-            void emitAcpxLog(ctx, payload).catch(() => {});
-          },
+          // Return the write's promise; do not swallow it here. The observer
+          // never awaits this on the permission critical path, but it keeps
+          // the promise so `finalizeRun` can drain every pending write before
+          // it returns, so the run never finalizes with a write still in
+          // flight.
+          emitLog: (payload) => emitAcpxLog(ctx, payload),
         });
         // Capture the run's staging lease release now that the runtime built. The
         // run root `finally` releases it as the final settlement act.
@@ -5342,8 +5343,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           recordDispositionReport(report);
           if (childStderrState) flushChildStderr(childStderrState);
           // Report every permission request the run never saw settle. Not on
-          // the permission critical path. `emitLog` returns `void`, so this
-          // call awaits no log write.
+          // the permission critical path. This call waits for every queued
+          // log write, including one still in flight from an earlier
+          // permission event, to reach durable storage before it returns.
           await permissionObserver?.finalizeRun();
         },
         reproduceResult: async (): Promise<AdapterExecutionResult> => {

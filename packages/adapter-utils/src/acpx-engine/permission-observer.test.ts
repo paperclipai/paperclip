@@ -47,7 +47,9 @@ describe("createAcpPermissionObserver — handlePermissionRequest", () => {
   it("resolves to undefined for a normal request", async () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -58,7 +60,9 @@ describe("createAcpPermissionObserver — handlePermissionRequest", () => {
   it("resolves to undefined for a request that carries unknown fields", async () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -115,7 +119,9 @@ describe("createAcpPermissionObserver — handlePermissionRequest", () => {
   it("emits only allow-listed scalar fields, never the raw request payload", async () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -149,7 +155,9 @@ describe("createAcpPermissionObserver — handlePermissionRequest", () => {
   it("maps an unmapped tool kind to exactly 'unknown', dropping the source string", async () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -165,7 +173,9 @@ describe("createAcpPermissionObserver — ledger lifecycle", () => {
     let clock = 1_000;
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
       now: () => clock,
@@ -193,7 +203,9 @@ describe("createAcpPermissionObserver — ledger lifecycle", () => {
     let clock = 0;
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
       now: () => clock,
@@ -226,7 +238,9 @@ describe("createAcpPermissionObserver — ledger lifecycle", () => {
   it("does not close an entry on a non-terminal tool_call status", () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -237,7 +251,9 @@ describe("createAcpPermissionObserver — ledger lifecycle", () => {
   it("ignores a tool_call event for a toolCallId it never opened", () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -248,7 +264,9 @@ describe("createAcpPermissionObserver — ledger lifecycle", () => {
   it("does not open a ledger entry for a request with no tool-call identifier", async () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -269,7 +287,9 @@ describe("createAcpPermissionObserver — ledger lifecycle", () => {
   it("does not let two requests with a missing session identifier share one ledger entry", async () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -308,7 +328,9 @@ describe("createAcpPermissionObserver — per-run budgets", () => {
   it("caps the ledger and the observed-event count when more than 256 requests never settle", async () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -331,7 +353,9 @@ describe("createAcpPermissionObserver — per-run budgets", () => {
   it("bounds cumulative settled emissions at 256 across more than 1000 open-and-settle cycles", async () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -354,7 +378,9 @@ describe("createAcpPermissionObserver — per-run budgets", () => {
   it("keeps the unsettled-event budget reachable after a normal run spends the settled budget", async () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -379,7 +405,9 @@ describe("createAcpPermissionObserver — per-run budgets", () => {
   it("bounds cumulative unsettled emissions at 256 when more than 256 requests never settle", async () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -397,7 +425,9 @@ describe("createAcpPermissionObserver — per-run budgets", () => {
   it("emits exactly one truncated summary event across two finalizeRun calls", async () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -415,7 +445,9 @@ describe("createAcpPermissionObserver — per-run budgets", () => {
   it("keeps the settled-event budget reachable after the observed budget is spent", async () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -444,7 +476,9 @@ describe("createAcpPermissionObserver — per-run budgets", () => {
   it("emits a summary event with only the four counters and the type, using an exact key match", async () => {
     const events: PermissionObserverLogEvent[] = [];
     const observer = createAcpPermissionObserver({
-      emitLog: (event) => events.push(event),
+      emitLog: (event) => {
+        events.push(event);
+      },
       permissionMode: "approve-all",
       transport: "sandbox",
     });
@@ -484,6 +518,63 @@ describe("createAcpPermissionObserver — per-run budgets", () => {
     }
     const result = await observer.handlePermissionRequest(buildRequestFor("session-last", "tool-last"), { signal });
     expect(result).toBeUndefined();
+    await expect(observer.finalizeRun()).resolves.toBeUndefined();
+  });
+});
+
+describe("createAcpPermissionObserver — asynchronous log persistence", () => {
+  it("waits for a write still pending from an earlier event before finalizeRun resolves", async () => {
+    const durable: PermissionObserverLogEvent[] = [];
+    const releaseWrite: Array<() => void> = [];
+    const observer = createAcpPermissionObserver({
+      // A durable log sink that starts a write and only completes it when the
+      // test calls the matching release function. This stands in for a real
+      // write to storage that takes more than one microtask turn.
+      emitLog: (event) =>
+        new Promise<void>((resolve) => {
+          releaseWrite.push(() => {
+            durable.push(event);
+            resolve();
+          });
+        }),
+      permissionMode: "approve-all",
+      transport: "sandbox",
+    });
+    const signal = new AbortController().signal;
+    // This request's "observed" write starts but does not finish. The tool
+    // call it opened never settles, so the entry is still open at
+    // finalization.
+    await observer.handlePermissionRequest(buildRequest(), { signal });
+    expect(durable).toHaveLength(0);
+
+    const finalizePromise = observer.finalizeRun();
+    // finalizeRun has started its own "unsettled" write for the still-open
+    // entry. That write is also pending. Flush a few microtask turns: if
+    // finalizeRun dropped either write's promise, it would resolve here even
+    // though neither write has completed.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(durable).toHaveLength(0);
+
+    // Release both writes, the one queued before finalizeRun ran and the one
+    // finalizeRun queued itself.
+    for (const release of releaseWrite) release();
+    await finalizePromise;
+
+    expect(durable.map((event) => event.type).sort()).toEqual(
+      ["acpx.permission_observed", "acpx.permission_unsettled"].sort(),
+    );
+  });
+
+  it("resolves finalizeRun without throwing when a queued write rejects", async () => {
+    const observer = createAcpPermissionObserver({
+      emitLog: () => Promise.reject(new Error("durable sink unavailable")),
+      permissionMode: "approve-all",
+      transport: "sandbox",
+    });
+    const signal = new AbortController().signal;
+    await observer.handlePermissionRequest(buildRequest(), { signal });
     await expect(observer.finalizeRun()).resolves.toBeUndefined();
   });
 });
