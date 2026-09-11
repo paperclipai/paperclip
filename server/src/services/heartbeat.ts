@@ -23666,7 +23666,7 @@ export function heartbeatService(
           // likewise keeps the provider session, logs, and usage after Stop wins.
           if (
             (adapterResult.nativeFinalization ||
-              (run.runtimeMode !== "native" && status === "cancelled")) &&
+              (processCancellation && !processCancellation.failed && status === "cancelled")) &&
             persistedRunWrite.run?.status === status
           ) {
             persistedRun = await db

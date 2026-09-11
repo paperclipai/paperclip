@@ -7506,7 +7506,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
       expect(mockTerminateLocalService).toHaveBeenCalledWith(
         expect.objectContaining({ pid: 12345, processGroupId: null }),
-        { forceAfterMs: 1000 },
+        { forceAfterMs: 1000, signal: "SIGINT" },
       );
       expect(runningProcesses.has(runId)).toBe(false);
     } finally {
@@ -7539,7 +7539,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     expect(mockTerminateLocalService).toHaveBeenCalledWith(
       expect.objectContaining({ pid: 12_346, processGroupId: null }),
-      { forceAfterMs: 2_000 },
+      { forceAfterMs: 2_000, signal: "SIGINT" },
     );
     expect(runningProcesses.has(runId)).toBe(false);
   });
@@ -7575,7 +7575,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(outcome).toMatchObject({ status: "succeeded", errorCode: null });
     expect(mockTerminateLocalService).toHaveBeenCalledWith(
       expect.objectContaining({ pid: 12_347, processGroupId: null }),
-      { forceAfterMs: 2_000 },
+      { forceAfterMs: 2_000, signal: "SIGINT" },
     );
     await expect(heartbeat.getRun(runId)).resolves.toMatchObject({
       status: "succeeded",
