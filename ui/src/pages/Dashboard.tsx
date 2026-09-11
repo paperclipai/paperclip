@@ -528,12 +528,12 @@ export function Dashboard() {
                             <span className="min-w-0 flex-1 truncate text-sm leading-6" title={issue.title}>
                               {issue.title}
                             </span>
-                            <span className="ml-auto shrink-0 truncate text-right font-mono text-(length:--text-micro) text-muted-foreground @xl:w-(--dashboard-list-id-width)">
+                            <span className="ml-auto shrink-0 truncate text-right font-mono text-(length:--text-micro) text-muted-foreground @xl:col-start-4 @xl:row-start-1 @xl:w-(--dashboard-list-id-width)">
                               {issue.identifier ?? issue.id.slice(0, 8)}
                             </span>
                           </span>
                           <span className="flex min-h-6 min-w-0 items-center gap-2 @xl:contents">
-                            <span className="flex min-w-0 flex-1 items-center @xl:self-center">
+                            <span className="flex min-w-0 flex-1 items-center @xl:col-start-3 @xl:row-start-1 @xl:self-center">
                               {issue.assigneeAgentId && (() => {
                                 const name = agentName(issue.assigneeAgentId);
                                 return name

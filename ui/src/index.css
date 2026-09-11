@@ -181,7 +181,7 @@
   --dashboard-list-leading-width: calc(var(--spacing) * 6);
   --dashboard-list-id-width: calc(var(--spacing) * 20);
   --dashboard-list-time-width: calc(var(--spacing) * 16);
-  --dashboard-task-list-columns: var(--dashboard-list-leading-width) minmax(0, 1fr) var(--dashboard-list-id-width) calc(var(--spacing) * 36) var(--dashboard-list-time-width);
+  --dashboard-task-list-columns: var(--dashboard-list-leading-width) minmax(0, 1fr) calc(var(--spacing) * 36) var(--dashboard-list-id-width) var(--dashboard-list-time-width);
   --dashboard-activity-list-columns: var(--dashboard-list-leading-width) minmax(0, 1fr) var(--dashboard-list-id-width) var(--dashboard-list-time-width);
   --status-task-backlog: #a8aeb2;
   --status-task-todo: #f59e0b;
