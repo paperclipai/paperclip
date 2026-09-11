@@ -49,6 +49,9 @@ export async function prepareAutomaticSandboxContinuation(db: Db, source: typeof
     if (!agent || !isConversationAdapter(agent.adapterType)) return null;
     const recorded = await recordedRunAdapter(tx as unknown as Db, run);
     if (recorded && !isConversationAdapter(recorded)) return null;
+    // Missing historical evidence does not establish the old adapter type.
+    // After exact termination, it permits only a fresh task conversation with
+    // the currently assigned conversational agent, never old session replay.
     // A later execution owns current task work. Never revive an older request.
     if (await hasLaterSandboxExecution(tx as unknown as Db, run, issue.id)) return null;
     const leases = await tx.select().from(environmentLeases).where(and(
@@ -80,9 +83,11 @@ export async function prepareAutomaticSandboxContinuation(db: Db, source: typeof
     // Remote process numbers belong to the remote namespace, not this host.
     const [ready] = await tx.update(heartbeatRuns).set({
       processPid: null, processGroupId: null, processStartedAt: null,
+      ...(!recorded ? { contextSnapshot: { ...run.contextSnapshot, forceFreshSession: true } } : {}),
       resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify({
         conversationContinuation: CONVERSATION_CONTINUATION_POLICY,
-        automaticSandboxRecovery: { state: "provider_terminated", actionOutcomes: "unknown" },
+        automaticSandboxRecovery: { state: "provider_terminated", actionOutcomes: "unknown",
+          priorAdapter: recorded ?? "unknown", continuation: recorded ? "conversation_turn" : "fresh_task_conversation" },
       })}::jsonb`,
     }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId))).returning();
     const retired = await tx.update(issueRecoveryActions).set({

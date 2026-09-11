@@ -991,3 +991,5 @@ pending approvals, task completion, reassignment, and later executions still gat
 admission. Native runners keep their supported reattachment protocol.
 
 Historical released reusable leases without termination receipts are not reclaimed by an old run. A concurrent resume can own the provider resource before its new lease row exists. Those runs remain gated until termination is confirmed. New cleanup attempts retain their durable pending-cleanup ownership.
+
+For historical task-bound runs with no adapter evidence, termination authorizes a fresh task conversation with the currently assigned conversational agent. It does not establish which adapter ran previously. Recovery records that identity as unknown and forces a fresh session while supplying the task history and latest request. This is an intentional exception to historical adapter classification, not permission to replay old process, webhook, or tool commands. Known non-conversational dispatch evidence remains ineligible for this automatic path.

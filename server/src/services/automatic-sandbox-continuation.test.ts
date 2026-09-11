@@ -137,6 +137,20 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(old).toMatchObject({ status: "failed", errorCode: "process_lost" });
     expect(old.resultJson?.automaticSandboxRecovery).toMatchObject({ actionOutcomes: "unknown" });
   });
+  it("starts fresh after termination when historical adapter identity is unavailable", async () => {
+    const f = await seed();
+    // Old installs did not record the adapter before provisioning. Changing
+    // current settings cannot reveal it; the recovery audit must keep it unknown.
+    await db.update(agents).set({ adapterType: "process" }).where(eq(agents.id, f.agentId));
+    await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));
+    await heartbeatService(db).resumeInterruptedSandboxRuns();
+    const [next] = await successors(f.run.id);
+    expect(next.contextSnapshot?.forceFreshSession).toBe(true);
+    const [old] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+    expect(old.resultJson?.automaticSandboxRecovery).toMatchObject({
+      priorAdapter: "unknown", actionOutcomes: "unknown", continuation: "fresh_task_conversation",
+    });
+  });
   it("queues missing termination proof for cleanup, then resumes after a restart", async () => {
     const f = await seed(false);
     expect(await prepareAutomaticSandboxContinuation(db, f.run)).toBeNull();
