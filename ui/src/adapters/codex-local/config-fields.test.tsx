@@ -31,7 +31,7 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).toContain('<option value="codex" selected="">Codex</option>');
     expect(html).toContain("OpenCode 1.18.29");
     expect(html).toContain("ACPX");
-    expect(html).toContain("Automatic (isolated)");
+    expect(html).not.toContain("Permission mode");
     expect(html).not.toContain("Ask when requested");
     expect(html).not.toContain("Ask for untrusted operations");
     expect(html).toContain("Claude Managed");
@@ -48,11 +48,9 @@ describe("Paperclip Runner Codex configuration", () => {
     expect(html).toContain(
       '<option value="opencode" selected="">OpenCode 1.18.29</option>',
     );
-    expect(html).toContain(
-      '<option value="allow" selected="">Full auto (allow)</option>',
-    );
-    expect(html).toContain("Ask for permission");
-    expect(html).toContain("Deny operations");
+    expect(html).toContain("Full auto (allow)");
+    expect(html).toContain('aria-label="Permission mode"');
+    expect(html).toContain("font-sans");
     expect(html).not.toContain("Ask for untrusted operations");
   });
 
@@ -77,7 +75,7 @@ describe("Paperclip Runner Codex configuration", () => {
   it("falls back to the fail-closed Codex permission mode", () => {
     const html = renderRunner({ codexPermissionMode: "unrestricted" });
 
-    expect(html).toContain('value="__unsupported__" disabled="" selected=""');
+    expect(html).toContain("Unsupported saved mode — select a qualified mode");
     expect(html).toContain("cannot start or recover a Paperclip Runner run");
     expect(html).toContain("Select Automatic (isolated) to remediate it");
     expect(html).not.toContain("Full auto (never ask)");

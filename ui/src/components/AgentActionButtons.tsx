@@ -162,6 +162,7 @@ export function AgentActionButtons({
   assignLabel = "Assign Task",
   runLabel = "Run now",
   showStatus = true,
+  showRun = true,
   actionsDisabled = false,
   workActionsDisabled = false,
   workActionsDisabledReason,
@@ -182,6 +183,7 @@ export function AgentActionButtons({
   assignLabel?: string;
   runLabel?: string;
   showStatus?: boolean;
+  showRun?: boolean;
   actionsDisabled?: boolean;
   workActionsDisabled?: boolean;
   workActionsDisabledReason?: string;
@@ -398,7 +400,7 @@ export function AgentActionButtons({
         <Plus className="h-3.5 w-3.5 sm:mr-1" />
         <span className="hidden sm:inline">{assignLabel}</span>
       </Button>
-      <RunButton
+      {showRun && <RunButton
         onClick={() => {
           if (navigateToRunOnInvoke && !confirmNavigationStart(agentActionStartedDirtyRef)) return;
           agentAction.mutate("invoke");
@@ -406,7 +408,7 @@ export function AgentActionButtons({
         disabled={assignAndRunDisabled}
         label={runLabel}
         size={size}
-      />
+      />}
       {canRunWithProviderTrace && (
         <Button
           variant="outline"

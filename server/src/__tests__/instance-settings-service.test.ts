@@ -13,6 +13,15 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({ enableCachedTaskFiles: false }).enableCachedTaskFiles).toBe(false);
   });
 
+  it("keeps chat connectors opt-in across legacy storage and patches without disabling Apps", () => {
+    for (const stored of [undefined, {}, { enableApps: true }, { enableConferenceRoomChat: true }]) {
+      expect(normalizeExperimentalSettings(stored).enableChatConnectors).toBe(false);
+    }
+    const enabled = applyExperimentalSettingsPatch({}, { enableChatConnectors: true });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(enabled))).enableChatConnectors).toBe(true);
+    const disabled = applyExperimentalSettingsPatch(enabled, { enableChatConnectors: false });
+    expect(disabled).toMatchObject({ enableApps: true, enableChatConnectors: false });
+  });
   it("ignores retired experimental flags without resetting current settings", () => {
     expect(normalizeExperimentalSettings({
       enableEnvironments: true,
@@ -38,6 +47,7 @@ describe("instance settings service", () => {
       enableStreamlinedLeftNavigation: true,
       enableStreamlinedUi: true,
       enableApps: true,
+      enableChatConnectors: false,
       enableConferenceRoomChat: false,
       enableClassicTaskInterface: false,
       enableExternalObjects: false,
@@ -56,6 +66,7 @@ describe("instance settings service", () => {
       enableServerInfoDebugView: true,
       enablePaperclipDeveloperMode: true,
       enableSimplifiedEnglishInteractions: false,
+      enableFirstTaskPlanProposal: false,
       autoRestartDevServerWhenIdle: true,
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: false,

@@ -11,6 +11,7 @@ import {
   bigint,
   boolean,
   unique,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
@@ -30,6 +31,10 @@ export const heartbeatRuns = pgTable(
     activeIdentityContextId: uuid("active_identity_context_id"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
+    // Set only after provider execution settles; never a timeout on thinking.
+    executionControlDeadlineAt: timestamp("execution_control_deadline_at", { withTimezone: true }),
+    // Transactional delivery marker. Null on historical rows; publication never replays provider work.
+    executionStatusDeliveryId: uuid("execution_status_delivery_id"),
     error: text("error"),
     wakeupRequestId: uuid("wakeup_request_id").references(() => agentWakeupRequests.id),
     exitCode: integer("exit_code"),
@@ -89,6 +94,13 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    executionStatusDeliveryIdx: index("heartbeat_runs_execution_status_delivery_idx")
+      .on(table.executionStatusDeliveryId).where(sql`${table.executionStatusDeliveryId} is not null`),
+    executionControlDeadlineIdx: index("heartbeat_runs_execution_control_deadline_idx")
+      .on(table.executionControlDeadlineAt).where(sql`${table.executionControlDeadlineAt} is not null`),
+    nativeReplacementPredecessorUq: uniqueIndex("heartbeat_runs_native_replacement_predecessor_uq")
+      .on(table.companyId, table.retryOfRunId)
+      .where(sql`${table.scheduledRetryReason} = 'native_safe_replacement'`),
     companyNativeIssueRunUq: unique("heartbeat_runs_company_native_issue_id_uq").on(
       table.companyId,
       table.nativeIssueId,

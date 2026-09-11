@@ -41,6 +41,8 @@ import { Textarea } from "./ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { Badge } from "@/components/ui/badge";
 import { ProposalJustification } from "../pages/secrets/proposal-review";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { AppLogo } from "@/pages/apps/AppLogo";
 import { ConnectionIntentInteractionBody } from "@/features/connections/ConnectionIntentInteractionBody";
 
 const OTHER_ANSWER_ID = "__paperclip_other__";
@@ -99,6 +101,7 @@ interface IssueThreadInteractionCardProps {
       | RequestCheckboxConfirmationInteraction,
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
+    rememberAction?: boolean,
   ) => Promise<void> | void;
   onRejectInteraction?: (
     interaction:
@@ -430,6 +433,7 @@ type ToolActionCardState =
   | "running"
   | "executed"
   | "failed"
+  | "cancelled"
   | "declined"
   | "expired";
 
@@ -445,6 +449,7 @@ function toolActionCardState(
   const execStatus = interaction.result?.toolAction?.status ?? null;
   if (interaction.status === "pending") return "pending";
   if (interaction.status === "rejected") return "declined";
+  if (interaction.status === "cancelled") return "cancelled";
   if (interaction.status === "expired") return "expired";
   // Terminal execution outcomes take precedence over the coarse interaction
   // status so a self-resolving "running…" advances to its real result.
@@ -495,6 +500,8 @@ function toolActionStatusClasses(state: ToolActionCardState): {
         Icon: XCircle,
         dimmed: true,
       };
+    case "cancelled":
+      return { shell: "border-2 border-border bg-transparent", badge: "border-border bg-muted text-muted-foreground", label: "Cancelled", Icon: XCircle, dimmed: true };
     case "expired":
       return {
         shell: "border-2 border-border bg-transparent",
@@ -511,48 +518,6 @@ function toolActionStatusClasses(state: ToolActionCardState): {
         Icon: ShieldAlert,
       };
   }
-}
-
-function toolActionRiskBadge(risk: "write" | "destructive") {
-  if (risk === "destructive") {
-    return {
-      label: "DESTRUCTIVE",
-      Icon: TriangleAlert,
-      className:
-        "border-red-500/60 bg-red-500/10 text-red-900 dark:bg-red-500/15 dark:text-red-100",
-    };
-  }
-  return {
-    label: "WRITE",
-    Icon: AlertTriangle,
-    className:
-      "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
-  };
-}
-
-function toolActionInitial(payload: {
-  appDisplayName: string | null;
-  toolDisplayName: string;
-}): string {
-  const source = payload.appDisplayName?.trim() || payload.toolDisplayName.trim();
-  return source ? source.charAt(0).toUpperCase() : "?";
-}
-
-function formatToolActionCountdown(expiresAt: string, nowMs: number): {
-  text: string;
-  urgent: boolean;
-} | null {
-  const expiresMs = new Date(expiresAt).getTime();
-  if (Number.isNaN(expiresMs)) return null;
-  const remainingMs = expiresMs - nowMs;
-  if (remainingMs <= 0) {
-    return { text: "Approval window closed · auto-declines any moment", urgent: true };
-  }
-  const minutes = Math.ceil(remainingMs / 60000);
-  return {
-    text: `Approval expires in ${minutes} min · auto-declines if not answered`,
-    urgent: minutes <= 5,
-  };
 }
 
 function TaskField({
@@ -1666,235 +1631,56 @@ function RequestConfirmationResolution({
   return null;
 }
 
-function ToolActionIdentityHeader({
-  payload,
-  state,
-}: {
-  payload: NonNullable<RequestConfirmationInteraction["payload"]["toolAction"]>;
-  state: ToolActionCardState;
-}) {
-  const risk = toolActionRiskBadge(payload.risk);
-  const RiskIcon = risk.Icon;
-  const dimmed = state === "declined" || state === "expired";
-  const subParts = [payload.appDisplayName, payload.toolName].filter(
-    (part): part is string => Boolean(part && part.trim()),
-  );
-
-  return (
-    <div className={cn("flex items-start gap-3", dimmed && "opacity-60 grayscale")}>
-      <div
-        aria-hidden
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border/70 bg-muted/60 text-base font-semibold text-foreground"
-      >
-        {toolActionInitial(payload)}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="text-base font-bold leading-tight text-foreground">
-            {payload.toolDisplayName}
-          </span>
-          <span
-            className={cn(
-              "inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow)",
-              risk.className,
-            )}
-          >
-            <RiskIcon className="h-3 w-3" />
-            {risk.label}
-          </span>
-        </div>
-        {subParts.length > 0 ? (
-          <div className="mt-1 truncate font-mono text-(length:--text-compact) text-muted-foreground">
-            {subParts.join(" · ")}
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function ToolActionTechnicalDetails({
-  payload,
-}: {
-  payload: NonNullable<RequestConfirmationInteraction["payload"]["toolAction"]>;
-}) {
-  const [open, setOpen] = useState(false);
-  const hasArgs = payload.argumentsSummaryJson.trim().length > 0;
-
-  return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="flex w-full items-center gap-1.5 rounded-sm py-1 text-left text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40">
-        {open ? (
-          <ChevronDown className="h-3.5 w-3.5" />
-        ) : (
-          <ChevronRight className="h-3.5 w-3.5" />
-        )}
-        Technical details
-      </CollapsibleTrigger>
-      <CollapsibleContent className="space-y-2 pt-2">
-        {hasArgs ? (
-          <pre className="max-h-64 overflow-auto rounded-sm border border-border/70 bg-muted/40 p-3 font-mono text-xs leading-5 text-foreground">
-            {payload.argumentsSummaryJson}
-          </pre>
-        ) : null}
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="font-semibold uppercase tracking-(--tracking-eyebrow) text-(length:--text-nano)">
-            args hash
-          </span>
-          <code className="truncate font-mono">{payload.argumentsHash}</code>
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
-
 function ToolActionResolution({
   state,
   interaction,
-  resolvedByLabel,
-  requestedByLabel,
 }: {
   state: ToolActionCardState;
   interaction: RequestConfirmationInteraction;
-  resolvedByLabel: string | null;
-  requestedByLabel: string;
 }) {
-  const result = interaction.result?.toolAction ?? null;
-  const who = resolvedByLabel ?? "the board";
-  const when = interaction.resolvedAt
-    ? formatDateTime(interaction.resolvedAt)
-    : result?.updatedAt
-      ? formatDateTime(result.updatedAt)
-      : null;
-  const whenSuffix = when ? ` at ${when}` : "";
-
-  if (state === "running") {
-    return (
-      <div
-        aria-live="polite"
-        className="flex items-start gap-2 rounded-sm border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100"
-      >
-        <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
-        <div className="space-y-1 leading-6">
-          <div className="font-medium">Approved by {who} — running the action now</div>
-          <p className="text-amber-900/80 dark:text-amber-100/80">
-            The action is executing server-side with the exact arguments you approved.
-          </p>
-        </div>
-      </div>
-    );
+  const result = interaction.result?.toolAction;
+  const [resultOpen, setResultOpen] = useState(false);
+  const output = state === "executed" ? result?.resultSummary?.trim() : null;
+  let formattedOutput = output;
+  if (output) {
+    try { formattedOutput = JSON.stringify(JSON.parse(output), null, 2); } catch { /* Plain-text results remain readable. */ }
   }
-
-  if (state === "executed") {
-    const summary = result?.resultSummary?.trim();
-    const href = result?.resultHref?.trim();
-    return (
-      <div
-        aria-live="polite"
-        className="space-y-2 rounded-sm border border-green-500/50 bg-green-500/10 px-4 py-3 text-sm text-green-900 dark:text-green-100"
-      >
-        <div className="flex items-start gap-2 leading-6">
-          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-          <div>
-            <div className="font-medium">Executed · approved by {who}{whenSuffix}</div>
-            <p className="text-green-900/80 dark:text-green-100/80">
-              {requestedByLabel} was resumed with this result.
-            </p>
-          </div>
-        </div>
-        {summary ? (
-          <div className="rounded-sm border border-green-500/40 bg-background/60 px-3 py-2 font-medium text-foreground">
-            {summary}
-          </div>
-        ) : (
-          <div className="rounded-sm border border-green-500/40 bg-background/60 px-3 py-2 text-foreground">
-            Executed successfully.
-          </div>
-        )}
-        {href ? (
-          <Button asChild size="sm" variant="outline" className="h-7 px-2">
-            <a href={href} target="_blank" rel="noreferrer">
-              <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
-              View result
-            </a>
-          </Button>
-        ) : null}
-      </div>
-    );
-  }
-
-  if (state === "failed") {
-    const errorText = result?.errorMessage?.trim();
-    const errorCode = result?.errorCode?.trim();
-    return (
-      <div
-        aria-live="polite"
-        className="space-y-2 rounded-sm border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100"
-      >
-        <div className="flex items-start gap-2 leading-6">
-          <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
-          <div>
-            <div className="font-medium">Failed · approved by {who}{whenSuffix}</div>
-            <p className="text-amber-900/80 dark:text-amber-100/80">
-              You approved it and it ran, but the connector returned an error.{" "}
-              {requestedByLabel} was resumed with this error.
-            </p>
-          </div>
-        </div>
-        {errorText || errorCode ? (
-          <div className="rounded-sm border border-red-500/50 bg-red-500/10 px-3 py-2 text-red-900 dark:text-red-100">
-            {errorCode ? (
-              <div className="text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-red-700 dark:text-red-300">
-                {errorCode}
-              </div>
-            ) : null}
-            {errorText ? (
-              <p className={cn("leading-6", errorCode && "mt-1")}>{errorText}</p>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-    );
-  }
-
-  if (state === "declined") {
-    const reason = interaction.result?.reason?.trim();
-    return (
-      <div className="space-y-2 rounded-sm border border-red-500/50 bg-red-500/10 px-4 py-3 text-sm text-red-900 dark:text-red-100">
-        <div className="flex items-start gap-2 leading-6">
-          <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          <div>
-            <div className="font-medium">Declined by {who}{whenSuffix}</div>
-            <p className="text-red-900/80 dark:text-red-100/80">
-              The action did <strong>not</strong> run. {requestedByLabel} was resumed with
-              your reason and told not to retry the same call.
-            </p>
-          </div>
-        </div>
-        {reason ? (
-          <div className="rounded-sm border border-red-500/40 bg-background/60 px-3 py-2 text-foreground">
-            <MarkdownBody>{reason}</MarkdownBody>
-          </div>
-        ) : null}
-      </div>
-    );
-  }
-
-  // expired
+  const labels = {
+    pending: "Waiting for approval",
+    running: "Approved · Running…",
+    executed: "Succeeded",
+    failed: "Execution failed",
+    declined: "Declined",
+    expired: "Expired",
+    cancelled: "Cancelled",
+  };
+  const Icon = state === "running" ? Loader2 : state === "executed" ? CheckCircle2 : state === "failed" ? AlertTriangle : state === "expired" ? Clock : MinusCircle;
+  const detail = state === "failed" ? result?.errorMessage?.trim() || "The action could not complete."
+    : state === "declined" ? interaction.result?.reason?.trim()
+    : null;
+  const status = <>
+    <Icon className={cn("h-3.5 w-3.5 shrink-0", state === "running" && "animate-spin", state === "failed" && "text-destructive")} />
+    {labels[state]}
+    {result?.rememberedAction ? " · Always allowed" : ""}
+  </>;
   return (
-    <div className="space-y-1 rounded-sm border border-border bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
-      <div className="flex items-start gap-2 leading-6">
-        <Clock className="mt-0.5 h-4 w-4 shrink-0" />
-        <div>
-          <div className="font-medium text-foreground">
-            Expired{when ? ` at ${when}` : ""} — no one responded within 60 minutes
-          </div>
-          <p>
-            The action did <strong>not</strong> run. If it's still needed, the agent can
-            request approval again — a fresh card will appear.
-          </p>
-        </div>
-      </div>
+    <div className="space-y-1 text-sm text-muted-foreground" aria-live="polite">
+      {output ? (
+        <Collapsible open={resultOpen} onOpenChange={setResultOpen}>
+          <CollapsibleTrigger asChild>
+            <button type="button" className="flex items-center gap-1.5 rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" aria-label={resultOpen ? "Hide result details" : "Show result details"}>
+              {status}<ChevronDown className={cn("h-3 w-3", resultOpen && "rotate-180")} />
+            </button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted p-3 font-mono text-xs text-foreground">{formattedOutput}</pre>
+          </CollapsibleContent>
+        </Collapsible>
+      ) : <p className="flex items-center gap-1.5">{status}</p>}
+      {detail ? <p className={cn("break-words", state === "failed" && "text-destructive")}>{detail}</p> : null}
+      {state === "executed" && result?.resultHref?.trim() ? (
+        <a className="inline-flex items-center gap-1 underline underline-offset-4 hover:text-foreground" href={result.resultHref} target="_blank" rel="noreferrer">View result<ExternalLink className="h-3 w-3" /></a>
+      ) : null}
     </div>
   );
 }
@@ -1902,180 +1688,78 @@ function ToolActionResolution({
 function RequestToolActionCard({
   interaction,
   state,
-  resolvedByLabel,
-  requestedByLabel,
   onAcceptInteraction,
   onRejectInteraction,
   externalReferences,
 }: {
   interaction: RequestConfirmationInteraction;
   state: ToolActionCardState;
-  resolvedByLabel: string | null;
-  requestedByLabel: string;
-  onAcceptInteraction?: (
-    interaction: RequestConfirmationInteraction,
-  ) => Promise<void> | void;
-  onRejectInteraction?: (
-    interaction: RequestConfirmationInteraction,
-    reason?: string,
-  ) => Promise<void> | void;
+  onAcceptInteraction?: IssueThreadInteractionCardProps["onAcceptInteraction"];
+  onRejectInteraction?: (interaction: RequestConfirmationInteraction, reason?: string) => Promise<void> | void;
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
   const payload = interaction.payload.toolAction!;
-  const [rejecting, setRejecting] = useState(false);
-  const [rejectReason, setRejectReason] = useState("");
-  const [working, setWorking] = useState<"accept" | "reject" | null>(null);
+  const [working, setWorking] = useState<"accept" | "always" | "reject" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const resolutionErrorMessage = useResolutionErrorMessage();
-  const [nowMs, setNowMs] = useState(() => Date.now());
   const isPending = state === "pending";
-  const isDestructive = payload.risk === "destructive";
+  const variant = payload.risk === "destructive" ? "destructive" : "cta";
 
   useEffect(() => {
-    if (!isPending) return;
-    const timer = setInterval(() => setNowMs(Date.now()), 30000);
-    return () => clearInterval(timer);
-  }, [isPending]);
+    if (!isPending) setWorking(null);
+  }, [interaction.id, isPending]);
 
-  useEffect(() => {
-    if (state !== "pending") {
-      setRejecting(false);
-      setWorking(null);
-    }
-  }, [interaction.id, state]);
-
-  async function handleAccept() {
-    if (!onAcceptInteraction) return;
-    setWorking("accept");
+  async function decide(decision: "accept" | "always" | "reject") {
+    setWorking(decision);
     setActionError(null);
     try {
-      await onAcceptInteraction(interaction);
+      if (decision === "reject") await onRejectInteraction?.(interaction);
+      else await onAcceptInteraction?.(interaction, undefined, undefined, decision === "always");
     } catch (error) {
       setActionError(resolutionErrorMessage(error));
     } finally {
       setWorking(null);
     }
   }
-
-  async function handleReject() {
-    if (!onRejectInteraction) return;
-    setWorking("reject");
-    setActionError(null);
-    try {
-      await onRejectInteraction(interaction, rejectReason.trim() || undefined);
-      setRejecting(false);
-    } catch (error) {
-      setActionError(resolutionErrorMessage(error));
-    } finally {
-      setWorking(null);
-    }
-  }
-
-  const countdown = isPending ? formatToolActionCountdown(payload.expiresAt, nowMs) : null;
 
   return (
-    <div className="space-y-4">
-      <ToolActionIdentityHeader payload={payload} state={state} />
-
-      <div className="text-sm leading-6 text-foreground">
-        <MarkdownBody externalReferences={externalReferences}>
-          {payload.previewMarkdown}
-        </MarkdownBody>
+    <div className="text-foreground">
+      <div className="flex items-start gap-3">
+        <span role="img" aria-label={payload.appDisplayName || payload.toolDisplayName}>
+          <AppLogo name={payload.appDisplayName || payload.toolDisplayName} size={36} />
+        </span>
+        <div className="min-w-0 flex-1 space-y-1 text-sm">
+          <MarkdownBody externalReferences={externalReferences}>{payload.previewMarkdown || payload.toolDisplayName}</MarkdownBody>
+          {!isPending ? <ToolActionResolution state={state} interaction={interaction} /> : null}
+        </div>
       </div>
-
-      <ToolActionTechnicalDetails payload={payload} />
-
       {isPending ? (
-        <>
-          {countdown ? (
-            <div
-              className={cn(
-                "flex items-center gap-2 text-(length:--text-micro) font-medium",
-                countdown.urgent ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground",
-              )}
-            >
-              <Clock className="h-3.5 w-3.5" />
-              {countdown.text}
-            </div>
-          ) : null}
-
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                size="sm"
-                variant={isDestructive ? "destructive" : "cta"}
-                disabled={!onAcceptInteraction || working !== null}
-                onClick={() => void handleAccept()}
-              >
-                {working === "accept" ? (
-                  <>
-                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                    Approving…
-                  </>
-                ) : (
-                  "Approve & run"
-                )}
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                disabled={!onRejectInteraction || working !== null}
-                onClick={() => setRejecting((current) => !current)}
-              >
-                Decline
-              </Button>
-              <span className="text-(length:--text-micro) text-muted-foreground">
-                Approving runs this action now.
-              </span>
-            </div>
-
-            {rejecting ? (
-              <div className="space-y-3 rounded-sm border border-border/70 bg-background/75 p-3">
-                <Textarea
-                  value={rejectReason}
-                  onChange={(event) => setRejectReason(event.target.value)}
-                  placeholder="Optional: tell the agent why, so it doesn't retry the same call."
-                  className="min-h-20 bg-background text-sm"
-                />
-                <div className="flex flex-wrap justify-end gap-2">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    disabled={working !== null}
-                    onClick={() => setRejecting(false)}
-                  >
-                    Cancel
+        <div className="mt-3 flex justify-end gap-2">
+          <Button size="sm" variant="ghost" disabled={!onRejectInteraction || working !== null} onClick={() => void decide("reject")}>
+            {working === "reject" ? "Declining…" : "Decline"}
+          </Button>
+          <div className="inline-flex" role="group" aria-label="Approve request">
+            <Button size="sm" variant={variant} className={payload.rememberActionScope ? "rounded-r-none" : undefined} disabled={!onAcceptInteraction || working !== null} onClick={() => void decide("accept")}>
+              {working === "accept" || working === "always" ? <><Loader2 className="h-3.5 w-3.5 animate-spin" />{working === "always" ? "Saving…" : "Approving…"}</> : "Approve & run"}
+            </Button>
+            {payload.rememberActionScope ? (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="icon-sm" variant={variant} className="rounded-l-none border-l border-background/30" aria-label="Approval options" disabled={!onAcceptInteraction || working !== null}>
+                    <ChevronDown className="h-4 w-4" />
                   </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={!onRejectInteraction || working !== null}
-                    onClick={() => void handleReject()}
-                  >
-                    {working === "reject" ? (
-                      <>
-                        <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                        Declining…
-                      </>
-                    ) : (
-                      "Decline"
-                    )}
-                  </Button>
-                </div>
-              </div>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={() => void decide("always")} title={payload.rememberActionScope} aria-description={payload.rememberActionScope}>
+                    Always allow
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             ) : null}
-
-            <InteractionActionError message={actionError} />
           </div>
-        </>
-      ) : (
-        <ToolActionResolution
-          state={state}
-          interaction={interaction}
-          resolvedByLabel={resolvedByLabel}
-          requestedByLabel={requestedByLabel}
-        />
-      )}
+        </div>
+      ) : null}
+      <InteractionActionError message={actionError} />
     </div>
   );
 }
@@ -3992,6 +3676,19 @@ export function IssueThreadInteractionCard({
     creatorLabel: createdByLabel,
     addresseeLabel,
   });
+  if (isToolAction && interaction.kind === "request_confirmation" && toolActionState) {
+    return (
+      <InteractionAudienceContext.Provider value={audience}>
+        <RequestToolActionCard
+          interaction={interaction}
+          state={toolActionState}
+          onAcceptInteraction={onAcceptInteraction}
+          onRejectInteraction={onRejectInteraction}
+          externalReferences={externalReferences}
+        />
+      </InteractionAudienceContext.Provider>
+    );
+  }
   const statusText =
     adminOutcome === "withdrawn"
       ? "Withdrawn"
@@ -4153,16 +3850,6 @@ export function IssueThreadInteractionCard({
               resolvedByLabel={resolvedByLabel}
               onAcceptInteraction={onAcceptInteraction}
               onRejectInteraction={onRejectInteraction}
-            />
-          ) : isToolAction && interaction.kind === "request_confirmation" && toolActionState ? (
-            <RequestToolActionCard
-              interaction={interaction}
-              state={toolActionState}
-              resolvedByLabel={resolvedByLabel}
-              requestedByLabel={createdByLabel}
-              onAcceptInteraction={onAcceptInteraction}
-              onRejectInteraction={onRejectInteraction}
-              externalReferences={externalReferences}
             />
           ) : interaction.kind === "connection_intent" ? (
             <ConnectionIntentInteractionBody

@@ -51,7 +51,7 @@ COPY scripts/link-plugin-dev-sdk.mjs scripts/
 
 RUN pnpm install --frozen-lockfile
 
-FROM base AS build
+FROM base AS rust-toolchain
 WORKDIR /app
 # Debian's packaged rust lags the ecosystem (trixie ships 1.85) and the
 # runner's dependency tree now requires a newer rustc. Install rustup from a
@@ -83,8 +83,31 @@ RUN set -eux; \
     chmod +x /tmp/rustup-init; \
     /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain none; \
     rm /tmp/rustup-init
+# Install the package-owned compiler before any application source enters the
+# stage. rustup-init above installs rustup itself, not the selected compiler.
+COPY packages/paperclip-runner/rust-toolchain.toml /tmp/runner-toolchain/rust-toolchain.toml
+RUN cd /tmp/runner-toolchain && rustup show
+
+FROM rust-toolchain AS runner-build
+WORKDIR /app/packages/paperclip-runner
+# Rust embeds protocol schemas and fixtures with include_str!. Keep those
+# alongside the complete Cargo workspace so every compile-time input keys
+# this layer. Ordinary server/UI edits can then reuse the native build.
+COPY packages/paperclip-runner/rust-toolchain.toml ./
+COPY packages/paperclip-runner/runner ./runner
+COPY packages/paperclip-runner/protocol ./protocol
+# Cargo fingerprints source mtimes. Normalize them here and after the full
+# source copy below so a fresh checkout cannot invalidate unchanged inputs.
+RUN find runner protocol -type f -exec touch -d @0 {} + \
+  && touch -d @0 rust-toolchain.toml \
+  && cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd
+
+FROM runner-build AS build
+WORKDIR /app
 COPY --from=deps /app /app
 COPY . .
+RUN find packages/paperclip-runner/runner packages/paperclip-runner/protocol -type f -exec touch -d @0 {} + \
+  && touch -d @0 packages/paperclip-runner/rust-toolchain.toml
 RUN pnpm --filter @paperclipai/ui build
 RUN pnpm --filter @paperclipai/plugin-sdk build
 # The server build runs scripts/write-build-stamp.mjs, which stamps the built
@@ -103,14 +126,6 @@ RUN rm -rf packages/paperclip-runner/runner/target
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
-# Real version for this build, computed from `git describe` on the CI runner
-# (the image has no .git, so the server cannot derive it at runtime). Empty for
-# local `docker build`, which just leaves the server on its normal fallbacks.
-ARG PAPERCLIP_BUILD_VERSION=""
-# The exact commit this image was built from, for the same reason: server-info
-# falls back to PAPERCLIP_BUILD_COMMIT when git is unavailable, which feeds the
-# /api/health `commit` field that deploy tooling verifies. Empty locally.
-ARG PAPERCLIP_BUILD_COMMIT=""
 # Refreshes the tool layer below when it changes (CI stamps an ISO week, so
 # the @latest CLI tools advance weekly). Without it the cached layer would
 # freeze the tools until an unrelated cache bust.
@@ -133,6 +148,13 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 COPY --chown=node:node --from=build /app /app
 
+# Declare per-build metadata after the stable RUN layers. Docker includes
+# in-scope ARG values in a RUN's environment even when its command does not
+# mention them; declaring these earlier invalidates the weekly tool cache.
+# The build stage still receives the commit before writing dist/build-info.json.
+# Empty for local builds, preserving the server's normal version fallbacks.
+ARG PAPERCLIP_BUILD_VERSION=""
+ARG PAPERCLIP_BUILD_COMMIT=""
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \

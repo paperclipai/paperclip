@@ -6,6 +6,7 @@ const workflows = [
   '.github/workflows/refresh-lockfile.yml',
   '.github/workflows/pr-trusted.yml',
   '.github/workflows/docker.yml',
+  '.github/workflows/docker-cloud.yml',
 ];
 
 test('lockfile repair workflows resolve dependencies instead of updating metadata only', async () => {

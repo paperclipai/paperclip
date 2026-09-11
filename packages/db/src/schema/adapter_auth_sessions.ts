@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, pgTable, text, timestamp, uniqueIndex, uuid, varchar } from "drizzle-orm/pg-core";
+import { index, jsonb, pgTable, text, timestamp, uniqueIndex, uuid, varchar } from "drizzle-orm/pg-core";
 import type { AdapterAuthSessionInternalStatus, AgentAdapterType } from "@paperclipai/shared";
 import { companies } from "./companies.js";
 import { environments } from "./environments.js";
@@ -81,6 +81,15 @@ export const adapterAuthSessions = pgTable(
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     // The fixed, non-secret failure code. The public response reads it.
     failureReason: text("failure_reason"),
+    // The non-secret result claim of a terminal success, written in the SAME
+    // conditional write that records the terminal status, so a claim can never
+    // exist for a session that did not authenticate and a restart never loses
+    // it. For a Codex device login this holds the account-binding claim: the
+    // opaque company secret id that names the login's account home, and
+    // whether the company default home stayed on a different account. Never a
+    // credential byte, never an account identifier. Null for every failure
+    // and for flows that produce no claim.
+    resultClaim: jsonb("result_claim").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

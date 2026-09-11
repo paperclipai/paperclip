@@ -122,8 +122,10 @@ All of these are optional; when unset, the driver defaults apply and behavior is
 ```sh
 DATABASE_PREPARED_STATEMENTS=false   # required for transaction-mode poolers; default: enabled
 DATABASE_POOL_MAX=25                 # connection pool size; default: 10
-DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: keep open
+DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: 60 (0 = keep open)
 DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
+DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this long; default: 30-60 min (random)
+DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default: paperclip
 ```
 
 ### Push the schema
@@ -245,6 +247,15 @@ finalization ledger, whose retry time and owner lease are checked under a row
 lock. None of these writes selects a runtime or changes a legacy run's execution
 path.
 
+Durable agent session goals are an additive projection on
+`agent_task_sessions`, distinct from the business-goal hierarchy. The row stores
+the negotiated goal capability, normalized snapshot and status, desired state,
+provider source cursor, monotonic projection revision, and observation time.
+`agent_session_goal_actions` is the control outbox: `(session_id, request_id)`
+is unique, so retries return the original accepted action. Provider source
+ordering fences duplicate and stale updates, and a cleared projection retains
+its revision/cursor tombstone so an older provider event cannot resurrect it.
+
 Issue `status_version` advances only when `status` changes. The JavaScript backup
 path includes user-defined functions and triggers so a restored database keeps
 that invariant. Removing or disabling a future native rollout flag must not
@@ -259,6 +270,35 @@ successor can take the lease immediately only when coordinated handoff or PID
 and process-start evidence proves the prior controller is gone, or when the
 lease expires. Recovery generation changes do not increment the independent
 provider-attempt counter.
+
+## Telegram private draft identities
+
+`chat_telegram_draft_ids` is a content-free, instance-wide PostgreSQL sequence,
+not a company-owned record. Telegram's native Stop callback carries a draft ID
+but no actor or Paperclip generation. IDs therefore must not be recycled when
+a transaction rolls back or an endpoint/company is deleted and its bot is
+connected again. The sequence allocates positive 31-bit IDs without cycling;
+exhaustion refuses new draft allocation rather than wrapping or falling back to
+random IDs. Never reset it as part of chat cleanup.
+
+The matching `chat_actions` entry remains company/endpoint-scoped and binds the
+draft to its exact conversation, publication attempt, runtime, credential and
+approved text. Stop can suppress that private draft's final publication; it
+cannot cancel a task or model run. Logical backups preserve the sequence, but
+restoring an older database may roll back its high-water mark: disaster recovery
+must not assume stale provider Stop events are safe to reuse. That restore
+boundary is not qualified by the rollback/concurrency regression.
+
+## Attachment upload provenance
+
+`issue_attachments.originating_run_id` records server-derived run attribution at
+upload time. It is not writable through attachment or work-product update APIs.
+Legacy attachments and uploads without a registered run keep a null value; the
+migration deliberately does not infer attribution from mutable work products.
+Deleting the originating run clears the reference and fails closed for automatic
+chat handoff. An agent's external file selection must match the attachment's
+company, task, agent, and originating run. Editing or recreating a work-product
+record cannot reassign that authority to a later run.
 
 ## Question-response delivery receipts
 
