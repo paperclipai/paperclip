@@ -34,6 +34,18 @@ function probeResult(overrides: Record<string, unknown>) {
 }
 
 describe("OpenCode local skill injection", () => {
+  let configHome: string;
+
+  beforeEach(async () => {
+    configHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-config-"));
+    vi.stubEnv("XDG_CONFIG_HOME", configHome);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fs.rm(configHome, { recursive: true, force: true });
+  });
+
   it("injects runtime skills into the configured child HOME", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-configured-home-"));
     const processHome = path.join(root, "process-home");
