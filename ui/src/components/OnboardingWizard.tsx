@@ -2698,6 +2698,13 @@ function OnboardingWizardInner({
                           setConnectPhase("connecting");
                         }}
                         onSubmitFailed={() => {
+                          // Only while the button still says "Connecting". The
+                          // panel stays mounted through Back's exit, so a failure
+                          // that landed after Back restored the button and
+                          // reopened the card the customer was leaving — without
+                          // the address Back had cleared, so its sign-in could
+                          // not even be pressed.
+                          if (connectPhase !== "connecting") return;
                           // Refused, failed or timed out — the card says which.
                           // The button goes back to what it was offering rather
                           // than spinning on a login that is not coming.
@@ -2708,6 +2715,20 @@ function OnboardingWizardInner({
                           );
                         }}
                         onConnected={() => {
+                          // Not into a card the customer has left. The panel is
+                          // still mounted through Back's exit, and a login that
+                          // finished there pulled the step back into "Connecting"
+                          // and on into a hire they had just backed away from.
+                          // The login is stored either way; what this refuses is
+                          // only the step moving forward after they chose to go.
+                          if (
+                            connectPhase !== "loading" &&
+                            connectPhase !== "ready" &&
+                            connectPhase !== "waiting" &&
+                            connectPhase !== "connecting"
+                          ) {
+                            return;
+                          }
                           // The hold before the step advances is the phase's own
                           // beat, above, so that backing out during it cancels
                           // the hire. It counts from the paste when there was
