@@ -1,3 +1,5 @@
+import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { recordNativeLocalProcessStop, hasNativeLocalProcessStop, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -10,7 +12,7 @@ import {
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "../__tests__/helpers/embedded-postgres.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
-import { heartbeatService, type HeartbeatEnvironmentRuntime } from "./heartbeat.js";
+import { heartbeatService, persistHeartbeatRunProcessMetadata, type HeartbeatEnvironmentRuntime } from "./heartbeat.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("explicit native conversation continuation", () => {
@@ -47,6 +49,104 @@ const support = await getEmbeddedPostgresTestSupport();
       agentId: f.agentId, status: "queued", contextSnapshot: { issueId: f.issueId, previousRunId: result.previousRunId, forceFreshSession: true } });
     return result;
   });
+  it("preserves local stop proof after process metadata is cleared and invalidates it on another launch", async () => {
+    const f = await seed();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.transaction(async tx => {
+      expect(await recordNativeLocalProcessStop(tx as unknown as typeof db, source)).toBe(true);
+      await tx.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, source.id));
+    });
+    expect(await hasNativeLocalProcessStop(db, f.companyId, source.id)).toBe(true);
+    expect(await hasNativeLocalProcessStop(db, randomUUID(), source.id)).toBe(false);
+    expect(await admit(f, true)).toMatchObject({ previousRunId: source.id });
+    await persistHeartbeatRunProcessMetadata(db, source.id, { pid: 999999999, processGroupId: null, startedAt: new Date().toISOString() });
+    await db.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, source.id));
+    expect(await admit(f, true)).toBeNull();
+    expect(await recordNativeLocalProcessStop(db, source)).toBe(true);
+    await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: source.id, agentId: f.agentId,
+      eventType: PROCESS_START_REQUESTED });
+    // No PID was stored for the new launch, as when the server dies after spawn.
+    expect(await admit(f, true)).toBeNull();
+  });
+
+  it.each(["live", "remote", "provider_event"])("does not accept invalid local stop proof: %s", async kind => {
+    const f = await seed();
+    if (kind === "remote") {
+      const [environment] = await db.insert(environments).values({ name: "Remote stop", driver: "sandbox" }).returning();
+      await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.sourceRunId,
+        environmentId: environment.id, provider: "daytona", status: "active", leasePolicy: "ephemeral" });
+    }
+    if (kind === "live") await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (kind === "provider_event") {
+      await db.insert(heartbeatRunEvents).values({ companyId: f.companyId, runId: source.id, agentId: f.agentId,
+        eventType: "native.local_process_stopped", seq: 1, sourceEventId: randomUUID() });
+    } else expect(await recordNativeLocalProcessStop(db, source)).toBe(false);
+    expect(await hasNativeLocalProcessStop(db, f.companyId, source.id)).toBe(false);
+  });
+
+  it("resumes saved local messages after restart exactly once and keeps the same wait receipt while blocked", async () => {
+    const f = await seed();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    // A prior cancelled admission is also held, but cannot select the native
+    // retry source. The newest blocker must win just as it does on Send.
+    const oldAdmissionId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: oldAdmissionId, companyId: f.companyId, agentId: f.agentId,
+      status: "cancelled", errorCode: "execution_reconciliation_required", contextSnapshot: { issueId: f.issueId },
+      finishedAt: new Date("2026-09-11T09:00:00Z") });
+    await db.update(issueRecoveryActions).set({ updatedAt: new Date(0), evidence: { runId: oldAdmissionId,
+      automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } } }).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "active_run_watchdog", cause: "uncertain_external_action", fingerprint: randomUUID(), status: "active",
+      nextAction: "Waiting for the current run.", evidence: { runId: f.sourceRunId } });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ runId: f.sourceRunId });
+    await heartbeatService(db).wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, commentId: f.commentId },
+      contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
+    const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(waiting.payload?.executionWait).toMatchObject({ reason: "process_running" });
+    const makeDue = () => db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, waiting.id));
+    await makeDue();
+    await heartbeatService(db).resumeExecutionWaitComments();
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(1);
+    await db.update(heartbeatRuns).set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.transaction(async tx => {
+      await recordNativeLocalProcessStop(tx as unknown as typeof db, stopped);
+      await tx.update(heartbeatRuns).set({ processPid: null }).where(eq(heartbeatRuns.id, stopped.id));
+    });
+    const holdId = randomUUID();
+    await db.insert(issueTreeHolds).values({ id: holdId, companyId: f.companyId, rootIssueId: f.issueId, mode: "pause", status: "active" });
+    await db.insert(issueTreeHoldMembers).values({ companyId: f.companyId, holdId, issueId: f.issueId, depth: 0, issueTitle: "Deploy", issueStatus: "blocked" });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await makeDue();
+      await heartbeatService(db).resumeExecutionWaitComments();
+    }
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(1);
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
+    const [paused] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, waiting.id));
+    expect(paused.payload?.executionWait).toMatchObject({ reason: "issue_tree_hold_active" });
+    await db.update(issueTreeHolds).set({ status: "released" }).where(eq(issueTreeHolds.id, holdId));
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1, maxDailyRuns: 0 } } }).where(eq(agents.id, f.agentId));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await makeDue();
+      await heartbeatService(db).resumeExecutionWaitComments();
+    }
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(1);
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).not.toBeNull();
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, f.agentId));
+    await makeDue();
+    await Promise.all([heartbeatService(db).resumeExecutionWaitComments(), heartbeatService(db).resumeExecutionWaitComments()]);
+    const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    expect(runs).toHaveLength(1);
+    expect(runs[0].contextSnapshot).toMatchObject({ forceFreshSession: true, previousRunId: f.sourceRunId,
+      explicitUserContinuation: { commentId: f.commentId } });
+    const [adopted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, waiting.id));
+    expect(adopted).toMatchObject({ status: "coalesced", runId: runs[0].id });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+  });
+
   it.each([true, false])("acknowledges a legacy remote Stop only after confirmed lease cleanup: %s", async confirmed => {
     const f = await seed();
     await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));

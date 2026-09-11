@@ -4335,7 +4335,7 @@ function leaseDb(
           };
           result.returning = () => Promise.resolve(
             loseCancellationLease && values.nextAttemptAt === null && values.leaseOwner === null
-              ? [] : [{ runId: coordinator.runId }],
+              ? [] : [{ runId: coordinator.runId, nextEventSeq: 2 }],
           );
           return result;
         },
@@ -4379,12 +4379,20 @@ function leaseDb(
       return query;
     },
   });
+  const insert = (table: unknown) => ({
+    values: (values: Record<string, unknown>) => {
+      updates.push({ table, values });
+      return { returning: async () => [values] };
+    },
+  });
   const tx = {
+    insert,
     execute: async () => [],
     select,
     update,
   };
   return {
+    insert,
     select,
     transaction: async (operation: (transaction: Db) => Promise<unknown>) =>
       operation(tx as unknown as Db),
@@ -6803,13 +6811,16 @@ describe("native process ownership", () => {
         highestContiguousSourceSeq: 1,
       };
     });
-    state.createBackend.mockImplementationOnce((_input, options) => ({
-      kind: "test",
-      onSpawn: options.onSpawn,
-    }));
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    state.createBackend.mockImplementationOnce((_input, options) => {
+      expect(updates).toContainEqual({ table: heartbeatRunEvents, values: expect.objectContaining({
+        eventType: "native.process_start_requested", runId: execution.binding.runId,
+      }) });
+      return { kind: "test", onSpawn: options.onSpawn };
+    });
 
     await executePaperclipNativeSession({
-      db: leaseDb(),
+      db: leaseDb(execution, {}, {}, updates),
       execution,
       runnerInstanceId: "runner",
       onSpawn,

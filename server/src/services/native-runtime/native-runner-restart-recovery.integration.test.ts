@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -716,6 +717,10 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       if (!claim || claim.kind !== "resume_dead_runner") {
         throw new Error("Expected dead-runner recovery claim");
       }
+      expect(await hasNativeLocalProcessStop(fixture.db, companyId, fixture.runId)).toBe(true);
+      const [stoppedRun] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      expect(stoppedRun.processPid).toBeNull();
+      expect(stoppedRun.processGroupId).toBeNull();
 
       restored = createRunnerdCodexTransport({
         ...options,
