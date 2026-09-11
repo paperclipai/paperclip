@@ -503,6 +503,12 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
     };
     const worker = require(input.workerProfileId, "worker", "Worker");
     require(input.advisorProfileId, "advisor", "Advisor");
+    if (input.reviewRequirement !== "none" && !input.reviewerProfileId) {
+      throw unprocessable("A rule that requires review must name a reviewer profile", { code: "reviewer-required", reviewRequirement: input.reviewRequirement });
+    }
+    if (input.advisorMode !== "none" && !input.advisorProfileId) {
+      throw unprocessable("A rule with an advisor mode must name an advisor profile", { code: "advisor-required", advisorMode: input.advisorMode });
+    }
     const reviewer = require(input.reviewerProfileId, "reviewer", "Reviewer");
     const fallback = require(input.reviewerFallbackProfileId, "reviewer", "Reviewer fallback");
     const rescue = require(input.rescueProfileId, "rescuer", "Rescue");
@@ -665,6 +671,8 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
   }
 
   async function policyContext(issue: IssueRow) {
+    // Capacity counts only claims whose runs are still live, company-wide.
+    await reconcileClaims(issue.companyId);
     const [profiles, rules, claims] = await Promise.all([
       listProfiles(issue.companyId),
       listRules(issue.companyId),
@@ -971,7 +979,7 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
    */
   async function dispatch(issueId: string, actor: RoutingActor): Promise<DispatchResult> {
     const issue = await loadIssue(issueId);
-    await reconcileClaims(issue.companyId, issue.id);
+    await reconcileClaims(issue.companyId);
     const decision = await getCurrentDecision(issue.companyId, issue.id);
     if (!decision) throw conflict("Issue has no route decision", { code: "route_decision_missing" });
     if (decision.state !== "routed" || !decision.worker) {
@@ -1236,6 +1244,7 @@ export function routingService(db: Db, deps: RoutingServiceDeps = {}) {
    */
   async function requestReview(issueId: string, actor: RoutingActor): Promise<ReviewRequestResult> {
     const issue = await loadIssue(issueId);
+    await reconcileClaims(issue.companyId);
     const history = await listDecisionRows(issue.companyId, issue.id);
     const decision = history[0] ? toDecision(history[0]) : null;
     if (!decision) throw conflict("Issue has no route decision", { code: "route_decision_missing" });
