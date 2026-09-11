@@ -317,8 +317,13 @@ export async function reconcileSafeNativeReplacements(
         const successorRunId = randomUUID();
         const dueAt = new Date(now.getTime() + 30_000);
         const predecessorContext = { ...record(run.contextSnapshot) };
-        // The user authorization belongs to its original successor, not later retries.
-        delete predecessorContext.explicitUserContinuation;
+        // History comes from the failed source run. Consumed wake fields must
+        // not grant this automatic retry fresh comment/resume authority.
+        for (const key of [
+          "explicitUserContinuation", "wakeCommentId", "wakeCommentIds", "commentId",
+          "commentIds", "latestCommentId", "resumeIntent", "followUpRequested",
+          "paperclipWake", "paperclipWakeComment", "paperclipTaskMarkdown", "paperclipTaskMarkdownCompact",
+        ]) delete predecessorContext[key];
         const context = {
           ...predecessorContext,
           issueId: task.id,

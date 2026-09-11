@@ -1,3 +1,4 @@
+import { createRunDispatch, deriveCommentId } from "../../modules/run-dispatch/index.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { activityService } from "../activity.js";
 import { buildPaperclipWakePayload, heartbeatService } from "../heartbeat.js";
@@ -278,7 +279,7 @@ const support = externalDatabaseUrl
         "provider_failure_meaning_unverified",
       );
     });
-    it("does not carry a consumed explicit authorization into a later safe replacement", async () => {
+    it.each(["done", "cancelled", "review"])("does not reuse consumed wake authority after a later %s transition", async transition => {
       const source = await seed();
       const previousRunId = randomUUID(), commentId = randomUUID();
       await db.insert(heartbeatRuns).values({ id: previousRunId, companyId: source.companyId,
@@ -292,15 +293,35 @@ const support = externalDatabaseUrl
         } });
       await db.update(heartbeatRuns).set({ contextSnapshot: {
         issueId: source.issueId, previousRunId,
+        wakeCommentId: commentId, wakeCommentIds: [commentId], commentId,
+        resumeIntent: true, followUpRequested: true,
         explicitUserContinuation: { previousRunId, commentId },
       } }).where(eq(heartbeatRuns.id, source.runId));
       await reconcileSafeNativeReplacements(db);
       const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
       expect(successor.contextSnapshot?.explicitUserContinuation).toBeUndefined();
+      expect(deriveCommentId(successor.contextSnapshot)).toBeNull();
+      expect(successor.contextSnapshot?.resumeIntent).toBeUndefined();
+      expect(successor.contextSnapshot?.followUpRequested).toBeUndefined();
       const envelope = await buildExecutionContinuation({ db, companyId: source.companyId,
         issueId: source.issueId, agentId: source.agentId, context: successor.contextSnapshot!,
         summary: null, exposeLowTrustRaw: false });
       expect(envelope.trigger.sourceRunId).toBe(source.runId);
+      expect(envelope.objective).toBe("Continue");
+      if (transition === "review") {
+        await db.update(issues).set({ status: "in_review", executionState: {
+          status: "pending", currentStageId: randomUUID(), currentStageIndex: 0, currentStageType: "review",
+          currentParticipant: { type: "agent", agentId: randomUUID(), userId: null },
+          returnAssignee: { type: "agent", agentId: source.agentId, userId: null },
+          reviewRequest: null, completedStageIds: [], lastDecisionId: null, lastDecisionOutcome: null,
+        } }).where(eq(issues.id, source.issueId));
+      } else {
+        await db.update(issues).set({ status: transition }).where(eq(issues.id, source.issueId));
+      }
+      await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, successor.id));
+      expect(await createRunDispatch(db).cancelStaleQueuedRun({ companyId: source.companyId,
+        runId: successor.id, expectedStatus: "queued" })).toMatchObject({ outcome: "cancelled",
+        errorCode: transition === "review" ? "issue_review_participant_changed" : "issue_terminal_status" });
     });
     it("persists exactly one linked successor under competing sweepers and restarts", async () => {
       const source = await seed(2);
