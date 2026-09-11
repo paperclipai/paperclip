@@ -24,6 +24,19 @@ docker build -t paperclip-local \
   --build-arg USER_UID=$(id -u) --build-arg USER_GID=$(id -g) .
 ```
 
+## Cloud image addresses
+
+The Docker workflow publishes the managed deployment image for Linux AMD64.
+After the pushed image passes its Sentry check, the workflow verifies its
+commit label and platform and adds `ghcr.io/paperclipai/paperclip:sha-<full-commit-sha>-cloud`.
+This address lets commit-based deployment tooling reuse the normal build.
+Existing short-SHA and release tags remain available.
+
+The full-SHA tag identifies the source commit. It does not certify that source
+tests passed or that a compatible database migrator is available. Deployment
+tooling must still check those prerequisites and pin the resolved image digest;
+a rebuild of the same source can update the tag's digest.
+
 ## One-liner (build + run)
 
 ```sh

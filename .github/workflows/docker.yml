@@ -520,6 +520,7 @@ jobs:
             io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
 
       - name: Build and push (cloud)
+        id: build-cloud
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -557,18 +558,16 @@ jobs:
 
       - name: Verify the pushed image resolves the declared Sentry version
         env:
-          IMAGE_TAGS: ${{ steps.meta-cloud.outputs.tags }}
+          IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build-cloud.outputs.digest }}
         run: |
           set -euo pipefail
-          image="$(printf '%s\n' "$IMAGE_TAGS" | head -n 1)"
-          test -n "$image"
 
           expected="$(node -e "process.stdout.write(require('./server/package.json').peerDependencies['@sentry/node'])")"
           test -n "$expected"
 
           installed="$(docker run --rm --pull always \
             -v "$PWD/scripts/assert-cloud-image-sentry.mjs:/app/server/.ci-sentry-probe.mjs:ro" \
-            --entrypoint node "$image" /app/server/.ci-sentry-probe.mjs)"
+            --entrypoint node "$IMAGE" /app/server/.ci-sentry-probe.mjs)"
 
           echo "Declared optional peer version: $expected"
           echo "Installed in the pushed image: $installed"
@@ -577,6 +576,21 @@ jobs:
             exit 1
           fi
           echo "The pushed image resolves the declared @sentry/node version."
+
+      # Cloud's commit resolver and preview-artifact planner use the full SHA.
+      # Publish that address only after checking this build's exact digest.
+      # Retagging reuses the registry manifest and does not rebuild the image.
+      - name: Publish verified full-SHA cloud tag
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build-cloud.outputs.digest }}
+          FULL_SHA_TAG: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}-cloud
+        run: |
+          set -euo pipefail
+          revision="$(docker image inspect "$IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          platform="$(docker image inspect "$IMAGE" --format '{{ .Os }}/{{ .Architecture }}')"
+          test "$revision" = "$GITHUB_SHA"
+          test "$platform" = linux/amd64
+          docker buildx imagetools create --prefer-index=false --tag "$FULL_SHA_TAG" "$IMAGE"
 
   # Moves the mutable `:canary` / `:canary-cloud` channel tags. Kept OUT
   # of the build jobs and serialized in its own lane, and — the load-

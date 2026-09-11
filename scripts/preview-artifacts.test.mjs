@@ -4,6 +4,7 @@ import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
+import { spawnSync } from "node:child_process";
 import { previewManifest, assertMetadata, validateRequest, versionFor, tarManifest, packageExists, imageExists, publishPreview, publishImage } from "./preview-artifacts.mjs";
 
 const sha = "a".repeat(40);
@@ -125,4 +126,50 @@ test("commits sharing a short prefix use separate full-SHA image addresses", asy
   await imageExists(sha, fetchImpl);
   await imageExists(other, fetchImpl);
   assert.deepEqual(urls.filter((url) => url.includes("/manifests/")), [sha, other].map((commit) => `https://ghcr.io/v2/paperclipai/paperclip/manifests/sha-${commit}-cloud`));
+});
+
+test("normal cloud builds publish the checked digest only when source and platform match", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/docker.yml", import.meta.url), "utf8");
+  const cloud = workflow.split("  build-and-push-cloud:")[1].split("  promote_canary_channel:")[0];
+  const verify = cloud.indexOf("      - name: Verify the pushed image resolves the declared Sentry version");
+  const publish = cloud.indexOf("      - name: Publish verified full-SHA cloud tag");
+  assert.ok(verify >= 0 && publish > verify);
+  const verification = cloud.slice(verify, publish);
+  assert.match(verification, /IMAGE: ghcr.io\/\$\{\{ github.repository \}\}@\$\{\{ steps.build-cloud.outputs.digest \}\}/);
+  assert.doesNotMatch(verification, /continue-on-error:|if: always\(/);
+  const step = cloud.slice(publish).split(/\n(?:  #|      - name:)/)[0];
+  assert.doesNotMatch(step, /continue-on-error:|if:/);
+  assert.match(step, /FULL_SHA_TAG: ghcr.io\/\$\{\{ github.repository \}\}:sha-\$\{\{ github.sha \}\}-cloud/);
+  const script = step.split("        run: |\n")[1].split("\n").map((line) => line.replace(/^ {10}/, "")).join("\n");
+  const dir = mkdtempSync(path.join(tmpdir(), "cloud-tag-test-"));
+  const image = `ghcr.io/paperclipai/paperclip@sha256:${"b".repeat(64)}`;
+  const tag = `ghcr.io/paperclipai/paperclip:sha-${sha}-cloud`;
+  try {
+    writeFileSync(path.join(dir, "docker"), `#!/bin/sh
+case "$1 $2" in
+  'image inspect')
+    case "$5" in
+      *revision*) printf '%s\\n' "$TEST_REVISION" ;;
+      *) printf '%s\\n' "$TEST_PLATFORM" ;;
+    esac ;;
+  'buildx imagetools') printf '%s\\n' "$@" > "$TEST_CALLS" ;;
+  *) exit 99 ;;
+esac
+`, { mode: 0o755 });
+    for (const [revision, platform, succeeds] of [[sha, "linux/amd64", true], ["c".repeat(40), "linux/amd64", false], [sha, "linux/arm64", false]]) {
+      const calls = path.join(dir, "calls");
+      rmSync(calls, { force: true });
+      const result = spawnSync("bash", ["-c", script], { encoding: "utf8", env: {
+        ...process.env, PATH: `${dir}${path.delimiter}${process.env.PATH}`, GITHUB_SHA: sha,
+        IMAGE: image, FULL_SHA_TAG: tag, TEST_REVISION: revision, TEST_PLATFORM: platform, TEST_CALLS: calls,
+      } });
+      if (succeeds) {
+        assert.equal(result.status, 0, result.stderr);
+        assert.deepEqual(readFileSync(calls, "utf8").trim().split("\n"), ["buildx", "imagetools", "create", "--prefer-index=false", "--tag", tag, image]);
+      } else {
+        assert.notEqual(result.status, 0);
+        assert.throws(() => readFileSync(calls), { code: "ENOENT" });
+      }
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
