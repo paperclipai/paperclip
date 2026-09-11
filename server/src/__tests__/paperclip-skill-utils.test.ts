@@ -574,7 +574,7 @@ describe("paperclip skill utils", () => {
     await fs.symlink(customSkill, path.join(skillsHome, "release-notes"));
     await fs.symlink(staleMaintainerSkill, path.join(skillsHome, "release"));
 
-    const removed = await removeMaintainerOnlySkillSymlinks(skillsHome, ["paperclip"]);
+    const { removed } = await removeMaintainerOnlySkillSymlinks(skillsHome, ["paperclip"]);
 
     expect(removed).toEqual(["release"]);
     await expect(fs.lstat(path.join(skillsHome, "release"))).rejects.toThrow();

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import {
   applyPaperclipWorkspaceEnv,
@@ -14,18 +14,22 @@ import {
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  ensurePaperclipSkillSymlink,
+  isManagedGeminiSkillEntry,
   isPaperclipExternalChatContractTurn,
   isPaperclipExternalChatQuestionResponseTurn,
   isPaperclipExternalChatTurn,
   materializePaperclipSkillCopy,
   PAPERCLIP_OPERATIONAL_SKILL_KEY,
   refreshPaperclipWorkspaceEnvForExecution,
+  removeMaintainerOnlySkillSymlinks,
   renderPaperclipWakePrompt,
   resolveLegacyPaperclipDesiredSkillNames,
   resolvePaperclipDesiredSkillNames,
   selectPaperclipTaskMarkdown,
   runningProcesses,
   runChildProcess,
+  writeManagedGeminiSkillsManifest,
   sanitizeSshRemoteEnv,
   signalRunningProcess,
   shapePaperclipWorkspaceEnvForExecution,
@@ -343,6 +347,494 @@ describe("materializePaperclipSkillCopy", () => {
       await expect(
         fs.readFile(path.join(target, "SKILL.md"), "utf8"),
       ).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("removeMaintainerOnlySkillSymlinks", () => {
+  it("prunes a stale managed directory the manifest names, and keeps an unmanaged directory", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      await fs.mkdir(skillsHome, { recursive: true });
+
+      // A skill this lane materialized as an owned copy (the shape the
+      // Agent Client Protocol lane's permission-error fallback writes) and
+      // no longer selects.
+      const staleManagedDir = path.join(skillsHome, "old-skill");
+      const staleSource = path.join(root, "old-skill-source");
+      await fs.mkdir(staleSource, { recursive: true });
+      await fs.writeFile(
+        path.join(staleSource, "SKILL.md"),
+        "# old\n",
+        "utf8",
+      );
+      await materializePaperclipSkillCopy(staleSource, staleManagedDir);
+      await writeManagedGeminiSkillsManifest(skillsHome, [
+        { name: "old-skill", source: staleSource },
+      ]);
+
+      // An entry the manifest never named: a skill the user put in their
+      // own Gemini skills home, not one Paperclip materialized.
+      const unmanagedDir = path.join(skillsHome, "users-own-skill");
+      await fs.mkdir(unmanagedDir, { recursive: true });
+      await fs.writeFile(
+        path.join(unmanagedDir, "SKILL.md"),
+        "# mine\n",
+        "utf8",
+      );
+
+      const { removed } = await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+      expect(removed).toEqual(["old-skill"]);
+      await expect(fs.stat(staleManagedDir)).rejects.toThrow();
+      await expect(
+        fs.readFile(path.join(unmanagedDir, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# mine\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("prunes a stale managed symlink the manifest names", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      const source = path.join(root, "source-skill");
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      const target = path.join(skillsHome, "linked-skill");
+      await fs.symlink(source, target);
+      await writeManagedGeminiSkillsManifest(skillsHome, [
+        { name: "linked-skill", source },
+      ]);
+
+      const { removed } = await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+      expect(removed).toEqual(["linked-skill"]);
+      await expect(fs.lstat(target)).rejects.toThrow();
+      // The link is gone, but the skill source it pointed to must survive —
+      // this lane only ever prunes its own target directory.
+      await expect(
+        fs.readFile(path.join(source, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# skill\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a symbolic link the manifest names when the user repointed it at their own target", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      const paperclipSource = path.join(root, "paperclip-source-skill");
+      const usersOwnSource = path.join(root, "users-own-source");
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.mkdir(paperclipSource, { recursive: true });
+      await fs.mkdir(usersOwnSource, { recursive: true });
+      await fs.writeFile(
+        path.join(usersOwnSource, "SKILL.md"),
+        "# mine\n",
+        "utf8",
+      );
+
+      // Run 1: the lane links its own skill and records the link as managed.
+      const target = path.join(skillsHome, "shared-name");
+      await fs.symlink(paperclipSource, target);
+      await writeManagedGeminiSkillsManifest(skillsHome, [
+        { name: "shared-name", source: paperclipSource },
+      ]);
+
+      // Between runs, the user removes the link and points a new symbolic
+      // link of the same name at their own skill. The manifest still names
+      // "shared-name", but the link no longer resolves to the source this
+      // lane materialized.
+      await fs.unlink(target);
+      await fs.symlink(usersOwnSource, target);
+
+      // Run 2: the skill is no longer selected. The prune must keep the
+      // user's replacement link and must not report it as removed.
+      const { removed } = await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+      expect(removed).toEqual([]);
+      const linkedPath = await fs.readlink(target);
+      expect(path.resolve(path.dirname(target), linkedPath)).toBe(
+        usersOwnSource,
+      );
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a manifest-named entry it could not remove as failed, not removed, and keeps it for retry", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      const source = path.join(root, "source-skill");
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      const target = path.join(skillsHome, "linked-skill");
+      await fs.symlink(source, target);
+      await writeManagedGeminiSkillsManifest(skillsHome, [
+        { name: "linked-skill", source },
+      ]);
+
+      // Deny write access to skillsHome itself, so removing an entry inside
+      // it fails, the way a permission error or a busy mount would.
+      await fs.chmod(skillsHome, 0o555);
+      try {
+        const { removed, failedToRemove } =
+          await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+        expect(removed).toEqual([]);
+        expect(failedToRemove).toEqual([{ name: "linked-skill", source }]);
+        // The failed removal must not have deleted the link.
+        await expect(fs.lstat(target)).resolves.toBeDefined();
+      } finally {
+        await fs.chmod(skillsHome, 0o755);
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a directory that replaces a managed symlink in the instant between the ownership check and removal", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      const source = path.join(root, "source-skill");
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      const target = path.join(skillsHome, "raced-skill");
+      await fs.symlink(source, target);
+      await writeManagedGeminiSkillsManifest(skillsHome, [
+        { name: "raced-skill", source },
+      ]);
+
+      // The prune checks the link target, confirms lane ownership, then
+      // removes the entry. Between those two steps a concurrent process can
+      // replace the link with a populated directory of its own. Simulate
+      // that race at the read that follows the ownership check, so the
+      // removal call runs against the replaced directory, not the symlink
+      // it approved.
+      const originalReadlink = fs.readlink.bind(fs);
+      const readlinkSpy = vi
+        .spyOn(fs, "readlink")
+        .mockImplementationOnce(async (
+          ...readlinkArgs: Parameters<typeof fs.readlink>
+        ) => {
+          const real = await originalReadlink(...readlinkArgs);
+          await fs.unlink(target);
+          await fs.mkdir(target, { recursive: true });
+          await fs.writeFile(
+            path.join(target, "SKILL.md"),
+            "# raced in\n",
+            "utf8",
+          );
+          return real;
+        });
+
+      try {
+        const { removed, failedToRemove } =
+          await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+        // The removal call must not delete the directory that replaced the
+        // approved symlink. It must report the entry as failed, not
+        // removed, so a caller retries it on the next pass instead of
+        // silently dropping it from the manifest.
+        expect(removed).toEqual([]);
+        expect(failedToRemove).toEqual([{ name: "raced-skill", source }]);
+        await expect(
+          fs.readFile(path.join(target, "SKILL.md"), "utf8"),
+        ).resolves.toBe("# raced in\n");
+      } finally {
+        readlinkSpy.mockRestore();
+      }
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a non-symlink entry the manifest never named, even when it is not selected", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      await fs.mkdir(skillsHome, { recursive: true });
+      const unmanagedDir = path.join(skillsHome, "users-own-skill");
+      await fs.mkdir(unmanagedDir, { recursive: true });
+      await fs.writeFile(
+        path.join(unmanagedDir, "SKILL.md"),
+        "# mine\n",
+        "utf8",
+      );
+      // No manifest is written at all: this skills home predates the
+      // manifest, or the entry was never Paperclip's to manage.
+
+      const { removed } = await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+      expect(removed).toEqual([]);
+      await expect(
+        fs.readFile(path.join(unmanagedDir, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# mine\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still removes a legacy maintainer-only symlink absent from any manifest", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      const maintainerSource = path.join(
+        root,
+        ".agents",
+        "skills",
+        "maintainer-skill",
+      );
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.mkdir(maintainerSource, { recursive: true });
+      await fs.writeFile(
+        path.join(maintainerSource, "SKILL.md"),
+        "# maintainer\n",
+        "utf8",
+      );
+
+      const target = path.join(skillsHome, "maintainer-skill");
+      await fs.symlink(maintainerSource, target);
+      // No manifest is written: this covers the pre-manifest legacy case.
+
+      const { removed } = await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+      expect(removed).toEqual(["maintainer-skill"]);
+      await expect(fs.lstat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a user's own directory that replaced a formerly managed entry between runs", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      const source = path.join(root, "source-skill");
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# notes\n", "utf8");
+
+      // Run 1: the lane links the selected skill and records it as managed.
+      const target = path.join(skillsHome, "notes");
+      await ensurePaperclipSkillSymlink(source, target);
+      await writeManagedGeminiSkillsManifest(skillsHome, [
+        { name: "notes", source },
+      ]);
+
+      // Between runs, the user removes the link by hand and writes their
+      // own directory at the same name.
+      await fs.unlink(target);
+      await fs.mkdir(target, { recursive: true });
+      await fs.writeFile(
+        path.join(target, "SKILL.md"),
+        "# my own notes\n",
+        "utf8",
+      );
+
+      // Run 2: the skill is no longer selected. The manifest still names
+      // "notes", but the entry on disk is now the user's own directory, not
+      // a lane-owned shape. The prune must keep it and must not report it
+      // as removed.
+      const { removed } = await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+      expect(removed).toEqual([]);
+      await expect(
+        fs.readFile(path.join(target, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# my own notes\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a manifest-named entry that is a regular file, not a lane-owned shape", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      await fs.mkdir(skillsHome, { recursive: true });
+
+      const target = path.join(skillsHome, "stray-file");
+      await fs.writeFile(target, "not a skill\n", "utf8");
+      await writeManagedGeminiSkillsManifest(skillsHome, [
+        { name: "stray-file", source: path.join(root, "source-skill") },
+      ]);
+
+      const { removed } = await removeMaintainerOnlySkillSymlinks(skillsHome, []);
+
+      expect(removed).toEqual([]);
+      await expect(fs.readFile(target, "utf8")).resolves.toBe(
+        "not a skill\n",
+      );
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Gemini managed-skills manifest records only owned entries", () => {
+  // Mirrors the materialize-then-record pass both Gemini lanes run: prune
+  // by the existing manifest, attempt each selected entry, then write the
+  // manifest from the entries this lane actually owns afterward — never
+  // from the selected names themselves.
+  async function runGeminiManifestPass(
+    skillsHome: string,
+    entries: Array<{ runtimeName: string; source: string }>,
+  ): Promise<void> {
+    const selectedNames = entries.map((entry) => entry.runtimeName);
+    const { failedToRemove } = await removeMaintainerOnlySkillSymlinks(skillsHome, selectedNames);
+    const owned: Array<{ name: string; source: string }> = [...failedToRemove];
+    for (const entry of entries) {
+      const target = path.join(skillsHome, entry.runtimeName);
+      try {
+        await ensurePaperclipSkillSymlink(entry.source, target);
+      } catch {
+        await materializePaperclipSkillCopy(entry.source, target);
+      }
+      if (await isManagedGeminiSkillEntry(target, entry.source)) {
+        owned.push({ name: entry.runtimeName, source: entry.source });
+      }
+    }
+    await writeManagedGeminiSkillsManifest(skillsHome, owned);
+  }
+
+  it("keeps a real user directory alive across selection and deselection", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      await fs.mkdir(skillsHome, { recursive: true });
+
+      // The user already has their own directory at the same name a
+      // Paperclip skill also uses.
+      const userTarget = path.join(skillsHome, "shared-name");
+      await fs.mkdir(userTarget, { recursive: true });
+      await fs.writeFile(
+        path.join(userTarget, "SKILL.md"),
+        "# mine\n",
+        "utf8",
+      );
+
+      const source = path.join(root, "source-skill");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(
+        path.join(source, "SKILL.md"),
+        "# paperclip\n",
+        "utf8",
+      );
+
+      // Run 1: the user selects the skill of the same name. The lane must
+      // not overwrite the user's own directory, and must not record it as
+      // an owned entry.
+      await runGeminiManifestPass(skillsHome, [
+        { runtimeName: "shared-name", source },
+      ]);
+      await expect(
+        fs.readFile(path.join(userTarget, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# mine\n");
+
+      // Run 2: the user deselects the skill. The prune must not delete the
+      // user's own directory, because the lane never owned it.
+      await runGeminiManifestPass(skillsHome, []);
+      await expect(
+        fs.readFile(path.join(userTarget, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# mine\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still prunes an entry that was already a correct symbolic link", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      const source = path.join(root, "source-skill");
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      const target = path.join(skillsHome, "linked-skill");
+      // The link already points at the right source before the pass runs,
+      // so `ensurePaperclipSkillSymlink` returns "skipped" for it too.
+      await fs.symlink(source, target);
+
+      // Run 1: the skill stays selected. A link that was already correct
+      // must still enter the manifest as an owned entry.
+      await runGeminiManifestPass(skillsHome, [
+        { runtimeName: "linked-skill", source },
+      ]);
+
+      // Run 2: the skill is deselected. The manifest must still name it, so
+      // the prune removes it.
+      await runGeminiManifestPass(skillsHome, []);
+      await expect(fs.lstat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still prunes an owned copied directory, the permission-error fallback shape", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      const source = path.join(root, "source-skill");
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      // A prior run already materialized this entry as a copy, the shape
+      // the Agent Client Protocol lane's permission-error fallback writes
+      // when it cannot create a symbolic link.
+      const target = path.join(skillsHome, "copied-skill");
+      await materializePaperclipSkillCopy(source, target);
+
+      // Run 1: the skill stays selected. `ensurePaperclipSkillSymlink`
+      // leaves the existing directory alone and returns "skipped", but the
+      // owned copy must still enter the manifest.
+      await runGeminiManifestPass(skillsHome, [
+        { runtimeName: "copied-skill", source },
+      ]);
+
+      // Run 2: the skill is deselected. The prune must remove the owned
+      // copy.
+      await runGeminiManifestPass(skillsHome, []);
+      await expect(fs.stat(target)).rejects.toThrow();
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

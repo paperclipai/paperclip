@@ -36,6 +36,7 @@ import {
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensurePaperclipSkillSymlink,
+  isManagedGeminiSkillEntry,
   joinPromptSections,
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
@@ -44,6 +45,7 @@ import {
   readPaperclipIssueWorkModeFromContext,
   resolveLegacyPaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
+  writeManagedGeminiSkillsManifest,
   parseObject,
   renderTemplate,
   renderPaperclipWakePrompt,
@@ -157,34 +159,52 @@ async function ensureGeminiSkillsInjected(
     );
     return;
   }
-  const removedSkills = await removeMaintainerOnlySkillSymlinks(
+  const { removed: removedSkills, failedToRemove } = await removeMaintainerOnlySkillSymlinks(
     skillsHome,
     selectedEntries.map((entry) => entry.runtimeName),
   );
   for (const skillName of removedSkills) {
     await onLog(
       "stderr",
-      `[paperclip] Removed maintainer-only Gemini skill "${skillName}" from ${skillsHome}\n`,
+      `[paperclip] Removed stale Gemini skill "${skillName}" from ${skillsHome}\n`,
+    );
+  }
+  for (const failedEntry of failedToRemove) {
+    await onLog(
+      "stderr",
+      `[paperclip] Failed to remove stale Gemini skill "${failedEntry.name}" from ${skillsHome}; it stays in the managed-skill manifest for a later retry.\n`,
     );
   }
 
+  // Keep every entry this lane still owns but could not remove, so the next
+  // prune can retry it. None of these names overlap `selectedEntries`: the
+  // loop above only reports a failure for a name outside that selection.
+  const ownedSkills: Array<{ name: string; source: string }> = [...failedToRemove];
   for (const entry of selectedEntries) {
     const target = path.join(skillsHome, entry.runtimeName);
 
     try {
       const result = await ensurePaperclipSkillSymlink(entry.source, target);
-      if (result === "skipped") continue;
-      await onLog(
-        "stderr",
-        `[paperclip] ${result === "repaired" ? "Repaired" : "Linked"} Gemini skill: ${entry.key}\n`,
-      );
+      if (result !== "skipped") {
+        await onLog(
+          "stderr",
+          `[paperclip] ${result === "repaired" ? "Repaired" : "Linked"} Gemini skill: ${entry.key}\n`,
+        );
+      }
     } catch (err) {
       await onLog(
         "stderr",
         `[paperclip] Failed to link Gemini skill "${entry.key}": ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
+    // A name enters the manifest only when this lane owns the entry after
+    // the attempt above. A real user directory returns "skipped" too, so
+    // the result string alone cannot tell them apart.
+    if (await isManagedGeminiSkillEntry(target, entry.source)) {
+      ownedSkills.push({ name: entry.runtimeName, source: path.resolve(entry.source) });
+    }
   }
+  await writeManagedGeminiSkillsManifest(skillsHome, ownedSkills);
 }
 
 async function buildGeminiSkillsDir(

@@ -137,10 +137,12 @@ async function installSkillsForTarget(
 
   await fs.mkdir(targetSkillsDir, { recursive: true });
   const entries = await fs.readdir(sourceSkillsDir, { withFileTypes: true });
-  summary.removed = await removeMaintainerOnlySkillSymlinks(
-    targetSkillsDir,
-    entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
-  );
+  summary.removed = (
+    await removeMaintainerOnlySkillSymlinks(
+      targetSkillsDir,
+      entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
+    )
+  ).removed;
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const source = path.join(sourceSkillsDir, entry.name);
