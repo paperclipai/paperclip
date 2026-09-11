@@ -32,7 +32,7 @@ import {
   or,
   sql,
 } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   agentWakeupRequests,
@@ -1022,8 +1022,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     rmSync(secretsTmpDir, { recursive: true, force: true });
   });
 
+  // Services scan this file's shared database. Retire each case's fixtures
+  // after its assertions so another case (or shard order) cannot claim them.
+  const fixtureCompanies = new Set<string>();
+  const fixtureServices = new Set<ChatChannelService>();
+  afterEach(async () => {
+    try {
+      await Promise.all([...fixtureServices].map((service) => service.shutdown()));
+    } finally {
+      if (fixtureCompanies.size > 0) {
+        await db.update(chatEndpoints).set({ status: "paused" })
+          .where(and(inArray(chatEndpoints.companyId, [...fixtureCompanies]), eq(chatEndpoints.status, "active")));
+      }
+      fixtureServices.clear();
+      fixtureCompanies.clear();
+    }
+  });
+
   async function seedCompany() {
     const companyId = randomUUID();
+    fixtureCompanies.add(companyId);
     const assignedAgentId = randomUUID();
     const replacementAgentId = randomUUID();
     await db.insert(companies).values({
@@ -1193,6 +1211,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       runtime: runtime as unknown as ChatSdkRuntime,
       ...serviceOverrides,
     });
+    fixtureServices.add(service);
     return { cancelRun, runtime, service, wakeup };
   }
 
