@@ -365,7 +365,10 @@ See [GitHub cache access restrictions](https://docs.github.com/en/actions/refere
 Release verification runs the large chat integration file on three independent
 runners. Four other server shards cover every remaining general server file.
 The ordinary local test command and trusted PR workflow keep their complete
-`general-server` group. No application test assertions or fixtures change.
+`general-server` group. Each chat case shuts down its services, pauses its own
+still-active endpoints, and retires its active/waiting conversations after
+assertions. This keeps workers in later cases from claiming earlier
+fixtures in the shared test database. Application assertions stay unchanged.
 
 Each chat job collects active tests with Vitest, groups cases by source line,
 and balances those groups by case count. Parameterized cases and loop-generated
