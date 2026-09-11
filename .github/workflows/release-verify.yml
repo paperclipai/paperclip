@@ -227,6 +227,30 @@ jobs:
           node-version: 24
           cache: pnpm
 
+      - name: Select the pinned Runner Rust toolchain
+        working-directory: packages/paperclip-runner
+        run: |
+          set -euo pipefail
+          rustup show
+          toolchain="$(rustup show active-toolchain | awk '{print $1}')"
+          echo "RUSTUP_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+
+      - name: Cache Runner Rust dependencies
+        # Restore and save only within trusted master-push verification. GitHub
+        # isolates branch/PR caches from master; other callers compile afresh.
+        if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: packages/paperclip-runner/runner -> target
+          shared-key: release-runner-v1
+          # Rebuild workspace code and rerun every check. Cache only compiled
+          # dependencies; never restore installed executables from cargo/bin.
+          cache-workspace-crates: false
+          cache-bin: false
+          # The step guard also restricts restores. Save only after a successful
+          # master-push verification of that push's exact commit.
+          save-if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
+
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
