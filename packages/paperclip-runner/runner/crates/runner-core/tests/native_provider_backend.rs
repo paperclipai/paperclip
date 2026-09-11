@@ -406,6 +406,57 @@ fn executes_a_qualified_acpx_profile_through_the_native_selector() {
 }
 
 #[test]
+fn resumes_an_idle_acpx_session_in_a_cold_replacement_runner() {
+    let directory = temporary_directory("acpx-cold-idle-recovery");
+    let config = acpx_config(&directory, "turns-reserved-result-terminal");
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    executor
+        .execute(&command(
+            1,
+            "run.prepare",
+            prepare_payload(&directory, "codex"),
+        ))
+        .unwrap();
+    let original = executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            3,
+            "turn.start",
+            json!({"text":"Acknowledge.", "turnId":"provider-turn-first"}),
+        ))
+        .unwrap();
+    let events = executor.poll_events().unwrap();
+    executor.acknowledge_events(events.len()).unwrap();
+    executor
+        .execute(&command(4, "runner.suspend", json!({})))
+        .unwrap();
+    executor.shutdown().unwrap();
+    drop(executor);
+
+    let mut replacement_config = config.clone();
+    replacement_config.run_id = "run-2".to_owned();
+    replacement_config.turn_id = "turn-2".to_owned();
+    let mut replacement =
+        NativeProviderCommandExecutor::with_runner_config(&directory, &replacement_config);
+    let mut payload = prepare_payload(&directory, "codex");
+    payload["provider"]["runId"] = json!("run-2");
+    let resumed = replacement
+        .execute(&command(1, "run.attach", payload))
+        .unwrap();
+    assert_eq!(resumed.result["status"], "resumed");
+    assert_eq!(
+        resumed.result["providerSessionId"],
+        original.result["providerSessionId"]
+    );
+    // Admission itself must preserve the provider identity before any new
+    // model turn. The fixture's scripted terminal events belong to run-1.
+    replacement.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn keeps_native_acpx_semantic_events_on_the_durable_controller_turn() {
     let directory = temporary_directory("acpx-durable-turn-correlation");
     let config = acpx_config(&directory, "turns-tool");

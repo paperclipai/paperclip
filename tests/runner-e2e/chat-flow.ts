@@ -245,7 +245,9 @@ export async function runChatFlow(input: {
       enableClassicTaskInterface: false,
     });
     expect(await api.get(chatPath)).toBeNull();
-    await page.goto(route);
+    // Cold Vite startup can keep unrelated assets loading after the chat is
+    // interactive. The composer assertion below verifies actual UI readiness.
+    await page.goto(route, { waitUntil: "domcontentloaded", timeout: 60_000 });
     await expect(page.getByTestId("task-chat-composer-input")).toBeVisible();
     expect(await api.get(chatPath)).toBeNull();
     expect(await allRuns()).toHaveLength(0);
@@ -261,7 +263,7 @@ export async function runChatFlow(input: {
       const initialId = issue!.id;
       const before = runs.filter((run) => !isResetRun(run))[0]!;
       await noTasks();
-      await page.reload();
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
       if (caseId === "continuity-restart") {
         await turn(
           "What phrase did I just ask you to remember? Reply with the phrase only.",
@@ -272,7 +274,7 @@ export async function runChatFlow(input: {
         ).toContain(secret);
         const count = runs.length;
         await input.restart();
-        await page.reload();
+        await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
         await idle(2);
         expect(runs).toHaveLength(count);
         await turn(
@@ -365,7 +367,7 @@ export async function runChatFlow(input: {
           ).toEqual(
             oldComments.filter((c) => c.createdByRunId === cancelledId),
           );
-        await page.reload();
+        await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
         await expect(
           page.getByText("New session", { exact: true }),
         ).toHaveCount(1);
@@ -677,7 +679,7 @@ export async function runChatFlow(input: {
           expect(projects[0]!.workspaces.filter((w) => w.repoUrl)).toHaveLength(
             0,
           );
-        await page.reload();
+        await page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
         await expect(
           page.getByRole("article", { name: /Project created:/ }),
         ).toHaveCount(1);

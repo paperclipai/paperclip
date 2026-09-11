@@ -36,7 +36,12 @@ export async function prepareCodexCiSandbox(repositoryRoot: string, temporaryRoo
   execFileSync("sudo", ["-n", "apparmor_parser", "-r", profilePath], { timeout: 15_000, stdio: "pipe" });
   const probeHome = path.join(temporaryRoot, "codex-sandbox-probe");
   await mkdir(probeHome, { mode: 0o700 });
-  execFileSync(binary, ["sandbox", "-C", temporaryRoot, "--", "/bin/true"], {
+  execFileSync(binary, [
+    "sandbox", "--permission-profile", "paperclip-e2e-probe",
+    "-c", 'permissions.paperclip-e2e-probe.filesystem={":root"="read"}',
+    "-c", "permissions.paperclip-e2e-probe.network.enabled=false",
+    "-C", temporaryRoot, "--", "/bin/true",
+  ], {
     cwd: temporaryRoot,
     env: { PATH: process.env.PATH, CODEX_HOME: probeHome },
     timeout: 15_000,

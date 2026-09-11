@@ -632,7 +632,9 @@ impl AcpxCommandExecutor {
                 event_type: "run.terminal".to_owned(),
                 priority: EventPriority::P0,
                 payload: json!({
+                    "schema": "paperclip.prp.terminal.v1",
                     "status": "failed",
+                    "turnTerminalState": "failed",
                     "runTerminalState": "failed",
                     "reportedWorkDisposition": "unknown",
                     "provider": "acpx",
@@ -2229,6 +2231,8 @@ mod tests {
         assert_eq!(events[0].event_type, "turn.failed");
         assert_eq!(events[0].payload["providerShutdownFailed"], true);
         assert_eq!(events[1].event_type, "run.terminal");
+        assert_eq!(events[1].payload["schema"], "paperclip.prp.terminal.v1");
+        assert_eq!(events[1].payload["turnTerminalState"], "failed");
         let cleanup_error = recovered
             .shutdown()
             .expect_err("cleanup must not succeed while the original lifetime remains active");

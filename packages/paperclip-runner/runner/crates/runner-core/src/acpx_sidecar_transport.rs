@@ -642,6 +642,14 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         _ => {}
     }
     match error.message.as_str() {
+        "ACPX recovery identity conflicts with the immutable session configuration" => {
+            "recovery_configuration_mismatch"
+        }
+        "ACPX recovery identity does not match the persisted runtime record" => {
+            "recovery_identity_mismatch"
+        }
+        "ACPX provider lifetime lease is unavailable" => "provider_lifetime_unavailable",
+        "Managed Codex credential home already has an active lease" => "provider_lifetime_owned",
         "ACPX session handshake exceeded its admission deadline" => "session_handshake_timeout",
         "ACPX provider lifetime guardian exited before ownership transfer" => {
             "provider_guardian_exit"
@@ -733,6 +741,39 @@ mod tests {
                 "bounded provider admission failed",
             )),
             "session_handshake_timeout"
+        );
+        for (message, classification) in [
+            (
+                "ACPX recovery identity conflicts with the immutable session configuration",
+                "recovery_configuration_mismatch",
+            ),
+            (
+                "ACPX recovery identity does not match the persisted runtime record",
+                "recovery_identity_mismatch",
+            ),
+            (
+                "ACPX provider lifetime lease is unavailable",
+                "provider_lifetime_unavailable",
+            ),
+        ] {
+            assert_eq!(
+                response_error_classification(&error("acpx_sidecar_command_failed", message)),
+                classification
+            );
+            assert_eq!(
+                response_error_classification(&error(
+                    "acpx_sidecar_command_failed",
+                    &format!("{message}: private-provider-detail")
+                )),
+                "unclassified"
+            );
+        }
+        assert_eq!(
+            response_error_classification(&error(
+                "acpx_sidecar_command_failed",
+                "Managed Codex credential home already has an active lease"
+            )),
+            "provider_lifetime_owned"
         );
         let admission_failures = [
             (
