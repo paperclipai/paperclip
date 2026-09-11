@@ -1,6 +1,6 @@
-import { useRef, useState, type ComponentType, type SVGProps } from "react";
+import { useEffect, useRef, useState, type ComponentType, type SVGProps } from "react";
 import type { ExecutionProjection } from "@paperclipai/shared";
-import { Brain, ChevronRight, OctagonX } from "lucide-react";
+import { Brain, ChevronRight, MessageSquare, OctagonX } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { cn } from "@/lib/utils";
@@ -80,7 +80,7 @@ function currentActivityStatusItems(
 }
 
 type FoldedActivity = {
-  kind: "reasoning" | "tool" | "protocol";
+  kind: "reasoning" | "commentary" | "tool" | "protocol";
   logicalKey: string;
   text: string;
   icon: ComponentType<SVGProps<SVGSVGElement>>;
@@ -109,6 +109,18 @@ function latestFoldedActivity(
           break;
         }
       }
+      continue;
+    }
+    if (item.kind === "message" &&
+      item.channel !== "progress" &&
+      item.interstitial &&
+      item.text.trim()) {
+      latest = {
+        kind: "commentary",
+        logicalKey: item.id,
+        text: item.text.trim(),
+        icon: MessageSquare,
+      };
       continue;
     }
     if (item.kind === "tool") {
@@ -458,6 +470,9 @@ export function TaskChatRunnerTurn({
   ) => void | Promise<void>;
 }) {
   const [liveActivityOpen, setLiveActivityOpen] = useState(false);
+  useEffect(() => {
+    setLiveActivityOpen(false);
+  }, [runId]);
   const terminal = isTerminalRunStatus(status);
   const foldedActivity = latestFoldedActivity(items);
   const currentActivityItems = currentActivityStatusItems(items);

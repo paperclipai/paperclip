@@ -523,6 +523,67 @@ describe("TaskChatRunnerTurn", () => {
     expect(ticker?.textContent).not.toContain("Inspecting the current UI");
   });
 
+  it("shows the newest interstitial commentary in the folded ticker", () => {
+    render([
+      {
+        id: "reasoning",
+        kind: "thinking",
+        lines: ["Inspecting the current UI."],
+        streaming: true,
+        channel: "summary",
+      },
+      {
+        id: "commentary",
+        kind: "message",
+        author: "agent",
+        text: "I’ll verify the updated behavior now.",
+        channel: "unknown",
+        interstitial: true,
+      },
+    ]);
+
+    const ticker = container.querySelector(
+      '[data-testid="task-chat-reasoning-ticker"]',
+    );
+    expect(ticker?.getAttribute("data-activity-kind")).toBe("commentary");
+    expect(ticker?.textContent).toContain("I’ll verify the updated behavior now.");
+    expect(ticker?.textContent).not.toContain("Inspecting the current UI");
+  });
+
+  it("folds live activity again when a different run takes over", () => {
+    const items: TaskChatItem[] = [
+      {
+        id: "tool",
+        kind: "tool",
+        name: "Read",
+        rawName: "read_file",
+        target: "ui/src/App.tsx",
+        status: "in_progress",
+      },
+    ];
+    render(items, "running", "run-1");
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="task-chat-reasoning-ticker"]',
+        )
+        ?.click(),
+    );
+    expect(
+      container
+        .querySelector('[data-testid="task-chat-reasoning-ticker"]')
+        ?.getAttribute("aria-expanded"),
+    ).toBe("true");
+
+    render(items, "running", "run-2");
+
+    expect(
+      container
+        .querySelector('[data-testid="task-chat-reasoning-ticker"]')
+        ?.getAttribute("aria-expanded"),
+    ).toBe("false");
+  });
+
   it("surfaces native activity transport failure while retrying", () => {
     act(() =>
       root.render(
