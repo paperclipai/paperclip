@@ -570,6 +570,13 @@ Recovery rule:
 
 This is an active-work continuity recovery.
 
+A successful run does not imply that the task is complete, but an operator-held
+delivery unit is a valid disposition. Before escalating a missing-disposition
+handoff, recovery re-reads current dependency, delivery, pause, and execution
+ownership. A later durable wait retires the same stale recovery action, including
+an already board-owned escalation on a blocked issue, without restarting work,
+changing its assignee, releasing the hold, or marking the task done.
+
 The same bounded rule applies when the previous heartbeat reported waiting on a local/background watcher and that watcher was killed, disappeared, or was never represented by a durable Paperclip primitive. Paperclip queues at most one continuation for the same recovery fingerprint. If the continuation also leaves only local watcher evidence, Paperclip must surface a real blocker or explicit recovery action instead of repeating continuation recovery. A new monitor, scheduled wake, healthy delegated blocker issue, or other durable source mutation resolves that recovery fingerprint normally.
 
 #### Deliberate wait is not a lost run
@@ -590,6 +597,15 @@ Recovery rule for a parked-for-review continuation:
 An accepted interaction supersedes a continuation park recorded before that acceptance. A queued continuation carrying a parseable `interactionResolvedAt` must not be cancelled solely because an older continuation summary says to wait for review or approval. Interaction-continuation recovery is bounded: after three consecutive continuation wakes are cancelled without a run starting, recovery converts a real dependency wait when one exists or escalates the missing execution path visibly instead of requeueing forever.
 
 This keeps the post-decomposition umbrella (§7) on a real waiting path instead of relying on `parentId` rollup, which §6 does not treat as a dependency.
+
+Dependency- or drain-suppressed wakes retain one durable scheduled-retry run and
+one linked wake per intent. Concurrent repeats coalesce rather than creating
+discarded rows. The parked run owns no issue execution lock. Scheduled rechecks
+keep the same pair while a dependency remains unresolved; elapsed rechecks do not
+turn a legitimate long wait into recovery work. Promotion revalidates status,
+assignee, dependencies, budget, and existing admission guards, removes the park
+marker, and admits the original intent once. Reassignment cancels the stale
+intent rather than starting it under the previous owner.
 
 ### 9.3 Recovery work classes
 

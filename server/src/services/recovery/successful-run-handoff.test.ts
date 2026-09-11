@@ -9,6 +9,7 @@ import {
   buildSuccessfulRunHandoffExhaustedNotice,
   buildSuccessfulRunHandoffRequiredNotice,
   decideSuccessfulRunHandoff,
+  decideSuccessfulRunHandoffExhaustion,
   isIdempotentFinishSuccessfulRunHandoffWakeStatus,
   isSuccessfulRunHandoffValidPathSkip,
   isPluginManagedIssueLifecycle,
@@ -710,5 +711,169 @@ describe("successful run handoff decision", () => {
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## Successful run missing issue disposition\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("## This issue still needs a next step\n\nold body")).toBe(true);
     expect(isSuccessfulRunHandoffRequiredNoticeBody("Unrelated comment")).toBe(false);
+  });
+});
+
+describe("operator-held delivery and dependency skips", () => {
+  it("skips the corrective wake while an operator/policy hold owns the delivery unit", () => {
+    const decision = decide({ hasNativeDeliveryHold: true });
+    expect(decision).toEqual({
+      kind: "skip",
+      reason: "operator-held native delivery owns the next action",
+    });
+    // A human hold is a valid path: the stale required notice must resolve.
+    expect(isSuccessfulRunHandoffValidPathSkip(decision)).toBe(true);
+  });
+
+  it("skips the corrective wake while the dependency gate owns the issue", () => {
+    const decision = decide({ hasDependenciesBlocked: true });
+    expect(decision).toEqual({
+      kind: "skip",
+      reason: "issue dependencies own the next action",
+    });
+    expect(isSuccessfulRunHandoffValidPathSkip(decision)).toBe(true);
+  });
+});
+
+describe("exhausted successful-run handoff disposition", () => {
+  const escalateSurface = {
+    issueStatus: "in_progress",
+    pluginManagedIssueLifecycle: false,
+    hasDurableWaitingPath: false,
+    durablePathReason: null,
+    hasNativeDeliveryHold: false,
+    hasDependenciesBlocked: false,
+    hasPauseHold: false,
+    hasActiveExecutionPath: false,
+    hasOpenRecoveryIssue: false,
+    activeRecoveryAction: null,
+  };
+
+  it("escalates when nothing else owns the next action", () => {
+    expect(decideSuccessfulRunHandoffExhaustion(escalateSurface)).toEqual({ kind: "escalate" });
+  });
+
+  it("stands down when an operator hold owns the delivery unit (no missing-state storm)", () => {
+    const decision = decideSuccessfulRunHandoffExhaustion({
+      ...escalateSurface,
+      hasNativeDeliveryHold: true,
+      activeRecoveryAction: {
+        id: "action-1",
+        kind: "missing_disposition",
+        cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        ownerType: "board",
+      },
+    });
+    expect(decision).toEqual({
+      kind: "stand_down",
+      reason: "operator-held native delivery owns the next action",
+      resolutionNote: "durable_path_restored:native_delivery_hold",
+    });
+  });
+
+  it("stands down when the dependency gate owns the issue", () => {
+    const decision = decideSuccessfulRunHandoffExhaustion({
+      ...escalateSurface,
+      issueStatus: "blocked",
+      hasDependenciesBlocked: true,
+      activeRecoveryAction: {
+        id: "action-1",
+        kind: "missing_disposition",
+        cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        ownerType: "board",
+      },
+    });
+    expect(decision).toEqual({
+      kind: "stand_down",
+      reason: "issue dependencies own the next action",
+      resolutionNote: "durable_path_restored:dependency_gate",
+    });
+  });
+
+  it("skips a repeat escalation once the board-owned action already owns the issue", () => {
+    // One exhausted handoff escalates once. Re-discovering the same missing
+    // disposition later must not rewrite status, comments, or re-mint rows.
+    const decision = decideSuccessfulRunHandoffExhaustion({
+      ...escalateSurface,
+      issueStatus: "blocked",
+      activeRecoveryAction: {
+        id: "action-1",
+        kind: "missing_disposition",
+        cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        ownerType: "board",
+      },
+    });
+    expect(decision).toEqual({
+      kind: "skip",
+      reason: "missing disposition escalation already owns the issue",
+    });
+  });
+
+  it("stands down when the issue moved to in_review (disposition exists)", () => {
+    expect(
+      decideSuccessfulRunHandoffExhaustion({
+        ...escalateSurface,
+        issueStatus: "in_review",
+        activeRecoveryAction: {
+          id: "action-1",
+          kind: "missing_disposition",
+          cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+          ownerType: "board",
+        },
+      }),
+    ).toEqual({
+      kind: "stand_down",
+      reason: "issue status in_review is a valid disposition",
+      resolutionNote: "issue_disposition_recorded:in_review",
+    });
+  });
+
+  it("stands down on pause holds, durable paths, and live execution paths", () => {
+    expect(
+      decideSuccessfulRunHandoffExhaustion({
+        ...escalateSurface,
+        hasPauseHold: true,
+      }),
+    ).toMatchObject({ kind: "stand_down", reason: "issue is under an active pause hold" });
+    expect(
+      decideSuccessfulRunHandoffExhaustion({
+        ...escalateSurface,
+        hasDurableWaitingPath: true,
+        durablePathReason: "interaction",
+      }),
+    ).toMatchObject({
+      kind: "stand_down",
+      resolutionNote: "durable_path_restored:interaction",
+    });
+    expect(
+      decideSuccessfulRunHandoffExhaustion({
+        ...escalateSurface,
+        hasActiveExecutionPath: true,
+      }),
+    ).toMatchObject({ kind: "stand_down", reason: "issue already has an active execution path" });
+  });
+
+  it("skips plugin-managed lifecycles and terminal issues without touching actions", () => {
+    expect(
+      decideSuccessfulRunHandoffExhaustion({
+        ...escalateSurface,
+        pluginManagedIssueLifecycle: true,
+      }),
+    ).toEqual({ kind: "skip", reason: "issue lifecycle is owned by a plugin" });
+    expect(
+      decideSuccessfulRunHandoffExhaustion({
+        ...escalateSurface,
+        issueStatus: "done",
+      }),
+    ).toEqual({ kind: "skip", reason: "issue status done is terminal" });
+  });
+
+  it("escalates a blocked issue with no owned wait and no recorded escalation", () => {
+    expect(
+      decideSuccessfulRunHandoffExhaustion({
+        ...escalateSurface,
+        issueStatus: "blocked",
+      }),
+    ).toEqual({ kind: "escalate" });
   });
 });

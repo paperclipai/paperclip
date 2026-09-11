@@ -135,6 +135,8 @@ const SUCCESSFUL_RUN_HANDOFF_VALID_PATH_SKIP_REASONS: Record<string, true> = {
   "persisted issue monitor owns the next action": true,
   "recovery incident maintenance wait owns the next action": true,
   "native delivery owns the next action": true,
+  "operator-held native delivery owns the next action": true,
+  "issue dependencies own the next action": true,
   "explicit blocker path owns the next action": true,
   "blocked issue has a durable waiting path": true,
   "open recovery issue owns the ambiguity": true,
@@ -464,6 +466,20 @@ export function decideSuccessfulRunHandoff(input: {
   hasPersistedMonitor: boolean;
   /** A linked native delivery unit under an enabled, unpaused policy owns the next action. */
   hasNativeDeliveryWait: boolean;
+  /**
+   * A linked native delivery unit is explicitly held — `operator_pause` on the
+   * unit or a paused delivery policy. That hold is a real human/business gate:
+   * it owns the next action, so it must never read as a missing disposition.
+   * (Backward-compatible optional input; callers that predate the hold surface
+   * simply never claim a hold.)
+   */
+  hasNativeDeliveryHold?: boolean;
+  /**
+   * The issue's dependency gate is authoritatively blocked. The gate owns the
+   * next action, so a corrective disposition wake would be parked at dispatch
+   * anyway; skip it here instead of feeding the discarded-wake storm.
+   */
+  hasDependenciesBlocked?: boolean;
   hasExplicitBlockerPath: boolean;
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;
@@ -530,6 +546,12 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (input.hasPersistedMonitor) return { kind: "skip", reason: "persisted issue monitor owns the next action" };
   if (input.hasNativeDeliveryWait) return { kind: "skip", reason: "native delivery owns the next action" };
+  if (input.hasNativeDeliveryHold) {
+    return { kind: "skip", reason: "operator-held native delivery owns the next action" };
+  }
+  if (input.hasDependenciesBlocked) {
+    return { kind: "skip", reason: "issue dependencies own the next action" };
+  }
   if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
   if (input.recoveryMaintenanceWaitRecorded) {
@@ -590,4 +612,150 @@ export function decideSuccessfulRunHandoff(input: {
       livenessState: input.livenessState,
     }, "normal_model"),
   };
+}
+
+/**
+ * Current durable-ownership surface at the moment an exhausted successful-run
+ * handoff is about to escalate. Everything here is read fresh from persisted
+ * state by the caller; no run prose or stale snapshot participates.
+ */
+export type SuccessfulRunHandoffExhaustionSurface = {
+  /** Fresh issue status at decision time. */
+  issueStatus: string;
+  pluginManagedIssueLifecycle: boolean;
+  /** Actor-capable durable waiting path (native delivery wait, blocker, monitor, execution stage, interaction, approval, user owner). */
+  hasDurableWaitingPath: boolean;
+  durablePathReason: string | null;
+  /** Operator- or policy-held linked delivery unit. A real human/business gate. */
+  hasNativeDeliveryHold: boolean;
+  /** The authoritative dependency gate currently blocks the issue. */
+  hasDependenciesBlocked: boolean;
+  hasPauseHold: boolean;
+  hasActiveExecutionPath: boolean;
+  hasOpenRecoveryIssue: boolean;
+  /** Active recovery action row, when the issue carries one. */
+  activeRecoveryAction: {
+    id: string;
+    kind: string;
+    cause: string;
+    ownerType: string;
+  } | null;
+};
+
+export type SuccessfulRunHandoffExhaustionDecision =
+  | {
+      kind: "stand_down";
+      reason: string;
+      /** resolutionNote for resolving a stale missing_disposition action. */
+      resolutionNote: string;
+    }
+  | { kind: "skip"; reason: string }
+  | { kind: "escalate" };
+
+/**
+ * Decides what an exhausted bounded corrective handoff means NOW, against the
+ * issue's current durable ownership — not against the run that exhausted the
+ * budget. Process success is not next-action ownership: a run that succeeded
+ * without a disposition may have been superseded by an owned durable wait
+ * (operator-held delivery, dependency gate, pause hold, reviewer path), and
+ * escalating such an issue to a board-owned `missing_disposition` action is
+ * the cancelled/recreated escalation storm. Conversely a real missing
+ * disposition still escalates exactly once to a stable board-owned identity.
+ *
+ * Pure: every input is persisted state read by the caller. Nothing here
+ * manufactures a disposition or automates past a board gate; a stand-down only
+ * retires the stale missing-disposition verdict when another owner verifiably
+ * holds the next action.
+ */
+export function decideSuccessfulRunHandoffExhaustion(
+  surface: SuccessfulRunHandoffExhaustionSurface,
+): SuccessfulRunHandoffExhaustionDecision {
+  if (surface.pluginManagedIssueLifecycle) {
+    return { kind: "skip", reason: "issue lifecycle is owned by a plugin" };
+  }
+  if (surface.issueStatus === "done" || surface.issueStatus === "cancelled") {
+    return { kind: "skip", reason: `issue status ${surface.issueStatus} is terminal` };
+  }
+  if (surface.issueStatus === "in_review") {
+    return {
+      kind: "stand_down",
+      reason: "issue status in_review is a valid disposition",
+      resolutionNote: "issue_disposition_recorded:in_review",
+    };
+  }
+  if (surface.issueStatus === "blocked") {
+    if (surface.hasNativeDeliveryHold) {
+      return {
+        kind: "stand_down",
+        reason: "operator-held native delivery owns the next action",
+        resolutionNote: "durable_path_restored:native_delivery_hold",
+      };
+    }
+    if (surface.hasDependenciesBlocked) {
+      return {
+        kind: "stand_down",
+        reason: "issue dependencies own the next action",
+        resolutionNote: "durable_path_restored:dependency_gate",
+      };
+    }
+    if (surface.hasDurableWaitingPath) {
+      return {
+        kind: "stand_down",
+        reason: "blocked issue has a durable waiting path",
+        resolutionNote: `durable_path_restored:${surface.durablePathReason ?? "unknown"}`,
+      };
+    }
+    if (
+      surface.activeRecoveryAction &&
+      surface.activeRecoveryAction.cause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+    ) {
+      // The exhausted handoff already owns the escalation: one board-owned
+      // action, one notice, no repeated cancelled/recreated rows. Re-running
+      // the escalation would only rewrite status and churn evidence.
+      return {
+        kind: "skip",
+        reason: "missing disposition escalation already owns the issue",
+      };
+    }
+    return { kind: "escalate" };
+  }
+  if (surface.hasNativeDeliveryHold) {
+    return {
+      kind: "stand_down",
+      reason: "operator-held native delivery owns the next action",
+      resolutionNote: "durable_path_restored:native_delivery_hold",
+    };
+  }
+  if (surface.hasDependenciesBlocked) {
+    return {
+      kind: "stand_down",
+      reason: "issue dependencies own the next action",
+      resolutionNote: "durable_path_restored:dependency_gate",
+    };
+  }
+  if (surface.hasDurableWaitingPath) {
+    return {
+      kind: "stand_down",
+      reason: "blocked issue has a durable waiting path",
+      resolutionNote: `durable_path_restored:${surface.durablePathReason ?? "unknown"}`,
+    };
+  }
+  if (surface.hasActiveExecutionPath) {
+    return {
+      kind: "stand_down",
+      reason: "issue already has an active execution path",
+      resolutionNote: "durable_path_restored:active_execution_path",
+    };
+  }
+  if (surface.hasOpenRecoveryIssue) {
+    return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
+  }
+  if (surface.hasPauseHold) {
+    return {
+      kind: "stand_down",
+      reason: "issue is under an active pause hold",
+      resolutionNote: "durable_path_restored:pause_hold",
+    };
+  }
+  return { kind: "escalate" };
 }

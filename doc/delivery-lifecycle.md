@@ -255,8 +255,19 @@ Dependency edges are operator-governed.
   failing checks, not unrelated check churn. Exhaustion records
   `repair_attempts_exhausted` and releases the native waiting claim so recovery
   can act. An explicit retry requests unchanged evidence again without resetting
-  the bound. Native merge-queue failures use the same repair path and count
-  toward the merge-attempt bound.
+  the bound. Provider admission refusals (`merge_queue_blocked` and
+  `merge_queue_unsupported`) are owned delivery waits, not code-repair failures:
+  they retain their evidence and next-check time without consuming an executed
+  merge attempt or waking the implementation owner. Webhooks and explicit
+  reconcile requests re-read provider state immediately; periodic sweeps respect
+  the recorded next-check time. Historical attempt counts are never reset.
+  Issue status, delivery phase, and board placement return to `in_review` while
+  admission is blocked; readiness returns only after fresh evidence permits it.
+- When GitHub requires conversation resolution, every unresolved review thread
+  blocks readiness, including outdated threads. An `addressed` flag is not
+  GitHub resolution evidence. Read the branch's effective rules and legacy
+  branch-protection endpoint; unreadable requirements or incomplete thread
+  evidence fail closed rather than inventing permission to merge.
 - Repair dedupe is bound to the durable execution, not to the recorded signal
   string. Each attempt stores the evidence `signal` it was dispatched for and
   the `candidate_generation` it was decided at, and the wake payload carries the

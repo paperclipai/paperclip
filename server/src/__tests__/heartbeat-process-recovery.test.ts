@@ -29,6 +29,9 @@ import {
   documentAnnotationComments,
   documentAnnotationThreads,
   createDb,
+  deliveryRepositories,
+  deliveryUnitIssues,
+  deliveryUnits,
   documentRevisions,
   documents,
   environmentLeases,
@@ -420,6 +423,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await waitForHeartbeatIdle(db, 5_000);
     await new Promise((resolve) => setTimeout(resolve, 100));
     await db.delete(activityLog);
+    await db.delete(deliveryUnitIssues);
+    await db.delete(deliveryUnits);
+    await db.delete(deliveryRepositories);
     await db.delete(agentRuntimeState);
     await db.delete(companySkills);
     await db.delete(costEvents);
@@ -5001,7 +5007,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     ).toBe(true);
   });
 
-  it("escalates an exhausted successful handoff run that still leaves no disposition", async () => {
+  it("retires an exhausted handoff escalation when an operator-held delivery owns the next action", async () => {
     const { companyId, agentId, runId, issueId } =
       await seedStrandedIssueFixture({
         status: "in_progress",
@@ -5048,6 +5054,34 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       latestRunStatus: "succeeded",
       missingDisposition: "clear_next_step",
     });
+
+    // A later legitimate hold supersedes the missing-disposition verdict.
+    // The source is already blocked by that verdict, not an in-progress candidate.
+    const repositoryId = randomUUID();
+    const unitId = randomUUID();
+    await db.insert(deliveryRepositories).values({
+      id: repositoryId, companyId, owner: "acme", name: "held-delivery", defaultBranch: "main",
+    });
+    const pausedAt = new Date();
+    await db.insert(deliveryUnits).values({
+      id: unitId, companyId, repositoryId, primaryIssueId: issueId,
+      targetBranch: "main", sourceBranch: "delivery/held", headSha: "a".repeat(40),
+      status: "blocked", pausedAt, ownerAgentId: agentId,
+      blocker: { reasonCode: "operator_paused", message: "Verification hold", owner: null, nextAction: "Operator releases after verification" },
+    });
+    await db.insert(deliveryUnitIssues).values({ companyId, unitId, issueId, role: "primary" });
+    const beforeRuns = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    const settled = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(settled.successfulRunHandoffSuperseded).toBe(1);
+    const [retired] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, recoveryAction.id));
+    expect(retired).toMatchObject({ status: "resolved", resolutionNote: "durable_path_restored:native_delivery_hold" });
+    const [heldIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(heldIssue).toMatchObject({ status: "blocked", assigneeAgentId: agentId });
+    const [heldUnit] = await db.select().from(deliveryUnits).where(eq(deliveryUnits.id, unitId));
+    expect(heldUnit?.pausedAt).toEqual(pausedAt);
+    await heartbeat.reconcileStrandedAssignedIssues();
+    expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toEqual(beforeRuns);
+    expect(await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([{ id: recoveryAction.id }]);
   });
 
   it("converts a continuation parked for review into a dependency wait on its open sub-tasks", async () => {

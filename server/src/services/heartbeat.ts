@@ -390,6 +390,12 @@ import {
 } from "./recovery/disposition-repair.js";
 import { readExecutableRepairIntent } from "./recovery/executable-repair-intent.js";
 import {
+  buildRunnerTimeoutContinuationIdempotencyKey,
+  decideRunnerTimeoutContinuation,
+  findExistingRunnerTimeoutContinuationWake,
+  readPersistedRunnerTimeout,
+} from "./recovery/runner-timeout-continuation.js";
+import {
   buildIssueReviewPathLostIdempotencyKey,
   decideIssueReviewPathRecovery,
   ISSUE_REVIEW_PATH_LOST_WAKE_REASON,
@@ -402,7 +408,14 @@ import {
   readReviewWaitState,
   type AcceptedReviewResume,
 } from "./recovery/review-wait-state.js";
-import { getNativeDeliveryWait } from "./delivery/native-delivery-wait.js";
+import { getNativeDeliveryHold, getNativeDeliveryWait } from "./delivery/native-delivery-wait.js";
+import {
+  SUPPRESSED_WAKE_DEFERRED_CONTEXT_KEY,
+  buildSuppressedWakeParkMarker,
+  dependencyWaitRecheckDelayMs,
+  readSuppressedWakeParkMarker,
+  rearmSuppressedWakeParkMarker,
+} from "./recovery/suppression-wait.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
@@ -531,7 +544,9 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
   "environment.lease_acquired",
   "environment.lease_released",
 ];
-const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
+// Canonical key for the deferred-wake context carrier; shared with the
+// suppression-wait park so parked and busy-deferred rows stay one carrier.
+const DEFERRED_WAKE_CONTEXT_KEY = SUPPRESSED_WAKE_DEFERRED_CONTEXT_KEY;
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const ACCEPTED_PLAN_CONVERSION_SKILL_KEY =
@@ -4117,6 +4132,13 @@ export function buildReferencedProjectRunObservability(input: {
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    : [];
+}
+
 
 function sanitizeAgentSessionMessageText(value: unknown): string | null {
   const text = readNonEmptyString(value);
@@ -11631,6 +11653,8 @@ export function heartbeatService(
       pauseHold,
       activeRoutineContinuation,
       nativeDeliveryWait,
+      nativeDeliveryHold,
+      dependencyReadiness,
     ] = await Promise.all([
       issue
         ? db
@@ -11779,6 +11803,14 @@ export function heartbeatService(
       issue
         ? getNativeDeliveryWait(db, issue.companyId, issue.id)
         : Promise.resolve(null),
+      issue
+        ? getNativeDeliveryHold(db, issue.companyId, issue.id)
+        : Promise.resolve(null),
+      issue
+        ? issuesSvc
+            .listDependencyReadiness(issue.companyId, [issue.id])
+            .then((map) => map.get(issue.id) ?? null)
+        : Promise.resolve(null),
     ]);
 
     // A linked delivery unit owns the next handoff action only while its next
@@ -11826,6 +11858,10 @@ export function heartbeatService(
       ),
       hasPersistedMonitor: Boolean(issue?.monitorNextCheckAt),
       hasNativeDeliveryWait: Boolean(nativeDeliveryWait) && nativeDeliveryWaitOwned,
+      hasNativeDeliveryHold: Boolean(nativeDeliveryHold),
+      hasDependenciesBlocked: dependencyReadiness
+        ? !dependencyReadiness.isDependencyReady
+        : false,
       hasExplicitBlockerPath: Boolean(explicitBlocker),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
@@ -13993,6 +14029,73 @@ export function heartbeatService(
     return cancelled;
   }
 
+  // The dependency gate owns the next action for a parked retry, so the wait
+  // lifetime is the blocker owner's decision, never a clock. Only the recheck
+  // RATE is bounded: 60s doubling per unchanged recheck up to 15min.
+  /**
+   * Re-arms a due scheduled retry in place while its issue's dependencies are
+   * still blocked: same row, same queue position, no cancel, no new run, no
+   * notice, no synthetic exhaustion. The wait ends when the blocker's owner
+   * resolves it (or an operator/gate changes the issue state, which the
+   * promotion gate then evaluates).
+   */
+  async function rearmDependencyWaitRetryRun(
+    dueRun: typeof heartbeatRuns.$inferSelect,
+    gate: Extract<
+      ScheduledRetryGate,
+      { allowed: false; errorCode: "issue_dependencies_blocked" }
+    >,
+    now: Date,
+  ) {
+    const context = parseObject(dueRun.contextSnapshot);
+    const previousMarker = readSuppressedWakeParkMarker(context);
+    const nextMarker = previousMarker
+      ? rearmSuppressedWakeParkMarker(previousMarker, now)
+      : buildSuppressedWakeParkMarker({
+          cause: "issue_dependencies_blocked",
+          now,
+          unresolvedBlockerIssueIds: readStringArray(
+            gate.details.unresolvedBlockerIssueIds,
+          ),
+          wakeReason: dueRun.scheduledRetryReason,
+        });
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({
+        scheduledRetryAt: new Date(
+          now.getTime() +
+            dependencyWaitRecheckDelayMs(previousMarker?.rechecks ?? 0),
+        ),
+        contextSnapshot: {
+          ...context,
+          suppressedWakePark: nextMarker,
+          unresolvedBlockerIssueIds: readStringArray(
+            gate.details.unresolvedBlockerIssueIds,
+          ),
+        },
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(heartbeatRuns.id, dueRun.id),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+        ),
+      )
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!updated) return null;
+    logger.info(
+      {
+        event: "dependency_wait_rearmed",
+        runId: dueRun.id,
+        rechecks: nextMarker.rechecks,
+        unresolvedBlockerIssueIds: nextMarker.unresolvedBlockerIssueIds,
+      },
+      "dependency-blocked scheduled retry re-armed in place",
+    );
+    return updated;
+  }
+
   async function promoteScheduledRetryRun(
     dueRun: typeof heartbeatRuns.$inferSelect,
     now: Date,
@@ -14044,6 +14147,24 @@ export function heartbeatService(
       ) {
         // Preserve legacy transient retry behavior for runs that only carry a
         // loose task context rather than a persisted issue row.
+      } else if (gate.errorCode === "issue_dependencies_blocked") {
+        // The dependency gate still owns the next action. Re-arm the SAME run
+        // in place — same row, same queue position, no cancel, no new run, no
+        // notice, no synthetic exhaustion — on an escalating recheck cadence.
+        // The wait ends only when the blocker's owner resolves it or the
+        // gate's other guards change; the cancel fallback below covers only a
+        // lost concurrent row update.
+        const rearmed = await rearmDependencyWaitRetryRun(dueRun, gate, now);
+        if (rearmed) return { outcome: "not_promoted", run: rearmed };
+        const cancelled = await cancelScheduledRetryForGate(dueRun, gate, now);
+        return cancelled
+          ? {
+              outcome: "gate_suppressed",
+              run: cancelled,
+              reason: gate.reason,
+              errorCode: gate.errorCode,
+            }
+          : { outcome: "not_promoted", run: null };
       } else {
         const cancelled = await cancelScheduledRetryForGate(dueRun, gate, now);
         return cancelled
@@ -14067,10 +14188,14 @@ export function heartbeatService(
       return { outcome: "not_promoted", run: extended ?? dueRun };
     }
 
+    const promotedContextSnapshot = parseObject(dueRun.contextSnapshot);
+    // Admission ends the park; queued runs must participate in execution ownership.
+    delete promotedContextSnapshot.suppressedWakePark;
     const promoted = await db
       .update(heartbeatRuns)
       .set({
         status: "queued",
+        contextSnapshot: promotedContextSnapshot,
         updatedAt: now,
       })
       .where(
@@ -25253,6 +25378,70 @@ export function heartbeatService(
         return { kind: "released" as const };
       }
 
+      // A contained run that timed out with real work behind it continues the
+      // SAME worker session from its checkpoint, bounded by its own attempt
+      // budget. The finalize path must not bypass that chain with a generic
+      // `issue.continuation_recovery` successor: that run carries no attempt
+      // counter, so the next timeout would read attempt 0 and restart the
+      // whole bounded chain. Decide the bounded continuation first; the shared
+      // recovery insertion below mints the successor with the bounded
+      // source/identity/context when the decision enqueues.
+      const finalizeTimeoutEvidence = readPersistedRunnerTimeout(run);
+      let finalizeTimeoutEnqueue: Extract<
+        ReturnType<typeof decideRunnerTimeoutContinuation>,
+        { kind: "enqueue" }
+      > | null = null;
+      if (finalizeTimeoutEvidence) {
+        const finalizeTimeoutAttempt = readContinuationAttempt(
+          parseObject(run.contextSnapshot).livenessContinuationAttempt,
+        );
+        const finalizeTimeoutWake = await findExistingRunnerTimeoutContinuationWake(db, {
+          companyId: issue.companyId,
+          idempotencyKey: buildRunnerTimeoutContinuationIdempotencyKey({
+            issueId: issue.id,
+            sourceRunId: run.id,
+            nextAttempt: finalizeTimeoutAttempt + 1,
+          }),
+        });
+        const finalizeTimeoutDecision = decideRunnerTimeoutContinuation({
+          run,
+          issue,
+          agent: recoveryAgent,
+          evidence: finalizeTimeoutEvidence,
+          continuationAttempt: finalizeTimeoutAttempt,
+          budgetBlocked: Boolean(
+            await budgets.getInvocationBlock(issue.companyId, run.agentId, {
+              issueId: issue.id,
+              projectId: issue.projectId,
+            }),
+          ),
+          idempotentWakeExists: Boolean(finalizeTimeoutWake),
+        });
+        if (
+          finalizeTimeoutDecision.kind === "duplicate" ||
+          finalizeTimeoutDecision.kind === "exhausted"
+        ) {
+          // duplicate: the bounded wake already owns this attempt; a generic
+          // successor would fork the chain. exhausted: the recovery sweep owns
+          // the escalation with its dedicated timeout semantics. Either way
+          // the finalize path stands down instead of re-deriving generically.
+          return { kind: "released" as const };
+        }
+        if (finalizeTimeoutDecision.kind === "enqueue") {
+          finalizeTimeoutEnqueue = finalizeTimeoutDecision;
+        } else if (finalizeTimeoutEvidence.resumable && (finalizeTimeoutEvidence.progress?.requests ?? 0) > 0) {
+          // The resumable evidence is valid, but a lifecycle gate refuses the
+          // continuation (budget, execution policy state, agent or issue no
+          // longer continuable). A generic successor here would restart the
+          // task and repeat effects whose receipts already exist; stand down
+          // and let the recovery sweep handle the refused intent.
+          return { kind: "released" as const };
+        }
+        // skip with invalid/non-resumable evidence: the bounded lane does not
+        // apply to this run; the generic immediate recovery below stays
+        // authoritative.
+      }
+
       if (issue.originKind === RECOVERY_ORIGIN_KINDS.strandedIssueRecovery) {
         return {
           kind: "blocked_recovery_in_place" as const,
@@ -25266,12 +25455,12 @@ export function heartbeatService(
         !recoveryAgent ||
         isWorkspaceValidationFailedRun(run) ||
         isConfigurationIncompleteFailedRun(run) ||
-        didAutomaticRecoveryFail(
+        (!finalizeTimeoutEnqueue && didAutomaticRecoveryFail(
           run,
           issue.status === "todo"
             ? "assignment_recovery"
             : "issue_continuation_needed",
-        );
+        ));
       if (shouldBlockImmediately) {
         const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);
         const configurationIncompleteFailure =
@@ -25304,8 +25493,9 @@ export function heartbeatService(
         issue.status === "todo"
           ? "issue_assignment_recovery"
           : "issue_continuation_needed";
-      const recoverySource =
-        issue.status === "todo"
+      const recoverySource = finalizeTimeoutEnqueue
+        ? "issue.runner_timeout_continuation"
+        : issue.status === "todo"
           ? "issue.assignment_recovery"
           : "issue.continuation_recovery";
       const now = new Date();
@@ -25317,9 +25507,33 @@ export function heartbeatService(
           retryReason,
           source: recoverySource,
           retryOfRunId: run.id,
+          // The bounded timeout continuation advances the run's own attempt
+          // counter and carries the exact resumable session; the generic
+          // continuation stays untouched without it.
+          ...(finalizeTimeoutEnqueue
+            ? {
+                ...finalizeTimeoutEnqueue.extraContext,
+                livenessContinuationAttempt: finalizeTimeoutEnqueue.nextAttempt,
+                livenessContinuationMaxAttempts: finalizeTimeoutEnqueue.maxAttempts,
+                livenessContinuationSourceRunId: run.id,
+              }
+            : {}),
         },
         "normal_model",
       );
+      const timeoutContextPayload = finalizeTimeoutEnqueue
+        ? withRecoveryContext(
+            {
+              issueId: issue.id,
+              retryOfRunId: run.id,
+              ...finalizeTimeoutEnqueue.extraContext,
+              livenessContinuationAttempt: finalizeTimeoutEnqueue.nextAttempt,
+              livenessContinuationMaxAttempts: finalizeTimeoutEnqueue.maxAttempts,
+              livenessContinuationSourceRunId: run.id,
+            },
+            "normal_model",
+          )
+        : null;
       const responsibleUserId = await resolveResponsibleUserIdForRunSeed({
         companyId: issue.companyId,
         contextSnapshot: recoveryContextSnapshot,
@@ -25356,16 +25570,21 @@ export function heartbeatService(
           source: "automation",
           triggerDetail: "system",
           reason: recoveryReason,
-          payload: withRecoveryContext(
-            {
-              issueId: issue.id,
-              retryOfRunId: run.id,
-            },
-            "normal_model",
-          ),
+          payload: timeoutContextPayload ??
+            withRecoveryContext(
+              {
+                issueId: issue.id,
+                retryOfRunId: run.id,
+              },
+              "normal_model",
+            ),
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
+          // One idempotent attempt per bounded timeout continuation.
+          ...(finalizeTimeoutEnqueue
+            ? { idempotencyKey: finalizeTimeoutEnqueue.idempotencyKey }
+            : {}),
           updatedAt: now,
         })
         .returning()
@@ -25382,8 +25601,18 @@ export function heartbeatService(
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: recoveryContextSnapshot,
           responsibleUserId,
-          sessionIdBefore: recoverySessionBefore,
+          // The bounded continuation resumes the timed-out run's own session
+          // checkpoint, not an unrelated prior session.
+          sessionIdBefore:
+            readNonEmptyString(finalizeTimeoutEnqueue?.resumeSessionId) ??
+            recoverySessionBefore,
           retryOfRunId: run.id,
+          // The physical attempt column advances with the bounded chain so
+          // acceptance/E2E and the sweep read the real counter, not only the
+          // context snapshot.
+          ...(finalizeTimeoutEnqueue
+            ? { continuationAttempt: finalizeTimeoutEnqueue.nextAttempt }
+            : {}),
           updatedAt: now,
         })
         .returning()
@@ -25469,6 +25698,180 @@ export function heartbeatService(
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
+  type SuppressedWakeParkInput = {
+    cause: "issue_dependencies_blocked" | "scheduling_suppressed";
+    companyId: string;
+    agentId: string;
+    issueId: string | null;
+    source: WakeupOptions["source"];
+    triggerDetail: WakeupOptions["triggerDetail"];
+    reason: string | null;
+    payload: Record<string, unknown> | null;
+    contextSnapshot: Record<string, unknown>;
+    unresolvedBlockerIssueIds?: string[];
+    schedulingReason?: string | null;
+    requestedByActorType: "user" | "agent" | "system" | null;
+    requestedByActorId: string | null;
+    idempotencyKey: string | null;
+    now: Date;
+  };
+
+  /**
+   * Parks a wake whose guard refuses admission (issue dependencies blocked,
+   * scheduling suppression) on the existing scheduled-retry queue carrier:
+   * one durable run+wake pair per intent identity. Identity is the wake's own
+   * source identity — (company, agent, issue, reason, idempotencyKey,
+   * retryOfRunId) — so a different authorized successor for the same issue is
+   * parked separately, while re-derivations of the SAME intent coalesce onto
+   * the first pair. Park, lookup and refresh run under a transaction-scoped
+   * advisory lock on that identity, so concurrent identical suppressions
+   * cannot race the read and mint duplicate pairs. Promotion re-evaluates the
+   * current guard before a single admitted execution; the intent survives
+   * restarts.
+   */
+  async function parkSuppressedWakeIntent(dbOrTx: Db, input: SuppressedWakeParkInput) {
+    const intentLockKey = [
+      "suppressed-wake-park",
+      input.companyId,
+      input.agentId,
+      input.issueId ?? "",
+      input.reason ?? "",
+      input.idempotencyKey ?? "",
+      input.cause,
+    ].join(":");
+    // Serialize park lookup + insert against concurrent same-intent wakes.
+    await dbOrTx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${intentLockKey}, 0))`,
+    );
+    const marker = buildSuppressedWakeParkMarker({
+      cause: input.cause,
+      now: input.now,
+      unresolvedBlockerIssueIds: input.unresolvedBlockerIssueIds,
+      schedulingReason: input.schedulingReason,
+      wakeReason: input.reason,
+      idempotencyKey: input.idempotencyKey,
+      retryOfRunId: readNonEmptyString(input.payload?.retryOfRunId),
+    });
+    const parkedContext: Record<string, unknown> = {
+      ...input.contextSnapshot,
+      suppressedWakePark: marker,
+    };
+    const parkedPayload: Record<string, unknown> = {
+      ...(input.payload ?? {}),
+      ...(input.issueId ? { issueId: input.issueId } : {}),
+      ...(input.unresolvedBlockerIssueIds
+        ? { unresolvedBlockerIssueIds: input.unresolvedBlockerIssueIds }
+        : {}),
+      [DEFERRED_WAKE_CONTEXT_KEY]: parkedContext,
+    };
+    const intentRetryOfRunId = readNonEmptyString(input.payload?.retryOfRunId);
+
+    const existingPark = await dbOrTx
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          sql`${heartbeatRuns.contextSnapshot} -> 'suppressedWakePark' ->> 'cause' is not null`,
+          input.issueId
+            ? sql`(
+                ${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}
+                or ${heartbeatRuns.contextSnapshot} ->> 'taskId' = ${input.issueId}
+              )`
+            : sql`(${heartbeatRuns.contextSnapshot} ->> 'issueId') is null`,
+          sql`coalesce(${heartbeatRuns.contextSnapshot} -> 'suppressedWakePark' ->> 'wakeReason', '') = ${input.reason ?? ""}`,
+          // Intent identity: only coalesce onto the SAME authorized intent.
+          sql`coalesce(${heartbeatRuns.contextSnapshot} -> 'suppressedWakePark' ->> 'idempotencyKey', '') = ${input.idempotencyKey ?? ""}`,
+          sql`coalesce(${heartbeatRuns.contextSnapshot} -> 'suppressedWakePark' ->> 'retryOfRunId', '') = ${intentRetryOfRunId ?? ""}`,
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+
+    if (existingPark) {
+      // Refresh in place: keep the ORIGINAL identity, payload and source run;
+      // only the suppression bookkeeping advances.
+      const refreshedMarker = buildSuppressedWakeParkMarker({
+        cause: input.cause,
+        now: input.now,
+        unresolvedBlockerIssueIds: input.unresolvedBlockerIssueIds,
+        idempotencyKey: input.idempotencyKey,
+        retryOfRunId: intentRetryOfRunId,
+        previous: readSuppressedWakeParkMarker(parseObject(existingPark.contextSnapshot)),
+      });
+      await dbOrTx
+        .update(heartbeatRuns)
+        .set({
+          contextSnapshot: {
+            ...parseObject(existingPark.contextSnapshot),
+            suppressedWakePark: refreshedMarker,
+          },
+          updatedAt: input.now,
+        })
+        .where(
+          and(
+            eq(heartbeatRuns.id, existingPark.id),
+            eq(heartbeatRuns.status, "scheduled_retry"),
+          ),
+        );
+      if (existingPark.wakeupRequestId) {
+        await dbOrTx
+          .update(agentWakeupRequests)
+          .set({
+            coalescedCount: sql`${agentWakeupRequests.coalescedCount} + 1`,
+            updatedAt: input.now,
+          })
+          .where(eq(agentWakeupRequests.id, existingPark.wakeupRequestId));
+      }
+      return;
+    }
+
+    const wake = await dbOrTx
+      .insert(agentWakeupRequests)
+      .values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        source: input.source,
+        triggerDetail: input.triggerDetail,
+        reason: input.reason,
+        payload: parkedPayload,
+        status: "queued",
+        requestedByActorType: input.requestedByActorType,
+        requestedByActorId: input.requestedByActorId,
+        idempotencyKey: input.idempotencyKey,
+        updatedAt: input.now,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    const parkedRun = await dbOrTx
+      .insert(heartbeatRuns)
+      .values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        invocationSource: input.source,
+        triggerDetail: input.triggerDetail,
+        status: "scheduled_retry",
+        wakeupRequestId: wake.id,
+        // The parked intent has not executed anything; it is a preserved wake,
+        // not a consumed attempt.
+        retryOfRunId: readNonEmptyString(parkedPayload.retryOfRunId) ?? null,
+        scheduledRetryAt: new Date(input.now.getTime() + computeWorkspaceBusyRetryDelayMs()),
+        scheduledRetryAttempt: 0,
+        scheduledRetryReason: input.cause,
+        contextSnapshot: parkedContext,
+        updatedAt: input.now,
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    await dbOrTx
+      .update(agentWakeupRequests)
+      .set({ runId: parkedRun.id, updatedAt: input.now })
+      .where(eq(agentWakeupRequests.id, wake.id));
+  }
+
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
@@ -25543,8 +25946,28 @@ export function heartbeatService(
 
     const schedulingSuppression = await getSchedulingSuppression();
     if (schedulingSuppression.suppressed) {
-      await writeSkippedHeartbeatRequest("heartbeat.scheduling_suppressed", {
-        reason: schedulingSuppression.reason,
+      // Drain / restore / worktree suppression is a guard, not a verdict:
+      // park the intent on the scheduled-retry carrier so it survives the
+      // suppression window (and a restart inside it), coalesce repeated
+      // identical suppressions onto the same parked pair, and let the normal
+      // promotion path re-evaluate every guard before one admitted execution.
+      await db.transaction(async (tx) => {
+        await parkSuppressedWakeIntent(tx, {
+          cause: "scheduling_suppressed",
+          companyId: agent.companyId,
+          agentId,
+          issueId,
+          source,
+          triggerDetail,
+          reason,
+          payload,
+          contextSnapshot: enrichedContextSnapshot,
+          schedulingReason: schedulingSuppression.reason,
+          requestedByActorType: opts.requestedByActorType ?? null,
+          requestedByActorId: opts.requestedByActorId ?? null,
+          idempotencyKey: opts.idempotencyKey ?? null,
+          now: new Date(),
+        });
       });
       return null;
     }
@@ -26167,6 +26590,9 @@ export function heartbeatService(
                   ...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES,
                 ]),
                 sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+                // A parked intent owns a wake, not an execution lock. Repeated
+                // wakes must reach the gate and coalesce onto that same intent.
+                sql`${heartbeatRuns.contextSnapshot} -> 'suppressedWakePark' is null`,
               ),
             )
             .orderBy(
@@ -26235,23 +26661,33 @@ export function heartbeatService(
           !dependencyReadiness.isDependencyReady &&
           !blockedInteractionWake
         ) {
-          await tx.insert(agentWakeupRequests).values({
+          // The dependency gate owns the next action for this issue. Park the
+          // wake intent durably on the scheduled-retry carrier instead of
+          // writing one terminal skipped row per re-derivation: the parked
+          // pair keeps the original identity, payload and source-run context,
+          // later identical re-derivations coalesce onto it, and the existing
+          // promotion loop re-evaluates the guard and admits the intent once
+          // when the blockers resolve.
+          await parkSuppressedWakeIntent(tx as unknown as Db, {
+            cause: "issue_dependencies_blocked",
             companyId: agent.companyId,
             agentId,
+            issueId,
             source,
             triggerDetail,
-            reason: "issue_dependencies_blocked",
-            payload: {
-              ...(payload ?? {}),
-              issueId,
+            reason,
+            payload,
+            contextSnapshot: {
+              ...enrichedContextSnapshot,
               unresolvedBlockerIssueIds:
                 dependencyReadiness.unresolvedBlockerIssueIds,
             },
-            status: "skipped",
+            unresolvedBlockerIssueIds:
+              dependencyReadiness.unresolvedBlockerIssueIds,
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
-            finishedAt: new Date(),
+            now: new Date(),
           });
           return { kind: "skipped" as const };
         }

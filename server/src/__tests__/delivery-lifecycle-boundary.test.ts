@@ -44,6 +44,7 @@ import { deliveryMergeExecutor, DELIVERY_MAX_MERGE_ATTEMPTS } from "../services/
 import { deliveryReconciler } from "../services/delivery/reconciler.js";
 import type { GitHubCheckRun, GitHubDeliveryClient, GitHubReviewThread } from "../services/delivery/github-client.js";
 import { issueService } from "../services/issues.js";
+import { issueOverviewService } from "../services/issue-overviews.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -1396,6 +1397,11 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
       blocker: { reasonCode: "merge_queue_blocked" },
       queuePosition: null,
     });
+    expect((await issueOverviewService(db).list(companyId, [issue.id])).items[0]).toMatchObject({
+      phase: "in_review",
+      blocked: true,
+      blocker: { message: summary.blocker?.message },
+    });
     expect(await queue.getEntry(companyId, unit!.id)).toMatchObject({
       status: "blocked",
       lastErrorCode: "merge_queue_blocked",
@@ -1412,6 +1418,10 @@ describeEmbeddedPostgres("delivery lifecycle boundary regressions", () => {
     const [readmitted] = await db.select().from(issues).where(eq(issues.id, issue.id));
     expect(readmitted?.status).toBe("ready_to_merge");
     expect((await dependencies.units.buildSummary(companyId, issue.id)).phase).toBe("ready_to_merge");
+    expect((await issueOverviewService(db).list(companyId, [issue.id])).items[0]).toMatchObject({
+      phase: "ready_to_merge",
+      blocked: false,
+    });
     const outcomes = await executor.sweepRepository({ companyId, repositoryId: repository.id, targetBranch: "main", leaseOwner: "sweep-2" });
     expect(outcomes.at(-1)).toMatchObject({ merged: true });
     const [doneIssue] = await db.select().from(issues).where(eq(issues.id, issue.id));

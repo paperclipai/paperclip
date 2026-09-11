@@ -55,6 +55,7 @@ import {
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildSuccessfulRunHandoffExhaustedNotice,
+  decideSuccessfulRunHandoffExhaustion,
   isPluginManagedIssueLifecycle,
   noticeMetadataReferencesRecoveryAction,
   type SuccessfulRunHandoffNotice,
@@ -568,6 +569,10 @@ function isExhaustedSuccessfulRunHandoff(latestRun: LatestIssueRun) {
   return { ...evidence, exhausted: true };
 }
 
+type ExhaustedSuccessfulRunHandoffEvidence = NonNullable<
+  ReturnType<typeof isExhaustedSuccessfulRunHandoff>
+>;
+
 function issueIdFromRunContext(contextSnapshot: unknown) {
   const context = parseObject(contextSnapshot);
   return readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -916,13 +921,16 @@ export function recoveryService(
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string, agentId?: string | null) {
+    // `deferred_issue_execution` is a live parked intent (dependency-suppressed
+    // or issue-busy wake), not a discarded one: the recovery sweep must not
+    // re-derive and re-enqueue an identical wake while it is parked.
     return db
       .select({ id: agentWakeupRequests.id })
       .from(agentWakeupRequests)
       .where(
         and(
           eq(agentWakeupRequests.companyId, companyId),
-          eq(agentWakeupRequests.status, "queued"),
+          inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"]),
           sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
           agentId ? eq(agentWakeupRequests.agentId, agentId) : sql`true`,
         ),
@@ -1580,6 +1588,7 @@ export function recoveryService(
         eq(heartbeatRuns.companyId, input.issue.companyId),
         eq(heartbeatRuns.agentId, input.agentId),
         eq(heartbeatRuns.status, "scheduled_retry"),
+        eq(heartbeatRuns.scheduledRetryReason, "provider_quota_recovery"),
         sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issue.id}`,
       ))
       .orderBy(desc(heartbeatRuns.scheduledRetryAt))
@@ -1893,6 +1902,115 @@ export function recoveryService(
     return {
       attempt: Math.max(1, Math.floor(asNumber(context.dispositionRepairAttempt, 1))),
       fingerprint: readNonEmptyString(context.dispositionRepairFingerprint),
+    };
+  }
+
+  /**
+   * Guards the exhausted-handoff escalation against stale verdicts. Re-reads
+   * the issue and its CURRENT durable ownership (delivery hold/wait,
+   * dependency gate, pause hold, interactions, active execution path, existing
+   * board action) and lets the pure decision decide between escalating,
+   * standing the stale missing-disposition verdict down, and doing nothing. A
+   * stand-down resolves the stale board-owned `missing_disposition` action as
+   * covered — recorded, never manufactured into success, never re-minted.
+   */
+  async function reconcileSuccessfulRunHandoffExhaustion(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: LatestIssueRun;
+    evidence: ExhaustedSuccessfulRunHandoffEvidence | null;
+  }): Promise<
+    | { outcome: "stand_down"; reason: string; resolutionNote: string }
+    | { outcome: "skip"; reason: string }
+    | { outcome: "escalate" }
+  > {
+    const current = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, input.issue.companyId), eq(issues.id, input.issue.id)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!current) {
+      return { outcome: "skip", reason: "issue not found" };
+    }
+
+    const [sourceState, activeRecoveryAction, pauseHold, dependencyReadiness] = await Promise.all([
+      collectDispositionRepairSourceState(db, { issue: current }),
+      recoveryActionsSvc.getActiveForIssue(current.companyId, current.id),
+      isAutomaticRecoverySuppressedByPauseHold(db, current.companyId, current.id, treeControlSvc),
+      current.assigneeAgentId
+        ? issuesSvc
+            .listDependencyReadiness(current.companyId, [current.id])
+            .then((map) => map.get(current.id) ?? null)
+        : Promise.resolve(null),
+    ]);
+
+    const decision = decideSuccessfulRunHandoffExhaustion({
+      issueStatus: current.status,
+      pluginManagedIssueLifecycle: isPluginManagedIssueLifecycle(current),
+      hasDurableWaitingPath: sourceState.hasDurableWaitingPath,
+      durablePathReason: sourceState.durablePathReason,
+      hasNativeDeliveryHold: sourceState.hasNativeDeliveryHold,
+      hasDependenciesBlocked: dependencyReadiness
+        ? !dependencyReadiness.isDependencyReady
+        : false,
+      hasPauseHold: pauseHold,
+      hasActiveExecutionPath: sourceState.hasActiveExecutionPath,
+      hasOpenRecoveryIssue: false,
+      activeRecoveryAction: activeRecoveryAction
+        ? {
+            id: activeRecoveryAction.id,
+            kind: activeRecoveryAction.kind,
+            cause: activeRecoveryAction.cause,
+            ownerType: activeRecoveryAction.ownerType,
+          }
+        : null,
+    });
+
+    if (decision.kind === "escalate") return { outcome: "escalate" };
+    if (decision.kind === "skip") {
+      return { outcome: "skip", reason: decision.reason };
+    }
+
+    // Stand down: another owner verifiably holds the next action. Retire the
+    // stale missing-disposition verdict so the board-owned identity is not left
+    // active next to the real owner (the cancelled/recreated action storm).
+    if (
+      activeRecoveryAction &&
+      activeRecoveryAction.kind === "missing_disposition"
+    ) {
+      const resolved = await recoveryActionsSvc.resolveActiveForIssue({
+        companyId: current.companyId,
+        sourceIssueId: current.id,
+        actionId: activeRecoveryAction.id,
+        status: "resolved",
+        outcome: "restored",
+        resolutionNote: decision.resolutionNote,
+      });
+      if (resolved) {
+        await logActivity(db, {
+          companyId: current.companyId,
+          actorType: "system",
+          actorId: "recovery",
+          agentId: null,
+          runId: input.latestRun?.id ?? null,
+          action: "issue.successful_run_handoff_resolved",
+          entityType: "issue",
+          entityId: current.id,
+          details: {
+            label: "Successful run handoff superseded by an owned durable wait",
+            sourceRunId: input.evidence?.sourceRunId ?? activeRecoveryAction.sourceRunId,
+            correctiveRunId: input.evidence?.correctiveRunId ?? input.latestRun?.id ?? null,
+            resolvedBySkipReason: decision.reason,
+            resolutionNote: decision.resolutionNote,
+            recoveryActionId: activeRecoveryAction.id,
+          },
+        });
+      }
+    }
+    return {
+      outcome: "stand_down",
+      reason: decision.reason,
+      resolutionNote: decision.resolutionNote,
     };
   }
 
@@ -2903,7 +3021,20 @@ export function recoveryService(
       .where(
         and(
           isNull(issues.assigneeUserId),
-          inArray(issues.status, ["todo", "in_progress", "in_review"]),
+          or(
+            inArray(issues.status, ["todo", "in_progress", "in_review"]),
+            and(
+              eq(issues.status, "blocked"),
+              sql`exists (
+                select 1 from ${issueRecoveryActions}
+                where ${issueRecoveryActions.companyId} = ${issues.companyId}
+                  and ${issueRecoveryActions.sourceIssueId} = ${issues.id}
+                  and ${issueRecoveryActions.kind} = 'missing_disposition'
+                  and ${issueRecoveryActions.cause} = ${SUCCESSFUL_RUN_MISSING_STATE_REASON}
+                  and ${issueRecoveryActions.status} in ('active', 'escalated')
+              )`,
+            ),
+          ),
           or(
             sql`${issues.assigneeAgentId} is not null`,
             eq(issues.status, "in_review"),
@@ -2922,6 +3053,7 @@ export function recoveryService(
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
+      successfulRunHandoffSuperseded: 0,
       reviewParticipantRequeued: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,
@@ -2950,6 +3082,29 @@ export function recoveryService(
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+      if (
+        activeRecoveryAction?.kind === "missing_disposition" &&
+        activeRecoveryAction.cause === SUCCESSFUL_RUN_MISSING_STATE_REASON
+      ) {
+        const currentOwnership = await reconcileSuccessfulRunHandoffExhaustion({
+          issue,
+          latestRun,
+          evidence: isExhaustedSuccessfulRunHandoff(latestRun),
+        });
+        if (currentOwnership.outcome === "stand_down") {
+          result.successfulRunHandoffSuperseded += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        // This is ownership reconciliation, not permission to restart work.
+        continue;
+      }
+      if (issue.status === "blocked") {
+        result.skipped += 1;
+        continue;
+      }
       if (
         isUnsuccessfulTerminalIssueRun(latestRun) &&
         (
@@ -3015,10 +3170,6 @@ export function recoveryService(
       // continuation path. Generic stranded-work recovery must not race that
       // authority by launching another provider turn (most importantly after
       // bounded native-session recovery has reached terminal exhaustion).
-      const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(
-        issue.companyId,
-        issue.id,
-      );
       if (activeRecoveryAction?.ownerType === "board") {
         result.skipped += 1;
         continue;
@@ -3535,11 +3686,28 @@ export function recoveryService(
       }
       const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
       if (handoffEvidence) {
-        if (isPluginManagedIssueLifecycle(issue)) {
+        if (!handoffEvidence.exhausted) {
           result.skipped += 1;
           continue;
         }
-        if (!handoffEvidence.exhausted) {
+
+        // The bounded corrective handoff is spent, but "missing disposition"
+        // was a verdict about the moment the corrective run finished. Before
+        // escalating, re-evaluate the issue's CURRENT durable ownership: an
+        // operator-held delivery unit, the dependency gate, a pause hold, or
+        // any other owned waiting path supersedes the stale verdict, and an
+        // already-recorded board escalation stays the single stable owner.
+        const exhaustion = await reconcileSuccessfulRunHandoffExhaustion({
+          issue,
+          latestRun,
+          evidence: handoffEvidence,
+        });
+        if (exhaustion.outcome === "stand_down") {
+          result.successfulRunHandoffSuperseded += 1;
+          result.issueIds.push(issue.id);
+          continue;
+        }
+        if (exhaustion.outcome !== "escalate") {
           result.skipped += 1;
           continue;
         }
@@ -3620,97 +3788,6 @@ export function recoveryService(
         }
         continue;
       }
-      if (isUnsuccessfulTerminalIssueRun(latestRun)) {
-        const classification = classifyContinuationFailure(latestRun);
-
-        if (classification.errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
-          const resolved = await resolveContinuationWaitingOnReview(issue);
-          if (resolved) {
-            result.waitingOnReviewResolved += 1;
-            result.issueIds.push(issue.id);
-            continue;
-          }
-
-          const outcome = await reconcileDispositionRepair(issue, latestRun);
-          if (outcome === "queued") {
-            result.continuationRequeued += 1;
-            result.dispositionRepairRequeued += 1;
-            result.issueIds.push(issue.id);
-          } else if (outcome === "escalated") {
-            result.escalated += 1;
-            result.issueIds.push(issue.id);
-          } else {
-            result.skipped += 1;
-          }
-          continue;
-        }
-
-        if (classification.kind === "non_retryable") {
-          const updated = await escalateStrandedAssignedIssue({
-            issue,
-            previousStatus: "in_progress",
-            latestRun,
-            notice: {
-              body:
-                "Paperclip detected a non-retryable failure on this issue's continuation run " +
-                `(\`${classification.errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
-                "so it is visible for intervention.",
-              title: "Continuation failed",
-              tone: "danger",
-            },
-          });
-          if (updated) {
-            result.escalated += 1;
-            result.issueIds.push(issue.id);
-          } else {
-            result.skipped += 1;
-          }
-          continue;
-        }
-
-        if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
-          const { consecutive, latestFinishedAt } = await summarizeRecentContinuationRetries(
-            issue.companyId,
-            issue.id,
-            agentId,
-            classification.errorCode,
-          );
-          if (consecutive >= classification.maxAttempts) {
-            const attemptCopy = consecutive <= 1 ? "" : ` (${consecutive}× attempts)`;
-            const updated = await escalateStrandedAssignedIssue({
-              issue,
-              previousStatus: "in_progress",
-              latestRun,
-              notice: {
-                body:
-                  "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
-                  `execution disappeared, but it still has no live execution path${attemptCopy}. ` +
-                  "Moving it to `blocked` so it is visible for intervention.",
-                title: "No live execution path",
-                tone: "danger",
-              },
-            });
-            if (updated) {
-              result.escalated += 1;
-              result.issueIds.push(issue.id);
-            } else {
-              result.skipped += 1;
-            }
-            continue;
-          }
-
-          if (classification.baseBackoffMs > 0 && latestFinishedAt) {
-            const elapsed = Date.now() - latestFinishedAt.getTime();
-            const requiredDelay = classification.baseBackoffMs *
-              Math.pow(2, Math.max(0, consecutive - 1));
-            if (elapsed < requiredDelay) {
-              result.skipped += 1;
-              continue;
-            }
-          }
-        }
-      }
-
       // A contained run that timed out with real work behind it continues the
       // SAME worker session from its checkpoint, bounded by its own attempt
       // budget, instead of restarting the task (which repeats effects whose
@@ -3822,8 +3899,107 @@ export function recoveryService(
           continue;
         }
       }
+      if (isUnsuccessfulTerminalIssueRun(latestRun)) {
+        const classification = classifyContinuationFailure(latestRun);
+
+        if (classification.errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
+          const resolved = await resolveContinuationWaitingOnReview(issue);
+          if (resolved) {
+            result.waitingOnReviewResolved += 1;
+            result.issueIds.push(issue.id);
+            continue;
+          }
+
+          const outcome = await reconcileDispositionRepair(issue, latestRun);
+          if (outcome === "queued") {
+            result.continuationRequeued += 1;
+            result.dispositionRepairRequeued += 1;
+            result.issueIds.push(issue.id);
+          } else if (outcome === "escalated") {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        if (classification.kind === "non_retryable") {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun,
+            notice: {
+              body:
+                "Paperclip detected a non-retryable failure on this issue's continuation run " +
+                `(\`${classification.errorCode}\`). Skipping automatic retries and moving it to \`blocked\` ` +
+                "so it is visible for intervention.",
+              title: "Continuation failed",
+              tone: "danger",
+            },
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
+          const { consecutive, latestFinishedAt } = await summarizeRecentContinuationRetries(
+            issue.companyId,
+            issue.id,
+            agentId,
+            classification.errorCode,
+          );
+          if (consecutive >= classification.maxAttempts) {
+            const attemptCopy = consecutive <= 1 ? "" : ` (${consecutive}× attempts)`;
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: "in_progress",
+              latestRun,
+              notice: {
+                body:
+                  "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
+                  `execution disappeared, but it still has no live execution path${attemptCopy}. ` +
+                  "Moving it to `blocked` so it is visible for intervention.",
+                title: "No live execution path",
+                tone: "danger",
+              },
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
+          }
+
+          if (classification.baseBackoffMs > 0 && latestFinishedAt) {
+            const elapsed = Date.now() - latestFinishedAt.getTime();
+            const requiredDelay = classification.baseBackoffMs *
+              Math.pow(2, Math.max(0, consecutive - 1));
+            if (elapsed < requiredDelay) {
+              result.skipped += 1;
+              continue;
+            }
+          }
+        }
+      }
+
 
       if (await isInvocationBudgetBlocked(issue, agentId)) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // A live queued or parked wake already carries this issue's next
+      // action. Re-deriving the same continuation every sweep is the
+      // discarded-wake storm; skip while one exists.
+      if (await hasQueuedIssueWake(issue.companyId, issue.id, agentId)) {
         result.skipped += 1;
         continue;
       }

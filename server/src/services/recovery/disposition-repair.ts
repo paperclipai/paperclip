@@ -13,7 +13,7 @@ import {
   issues,
 } from "@paperclipai/db";
 import { parseIssueExecutionState } from "../issue-execution-policy.js";
-import { getNativeDeliveryWait } from "../delivery/native-delivery-wait.js";
+import { getNativeDeliveryHold, getNativeDeliveryWait } from "../delivery/native-delivery-wait.js";
 
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 
@@ -42,6 +42,10 @@ export type DispositionRepairSourceState = {
    * next move (today: a delivery unit whose implementation owner cannot run).
    * Callers must not treat such a path as a resolution. */
   durablePathActorCapable: boolean;
+  /** A linked delivery unit (or its policy) is explicitly held — operator pause
+   * or paused policy. A real human/business gate: it owns the next action, so
+   * it must never read as a missing disposition or as an unowned block. */
+  hasNativeDeliveryHold: boolean;
 };
 
 function stableJson(value: unknown): string {
@@ -114,7 +118,7 @@ export async function collectDispositionRepairSourceState(
   },
 ): Promise<DispositionRepairSourceState> {
   const issue = input.issue;
-  const [blockers, children, interactions, linkedApprovals, workProducts, activeRuns, queuedWakes, nativeDeliveryWait] =
+  const [blockers, children, interactions, linkedApprovals, workProducts, activeRuns, queuedWakes, nativeDeliveryWait, nativeDeliveryHold] =
     await Promise.all([
       db
         .select({ id: issues.id, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
@@ -217,6 +221,7 @@ export async function collectDispositionRepairSourceState(
           ),
         ),
       getNativeDeliveryWait(db, issue.companyId, issue.id),
+      getNativeDeliveryHold(db, issue.companyId, issue.id),
     ]);
 
   const pendingExecutionState = parseIssueExecutionState(issue.executionState);
@@ -253,9 +258,14 @@ export async function collectDispositionRepairSourceState(
             ? "interaction"
             : pendingApproval
               ? "approval"
-              : nativeDeliveryOwnerCapable
-                ? "native_delivery"
-                : null;
+              : nativeDeliveryHold
+                // An operator/policy pause is itself an owned durable wait: the
+                // hold's actor (operator) owns the next move. It ranks below a
+                // live controller wait but above "no path".
+                ? "native_delivery_hold"
+                : nativeDeliveryOwnerCapable
+                  ? "native_delivery"
+                  : null;
   const durablePathActorCapable = durablePathReason !== "native_delivery"
     ? true
     : nativeDeliveryOwnerCapable;
@@ -297,6 +307,20 @@ export async function collectDispositionRepairSourceState(
           blockerReasonCode: nativeDeliveryWait.blocker?.reasonCode ?? null,
         }
       : null,
+    // An explicit operator/policy hold is part of the decision surface too:
+    // pausing or releasing the hold must re-evaluate. The field is only present
+    // when a hold exists so every non-held fingerprint stays byte-identical to
+    // the pre-hold v1 digest (no budget or attempt reset at cutover).
+    ...(nativeDeliveryHold
+      ? {
+          nativeDeliveryHold: {
+            unitId: nativeDeliveryHold.unitId,
+            hold: nativeDeliveryHold.hold,
+            candidateGeneration: nativeDeliveryHold.candidateGeneration,
+            blockerReasonCode: nativeDeliveryHold.blocker?.reasonCode ?? null,
+          },
+        }
+      : {}),
   };
   const digest = createHash("sha256").update(stableJson(durableState)).digest("hex");
 
@@ -307,5 +331,6 @@ export async function collectDispositionRepairSourceState(
     hasDurableWaitingPath: durablePathReason !== null,
     durablePathReason,
     durablePathActorCapable,
+    hasNativeDeliveryHold: nativeDeliveryHold !== null,
   };
 }
