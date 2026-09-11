@@ -1191,6 +1191,7 @@ const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "execution_review_requested",
   "execution_approval_requested",
   "execution_changes_requested",
+  "execution_precondition_returned",
   "approval_approved",
 ]);
 const SESSIONED_LOCAL_ADAPTERS = new Set([
@@ -5465,7 +5466,8 @@ function shouldRequireIssueCommentForWake(
     wakeReason === "issue_assigned" ||
     wakeReason === "execution_review_requested" ||
     wakeReason === "execution_approval_requested" ||
-    wakeReason === "execution_changes_requested"
+    wakeReason === "execution_changes_requested" ||
+    wakeReason === "execution_precondition_returned"
   );
 }
 
