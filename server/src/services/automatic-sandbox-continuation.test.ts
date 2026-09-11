@@ -145,6 +145,15 @@ const support = await getEmbeddedPostgresTestSupport();
     await heartbeatService(db).resumeInterruptedSandboxRuns();
     expect(await successors(f.run.id)).toHaveLength(1);
   });
+  it("does not revive old work if a later run completes between preparation and scheduling", async () => {
+    const f = await seed();
+    expect(await prepareAutomaticSandboxContinuation(db, f.run)).not.toBeNull();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "succeeded",
+      startedAt: new Date(), finishedAt: new Date(), contextSnapshot: { issueId: f.issueId } });
+    const result = await heartbeatService(db).scheduleBoundedRetry(f.run.id);
+    expect(result.outcome).toBe("not_scheduled");
+    expect(await successors(f.run.id)).toHaveLength(0);
+  });
   it("finishes delivery after a crash between retiring the hold and scheduling", async () => {
     const f = await seed();
     expect(await prepareAutomaticSandboxContinuation(db, f.run)).not.toBeNull();

@@ -15,6 +15,17 @@ export async function runHasUnconfirmedRemoteExecution(db: Db, companyId: string
   return leases.some(lease => lease.provider && lease.provider !== "local" && !hasRemoteTerminationReceipt(lease));
 }
 
+export async function hasLaterSandboxExecution(db: Db, run: typeof heartbeatRuns.$inferSelect, issueId: string) {
+  const [successor] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, run.companyId),
+      sql`(${heartbeatRuns.retryOfRunId} = ${run.id} or
+        (coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}::text
+          and ${heartbeatRuns.createdAt} > ${run.createdAt.toISOString()}
+          and (${heartbeatRuns.startedAt} is not null or ${heartbeatRuns.status} in ('queued', 'running', 'scheduled_retry', 'succeeded'))))`,
+    )).limit(1);
+  return Boolean(successor);
+}
+
 /** Repair execution ownership independently of whether task admission is open.
  * A fresh conversation can inspect unknown prior effects; a stopped sandbox is
  * the prerequisite, not a user accepting responsibility for those effects. */
@@ -39,14 +50,7 @@ export async function prepareAutomaticSandboxContinuation(db: Db, source: typeof
     const recorded = await recordedRunAdapter(tx as unknown as Db, run);
     if (recorded && !isConversationAdapter(recorded)) return null;
     // A later execution owns current task work. Never revive an older request.
-    const [successor] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-      eq(heartbeatRuns.companyId, run.companyId),
-      sql`(${heartbeatRuns.retryOfRunId} = ${run.id} or
-        (coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issue.id}::text
-          and ${heartbeatRuns.createdAt} > ${run.createdAt.toISOString()}
-          and (${heartbeatRuns.startedAt} is not null or ${heartbeatRuns.status} in ('queued', 'running', 'scheduled_retry', 'succeeded'))))`,
-    )).limit(1);
-    if (successor) return null;
+    if (await hasLaterSandboxExecution(tx as unknown as Db, run, issue.id)) return null;
     const leases = await tx.select().from(environmentLeases).where(and(
       eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
     ));

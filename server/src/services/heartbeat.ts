@@ -1,5 +1,5 @@
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
-import { prepareAutomaticSandboxContinuation, runHasUnconfirmedRemoteExecution, SANDBOX_INFRASTRUCTURE_ERRORS } from "./automatic-sandbox-continuation.js";
+import { hasLaterSandboxExecution, prepareAutomaticSandboxContinuation, runHasUnconfirmedRemoteExecution, SANDBOX_INFRASTRUCTURE_ERRORS } from "./automatic-sandbox-continuation.js";
 import { LegacyControllerLeaseLostError, legacyControllerBootId, legacyControllerClaim, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
@@ -15062,6 +15062,13 @@ export function heartbeatService(
               run: existing,
               reusedExisting: true,
             };
+        }
+        // Preparation and scheduling can be separated by a crash or another
+        // admission. Recheck latest execution while holding the issue lock.
+        if (issueId && parseObject(run.resultJson?.automaticSandboxRecovery).state === "provider_terminated" &&
+            await hasLaterSandboxExecution(tx as unknown as Db, run, issueId)) {
+          return { outcome: "not_scheduled", reason: "A later execution owns the current task",
+            errorCode: "issue_execution_lock_changed", issueId, details: { runId: run.id } };
         }
         if (retryReason === INTERACTION_CONTINUATION_INFRA_RETRY_REASON) {
           if (issueId) {
