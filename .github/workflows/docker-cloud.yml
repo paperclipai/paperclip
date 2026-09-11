@@ -1,0 +1,264 @@
+name: Docker cloud
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+  workflow_call:
+
+permissions: {}
+
+# Independent SHAs can build immediately on separate existing hosted runners.
+# Repeated requests for the same source serialize without cancelling a build.
+# No mutable canary channel is promoted here; docker.yml owns that operation.
+concurrency:
+  group: docker-cloud-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push-cloud:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Full history and tags so `git describe` below can compute the
+          # release version to stamp into the image.
+          fetch-depth: 0
+
+      # `.git` is dockerignored, so a running image cannot derive its own
+      # version and otherwise reports the source package.json placeholder in
+      # analytics and the debug panel. Compute it here from the pristine
+      # checkout (real CalVer drift from the nearest release tag) and pass it
+      # into the build. Empty when no release tag is reachable — the server
+      # then keeps its existing fallbacks.
+      - name: Compute build version
+        id: build-version
+        run: |
+          set -euo pipefail
+          case "${GITHUB_REF}" in
+            refs/tags/nightly/v*)
+              # Lane tags carry the exact published version; stamp it verbatim
+              # instead of describing drift from the nearest stable tag.
+              version="${GITHUB_REF#refs/tags/nightly/v}"
+              ;;
+            refs/tags/beta/v*)
+              version="${GITHUB_REF#refs/tags/beta/v}"
+              ;;
+            *)
+              version="$(git describe --tags --match 'v*' --long --dirty 2>/dev/null || true)"
+              ;;
+          esac
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "Stamping build version: ${version:-<none>}"
+
+      # ISO week stamp for the Dockerfile's tool layer: the layer caches
+      # across commits and re-pulls the @latest CLI tools when the week rolls
+      # over, instead of on every build.
+      - name: Compute tool cache epoch
+        id: tools-epoch
+        run: echo "epoch=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
+      # Each SHA exports its own cache. Import recent first-parent caches so
+      # a late older build cannot overwrite a newer build's cache manifest.
+      # The legacy ref keeps the first builds warm during the transition.
+      - name: Select cloud cache ancestry
+        id: cloud-cache
+        env:
+          CACHE_IMAGE: ghcr.io/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          {
+            echo 'sources<<CACHE_SOURCES'
+            for commit in $(git rev-list --first-parent --max-count=10 HEAD); do
+              echo "type=registry,ref=$CACHE_IMAGE:buildcache-cloud-$commit"
+            done
+            echo "type=registry,ref=$CACHE_IMAGE:buildcache-cloud"
+            echo 'CACHE_SOURCES'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+          run_install: false
+
+      # No dependency cache here: this workflow publishes release images, and
+      # restoring a shared Actions cache into the build inputs would let a
+      # poisoned cache entry reach the published artifact.
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Refresh lockfile for Docker build context
+        run: |
+          set -euo pipefail
+          pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
+
+          changed="$(git status --porcelain)"
+          if [ -z "$changed" ]; then
+            echo "Lockfile already matches package metadata."
+            exit 0
+          fi
+
+          if printf '%s\n' "$changed" | grep -Fvq ' pnpm-lock.yaml'; then
+            echo "Unexpected files changed during lockfile refresh:"
+            echo "$changed"
+            exit 1
+          fi
+
+          echo "Using refreshed pnpm-lock.yaml in the Docker build context."
+
+      - name: Free runner disk
+        run: |
+          set -euo pipefail
+          echo "Disk before cleanup:"
+          df -h
+
+          pnpm store prune || true
+          sudo apt-get clean || true
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/share/swift \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /opt/hostedtoolcache/PyPy \
+            /opt/hostedtoolcache/Ruby || true
+          docker system prune -af || true
+
+          echo "Disk after cleanup:"
+          df -h
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      # Deployment tooling reads these labels from the registry to verify an
+      # image's schema expectations against a migrator before deploying it,
+      # without pulling the image. The server refuses to start when the
+      # database is missing bundled migrations, so orchestrators need a cheap
+      # way to check image/migrator compatibility up front.
+      - name: Compute schema migration labels
+        id: schema
+        run: |
+          set -euo pipefail
+          last=$(ls packages/db/src/migrations/*.sql | sed 's|.*/||' | LC_ALL=C sort | tail -1)
+          count=$(ls packages/db/src/migrations/*.sql | wc -l | tr -d ' ')
+          echo "last=${last}" >> "$GITHUB_OUTPUT"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+
+      # Published under the same lane tag set as the self-hosted image, with a
+      # `-cloud` suffix (nightly-cloud, latest-cloud, <version>-cloud,
+      # sha-<short>-cloud). `:canary-cloud` follows the same retag-step
+      # ownership rule as `:canary` above.
+      - name: Docker meta (cloud)
+        id: meta-cloud
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: |
+            suffix=-cloud,onlatest=true
+          tags: |
+            type=raw,value=nightly,enable=${{ startsWith(github.ref, 'refs/tags/nightly/v') }}
+            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/beta/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=sha
+          labels: |
+            io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
+            io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
+
+      - name: Build and push (cloud)
+        id: build-cloud
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          target: cloud
+          # Space-separated sandbox-provider directory names to build into
+          # the variant; add here when managed deployments need another.
+          # CLOUD_BUNDLED_SERVER_DEPS names the optional peer packages the
+          # variant installs from server/package.json's declared version;
+          # add another name there when a managed tenant needs it.
+          build-args: |
+            CLOUD_BUNDLED_PLUGINS=daytona
+            CLOUD_BUNDLED_SERVER_DEPS=@sentry/node
+            PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
+            PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
+            CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}
+          # amd64 only, unlike the self-hosted image above: the cloud variant
+          # is consumed exclusively by managed-deployment hosts, which run
+          # amd64. The QEMU-emulated arm64 half dominated this job's wall
+          # clock, and dropping it roughly halves time-to-deployable-image.
+          platforms: linux/amd64
+          push: true
+          # Same-SHA builds serialize above; different SHAs never share a
+          # writable cache ref. Registry layers are content-addressed and
+          # shared even when cache manifests have separate tags.
+          cache-from: ${{ steps.cloud-cache.outputs.sources }}
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-cloud-${{ github.sha }},mode=max
+          tags: ${{ steps.meta-cloud.outputs.tags }}
+          labels: ${{ steps.meta-cloud.outputs.labels }}
+
+      # The cloud target installs @sentry/node at the version
+      # server/package.json declares, into a directory the server's own
+      # module resolution walks. Verify the image this job just pushed, not
+      # a local build, so a build-cache or layer-ordering regression is
+      # caught before any tenant runs the image.
+
+      - name: Verify the pushed image resolves the declared Sentry version
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build-cloud.outputs.digest }}
+        run: |
+          set -euo pipefail
+
+          expected="$(node -e "process.stdout.write(require('./server/package.json').peerDependencies['@sentry/node'])")"
+          test -n "$expected"
+
+          installed="$(docker run --rm --pull always \
+            -v "$PWD/scripts/assert-cloud-image-sentry.mjs:/app/server/.ci-sentry-probe.mjs:ro" \
+            --entrypoint node "$IMAGE" /app/server/.ci-sentry-probe.mjs)"
+
+          echo "Declared optional peer version: $expected"
+          echo "Installed in the pushed image: $installed"
+          if [ "$installed" != "$expected" ]; then
+            echo "ERROR: the pushed image resolves @sentry/node@$installed, expected @sentry/node@$expected" >&2
+            exit 1
+          fi
+          echo "The pushed image resolves the declared @sentry/node version."
+
+      # Verify the independently published cloud image without waiting for
+      # the self-hosted manifest job. The Sentry check already pulled it.
+      - name: Verify cloud PID 1 reaps orphaned processes
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build-cloud.outputs.digest }}
+        run: docker run --rm -i "$IMAGE" sh -s < scripts/assert-orphan-reaping.sh
+
+      # Cloud's commit resolver and preview-artifact planner use the full SHA.
+      # Publish that address only after checking this build's exact digest.
+      # Retagging reuses the registry manifest and does not rebuild the image.
+      - name: Publish verified full-SHA cloud tag
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}@${{ steps.build-cloud.outputs.digest }}
+          FULL_SHA_TAG: ghcr.io/${{ github.repository }}:sha-${{ github.sha }}-cloud
+        run: |
+          set -euo pipefail
+          revision="$(docker image inspect "$IMAGE" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+          platform="$(docker image inspect "$IMAGE" --format '{{ .Os }}/{{ .Architecture }}')"
+          test "$revision" = "$GITHUB_SHA"
+          test "$platform" = linux/amd64
+          docker buildx imagetools create --prefer-index=false --tag "$FULL_SHA_TAG" "$IMAGE"

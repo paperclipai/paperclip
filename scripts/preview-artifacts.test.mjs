@@ -4,7 +4,7 @@ import { readFileSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { previewManifest, assertMetadata, validateRequest, versionFor, tarManifest, packageExists, imageExists, publishPreview, publishImage } from "./preview-artifacts.mjs";
 
 const sha = "a".repeat(40);
@@ -128,9 +128,58 @@ test("commits sharing a short prefix use separate full-SHA image addresses", asy
   assert.deepEqual(urls.filter((url) => url.includes("/manifests/")), [sha, other].map((commit) => `https://ghcr.io/v2/paperclipai/paperclip/manifests/sha-${commit}-cloud`));
 });
 
+test("cloud builds start per commit and preserve tag promotion dependencies", () => {
+  const docker = readFileSync(new URL("../.github/workflows/docker.yml", import.meta.url), "utf8");
+  const cloud = readFileSync(new URL("../.github/workflows/docker-cloud.yml", import.meta.url), "utf8");
+  assert.match(cloud, /branches: \[master\]/);
+  assert.match(cloud, /workflow_call:/);
+  assert.match(cloud, /group: docker-cloud-\$\{\{ github.sha \}\}/);
+  assert.match(cloud, /cancel-in-progress: false/);
+  assert.doesNotMatch(cloud, /uses: .*@v\d\b/);
+  assert.match(cloud, /cache-to: type=registry,ref=ghcr.io\/\$\{\{ github.repository \}\}:buildcache-cloud-\$\{\{ github.sha \}\},mode=max/);
+  const caller = docker.split("  build-and-push-cloud:")[1].split("  promote_canary_channel:")[0];
+  assert.match(caller, /if: github.event_name != 'push' \|\| github.ref != 'refs\/heads\/master'/);
+  assert.match(caller, /uses: .\/.github\/workflows\/docker-cloud.yml/);
+  assert.match(docker.split("  promote_canary_channel:")[1], /needs: \[merge-and-push, build-and-push-cloud\]/);
+  const reaping = cloud.indexOf("      - name: Verify cloud PID 1 reaps orphaned processes");
+  assert.ok(reaping > cloud.indexOf("      - name: Verify the pushed image resolves the declared Sentry version"));
+  assert.ok(reaping < cloud.indexOf("      - name: Publish verified full-SHA cloud tag"));
+});
+
+test("cloud cache imports are bounded, follow master ancestry, and retain the legacy fallback", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/docker-cloud.yml", import.meta.url), "utf8");
+  const step = workflow.split("      - name: Select cloud cache ancestry")[1].split("      - name: Setup pnpm")[0];
+  const script = step.split("        run: |\n")[1].split("\n").map((line) => line.replace(/^ {10}/, "")).join("\n");
+  const dir = mkdtempSync(path.join(tmpdir(), "cloud-cache-test-"));
+  const output = path.join(dir, "output");
+  const env = { ...process.env, GIT_AUTHOR_NAME: "Test", GIT_AUTHOR_EMAIL: "test@example.test", GIT_COMMITTER_NAME: "Test", GIT_COMMITTER_EMAIL: "test@example.test" };
+  const git = (...args) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", ...args], { cwd: dir, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  try {
+    git("init", "--initial-branch=master");
+    const commits = [];
+    for (let i = 0; i < 12; i++) {
+      git("commit", "--allow-empty", "-m", `main ${i}`);
+      commits.unshift(git("rev-parse", "HEAD"));
+    }
+    git("checkout", "-b", "topic", "HEAD~1");
+    git("commit", "--allow-empty", "-m", "topic");
+    git("checkout", "master");
+    git("merge", "--no-ff", "topic", "-m", "merge topic");
+    commits.unshift(git("rev-parse", "HEAD"));
+    const result = spawnSync("bash", ["-c", script], { cwd: dir, encoding: "utf8", env: { ...env, CACHE_IMAGE: "ghcr.io/paperclipai/paperclip", GITHUB_OUTPUT: output } });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(readFileSync(output, "utf8").trim().split("\n"), [
+      "sources<<CACHE_SOURCES",
+      ...commits.slice(0, 10).map((commit) => `type=registry,ref=ghcr.io/paperclipai/paperclip:buildcache-cloud-${commit}`),
+      "type=registry,ref=ghcr.io/paperclipai/paperclip:buildcache-cloud",
+      "CACHE_SOURCES",
+    ]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("normal cloud builds publish the checked digest only when source and platform match", () => {
-  const workflow = readFileSync(new URL("../.github/workflows/docker.yml", import.meta.url), "utf8");
-  const cloud = workflow.split("  build-and-push-cloud:")[1].split("  promote_canary_channel:")[0];
+  const workflow = readFileSync(new URL("../.github/workflows/docker-cloud.yml", import.meta.url), "utf8");
+  const cloud = workflow.split("  build-and-push-cloud:")[1];
   const verify = cloud.indexOf("      - name: Verify the pushed image resolves the declared Sentry version");
   const publish = cloud.indexOf("      - name: Publish verified full-SHA cloud tag");
   assert.ok(verify >= 0 && publish > verify);
