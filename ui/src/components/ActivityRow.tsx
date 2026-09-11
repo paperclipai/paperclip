@@ -53,30 +53,32 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
 
   const inner = (
     <div className="space-y-2">
-      <div className="flex items-start gap-3 @xl:grid @xl:grid-cols-(--dashboard-activity-list-columns) @xl:items-baseline">
+      <div className="flex items-start gap-2 @xl:grid @xl:grid-cols-(--dashboard-activity-list-columns) @xl:items-baseline">
         <Avatar size="sm" aria-hidden="true" className="@xl:self-center">
           {actorAvatarUrl && <AvatarImage src={actorAvatarUrl} alt="" />}
           <AvatarFallback>{deriveInitials(actorName)}</AvatarFallback>
         </Avatar>
         <div className="flex min-w-0 flex-1 flex-col gap-1 @xl:contents">
-          <p className="flex h-6 min-w-0 items-center gap-1.5">
-            <span className="max-w-1/2 shrink-0 truncate" title={`${actorName} ${verb}`}>
-              <span>{actorName}</span>{" "}
-              <span className="text-muted-foreground">{verb}</span>
-            </span>
-            {event.entityType === "issue" ? (
-              <span className="min-w-0 flex-1 truncate" title={entityTitle}>{entityTitle}</span>
-            ) : (
-              <span className="min-w-0 flex-1 truncate">
-                {name && <span className="font-medium">{name}</span>}
-                {entityTitle && <span className="text-muted-foreground"> — {entityTitle}</span>}
+          <div className="flex min-w-0 items-baseline gap-2 @xl:contents">
+            <p className="flex h-6 min-w-0 flex-1 items-center gap-1.5">
+              <span className="max-w-1/2 shrink-0 truncate" title={`${actorName} ${verb}`}>
+                <span>{actorName}</span>{" "}
+                <span className="text-muted-foreground">{verb}</span>
               </span>
-            )}
-          </p>
-          <div className="flex min-h-6 min-w-0 items-baseline gap-3 @xl:contents">
-            <span className="w-(--dashboard-list-id-width) shrink-0 truncate font-mono text-(length:--text-micro) text-muted-foreground">
+              {event.entityType === "issue" ? (
+                <span className="min-w-0 flex-1 truncate" title={entityTitle}>{entityTitle}</span>
+              ) : (
+                <span className="min-w-0 flex-1 truncate">
+                  {name && <span className="font-medium">{name}</span>}
+                  {entityTitle && <span className="text-muted-foreground"> — {entityTitle}</span>}
+                </span>
+              )}
+            </p>
+            <span className="ml-auto shrink-0 truncate text-right font-mono text-(length:--text-micro) text-muted-foreground @xl:w-(--dashboard-list-id-width)">
               {event.entityType === "issue" ? name : null}
             </span>
+          </div>
+          <div className="flex min-h-6 min-w-0 items-center @xl:contents">
             <span className="ml-auto w-(--dashboard-list-time-width) shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground">
               {timeAgo(event.createdAt)}
             </span>

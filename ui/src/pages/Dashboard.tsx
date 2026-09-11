@@ -519,32 +519,30 @@ export function Dashboard() {
                       to={`/issues/${issue.identifier ?? issue.id}`}
                       className="dashboard-list-row text-sm cursor-pointer hover:bg-accent/50 transition-colors no-underline text-inherit block"
                     >
-                      <div className="flex items-start gap-3 @xl:grid @xl:grid-cols-(--dashboard-task-list-columns) @xl:items-baseline">
-                        <span className="flex size-6 shrink-0 items-center justify-center @xl:self-center">
+                      <div className="flex items-start gap-2 @xl:grid @xl:grid-cols-(--dashboard-task-list-columns) @xl:items-baseline">
+                        <span className="flex size-6 shrink-0 items-center justify-end @xl:self-center">
                           <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />
                         </span>
                         <span className="flex min-w-0 flex-1 flex-col gap-1 @xl:contents">
-                          <span className="flex h-6 min-w-0 items-center">
-                            <span className="min-w-0 truncate text-sm" title={issue.title}>
+                          <span className="flex min-w-0 items-baseline gap-2 @xl:contents">
+                            <span className="min-w-0 flex-1 truncate text-sm leading-6" title={issue.title}>
                               {issue.title}
                             </span>
-                          </span>
-                          <span className="flex min-h-6 min-w-0 items-baseline gap-3 @xl:contents">
-                            <span className="w-(--dashboard-list-id-width) shrink-0 truncate font-mono text-(length:--text-micro) text-muted-foreground">
+                            <span className="ml-auto shrink-0 truncate text-right font-mono text-(length:--text-micro) text-muted-foreground @xl:w-(--dashboard-list-id-width)">
                               {issue.identifier ?? issue.id.slice(0, 8)}
                             </span>
-                            <span className="flex min-w-0 flex-1 items-center gap-3 @xl:contents">
-                              <span className="flex min-w-0 flex-1 items-center @xl:self-center">
-                                {issue.assigneeAgentId && (() => {
-                                  const name = agentName(issue.assigneeAgentId);
-                                  return name
-                                    ? <Identity name={name} size="sm" className="max-w-32" />
-                                    : null;
-                                })()}
-                              </span>
-                              <span className="ml-auto w-(--dashboard-list-time-width) shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground">
-                                {timeAgo(issue.updatedAt)}
-                              </span>
+                          </span>
+                          <span className="flex min-h-6 min-w-0 items-center gap-2 @xl:contents">
+                            <span className="flex min-w-0 flex-1 items-center @xl:self-center">
+                              {issue.assigneeAgentId && (() => {
+                                const name = agentName(issue.assigneeAgentId);
+                                return name
+                                  ? <Identity name={name} size="sm" className="max-w-32" />
+                                  : null;
+                              })()}
+                            </span>
+                            <span className="ml-auto w-(--dashboard-list-time-width) shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground">
+                              {timeAgo(issue.updatedAt)}
                             </span>
                           </span>
                         </span>
