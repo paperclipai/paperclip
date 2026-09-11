@@ -13,6 +13,22 @@ import type { AcpPermissionDecision, AcpPermissionRequest } from "acpx/runtime";
 const MAX_IDENTIFIER_LENGTH = 200;
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+// The agent process is untrusted. It picks how many permission requests it
+// sends, so the observer must cap its own memory and log volume against that
+// input. Each run gets its own budget: every counter below lives inside the
+// observer closure, not at module scope.
+//
+// The ledger, the "observed" count, and the "settled or unsettled" count each
+// get a separate budget of 256, instead of one shared budget of 512. A shared
+// budget lets an agent that sends 512 requests spend the whole budget on
+// "observed" events, so the observer would then emit no "unsettled" event at
+// finalization — the one signal this observer exists to produce. Two budgets
+// keep that signal reachable no matter how the agent spends the "observed"
+// side.
+const MAX_LEDGER_ENTRIES = 256;
+const MAX_OBSERVED_EVENTS = 256;
+const MAX_TERMINAL_EVENTS = 256;
+
 export const PERMISSION_OBSERVER_METHODS = ["session/request_permission"] as const;
 export type PermissionObserverMethod = (typeof PERMISSION_OBSERVER_METHODS)[number] | "unknown";
 
@@ -106,7 +122,11 @@ export interface PermissionObserverToolCallEvent {
 }
 
 export interface PermissionObserverLogEvent {
-  type: "acpx.permission_observed" | "acpx.permission_settled" | "acpx.permission_unsettled";
+  type:
+    | "acpx.permission_observed"
+    | "acpx.permission_settled"
+    | "acpx.permission_unsettled"
+    | "acpx.permission_observer_truncated";
   [key: string]: unknown;
 }
 
@@ -155,6 +175,15 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
   const permissionMode = mapPermissionObserverPermissionMode(options.permissionMode);
   const transport = mapPermissionObserverTransport(options.transport);
 
+  // Per-run budget state. Each counter tracks a cumulative count of emitted
+  // events, not the live ledger size, so an agent cannot reset a counter by
+  // opening and settling requests in a loop (the churn case).
+  let observedEventCount = 0;
+  let terminalEventCount = 0;
+  let suppressedLedgerEntries = 0;
+  let suppressedObservedEvents = 0;
+  let suppressedTerminalEvents = 0;
+
   const ledgerKey = (sessionId: string, toolCallId: string) => sessionId + "\u0000" + toolCallId;
 
   const handlePermissionRequest: AcpPermissionObserver["handlePermissionRequest"] = async (request) => {
@@ -170,28 +199,42 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
       if (typeof rawSessionId === "string" && typeof rawToolCallId === "string") {
         const key = ledgerKey(sessionId, toolCallId);
         if (!ledger.has(key)) {
-          // The ledger entry always opens as "requested": the observer has not
-          // yet seen a settlement for this tool call, whatever status the
-          // permission request itself carried.
-          ledger.set(key, {
-            sessionId,
-            toolCallId,
-            openedAtMs: now(),
-            toolKind,
-            lastStage: "requested",
-          });
+          if (ledger.size < MAX_LEDGER_ENTRIES) {
+            // The ledger entry always opens as "requested": the observer has
+            // not yet seen a settlement for this tool call, whatever status
+            // the permission request itself carried.
+            ledger.set(key, {
+              sessionId,
+              toolCallId,
+              openedAtMs: now(),
+              toolKind,
+              lastStage: "requested",
+            });
+          } else {
+            suppressedLedgerEntries += 1;
+          }
         }
       }
-      options.emitLog({
-        type: "acpx.permission_observed",
-        sessionId,
-        toolCallId,
-        method: mapPermissionObserverMethod("session/request_permission"),
-        toolKind,
-        stage: "requested",
-        permissionMode,
-        transport,
-      });
+      // Count every emission against the budget, not the live ledger size, so
+      // an agent cannot refill the budget by settling old requests.
+      if (observedEventCount < MAX_OBSERVED_EVENTS) {
+        observedEventCount += 1;
+        options.emitLog({
+          type: "acpx.permission_observed",
+          sessionId,
+          toolCallId,
+          method: mapPermissionObserverMethod("session/request_permission"),
+          toolKind,
+          stage: "requested",
+          permissionMode,
+          transport,
+        });
+      } else {
+        // Emit nothing, not even a reduced event: that keeps every
+        // attacker-controlled identifier out of the log once the budget runs
+        // out.
+        suppressedObservedEvents += 1;
+      }
     } catch {
       // The observer is diagnostic only. An internal error here must never
       // affect the permission handoff, so every failure resolves the same
@@ -212,14 +255,22 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
       entry.lastStage = stage;
       const outcome = mapPermissionObserverOutcome(event?.status);
       if (outcome === "unknown") return;
+      // Delete the entry (freeing the ledger memory) even when the terminal
+      // budget below is spent: the ledger must not hold a settled entry just
+      // because the observer could not log its settlement.
       ledger.delete(key);
-      options.emitLog({
-        type: "acpx.permission_settled",
-        sessionId: entry.sessionId,
-        toolCallId: entry.toolCallId,
-        outcome,
-        ageMs: boundedAgeMs(now() - entry.openedAtMs),
-      });
+      if (terminalEventCount < MAX_TERMINAL_EVENTS) {
+        terminalEventCount += 1;
+        options.emitLog({
+          type: "acpx.permission_settled",
+          sessionId: entry.sessionId,
+          toolCallId: entry.toolCallId,
+          outcome,
+          ageMs: boundedAgeMs(now() - entry.openedAtMs),
+        });
+      } else {
+        suppressedTerminalEvents += 1;
+      }
     } catch {
       // Diagnostic only; never let a logging failure surface into the event
       // loop that drains the turn's tool-call events.
@@ -230,12 +281,29 @@ export function createAcpPermissionObserver(options: AcpPermissionObserverOption
     const openEntries = [...ledger.values()];
     ledger.clear();
     for (const entry of openEntries) {
+      if (terminalEventCount < MAX_TERMINAL_EVENTS) {
+        terminalEventCount += 1;
+        options.emitLog({
+          type: "acpx.permission_unsettled",
+          sessionId: entry.sessionId,
+          toolCallId: entry.toolCallId,
+          stage: entry.lastStage,
+          ageMs: boundedAgeMs(now() - entry.openedAtMs),
+        });
+      } else {
+        suppressedTerminalEvents += 1;
+      }
+    }
+    // Emit one summary event for the whole run, and only when the observer
+    // suppressed something. It carries only the three counters: no session
+    // identifier, no tool-call identifier, and no other agent-controlled
+    // value.
+    if (suppressedLedgerEntries > 0 || suppressedObservedEvents > 0 || suppressedTerminalEvents > 0) {
       options.emitLog({
-        type: "acpx.permission_unsettled",
-        sessionId: entry.sessionId,
-        toolCallId: entry.toolCallId,
-        stage: entry.lastStage,
-        ageMs: boundedAgeMs(now() - entry.openedAtMs),
+        type: "acpx.permission_observer_truncated",
+        suppressedLedgerEntries,
+        suppressedObservedEvents,
+        suppressedTerminalEvents,
       });
     }
   };

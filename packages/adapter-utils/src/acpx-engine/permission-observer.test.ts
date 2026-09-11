@@ -296,3 +296,126 @@ describe("createAcpPermissionObserver — ledger lifecycle", () => {
     expect(events).toHaveLength(0);
   });
 });
+
+describe("createAcpPermissionObserver — per-run budgets", () => {
+  function buildRequestFor(sessionId: string, toolCallId: string): AcpPermissionRequest {
+    return buildRequest({
+      sessionId,
+      raw: { sessionId, toolCall: { toolCallId }, options: [] } as AcpPermissionRequest["raw"],
+    });
+  }
+
+  it("caps the ledger and the observed-event count when more than 256 requests never settle", async () => {
+    const events: PermissionObserverLogEvent[] = [];
+    const observer = createAcpPermissionObserver({
+      emitLog: (event) => events.push(event),
+      permissionMode: "approve-all",
+      transport: "sandbox",
+    });
+    const signal = new AbortController().signal;
+    for (let i = 0; i < 300; i += 1) {
+      await observer.handlePermissionRequest(buildRequestFor(`session-${i}`, `tool-${i}`), { signal });
+    }
+
+    const observed = events.filter((event) => event.type === "acpx.permission_observed");
+    expect(observed.length).toBeLessThanOrEqual(256);
+
+    events.length = 0;
+    await observer.finalizeRun();
+    const unsettled = events.filter((event) => event.type === "acpx.permission_unsettled");
+    expect(unsettled.length).toBeLessThanOrEqual(256);
+    const summaries = events.filter((event) => event.type === "acpx.permission_observer_truncated");
+    expect(summaries).toHaveLength(1);
+  });
+
+  it("bounds cumulative emissions at 512 detailed events across more than 1000 open-and-settle cycles", async () => {
+    const events: PermissionObserverLogEvent[] = [];
+    const observer = createAcpPermissionObserver({
+      emitLog: (event) => events.push(event),
+      permissionMode: "approve-all",
+      transport: "sandbox",
+    });
+    const signal = new AbortController().signal;
+    for (let i = 0; i < 1_100; i += 1) {
+      const sessionId = `session-${i}`;
+      const toolCallId = `tool-${i}`;
+      await observer.handlePermissionRequest(buildRequestFor(sessionId, toolCallId), { signal });
+      observer.noteToolCallEvent(sessionId, { toolCallId, status: "completed" });
+    }
+
+    const detailed = events.filter((event) => event.type !== "acpx.permission_observer_truncated");
+    expect(detailed.length).toBeLessThanOrEqual(512);
+
+    events.length = 0;
+    await observer.finalizeRun();
+    expect(events.filter((event) => event.type === "acpx.permission_observer_truncated")).toHaveLength(1);
+  });
+
+  it("keeps the settled-event budget reachable after the observed budget is spent", async () => {
+    const events: PermissionObserverLogEvent[] = [];
+    const observer = createAcpPermissionObserver({
+      emitLog: (event) => events.push(event),
+      permissionMode: "approve-all",
+      transport: "sandbox",
+    });
+    const signal = new AbortController().signal;
+    const opened: Array<{ sessionId: string; toolCallId: string }> = [];
+    for (let i = 0; i < 256; i += 1) {
+      const sessionId = `session-${i}`;
+      const toolCallId = `tool-${i}`;
+      opened.push({ sessionId, toolCallId });
+      await observer.handlePermissionRequest(buildRequestFor(sessionId, toolCallId), { signal });
+    }
+    // The observed budget is now fully spent. A further request emits no
+    // "acpx.permission_observed" event.
+    await observer.handlePermissionRequest(buildRequestFor("session-extra", "tool-extra"), { signal });
+    expect(events.filter((event) => event.type === "acpx.permission_observed")).toHaveLength(256);
+
+    events.length = 0;
+    for (const { sessionId, toolCallId } of opened) {
+      observer.noteToolCallEvent(sessionId, { toolCallId, status: "completed" });
+    }
+
+    const settled = events.filter((event) => event.type === "acpx.permission_settled");
+    expect(settled.length).toBe(256);
+  });
+
+  it("emits a summary event with only the three counters and the type, using an exact key match", async () => {
+    const events: PermissionObserverLogEvent[] = [];
+    const observer = createAcpPermissionObserver({
+      emitLog: (event) => events.push(event),
+      permissionMode: "approve-all",
+      transport: "sandbox",
+    });
+    const signal = new AbortController().signal;
+    for (let i = 0; i < 300; i += 1) {
+      await observer.handlePermissionRequest(buildRequestFor(`session-${i}`, `tool-${i}`), { signal });
+    }
+
+    events.length = 0;
+    await observer.finalizeRun();
+    const summary = events.find((event) => event.type === "acpx.permission_observer_truncated");
+    expect(summary).toBeDefined();
+    expect(Object.keys(summary as object).sort()).toEqual(
+      ["suppressedLedgerEntries", "suppressedObservedEvents", "suppressedTerminalEvents", "type"].sort(),
+    );
+    expect(typeof summary?.suppressedLedgerEntries).toBe("number");
+    expect(typeof summary?.suppressedObservedEvents).toBe("number");
+    expect(typeof summary?.suppressedTerminalEvents).toBe("number");
+  });
+
+  it("still resolves handlePermissionRequest to undefined, and throws nothing, once every cap is reached", async () => {
+    const observer = createAcpPermissionObserver({
+      emitLog: () => {},
+      permissionMode: "approve-all",
+      transport: "sandbox",
+    });
+    const signal = new AbortController().signal;
+    for (let i = 0; i < 300; i += 1) {
+      await observer.handlePermissionRequest(buildRequestFor(`session-${i}`, `tool-${i}`), { signal });
+    }
+    const result = await observer.handlePermissionRequest(buildRequestFor("session-last", "tool-last"), { signal });
+    expect(result).toBeUndefined();
+    await expect(observer.finalizeRun()).resolves.toBeUndefined();
+  });
+});
