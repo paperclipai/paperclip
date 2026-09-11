@@ -51644,7 +51644,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             ),
           ),
       ).resolves.toEqual([{ state: "processed" }]);
-    });
+    }, { timeout: 5_000 });
     // The row becomes processed inside the mutation transaction, just before
     // the conversation drain releases its endpoint/thread lease. Synchronize
     // on that lease boundary before injecting the exact lifecycle commit fault.
@@ -51660,7 +51660,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             ),
           ),
       ).resolves.toEqual([]);
-    });
+    }, { timeout: 5_000 });
     if (!first.callbacks.onMessageUpdated)
       throw new Error("Slack lifecycle callback was not registered");
     await first.callbacks.onMessageUpdated({

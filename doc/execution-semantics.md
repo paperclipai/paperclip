@@ -144,6 +144,16 @@ The active-lock lifecycle is part of the checkout contract:
 
 Stale-lock recovery is crash recovery, not a retry loop. Paperclip must not clear or adopt locks held by non-terminal runs. After stale cleanup, a checkout `409` should mean a real live owner, status/assignee mismatch, unresolved blocker, or active gate still prevents checkout. Agents must treat that `409` as an ownership conflict and stop rather than retrying the same checkout.
 
+### Known execution waits at admission
+
+A known execution hold is a waiting condition, not a new execution attempt. Every issue wake must read the current effective reconciliation hold under the issue admission lock before creating a run. Resolved recovery bookkeeping can still carry a no-replay hold; only clearing the effective hold makes admission eligible again. The final dispatch gate remains required for changes after admission.
+
+Repeated automatic signals for an unchanged gate share one durable skipped-wake diagnostic, scoped to company, agent, issue, gate code, and condition identity. The diagnostic retains the first request and counts later observations. This applies to execution reconciliation, dependencies, pause holds, company and agent availability, budget blocks, and disabled heartbeats. These diagnostics do not consume provider attempts and are never proof that a future wake was delivered. All current gates are checked again on the next wake, including the periodic dependency reconciliation sweep. Clearing one gate does not bypass another.
+
+New comments received during an execution hold retain their individual deferred receipts and ordered comment ids. Release cannot drain those receipts while replay remains blocked; the next eligible wake can adopt them. Authorized external-chat requests also remain deferred with their exact durable receipt. They must use normal promotion and current authorization; a generic wake cannot adopt only their comment ids and discard their actor or session contract. A wait does not authorize replay, reset an incident retry budget, or bypass an interaction's delivery rules.
+
+The conversation groups repeated empty pre-start reconciliation cancellations into a neutral waiting notice. Started runs, actual startup failures, and run history remain inspectable. No historical run records are deleted.
+
 ### Pre-dispatch configuration validation
 
 Pre-dispatch configuration validation is a distinct gate that runs after ownership and checkout are resolved but before the control plane actually dispatches a run.
