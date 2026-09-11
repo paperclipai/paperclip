@@ -975,7 +975,6 @@ function IssueDetailLoadingState({
             <>
               <StatusIcon
                 status={headerSeed.status}
-                className="size-3"
                 blockerAttention={headerSeed.blockerAttention}
               />
               {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
@@ -6829,7 +6828,7 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
   const issueStatusControl = (
     <StatusIcon
       status={issue.status}
-      className="size-3"
+      size="lg"
       blockerAttention={issue.blockerAttention}
       onChange={(status) => updateIssue.mutate({ status })}
     />
