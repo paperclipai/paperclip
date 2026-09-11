@@ -559,7 +559,21 @@ function signDevicePayload(privateKeyPem: string, payload: string): string {
   return base64UrlEncode(sig);
 }
 
-function buildDeviceAuthPayloadV3(params: {
+/**
+ * The OpenClaw gateway verifies the signed device payload against the credential the client
+ * actually presents for the connection: `auth.token` when a shared token is supplied, otherwise
+ * `auth.deviceToken`. Binding only the shared token breaks every device-token-only reconnect
+ * (the gateway answers "device signature invalid"), so the signature token must follow the
+ * same precedence as the `auth` object built for `connect`.
+ */
+export function resolveDeviceSignatureToken(params: {
+  authToken?: string | null;
+  deviceToken?: string | null;
+}): string | null {
+  return nonEmpty(params.authToken) ?? nonEmpty(params.deviceToken) ?? null;
+}
+
+export function buildDeviceAuthPayloadV3(params: {
   deviceId: string;
   clientId: string;
   clientMode: string;
@@ -1276,7 +1290,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             role,
             scopes,
             signedAtMs,
-            token: authToken,
+            token: resolveDeviceSignatureToken({ authToken, deviceToken }),
             nonce,
             platform: process.platform,
             deviceFamily,
