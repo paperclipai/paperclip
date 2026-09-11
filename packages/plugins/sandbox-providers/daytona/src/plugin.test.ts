@@ -1621,7 +1621,8 @@ describe("Daytona sandbox provider plugin", () => {
     it("deletes the session at destroy even when the sandbox delete throws", async () => {
       process.env.DAYTONA_API_KEY = "host-key";
       const sandbox = createMockSandbox();
-        mockGet.mockResolvedValue(sandbox);
+      sandbox.delete.mockRejectedValueOnce(new Error("delete failed"));
+      mockGet.mockResolvedValue(sandbox);
 
       await plugin.definition.onEnvironmentExecute?.(sessionExecParams());
       const sessionId = sandbox.process.createSession.mock.calls[0]![0] as string;
