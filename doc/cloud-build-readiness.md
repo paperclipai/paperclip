@@ -156,3 +156,14 @@ The `release-typecheck-v1` cache is separate from Runner verification because
 those jobs compile different profiles. The pinned toolchain is selected before
 cache lookup. Workspace crates and installed cargo binaries are excluded, and
 all typechecks still execute. A missing or invalidated cache triggers compilation.
+
+### pnpm dependency store cache
+
+The Refresh Lockfile workflow does not cache the pnpm store. Its resolution-only
+command does not download packages and can save an empty default-branch cache
+before full install jobs finish. Jobs that install dependencies retain caching.
+
+After deploying this correction, remove any existing empty default-branch entry
+for the current lockfile key. A subsequent master install can then populate it.
+Check the saved archive size and package reuse in install logs; a cache hit alone
+does not prove that the entry contains dependencies.
