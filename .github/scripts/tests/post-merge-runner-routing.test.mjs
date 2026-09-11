@@ -9,14 +9,19 @@ const base = {
   repository: "paperclipai/paperclip", repository_id: "1170821064",
   ref: "refs/heads/master", event_name: "push", sha,
 };
-const files = ["cloud-readiness.yml", "cloud-artifacts.yml", "release-verify.yml", "runner-chaos-evals.yml", "release.yml"];
-const counts = [3, 1, 6, 1, 2];
-for (const [index, file] of files.entries()) {
+const expectedJobs = {
+  "cloud-readiness.yml": ["artifacts", "source_verified", "ready"],
+  "cloud-artifacts.yml": ["dispatch_migrator"],
+  "release-verify.yml": ["typecheck", "general_tests", "serialized_tests", "runner_workflow_evals", "verify_paperclip_runner", "build"],
+  "runner-chaos-evals.yml": ["chaos_and_recovery"],
+  "release.yml": ["plan_preview", "package_preview"],
+};
+for (const [file, expectedNames] of Object.entries(expectedJobs)) {
   const workflow = readFileSync(new URL(`../../workflows/${file}`, import.meta.url), "utf8");
   const jobs = [...workflow.matchAll(/^  ([a-z_]+):\n([\s\S]*?)(?=^  [a-z_]+:\n|(?![\s\S]))/gm)];
   const routed = jobs.filter(([, , body]) => body.includes(fleet));
   test(`${file}: all intended jobs carry the post-merge guard`, () => {
-    assert.equal(routed.length, counts[index]);
+    assert.deepEqual(routed.map(([, name]) => name).sort(), [...expectedNames].sort());
   });
   for (const [, job, body] of routed) {
     const expression = body.match(/^    runs-on: \$\{\{ (.+) \}\}$/m)?.[1];
@@ -63,6 +68,7 @@ for (const [index, file] of files.entries()) {
         assert.ok(timeout, "AWS jobs need a timeout below the 45-minute instance lifetime");
         const minutes = timeout.startsWith("${{") ? runInNewContext(timeout.slice(3, -2), context) : Number(timeout);
         if (expected === fleet) assert.ok(minutes > 0 && minutes < 45);
+        if (release && job === "plan_preview") assert.equal(minutes, expected === fleet ? 10 : 360);
       });
     }
   }
