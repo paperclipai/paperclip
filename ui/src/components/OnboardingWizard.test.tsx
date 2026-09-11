@@ -2306,6 +2306,84 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // followed was an input that had just gone blank — reported from staging
       // as the paste looking dropped, or the step looking stuck.
       expect(field!.value).toBe("Q2RJ-E1YIF-authorization-code");
+      // As dots. The code is kept so the customer can see the paste landed,
+      // and that is all the field needs to show of it.
+      expect(field!.type).toBe("password");
+      // And the button answers the paste itself. The status here never reaches
+      // authenticated, so this is "Connecting" before any server confirmation —
+      // waiting for that left about a second of a button still reading
+      // "Waiting for code" after the code had gone in.
+      expect(
+        [...document.body.querySelectorAll("button")].pop()?.textContent?.trim(),
+      ).toBe("Connecting");
+
+      await act(async () => root.unmount());
+    });
+
+    it("does not hire on the paste alone, before the login is stored", async () => {
+      // "Connecting" appears at the paste now, ahead of the server confirming
+      // anything. The two-second hold used to start at that same moment, so
+      // moving one without the other would hire at the paste plus two seconds
+      // whether or not a credential existed. The status here stays pending, so
+      // the login is never stored.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+
+      const field = document.body.querySelector(
+        'input[aria-label="Authorization code"]',
+      ) as HTMLInputElement;
+      await act(async () => {
+        field.dispatchEvent(new Event("paste", { bubbles: true }));
+        setControlledValue(field, "Q2RJ-E1YIF-authorization-code");
+      });
+      for (let i = 0; i < 4; i++) await flushReact();
+
+      const cta = () =>
+        [...document.body.querySelectorAll("button")].pop()?.textContent?.trim();
+      // The paste really did start Connecting; without this the assertion
+      // below would hold for a flow that never got that far.
+      expect(cta(), "the paste should have started Connecting").toBe("Connecting");
+
+      await act(async () => {
+        await new Promise((resolve) => window.setTimeout(resolve, CONNECTED_HOLD_MS + 400));
+      });
+      for (let i = 0; i < 4; i++) await flushReact();
+
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
+      expect(cta()).toBe("Connecting");
+
+      await act(async () => root.unmount());
+    });
+
+    it("gives the button back when the pasted code is refused", async () => {
+      // The other half of answering the paste early: a button that says
+      // "Connecting" before the server answers has to stop saying it when the
+      // answer is no, or it spins on a login that is not coming.
+      mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      mockAgentsApi.submitClaudeSetupTokenBrowserCode.mockRejectedValueOnce(
+        new Error("That authorization code was not accepted."),
+      );
+      const { root } = await openStep4({ adapterType: "claude_local" });
+      await pickSource(/Claude/);
+
+      const cta = () =>
+        [...document.body.querySelectorAll("button")].pop()?.textContent?.trim();
+      expect(cta()).toBe("Sign in to Claude");
+
+      const field = document.body.querySelector(
+        'input[aria-label="Authorization code"]',
+      ) as HTMLInputElement;
+      await act(async () => {
+        field.dispatchEvent(new Event("paste", { bubbles: true }));
+        setControlledValue(field, "Q2RJ-E1YIF-authorization-code");
+      });
+      for (let i = 0; i < 8; i++) await flushReact();
+
+      expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).toHaveBeenCalledTimes(1);
+      expect(document.body.textContent).toContain("That authorization code was not accepted.");
+      expect(cta()).toBe("Sign in to Claude");
+      expect(mockAgentsApi.hire).not.toHaveBeenCalled();
 
       await act(async () => root.unmount());
     });
