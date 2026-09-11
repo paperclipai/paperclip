@@ -811,11 +811,9 @@ for (const execution of executions) {
     });
 
     try {
-      const initialExperimental = await api.get<{
+      const experimental = await api.patch<{
         enableNativeRunner: boolean;
-      }>("/api/instance/settings/experimental");
-      expect(initialExperimental.enableNativeRunner).toBe(false);
-      await api.patch("/api/instance/settings/experimental", {
+      }>("/api/instance/settings/experimental", {
         enableNativeRunner: true,
         ...(execution.task.flow === "warm_three_turn"
           ? { enableIsolatedWorkspaces: true }
@@ -825,6 +823,7 @@ for (const execution of executions) {
           ? { enableRunnerPreviewIngress: true }
           : {}),
       });
+      expect(experimental.enableNativeRunner).toBe(true);
 
       fixtures = await setupLiveFixtures({
         api,
