@@ -176,6 +176,9 @@ function buildHost(_tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
 function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, run: HeartbeatRunRow): WakeQueueTransaction {
   const treeControlSvc = issueTreeControlService(tx);
   const issuesSvc = issueService(tx);
+  const interruptQueueId = run.runtimeMode !== "native" && run.status === "cancelled"
+    ? readNonEmptyString(run.resultJson?.queuedCommentInterruptQueueId)
+    : null;
 
   return {
     async findInvokableAgent({ companyId, agentId }): Promise<InvokableAgentSnapshot | null> {
@@ -199,6 +202,8 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
               eq(agentWakeupRequests.companyId, companyId),
               eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
               sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+              interruptQueueId ? eq(agentWakeupRequests.id, interruptQueueId) : undefined,
+              interruptQueueId ? eq(agentWakeupRequests.agentId, run.agentId) : undefined,
             ),
           )
           .orderBy(asc(agentWakeupRequests.requestedAt))

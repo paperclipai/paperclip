@@ -18476,6 +18476,31 @@ export function heartbeatService(
     if ((await getSchedulingSuppression()).suppressed) return;
     const cutoff = await getWorktreeExecutionCutoff();
 
+    // The cancellation marker is durable intent. Retry while its exact queue
+    // is still deferred, including after a failed cleanup promotion or restart.
+    // Normal admission still checks process ownership, leases, pauses, and scope.
+    const interruptedQueues = await db
+      .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId })
+      .from(agentWakeupRequests)
+      .innerJoin(heartbeatRuns, and(
+        sql`${heartbeatRuns.resultJson}->>'queuedCommentInterruptQueueId' = ${agentWakeupRequests.id}::text`,
+        eq(heartbeatRuns.companyId, agentWakeupRequests.companyId),
+        eq(heartbeatRuns.agentId, agentWakeupRequests.agentId),
+      ))
+      .innerJoin(companies, eq(companies.id, heartbeatRuns.companyId))
+      .where(and(
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        eq(heartbeatRuns.status, "cancelled"),
+        eq(heartbeatRuns.runtimeMode, "legacy"),
+        eq(companies.status, "active"),
+        cutoff ? gte(heartbeatRuns.createdAt, cutoff) : undefined,
+      ));
+    for (const run of interruptedQueues) {
+      await releaseIssueExecutionAndPromote(run, { suppressImmediateRecovery: true }).catch((err) => {
+        logger.error({ err, runId: run.id }, "failed to retry interrupted comment queue");
+      });
+    }
+
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
@@ -24799,7 +24824,7 @@ export function heartbeatService(
   }
 
   async function releaseIssueExecutionAndPromote(
-    run: typeof heartbeatRuns.$inferSelect,
+    run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">,
     options: { suppressImmediateRecovery?: boolean } = {},
   ) {
     try {

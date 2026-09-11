@@ -6715,6 +6715,39 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((await heartbeat.getRun(updated!.runId!))!.contextSnapshot?.wakeCommentIds).toEqual([comment!.id]);
   });
 
+  it("retries durable queue interruption after a promotion failure on a fresh service", async () => {
+    const { companyId, agentId, issueId, runId } = await seedRunFixture({
+      runtimeMode: "legacy", adapterType: "codex_local", agentStatus: "idle", runStatus: "cancelled",
+    });
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "responsible-user", body: "retry this input" }).returning();
+    const [wake] = await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "responsible-user",
+      payload: { issueId, commentId: comment!.id, _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment!.id] } },
+    }).returning();
+    await db.update(heartbeatRuns).set({ resultJson: {
+      queuedCommentInterruptQueueId: wake!.id,
+      executionCancellation: { state: "acknowledged" },
+      conversationContinuation: "continue_conversation_v1",
+    } }).where(eq(heartbeatRuns.id, runId));
+    const failedPromotion = vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("temporary queue promotion outage"));
+    try {
+      await heartbeatService(db).resumeQueuedRuns();
+      expect(failedPromotion).toHaveBeenCalled();
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake!.id)))[0]!.status).toBe("deferred_issue_execution");
+    } finally {
+      failedPromotion.mockRestore();
+    }
+    const restarted = heartbeatService(db);
+    await restarted.resumeQueuedRuns();
+    await restarted.drainActiveRunExecutions();
+    const [updated] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake!.id));
+    expect(updated!.runId).toBeTruthy();
+    expect((await restarted.getRun(updated!.runId!))!.contextSnapshot?.wakeCommentIds).toEqual([comment!.id]);
+    await restarted.resumeQueuedRuns();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(2);
+  });
+
   it.each(["pending", "discarded", "wrong queue"] as const)(
     "resumes only the authorized %s queue after an acknowledged legacy interrupt",
     async (state) => {
@@ -6736,6 +6769,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           issueId, wakeReason: "issue_commented", wakeCommentIds: commentIds,
         } },
       }).returning();
+      // A different actor's older queue must not consume this interrupt.
+      const [otherComment] = await db.insert(issueComments).values({
+        companyId, issueId, authorUserId: "other-user", body: "Other actor's input",
+      }).returning();
+      await db.insert(agentWakeupRequests).values({
+        companyId, agentId, source: "automation", reason: "issue_commented",
+        status: "deferred_issue_execution", requestedAt: new Date(0),
+        requestedByActorType: "user", requestedByActorId: "other-user",
+        payload: { issueId, commentId: otherComment!.id, _paperclipWakeContext: {
+          issueId, wakeReason: "issue_commented", wakeCommentIds: [otherComment!.id],
+        } },
+      });
       await heartbeat.cancelRun(runId, "Interrupt queued messages", {
         suppressImmediateRecovery: true, errorCode: "operator_interrupted",
         resultJson: {
@@ -6747,12 +6792,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
       await heartbeat.drainActiveRunExecutions();
       const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-      const successors = runs.filter((run) => run.id !== runId);
-      expect(successors).toHaveLength(state === "pending" ? 1 : 0);
+      const successors = runs.filter((run) => run.id !== runId)
+        .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+      expect(successors).toHaveLength(state === "pending" ? 2 : 0);
       if (state === "pending") {
         expect(successors[0]!.contextSnapshot?.wakeCommentIds).toEqual(commentIds);
+        // Only the requested turn's normal completion can drain the other queue.
+        expect(successors[1]!.contextSnapshot?.wakeCommentIds).toEqual([otherComment!.id]);
         await heartbeat.cancelRun(runId, "Duplicate interrupt");
-        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(2);
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(3);
       }
     },
   );
