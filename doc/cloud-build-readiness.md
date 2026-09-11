@@ -50,10 +50,37 @@ successfully verified a real master commit.
 
 ## Timing and rollout
 
-Measure from the master push to completion of `Cloud deployable v1`. Record
-queue time and the image, source-verification, and artifact-wait durations
+Measure the complete path from a master merge to a healthy target running that
+exact commit. Keep readiness and deployment as separate milestones:
+
+| Milestone | Evidence | Elapsed time starts at |
+| --- | --- | --- |
+| Merge | Merged PR timestamp and full merge commit SHA | Merge |
+| Image available | Successful full-SHA image publication and verification | Merge |
+| Cloud deployable | Successful `Cloud deployable v1` job in the accepted push run and attempt | Merge |
+| Canary healthy | Deployment consumer's canary health gate confirms the target commit | Merge |
+| Fleet complete | Campaign succeeds for all eligible targets at that commit | Merge |
+
+Record the source SHA, workflow run ID and attempt, readiness job completion
+time, and deployment campaign identity together. Verify the run against the
+consumer contract above. A manual dispatch can test wiring, but its timestamp
+does not measure automatic merge-to-deploy latency. A preparation-only run
+resolves artifacts without deploying a target and must not be counted as a
+successful deployment.
+
+Record queue time and the image, source-verification, and artifact-wait durations
 separately. The slowest prerequisite determines readiness; shortening an already
-faster prerequisite may have no effect on the total.
+faster prerequisite may have no effect on the total. After readiness, measure
+consumer discovery delay, artifact resolution, canary health, and fleet rollout.
+An automatic consumer that still waits for the full npm canary publication has
+that queue on its critical path even if cloud artifacts are ready earlier.
+
+For a target health measurement, confirm the deployed source SHA as well as
+service health. A proxy health response alone may describe the control plane
+while the tenant still runs the previous image. Report the eligible target count,
+excluded or sleeping targets, retries, and failures with the fleet result. Record
+runner queue conditions and cache state; one warm or cold run is a sample, not a
+latency guarantee.
 
 Land full-SHA image publication, independent cloud builds, and migrator-only
 publication before enabling this workflow. Until those producers are present,
