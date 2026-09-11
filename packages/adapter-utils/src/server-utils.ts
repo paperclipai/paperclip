@@ -4505,6 +4505,57 @@ export async function writeManagedGeminiSkillsManifest(
   );
 }
 
+/**
+ * Test if the Gemini lane owns the entry at `target` after it materializes
+ * `source` there. Only an owned entry may enter the managed-skills
+ * manifest. An owned entry is one of:
+ *
+ * - a symbolic link that resolves to `source`;
+ * - a directory that carries the materialized-skill sentinel
+ *   `materializePaperclipSkillCopy` writes.
+ *
+ * Every other entry — most of all a plain directory the user wrote by
+ * hand — is not owned. `ensurePaperclipSkillSymlink` returns `"skipped"`
+ * for that case, so the caller must not infer ownership from its return
+ * value alone; it must check the entry itself, with this function, after
+ * the materialize attempt.
+ */
+export async function isManagedGeminiSkillEntry(
+  target: string,
+  source: string,
+): Promise<boolean> {
+  const existing = await fs.lstat(target).catch(() => null);
+  if (!existing) return false;
+
+  if (existing.isSymbolicLink()) {
+    const linkedPath = await fs.readlink(target).catch(() => null);
+    if (!linkedPath) return false;
+    const resolvedLinkedPath = path.isAbsolute(linkedPath)
+      ? linkedPath
+      : path.resolve(path.dirname(target), linkedPath);
+    return resolvedLinkedPath === path.resolve(source);
+  }
+
+  if (existing.isDirectory()) {
+    try {
+      const raw = JSON.parse(
+        await fs.readFile(
+          path.join(target, MATERIALIZED_SKILL_SENTINEL),
+          "utf8",
+        ),
+      ) as unknown;
+      const parsed = parseObject(raw);
+      return (
+        parsed.version === 1 && typeof parsed.sourceFingerprint === "string"
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  return false;
+}
+
 export async function removeMaintainerOnlySkillSymlinks(
   skillsHome: string,
   allowedSkillNames: Iterable<string>,

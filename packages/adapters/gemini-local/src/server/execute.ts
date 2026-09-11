@@ -36,6 +36,7 @@ import {
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensurePaperclipSkillSymlink,
+  isManagedGeminiSkillEntry,
   joinPromptSections,
   ensurePathInEnv,
   refreshPaperclipWorkspaceEnvForExecution,
@@ -169,27 +170,32 @@ async function ensureGeminiSkillsInjected(
     );
   }
 
+  const ownedSkillNames: string[] = [];
   for (const entry of selectedEntries) {
     const target = path.join(skillsHome, entry.runtimeName);
 
     try {
       const result = await ensurePaperclipSkillSymlink(entry.source, target);
-      if (result === "skipped") continue;
-      await onLog(
-        "stderr",
-        `[paperclip] ${result === "repaired" ? "Repaired" : "Linked"} Gemini skill: ${entry.key}\n`,
-      );
+      if (result !== "skipped") {
+        await onLog(
+          "stderr",
+          `[paperclip] ${result === "repaired" ? "Repaired" : "Linked"} Gemini skill: ${entry.key}\n`,
+        );
+      }
     } catch (err) {
       await onLog(
         "stderr",
         `[paperclip] Failed to link Gemini skill "${entry.key}": ${err instanceof Error ? err.message : String(err)}\n`,
       );
     }
+    // A name enters the manifest only when this lane owns the entry after
+    // the attempt above. A real user directory returns "skipped" too, so
+    // the result string alone cannot tell them apart.
+    if (await isManagedGeminiSkillEntry(target, entry.source)) {
+      ownedSkillNames.push(entry.runtimeName);
+    }
   }
-  await writeManagedGeminiSkillsManifest(
-    skillsHome,
-    selectedEntries.map((entry) => entry.runtimeName),
-  );
+  await writeManagedGeminiSkillsManifest(skillsHome, ownedSkillNames);
 }
 
 async function buildGeminiSkillsDir(

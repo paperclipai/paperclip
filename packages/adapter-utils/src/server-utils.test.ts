@@ -14,6 +14,8 @@ import {
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  ensurePaperclipSkillSymlink,
+  isManagedGeminiSkillEntry,
   isPaperclipExternalChatContractTurn,
   isPaperclipExternalChatQuestionResponseTurn,
   isPaperclipExternalChatTurn,
@@ -479,6 +481,144 @@ describe("removeMaintainerOnlySkillSymlinks", () => {
 
       expect(removed).toEqual(["maintainer-skill"]);
       await expect(fs.lstat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Gemini managed-skills manifest records only owned entries", () => {
+  // Mirrors the materialize-then-record pass both Gemini lanes run: prune
+  // by the existing manifest, attempt each selected entry, then write the
+  // manifest from the entries this lane actually owns afterward — never
+  // from the selected names themselves.
+  async function runGeminiManifestPass(
+    skillsHome: string,
+    entries: Array<{ runtimeName: string; source: string }>,
+  ): Promise<void> {
+    const selectedNames = entries.map((entry) => entry.runtimeName);
+    await removeMaintainerOnlySkillSymlinks(skillsHome, selectedNames);
+    const ownedNames: string[] = [];
+    for (const entry of entries) {
+      const target = path.join(skillsHome, entry.runtimeName);
+      try {
+        await ensurePaperclipSkillSymlink(entry.source, target);
+      } catch {
+        await materializePaperclipSkillCopy(entry.source, target);
+      }
+      if (await isManagedGeminiSkillEntry(target, entry.source)) {
+        ownedNames.push(entry.runtimeName);
+      }
+    }
+    await writeManagedGeminiSkillsManifest(skillsHome, ownedNames);
+  }
+
+  it("keeps a real user directory alive across selection and deselection", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      await fs.mkdir(skillsHome, { recursive: true });
+
+      // The user already has their own directory at the same name a
+      // Paperclip skill also uses.
+      const userTarget = path.join(skillsHome, "shared-name");
+      await fs.mkdir(userTarget, { recursive: true });
+      await fs.writeFile(
+        path.join(userTarget, "SKILL.md"),
+        "# mine\n",
+        "utf8",
+      );
+
+      const source = path.join(root, "source-skill");
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(
+        path.join(source, "SKILL.md"),
+        "# paperclip\n",
+        "utf8",
+      );
+
+      // Run 1: the user selects the skill of the same name. The lane must
+      // not overwrite the user's own directory, and must not record it as
+      // an owned entry.
+      await runGeminiManifestPass(skillsHome, [
+        { runtimeName: "shared-name", source },
+      ]);
+      await expect(
+        fs.readFile(path.join(userTarget, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# mine\n");
+
+      // Run 2: the user deselects the skill. The prune must not delete the
+      // user's own directory, because the lane never owned it.
+      await runGeminiManifestPass(skillsHome, []);
+      await expect(
+        fs.readFile(path.join(userTarget, "SKILL.md"), "utf8"),
+      ).resolves.toBe("# mine\n");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still prunes an entry that was already a correct symbolic link", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      const source = path.join(root, "source-skill");
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      const target = path.join(skillsHome, "linked-skill");
+      // The link already points at the right source before the pass runs,
+      // so `ensurePaperclipSkillSymlink` returns "skipped" for it too.
+      await fs.symlink(source, target);
+
+      // Run 1: the skill stays selected. A link that was already correct
+      // must still enter the manifest as an owned entry.
+      await runGeminiManifestPass(skillsHome, [
+        { runtimeName: "linked-skill", source },
+      ]);
+
+      // Run 2: the skill is deselected. The manifest must still name it, so
+      // the prune removes it.
+      await runGeminiManifestPass(skillsHome, []);
+      await expect(fs.lstat(target)).rejects.toThrow();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("still prunes an owned copied directory, the permission-error fallback shape", async () => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-gemini-skills-"),
+    );
+    try {
+      const skillsHome = path.join(root, "skills");
+      const source = path.join(root, "source-skill");
+      await fs.mkdir(skillsHome, { recursive: true });
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+
+      // A prior run already materialized this entry as a copy, the shape
+      // the Agent Client Protocol lane's permission-error fallback writes
+      // when it cannot create a symbolic link.
+      const target = path.join(skillsHome, "copied-skill");
+      await materializePaperclipSkillCopy(source, target);
+
+      // Run 1: the skill stays selected. `ensurePaperclipSkillSymlink`
+      // leaves the existing directory alone and returns "skipped", but the
+      // owned copy must still enter the manifest.
+      await runGeminiManifestPass(skillsHome, [
+        { runtimeName: "copied-skill", source },
+      ]);
+
+      // Run 2: the skill is deselected. The prune must remove the owned
+      // copy.
+      await runGeminiManifestPass(skillsHome, []);
+      await expect(fs.stat(target)).rejects.toThrow();
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }

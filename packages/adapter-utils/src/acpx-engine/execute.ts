@@ -54,6 +54,7 @@ import {
   ensurePathInEnv,
   ensurePaperclipSkillSymlink,
   isForbiddenConfigEnvKey,
+  isManagedGeminiSkillEntry,
   isPaperclipExternalChatTurn,
   isPaperclipRuntimeEnvKey,
   joinPromptSections,
@@ -1317,6 +1318,7 @@ async function prepareGeminiSkillRuntime(input: {
     await input.onLog("stdout", `[paperclip] Removed stale ACPX Gemini skill "${skillName}" from ${skillsHome}\n`);
   }
 
+  const ownedSkillNames: string[] = [];
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
     try {
@@ -1334,15 +1336,22 @@ async function prepareGeminiSkillRuntime(input: {
           "stdout",
           `[paperclip] Copied ACPX Gemini skill "${entry.runtimeName}" into ${skillsHome} because symlinks are unavailable.${result.skippedSymlinks.length > 0 ? ` Skipped ${result.skippedSymlinks.length} nested symlink(s).` : ""}\n`,
         );
-        continue;
+      } else {
+        await input.onLog(
+          "stderr",
+          `[paperclip] Failed to link ACPX Gemini skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
       }
-      await input.onLog(
-        "stderr",
-        `[paperclip] Failed to link ACPX Gemini skill "${entry.key}" into ${skillsHome}: ${err instanceof Error ? err.message : String(err)}\n`,
-      );
+    }
+    // A name enters the manifest only when this lane owns the entry after
+    // the attempt above. A real user directory, and a link that already
+    // pointed at the right source, both return "skipped" too, so the
+    // result string alone cannot tell an owned entry from a user one.
+    if (await isManagedGeminiSkillEntry(target, entry.source)) {
+      ownedSkillNames.push(entry.runtimeName);
     }
   }
-  await writeManagedGeminiSkillsManifest(skillsHome, allowedSkillNames);
+  await writeManagedGeminiSkillsManifest(skillsHome, ownedSkillNames);
 
   return {
     identity: {
