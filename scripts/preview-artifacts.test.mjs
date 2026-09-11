@@ -197,6 +197,24 @@ test("cloud builds start per commit and preserve tag promotion dependencies", ()
   assert.ok(reaping < cloud.indexOf("      - name: Publish verified full-SHA cloud tag"));
 });
 
+test("cloud builds bake the managed runtime identity and verify it before publication", () => {
+  const workflow = readFileSync(new URL("../.github/workflows/docker-cloud.yml", import.meta.url), "utf8");
+  const build = workflow.split("      - name: Build and push (cloud)")[1].split("      - name:")[0];
+  assert.match(build, /build-args: \|\n\s+USER_UID=1001\n\s+USER_GID=1001\n/);
+  const verify = workflow.indexOf("      - name: Verify cloud runtime user");
+  assert.ok(verify > workflow.indexOf("      - name: Verify the pushed image resolves the declared Sentry version"));
+  assert.ok(verify < workflow.indexOf("      - name: Publish verified full-SHA cloud tag"));
+  const step = workflow.slice(verify).split("\n      - name:")[0];
+  assert.match(step, /IMAGE: ghcr.io\/\$\{\{ github.repository \}\}@\$\{\{ steps.build-cloud.outputs.digest \}\}/);
+  assert.doesNotMatch(step, /continue-on-error:|if:/);
+  assert.ok(step.indexOf('--entrypoint sh "$IMAGE"') < step.indexOf('-e USER_UID=1001 -e USER_GID=1001'));
+  for (const flag of ["u", "g"]) {
+    assert.ok(step.includes(`test "$(id -${flag} node)" = 1001`));
+    assert.ok(step.includes(`test "$(id -${flag})" = 1001`));
+  }
+  assert.ok(step.includes('test -w "$PAPERCLIP_HOME"'));
+});
+
 test("cloud cache imports are bounded, follow master ancestry, and retain the legacy fallback", () => {
   const workflow = readFileSync(new URL("../.github/workflows/docker-cloud.yml", import.meta.url), "utf8");
   const step = workflow.split("      - name: Select cloud cache ancestry")[1].split("      - name: Setup pnpm")[0];
