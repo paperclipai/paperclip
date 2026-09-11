@@ -40,6 +40,7 @@ import {
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
+import { serverVersion } from "./version.js";
 import { logger } from "./middleware/logger.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import {
@@ -909,6 +910,9 @@ async function startServerWithDatabaseTeardown(
     pluginWorkerManager,
     decisionServiceOptions,
     managedPluginAutoInstall,
+    // Without this the plugin loader falls back to "0.0.0" and rejects every
+    // plugin that declares a `minimumHostVersion`, however new the host is.
+    hostVersion: serverVersion,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 
