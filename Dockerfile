@@ -100,6 +100,55 @@ RUN pnpm --filter @paperclipai/server build
 RUN test -f server/dist/index.js || (echo "ERROR: server build output missing" && exit 1)
 RUN rm -rf packages/paperclip-runner/runner/target
 
+# Prune the workspace down to @paperclipai/server's own production
+# dependency graph, in a stage of its own rather than in `build` directly:
+# `cloud-plugins` and `cloud-server-deps` below both fork from `build` and
+# need its full devDependency toolchain (typescript, etc.) still intact to
+# build their own TypeScript at image build time, so the prune can't
+# happen in `build` itself without breaking them.
+#
+# `pnpm install --frozen-lockfile` in the deps stage installed every
+# workspace member's devDependencies plus every member's own dependencies
+# -- ui's bundler/storybook toolchain, other workspace packages' test
+# tooling, none of which the running server touches -- into one hoisted
+# node_modules that `production` below would otherwise copy wholesale. The
+# builds above are already done, so re-resolving with --prod and a
+# `server...` filter (server plus everything it actually depends on,
+# transitively) is safe and drops the unused weight.
+#
+# This deletes node_modules and reinstalls rather than installing narrow
+# from the start, because nothing earlier in the pipeline can afford to
+# skip the full install: `build` above needs every devDependency present
+# (typescript, vite, cargo's crates, ...) to actually compile the ui,
+# plugin-sdk, and server. Only once that's done do we know it's safe to
+# drop them. `pnpm prune --prod` looked like the narrower tool for this;
+# it isn't. Run bare it only prunes the *root* workspace importer, but
+# `pnpm prune --prod -C <dir>` does correctly scope to one member's own
+# devDependencies -- verified by running it against every workspace
+# member in turn, which measurably unlinked each member's own dev-only
+# packages. It still leaves the shipped node_modules unchanged in
+# aggregate, because prune only drops a package once *every* importer
+# that references it, prod or dev, has released it, and `ui` remains a
+# full workspace member throughout with its own real (non-dev)
+# dependencies -- some of which need typescript/vite/vitest/rolldown as
+# peer dependencies regardless of dev/prod classification. No amount of
+# per-member pruning can exclude `ui`'s footprint the way `--filter`
+# does, because prune never stops trying to satisfy it. A filtered
+# `install --prod` is the only primitive that scopes to just server's
+# own graph, and it requires a clean node_modules first.
+#
+# tsx is deliberately NOT pruned: server/package.json lists it as a
+# production dependency (not dev) because the ENTRYPOINT below imports it
+# directly (`--import ./server/node_modules/tsx/...`) to transpile the
+# workspace packages the server consumes by TypeScript source -- their
+# `exports` field points at `./src/*.ts`, not a prebuilt `dist` -- so tsx
+# has to survive any devDependency prune.
+FROM build AS pruned-app
+RUN find . -maxdepth 4 -type d -name node_modules \
+      -not -path '*/node_modules/*/node_modules*' -exec rm -rf {} + \
+  && pnpm install --prod --frozen-lockfile --ignore-scripts \
+      --filter='@paperclipai/server...'
+
 FROM base AS production
 ARG USER_UID=1000
 ARG USER_GID=1000
@@ -131,7 +180,7 @@ RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-COPY --chown=node:node --from=build /app /app
+COPY --chown=node:node --from=pruned-app /app /app
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
