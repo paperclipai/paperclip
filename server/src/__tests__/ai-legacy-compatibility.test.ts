@@ -36,7 +36,7 @@ it("reconnect detaches an indexed credential without changing unadopted legacy a
   const legacyConfig = { env: { ANTHROPIC_API_KEY: { type: "user_secret_ref", key: definition.key, required: true } } };
   await db.update(agents).set({ adapterConfig: legacyConfig }).where(eq(agents.id, agentId));
   await vault.syncUserSecretDeclarationsForTarget(companyId, { targetType: "agent", targetId: agentId }, [{ definitionKey: definition.key, configPath: "env.ANTHROPIC_API_KEY", envKey: "ANTHROPIC_API_KEY", required: true }]);
-  const migration = await readFile(new URL("../../../packages/db/src/migrations/0272_material_phalanx.sql", import.meta.url), "utf8");
+  const migration = await readFile(new URL("../../../packages/db/src/migrations/0273_organic_jackal.sql", import.meta.url), "utf8");
   await db.execute(sql.raw(migration.slice(migration.indexOf("DO $$", migration.indexOf("-- Only declared")))));
   const connection = (await service.list(companyId, owner)).find(c => c.name === secret.name)!;
   const resolve = () => vault.resolveUserSecretValue(companyId, { definitionId: definition.id, responsibleUserId: owner, required: true, version: "latest" }, { companyId, responsibleUserId: owner, actorType: "system" });
