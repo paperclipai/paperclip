@@ -2,7 +2,7 @@ import { appendFileSync, mkdtempSync, readSync, renameSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { locateRunnerdTraceFrame, releaseRunnerdTraceFrameIndex, RunnerdTraceFrameIndex } from "./runnerd-trace-frame-index.js";
+import { RunnerdTraceFrameIndex } from "./runnerd-trace-frame-index.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const fs = await importOriginal<typeof import("node:fs")>();
@@ -24,22 +24,22 @@ describe("runnerd trace frame index", () => {
     vi.mocked(readSync).mockClear();
   });
   afterEach(() => {
-    releaseRunnerdTraceFrameIndex(path);
+    index.clear();
     rmSync(directory, { recursive: true, force: true });
   });
 
   it("indexes appended records once across repeated pending lookups and both stages", () => {
     const first = interpretation(1, "event-1", "event-2");
     writeFileSync(path, first);
-    expect(locateRunnerdTraceFrame(path, "event-2")).toEqual({ frameId: 1, nativeChannelSettled: false });
+    expect(index.locate(path, "event-2")).toEqual({ frameId: 1, nativeChannelSettled: false });
     for (let i = 0; i < 4096; i++) {
-      expect(locateRunnerdTraceFrame(path, `pending-${i}`)).toEqual({ frameId: null, nativeChannelSettled: false });
-      expect(locateRunnerdTraceFrame(path, "event-1").frameId).toBe(1);
+      expect(index.locate(path, `pending-${i}`)).toEqual({ frameId: null, nativeChannelSettled: false });
+      expect(index.locate(path, "event-1").frameId).toBe(1);
     }
     expect(readSync).toHaveBeenCalledTimes(1);
     appendFileSync(path, interpretation(2, "pending-1") + settled);
-    expect(locateRunnerdTraceFrame(path, "pending-1")).toEqual({ frameId: 2, nativeChannelSettled: true });
-    expect(locateRunnerdTraceFrame(path, "missing")).toEqual({ frameId: null, nativeChannelSettled: true });
+    expect(index.locate(path, "pending-1")).toEqual({ frameId: 2, nativeChannelSettled: true });
+    expect(index.locate(path, "missing")).toEqual({ frameId: null, nativeChannelSettled: true });
     expect(readSync).toHaveBeenCalledTimes(2);
     expect(vi.mocked(readSync).mock.calls[1]![4]).toBe(Buffer.byteLength(first));
   });
@@ -93,12 +93,12 @@ describe("runnerd trace frame index", () => {
     expect(readSync).toHaveBeenCalledTimes(calls);
   });
 
-  it("retries missing files and releases cached indexes on close", () => {
-    expect(() => locateRunnerdTraceFrame(path, "event")).toThrow();
+  it("retries missing files and clears retained indexes on close", () => {
+    expect(() => index.locate(path, "event")).toThrow();
     writeFileSync(path, interpretation(1, "event"));
-    expect(locateRunnerdTraceFrame(path, "event").frameId).toBe(1);
-    releaseRunnerdTraceFrameIndex(path);
-    expect(locateRunnerdTraceFrame(path, "event").frameId).toBe(1);
+    expect(index.locate(path, "event").frameId).toBe(1);
+    index.clear();
+    expect(index.locate(path, "event").frameId).toBe(1);
     expect(readSync).toHaveBeenCalledTimes(2);
   });
 
@@ -108,5 +108,51 @@ describe("runnerd trace frame index", () => {
       interpretation(2, "same"));
     expect(index.locate(path, "same")).toEqual({ frameId: null, nativeChannelSettled: false });
     expect(index.locate(path, "same")).toEqual({ frameId: 2, nativeChannelSettled: false });
+  });
+
+  it("keeps progress for more than 16 interleaved active transports", () => {
+    const raw = JSON.stringify({ kind: "frame", rawBase64: "x".repeat(2 * 1024 * 1024) }) + "\n";
+    const traces = Array.from({ length: 24 }, (_, i) => {
+      const tracePath = join(directory, `trace-${i}.ndjson`);
+      writeFileSync(tracePath, raw + interpretation(i, "last"));
+      return { tracePath, index: new RunnerdTraceFrameIndex() };
+    });
+    for (let round = 0; round < 3; round++) {
+      for (const [i, trace] of traces.entries()) {
+        expect(trace.index.locate(trace.tracePath, "last").frameId).toBe(round === 2 ? i : null);
+      }
+    }
+    expect(readSync).toHaveBeenCalledTimes(72);
+    for (let i = 0; i < 24; i++) {
+      expect(vi.mocked(readSync).mock.calls[24 + i]![4]).toBe(1024 * 1024);
+      expect(vi.mocked(readSync).mock.calls[48 + i]![4]).toBe(2 * 1024 * 1024);
+    }
+  });
+
+  it("skips oversized records across appends without decoding or parsing them", () => {
+    const parse = vi.spyOn(JSON, "parse");
+    try {
+      writeFileSync(path, '{"kind":"frame","rawBase64":"');
+      const chunk = "x".repeat(32 * 1024);
+      for (let i = 0; i < 256; i++) {
+        appendFileSync(path, chunk);
+        expect(index.locate(path, "after").frameId).toBeNull();
+      }
+      expect(parse).not.toHaveBeenCalled();
+      appendFileSync(path, '"}\n' + interpretation(7, "after"));
+      expect(index.locate(path, "after").frameId).toBe(7);
+      expect(parse).toHaveBeenCalledTimes(1);
+      expect(Buffer.byteLength(parse.mock.calls[0]![0])).toBeLessThan(64 * 1024);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it("waits for a partial later interpretation before returning an older match", () => {
+    const next = interpretation(2, "same");
+    writeFileSync(path, interpretation(1, "same") + next.slice(0, -1));
+    expect(index.locate(path, "same").frameId).toBeNull();
+    appendFileSync(path, "\n");
+    expect(index.locate(path, "same").frameId).toBe(2);
   });
 });
