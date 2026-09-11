@@ -556,7 +556,7 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("shared default-open");
   });
 
-  it("allows standard-trust agents to comment on and update visible peer-owned issues", async () => {
+  it("keeps standard-trust peer issue mutations default-open but denies peer comments", async () => {
     const company = await createCompany(db, "DefaultOpenPeerWrites");
     const actorAgent = await createAgent(db, company.id);
     const ownerAgent = await createAgent(db, company.id);
@@ -576,15 +576,75 @@ describeEmbeddedPostgres("authorization service", () => {
     };
     const authorization = authorizationService(db);
 
-    for (const action of ["issue:comment", "issue:mutate"] as const) {
-      await expect(authorization.decide({ actor, action, resource })).resolves.toMatchObject({
-        allowed: true,
-        reason: "allow_visible_issue_write",
-      });
-    }
+    await expect(authorization.decide({ actor, action: "issue:comment", resource })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+    await expect(authorization.decide({ actor, action: "issue:mutate", resource })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_visible_issue_write",
+    });
   });
 
-  it("keeps the responsible-user ceiling on every default-open peer write", async () => {
+  it("allows only direct same-company managers to comment on assigned issues", async () => {
+    const company = await createCompany(db, "DirectManagerComment");
+    const ceoAgent = await createAgent(db, company.id, { role: "ceo" });
+    const managerAgent = await createAgent(db, company.id, { reportsTo: ceoAgent.id });
+    const directReport = await createAgent(db, company.id, { reportsTo: managerAgent.id });
+    const peerAgent = await createAgent(db, company.id, { reportsTo: ceoAgent.id });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: directReport.id });
+    const unassignedIssue = await createIssue(db, company.id);
+    const otherCompany = await createCompany(db, "CrossCompanyManagerComment");
+    const otherAgent = await createAgent(db, otherCompany.id);
+    const otherIssue = await createIssue(db, otherCompany.id, { assigneeAgentId: otherAgent.id });
+    const authorization = authorizationService(db);
+    const actorFor = (agentId: string, companyId = company.id) => ({
+      type: "agent" as const,
+      agentId,
+      companyId,
+      source: "agent_jwt" as const,
+    });
+    const resourceFor = (targetIssue: typeof issue) => ({
+      type: "issue" as const,
+      companyId: targetIssue.companyId,
+      issueId: targetIssue.id,
+      assigneeAgentId: targetIssue.assigneeAgentId,
+      status: targetIssue.status,
+    });
+
+    await expect(authorization.decide({
+      actor: actorFor(managerAgent.id),
+      action: "issue:comment",
+      resource: resourceFor(issue),
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_manager_chain" });
+    await expect(authorization.decide({
+      actor: actorFor(ceoAgent.id),
+      action: "issue:comment",
+      resource: resourceFor(issue),
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+    await expect(authorization.decide({
+      actor: actorFor(peerAgent.id),
+      action: "issue:comment",
+      resource: resourceFor(issue),
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+    await expect(authorization.decide({
+      actor: actorFor(managerAgent.id),
+      action: "issue:comment",
+      resource: resourceFor(unassignedIssue),
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+    await expect(authorization.decide({
+      actor: actorFor(managerAgent.id),
+      action: "issue:comment",
+      resource: resourceFor(otherIssue),
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_company_boundary" });
+    await expect(authorization.decide({
+      actor: actorFor(managerAgent.id),
+      action: "issue:mutate",
+      resource: resourceFor(issue),
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_visible_issue_write" });
+  });
+
+  it("keeps the responsible-user ceiling on default-open peer mutations", async () => {
     const company = await createCompany(db, "DefaultOpenPeerWriteCeiling");
     const actorAgent = await createAgent(db, company.id);
     const ownerAgent = await createAgent(db, company.id);
@@ -606,13 +666,15 @@ describeEmbeddedPostgres("authorization service", () => {
     };
     const authorization = authorizationService(db);
 
-    for (const action of ["issue:comment", "issue:mutate"] as const) {
-      await expect(authorization.decide({ actor, action, resource })).resolves.toMatchObject({
-        allowed: false,
-        code: "RESPONSIBLE_USER_UNAVAILABLE",
-        reason: "deny_missing_membership",
-      });
-    }
+    await expect(authorization.decide({ actor, action: "issue:comment", resource })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+    await expect(authorization.decide({ actor, action: "issue:mutate", resource })).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
+      reason: "deny_missing_membership",
+    });
   });
 
   it("structurally keeps default-open comments inside issue visibility", async () => {
@@ -666,7 +728,7 @@ describeEmbeddedPostgres("authorization service", () => {
     }
   });
 
-  it("does not let default-open non-assignee comments mint mention grants", async () => {
+  it("does not let denied non-assignee comments mint mention grants", async () => {
     const company = await createCompany(db, "DefaultOpenMentionNonTransitive");
     const ownerAgent = await createAgent(db, company.id);
     const commentingAgent = await createAgent(db, company.id);
@@ -694,10 +756,7 @@ describeEmbeddedPostgres("authorization service", () => {
         assigneeAgentId: ownerAgent.id,
         status: issue.status,
       },
-    })).resolves.toMatchObject({
-      allowed: true,
-      reason: "allow_visible_issue_write",
-    });
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
   });
 
   it("denies delegated protected assignment when the responsible user lacks matching authority", async () => {
