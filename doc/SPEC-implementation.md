@@ -475,6 +475,13 @@ Decision-desk triage uses company-scoped sidecars rather than adding queue field
 - `decision_archive_notification_outbox` records one retry-safe origin-agent notification per source/archive version. The 90-day internal sweeper archives only unkept rows and coalesces delivery per origin agent.
 - Queue membership never grants source visibility. Item writes re-authorize the referenced source, and queue reads re-authorize every member before returning rows or counts.
 
+Task-attempt routing (see `doc/execution-semantics.md` §13.1) is company-scoped and append-only:
+
+- `execution_profiles` binds an existing agent to a typed provider family, requested model/effort, role capabilities, and a per-profile concurrency cap; `(company_id, agent_id)` and `(company_id, name)` are unique, and the agent FK is composite over `(company_id, id)`.
+- `route_rules` stores one rule per `(company_id, task_class)` with composite profile FKs; cross-family reviewer validity is enforced by the service on every write.
+- `route_decisions` is immutable per revision with `(company_id, issue_id, revision)` uniqueness, a composite superseded-decision FK, snapshotted participants for every role, and CHECKs that reject same-family or self reviewers.
+- `route_pool_claims` counts active slots per profile under the profile row lock; partial unique indexes allow one active claim per `(issue, role)` and one writable claim per issue.
+
 ## 8. State Machines
 
 ## 8.1 Agent Status
@@ -1155,6 +1162,7 @@ The current app also exposes V1-supporting surfaces for:
 - company-scoped summary slots for projects, the workspaces overview, project workspaces, and individual execution workspaces; execution-workspace slots are keyed by execution workspace id so a new workspace never inherits another workspace's summary
 - issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`) with the open-default resolver contract in §9.8.1
 - issue approvals, issue references/search, labels, read state, inbox/archive state, and work products
+- task-attempt routing: `GET|POST /companies/:companyId/execution-profiles`, `PATCH /execution-profiles/:profileId`, `GET|PUT /companies/:companyId/route-rules`, `POST /companies/:companyId/route-rules/defaults`, `GET /issues/:issueId/routing`, and `POST /issues/:issueId/routing/{route|dispatch|escalate|rescue|override|review-request|release-claim}`; profile/rule writes and every authority change (dispatch, escalate, rescue, override, release) are board-only, and agents may only submit classification facts or request an already-required review
 - company search through `GET /companies/:companyId/search` plus agent-oriented bulk extraction through
   `GET /companies/:companyId/search/extract`; extraction accepts a server-escaped literal `contains`, optional
   server-owned URL expansion, issue/comment/document scopes, status/date filters, issue-level pagination, a

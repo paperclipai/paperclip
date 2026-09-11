@@ -156,6 +156,20 @@ The payload never carries a command, an argument, a path, an environment value,
 or a raw identifier. The event rides the `ctx.onEvent` run-event bridge and is
 run-log-only. It needs no OTLP endpoint.
 
+## Route Decision Run-Log Event
+
+Task-attempt routing writes one `route.decision` event to the run log of every
+run it dispatches (worker, rescuer, or reviewer). The payload carries only the
+decision identity and its public summary: `decisionId`, `revision`,
+`revisionKind`, `supersedesDecisionId`, `policyVersion`, `state`, `taskClass`,
+`effectiveTaskClass`, the selected `workerProfileId`, `workerProviderFamily`,
+`workerModel`, `advisorProfileId`, `reviewerProfileId`,
+`reviewerProviderFamily`, `requireCrossFamilyReview`, `reasonCodes`,
+`escalationReason`, and the dispatched `role`. It never carries adapter
+configuration, credentials, provider errors, or free text. The requested model
+recorded here is the decision snapshot; the provider's own
+`model.route.changed` events remain the evidence of the effective model.
+
 ## Related instrumentation
 
 The sandbox duplex transport also writes one run-log event as one of its three
