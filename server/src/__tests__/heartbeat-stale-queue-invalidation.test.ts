@@ -932,6 +932,55 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(run!.id)).toBe(1);
   });
 
+  it("does not treat a cancelled blocker as resolved for generic timer fallback", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      heartbeatConfig: {
+        enabled: true,
+        intervalSec: 60,
+        skipTimerWhenNoActionableWork: true,
+      },
+    });
+    const blockedIssueId = randomUUID();
+    const cancelledBlockerId = randomUUID();
+    const now = new Date();
+    const priorTimerBaseline = new Date(now.getTime() - 120_000);
+    await db
+      .update(agents)
+      .set({ lastHeartbeatAt: priorTimerBaseline })
+      .where(eq(agents.id, agentId));
+    await db.insert(issues).values([
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Still blocked by a cancelled dependency",
+        status: "blocked",
+        priority: "high",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: cancelledBlockerId,
+        companyId,
+        title: "Cancelled dependency",
+        status: "cancelled",
+        priority: "high",
+        updatedAt: new Date(now.getTime() - 30_000),
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: cancelledBlockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+
+    expect(await heartbeat.tickTimers(now)).toMatchObject({ enqueued: 0 });
+    const runs = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(0);
+  });
+
   it("creates one typed liveness incident after bounded deferred-claim retries exhaust", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {

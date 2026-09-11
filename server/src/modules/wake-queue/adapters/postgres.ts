@@ -215,7 +215,12 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
                 : sql`true`,
             ),
           )
-          .orderBy(asc(agentWakeupRequests.requestedAt))
+          .orderBy(
+            ...(releaseIssueId
+              ? [sql`case when ${agentWakeupRequests.agentId} = ${agentId} then 0 else 1 end`]
+              : []),
+            asc(agentWakeupRequests.requestedAt),
+          )
           .limit(1)
           .then((rows) => rows[0] ?? null);
         if (!row) return null;

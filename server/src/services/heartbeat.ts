@@ -12847,7 +12847,7 @@ export function heartbeatService(
                 from issues blocker
                 where blocker.id = ${issueRelations.issueId}
                   and blocker.company_id = ${issue.companyId}
-                  and blocker.status not in ('done', 'cancelled')
+                  and blocker.status <> 'done'
                   and blocker.hidden_at is null
               )`,
               ),
@@ -16117,7 +16117,7 @@ export function heartbeatService(
                 where resolved_edge.company_id = ${issues.companyId}
                   and resolved_edge.related_issue_id = ${issues.id}
                   and resolved_edge.type = 'blocks'
-                  and resolved_blocker.status in ('done', 'cancelled')
+                  and resolved_blocker.status = 'done'
                   and resolved_blocker.updated_at > ${priorTimerBaseline.toISOString()}::timestamptz
               )`,
             ),
