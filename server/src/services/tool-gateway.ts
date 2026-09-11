@@ -5913,7 +5913,11 @@ export function createToolGatewayService(
       // and TLS setup before it invokes the final authorization callback. The
       // request call follows that callback without another awaited step.
       let response = await dispatchRemote(endpoint, requestInit, beforeDispatch);
-      if (response.status === 401 && composioChild) {
+      // Approval-governed calls are single-attempt after their final permit.
+      // A provider may complete a side effect and still return 401, so any
+      // credential refresh and retry here could dispatch the approved action
+      // twice under one request/audit record.
+      if (!beforeDispatch && response.status === 401 && composioChild) {
         composioSession = await composioSessions.ensureSession(connection.id, {
           tools: [entry.toolName],
           scopeRevision: composioScopeRevision,
@@ -5937,6 +5941,7 @@ export function createToolGatewayService(
       }
       const oauth = asRecord(asRecord(connection.config)?.oauth);
       if (
+        !beforeDispatch &&
         response.status === 401 &&
         connection.authKind === "oauth" &&
         connection.credentialSource === "paperclip_vault" &&
@@ -5976,6 +5981,7 @@ export function createToolGatewayService(
         }
       }
       if (
+        !beforeDispatch &&
         response.status === 401 &&
         connection.authKind === "oauth" &&
         connection.credentialSource === "paperclip_vault" &&
@@ -6002,6 +6008,7 @@ export function createToolGatewayService(
         });
       }
       if (
+        !beforeDispatch &&
         response.status === 401 &&
         connection.credentialSource === "vercel_connect"
       ) {

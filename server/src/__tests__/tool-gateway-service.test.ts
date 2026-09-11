@@ -203,9 +203,21 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await tempDb?.cleanup();
   });
 
-  async function createRemoteApprovalFixture(options: ToolGatewayServiceOptions = {}) {
+  async function createRemoteApprovalFixture(
+    options: ToolGatewayServiceOptions = {},
+    prepareRemote?: (input: {
+      companyId: string;
+      agentId: string;
+      connectionId: string;
+    }) => Promise<void>,
+  ) {
     const { company, agent, issue, run } = await createRunFixture(db);
     const remote = await createRemoteMcpToolFixture(db, company.id);
+    await prepareRemote?.({
+      companyId: company.id,
+      agentId: agent.id,
+      connectionId: remote.connection.id,
+    });
     await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "Review remote reads",
@@ -401,6 +413,108 @@ describeEmbeddedPostgres("tool gateway service", () => {
     releaseProvider();
     expect((await approval).status).toBe("executed");
     expect(providerCalls).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not refresh credentials or redispatch after an approved remote call returns 401", async () => {
+    const getToken = vi.fn<VercelConnectClient["getToken"]>(
+      async (_request, options) => ({
+        token: options?.forceRefresh
+          ? "fresh-provider-bearer"
+          : "stale-provider-bearer",
+        tokenId: options?.forceRefresh ? "stk_fresh" : "stk_stale",
+        expiresAt: Date.now() + 60_000,
+        connector: {
+          id: "scl_fixture",
+          uid: "fixture-paperclip",
+          type: "api-key",
+        },
+      }),
+    );
+    const evict = vi.fn<VercelConnectClient["evict"]>();
+    const providerCalls = vi.fn(async () =>
+      new Response(null, { status: 401 }),
+    );
+    const fixture = await createRemoteApprovalFixture(
+      {
+        vercelConnectClient: {
+          getConnectorMetadata: vi.fn(),
+          getToken,
+          startAuthorization: vi.fn(),
+          revoke: vi.fn(),
+          evict,
+        },
+        remoteHttpRequest: providerCalls,
+      },
+      async ({ connectionId }) => {
+        await db
+          .update(toolConnections)
+          .set({
+            credentialSource: "vercel_connect",
+            externalCredential: {
+              provider: "vercel_connect",
+              connectorId: "scl_fixture",
+              connectorUid: "fixture-paperclip",
+              service: "fixture",
+              connectorType: "api-key",
+              principalMode: "app",
+              headerName: "Authorization",
+              headerPrefix: "Bearer ",
+              scopes: ["*"],
+            },
+            credentialRefs: [],
+            credentialSecretRefs: [],
+          })
+          .where(eq(toolConnections.id, connectionId));
+        await db
+          .update(connectionGrants)
+          .set({
+            externalCredential: {
+              provider: "vercel_connect",
+              subjectType: "app",
+            },
+            credentialSecretRefs: [],
+          })
+          .where(eq(connectionGrants.connectionId, connectionId));
+      },
+    );
+
+    const result = await fixture.gateway.approveActionRequest({
+      companyId: fixture.company.id,
+      actionRequestId: fixture.actionRequest.id,
+      actor: { userId: "board-user" },
+    });
+
+    expect(result.status).toBe("failed");
+    expect(providerCalls).toHaveBeenCalledTimes(1);
+    expect(getToken).toHaveBeenCalledTimes(1);
+    expect(getToken.mock.calls[0]?.[1]).not.toMatchObject({
+      forceRefresh: true,
+    });
+    expect(evict).not.toHaveBeenCalled();
+
+    const [request] = await db
+      .select()
+      .from(toolActionRequests)
+      .where(eq(toolActionRequests.id, fixture.actionRequest.id));
+    const [invocation] = await db
+      .select()
+      .from(toolInvocations)
+      .where(eq(toolInvocations.id, fixture.invocation.id));
+    const events = await db
+      .select()
+      .from(toolCallEvents)
+      .where(eq(toolCallEvents.actionRequestId, fixture.actionRequest.id));
+    expect(request).toMatchObject({ status: "failed" });
+    expect(invocation).toMatchObject({
+      status: "failed",
+      approvalState: "approved",
+      errorCode: "mcp_remote_status",
+    });
+    expect(events.map((event) => event.reasonCode)).toEqual([
+      "requires_approval_policy",
+      "approved_action_permitted",
+      "mcp_remote_status",
+    ]);
   });
 
   it("replays the single winner and denies alternate dispatch entry points", async () => {
