@@ -3,7 +3,7 @@
 
 @font-face {
   font-family: "InterVariable";
-  src: url("../fonts/InterVariable.woff2") format("woff2");
+  src: url("/fonts/InterVariable.woff2") format("woff2");
   font-display: swap;
   font-style: normal;
   font-weight: 100 900;
@@ -11,7 +11,7 @@
 
 @font-face {
   font-family: "InterVariable";
-  src: url("../fonts/InterVariable-Italic.woff2") format("woff2");
+  src: url("/fonts/InterVariable-Italic.woff2") format("woff2");
   font-display: swap;
   font-style: italic;
   font-weight: 100 900;
@@ -174,6 +174,13 @@
   --status-agent-running: #2563eb;
   --status-agent-paused: #f59e0b;
   --status-agent-error: #dc2626;
+  /* Dashboard agent card: translucent running treatment from the Paper design. */
+  --dashboard-run-accent: oklch(62.3% 0.214 259.815);
+  --dashboard-run-background: color-mix(in oklab, var(--dashboard-run-accent) 4%, transparent);
+  --dashboard-run-border: color-mix(in oklab, var(--dashboard-run-accent) 25%, transparent);
+  --dashboard-run-badge-background: color-mix(in oklab, var(--dashboard-run-accent) 10%, transparent);
+  --dashboard-run-badge-border: color-mix(in oklab, var(--dashboard-run-accent) 30%, transparent);
+  --dashboard-run-badge-foreground: var(--status-agent-running);
   --status-task-backlog: #a8aeb2;
   --status-task-todo: #f59e0b;
   --status-task-in_progress: #2563eb;
@@ -355,6 +362,7 @@
 }
 
 .dark {
+  --dashboard-run-badge-foreground: oklch(70.7% 0.165 254.624);
   --background: oklch(0.205 0 0);
   --foreground: oklch(0.985 0 0);
   --side-panel-bg: var(--background);
@@ -2315,6 +2323,18 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
 }
 .status-fill {
   background-color: var(--sc);
+}
+
+/* Small uppercase run labels need stronger light-mode contrast. The shared
+   .dark .status-chip rule keeps its brighter text in dark mode. */
+.dashboard-run-status {
+  color: color-mix(in srgb, var(--sc) 60%, black);
+}
+
+.dashboard-run-status[data-status="running"] {
+  background-color: var(--dashboard-run-badge-background);
+  border-color: var(--dashboard-run-badge-border);
+  color: var(--dashboard-run-badge-foreground);
 }
 
 /* ── Extracted verbatim tokens (Phase 2, design/token-extraction) ── */
