@@ -69,11 +69,17 @@ export function WorkFolderBrowser({ owner, exampleFiles, readOnly = false, fillH
     if (action.type === "upload") for (const file of action.files) await workFoldersApi.upload(owner, file, directory ? `${directory}/${file.name}` : file.name, crypto.randomUUID());
     else if (action.type === "mkdir") { await workFoldersApi.operation(owner, { action: "mkdir", path: directory }, crypto.randomUUID()); setExpanded((before) => new Set([...before, directory])); }
     else if (action.type === "deleteSelected") {
+      const failures: string[] = [];
       for (const path of action.paths) {
-        await workFoldersApi.operation(owner, { action: "delete", path }, crypto.randomUUID());
-        setCheckedFiles((before) => new Set([...before].filter((candidate) => candidate !== path && !candidate.startsWith(`${path}/`))));
-        setSelectedPath((before) => before === path || before?.startsWith(`${path}/`) ? null : before);
+        try {
+          await workFoldersApi.operation(owner, { action: "delete", path }, crypto.randomUUID());
+          setCheckedFiles((before) => new Set([...before].filter((candidate) => candidate !== path && !candidate.startsWith(`${path}/`))));
+          setSelectedPath((before) => before === path || before?.startsWith(`${path}/`) ? null : before);
+        } catch (error) {
+          failures.push(`${path}: ${error instanceof Error ? error.message : "Could not move to trash"}`);
+        }
       }
+      if (failures.length > 0) throw new Error(failures.join("; "));
     }
     else if (action.type === "restore" || action.type === "purge") await workFoldersApi.operation(owner, { action: action.type, fileId: action.fileId }, crypto.randomUUID());
     else for (const run of (syncQuery.data ?? []).filter((run) => run.active)) await workFoldersApi.refresh(owner, run.runId);
