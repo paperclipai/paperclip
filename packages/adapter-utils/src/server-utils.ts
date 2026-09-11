@@ -2161,7 +2161,21 @@ export function selectPaperclipTaskMarkdown(
   return compact || full;
 }
 
+// Runtime-only connector skills are supplied by the server after assignment resolution.
+// Shared-home adapters consume them here on fresh and resumed runs without installing
+// files into a user-wide skills directory. They are not part of serialized wake data.
 export function renderPaperclipWakePrompt(
+  value: unknown,
+  options: Parameters<typeof renderPaperclipWakePromptBody>[1] = {},
+): string {
+  const instructions = asString(parseObject(value).connectorSkillInstructions, "").trim();
+  return joinPromptSections([
+    renderPaperclipWakePromptBody(value, options),
+    instructions ? `## Assigned connector skills\n\n${instructions}` : "",
+  ]);
+}
+
+function renderPaperclipWakePromptBody(
   value: unknown,
   options: {
     resumedSession?: boolean;
@@ -3950,7 +3964,8 @@ export async function readPaperclipRuntimeSkillEntries(
   const configuredEntries = normalizeConfiguredPaperclipRuntimeSkills(
     config.paperclipRuntimeSkills,
   );
-  if (configuredEntries.length > 0) return configuredEntries;
+  // An explicit empty assignment must not fall back to every bundled skill.
+  if (Array.isArray(config.paperclipRuntimeSkills)) return configuredEntries;
   return listPaperclipSkillEntries(moduleDir, additionalCandidates);
 }
 

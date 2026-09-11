@@ -1112,6 +1112,10 @@ export async function resolveChatOriginPublicationBindings(
   runId: string | null,
 ): Promise<ChatPublicationBinding[]> {
   if (!runId) return [];
+  const explicitEmail = await dbOrTx.select({ id: chatEndpoints.id }).from(chatEndpoints)
+    .innerJoin(chatConversations, eq(chatConversations.endpointId, chatEndpoints.id))
+    .where(and(eq(chatConversations.companyId, companyId), eq(chatConversations.issueId, issueId), eq(chatEndpoints.publicationMode, "explicit"))).limit(1);
+  if (explicitEmail.length) return [];
 
   let originRunId = runId;
   let contextSnapshot: Record<string, unknown> | null = null;

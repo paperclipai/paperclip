@@ -25,7 +25,7 @@ ALTER TABLE "tool_connections" ADD CONSTRAINT "tool_connections_purpose_check" C
 ALTER TABLE "tool_connections" ADD CONSTRAINT "tool_connections_channel_transport_check" CHECK ((
       ("tool_connections"."connection_purpose" = 'tool' and "tool_connections"."transport" not in ('chat_sdk', 'runtime_auth'))
       or
-      ("tool_connections"."connection_purpose" = 'channel' and "tool_connections"."transport" = 'chat_sdk')
+      ("tool_connections"."connection_purpose" = 'channel' and ("tool_connections"."transport" = 'chat_sdk' or ("tool_connections"."transport" = 'rest_api' and "tool_connections"."config"->>'provider' = 'agentmail')))
       or
       ("tool_connections"."connection_purpose" = 'ai' and "tool_connections"."transport" = 'runtime_auth')
     ));--> statement-breakpoint

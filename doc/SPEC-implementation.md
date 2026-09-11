@@ -1587,3 +1587,15 @@ harness/model routing and fails closed without ambient credential fallback.
 Legacy agents retain their authentication until validated adoption. See
 [AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
 methods, lifecycle, runtime enforcement, and migration details.
+### Experimental task-bound email
+
+AgentMail channel connections extend the experimental conversation/task pipeline
+with explicit email publication. Each owned inbox/provider thread binds one task;
+external email senders do not gain board authority. Incoming correspondence uses
+the assigned agent's normal execution controls. Internal task activity never
+implicitly sends email. New outgoing conversations create child tasks and durable
+send intents before provider contact. The board directs email work through the
+normal task conversation; rich email cards show the correspondence and delivery
+outcomes without a separate email composer. See
+[AgentMail connections](connections/AGENTMAIL.md) for setup, transports, recovery,
+authorization, and the API/CLI contract.

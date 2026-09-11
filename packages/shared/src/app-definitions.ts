@@ -5,6 +5,7 @@ import type { ToolConnectionOwnership } from "./types/tool-access.js";
 
 export const CONNECTABLE_APP_SLUGS = new Set([
   "anthropic", "openai", "openrouter", "xai",
+  "agentmail",
   ...SELF_SERVE_MCP_CANDIDATES.map((entry) => entry.slug),
   "zapier",
   "slack",

@@ -206,3 +206,4 @@ export { chatDiscordCommandOwners } from "./chat_discord_command_owners.js";
 export { chatTelegramDraftIds } from "./chat_telegram_draft_ids.js";
 
 export { aiConnectionDefaults } from "./ai_connection_defaults.js";
+export * from "./email.js";

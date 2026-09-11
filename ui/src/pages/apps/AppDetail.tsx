@@ -1,5 +1,7 @@
 import { ManagedAiConnectionDetails } from "@/components/ai-connections/ManagedAiConnectionDetails";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { EmailConnectionAccess } from "@/components/EmailConnectionAccess";
+import { EmailConnectionInboxes } from "./chat/EmailEndpointSetup";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Pencil } from "lucide-react";
 import type {
@@ -575,6 +577,8 @@ export function AppDetail({ renderActions, onReconnect }: {
           : permissionsLoading
           ? <ToolsLoading />
           : <div className="space-y-10">
+              {connection.config?.provider === "agentmail" && <EmailConnectionInboxes companyId={connection.companyId} connectionId={connection.id} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}
+              {connection.config?.provider === "agentmail" ? <EmailConnectionAccess companyId={connection.companyId} connectionId={connection.id} agents={agents} /> : <>
               <IdentitiesSection
                 appName={appName}
                 credentialPolicy={connection.credentialPolicy}
@@ -631,6 +635,7 @@ export function AppDetail({ renderActions, onReconnect }: {
                 onSetActionPermission={(id, next) => apply(actionPermissionMutation(id, next, enabledIds, askFirstIds))}
                 onReviewQuarantined={reviewQuarantined}
               />
+              </>}
             </div>
       )}
     </div>
@@ -719,7 +724,7 @@ function AppDetailHeader({
           )}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <StatusBadge status={status} />
-            {actionCount !== null && (
+            {connection.config?.provider !== "agentmail" && actionCount !== null && (
               <span className="text-xs text-muted-foreground">
                 {actionCount} {actionCount === 1 ? "action" : "actions"} available
               </span>

@@ -8,6 +8,9 @@ on:
         required: true
         type: string
 
+# Caller-provided refs may name unmerged PR code. AWS is eligible only when
+# the caller runs on canonical master and verifies that event's exact SHA.
+# The organization group also restricts these workflow files to master.
 jobs:
   runner_chaos_evals:
     name: Pre-release Runner chaos evals
@@ -17,7 +20,7 @@ jobs:
 
   typecheck:
     name: Typecheck
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -74,7 +77,7 @@ jobs:
 
   general_tests:
     name: General tests (${{ matrix.group_label }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -181,7 +184,7 @@ jobs:
 
   serialized_tests:
     name: Serialized tests (${{ matrix.shard_label }})
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -230,7 +233,7 @@ jobs:
 
   runner_workflow_evals:
     name: Runner workflow eval scorer contract
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -260,7 +263,7 @@ jobs:
 
   verify_paperclip_runner:
     name: Verify Paperclip Runner
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -314,7 +317,7 @@ jobs:
 
   build:
     name: Build
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.sha != '' && inputs.ref == github.sha && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:
       contents: read
