@@ -784,6 +784,26 @@ PATCH /api/agents/{agentId}/instructions-path
 
 When a CEO/manager task asks you to "set up a new project" and wire local + GitHub context, use this sequence.
 
+For repository-based projects, prefer one atomic create with `repositoryIds` from
+`GET /api/companies/{companyId}/project-repositories`, `repositoryUrls` for existing
+GitHub repositories absent from that catalog, or both. These arrays support
+multiple repositories. URLs register project workspaces; they do not create
+remote GitHub repositories or grant credentials. Use HTTPS URLs without credentials.
+Do not combine either array with an explicit `workspace`. Reuse the same
+`idempotencyKey` and body when retrying a creation.
+
+```
+POST /api/companies/{companyId}/projects
+{
+  "name": "Web and API",
+  "repositoryUrls": ["https://github.com/acme/web", "https://github.com/acme/api"],
+  "idempotencyKey": "web-api-project"
+}
+```
+
+Omit repository inputs for non-code work. The explicit workspace alternatives
+below remain available when local workspace configuration is needed.
+
 ### Option A: One-call create with workspace
 
 ```
@@ -1291,7 +1311,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/companies/:companyId/archive`  | Archive company    |
 | GET    | `/api/companies/:companyId/projects` | List projects      |
 | GET    | `/api/projects/:projectId`           | Project details    |
-| POST   | `/api/companies/:companyId/projects` | Create project (optional inline `workspace`) |
+| POST   | `/api/companies/:companyId/projects` | Create project (`repositoryIds`/`repositoryUrls` arrays or inline `workspace`; optional `idempotencyKey`) |
 | PATCH  | `/api/projects/:projectId`           | Update project     |
 | GET    | `/api/projects/:projectId/workspaces` | List project workspaces |
 | POST   | `/api/projects/:projectId/workspaces` | Create project workspace |

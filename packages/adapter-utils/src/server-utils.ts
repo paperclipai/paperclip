@@ -229,6 +229,18 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   CONNECTION_INTENT_AGENT_GUIDANCE,
 ].join("\n");
 
+// Chat behavior is supplied centrally by the server's task-context markdown.
+// Keep the ordinary task's completion/delegation contract out of this template.
+export const DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE = [
+  "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip conversation using the supplied chat mode directive.",
+  "Use available tools and assigned skills as needed; respect budget, pause/cancel, approval gates, and company boundaries.",
+  "Prefer the smallest verification that proves the action. Use PAPERCLIP_SCRATCH_DIR / PAPERCLIP_RUN_SCRATCH_DIR for temporary scratch files.",
+  "After 2 consecutive failures of the same control-plane write, stop retrying that write for the rest of the turn. Report the failure honestly; never claim an unconfirmed mutation succeeded.",
+  "Never create probe or throwaway issue-thread interactions. Every interaction must carry a real, answerable prompt; withdraw one you no longer need.",
+  "",
+  CONNECTION_INTENT_AGENT_GUIDANCE,
+].join("\n");
+
 export const WATCHDOG_DEFAULT_MANDATE = [
   "You are running as a task watchdog, not as the original deliverable worker.",
   "Your mission is to keep the watched issue tree moving by verifying stopped work, not by trusting agent claims.",
@@ -2180,6 +2192,9 @@ function renderPaperclipWakePromptBody(
   options: {
     resumedSession?: boolean;
     includeExecutionContract?: boolean;
+    // Conversation policy arrives in the server-owned task markdown. Generic
+    // task disposition and child-delegation instructions conflict with it.
+    conversationMode?: boolean;
     nativeWakeReaderAvailable?: boolean;
     // Set by adapters whose prompt already carries the task-context markdown
     // (the authoritative, uncapped brief) so the description is not delivered
@@ -2203,8 +2218,8 @@ function renderPaperclipWakePromptBody(
   // The heartbeat prompt template already carries the execution contract on
   // fresh sessions; only resume deltas (which replace the template) and
   // template-less adapters need the wake-payload copy.
-  const includeExecutionContract =
-    resumedSession || options.includeExecutionContract === true;
+  const includeExecutionContract = options.conversationMode !== true &&
+    (resumedSession || options.includeExecutionContract === true);
   const hasWakeCommentBatch =
     normalized.comments.length > 0 ||
     normalized.includedCount > 0 ||
@@ -2499,7 +2514,7 @@ function renderPaperclipWakePromptBody(
     lines.push(`- checkbox selection ids: ${selectedOptionIds}`);
     lines.push(`- checkbox selection options: ${selectedOptions}`);
   }
-  if (normalized.issue?.workMode === "planning" && !normalized.taskWatchdog) {
+  if (normalized.issue?.workMode === "planning" && !normalized.taskWatchdog && options.conversationMode !== true) {
     const hasWakeComments = normalized.comments.length > 0;
     const acceptedPlanContinuation =
       !hasWakeComments &&
@@ -2646,7 +2661,7 @@ function renderPaperclipWakePromptBody(
       "",
       "Open plan comments to incorporate:",
       "These open plan annotations are user feedback. Resolved annotations were intentionally omitted.",
-      "Read this before revising the plan or creating child issues from an accepted plan.",
+      "Read this before revising the plan or acting on an accepted plan.",
     );
     if (context.latestRevisionNumber || context.latestRevisionId) {
       lines.push(
@@ -2654,9 +2669,10 @@ function renderPaperclipWakePromptBody(
       );
     }
     if (context.interaction) {
-      lines.push(
-        `- interaction: ${context.interaction.kind ?? "unknown"} ${context.interaction.status ?? "unknown"}`,
-      );
+      lines.push(`- interaction: ${context.interaction.kind ?? "unknown"} ${context.interaction.status ?? "unknown"}`);
+      if (context.interaction.status === "rejected") {
+        lines.push("The user requested changes to this plan. Revise it using the feedback below; this is not approval to implement or hand off execution tasks. In Ask mode, discuss the requested changes without mutating documents or tasks.");
+      }
       if (context.interaction.result) {
         const result = context.interaction.result;
         lines.push(

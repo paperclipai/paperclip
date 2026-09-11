@@ -6,6 +6,7 @@ import type {
 } from "./semantic-action-types.js";
 import { searchApiAction } from "../protocol-actions/search-api.js";
 import { callApiAction } from "../protocol-actions/call-api.js";
+import { projectRepositoryUrlSchema } from "../protocol-actions/create-project.js";
 
 const ALL_MODES = ["standard", "ask", "planning", "skill_test"] as const;
 const WORK_MODES = ["standard", "planning", "skill_test"] as const;
@@ -427,6 +428,40 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
       ["idempotencyKey", "blockedByTaskIds"],
     ),
     outputSchema: operationReceipt,
+  }),
+  descriptor({
+    operationId: "list_projects",
+    title: "List projects",
+    requiredClaims: ["discovery:projects:read"],
+    description: "Inspect available company projects before selecting a project for new work.",
+    placement: "optional",
+    inputSchema: object({}),
+  }),
+  descriptor({
+    operationId: "list_project_repositories",
+    title: "List available repositories",
+    description: "List authorized repositories with stable IDs and names. Consider appropriate repositories before creating a project; never invent IDs.",
+    placement: "optional",
+    inputSchema: object({}),
+  }),
+  descriptor({
+    operationId: "create_project",
+    title: "Create project",
+    description: "Create a project after considering existing projects and available repositories. repositoryIds and repositoryUrls accept multiple existing repositories. Use HTTPS GitHub repositoryUrls when an accessible repo is not in the catalog; this registers project repositories, not remote GitHub repositories. Non-code projects may omit repositories. Cannot combine repositoryIds/repositoryUrls with workspace. Reuse the idempotency key on retries.",
+    placement: "optional", effect: "write", allowedModes: STANDARD_MODE,
+    inputSchema: object({
+      ...idempotency, name: text("Project name.", 500), description: nullableText("Project outcome and context."),
+      repositoryIds: stringArray("Authorized repository IDs from list_project_repositories; may contain multiple repositories."),
+      repositoryUrls: {
+        type: "array", items: projectRepositoryUrlSchema, maxItems: 100, uniqueItems: true,
+        description: "Existing HTTPS GitHub repository URLs, including repos absent from the catalog.",
+      },
+      workspace: openObject, status: { enum: ["backlog", "planned", "in_progress", "completed", "cancelled"] },
+      goalId: nullableText("Goal ID."), goalIds: stringArray("Goal IDs."), leadAgentId: nullableText("Lead agent ID."),
+      targetDate: nullableText("Target date."), color: nullableText("Project color."), icon: nullableText("Project icon."),
+      env: openObject, executionWorkspacePolicy: openObject, archivedAt: nullableText("Archive timestamp."),
+    }, ["idempotencyKey", "name"]),
+    outputSchema: openObject,
   }),
   descriptor({
     operationId: "create_task",
