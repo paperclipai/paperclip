@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 
@@ -34,4 +34,12 @@ export async function prepareCodexCiSandbox(repositoryRoot: string, temporaryRoo
   await writeFile(profilePath, codexUserNamespaceProfile(binary), { mode: 0o600 });
   // sudo is noninteractive and bounded. Failure is a preflight error, before any model invocation.
   execFileSync("sudo", ["-n", "apparmor_parser", "-r", profilePath], { timeout: 15_000, stdio: "pipe" });
+  const probeHome = path.join(temporaryRoot, "codex-sandbox-probe");
+  await mkdir(probeHome, { mode: 0o700 });
+  execFileSync(binary, ["sandbox", "-C", temporaryRoot, "--", "/bin/true"], {
+    cwd: temporaryRoot,
+    env: { PATH: process.env.PATH, CODEX_HOME: probeHome },
+    timeout: 15_000,
+    stdio: "pipe",
+  });
 }
