@@ -26579,7 +26579,7 @@ export function heartbeatService(
             .then((rows) => rows[0]);
 
           const pendingComments =
-            opts.allowRunCoalescing !== false &&
+            !isConversation(issue) && opts.allowRunCoalescing !== false &&
             !(await getExecutionBlocker(tx as unknown as Db, issue.companyId, issue.id))
               ? await tx
                   .select()

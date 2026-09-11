@@ -1,8 +1,5 @@
-import {
-  acknowledgeChatMessage,
-  chatMessageRequestId,
-} from "./chat-message-request";
 // @vitest-environment jsdom
+import { clearLegacyChatMessageRequests } from "./chat-message-request";
 import { describe, expect, it } from "vitest";
 import {
   orderChatAgents,
@@ -48,16 +45,12 @@ describe("agent chat navigation and session markers", () => {
       JSON.parse(localStorage.getItem("paperclip.recentAgentChats:a:user2")!),
     ).toEqual(["agent4"]);
   });
-  it("retains message retry identity until the server acknowledges it", () => {
-    const id = chatMessageRequestId("company:user:agent", "Same draft");
-    expect(chatMessageRequestId("company:user:agent", "Same draft")).toBe(id);
-    expect(
-      chatMessageRequestId("company:other-user:agent", "Same draft"),
-    ).not.toBe(id);
-    acknowledgeChatMessage("company:user:agent", id);
-    expect(chatMessageRequestId("company:user:agent", "Same draft")).not.toBe(
-      id,
-    );
+  it("removes legacy plaintext retry records", () => {
+    const scope = "company:user:agent";
+    const key = `paperclip:agent-chat-pending:${scope}`;
+    localStorage.setItem(key, JSON.stringify([{ body: "private text", id: "old" }]));
+    clearLegacyChatMessageRequests(scope);
+    expect(localStorage.getItem(key)).toBeNull();
   });
   it("renders a processed /new as a divider without discarding earlier messages", () => {
     const comment = {

@@ -1,3 +1,10 @@
+/** Existing GitHub repository references, never arbitrary network/resource URIs. */
+export const projectRepositoryUrlSchema = {
+  type: "string",
+  maxLength: 2000,
+  pattern: "^https://github\\.com/(?!\\.{1,2}/)[A-Za-z0-9_.-]+/(?!\\.{1,2}/?$)[A-Za-z0-9_.-]+/?$",
+} as const;
+
 /** Canonical project tool definition. */
 export const createProjectAction = {
   "id": "create_project",
@@ -173,10 +180,7 @@ export const createProjectAction = {
           },
           "repositoryUrls": {
             "type": "array",
-            "items": {
-              "type": "string",
-              "format": "uri"
-            },
+            "items": projectRepositoryUrlSchema,
             "maxItems": 100,
             "description": "Existing HTTPS GitHub repository URLs, including repos absent from the catalog."
           }

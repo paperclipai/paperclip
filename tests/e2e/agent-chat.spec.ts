@@ -191,8 +191,10 @@ test("chat first open is read-only; concurrent first sends and retries share one
     ).toHaveLength(0);
     const other = await context.newPage();
     await other.goto(f.route);
-    await Promise.all([send(page, "First tab"), send(other, "Second tab")]);
+    await Promise.all([send(page, "Same first message"), send(other, "Same first message")]);
     const issue = await idle(request, f.chatPath, 2);
+    const initialComments = await json(await request.get(`/api/issues/${issue.id}/comments`));
+    expect(initialComments.filter((comment: any) => !comment.authorAgentId && comment.body === "Same first message")).toHaveLength(2);
     const resolved = await Promise.all(
       Array.from({ length: 4 }, () =>
         request.post(f.chatPath, { data: {} }).then(json),

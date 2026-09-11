@@ -1,4 +1,4 @@
-import { acknowledgeChatMessage, chatMessageRequestId } from "@/lib/chat-message-request";
+import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
 import { Settings as ChatSettings } from "lucide-react";
 import { agentDetailHref } from "./agent-detail-navigation";
@@ -1272,6 +1272,7 @@ type IssueDetailChatTabProps = {
     reopen?: boolean,
     reassignment?: CommentReassignment,
     attachmentIds?: string[],
+    clientRequestId?: string,
   ) => Promise<void>;
   onReviewConversation: () => Promise<void>;
   onImageUpload: (file: File) => Promise<string>;
@@ -2303,7 +2304,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         >
           <EmailThreadProvider companyId={companyId} issueId={issueId}>
           <ThreadComponent
-            key={issueId}
+            key={conversationMode ? draftKey : issueId}
             {...(!classicTaskInterfaceEnabled ? { creationActivity: resolvedActivity } : {})}
             initialHistoryPending={!!issueId && (
               initialHistoryPending ||
@@ -2843,7 +2844,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const issueId = conversation ? conversation.issue?.id : routeIssueId;
   const [draftWorkMode, setDraftWorkMode] = useState<IssueWorkMode>("standard");
   const draftIssue = useMemo(() => conversation ? agentChatDraft(conversation.agent, draftWorkMode) : undefined, [conversation?.agent, draftWorkMode]);
-  const messageRequestIds = useRef(new Map<string, string>());
+  const pendingDraftWorkMode = useRef<IssueWorkMode | null>(null);
   const { companies, selectedCompanyId } = useCompany();
   // Classic Task Interface remains the sole task-chat-vs-pre-chat switch from
   // master. Streamlined UI only layers the new task-detail presentation onto
@@ -2975,7 +2976,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const resolveWritableIssueId = async () => {
     if (!conversation) return issueId!;
     const resolved = await conversation.ensureIssue();
-    if (!conversation.issue && draftWorkMode !== resolved.workMode) await issuesApi.update(resolved.id, { workMode: draftWorkMode });
+    const requestedMode = pendingDraftWorkMode.current;
+    if (requestedMode !== null && requestedMode !== resolved.workMode) {
+      await issuesApi.update(resolved.id, { workMode: requestedMode });
+    }
+    pendingDraftWorkMode.current = null;
     return resolved.id;
   };
   // A cached header seed can paint during navigation, but must not redirect
@@ -4387,25 +4392,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const addComment = useMutation({
-    mutationFn: ({
-      body,
-      reopen,
-      interrupt,
-      attachmentIds,
-    }: {
-      body: string;
-      reopen?: boolean;
-      interrupt?: boolean;
-      attachmentIds?: string[];
+    mutationFn: async ({ body, reopen, interrupt, attachmentIds, clientRequestId }: {
+      body: string; reopen?: boolean; interrupt?: boolean; attachmentIds?: string[]; clientRequestId?: string;
     }) => {
-      const chatScope = issue?.conversationAgentId ? `${issue.companyId}:${currentUserId}:${issue.conversationAgentId}` : null;
-      const requestId = chatScope ? chatMessageRequestId(chatScope, body) : messageRequestIds.current.get(body) ?? crypto.randomUUID();
-      messageRequestIds.current.set(body, requestId);
-      return resolveWritableIssueId().then(id => issuesApi.addComment(id, body, reopen, interrupt, attachmentIds, requestId)).then(comment => {
-        messageRequestIds.current.delete(body);
-        if (chatScope) acknowledgeChatMessage(chatScope, requestId);
-        return comment;
-      });
+      if (issue?.conversationAgentId) clearLegacyChatMessageRequests(`${issue.companyId}:${currentUserId}:${issue.conversationAgentId}`);
+      return issuesApi.addComment(await resolveWritableIssueId(), body, reopen, interrupt, attachmentIds, clientRequestId ?? crypto.randomUUID());
     },
     onMutate: async ({ body, reopen, interrupt }) => {
       // Start cache cancellation immediately but do not put it in front of the
@@ -6227,6 +6218,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       reopen?: boolean,
       reassignment?: CommentReassignment,
       attachmentIds?: string[],
+      clientRequestId?: string,
     ) => {
       if (reassignment) {
         await addCommentAndReassign.mutateAsync({
@@ -6237,7 +6229,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         });
         return;
       }
-      await addComment.mutateAsync({ body, reopen, attachmentIds });
+      await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId });
     },
     [addComment, addCommentAndReassign],
   );
@@ -7920,7 +7912,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     const currentMode: IssueWorkMode =
                       issue.workMode ?? "standard";
                     if (currentMode === nextMode) return;
-                    if (conversation && !conversation.issue) { setDraftWorkMode(nextMode); return; }
+                    if (conversation && (!conversation.issue || pendingDraftWorkMode.current !== null)) { pendingDraftWorkMode.current = nextMode; setDraftWorkMode(nextMode); return; }
                     return updateIssue
                       .mutateAsync({ workMode: nextMode })
                       .then(() => undefined);

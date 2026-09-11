@@ -102,6 +102,7 @@ interface TaskChatComposerProps {
     reopen?: boolean,
     reassignment?: CommentReassignment,
     attachmentIds?: string[],
+    clientRequestId?: string,
   ) => Promise<void> | void;
   onStop?: () => Promise<void>;
   stopPending?: boolean;
@@ -970,7 +971,9 @@ export function TaskChatComposer({
             .map((item) => item.attachmentId!),
         ),
       ];
-      if (attachmentIds.length > 0)
+      if (conversationMode)
+        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId);
+      else if (attachmentIds.length > 0)
         await onAdd(fullBody, reopen, reassignment, attachmentIds);
       else await onAdd(fullBody, reopen, reassignment);
       if (mountedTaskKey.current !== draftKey) return;

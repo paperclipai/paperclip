@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   authUsers,
   agents,
   agentTaskSessions,
@@ -236,6 +237,21 @@ const support = await getEmbeddedPostgresTestSupport();
         ).status,
       ).toBe(422);
       const chatId = resolved[0].body.id;
+      for (const body of ["Hello", "/new"]) {
+        expect((await request(appFor(colleague)).post(`/api/issues/${chatId}/comments`)
+          .send({ body, clientRequestId: randomUUID() })).status).toBe(403);
+      }
+      expect((await request(appFor(colleague))
+        .post(`/api/companies/${companyId}/issues/${chatId}/attachments`)
+        .attach("file", Buffer.from("foreign upload"), "note.txt")).status).toBe(403);
+
+      const [planReview] = await db.insert(issueThreadInteractions).values({
+        companyId, issueId: chatId, kind: "request_confirmation", status: "pending",
+        continuationPolicy: "wake_assignee_on_accept", payload: { version: 1, prompt: "Hand off this plan?" },
+      }).returning();
+      expect((await request(appFor(colleague))
+        .post(`/api/issues/${chatId}/interactions/${planReview.id}/accept`).send({})).status).toBe(403);
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, planReview.id)))[0].status).toBe("pending");
       const [pause] = await db.insert(issueTreeHolds).values({
         companyId, rootIssueId: chatId, mode: "pause", status: "active",
         createdByActorType: "user", createdByUserId: owner,
@@ -245,9 +261,17 @@ const support = await getEmbeddedPostgresTestSupport();
         .send({ body: "Continue working", clientRequestId: randomUUID() });
       expect(blockedSend.status).toBe(409);
       expect(await db.select().from(issueComments).where(eq(issueComments.issueId, chatId))).toHaveLength(0);
-      const reset = await request(app).post(`/api/issues/${chatId}/comments`)
-        .send({ body: "/new", clientRequestId: randomUUID() });
+      const resetRequest = { body: "/new", clientRequestId: randomUUID() };
+      const reset = await request(app).post(`/api/issues/${chatId}/comments`).send(resetRequest);
       expect(reset.status).toBe(201);
+      const retriedResets = await Promise.all(Array.from({ length: 3 }, () =>
+        request(app).post(`/api/issues/${chatId}/comments`).send(resetRequest)));
+      expect(retriedResets.every((response) => response.status === 201 && response.body.id === reset.body.id)).toBe(true);
+      const addedEvents = await db.select().from(activityLog).where(and(
+        eq(activityLog.entityId, chatId), eq(activityLog.action, "issue.comment_added"),
+      ));
+      expect(addedEvents).toHaveLength(1);
+
       expect((await db.select().from(issueTreeHolds).where(eq(issueTreeHolds.id, pause.id)))[0].status).toBe("released");
       const local = await request(appFor()).post(path);
       expect(local.body.conversationUserId).toBe("local-board");
@@ -577,7 +601,7 @@ const support = await getEmbeddedPostgresTestSupport();
         runningProcesses.delete(active.id);
       }
     });
-    it("runs real process turns, processes /new without invocation, and leaves the chat idle", async () => {
+    it.each([false, true])("runs real process turns and resets without replaying pre-Stop queued input (queued=%s)", async (queuedBeforeStop) => {
       const runtimeCompany = randomUUID();
       const runtimeAgent = randomUUID();
       await db
@@ -585,7 +609,7 @@ const support = await getEmbeddedPostgresTestSupport();
         .values({
           id: runtimeCompany,
           name: "Runtime chat",
-          issuePrefix: "RCHAT",
+          issuePrefix: queuedBeforeStop ? "RCHATQ" : "RCHAT",
           requireBoardApprovalForNewAgents: false,
         });
       const generations: unknown[] = [];
@@ -682,6 +706,19 @@ const support = await getEmbeddedPostgresTestSupport();
         await db.insert(issueThreadInteractions).values({ companyId: runtimeCompany, issueId: chat.id,
           kind: "ask_user_questions", status: "pending", title: "Old topic", payload: { version: 1, questions: [{ id: "old", prompt: "Old topic?", options: [{ id: "yes", label: "Yes" }], selectionMode: "single", required: true }], supersedeOnUserComment: false },
         });
+        let stoppedQueuedWakeId: string | null = null;
+        if (queuedBeforeStop) {
+          const [pending] = await db.insert(issueComments).values({ companyId: runtimeCompany,
+            issueId: chat.id, authorUserId: "local-board", body: "Old topic queued before Stop",
+          }).returning();
+          const [stoppedQueuedWake] = await db.insert(agentWakeupRequests).values({ companyId: runtimeCompany, agentId: runtimeAgent,
+            source: "on_demand", reason: "issue_execution_deferred", status: "deferred_issue_execution",
+            requestedByActorType: "user", requestedByActorId: "local-board",
+            payload: { issueId: chat.id, commentId: pending.id,
+              _paperclipWakeContext: { issueId: chat.id, wakeReason: "issue_commented", wakeCommentId: pending.id, wakeCommentIds: [pending.id] } },
+          }).returning();
+          stoppedQueuedWakeId = stoppedQueuedWake.id;
+        }
         await send("/new");
         await waitIdle();
         expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, chat.id)))[0].status).toBe("expired");
@@ -690,6 +727,11 @@ const support = await getEmbeddedPostgresTestSupport();
         await send("A fresh idea");
         await waitIdle();
         expect(generations).toEqual([0, 1]);
+        if (stoppedQueuedWakeId) {
+          const [stoppedWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, stoppedQueuedWakeId));
+          expect(stoppedWake).toMatchObject({ status: "cancelled", runId: null });
+        }
+
         expect(
           await heartbeat.wakeup(runtimeAgent, {
             source: "automation",
@@ -700,7 +742,7 @@ const support = await getEmbeddedPostgresTestSupport();
           .select()
           .from(issueComments)
           .where(eq(issueComments.issueId, chat.id));
-        expect(history).toHaveLength(5);
+        expect(history).toHaveLength(queuedBeforeStop ? 6 : 5);
       } finally {
         await new Promise<void>((resolve) => listener.close(() => resolve()));
         await rm(cwd, { recursive: true, force: true });

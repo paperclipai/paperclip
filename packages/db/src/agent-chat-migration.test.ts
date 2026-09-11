@@ -83,6 +83,12 @@ describePostgres("persistent agent chat migration", () => {
       const legacyGuard = migrationSql.slice(migrationSql.lastIndexOf('ALTER TABLE "issues" ADD CONSTRAINT'))
         .replace(' and "issues"."conversation_state" is not null', "");
       await sql.unsafe(legacyGuard);
+      const legacyNullIds = [randomUUID(), randomUUID()];
+      for (const [index, status] of ["in_review", "in_progress"].entries()) {
+        await sql`INSERT INTO issues (id, company_id, title, assignee_agent_id, status, conversation_agent_id, conversation_user_id, conversation_state)
+          VALUES (${legacyNullIds[index]!}, ${row.companyId}, 'Legacy null state', ${row.agentId}, ${status}, ${row.agentId}, ${`legacy-null-${index}`}, NULL)`;
+      }
+
       await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${migrationHash}`;
       expect(await inspectMigrations(database.connectionString)).toMatchObject({
         status: "needsMigrations", pendingMigrations: [migrationFile],
@@ -96,6 +102,9 @@ describePostgres("persistent agent chat migration", () => {
       });
       expect(await sql`SELECT * FROM issues WHERE id = ${row.issueId}`).toEqual(beforeIssue);
       expect(await sql`SELECT * FROM issue_comments WHERE id = ${row.commentId}`).toEqual(beforeComment);
+      const repaired = await sql`SELECT id, conversation_state FROM issues WHERE id IN ${sql(legacyNullIds)}`;
+      expect(repaired.find((item) => item.id === legacyNullIds[0])?.conversation_state).toBe("waiting");
+      expect(repaired.find((item) => item.id === legacyNullIds[1])?.conversation_state).toBe("active");
       await assertConstraints(sql, row);
     } finally {
       await sql.end();
