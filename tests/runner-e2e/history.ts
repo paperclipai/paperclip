@@ -1,3 +1,8 @@
+import {
+  discoverReportCatalog,
+  parseReportExecutionId,
+  type ReportExecution,
+} from "./report-catalog.js";
 import { runnerMatrix, runnerSuites } from "./catalog.js";
 import {
   aggregateCampaignBilling,
@@ -24,7 +29,12 @@ export function upgradeRunnerResult(result: RunnerE2EResult): RunnerE2EResult {
   const execution = runnerMatrix.find(
     (candidate) => candidate.id === executionId,
   );
-  if (!execution) return result;
+  if (!execution)
+    return {
+      ...result,
+      executionId,
+      suiteId: result.suiteId ?? parseReportExecutionId(executionId).suiteId,
+    };
   return {
     ...result,
     executionId,
@@ -49,25 +59,39 @@ export function buildRunnerCampaign(input: {
   expected: readonly string[];
   results: readonly RunnerE2EResult[];
   eventName?: string | null;
+  catalog?: readonly ReportExecution[];
 }): RunnerE2ECampaign {
   const expected = input.expected.map(canonicalExecutionId);
   const results = input.results.map((result) => ({
     ...upgradeRunnerResult(result),
     billing: result.billing ?? summarizeExecutionBilling(result),
   }));
+  const knownCatalog = input.catalog ?? runnerMatrix;
+  const catalog = discoverReportCatalog({
+    catalog: knownCatalog,
+    expected,
+    results,
+  });
+  const discoveredSuites = [
+    ...new Map(
+      catalog.map((execution) => [execution.suite.id, execution.suite]),
+    ).values(),
+  ];
   const resultSource = results.find((result) => result.source)?.source;
   const source = {
     ...resolveRunnerE2ESource(resultSource),
     eventName: input.eventName ?? process.env.GITHUB_EVENT_NAME ?? null,
   };
-  const suites = runnerSuites
+  const suites = discoveredSuites
     .map((suite) => {
       const suiteExpected = expected.filter((id) =>
         id.startsWith(`${suite.id}.`),
       );
       if (suiteExpected.length === 0) return null;
       const suiteResults = results.filter(
-        (result) => result.suiteId === suite.id,
+        (result) =>
+          expected.includes(result.executionId) &&
+          result.executionId.startsWith(`${suite.id}.`),
       );
       const passed = suiteResults.filter(
         (result) => result.status === "passed" && result.cleanup === "passed",
@@ -79,7 +103,7 @@ export function buildRunnerCampaign(input: {
         suiteId: suite.id,
         suiteDefinitionHash:
           suiteResults[0]?.suiteDefinitionHash ??
-          runnerMatrix.find((execution) => execution.suite.id === suite.id)!
+          catalog.find((execution) => execution.suite.id === suite.id)!
             .suiteDefinitionHash,
         expected: suite.expectedMatrixSize,
         selected: suiteExpected.length,
@@ -93,7 +117,9 @@ export function buildRunnerCampaign(input: {
         cleanupPassed: suiteResults.every(
           (result) => result.cleanup === "passed",
         ),
-        complete: suiteExpected.length === suite.expectedMatrixSize,
+        complete:
+          knownCatalog.some((execution) => execution.suite.id === suite.id) &&
+          suiteExpected.length === suite.expectedMatrixSize,
         durationMs: suiteResults.reduce(
           (total, result) => total + result.durationMs,
           0,

@@ -275,9 +275,20 @@ requested three-hour repair window. No acceptance assertions were disabled.
 - [Exact campaign results](https://d1p6rlowie26tp.cloudfront.net/runner-e2e/campaigns/gha-34648511170-1/summary.md)
 - [GitHub run and retained evidence](https://github.com/paperclipai/paperclip/actions/runs/34648511170)
 
-Use the Markdown results for this branch-only suite: the trusted default-branch
-HTML dashboard still uses its older catalog, while the normalized results and
-Markdown report include all 24 chat cells.
+The [HTML dashboard](https://d1p6rlowie26tp.cloudfront.net/runner-e2e/campaigns/gha-34648511170-1/index.html?report=agent-chat#suite-agent-chat)
+was repaired from retained evidence after its older trusted catalog omitted the
+branch-only suite. It now includes the chat suite and 32 screenshots, including
+eight draft/revised plan captures recovered from their original Playwright
+attachments. No paid cells were rerun; result records, tested SHA, timestamps,
+usage, billing, attempts, and cleanup outcomes remain unchanged.
+
+Reporting now discovers validated display-only entries for unknown selected
+execution IDs, and publication rejects missing declared screenshots. The exact
+chat plan filenames are included in packaged evidence. All 165 runner unit tests
+and runner TypeScript checks passed. Browser verification covered suite
+filtering, restored plan images, and gallery navigation. This explicitly
+authorized repair replaces only this campaign's report objects; normal
+immutable-publication protections remain unchanged.
 
 The published summary and normalized results were verified after publication:
 exactly 24 unique expected cells, all passed on attempt 1, all cleanup checks

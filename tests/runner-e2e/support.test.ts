@@ -1137,6 +1137,23 @@ describe("runner E2E evidence redaction", () => {
     ).rejects.toThrow();
   });
 
+  it("retains the two reviewed chat plan captures without admitting arbitrary chat PNGs", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-chat-captures-"));
+    cleanupDirectories.push(root);
+    const privateDir = path.join(root, "private");
+    const uploadDir = path.join(root, "upload");
+    await mkdir(privateDir, { recursive: true });
+    for (const file of ["chat-plan-draft.png", "chat-plan-revised.png", "chat-secret.png", "chat-plan-extra.png"]) {
+      await writeFile(path.join(privateDir, file), "fixture raster");
+    }
+    const packaged = await packageEvidence({ privateDir, uploadDir, secrets: [secret], expectPassScreenshot: false });
+    expect(packaged.files.sort()).toEqual(["chat-plan-draft.png", "chat-plan-revised.png", "evidence-manifest.json"]);
+    expect(packaged.leaks).toEqual([]);
+    for (const file of packaged.files.filter((file) => file.endsWith(".png"))) {
+      expect(await readFile(path.join(uploadDir, file), "utf8")).toBe("fixture raster");
+    }
+  });
+
   it("keeps raster evidence private to CI and rejects active SVG content", async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), "runner-e2e-visual-evidence-test-"),

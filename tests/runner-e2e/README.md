@@ -256,6 +256,12 @@ usage is labeled `unavailable` or `unpriced`; it is never presented as zero
 cost. The CI report job stages the same portable site at
 `normalized/index.html` inside the access-controlled merged report artifact.
 
+The trusted publisher discovers display-only entries for selected execution IDs
+absent from its local catalog, so branch-only suites remain visible in the
+dashboard, filters, gallery, and summary image. It validates execution identity
+and escapes display text without loading target-branch executable code. Unknown
+suite cardinality is not treated as proof of full-suite coverage.
+
 Permanent publication uses two explicit bundles. Both retain only normalized
 result PNG files with the explicit `public-runner-fixture` publication marker,
 including marked `failure.png` captures, so every campaign dashboard has its
@@ -273,6 +279,10 @@ retains allowlisted inert per-attempt evidence (`.json`, `.log`, `.md`, and
 `.txt`); `.log` copies have already passed exact-value/key-shape scanning and
 redaction. The GitHub Pages bundle is regenerated separately with the same
 declared-screenshot boundary.
+
+Publication fails if any declared public screenshot is missing from the bundle.
+The evidence packager explicitly retains `chat-plan-draft.png` and
+`chat-plan-revised.png`; arbitrary chat-prefixed files remain excluded.
 
 Both public bundles exclude video, archives, raw/unallowlisted logs, SVG or
 other active content, generated Playwright/blob/HTML report trees, and
