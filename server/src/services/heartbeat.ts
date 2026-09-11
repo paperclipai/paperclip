@@ -20248,7 +20248,7 @@ export function heartbeatService(
                 ...nativeExecution,
                 task: {
                   ...nativeExecution.task,
-                  prompt: `${nativeExecution.task.prompt}\n\n${renderPaperclipWakePrompt({ executionContinuation }, { resumedSession: true })}`,
+                  prompt: `${nativeExecution.task.prompt}\n\n${renderPaperclipWakePrompt({ executionContinuation }, { resumedSession: true, conversationMode: context.conversationMode === true })}`,
                 },
               });
             }
@@ -20376,6 +20376,7 @@ export function heartbeatService(
                 `# ${issueRef.identifier ?? issueRef.id}: ${issueRef.title}`,
               wakePayload: context.paperclipWake,
               resumedSession: previousNativeRun !== null,
+              conversationMode: context.conversationMode === true,
               agentId: agent.id,
               workspace: {
                 // Projectless paperclip_runner tasks still have a resolved local cwd. Bind that
