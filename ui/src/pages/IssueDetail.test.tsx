@@ -30,6 +30,7 @@ import {
   canBoardManageRuntime,
   canBoardResolveRecoveryAction,
   IssueDetail,
+  TaskDetailSurface,
   readRecoveryReconcileWorkspaceId,
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
@@ -569,6 +570,7 @@ vi.mock("../components/ApprovalCard", () => ({
 }));
 
 vi.mock("../components/Identity", () => ({
+  deriveInitials: (name: string) => name.slice(0, 2),
   Identity: ({ name, shape }: { name: string; shape?: string }) => (
     <span data-shape={shape ?? "circle"}>{name}</span>
   ),
@@ -1412,6 +1414,50 @@ describe("IssueDetail", () => {
     vi.restoreAllMocks();
   });
 
+  it("keeps an existing conversation on its agent-addressed route", async () => {
+    const agent = createAgent();
+    const canonical = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1", conversationState: "waiting", status: "in_review" });
+    mockIssuesApi.get.mockResolvedValue(canonical);
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TaskDetailSurface conversation={{ agent, issue: canonical, ensureIssue: async () => canonical }} /></QueryClientProvider>);
+    });
+    await flushReact();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    expect(mockIssuesApi.markRead).toHaveBeenCalledWith(canonical.id);
+  });
+
+  it.each(["message", "attachment"])("creates an unused conversation only for the first %s and updates its canonical cache", async (kind) => {
+    mockIssuesApi.markRead.mockClear();
+    const agent = createAgent();
+    const canonical = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1", conversationState: "waiting", status: "in_review" });
+    const ensureIssue = vi.fn().mockResolvedValue(canonical);
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+    mockIssuesApi.addComment.mockResolvedValue(createIssueComment({ body: "Clarify this goal" }));
+    mockIssuesApi.uploadAttachment.mockResolvedValue(createAttachment({ id: "first-upload" }));
+    await act(async () => {
+      root.render(<QueryClientProvider client={queryClient}><TaskDetailSurface conversation={{ agent, issue: null, ensureIssue }} /></QueryClientProvider>);
+    });
+    await flushReact();
+    expect(ensureIssue).not.toHaveBeenCalled();
+    expect(mockIssuesApi.markRead).not.toHaveBeenCalled();
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      onAdd: (body: string) => Promise<void>;
+      onAttachImage: (file: File) => Promise<IssueAttachment>;
+    };
+    if (kind === "message") {
+      await act(async () => { await props.onAdd("Clarify this goal"); });
+      expect(mockIssuesApi.addComment).toHaveBeenCalledWith(canonical.id, "Clarify this goal", undefined, undefined, undefined, expect.any(String));
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.comments(canonical.id) });
+    } else {
+      const file = new File(["image"], "first.png", { type: "image/png" });
+      await act(async () => { await props.onAttachImage(file); });
+      expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledWith(canonical.companyId, canonical.id, file);
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.attachments(canonical.id) });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.detail(canonical.id) });
+    }
+    expect(ensureIssue).toHaveBeenCalledTimes(1);
+  });
+
   it("opens artifact cards in the shared gallery at the selected image without duplicating attachments", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
     mockIssuesApi.listAttachments.mockResolvedValue([
@@ -1607,6 +1653,7 @@ describe("IssueDetail", () => {
           undefined,
           undefined,
           [id],
+          expect.any(String),
         );
         expect(mockIssuesApi.update).not.toHaveBeenCalled();
       }

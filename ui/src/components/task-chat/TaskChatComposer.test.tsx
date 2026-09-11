@@ -1714,6 +1714,19 @@ describe("TaskChatComposer", () => {
   });
 
   describe("paused task takeover", () => {
+    it("allows only standalone /new to resume a paused conversation through the normal composer", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      render(<TaskChatComposer onAdd={onAdd} conversationMode workMode="standard" pause={{ scope: "leaf" }} />);
+      typeText("Keep working");
+      expect(sendButton().disabled).toBe(true);
+      await act(async () => sendButton().click());
+      expect(onAdd).not.toHaveBeenCalled();
+      typeText("/new");
+      expect(sendButton().disabled).toBe(false);
+      await act(async () => sendButton().click());
+      expect(onAdd).toHaveBeenCalledWith("/new", undefined, undefined);
+    });
+
     it("preserves a typed draft and blocks sending until resume completes", async () => {
       const onAdd = vi.fn();
       const onResume = vi.fn();
