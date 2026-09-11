@@ -1238,6 +1238,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       const managedAuth = buttonByText("Use Paperclip instead");
       expect(managedAuth).toBeDefined();
       expect(managedAuth?.getAttribute("aria-expanded")).toBe("true");
+      const fieldsRegion = document.getElementById(managedAuth!.getAttribute("aria-controls")!);
+      expect(fieldsRegion?.getAttribute("role")).toBe("region");
+      expect(fieldsRegion?.textContent).toContain("Client ID");
       await act(async () => {
         managedAuth!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
