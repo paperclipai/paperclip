@@ -198,10 +198,9 @@ describe("claude remote execution", () => {
       "Task AskUserQuestion Bash CronCreate CronDelete CronList Edit EnterPlanMode EnterWorktree ExitPlanMode ExitWorktree Glob Grep Monitor NotebookEdit PushNotification Read RemoteTrigger ScheduleWakeup Skill TaskOutput TaskStop TodoWrite ToolSearch WebFetch WebSearch Write",
     );
     expect(call?.[2]).not.toContain("--dangerously-skip-permissions");
-    expect(call?.[2]).toContain("--append-system-prompt-file");
-    expect(call?.[2]).toContain(
-      `${managedRemoteWorkspace}/.paperclip-runtime/claude/skills/agent-instructions.md`,
-    );
+    expect(call?.[2]).toContain("--append-system-prompt");
+    const appendSystemPromptIndex = call?.[2]?.indexOf("--append-system-prompt") ?? -1;
+    expect(call?.[2]?.[appendSystemPromptIndex + 1]).toContain("Use the remote workspace.");
     expect(call?.[2]).toContain("--add-dir");
     expect(call?.[2]).toContain(`${managedRemoteWorkspace}/.paperclip-runtime/claude/skills`);
     expect(call?.[3].env.PAPERCLIP_WORKSPACE_CWD).toBe(managedRemoteWorkspace);
