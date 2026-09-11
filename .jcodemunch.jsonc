@@ -1,0 +1,20 @@
+// jcodemunch-mcp project configuration for the Paperclip codebase
+// See ~/.code-index/config.jsonc for full option documentation
+{
+  // Use standard tier (core + analytics + architecture tools)
+  // claude-sonnet maps to "standard" in the model_tier_map automatically
+  "tool_profile": "standard",
+
+  // Enable adaptive tiering so tool set adjusts based on the active model
+  "adaptive_tiering": true,
+
+  // Compact schemas saves ~1-2k tokens per session on top of the profile
+  "compact_schemas": true,
+
+  // File watcher: keep index fresh as code changes
+  "watch": true,
+  "watch_debounce_ms": 3000,
+
+  // Extend staleness threshold since we have a watcher active
+  "staleness_days": 30
+}
