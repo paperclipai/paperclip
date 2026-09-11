@@ -1311,6 +1311,36 @@ describe("Codex ACPX runtime adapter", () => {
     });
   });
 
+  it("verifies a lazy recovered provider spawned by model selection before returning", async () => {
+    const runtime = fakeRuntime();
+    const command = fakeCommand();
+    vi.mocked(command.spawn).mockReturnValue(fakeChild());
+    let runtimeOptions: AcpRuntimeOptions | undefined;
+    let acknowledgeOwnership!: () => void;
+    const ownership = new Promise<void>((resolve) => { acknowledgeOwnership = resolve; });
+    vi.mocked(runtime.setConfigOption!).mockImplementation(async () => {
+      await Promise.resolve();
+      runtimeOptions?.spawnAgent?.({ command: "ignored", args: ["--stdio"], options: {} });
+    });
+    const port = await openCodexAcpxRuntime(openOptions(command), {
+      createRegistry: () => registry(), createStore: () => store(),
+      awaitProviderOwnership: () => ownership,
+      awaitProviderExit: providerOwnershipEstablished,
+      createRuntime: (options) => { runtimeOptions = options; return runtime; },
+    });
+    let admitted = false;
+    const selection = port.setModel!("gpt-5.6-sol").then(() => { admitted = true; });
+    void selection.catch(() => undefined);
+    await vi.waitFor(() => expect(command.spawn).toHaveBeenCalledOnce());
+    expect(admitted).toBe(false);
+    acknowledgeOwnership();
+    await selection;
+    expect(admitted).toBe(true);
+    expect(() => runtimeOptions?.spawnAgent?.({ command: "ignored", args: [], options: {} }))
+      .toThrow("provider spawned after ownership admission was sealed");
+    await port.close({ reason: "test complete" });
+  });
+
   it("admits a verified provider that starts with the first recovered turn", async () => {
     const runtime = fakeRuntime();
     const child = fakeChild();

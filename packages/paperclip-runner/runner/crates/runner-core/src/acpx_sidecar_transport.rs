@@ -642,6 +642,9 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         _ => {}
     }
     match error.message.as_str() {
+        "ACPX provider spawned after ownership admission was sealed" => {
+            "provider_spawn_after_ownership_seal"
+        }
         "ACPX recovery identity conflicts with the immutable session configuration" => {
             "recovery_configuration_mismatch"
         }

@@ -1156,11 +1156,20 @@ function runtimePort(
     ...(runtime.setConfigOption
       ? {
           async setModel(model: string) {
-            await runtime.setConfigOption?.({
-              handle,
-              key: "model",
-              value: model,
-            });
+            // A restored handle can be lazy: selecting the pinned model may
+            // launch its first provider before any prompt. Admit that spawn
+            // only for this control call, and verify ownership before return.
+            const finishOwnershipAdmission =
+              children.beginLifetimeOwnershipAdmission();
+            try {
+              await runtime.setConfigOption?.({
+                handle,
+                key: "model",
+                value: model,
+              });
+            } finally {
+              await finishOwnershipAdmission();
+            }
           },
         }
       : {}),
