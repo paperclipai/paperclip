@@ -82,4 +82,10 @@ test("the versioned readiness job requires successful source, image and artifact
   assert.doesNotMatch(workflow, /secrets: inherit|id-token: write|actions: write|checks: write|uses: .*@v\d\b/);
   const cloud = readFileSync(new URL("../../workflows/docker-cloud.yml", import.meta.url), "utf8");
   assert.doesNotMatch(cloud, /^  push:/m, "the master image must build only once");
+  const migrator = readFileSync(new URL("../../workflows/cloud-artifacts.yml", import.meta.url), "utf8");
+  assert.match(migrator, /push:\s*\n\s*branches: \[master\]/);
+  assert.match(migrator, /SOURCE_SHA: \$\{\{ github.sha \}\}/);
+  assert.match(migrator, /gh workflow run release.yml .*--ref master/);
+  assert.match(migrator, /--field channel=cloud-migrator/);
+  assert.match(migrator, /--field source_ref="\$SOURCE_SHA"/);
 });
