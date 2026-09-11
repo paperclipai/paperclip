@@ -55,15 +55,27 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
     <div className="space-y-2">
       <div className="flex items-center gap-3">
         <div className="flex min-w-0 flex-1 items-center gap-2">
-          <Avatar size="xs">
+          <Avatar size="xs" role="img" aria-label={actorName} title={actorName}>
             {actorAvatarUrl && <AvatarImage src={actorAvatarUrl} alt={actorName} />}
             <AvatarFallback>{deriveInitials(actorName)}</AvatarFallback>
           </Avatar>
-          <p className="min-w-0 flex-1 truncate">
-            <span>{actorName}</span>
-            <span className="text-muted-foreground"> {verb} </span>
-            {name && <span className="font-medium">{name}</span>}
-            {entityTitle && <span className="text-muted-foreground"> — {entityTitle}</span>}
+          <p className="flex min-w-0 flex-1 items-baseline gap-1.5">
+            <span className="max-w-1/2 shrink-0 text-muted-foreground">{verb}</span>
+            {event.entityType === "issue" ? (
+              <>
+                {entityTitle && <span className="min-w-0 flex-1 truncate" title={entityTitle}>{entityTitle}</span>}
+                {name && (
+                  <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
+                    {name}
+                  </span>
+                )}
+              </>
+            ) : (
+              <span className="min-w-0 flex-1 truncate">
+                {name && <span className="font-medium">{name}</span>}
+                {entityTitle && <span className="text-muted-foreground"> — {entityTitle}</span>}
+              </span>
+            )}
           </p>
         </div>
         <span className="text-xs text-muted-foreground shrink-0">{timeAgo(event.createdAt)}</span>

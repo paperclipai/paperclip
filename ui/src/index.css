@@ -993,17 +993,26 @@
 }
 /* Sidebar actions cover the trailing live label without moving row content,
    fading into the row surface like the task-detail tab close control. */
+.primary-sidebar-surface {
+  --sidebar-action-rest-surface: color-mix(in srgb, var(--border) 50%, var(--background));
+  background-color: var(--sidebar-action-rest-surface);
+}
+.dark .primary-sidebar-surface {
+  --sidebar-action-rest-surface: var(--muted);
+}
 .sidebar-action-row {
-  --sidebar-action-surface: var(--sidebar);
+  --sidebar-action-surface: var(--sidebar-action-rest-surface, var(--background));
 }
 .sidebar-action-row:is(:hover, :focus-within),
 .sidebar-action-row:has(.sidebar-action-link[aria-current="page"]),
 .sidebar-action-row:has(.sidebar-action-menu[data-state="open"]) {
   --sidebar-action-surface: var(--sidebar-accent);
 }
+.sidebar-action-link {
+  background-color: var(--sidebar-action-surface);
+}
 .sidebar-action-row:is(:hover, :focus-within) .sidebar-action-link,
 .sidebar-action-row:has(.sidebar-action-menu[data-state="open"]) .sidebar-action-link {
-  background-color: var(--sidebar-accent);
   color: var(--sidebar-accent-foreground);
 }
 .sidebar-action-menu {
@@ -1016,7 +1025,11 @@
   left: calc(-1 * var(--sidebar-nav-action-fade-width));
   z-index: -1;
   border-radius: inherit;
-  background: linear-gradient(to right, transparent, var(--sidebar-action-surface) var(--sidebar-nav-action-fade-width));
+  /* Animate a solid surface in sync with the link; gradient color stops switch
+     immediately and flash the resting sidebar color during the opacity fade. */
+  background-color: var(--sidebar-action-surface);
+  mask-image: linear-gradient(to right, transparent, black var(--sidebar-nav-action-fade-width));
+  transition: background-color var(--default-transition-duration) var(--default-transition-timing-function);
   pointer-events: none;
 }
 
