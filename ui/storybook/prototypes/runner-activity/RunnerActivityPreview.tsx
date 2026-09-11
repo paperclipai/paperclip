@@ -161,7 +161,7 @@ export function RunnerActivityPreview({
         ? {
             failed: true,
             detail:
-              "The layout check failed: the trailing icon moved below the label at narrow widths. The failure stays visible even after the next activity arrives.",
+              "The layout check failed: the trailing icon moved below the label at narrow widths. The output stays available in expanded history after the next activity arrives.",
           }
         : {}),
     };

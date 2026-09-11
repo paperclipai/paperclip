@@ -1,11 +1,11 @@
 import { Brain, CirclePause, Gauge, Layers3 } from "lucide-react";
-import type { TaskChatActivityPhaseItem } from "@/components/task-chat/task-chat-model";
+import type { TaskChatActivityPhaseItem } from "./task-chat-model";
 import {
   toolActivityPresentation,
   type ToolFamily,
   type ToolIcon,
-} from "@/components/task-chat/tool-taxonomy";
-import { protocolActivityPresentation } from "@/components/task-chat/task-chat-activity-presentation";
+} from "./tool-taxonomy";
+import { protocolActivityPresentation } from "./task-chat-activity-presentation";
 
 type Activity = TaskChatActivityPhaseItem["items"][number];
 const labels: Record<ToolFamily, string> = {
@@ -78,6 +78,10 @@ export function completedActivitySummary(items: Activity[]) {
               artifact: "Worked with artifacts",
               context: "Managed context",
               memory: "Checked memory",
+              model_identity: "Checked model settings",
+              review: "Worked in review mode",
+              hook: "Ran hooks",
+              safety: "Reviewed safety",
               terminal: "Ran commands",
               wait: "Waited",
               provider_notice: "Received a provider update",
@@ -90,11 +94,12 @@ export function completedActivitySummary(items: Activity[]) {
       }
     }
   }
+  const completedFamilies = new Set(
+    tools.filter((tool) => tool.completed).map((tool) => tool.family),
+  );
   // Merge repeated families and retries. Terminal is an action, not an exit-status claim.
   for (const tool of tools) {
-    const succeeded = tools.some(
-      (t) => t.family === tool.family && t.completed,
-    );
+    const succeeded = completedFamilies.has(tool.family);
     const label =
       tool.family === "read" && !succeeded
         ? "Checked files"

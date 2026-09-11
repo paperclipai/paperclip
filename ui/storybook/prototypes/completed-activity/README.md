@@ -1,10 +1,10 @@
 # Completed activity proposal
 
-Storybook-only follow-up to the rolling runner activity UI. Production files are unchanged.
+Production runner activity group with deterministic fixtures for the approved completed summaries.
 
 Open **Tasks → Completed activity preview**. Start with Completed conversation, Summary situations, and Desktop live to completed. Mobile and expanded playback variants exercise the same proposal.
 
-## Proposed behavior
+## Behavior
 
 - While a group is active, keep the current rolling activity and its target.
 - When the next commentary message arrives, or the run ends, replace the collapsed activity with a short taxonomy-based summary.
@@ -16,4 +16,4 @@ Open **Tasks → Completed activity preview**. Start with Completed conversation
 - More than three categories collapse to two categories plus “and more”. The full description is the tooltip; history remains available by click or keyboard.
 - Expansion persists while a group transitions from active to settled. History stays single-line, with full output behind an individual disclosure.
 
-The copied activity renderer is an isolated review prototype, not a second production implementation. After review, the approved changes should be applied to the shared production activity group and covered with integration tests.
+All stories render the shared production activity group. No runner or task API calls are made.

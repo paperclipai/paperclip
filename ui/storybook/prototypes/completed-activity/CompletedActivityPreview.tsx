@@ -6,7 +6,7 @@ import type {
   TaskChatActivityPhaseItem,
   TaskChatToolItem,
 } from "@/components/task-chat/task-chat-model";
-import { CompletedActivityGroup } from "./CompletedActivityGroup";
+import { TaskChatRunnerActivityGroup as CompletedActivityGroup } from "@/components/task-chat/TaskChatRunnerActivityGroup";
 
 type Activity = TaskChatActivityPhaseItem["items"][number];
 const tool = (
@@ -226,7 +226,7 @@ export function CompletedActivityPreview({
         <div className="flex flex-col gap-1">
           <h1 className="text-sm font-semibold">Completed activity</h1>
           <p className="text-xs text-muted-foreground">
-            Design preview · expand any summary to inspect its history
+            Completed activity · expand any summary to inspect its history
           </p>
         </div>
         {mode === "live" && (
