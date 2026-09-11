@@ -4,7 +4,7 @@ import { mkdtemp, readFile, writeFile, mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, companyMemberships, adapterAuthSessions, environments, connectionGrants, toolConnections } from "@paperclipai/db";
+import { createDb, companies, agents, companyMemberships, adapterAuthSessions, environments, connectionGrants, toolConnections, activityLog } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { secretService } from "../services/secrets.js";
 import { aiConnectionService } from "../services/ai-connections.js";
@@ -96,6 +96,8 @@ it("isolates sign-in and refresh from the host, survives restart, and completes 
   // Cancellation after successful completion must not revoke the saved account.
   await login.cancel(companyId, owner, attempt.sessionId);
   expect((await aiConnectionService(db).list(companyId, owner)).find(c => c.id === results[0].connectionId)?.status).toBe("connected");
+  expect((await db.select().from(activityLog).where(eq(activityLog.entityId, attempt.sessionId)))
+    .filter(event => event.action === "ai_connection.local_login_cancelled")).toHaveLength(0);
   const reconnectIntent = { ...loginIntent(), connectionId: results[0].connectionId };
   const reconnect = await login.start(companyId, owner, reconnectIntent);
   expect(reconnect.sessionId).not.toBe(attempt.sessionId);
@@ -107,10 +109,19 @@ it("isolates sign-in and refresh from the host, survives restart, and completes 
 it("enforces local attempt ownership, company, target, cancellation, and expiry", async () => {
   const login = localAiLoginService(db);
   const attempt = await login.start(companyId, owner, loginIntent());
+  const cancellations = async () => (await db.select().from(activityLog).where(eq(activityLog.entityId, attempt.sessionId)))
+    .filter(event => event.action === "ai_connection.local_login_cancelled");
   await expect(login.complete(companyId, "another-owner", attempt.sessionId, loginIntent())).rejects.toThrow("not found");
+  await expect(login.cancel(companyId, "another-owner", attempt.sessionId)).rejects.toThrow("not found");
   await expect(login.cancel(randomUUID(), owner, attempt.sessionId)).rejects.toThrow("not found");
   await expect(login.complete(companyId, owner, attempt.sessionId, { ...loginIntent(), ownership: "shared" })).rejects.toThrow("not found");
+  expect(await cancellations()).toHaveLength(0);
   await login.cancel(companyId, owner, attempt.sessionId);
+  await login.cancel(companyId, owner, attempt.sessionId);
+  expect(await cancellations()).toEqual([expect.objectContaining({
+    companyId, actorType: "user", actorId: owner, entityType: "adapter_auth_session",
+    entityId: attempt.sessionId, details: { provider: "openai" },
+  })]);
   await expect(login.complete(companyId, owner, attempt.sessionId, loginIntent())).rejects.toThrow("cancelled");
   const retry = await login.start(companyId, owner, loginIntent());
   await writeFile(path.join(directoryFor(retry.sessionId), "auth.json"), auth("abandoned"));

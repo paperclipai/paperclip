@@ -146,9 +146,16 @@ export function localAiLoginService(db: Db) {
       )).for("update");
       if (!session) throw notFound("Local sign-in attempt not found.");
       await rm(loginHome(id), { recursive: true, force: true });
-      if (!session.connectionId) await tx.update(adapterAuthSessions).set({
-        status: "cancelled", finishedAt: new Date(), updatedAt: new Date(),
-      }).where(eq(adapterAuthSessions.id, id));
+      if (!session.connectionId && session.status !== "cancelled") {
+        await tx.update(adapterAuthSessions).set({
+          status: "cancelled", finishedAt: new Date(), updatedAt: new Date(),
+        }).where(eq(adapterAuthSessions.id, id));
+        await logActivity(tx as unknown as Db, {
+          companyId, actorType: "user", actorId: userId, action: "ai_connection.local_login_cancelled",
+          entityType: "adapter_auth_session", entityId: id,
+          details: { provider: session.aiConnection?.provider },
+        });
+      }
     });
   }
   return { start, complete, cancel, reapExpired };
