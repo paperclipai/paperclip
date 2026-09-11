@@ -8,10 +8,33 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createCommandManagedRuntimeClient,
   prepareCommandManagedRuntime,
+  type CommandManagedDuplexChannel,
   type CommandManagedRuntimeRunner,
 } from "./command-managed-runtime.js";
 import type { SandboxSyncOperation } from "./sandbox-managed-runtime.js";
 import type { RunProcessResult } from "./server-utils.js";
+
+/**
+ * An in-memory fake `CommandManagedDuplexChannel`. It holds no real process; a
+ * write echoes straight to the one registered data listener, so a test proves
+ * the channel contract carries a `Uint8Array` chunk with no string coercion in
+ * between. The fake never exits on its own; a test calls the listener it
+ * registers with `onExit` only when it needs one.
+ */
+function createFakeEchoDuplexChannel(): CommandManagedDuplexChannel {
+  let dataListener: ((chunk: Uint8Array) => void) | null = null;
+  return {
+    write(data: Uint8Array): void {
+      dataListener?.(data);
+    },
+    onData(listener: (chunk: Uint8Array) => void): void {
+      dataListener = listener;
+    },
+    onExit(): void {},
+    stop(): void {},
+    close: async (): Promise<void> => {},
+  };
+}
 
 const execFile = promisify(execFileCallback);
 
@@ -333,9 +356,9 @@ describe("command managed runtime", () => {
       adapterKey: "claude",
       workspaceLocalDir: localWorkspaceDir,
       additionalSources: [
-        { localPath: goodOne, projectId: "one" },
-        { localPath: path.join(rootDir, "missing"), projectId: "broken" },
-        { localPath: goodTwo, projectId: "two" },
+        { localPath: goodOne, projectId: "one", ignoreResolution: { kind: "other" } },
+        { localPath: path.join(rootDir, "missing"), projectId: "broken", ignoreResolution: { kind: "other" } },
+        { localPath: goodTwo, projectId: "two", ignoreResolution: { kind: "other" } },
       ],
     });
 
@@ -552,6 +575,62 @@ describe("command managed runtime", () => {
     expect(native.syncOut).toBeTypeOf("function");
   });
 
+  it("base64 fallback client reports allowConcurrentSyncOperations true", () => {
+    // A runner with no native sync uses the base64 fallback, which always
+    // permits concurrent sync operations.
+    const base = makeSpawnRunner().runner;
+    const client = createCommandManagedRuntimeClient({ runner: base, commandCwd: "/", timeoutMs: 1 });
+    expect(client.allowConcurrentSyncOperations).toBe(true);
+  });
+
+  it("undeclared native runner reports allowConcurrentSyncOperations false", () => {
+    // A native runner (both sync verbs) that never opted into concurrency keeps
+    // the flag off.
+    const base = makeSpawnRunner().runner;
+    const undeclaredNative: CommandManagedRuntimeRunner = {
+      ...base,
+      syncIn: async () => ({ operations: [] }),
+      syncOut: async () => ({ operations: [] }),
+    };
+    const client = createCommandManagedRuntimeClient({
+      runner: undeclaredNative,
+      commandCwd: "/",
+      timeoutMs: 1,
+    });
+    expect(client.allowConcurrentSyncOperations).toBe(false);
+  });
+
+  it("declared native runner reports allowConcurrentSyncOperations true", () => {
+    // A native runner that verified the opt-in carries the flag through to the
+    // client.
+    const base = makeSpawnRunner().runner;
+    const declaredNative: CommandManagedRuntimeRunner = {
+      ...base,
+      allowConcurrentSyncOperations: true,
+      syncIn: async () => ({ operations: [] }),
+      syncOut: async () => ({ operations: [] }),
+    };
+    const client = createCommandManagedRuntimeClient({
+      runner: declaredNative,
+      commandCwd: "/",
+      timeoutMs: 1,
+    });
+    expect(client.allowConcurrentSyncOperations).toBe(true);
+  });
+
+  it("base64 fallback ignores a runner opt-in without both sync verbs", () => {
+    // A runner that sets the opt-in but exposes only one sync verb still uses
+    // the fallback, which permits concurrency independent of the runner flag.
+    const base = makeSpawnRunner().runner;
+    const onlyIn: CommandManagedRuntimeRunner = {
+      ...base,
+      allowConcurrentSyncOperations: true,
+      syncIn: async () => ({ operations: [] }),
+    };
+    const client = createCommandManagedRuntimeClient({ runner: onlyIn, commandCwd: "/", timeoutMs: 1 });
+    expect(client.allowConcurrentSyncOperations).toBe(true);
+  });
+
   it("test_client_syncIn_delegates_to_native_runner_with_zero_execute_calls", async () => {
     // With a native runner, `client.syncIn` forwards `files` + `postUploadCommands`
     // to the runner and issues ZERO `execute` round-trips (the provider owns the
@@ -669,7 +748,7 @@ describe("command managed runtime", () => {
     expect(execTimeouts).toEqual([runTimeoutMs, syncClientTimeoutMs]);
   });
 
-  it("fallback syncIn stages mode-constrained files before chmod and rename", async () => {
+  it("fallback syncIn writes a mode-constrained file directly to its target and then applies the mode", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-syncin-mode-"));
     cleanupDirs.push(rootDir);
     const sourceFile = path.join(rootDir, "source.txt");
@@ -687,67 +766,19 @@ describe("command managed runtime", () => {
     ]);
 
     expect(await readFile(targetFile, "utf8")).toBe("payload\n");
+    // The write goes straight to the target path. No staging name and no
+    // rename step exist between the write and the chmod.
     const scripts = calls.map((call) => (call.args ?? []).join(" "));
-    expect(scripts).toHaveLength(5);
-    expect(scripts[0]).toContain(targetFile + ".paperclip-syncin.");
-    expect(scripts[0]).toContain(".paperclip-upload.");
-    expect(scripts[1]).toContain("rm -rf");
-    expect(scripts[1]).toContain(".paperclip-upload.");
-    expect(scripts[2]).toContain("chmod 640");
-    expect(scripts[2]).toContain(targetFile + ".paperclip-syncin.");
-    expect(scripts[3]).toContain("mv -f");
-    expect(scripts[3]).toContain(targetFile + ".paperclip-syncin.");
-    expect(scripts[3]).toContain(targetFile);
-    expect(scripts[4]).toContain("rm -rf");
-    expect(scripts[4]).toContain(targetFile + ".paperclip-syncin.");
+    expect(scripts.some((script) => script.includes(".paperclip-syncin."))).toBe(false);
+    expect(scripts.some((script) => script.includes("mv -f") && script.includes(".paperclip-syncin."))).toBe(
+      false,
+    );
+    const chmodScript = scripts.find((script) => script.includes("chmod 640"));
+    expect(chmodScript).toBeDefined();
+    expect(chmodScript).toContain(targetFile);
   });
 
-  it("fallback syncIn cleans up a staged file when chmod fails before rename", async () => {
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-syncin-cleanup-"));
-    cleanupDirs.push(rootDir);
-    const sourceFile = path.join(rootDir, "source.txt");
-    const targetFile = path.join(rootDir, "target.txt");
-    await writeFile(sourceFile, "payload\n", "utf8");
-
-    const { runner, calls } = makeSpawnRunner({ supportsSingleStreamStdinProgress: true });
-    const delegatedExecute = runner.execute.bind(runner);
-    runner.execute = async (input) => {
-      const script = (input.args ?? []).join(" ");
-      if (script.includes("chmod 600")) {
-        calls.push({ command: input.command, args: input.args, cwd: input.cwd, stdin: input.stdin });
-        return {
-          exitCode: 1,
-          signal: null,
-          timedOut: false,
-          stdout: "",
-          stderr: "chmod failed",
-          pid: null,
-          startedAt: new Date().toISOString(),
-        };
-      }
-      return await delegatedExecute(input);
-    };
-    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: 30_000 });
-
-    await expect(
-      client.syncIn!([
-        {
-          operationId: "op-cleanup",
-          files: [{ sourcePath: sourceFile, targetPath: targetFile, kind: "file", mode: 0o600 }],
-        },
-      ]),
-    ).rejects.toThrow(/chmod failed/);
-
-    const chmodCall = calls.find((call) => (call.args ?? []).join(" ").includes("chmod 600"));
-    expect(chmodCall).toBeDefined();
-    const stagedPath = (chmodCall?.args ?? []).join(" ").match(/chmod 600 '([^']+)'/)?.[1];
-    expect(stagedPath).toBeDefined();
-    await expect(readFile(stagedPath!, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-    expect(calls.some((call) => (call.args ?? []).join(" ").includes(`rm -rf '${stagedPath}'`))).toBe(true);
-    await expect(readFile(targetFile, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("test_post_upload_commands_execute_verbatim_not_rewritten (C1 opaque)", async () => {
+  it("post-upload commands execute verbatim and are never rewritten", async () => {
     // The provider/client treats each command as opaque: it is executed VERBATIM,
     // never concatenated with asset keys / paths or otherwise rewritten.
     const executed: string[] = [];
@@ -771,7 +802,7 @@ describe("command managed runtime", () => {
     expect(executed).toContain(verbatim);
   });
 
-  it("test_post_upload_command_cwd_escaping_target_root_is_rejected (C2)", async () => {
+  it("post-upload command cwd that escapes the target root is rejected", async () => {
     // A `cwd` that escapes the operation's target root — via `..` or an absolute
     // path outside the target — is rejected BEFORE any handoff (no execute).
     let executeCalls = 0;
@@ -825,7 +856,7 @@ describe("command managed runtime", () => {
     expect(executeCalls).toBe(0);
   });
 
-  it("test_fallback_syncIn_aborts_and_rejects_on_first_nonzero_exit (C4 fail-fast)", async () => {
+  it("fallback syncIn aborts on the first non-zero exit", async () => {
     // The first non-zero post-upload command aborts the operation: syncIn rejects,
     // the remaining commands do NOT run, and there is no silent partial fallback.
     const executed: string[] = [];
@@ -1000,5 +1031,23 @@ describe("command managed runtime", () => {
     await expect(client.run("tar -cf workspace-download.tar .", { timeoutMs: 30_000 })).rejects.toThrow(
       /stdout: tar: workspace-download\.tar: Cannot open: Permission denied/,
     );
+  });
+
+  it("test_channel_round_trips_all_byte_values", () => {
+    const channel = createFakeEchoDuplexChannel();
+    const allByteValues = Uint8Array.from({ length: 256 }, (_, value) => value);
+    const received: Uint8Array[] = [];
+    channel.onData((chunk) => {
+      received.push(chunk);
+    });
+
+    channel.write(allByteValues);
+
+    expect(received).toHaveLength(1);
+    // A byte value of zero must survive. A UTF-8 string channel loses it: a
+    // JavaScript string can hold the code point U+0000, but a C-style consumer
+    // downstream of a string channel often treats it as a terminator.
+    expect(received[0]).toEqual(allByteValues);
+    expect(Array.from(received[0] ?? [])).toEqual(Array.from({ length: 256 }, (_, value) => value));
   });
 });

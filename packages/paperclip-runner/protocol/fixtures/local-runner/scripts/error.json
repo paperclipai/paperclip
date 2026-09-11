@@ -1,0 +1,53 @@
+{
+  "schema": "paperclip.fake_harness.script.v1",
+  "name": "error",
+  "steps": [
+    { "kind": "delay", "milliseconds": 5 },
+    { "kind": "log", "stream": "stderr", "text": "scripted harness failure" },
+    {
+      "kind": "event",
+      "event_type": "item.failed",
+      "item_id": "item_local_runner_error",
+      "payload": { "kind": "diagnostic", "message": "The fake harness failed as requested." }
+    },
+    {
+      "kind": "result",
+      "payload": {
+        "schema": "paperclip.run_result.v1",
+        "reportedWorkDisposition": "yielded",
+        "summary": "The fake harness reported a scripted error.",
+        "completionClaim": {
+          "contractRevision": "local_runner-contract-v1",
+          "objectiveSatisfied": false,
+          "criteria": [],
+          "remainingWork": [
+            { "description": "Inspect the scripted failure.", "blocksCompletion": true }
+          ]
+        },
+        "evidence": [],
+        "verification": [
+          { "commandOrCheck": "scripted error scenario", "status": "failed" }
+        ],
+        "attentionRequests": [],
+        "artifacts": [],
+        "continuation": {
+          "kind": "retry",
+          "summary": "Retry with a successful script.",
+          "idempotencyKey": "local_runner-error-retry"
+        }
+      }
+    },
+    { "kind": "event", "event_type": "turn.failed", "payload": {} },
+    { "kind": "event", "event_type": "session.failed", "payload": {} },
+    {
+      "kind": "terminal",
+      "payload": {
+        "schema": "paperclip.prp.terminal.v1",
+        "turnTerminalState": "failed",
+        "runTerminalState": "failed",
+        "reportedWorkDisposition": "yielded"
+      }
+    },
+    { "kind": "exit", "code": 7 }
+  ]
+}

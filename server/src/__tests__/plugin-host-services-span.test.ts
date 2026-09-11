@@ -311,4 +311,21 @@ describe("clampProviderSpanAttributes", () => {
       // A non-finite number yields no attribute; `exec.command` is not allowed.
     });
   });
+
+  it("keeps the transfer direction for each closed-set value", () => {
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: "inbound" })).toEqual({
+      [A.transferDirection]: "inbound",
+    });
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: "outbound" })).toEqual({
+      [A.transferDirection]: "outbound",
+    });
+  });
+
+  it("drops a transfer direction outside the closed set or of the wrong type", () => {
+    // A free-form string, an empty string, and a non-string all yield no
+    // attribute, so the direction stays bounded and low-cardinality.
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: "sideways" })).toEqual({});
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: "" })).toEqual({});
+    expect(clampProviderSpanAttributes({ [A.transferDirection]: 1 })).toEqual({});
+  });
 });

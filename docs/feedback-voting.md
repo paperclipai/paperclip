@@ -36,7 +36,7 @@ Shows a color-coded summary: vote counts, per-trace details with reasons, and ex
 paperclipai feedback report
 
 # Point to a different server or company
-pnpm exec paperclipai feedback report --api-base http://127.0.0.1:3000 --company-id <company-id>
+npx paperclipai feedback report --api-base http://127.0.0.1:3000 --company-id <company-id>
 
 # Include raw payload dumps in the report
 pnpm paperclipai feedback report --payloads
@@ -112,7 +112,7 @@ Exports are full by default. `traces/` keeps the Paperclip envelope, while `full
 
 ```bash
 # Custom server and output directory
-pnpm exec paperclipai feedback export --api-base http://127.0.0.1:3000 --company-id <company-id> --out ./my-export
+npx paperclipai feedback export --api-base http://127.0.0.1:3000 --company-id <company-id> --out ./my-export
 ```
 
 ### Reading an exported trace

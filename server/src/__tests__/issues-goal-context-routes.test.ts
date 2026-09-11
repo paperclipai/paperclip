@@ -102,7 +102,7 @@ const mockDb = vi.hoisted(() => ({
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    getById: vi.fn(async () => ({ id: "company-1" })),
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
@@ -222,6 +222,7 @@ describe.sequential("issue goal context routes", () => {
     const emptyQuery: any = {};
     emptyQuery.from = vi.fn(() => emptyQuery);
     emptyQuery.innerJoin = vi.fn(() => emptyQuery);
+    emptyQuery.leftJoin = vi.fn(() => emptyQuery);
     emptyQuery.where = vi.fn(() => emptyQuery);
     emptyQuery.orderBy = vi.fn(() => emptyQuery);
     emptyQuery.limit = vi.fn(async () => []);

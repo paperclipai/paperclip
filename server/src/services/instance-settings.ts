@@ -14,7 +14,6 @@ export type InstanceSettingsWriteDb = Pick<
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   DEFAULT_BACKUP_RETENTION,
-  DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   PAPERCLIP_CLOUD_MANAGED_BY,
   instanceGeneralSettingsSchema,
   type InstanceGeneralSettings,
@@ -28,8 +27,14 @@ import {
   type PatchInstanceSettings,
   type PatchInstanceExperimentalSettings,
 } from "@paperclipai/shared";
+import {
+  INSTANCE_FEATURE_CATALOG,
+  applyOperatorGeneralDefaults,
+  stripOperatorGeneralEchoes,
+} from "@paperclipai/shared";
 import { eq } from "drizzle-orm";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
+import { getOperatorSettingDefaults } from "./setting-defaults.js";
 
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
@@ -219,17 +224,21 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   if (parsed.success) {
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
+      enableNativeRunner: parsed.data.enableNativeRunner ?? true,
       enableManagedSandboxOnly: parsed.data.enableManagedSandboxOnly ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
       enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
-      enableApps: parsed.data.enableApps ?? false,
+      enableStreamlinedUi: parsed.data.enableStreamlinedUi ?? true,
+      // Apps graduated from Experimental. Ignore historical off values while
+      // continuing to accept the compatibility key in stored settings.
+      enableApps: true,
+      enableChatConnectors: parsed.data.enableChatConnectors ?? false,
       enablePipelines: parsed.data.enablePipelines ?? false,
       enableCases: parsed.data.enableCases ?? false,
       enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
       enableClassicTaskInterface: parsed.data.enableClassicTaskInterface ?? false,
       enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
       enableExperimentalFileViewer: parsed.data.enableExperimentalFileViewer ?? false,
-      enableTaskWatchdogs: parsed.data.enableTaskWatchdogs ?? false,
       enableExternalObjects: parsed.data.enableExternalObjects ?? false,
       enableSmokeLab: parsed.data.enableSmokeLab ?? false,
       enableBuiltInAgents: parsed.data.enableBuiltInAgents ?? false,
@@ -239,32 +248,34 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableDecisions: parsed.data.enableDecisions ?? false,
       enableGoalsSidebarLink: parsed.data.enableGoalsSidebarLink ?? false,
       enableServerInfoDebugView: parsed.data.enableServerInfoDebugView ?? false,
+      enablePaperclipDeveloperMode: parsed.data.enablePaperclipDeveloperMode ?? false,
       enableSimplifiedEnglishInteractions: parsed.data.enableSimplifiedEnglishInteractions ?? false,
+      enableFirstTaskPlanProposal: parsed.data.enableFirstTaskPlanProposal ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
-      enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
       enableWorkspaceBranchReconcileForward: parsed.data.enableWorkspaceBranchReconcileForward ?? true,
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableOwnerInstanceAdmin: parsed.data.enableOwnerInstanceAdmin ?? false,
+      enableSandboxDuplexBridge: parsed.data.enableSandboxDuplexBridge ?? false,
+      enableRunnerPreviewIngress: parsed.data.enableRunnerPreviewIngress ?? false,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
       worktreeRunExecutionActivationInstanceId:
         parsed.data.worktreeRunExecutionActivationInstanceId ?? null,
-      issueGraphLivenessAutoRecoveryLookbackHours:
-        parsed.data.issueGraphLivenessAutoRecoveryLookbackHours ??
-        DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
     };
   }
   return {
     enableEnvironments: false,
+    enableNativeRunner: true,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
     enableStreamlinedLeftNavigation: true,
-    enableApps: false,
+    enableStreamlinedUi: true,
+    enableApps: true,
+    enableChatConnectors: false,
     enablePipelines: false,
     enableCases: false,
     enableConferenceRoomChat: false,
     enableClassicTaskInterface: false,
-    enableTaskWatchdogs: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
@@ -276,17 +287,18 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableDecisions: false,
     enableGoalsSidebarLink: false,
     enableServerInfoDebugView: false,
+    enablePaperclipDeveloperMode: false,
     enableSimplifiedEnglishInteractions: false,
+    enableFirstTaskPlanProposal: false,
     autoRestartDevServerWhenIdle: false,
-    enableIssueGraphLivenessAutoRecovery: false,
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
+    enableSandboxDuplexBridge: false,
+    enableRunnerPreviewIngress: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
     worktreeRunExecutionActivationInstanceId: null,
-    issueGraphLivenessAutoRecoveryLookbackHours:
-      DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   };
 }
 
@@ -314,20 +326,108 @@ export function applyManagedExperimentalOverlay(
   for (const [key, value] of Object.entries(managedConfig.features) as Array<
     [ManagedExperimentalFeatureKey, boolean]
   >) {
+    // Existing Cloud stack configs may still carry enableApps. Accept the
+    // document during rollout, but never let the retired flag disable Apps.
+    if (key === "enableApps") continue;
     next[key] = value;
     managedKeys[key] = { managed: true, managedBy: PAPERCLIP_CLOUD_MANAGED_BY };
   }
   return { experimental: next, managedKeys };
 }
 
+/**
+ * Keep self-hosted-only defaults out of Cloud.
+ *
+ * The experimental schema carries one default per flag, and the feature
+ * catalog pins it to `selfHostedDefault`. A flag that is on by default for
+ * self-hosted but off by default for Cloud (`selfHostedDefault: true`,
+ * `cloudDefault: false`) would therefore normalize to "on" for a managed
+ * instance whose tenant row and managed overlay both leave it unset. Re-assert
+ * the declared Cloud default for exactly those flags. An explicit tenant value
+ * or a managed feature value still wins (the overlay is applied afterwards).
+ */
+export function applyCloudCatalogDefaults(
+  experimental: InstanceExperimentalSettings,
+  rawStored: unknown,
+  managedConfig: ManagedInstanceConfig | null,
+): InstanceExperimentalSettings {
+  if (!managedConfig) return experimental;
+  const stored =
+    rawStored && typeof rawStored === "object" && !Array.isArray(rawStored)
+      ? (rawStored as Record<string, unknown>)
+      : {};
+  const next: InstanceExperimentalSettings = { ...experimental };
+  for (const [key, entry] of Object.entries(INSTANCE_FEATURE_CATALOG)) {
+    if (entry.cloudDefault !== false || entry.selfHostedDefault !== true) continue;
+    if (typeof stored[key] === "boolean") continue;
+    if (typeof managedConfig.features[key as ManagedExperimentalFeatureKey] === "boolean") continue;
+    (next as unknown as Record<string, unknown>)[key] = false;
+  }
+  return next;
+}
+
+/**
+ * Keep the write path from freezing a self-hosted default into a Cloud row.
+ *
+ * `updateExperimental` persists the whole normalized object, and the schema
+ * normalizes an omitted flag to its self-hosted default. Without this step an
+ * unrelated experimental write (say, turning on pipelines) would store
+ * `enableNativeRunner: true` on a managed instance whose tenant row had never
+ * mentioned the flag; every later read would then treat the stored boolean as
+ * an explicit tenant choice and stop re-asserting the Cloud default.
+ *
+ * For each guarded flag (see `applyCloudCatalogDefaults`), the stored key is
+ * left absent unless the tenant already stored a boolean or this patch sets
+ * the flag to something other than the Cloud default. A patch value equal to
+ * the Cloud default is a full-GET echo of the read-time overlay, not a
+ * choice, and is stripped the same way `stripOperatorGeneralEchoes` treats
+ * operator defaults. Self-hosted rows are returned untouched.
+ */
+export function stripCloudCatalogDefaultEchoes(
+  rawStored: unknown,
+  patch: PatchInstanceExperimentalSettings | Record<string, unknown>,
+  next: InstanceExperimentalSettings,
+  managedConfig: ManagedInstanceConfig | null,
+): Partial<InstanceExperimentalSettings> {
+  if (!managedConfig) return next;
+  const stored =
+    rawStored && typeof rawStored === "object" && !Array.isArray(rawStored)
+      ? (rawStored as Record<string, unknown>)
+      : {};
+  const patchRecord = patch as Record<string, unknown>;
+  const result: Record<string, unknown> = { ...next };
+  for (const [key, entry] of Object.entries(INSTANCE_FEATURE_CATALOG)) {
+    if (entry.cloudDefault !== false || entry.selfHostedDefault !== true) continue;
+    if (typeof stored[key] === "boolean") continue;
+    if (
+      Object.prototype.hasOwnProperty.call(patchRecord, key) &&
+      typeof patchRecord[key] === "boolean" &&
+      patchRecord[key] !== entry.cloudDefault
+    ) {
+      continue;
+    }
+    delete result[key];
+  }
+  return result as Partial<InstanceExperimentalSettings>;
+}
+
 export function instanceSettingsService(db: Db, options: InstanceSettingsServiceOptions = {}) {
   // Fail closed: a malformed PAPERCLIP_MANAGED_CONFIG throws here (and at
   // boot in index.ts) rather than silently running without the overlay.
   const managedConfig = getManagedInstanceConfig(options.runtimeEnv ?? process.env);
+  // Same posture for PAPERCLIP_SETTING_DEFAULTS: parsed once, applied per
+  // read, never persisted (see applyOperatorGeneralDefaults) — including on
+  // the write path, where a full-GET echo of the overlaid value is stripped
+  // back to the schema default (see stripOperatorGeneralEchoes).
+  const operatorDefaults = getOperatorSettingDefaults(options.runtimeEnv ?? process.env);
+
+  function toGeneralView(raw: unknown): InstanceGeneralSettings {
+    return applyOperatorGeneralDefaults(normalizeGeneralSettings(raw), operatorDefaults);
+  }
 
   function toExperimentalView(raw: unknown): InstanceExperimentalSettingsWithManaged {
     const { experimental, managedKeys } = applyManagedExperimentalOverlay(
-      normalizeExperimentalSettings(raw),
+      applyCloudCatalogDefaults(normalizeExperimentalSettings(raw), raw, managedConfig),
       managedConfig,
     );
     // Self-hosted responses stay byte-identical: no managedKeys field at all.
@@ -338,7 +438,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     return {
       id: row.id,
       defaultEnvironmentId: row.defaultEnvironmentId ?? null,
-      general: normalizeGeneralSettings(row.general),
+      general: toGeneralView(row.general),
       experimental: toExperimentalView(row.experimental),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
@@ -409,9 +509,11 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       return toInstanceSettings(updated ?? current);
     },
 
-    getGeneral: async (): Promise<InstanceGeneralSettings> => {
-      const row = await getOrCreateRow();
-      return normalizeGeneralSettings(row.general);
+    getGeneral: async (
+      readOptions?: { db?: InstanceSettingsWriteDb },
+    ): Promise<InstanceGeneralSettings> => {
+      const row = await getOrCreateRow(readOptions?.db);
+      return toGeneralView(row.general);
     },
 
     getExperimental: async (): Promise<InstanceExperimentalSettingsWithManaged> => {
@@ -421,10 +523,15 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     updateGeneral: async (patch: PatchInstanceGeneralSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
-      const nextGeneral = normalizeGeneralSettings({
-        ...normalizeGeneralSettings(current.general),
-        ...patch,
-      });
+      const storedGeneral = normalizeGeneralSettings(current.general);
+      // A full-GET echo carries the overlaid operator value for a field the
+      // user never chose; stripping it keeps the overlay strictly read-time,
+      // so changing or unsetting the variable later still takes effect.
+      const nextGeneral = stripOperatorGeneralEchoes(
+        storedGeneral,
+        normalizeGeneralSettings({ ...storedGeneral, ...patch }),
+        operatorDefaults,
+      );
       const now = new Date();
       const [updated] = await db
         .update(instanceSettings)
@@ -439,7 +546,14 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
       const current = await getOrCreateRow();
-      const nextExperimental = applyExperimentalSettingsPatch(current.experimental, patch, options);
+      // Guarded Cloud flags stay absent from the row unless chosen, so the
+      // read-time catalog default keeps applying (see stripCloudCatalogDefaultEchoes).
+      const nextExperimental = stripCloudCatalogDefaultEchoes(
+        current.experimental,
+        patch,
+        applyExperimentalSettingsPatch(current.experimental, patch, options),
+        managedConfig,
+      );
       const now = new Date();
       const [updated] = await db
         .update(instanceSettings)

@@ -8,7 +8,8 @@
   ],
   "featured": false,
   "branding": {
-    "logoUrl": "https://www.google.com/s2/favicons?domain=anthropic.com&sz=128"
+    "logoUrl": "/brands/apps/anthropic.svg",
+    "darkLogoUrl": "/brands/apps/anthropic-dark.svg"
   },
   "urlPatterns": [
     "https://api.anthropic.com/*"

@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  activityLog,
   agents,
   agentWakeupRequests,
   companies,
   createDb,
   heartbeatRuns,
   issueComments,
+  issueThreadInteractions,
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
@@ -38,6 +40,8 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueThreadInteractions);
+    await db.delete(activityLog);
     await db.delete(issueTreeHoldMembers);
     await db.delete(issueTreeHolds);
     await db.delete(issueComments);
@@ -137,7 +141,6 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
         createdAt: new Date("2026-04-21T10:03:00.000Z"),
       },
     ]);
-
     const svc = issueTreeControlService(db);
     const preview = await svc.preview(companyId, rootIssueId, { mode: "pause" });
 
@@ -314,6 +317,14 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
         createdAt: new Date("2026-04-21T10:03:00.000Z"),
       },
     ]);
+    const [pendingInteraction] = await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId: runningChildId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "none",
+      payload: { version: 1, prompt: "Continue?" },
+    }).returning();
 
     const svc = issueTreeControlService(db);
     const cancel = await svc.createHold(companyId, rootIssueId, {
@@ -340,6 +351,11 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
       [todoChildId]: "cancelled",
       [doneChildId]: "done",
     });
+    const [expiredInteraction] = await db
+      .select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, pendingInteraction!.id));
+    expect(expiredInteraction?.status).toBe("expired");
 
     await db
       .update(issues)

@@ -33,6 +33,16 @@ const mockNavigate = vi.hoisted(() => vi.fn());
 const mockSetBreadcrumbs = vi.hoisted(() => vi.fn());
 const mockIssuesList = vi.hoisted(() => vi.fn());
 const mockSummarySlotCard = vi.hoisted(() => vi.fn());
+const mockLocation = vi.hoisted(() => ({
+  pathname: "/projects/project-1/plugin-operations",
+  search: "",
+}));
+const mockCompanyContext = vi.hoisted(() => ({
+  companies: [{ id: "company-1", issuePrefix: "PAP" }] as Array<{ id: string; issuePrefix: string }>,
+  selectedCompanyId: "company-1" as string | null,
+}));
+const mockUsePluginSlots = vi.hoisted(() => vi.fn(() => ({ slots: [] as unknown[], isLoading: false })));
+const mockPluginSlotMount = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/projects", () => ({ projectsApi: mockProjectsApi }));
 vi.mock("../api/issues", () => ({ issuesApi: mockIssuesApi }));
@@ -47,15 +57,15 @@ vi.mock("../api/resourceMemberships", () => ({ resourceMembershipsApi: mockResou
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to }: { children?: ReactNode; to: string }) => <a href={to}>{children}</a>,
   Navigate: ({ to }: { to: string }) => <div data-testid="navigate">{to}</div>,
-  useLocation: () => ({ pathname: "/projects/project-1/plugin-operations", search: "", hash: "", state: null }),
+  useLocation: () => ({ pathname: mockLocation.pathname, search: mockLocation.search, hash: "", state: null }),
   useNavigate: () => mockNavigate,
   useParams: () => ({ projectId: "project-1" }),
 }));
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
-    companies: [{ id: "company-1", issuePrefix: "PAP" }],
-    selectedCompanyId: "company-1",
+    companies: mockCompanyContext.companies,
+    selectedCompanyId: mockCompanyContext.selectedCompanyId,
     setSelectedCompanyId: vi.fn(),
   }),
 }));
@@ -63,9 +73,12 @@ vi.mock("../context/PanelContext", () => ({ usePanel: () => ({ closePanel: vi.fn
 vi.mock("../context/ToastContext", () => ({ useToastActions: () => ({ pushToast: vi.fn() }) }));
 vi.mock("../context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mockSetBreadcrumbs }) }));
 vi.mock("@/plugins/slots", () => ({
-  PluginSlotMount: () => null,
+  PluginSlotMount: (props: unknown) => {
+    mockPluginSlotMount(props);
+    return <div data-testid="plugin-slot-mount" />;
+  },
   PluginSlotOutlet: () => null,
-  usePluginSlots: () => ({ slots: [], isLoading: false }),
+  usePluginSlots: mockUsePluginSlots,
 }));
 vi.mock("@/plugins/launchers", () => ({ PluginLauncherOutlet: () => null }));
 vi.mock("../components/ProjectProperties", () => ({
@@ -166,6 +179,11 @@ describe("ProjectDetail", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    mockLocation.pathname = "/projects/project-1/plugin-operations";
+    mockLocation.search = "";
+    mockCompanyContext.companies = [{ id: "company-1", issuePrefix: "PAP" }];
+    mockCompanyContext.selectedCompanyId = "company-1";
+    mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: false });
     mockProjectsApi.get.mockResolvedValue(project());
     mockProjectsApi.list.mockResolvedValue([project()]);
     mockIssuesApi.list.mockResolvedValue([]);
@@ -225,6 +243,109 @@ describe("ProjectDetail", () => {
     expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
       projectId: "project-1",
       originKindPrefix: "plugin:paperclip.missions",
+    });
+  });
+
+  it("keeps Timeline out of the project task-list controls", async () => {
+    mockLocation.pathname = "/projects/project-1/issues";
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProjectDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const props = mockIssuesList.mock.calls.at(-1)?.[0];
+    expect(props).toEqual(expect.objectContaining({ projectId: "project-1" }));
+    expect(props).not.toHaveProperty("projectTimelineHref");
+  });
+
+  describe("plugin detail-tab deep links", () => {
+    const PLUGIN_TAB = "plugin:paperclipai.plugin-llm-wiki:project-knowledge";
+    const knowledgeSlot = {
+      id: "project-knowledge",
+      type: "detailTab",
+      displayName: "Knowledge",
+      entityTypes: ["project"],
+      pluginId: "plugin-llm-wiki",
+      pluginKey: "paperclipai.plugin-llm-wiki",
+      pluginDisplayName: "LLM Wiki",
+      pluginVersion: "0.2.0",
+    };
+
+    async function renderDetail() {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      await act(async () => {
+        root = createRoot(container);
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <ProjectDetail />
+          </QueryClientProvider>,
+        );
+      });
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+
+    it("keeps a cold deep link on the plugin tab while contributions are still loading", async () => {
+      mockLocation.pathname = "/projects/project-1";
+      mockLocation.search = `?tab=${encodeURIComponent(PLUGIN_TAB)}`;
+      mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: true });
+
+      await renderDetail();
+
+      expect(container.querySelector('[data-testid="navigate"]')).toBeNull();
+      expect(container.querySelector('[data-testid="plugin-slot-mount"]')).toBeNull();
+    });
+
+    it("does not bounce to the issues tab before the company for the slots query resolves", async () => {
+      // Cold reload race: the slots query is disabled until a company is
+      // known, and a disabled query reports isLoading=false.
+      mockLocation.pathname = "/projects/project-1";
+      mockLocation.search = `?tab=${encodeURIComponent(PLUGIN_TAB)}`;
+      mockCompanyContext.companies = [];
+      mockCompanyContext.selectedCompanyId = null;
+      mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: false });
+
+      await renderDetail();
+
+      expect(container.querySelector('[data-testid="navigate"]')).toBeNull();
+    });
+
+    it("renders the registered plugin tab for a direct deep link", async () => {
+      mockLocation.pathname = "/projects/project-1";
+      mockLocation.search = `?tab=${encodeURIComponent(PLUGIN_TAB)}`;
+      mockUsePluginSlots.mockReturnValue({ slots: [knowledgeSlot], isLoading: false });
+
+      await renderDetail();
+
+      expect(container.querySelector('[data-testid="navigate"]')).toBeNull();
+      expect(container.querySelector('[data-testid="plugin-slot-mount"]')).not.toBeNull();
+      expect(mockPluginSlotMount).toHaveBeenCalledWith(expect.objectContaining({
+        slot: expect.objectContaining({ id: "project-knowledge", pluginKey: "paperclipai.plugin-llm-wiki" }),
+      }));
+      expect(container.textContent).toContain("Knowledge");
+    });
+
+    it("falls back to the issues tab once contributions load without the requested tab", async () => {
+      mockLocation.pathname = "/projects/project-1";
+      mockLocation.search = `?tab=${encodeURIComponent(PLUGIN_TAB)}`;
+      mockUsePluginSlots.mockReturnValue({ slots: [], isLoading: false });
+
+      await renderDetail();
+
+      expect(container.querySelector('[data-testid="navigate"]')?.textContent)
+        .toBe("/projects/project-1/issues");
     });
   });
 });

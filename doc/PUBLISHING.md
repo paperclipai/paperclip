@@ -184,53 +184,65 @@ CI publishing is controlled by [`scripts/release-package-manifest.json`](../scri
 When you add a new public package:
 
 1. add it to the manifest and decide whether CI should publish it immediately
-2. if CI should publish it, bootstrap the package on npm before merge
+2. if CI should publish it, reserve the name on npm with the placeholder bootstrap before merge
 3. if CI should not publish it yet, keep `"publishFromCi": false`
 4. only enable `"publishFromCi": true` after npm trusted publishing is configured for that package
 
-PR CI now checks changed release-enabled package manifests against npm. That catches a missing first-publish bootstrap before the change reaches `master`.
+PR CI now checks changed release-enabled package manifests against npm. That catches a missing first-publish bootstrap before the change reaches `master`. When a PR needs this bootstrap, commitperclip also posts an informational notice on the PR naming the exact command, so contributors know a maintainer action is pending rather than something they can fix.
 
 ### One-time bootstrap sequence for a new package
 
-The first publish of a brand-new package still needs one human maintainer with npm write access.
-After that, trusted publishing can take over.
+Creating a brand-new package name on npm still needs one human maintainer with npm write access.
+After that, trusted publishing takes over — and CI publishes the only real content the package ever gets.
+
+The bootstrap intentionally does **not** publish the package's real build output.
+It publishes a tiny placeholder at version `0.0.0` (a manifest, a README, and an
+`index.js` that throws a descriptive error), because:
+
+- real package content should only ever reach npm from CI, after the PR that adds the package has been reviewed and merged
+- the PR CI gate only requires the name to resolve on the registry
+- the trusted publisher rule can only be configured once the package page exists
+- the placeholder needs no local build and no workspace state, so it can be published from any checkout (including `master`, before the new package's PR merges)
 
 Example for a newly added public package from the repo root:
 
 ```bash
-# safe preview
+# safe preview (stages the placeholder and runs npm publish --dry-run)
 pnpm run release:bootstrap-package -- @paperclipai/new-package
 
-# one-time first publish from an authenticated maintainer machine
-pnpm run release:bootstrap-package -- @paperclipai/new-package --publish --otp 123456
+# one-time placeholder publish from an authenticated maintainer machine
+# (prompts for npm one-time passwords; they are never passed as arguments)
+pnpm run release:bootstrap-package -- @paperclipai/new-package --publish
 ```
 
 The helper script:
 
+- refuses names outside the `@paperclipai/` scope
 - checks that the package does not already exist on npm
-- builds the target package unless `--skip-build` is passed
-- runs `pnpm publish <package-dir> --dry-run --no-git-checks --access public` from the repo root
-- only runs the real `pnpm publish <package-dir> --no-git-checks --access public` when `--publish --otp <code>` is provided
+- stages the placeholder in a temporary directory and previews it with `npm publish --dry-run --access public`
+- with `--publish`, prompts for a one-time password and publishes. Codes are entered interactively and handed to npm through its environment (`npm_config_otp`), so they never appear on a command line, in shell history, or in a process listing; a rejected or expired code re-prompts
+- then waits for the registry to show the package (a first publish can take a few minutes to become visible on the read/write endpoints) and prompts for a second code to deprecate the placeholder, so accidental installs warn loudly. If the wait times out or the deprecation fails, it prints the exact `npm deprecate` command to run manually
 
-The helper intentionally uses `pnpm publish` instead of `npm publish` so workspace
-dependencies and `publishConfig` export fields are normalized before the package
-is sent to the registry.
+Until the first stable release supersedes it, the `latest` dist-tag points at the
+deprecated placeholder. Internal consumers are unaffected: release version
+rewrites pin exact calver versions, so nothing inside the release package set
+resolves through `latest`.
 
 For the real `--publish` step, the maintainer machine must already be authenticated to npm.
 If `npm whoami` returns `401`, first run `npm logout --registry=https://registry.npmjs.org/` to clear any stale local auth, then run `npm login` or `npm adduser` locally as an npm org member, and finally rerun the helper.
 That local human auth is fine for the one-time bootstrap publish; we just do not want the same auth model inside CI.
-The helper now requires `--otp <code>` up front for `--publish`, so it fails before the real publish attempt if the one-time password is missing.
+`--publish` requires an interactive terminal: the helper prompts for the one-time password right before the publish and again before the deprecation, handing each code to npm through its environment (`npm_config_otp`), so codes never appear in command arguments, shell history, or process listings.
 
-After that first publish succeeds:
+After the placeholder publish succeeds:
 
 1. open `https://www.npmjs.com/package/@paperclipai/new-package`
 2. go to `Settings` → `Trusted publishing`
 3. add repository `paperclipai/paperclip`
 4. set workflow filename to `release.yml`
 5. optionally go to `Settings` → `Publishing access` and enable `Require two-factor authentication and disallow tokens`
-6. keep `publishFromCi: true` in [`scripts/release-package-manifest.json`](../scripts/release-package-manifest.json)
+6. only then set `"publishFromCi": true` in [`scripts/release-package-manifest.json`](../scripts/release-package-manifest.json)
 
-Once those steps are done, future canary and stable publishes for that package are automated through GitHub OIDC. The manual step is only the first package creation on npm.
+Once those steps are done, future canary and stable publishes for that package are automated through GitHub OIDC. The manual step only reserves the name on npm; every real version ships from CI.
 
 ## Rollback model
 

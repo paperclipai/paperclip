@@ -1,0 +1,230 @@
+{
+  "schema": "paperclip.prp.fixture.v1",
+  "fixtureVersion": 1,
+  "protocolVersion": 1,
+  "name": "Happy path",
+  "description": "A typed assistant message completes and the run proposes a successful result.",
+  "identity": {
+    "schema": "paperclip.prp.identity.v1",
+    "companyId": "company_replay",
+    "issueId": "issue_replay_happy",
+    "runId": "run_replay_happy",
+    "environmentLeaseId": "lease_replay_happy",
+    "runnerInstanceId": "runner_replay",
+    "normalizedSessionId": "session_replay_happy",
+    "driverSessionId": "driver_replay_happy",
+    "providerSessionId": "provider_replay_happy"
+  },
+  "capabilities": {
+    "schema": "paperclip.prp.capabilities.v1",
+    "sessionReusePolicy": "new_per_run",
+    "driver": { "kind": "fake", "version": "1.0.0" },
+    "steer": true,
+    "interrupt": true,
+    "resume": true,
+    "runtimeRequests": true,
+    "structuredResult": true,
+    "typedEvents": true,
+    "unsupported": []
+  },
+  "commands": [
+    {
+      "schema": "paperclip.prp.command.v1",
+      "commandId": "command_happy_prepare",
+      "controllerSeq": 1,
+      "type": "run.prepare",
+      "issuedAt": "2026-08-07T12:00:00.000Z",
+      "payload": { "workspace": "fixture" }
+    },
+    {
+      "schema": "paperclip.prp.command.v1",
+      "commandId": "command_happy_session",
+      "controllerSeq": 2,
+      "type": "session.open",
+      "issuedAt": "2026-08-07T12:00:00.010Z",
+      "payload": { "reuse": "new_per_run" }
+    },
+    {
+      "schema": "paperclip.prp.command.v1",
+      "commandId": "command_happy_turn",
+      "controllerSeq": 3,
+      "type": "turn.start",
+      "issuedAt": "2026-08-07T12:00:00.020Z",
+      "payload": { "text": "Inspect the fixture" }
+    }
+  ],
+  "events": [
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "event_happy_01",
+      "sourceSeq": 1,
+      "sourceInstanceId": "runner_replay",
+      "sourceKind": "runner",
+      "runId": "run_replay_happy",
+      "normalizedSessionId": "session_replay_happy",
+      "eventType": "runtime.phase.changed",
+      "schemaVersion": 1,
+      "priority": 1,
+      "emittedAt": "2026-08-07T12:00:00.030Z",
+      "payload": { "phase": "workspace_preparing" }
+    },
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "event_happy_02",
+      "sourceSeq": 2,
+      "sourceInstanceId": "runner_replay",
+      "sourceKind": "runner",
+      "runId": "run_replay_happy",
+      "normalizedSessionId": "session_replay_happy",
+      "eventType": "session.started",
+      "schemaVersion": 1,
+      "priority": 0,
+      "emittedAt": "2026-08-07T12:00:00.040Z",
+      "payload": { "driverSessionId": "driver_replay_happy" }
+    },
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "event_happy_03",
+      "sourceSeq": 3,
+      "sourceInstanceId": "runner_replay",
+      "sourceKind": "runner",
+      "runId": "run_replay_happy",
+      "normalizedSessionId": "session_replay_happy",
+      "turnId": "turn_replay_happy",
+      "eventType": "turn.started",
+      "schemaVersion": 1,
+      "priority": 1,
+      "emittedAt": "2026-08-07T12:00:00.050Z",
+      "payload": {}
+    },
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "event_happy_04",
+      "sourceSeq": 4,
+      "sourceInstanceId": "runner_replay",
+      "sourceKind": "runner",
+      "runId": "run_replay_happy",
+      "normalizedSessionId": "session_replay_happy",
+      "turnId": "turn_replay_happy",
+      "itemId": "item_replay_message",
+      "eventType": "item.started",
+      "schemaVersion": 1,
+      "priority": 1,
+      "emittedAt": "2026-08-07T12:00:00.060Z",
+      "payload": { "kind": "assistant_message", "text": "" }
+    },
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "event_happy_05",
+      "sourceSeq": 5,
+      "sourceInstanceId": "runner_replay",
+      "sourceKind": "runner",
+      "runId": "run_replay_happy",
+      "normalizedSessionId": "session_replay_happy",
+      "turnId": "turn_replay_happy",
+      "itemId": "item_replay_message",
+      "eventType": "item.delta",
+      "schemaVersion": 1,
+      "priority": 2,
+      "emittedAt": "2026-08-07T12:00:00.070Z",
+      "payload": { "text": "Validated fixture. " }
+    },
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "event_happy_06",
+      "sourceSeq": 6,
+      "sourceInstanceId": "runner_replay",
+      "sourceKind": "runner",
+      "runId": "run_replay_happy",
+      "normalizedSessionId": "session_replay_happy",
+      "turnId": "turn_replay_happy",
+      "itemId": "item_replay_message",
+      "eventType": "item.completed",
+      "schemaVersion": 1,
+      "priority": 1,
+      "emittedAt": "2026-08-07T12:00:00.080Z",
+      "payload": { "kind": "assistant_message", "text": "Validated fixture. Replay complete." }
+    },
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "event_happy_07",
+      "sourceSeq": 7,
+      "sourceInstanceId": "runner_replay",
+      "sourceKind": "runner",
+      "runId": "run_replay_happy",
+      "normalizedSessionId": "session_replay_happy",
+      "turnId": "turn_replay_happy",
+      "eventType": "run.result.proposed",
+      "schemaVersion": 1,
+      "priority": 0,
+      "emittedAt": "2026-08-07T12:00:00.090Z",
+      "payload": {
+        "schema": "paperclip.run_result.v1",
+        "reportedWorkDisposition": "done",
+        "summary": "The scripted run completed successfully.",
+        "completionClaim": {
+          "contractRevision": "replay-contract-v1",
+          "objectiveSatisfied": true,
+          "criteria": [],
+          "remainingWork": []
+        },
+        "evidence": [],
+        "verification": [{ "commandOrCheck": "fixture replay", "status": "passed" }],
+        "attentionRequests": [],
+        "artifacts": []
+      }
+    },
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "event_happy_08",
+      "sourceSeq": 8,
+      "sourceInstanceId": "runner_replay",
+      "sourceKind": "runner",
+      "runId": "run_replay_happy",
+      "normalizedSessionId": "session_replay_happy",
+      "turnId": "turn_replay_happy",
+      "eventType": "turn.completed",
+      "schemaVersion": 1,
+      "priority": 0,
+      "emittedAt": "2026-08-07T12:00:00.100Z",
+      "payload": {}
+    },
+    {
+      "schema": "paperclip.prp.event.v1",
+      "sourceEventId": "event_happy_09",
+      "sourceSeq": 9,
+      "sourceInstanceId": "runner_replay",
+      "sourceKind": "runner",
+      "runId": "run_replay_happy",
+      "normalizedSessionId": "session_replay_happy",
+      "eventType": "run.terminal",
+      "schemaVersion": 1,
+      "priority": 0,
+      "emittedAt": "2026-08-07T12:00:00.110Z",
+      "payload": {
+        "schema": "paperclip.prp.terminal.v1",
+        "turnTerminalState": "completed",
+        "runTerminalState": "succeeded",
+        "reportedWorkDisposition": "done",
+        "workAssessmentId": "assessment_replay_happy",
+        "statusDecisionId": "decision_replay_happy"
+      }
+    }
+  ],
+  "requests": [],
+  "result": {
+    "schema": "paperclip.run_result.v1",
+    "reportedWorkDisposition": "done",
+    "summary": "The scripted run completed successfully.",
+    "completionClaim": {
+      "contractRevision": "replay-contract-v1",
+      "objectiveSatisfied": true,
+      "criteria": [],
+      "remainingWork": []
+    },
+    "evidence": [],
+    "verification": [{ "commandOrCheck": "fixture replay", "status": "passed" }],
+    "attentionRequests": [],
+    "artifacts": []
+  }
+}

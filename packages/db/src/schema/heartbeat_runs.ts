@@ -1,5 +1,18 @@
 import { sql } from "drizzle-orm";
-import { type AnyPgColumn, pgTable, uuid, text, timestamp, jsonb, index, integer, bigint, boolean } from "drizzle-orm/pg-core";
+import {
+  type AnyPgColumn,
+  pgTable,
+  uuid,
+  text,
+  timestamp,
+  jsonb,
+  index,
+  integer,
+  bigint,
+  boolean,
+  unique,
+  uniqueIndex,
+} from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { agentWakeupRequests } from "./agent_wakeup_requests.js";
@@ -14,14 +27,35 @@ export const heartbeatRuns = pgTable(
     triggerDetail: text("trigger_detail"),
     status: text("status").notNull().default("queued"),
     responsibleUserId: text("responsible_user_id"),
+    // The service validates the company/run boundary; avoid a cyclic schema import.
+    activeIdentityContextId: uuid("active_identity_context_id"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
+    // Set only after provider execution settles; never a timeout on thinking.
+    executionControlDeadlineAt: timestamp("execution_control_deadline_at", { withTimezone: true }),
+    // Transactional delivery marker. Null on historical rows; publication never replays provider work.
+    executionStatusDeliveryId: uuid("execution_status_delivery_id"),
     error: text("error"),
     wakeupRequestId: uuid("wakeup_request_id").references(() => agentWakeupRequests.id),
     exitCode: integer("exit_code"),
     signal: text("signal"),
     usageJson: jsonb("usage_json").$type<Record<string, unknown>>(),
     resultJson: jsonb("result_json").$type<Record<string, unknown>>(),
+    runtimeMode: text("runtime_mode").notNull().default("legacy"),
+    runtimeModeResolverVersion: text("runtime_mode_resolver_version"),
+    runtimeModeReason: text("runtime_mode_reason"),
+    runtimeModeResolvedAt: timestamp("runtime_mode_resolved_at", { withTimezone: true }),
+    runnerProfileJson: jsonb("runner_profile_json").$type<Record<string, unknown>>(),
+    runnerInstanceId: uuid("runner_instance_id"),
+    nativeSessionId: uuid("native_session_id"),
+    nativeIssueId: uuid("native_issue_id"),
+    driverKind: text("driver_kind"),
+    driverVersion: text("driver_version"),
+    completionContractId: uuid("completion_contract_id"),
+    completionContractSha256: text("completion_contract_sha256"),
+    nextEventSeq: bigint("next_event_seq", { mode: "number" }).notNull().default(1),
+    nativePhase: text("native_phase"),
+    nativePhaseUpdatedAt: timestamp("native_phase_updated_at", { withTimezone: true }),
     sessionIdBefore: text("session_id_before"),
     sessionIdAfter: text("session_id_after"),
     logStore: text("log_store"),
@@ -60,6 +94,26 @@ export const heartbeatRuns = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    executionStatusDeliveryIdx: index("heartbeat_runs_execution_status_delivery_idx")
+      .on(table.executionStatusDeliveryId).where(sql`${table.executionStatusDeliveryId} is not null`),
+    executionControlDeadlineIdx: index("heartbeat_runs_execution_control_deadline_idx")
+      .on(table.executionControlDeadlineAt).where(sql`${table.executionControlDeadlineAt} is not null`),
+    nativeReplacementPredecessorUq: uniqueIndex("heartbeat_runs_native_replacement_predecessor_uq")
+      .on(table.companyId, table.retryOfRunId)
+      .where(sql`${table.scheduledRetryReason} = 'native_safe_replacement'`),
+    companyNativeIssueRunUq: unique("heartbeat_runs_company_native_issue_id_uq").on(
+      table.companyId,
+      table.nativeIssueId,
+      table.id,
+    ),
+    companyNativeIssueRunContractUq: unique(
+      "heartbeat_runs_company_native_issue_contract_id_uq",
+    ).on(
+      table.companyId,
+      table.nativeIssueId,
+      table.id,
+      table.completionContractId,
+    ),
     companyAgentStartedIdx: index("heartbeat_runs_company_agent_started_idx").on(
       table.companyId,
       table.agentId,

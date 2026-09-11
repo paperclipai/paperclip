@@ -171,10 +171,12 @@ describe("worktree config repair", () => {
     expect(repairedEnv).toContain(`PAPERCLIP_CONTEXT=${JSON.stringify(path.join(isolatedHome, "context.json"))}`);
     expect(repairedEnv).toContain('PAPERCLIP_DB_BACKUP_ENABLED="false"');
     expect(repairedEnv).toContain("PAPERCLIP_AGENT_JWT_SECRET=shared-secret");
+    expect(repairedEnv).toContain("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET=");
     expect(process.env.PAPERCLIP_HOME).toBe(isolatedHome);
     expect(process.env.PORT).toBe("3101");
     expect(process.env.PAPERCLIP_INSTANCE_ID).toBe("pap-884-ai-commits-component");
     expect(process.env.PAPERCLIP_DB_BACKUP_ENABLED).toBe("false");
+    expect(process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET).toHaveLength(64);
   });
 
   it("disables backups in an otherwise isolated existing worktree config", async () => {
@@ -444,13 +446,27 @@ describe("worktree config repair", () => {
     const firstConfigPath = path.join(firstWorktreeRoot, ".paperclip", "config.json");
     const secondConfigPath = path.join(secondWorktreeRoot, ".paperclip", "config.json");
 
-    const writeWorktree = async (worktreeRoot: string, name: string) => {
+    const writeWorktree = async (
+      worktreeRoot: string,
+      name: string,
+      databaseMode: "embedded-postgres" | "postgres" = "embedded-postgres",
+    ) => {
       const paperclipDir = path.join(worktreeRoot, ".paperclip");
       const instanceRoot = path.join(isolatedHome, "instances", name.toLowerCase());
+      const config = buildIsolatedConfig(instanceRoot, 45439, 55439);
       await fs.mkdir(paperclipDir, { recursive: true });
       await fs.writeFile(
         path.join(paperclipDir, "config.json"),
-        `${JSON.stringify(buildIsolatedConfig(instanceRoot, 45439, 55439), null, 2)}\n`,
+        `${JSON.stringify({
+          ...config,
+          database: {
+            ...config.database,
+            mode: databaseMode,
+            ...(databaseMode === "postgres"
+              ? { connectionString: "postgres://paperclip:paperclip@127.0.0.1:55439/paperclip" }
+              : {}),
+          },
+        }, null, 2)}\n`,
         "utf8",
       );
       await fs.writeFile(
@@ -480,7 +496,7 @@ describe("worktree config repair", () => {
       delete process.env.DATABASE_URL;
     };
 
-    await writeWorktree(firstWorktreeRoot, "PAP-14013-import-bulk-skills");
+    await writeWorktree(firstWorktreeRoot, "PAP-14013-import-bulk-skills", "postgres");
     await writeWorktree(secondWorktreeRoot, "PAP-14069-port-conflicts");
     const staleLockPath = path.join(isolatedHome, ".worktree-port-reservations.lock");
     await fs.mkdir(staleLockPath, { recursive: true });

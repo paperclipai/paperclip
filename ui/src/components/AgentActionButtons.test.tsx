@@ -177,6 +177,26 @@ describe("AgentActionButtons", () => {
     expect(container.textContent).not.toContain("Clear error");
   });
 
+  it("starts an administrator-selected run with raw provider tracing", async () => {
+    render(makeAgent(), { canRunWithProviderTrace: true });
+    await flushReact();
+
+    const traceButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Run with provider trace"),
+    );
+    expect(traceButton).toBeTruthy();
+
+    await act(async () => {
+      traceButton?.click();
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.invoke).toHaveBeenCalledWith("agent-1", "company-1", {
+      debug: { providerTrace: "raw" },
+    });
+    expect(mockNavigate).toHaveBeenCalledWith("/agents/alpha/runs/run-1");
+  });
+
   it("calls the terminate success handler after terminating an agent", async () => {
     const onTerminateSuccess = vi.fn();
     render(makeAgent(), { onTerminateSuccess });

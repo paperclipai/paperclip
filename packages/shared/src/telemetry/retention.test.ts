@@ -18,4 +18,9 @@ describe("telemetry retention contract", () => {
     expect(cls).toBeDefined();
     expect(RETENTION_DAYS[cls!]).toBe(90);
   });
+
+  it("interaction compatibility telemetry uses enum/count retention", () => {
+    expect(EVENT_RETENTION_CLASS["interaction.created"]).toBe("operational_enum_count");
+    expect(EVENT_RETENTION_CLASS["interaction.resolved"]).toBe("operational_enum_count");
+  });
 });

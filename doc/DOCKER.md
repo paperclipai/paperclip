@@ -18,11 +18,54 @@ Build arguments:
 |-----|---------|---------|
 | `USER_UID` | `1000` | UID for the container `node` user (match your host UID to avoid permission issues on bind mounts) |
 | `USER_GID` | `1000` | GID for the container `node` group |
+| `CLI_TOOLS_CACHE_EPOCH` | empty | Refresh the CLI-install layer; CI supplies the current ISO week |
+| `PAPERCLIP_BUILD_VERSION` | empty | Runtime version when Git metadata is unavailable |
+| `PAPERCLIP_BUILD_COMMIT` | empty | Source commit written into the server build stamp and runtime environment |
+
+Changing the build version or commit preserves the CLI-install cache. The
+tool layer refreshes when its weekly epoch, base image, installation command,
+or earlier build inputs change. Local builds can set a new epoch explicitly
+to refresh tools without clearing the entire build cache.
 
 ```sh
 docker build -t paperclip-local \
   --build-arg USER_UID=$(id -u) --build-arg USER_GID=$(id -g) .
 ```
+
+## Cloud image addresses
+
+The Docker workflow publishes the managed deployment image for Linux AMD64.
+`Cloud readiness` starts `Docker cloud` on each master push independently of the
+multi-platform self-hosted build. Different commits use separate concurrency groups and existing
+GitHub-hosted runners, so an older production or cloud build does not hold the
+new commit in a workflow queue. Available GitHub runner capacity still applies.
+Release tags and manual `Docker` dispatches call the same cloud build workflow.
+
+Each commit exports to its own `buildcache-cloud-<FULL_SHA>` registry tag.
+Builds import the current commit and nine first-parent ancestors, plus the
+legacy `buildcache-cloud` fallback. This preserves reusable layers without
+letting concurrent builds overwrite one shared cache manifest. Retain recent
+cache tags if registry cleanup is configured; deleting them makes builds colder.
+
+Cloud CI skips SDK and cache cleanup when both the Docker data filesystem and
+the checkout filesystem have at least 64 GiB available. Below that conservative
+headroom threshold, or when the measurement fails, it retains the existing
+cleanup. The threshold selects the fast path; it is not a new minimum disk
+requirement for local builds or smaller runners.
+
+After the pushed image passes its Sentry and orphan-reaping checks, the workflow verifies its
+commit label and platform and adds `ghcr.io/paperclipai/paperclip:sha-<full-commit-sha>-cloud`.
+This address lets commit-based deployment tooling reuse the normal build.
+Existing short-SHA and release tags remain available.
+
+The full-SHA tag identifies the source commit. It does not certify that source
+tests passed or that a compatible database migrator is available. Deployment
+tooling must still check those prerequisites and pin the resolved image digest;
+a rebuild of the same source can update the tag's digest.
+
+The separate [cloud readiness check](cloud-build-readiness.md) combines source
+verification, successful cloud image checks, and exact-source migrator
+availability. It runs outside the full npm release's concurrency queue.
 
 ## One-liner (build + run)
 
@@ -132,6 +175,34 @@ pnpm paperclipai auth bootstrap-ceo
 Granular overrides remain available if needed (`PAPERCLIP_AUTH_PUBLIC_BASE_URL`, `BETTER_AUTH_URL`, `BETTER_AUTH_TRUSTED_ORIGINS`, `PAPERCLIP_ALLOWED_HOSTNAMES`).
 
 Set `PAPERCLIP_ALLOWED_HOSTNAMES` explicitly only when you need additional hostnames beyond the public URL host (for example Tailscale/LAN aliases or multiple private hostnames).
+
+### Optional Vercel Connect credentials
+
+Vercel Connect's backend integration is retained for controlled testing and
+existing Vercel-backed connections, but its new-connection UI is currently
+withheld from **Apps → Browse**. Setting
+`PAPERCLIP_VERCEL_CONNECT_ENABLED=true` does not expose a customer-facing setup
+entry. Native provider setup screens remain unchanged. Vercel-hosted deployments use the
+workload OIDC token Vercel injects. Other hosted and self-hosted deployments
+can provide `PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN` as a deployment bootstrap
+secret only when that token type is accepted by the live Connect API:
+
+```yaml
+services:
+  paperclip:
+    environment:
+      PAPERCLIP_VERCEL_CONNECT_ENABLED: "true"
+      PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN: ${PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN}
+```
+
+Do not save that access token in a company secret or connection config. It is
+instance bootstrap authority for the operator-selected Vercel account. A token's
+long expiry and broad Vercel scope do not prove Connect compatibility; validate
+it with connector metadata before rollout. Workload OIDC takes precedence when
+both authorities are present. Turning the feature flag off hides new
+Vercel-backed setup; existing connections keep resolving while workload OIDC or
+the bootstrap token remains available. Missing or invalid authority fails
+closed. See the [Vercel Connect operator guide](./connections/VERCEL-CONNECT.md).
 
 ## Claude + Codex Local Adapters in Docker
 
@@ -259,9 +330,33 @@ Notes:
 - In authenticated mode, the smoke script defaults `SMOKE_AUTO_BOOTSTRAP=true` and drives the real bootstrap path automatically: it signs up a real user, runs `paperclipai auth bootstrap-ceo` inside the container to mint a real bootstrap invite, accepts that invite over HTTP, and verifies board session access.
 - Run the script in the foreground to watch the onboarding flow; stop with `Ctrl+C` after validation.
 - Set `SMOKE_DETACH=true` to leave the container running for automation and optionally write shell-ready metadata to `SMOKE_METADATA_FILE`.
+- Set `SMOKE_CONTAINER_NAME` to fix the container's name up front. Automation that has to collect diagnostics when the script *fails* needs a name it already knows, rather than one it can only read back out of a successful run. Defaults to the image name.
+- The container's logs are dumped to `SMOKE_LOG_FILE` (default `$TMPDIR/<container name>.log`) before the script tears the container down, so a run that never became ready still leaves its logs behind.
 - The image definition is in `docker/Dockerfile.onboard-smoke`.
 
 ## General Notes
 
 - The `docker-entrypoint.sh` adjusts the container `node` user UID/GID at startup to match the values passed via `USER_UID`/`USER_GID`, avoiding permission issues on bind-mounted volumes.
 - Paperclip data persists via Docker volumes/bind mounts (compose) or at `~/.local/share/paperclip` (quadlet).
+
+## Native Runner build cache
+
+The image compiles the native Runner in `runner-build`, before copying the
+application source. That stage includes the pinned Rust compiler, the complete
+Cargo workspace and lockfile, and the protocol schemas and fixtures embedded
+by Rust. Changes to those inputs rebuild the native binary. Ordinary server or
+UI changes can reuse it through the existing registry cache (`mode=max`). Each
+platform gets its own native build; no cross-architecture binary is reused.
+
+The application build inherits that stage and still runs the normal server
+build, including Cargo, binary staging, and generated-contract checks. Rust
+input file times are normalized in both stages so fresh checkouts do not force
+Cargo to rebuild unchanged source. Changes made by build scripts still reach
+Cargo's normal validation. The final application copy excludes Cargo's target
+directory as before. Cache misses only cost compilation time.
+
+Pull requests that change the Dockerfile, Docker ignore rules, or Runner native
+inputs also build the isolated `runner-build` target in `Docker Runner check`.
+This compiles against the actual reduced context and catches missing embedded
+inputs before the post-merge image build. It uses a GitHub-hosted runner with
+read-only repository access and does not publish images or cache artifacts.

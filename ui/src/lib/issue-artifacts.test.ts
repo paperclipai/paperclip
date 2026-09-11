@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { IssueAttachment, IssueWorkProduct } from "@paperclipai/shared";
 import {
   documentDisplayTitle,
+  getAttachmentBackedWorkProductAttachmentIds,
   isAgentAttachment,
   selectAgentArtifactAttachments,
   workProductHref,
@@ -111,6 +112,54 @@ describe("selectAgentArtifactAttachments", () => {
 
   it("tolerates missing inputs", () => {
     expect(selectAgentArtifactAttachments(null, null)).toEqual([]);
+  });
+
+  it("dedupes markdown attachments promoted to work products", () => {
+    // Markdown is excluded from the binary Output surface, so this dedupe must
+    // not depend on getPromotedOutputAttachmentIds (LOOA-1533 duplicate rows).
+    const promotedId = "00000000-0000-4000-8000-000000000002";
+    const promoted = makeAttachment({
+      id: promotedId,
+      createdByAgentId: "agent-1",
+      contentType: "text/markdown",
+      originalFilename: "report.md",
+    });
+    const workProduct = makePromotingWorkProduct(promotedId);
+    workProduct.metadata = {
+      ...(workProduct.metadata as Record<string, unknown>),
+      contentType: "text/markdown",
+      originalFilename: "report.md",
+    };
+    expect(selectAgentArtifactAttachments([promoted], [workProduct])).toEqual([]);
+  });
+});
+
+describe("getAttachmentBackedWorkProductAttachmentIds", () => {
+  it("collects attachment ids across content types", () => {
+    const imageId = "00000000-0000-4000-8000-000000000001";
+    const markdownId = "00000000-0000-4000-8000-000000000002";
+    const markdownWorkProduct = makePromotingWorkProduct(markdownId);
+    markdownWorkProduct.metadata = {
+      ...(markdownWorkProduct.metadata as Record<string, unknown>),
+      contentType: "text/markdown",
+      originalFilename: "report.md",
+    };
+    const ids = getAttachmentBackedWorkProductAttachmentIds([
+      makePromotingWorkProduct(imageId),
+      markdownWorkProduct,
+    ]);
+    expect(ids).toEqual(new Set([imageId, markdownId]));
+  });
+
+  it("ignores non-canonical or non-paperclip work products", () => {
+    const attachmentId = "00000000-0000-4000-8000-000000000003";
+    const foreign = { ...makePromotingWorkProduct(attachmentId), provider: "github" };
+    const invalid = {
+      ...makePromotingWorkProduct(attachmentId),
+      metadata: { attachmentId, openPath: "https://evil.example/content" },
+    };
+    expect(getAttachmentBackedWorkProductAttachmentIds([foreign, invalid])).toEqual(new Set());
+    expect(getAttachmentBackedWorkProductAttachmentIds(null)).toEqual(new Set());
   });
 });
 

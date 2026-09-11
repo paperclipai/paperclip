@@ -4,6 +4,13 @@ import path from "node:path";
 
 const effortFlagSupportCache = new Map<string, Promise<boolean | null>>();
 
+export const CLAUDE_FABLE_5_1_MIN_CLI_VERSION = "2.1.251";
+
+const CLAUDE_FABLE_5_1_MODEL_IDS = new Set([
+  "claude-fable-5-1",
+  "us.anthropic.claude-fable-5-1",
+]);
+
 export function claudeCommandLooksLike(command: string, expected = "claude"): boolean {
   const base = path.basename(command).toLowerCase();
   return base === expected || base === `${expected}.cmd` || base === `${expected}.exe`;
@@ -31,6 +38,78 @@ function cacheKeyForTarget(command: string, target: AdapterExecutionTarget | nul
     target.spec.username ?? "",
     command,
   ].join(":");
+}
+
+export function minimumClaudeCliVersionForModel(model: string): string | null {
+  return CLAUDE_FABLE_5_1_MODEL_IDS.has(model.trim())
+    ? CLAUDE_FABLE_5_1_MIN_CLI_VERSION
+    : null;
+}
+
+export function parseClaudeCliVersion(output: string): string | null {
+  return output.match(/\b(\d+)\.(\d+)\.(\d+)\b/)?.[0] ?? null;
+}
+
+export function claudeCliVersionAtLeast(version: string, minimum: string): boolean {
+  const parsedVersion = version.split(".").map(Number);
+  const parsedMinimum = minimum.split(".").map(Number);
+  if (
+    parsedVersion.length !== 3 ||
+    parsedMinimum.length !== 3 ||
+    parsedVersion.some((part) => !Number.isInteger(part) || part < 0) ||
+    parsedMinimum.some((part) => !Number.isInteger(part) || part < 0)
+  ) {
+    return false;
+  }
+
+  for (let index = 0; index < parsedMinimum.length; index += 1) {
+    if (parsedVersion[index] !== parsedMinimum[index]) {
+      return parsedVersion[index] > parsedMinimum[index];
+    }
+  }
+  return true;
+}
+
+async function probeClaudeCommandVersion(input: {
+  runId: string;
+  command: string;
+  target: AdapterExecutionTarget | null | undefined;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec: number;
+  graceSec: number;
+}): Promise<string | null> {
+  const version = await runAdapterExecutionTargetProcess(
+    input.runId,
+    input.target,
+    input.command,
+    ["--version"],
+    {
+      cwd: input.cwd,
+      env: input.env,
+      timeoutSec: Math.max(1, Math.min(input.timeoutSec, 20)),
+      graceSec: Math.max(1, Math.min(input.graceSec, 5)),
+      onLog: async () => {},
+    },
+  );
+
+  if (version.timedOut || version.exitCode !== 0) return null;
+  return parseClaudeCliVersion(`${version.stdout}\n${version.stderr}`);
+}
+
+export async function readClaudeCommandVersion(input: {
+  runId: string;
+  command: string;
+  target: AdapterExecutionTarget | null | undefined;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec: number;
+  graceSec: number;
+}): Promise<string | null> {
+  // Do not cache this probe: an operator may upgrade Claude Code while the
+  // Paperclip server is running, and the next Test/run should recover without
+  // requiring a server restart.
+  return probeClaudeCommandVersion(input).catch(() => null);
 }
 
 async function probeClaudeCommandSupportsEffortFlag(input: {

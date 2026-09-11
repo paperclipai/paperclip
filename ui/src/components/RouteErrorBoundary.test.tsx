@@ -7,10 +7,15 @@ import { RouteErrorBoundary } from "./RouteErrorBoundary";
 
 const navigateMock = vi.hoisted(() => vi.fn());
 const routerLocation = vi.hoisted(() => ({ current: { pathname: "/co/agents/new", search: "?adapterType=claude_local" } }));
+const captureBrowserExceptionMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/router", () => ({
   useLocation: () => routerLocation.current,
   useNavigate: () => navigateMock,
+}));
+
+vi.mock("@/lib/sentry", () => ({
+  captureBrowserException: (error: unknown) => captureBrowserExceptionMock(error),
 }));
 
 function Boom(): never {
@@ -33,6 +38,30 @@ describe("RouteErrorBoundary", () => {
   afterEach(() => {
     consoleErrorSpy.mockRestore();
     container.remove();
+    captureBrowserExceptionMock.mockClear();
+  });
+
+  it("reports one captured error and keeps the recovery button", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <RouteErrorBoundary>
+          <Boom />
+        </RouteErrorBoundary>,
+      );
+    });
+
+    expect(captureBrowserExceptionMock).toHaveBeenCalledTimes(1);
+    expect(captureBrowserExceptionMock).toHaveBeenCalledWith(expect.any(Error));
+    expect(
+      Array.from(container.querySelectorAll("button")).some(
+        (button) => button.textContent === "Go back",
+      ),
+    ).toBe(true);
+
+    act(() => {
+      root.unmount();
+    });
   });
 
   it("renders a recoverable error card instead of a blank page when a child throws", () => {

@@ -30,11 +30,11 @@ import {
   Check,
   ChevronRight,
   Download,
-  Github,
   Loader2,
   Package,
   Upload,
 } from "lucide-react";
+import { GithubIcon } from "../components/icons/github-icon";
 import { Field, adapterLabels } from "../components/agent-config-primitives";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
 import { defaultCreateValues } from "../components/agent-config-defaults";
@@ -52,7 +52,7 @@ import {
 } from "../components/FileTree";
 import { readZipArchive } from "../lib/zip";
 import { formatMegabytes } from "../lib/import-preflight";
-import type { CompanyImportTransferDeclaration } from "@paperclipai/shared/company-import-transfer";
+import { buildAlreadyImportedMessage, type CompanyImportTransferDeclaration } from "@paperclipai/shared/company-import-transfer";
 import {
   CHUNKED_IMPORT_THRESHOLD_BYTES,
   IMPORT_TRANSFER_PART_ATTEMPTS,
@@ -556,6 +556,7 @@ function ConflictResolutionList({
 
 // ── Adapter type options for import ───────────────────────────────────
 
+const FALLBACK_IMPORT_ADAPTER_TYPE = "claude_local";
 const IMPORT_ADAPTER_OPTIONS: { value: string; label: string }[] = listUIAdapters().map((adapter) => ({
   value: adapter.type,
   label: adapterLabels[adapter.type] ?? getAdapterLabel(adapter.type),
@@ -572,13 +573,14 @@ interface AdapterPickerItem {
    * Set when the manifest adapter is not installed on the destination: the
    * adapter type the agent falls back to unless the user picks another one.
    * Null when the manifest adapter is usable here (or availability is unknown,
-   * which fails open to the manifest adapter).
+   * which fails open to the manifest adapter except for native runner).
    */
   fallbackAdapterType: string | null;
 }
 
 function AdapterPickerList({
   agents,
+  adapterOptions,
   adapterOverrides,
   expandedSlugs,
   configValues,
@@ -587,6 +589,7 @@ function AdapterPickerList({
   onChangeConfig,
 }: {
   agents: AdapterPickerItem[];
+  adapterOptions: { value: string; label: string }[];
   adapterOverrides: Record<string, string>;
   expandedSlugs: Set<string>;
   configValues: Record<string, CreateConfigValues>;
@@ -630,7 +633,7 @@ function AdapterPickerList({
                     value={selectedType}
                     onChange={(e) => onChangeAdapter(agent.slug, e.target.value)}
                   >
-                    {IMPORT_ADAPTER_OPTIONS.map((opt) => (
+                    {adapterOptions.map((opt) => (
                       <option key={opt.value} value={opt.value}>
                         {opt.label}
                       </option>
@@ -697,7 +700,7 @@ async function readLocalPackageZip(file: File): Promise<{
   files: Record<string, CompanyPortabilityFileEntry>;
 }> {
   if (!/\.zip$/i.test(file.name)) {
-    throw new Error("Select a .zip company package.");
+    throw new Error("Select a .zip organization package.");
   }
   const archive = await readZipArchive(await file.arrayBuffer());
   if (Object.keys(archive.files).length === 0) {
@@ -899,7 +902,12 @@ export function CompanyImport() {
         dashboardPath: string;
         pausedAutomations: boolean;
       }
-    | { kind: "expired" }
+    | {
+        kind: "expired";
+        companyName: string | null;
+        dashboardPath: string | null;
+        pausedAutomations: boolean;
+      }
     | null
   >(null);
   const [activationChecked, setActivationChecked] = useState<Set<string>>(new Set());
@@ -939,10 +947,10 @@ export function CompanyImport() {
     const created = await companiesApi.importTransferCreate(manifest);
     if (created.alreadyCompleted) {
       // The server keys transfers by content, and this exact zip already
-      // finished an apply — its parts are gone, so it cannot be re-run.
-      throw new Error(
-        "This exact package was already imported by a completed transfer. Re-export the package to import it again.",
-      );
+      // finished an apply — its parts are gone, so it cannot be re-run. Name
+      // the company that apply created so this reads as "your import exists
+      // over there", not as data loss.
+      throw new Error(buildAlreadyImportedMessage(created.company));
     }
     const missing = new Set(created.missingParts);
     let uploadedParts = manifest.parts.length - missing.size;
@@ -1020,6 +1028,18 @@ export function CompanyImport() {
     if (!installedAdapters) return null;
     return new Set(installedAdapters.filter((a) => !a.disabled).map((a) => a.type));
   }, [installedAdapters]);
+  // Native runner is the one adapter that fails closed in the importer. Other
+  // adapter choices preserve the importer's existing fail-open behavior when
+  // availability cannot be read, but Paperclip Runner only appears after the
+  // server explicitly reports that its experimental flag is enabled.
+  const nativeRunnerAvailable =
+    availableAdapterTypes?.has("paperclip_runner") === true;
+  const importAdapterOptions = useMemo(
+    () => IMPORT_ADAPTER_OPTIONS.filter(
+      (option) => option.value !== "paperclip_runner" || nativeRunnerAvailable,
+    ),
+    [nativeRunnerAvailable],
+  );
 
   const localZipHelpText =
     "Upload a .zip exported directly from Paperclip. Re-zipped archives created by Finder, Explorer, or other zip tools may not import correctly.";
@@ -1243,22 +1263,32 @@ export function CompanyImport() {
       if (outcome.status === "completed-expired") {
         // The import finished and wrote all its data, but the job's result
         // expired (or was never retained) before we could read it. This is a
-        // success, not a failure: surface it gently and let the refreshed
-        // switcher carry the user into the new company.
+        // success, not a failure: keep the landed company's identity so the
+        // outcome screen can take the user straight there instead of leaving
+        // them to hunt through the switcher.
+        let expiredCompanyName: string | null = null;
+        let expiredDashboardPath: string | null = null;
         if (outcome.companyId) {
           try {
             const importedCompany = await companiesApi.get(outcome.companyId);
             setSelectedCompanyId(importedCompany.id);
+            expiredCompanyName = importedCompany.name;
+            expiredDashboardPath = `/${importedCompany.issuePrefix}/dashboard`;
           } catch {
             // The company id may be unreadable (permissions, race); the
             // refreshed company list still surfaces the import.
           }
         }
-        setImportOutcome({ kind: "expired" });
+        setImportOutcome({
+          kind: "expired",
+          companyName: expiredCompanyName,
+          dashboardPath: expiredDashboardPath,
+          pausedAutomations: submittedPauseAutomations,
+        });
         pushToast({
           tone: "success",
           title: "Import completed",
-          body: "Open the company to view it.",
+          body: "Open the organization to view it.",
         });
         return;
       }
@@ -1558,21 +1588,34 @@ export function CompanyImport() {
   // CEO's adapter; while availability is unknown the manifest adapter stands.
   const adapterAgents = useMemo<AdapterPickerItem[]>(() => {
     if (!importPreview) return [];
-    return importPreview.manifest.agents.map((a) => ({
-      slug: a.slug,
-      name: a.name,
-      adapterType: a.adapterType,
-      // The fallback must itself be installed: the CEO's adapter when it is,
-      // else any installed adapter, else null so the manifest adapter stands
-      // and the server's unknown-adapter rejection is the backstop.
-      fallbackAdapterType:
-        availableAdapterTypes && !availableAdapterTypes.has(a.adapterType)
-          ? availableAdapterTypes.has(ceoAdapterType)
+    return importPreview.manifest.agents.map((a) => {
+      let fallbackAdapterType: string | null = null;
+      if (a.adapterType === "paperclip_runner" && !nativeRunnerAvailable) {
+        const firstEnabledLegacyAdapter = availableAdapterTypes
+          ? [...availableAdapterTypes].find((type) => type !== "paperclip_runner") ?? null
+          : null;
+        fallbackAdapterType =
+          ceoAdapterType !== "paperclip_runner" &&
+          (!availableAdapterTypes || availableAdapterTypes.has(ceoAdapterType))
             ? ceoAdapterType
-            : [...availableAdapterTypes][0] ?? null
-          : null,
-    }));
-  }, [importPreview, availableAdapterTypes, ceoAdapterType]);
+            : firstEnabledLegacyAdapter ?? FALLBACK_IMPORT_ADAPTER_TYPE;
+      } else if (availableAdapterTypes && !availableAdapterTypes.has(a.adapterType)) {
+        // The fallback must itself be installed: the CEO's adapter when it is,
+        // else any installed adapter, else null so the manifest adapter stands
+        // and the server's unknown-adapter rejection is the backstop.
+        fallbackAdapterType = availableAdapterTypes.has(ceoAdapterType)
+          ? ceoAdapterType
+          : [...availableAdapterTypes][0] ?? null;
+      }
+
+      return {
+        slug: a.slug,
+        name: a.name,
+        adapterType: a.adapterType,
+        fallbackAdapterType,
+      };
+    });
+  }, [importPreview, availableAdapterTypes, ceoAdapterType, nativeRunnerAvailable]);
 
   /** The adapter type an imported agent will actually use: an explicit user pick, else the availability fallback, else the manifest adapter. */
   function effectiveAdapterType(agent: AdapterPickerItem): string {
@@ -1619,16 +1662,37 @@ export function CompanyImport() {
     // Soft success: the import finished and wrote all its data, but the job's
     // in-memory result expired before we could read it. Never a failure — the
     // company list has been refreshed, so the imported company is available
-    // from the switcher.
+    // from the switcher, and when we could read the company we take the user
+    // straight to it.
     return (
-      <div className="px-5 py-5 space-y-4">
+      <div className="max-w-6xl space-y-4 px-5 py-5">
         <div>
           <h2 className="text-base font-semibold">Import completed</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            The import finished and your company is ready. Its detailed summary is no
-            longer available, but the company has been added — open it to view it.
+            {importOutcome.companyName
+              ? <>The import finished and <span className="font-medium text-foreground">{importOutcome.companyName}</span> is ready. Its detailed summary is no longer available.</>
+              : "The import finished and your organization is ready. Its detailed summary is no longer available, but the organization has been added — select it from the organization switcher to view it."}
           </p>
+          {importOutcome.pausedAutomations ? (
+            <p className="text-xs text-muted-foreground mt-1">
+              Imported agents arrived paused — resume them from the company's Agents page so assigned tasks can start.
+            </p>
+          ) : null}
         </div>
+        {importOutcome.dashboardPath ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              data-testid="import-expired-open-company"
+              // Force a fresh dashboard load so newly imported agents are
+              // immediately visible (same reason as the full-outcome CTA).
+              onClick={() => window.location.assign(importOutcome.dashboardPath!)}
+            >
+              Open organization dashboard
+            </Button>
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -1641,7 +1705,7 @@ export function CompanyImport() {
       (item) => activationChecked.has(item.key) && !activatedKeys.has(item.key),
     ).length;
     return (
-      <div className="px-5 py-5 space-y-4">
+      <div className="max-w-6xl space-y-4 px-5 py-5">
         <div>
           <h2 className="text-base font-semibold">Import complete</h2>
           <p className="text-xs text-muted-foreground mt-1">
@@ -1730,6 +1794,12 @@ export function CompanyImport() {
           </div>
         )}
 
+        {importOutcome.pausedAutomations ? (
+          <p className="text-xs text-muted-foreground">
+            Anything left paused here stays visible on the company's Agents and Routines pages, which offer the same resume actions — nothing is lost if you leave this page.
+          </p>
+        ) : null}
+
         {/* Force a fresh dashboard load so newly imported agents are immediately visible. */}
         <div className="flex flex-wrap items-center gap-2">
           <Button
@@ -1749,7 +1819,7 @@ export function CompanyImport() {
   // outcome above; failure returns to the form with an error toast).
   if (resumedWatchJobId) {
     return (
-      <div className="px-5 py-5 space-y-4">
+      <div className="max-w-6xl space-y-4 px-5 py-5">
         <div>
           <h2 className="text-base font-semibold">Resume watching import</h2>
           <p className="text-xs text-muted-foreground mt-1">
@@ -1767,11 +1837,11 @@ export function CompanyImport() {
   }
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Download} message="Select a company to import into." />;
+    return <EmptyState icon={Download} message="Select an organization to import into." />;
   }
 
   return (
-    <div>
+    <div className="max-w-6xl">
       {/* Source form section */}
       <div className="border-b border-border px-5 py-5 space-y-4">
         <div>
@@ -1784,7 +1854,7 @@ export function CompanyImport() {
         <div className="grid gap-2 md:grid-cols-2">
           {(
             [
-              { key: "github", icon: Github, label: "GitHub repo" },
+              { key: "github", icon: GithubIcon, label: "GitHub repo" },
               { key: "local", icon: Upload, label: "Local zip" },
             ] as const
           ).map(({ key, icon: Icon, label }) => (
@@ -1864,7 +1934,7 @@ export function CompanyImport() {
           </Field>
         )}
 
-        <Field label="Target" hint="Import into this company or create a new one.">
+        <Field label="Target" hint="Import into this organization or create a new one.">
           <select
             className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
             value={targetMode}
@@ -1874,7 +1944,7 @@ export function CompanyImport() {
               resetImportFlowState();
             }}
           >
-            <option value="new">Create new company</option>
+            <option value="new">Create new organization</option>
             <option value="existing">
               Existing company: {selectedCompany?.name}
             </option>
@@ -1883,7 +1953,7 @@ export function CompanyImport() {
 
         {targetMode === "new" && (
           <Field
-            label="New company name"
+            label="New organization name"
             hint="Optional override. Leave blank to use the package name."
           >
             <input
@@ -1894,14 +1964,14 @@ export function CompanyImport() {
                 setNewCompanyName(e.target.value);
                 resetMutationState();
               }}
-              placeholder="Imported Company"
+              placeholder="Imported Organization"
             />
           </Field>
         )}
 
         <Field
           label="Collision strategy"
-          hint="Board imports can rename, skip, or replace matching company content."
+          hint="Board imports can rename, skip, or replace matching organization content."
         >
           <select
             className="w-full rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
@@ -2006,6 +2076,7 @@ export function CompanyImport() {
           {/* Adapter picker list */}
           <AdapterPickerList
             agents={adapterAgents}
+            adapterOptions={importAdapterOptions}
             adapterOverrides={adapterOverrides}
             expandedSlugs={adapterExpandedSlugs}
             configValues={adapterConfigValues}

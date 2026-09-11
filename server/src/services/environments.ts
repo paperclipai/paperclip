@@ -30,7 +30,7 @@ import {
   type EnvironmentLeaseStatus,
   type UpdateEnvironment,
 } from "@paperclipai/shared";
-import { conflict } from "../errors.js";
+import { conflict, forbidden } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
 import {
@@ -105,6 +105,18 @@ export interface ManagedSandboxEnvironmentInput {
   extraMetadata?: Record<string, unknown>;
   /** Version label recorded with the stock binding; hashes remain the drift authority. */
   stockVersion?: string;
+  /**
+   * Asserts the caller's deployment gives no operator any path to hand-edit
+   * this row (currently only true for the PAPERCLIP_MANAGED_CONFIG applier,
+   * where `enableManagedSandboxOnly` removes the tenant's own environment
+   * choice entirely). When set, a plain content-hash mismatch against a real
+   * prior binding is treated as ordinary stock drift instead of an operator
+   * customization to protect — see the `operator_modified` handling below.
+   * Leave unset for any caller (self-hosted `kubernetes-execution-mode`
+   * bootstrap, tests, admin routes) where an operator could realistically
+   * have edited the row through the normal environments UI/API.
+   */
+  platformFullyManaged?: boolean;
 }
 
 export type ManagedSandboxEnvironmentReconcileAction =
@@ -347,6 +359,24 @@ export function environmentService(db: Db) {
           ? [input.companyId]
           : await tx.select({ id: companies.id }).from(companies).then((rows) => rows.map((row) => row.id));
         activityCompanyIds = companyIds;
+
+        // Take the sandbox-row lock BEFORE reading the stock bindings. Two
+        // passes can reconcile the same slot concurrently (the boot ensure and
+        // the async provider-recovery reactivation, or two app builds during a
+        // rolling deploy). Concurrent passes serialize on this lock, and under
+        // READ COMMITTED each later statement sees a fresh snapshot — so a pass
+        // that blocks here then reads the bindings the winning pass committed,
+        // not a snapshot from before it waited. Reading bindings first left a
+        // window where a waiting pass compared the winner's fresh row against
+        // its own stale binding hash, misclassified the mismatch as
+        // `operator_modified`, and — once `platformFullyManaged` turns that
+        // into an update — rolled the row back to its own older stock.
+        const sandboxRows = await tx
+          .select()
+          .from(environments)
+          .where(eq(environments.driver, "sandbox"))
+          .for("update");
+
         const bindingConditions = and(
           eq(builtInManagedResources.bundleKey, MANAGED_ENVIRONMENT_BUNDLE_KEY),
           eq(builtInManagedResources.resourceKind, MANAGED_ENVIRONMENT_RESOURCE_KIND),
@@ -359,11 +389,6 @@ export function environmentService(db: Db) {
         trackingInitialized = bindings.length < companyIds.length;
         const keys = managedMetadataKeys(desiredMetadata, bindings);
 
-        const sandboxRows = await tx
-          .select()
-          .from(environments)
-          .where(eq(environments.driver, "sandbox"))
-          .for("update");
         let row = sandboxRows.find(
           (candidate) => (candidate.metadata as Record<string, unknown> | null)?.managedByPaperclip === true,
         ) ?? sandboxRows.find((candidate) => candidate.name === input.name) ?? null;
@@ -539,6 +564,39 @@ export function environmentService(db: Db) {
           },
         );
         if (operatorReaffirmedArchive) stockStatus = "operator_modified";
+
+        // `platformFullyManaged` callers (currently: the PAPERCLIP_MANAGED_CONFIG
+        // applier) assert that nothing in their deployment can hand-edit this
+        // row — the product gives a cloud-harness tenant no path to it, unlike
+        // the general self-hosted contract this function otherwise protects
+        // (see "classifies operator drift" in environment-service.test.ts,
+        // which exercises a real operator edit and must keep winning). Under
+        // that assertion, a plain content-hash mismatch against a real prior
+        // binding can only be drift between two platform-driven reconciliation
+        // passes (e.g. a stock hash recorded by an older app build before a
+        // later stock field was added), never a customization to protect —
+        // apply it like any other stock-outdated row.
+        //
+        // Two things the bypass must never touch:
+        // - A row with NO matching binding. `row` can be a same-name sandbox
+        //   row that was never Paperclip-managed (the fallback lookup above).
+        //   It also reads as `operator_modified`, but there is no prior
+        //   platform pass to have drifted from — adopting it would overwrite
+        //   a tenant-created environment and stamp it managed. Require a
+        //   binding for this exact row, so "prior binding" is enforced, not
+        //   just documented.
+        // - Archive-reaffirmation. A `sandbox_image` update must never
+        //   resurrect a row something else deliberately kept archived after
+        //   Paperclip's own provider-unavailability archival, so that path
+        //   still skips below regardless of this flag.
+        if (
+          input.platformFullyManaged &&
+          stockStatus === "operator_modified" &&
+          !operatorReaffirmedArchive &&
+          matchingBindings.length > 0
+        ) {
+          stockStatus = "stock_update_available";
+        }
 
         if (stockStatus === "operator_modified") {
           const baseline = matchingBindings[0];
@@ -822,6 +880,26 @@ export function environmentService(db: Db) {
       return row ? toEnvironment(row) : null;
     },
 
+    /**
+     * List the companies that own an environment through a built-in managed
+     * resource binding. A managed sandbox row binds to each company that the
+     * instance provisions it for. An operator-created environment has no
+     * binding, so this returns an empty list. The caller treats an empty list
+     * as an instance-global environment with no company owner.
+     */
+    listBoundCompanyIds: async (environmentId: string): Promise<string[]> => {
+      const rows = await db
+        .select({ companyId: builtInManagedResources.companyId })
+        .from(builtInManagedResources)
+        .where(
+          and(
+            eq(builtInManagedResources.resourceKind, MANAGED_ENVIRONMENT_RESOURCE_KIND),
+            eq(builtInManagedResources.resourceId, environmentId),
+          ),
+        );
+      return Array.from(new Set(rows.map((row) => row.companyId)));
+    },
+
     getLeaseById: async (id: string): Promise<EnvironmentLease | null> => {
       const row = await db
         .select()
@@ -1089,11 +1167,54 @@ export function environmentService(db: Db) {
               select 1 from ${instanceSettings}
               where ${instanceSettings.defaultEnvironmentId} = ${environments.id}
             )`,
+            // A `pending_cleanup` lease is the durable teardown reference for an
+            // orphan sandbox. The environment foreign key uses
+            // `on delete set null`, so a delete keeps the lease row but drops its
+            // environment reference. This predicate refuses the delete while such
+            // a lease exists, so the operator resolves the cleanup first and the
+            // lease keeps its environment link. It runs in the same statement as
+            // the delete, so it also closes the check-to-delete race.
+            sql`not exists (
+              select 1 from ${environmentLeases}
+              where ${environmentLeases.environmentId} = ${environments.id}
+                and ${environmentLeases.status} = 'pending_cleanup'
+            )`,
+            // A reusable lease keeps a live provider sandbox after a run
+            // releases it. Deleting the environment would set its reference to
+            // null, and both the normal release path and scoped reusable cleanup
+            // require that environment context. Refuse the delete atomically
+            // until the owning issue/workspace destroys the reusable sandbox.
+            sql`not exists (
+              select 1 from ${environmentLeases}
+              where ${environmentLeases.environmentId} = ${environments.id}
+                and ${environmentLeases.leasePolicy} = 'reuse_by_environment'
+                and ${environmentLeases.status} in ('active', 'released', 'retained')
+            )`,
           ),
         )
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toEnvironment(row) : null;
+    },
+
+    /**
+     * Return true when the environment has one or more leases in the terminal
+     * `pending_cleanup` state. Each such lease is the only durable provider
+     * reference for an orphan sandbox that a teardown retry must destroy. The
+     * delete guard and the provider-change guard call this to protect that
+     * reference.
+     */
+    hasUnresolvedPendingCleanupLeases: async (environmentId: string): Promise<boolean> => {
+      const rows = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(environmentLeases)
+        .where(
+          and(
+            eq(environmentLeases.environmentId, environmentId),
+            eq(environmentLeases.status, "pending_cleanup"),
+          ),
+        );
+      return countFromRows(rows) > 0;
     },
 
     getDeleteBlastRadius: async (id: string): Promise<EnvironmentDeleteBlastRadius | null> => {
@@ -1115,6 +1236,8 @@ export function environmentService(db: Db) {
         projectRows,
         secretBindingRows,
         activeLeaseRows,
+        pendingCleanupLeaseRows,
+        reusableSandboxLeaseRows,
         activeSetupRows,
       ] = await Promise.all([
         db
@@ -1157,6 +1280,34 @@ export function environmentService(db: Db) {
           ),
         db
           .select({ count: sql<number>`count(*)::int` })
+          .from(environmentLeases)
+          .where(
+            and(
+              eq(environmentLeases.environmentId, id),
+              eq(environmentLeases.status, "pending_cleanup"),
+            ),
+          ),
+        db
+          .select({
+            leaseId: environmentLeases.id,
+            executionWorkspaceId: environmentLeases.executionWorkspaceId,
+            executionWorkspaceName: executionWorkspaces.name,
+            issueId: environmentLeases.issueId,
+            issueIdentifier: issues.identifier,
+            issueTitle: issues.title,
+          })
+          .from(environmentLeases)
+          .leftJoin(executionWorkspaces, eq(environmentLeases.executionWorkspaceId, executionWorkspaces.id))
+          .leftJoin(issues, eq(environmentLeases.issueId, issues.id))
+          .where(
+            and(
+              eq(environmentLeases.environmentId, id),
+              eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+              inArray(environmentLeases.status, ["active", "released", "retained"]),
+            ),
+          ),
+        db
+          .select({ count: sql<number>`count(*)::int` })
           .from(environmentCustomImageSetupSessions)
           .where(
             and(
@@ -1168,9 +1319,26 @@ export function environmentService(db: Db) {
 
       const isManagedLocal = environment.driver === "local";
       const isInstanceDefault = countFromRows(instanceDefaultRows) > 0;
+      const pendingCleanupLeaseCount = countFromRows(pendingCleanupLeaseRows);
+      const reusableSandboxLeaseHolders = reusableSandboxLeaseRows.map((row) => ({
+        leaseId: row.leaseId,
+        executionWorkspaceId: row.executionWorkspaceId,
+        executionWorkspaceName: row.executionWorkspaceName,
+        issueId: row.issueId,
+        issueIdentifier: row.issueIdentifier,
+        issueTitle: row.issueTitle,
+      }));
+      const reusableSandboxLeaseCount = reusableSandboxLeaseHolders.length;
       const deleteBlockedReasons: EnvironmentDeleteBlockedReason[] = [];
       if (isManagedLocal) deleteBlockedReasons.push("managed_local");
       if (isInstanceDefault) deleteBlockedReasons.push("instance_default");
+      // A `pending_cleanup` lease is the durable teardown reference for an orphan
+      // sandbox. The environment foreign key uses `on delete set null`, so a
+      // delete keeps the lease but drops its environment reference. Block the
+      // delete until the sweep resolves the lease, so the operator resolves the
+      // cleanup first and the lease keeps its environment link.
+      if (pendingCleanupLeaseCount > 0) deleteBlockedReasons.push("pending_sandbox_cleanup");
+      if (reusableSandboxLeaseCount > 0) deleteBlockedReasons.push("reusable_sandbox_lease");
       const activeLeaseCount = countFromRows(activeLeaseRows);
       const activeCustomImageSetupSessionCount = countFromRows(activeSetupRows);
 
@@ -1178,6 +1346,9 @@ export function environmentService(db: Db) {
         environmentId: id,
         canDelete: deleteBlockedReasons.length === 0,
         deleteBlockedReasons,
+        pendingCleanupLeaseCount,
+        reusableSandboxLeaseCount,
+        reusableSandboxLeaseHolders,
         staticReferences: {
           isManagedLocal,
           isInstanceDefault,
@@ -1222,32 +1393,216 @@ export function environmentService(db: Db) {
       providerLeaseId?: string | null;
       expiresAt?: Date | null;
       metadata?: Record<string, unknown> | null;
+      /**
+       * Atomically retire the previous database ownership record when this
+       * acquisition reuses the same provider resource for a new run. The
+       * provider resume happens before this write, so a failed transaction
+       * leaves the prior retained row recoverable instead of publishing two
+       * reusable owners for one sandbox.
+       */
+      replacesReusableLeaseId?: string | null;
+      /**
+       * Reactivate the exact lease row already owned by this heartbeat run.
+       * Native same-run recovery re-enters environment startup after the
+       * provider process is interrupted; it must not manufacture a second
+       * database owner for the same run and provider resource.
+       */
+      reusesReusableLeaseId?: string | null;
+      /**
+       * Re-check the environment company binding inside the lease insert
+       * transaction. The login routes set this to close the check-to-lease
+       * race: managed reconciliation can bind a sandbox to another company
+       * between the route guard and this acquire. When the environment is
+       * bound to a company other than `companyId`, the insert throws the 403
+       * `environment_company_mismatch` and no lease row is created (fail
+       * closed). An unbound (instance-global) environment stays open to every
+       * member. All other callers keep the plain, non-transactional insert.
+       */
+      assertCompanyBinding?: boolean;
     }): Promise<EnvironmentLease> => {
       const now = new Date();
-      const row = await db
-        .insert(environmentLeases)
-        .values({
-          companyId: input.companyId,
-          environmentId: input.environmentId,
-          executionWorkspaceId: input.executionWorkspaceId ?? null,
-          issueId: input.issueId ?? null,
-          heartbeatRunId: input.heartbeatRunId ?? null,
-          status: "active",
-          leasePolicy: input.leasePolicy ?? "ephemeral",
-          provider: input.provider ?? null,
-          providerLeaseId: input.providerLeaseId ?? null,
-          acquiredAt: now,
-          lastUsedAt: now,
-          expiresAt: input.expiresAt ?? null,
-          releasedAt: null,
-          failureReason: null,
-          cleanupStatus: null,
-          metadata: input.metadata ?? null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const values = {
+        companyId: input.companyId,
+        environmentId: input.environmentId,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+        issueId: input.issueId ?? null,
+        heartbeatRunId: input.heartbeatRunId ?? null,
+        status: "active" as const,
+        leasePolicy: input.leasePolicy ?? "ephemeral",
+        provider: input.provider ?? null,
+        providerLeaseId: input.providerLeaseId ?? null,
+        acquiredAt: now,
+        lastUsedAt: now,
+        expiresAt: input.expiresAt ?? null,
+        releasedAt: null,
+        failureReason: null,
+        cleanupStatus: null,
+        metadata: input.metadata ?? null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      if (
+        (input.replacesReusableLeaseId || input.reusesReusableLeaseId) &&
+        (!input.executionWorkspaceId || !input.providerLeaseId)
+      ) {
+        throw new Error(
+          "A reusable lease handoff requires an execution workspace and provider lease id.",
+        );
+      }
+      if (input.reusesReusableLeaseId && !input.heartbeatRunId) {
+        throw new Error(
+          "A same-run reusable lease reacquisition requires a heartbeat run id.",
+        );
+      }
+      if (input.replacesReusableLeaseId && input.reusesReusableLeaseId) {
+        throw new Error(
+          "A reusable lease cannot be replaced and reacquired in the same operation.",
+        );
+      }
+      const row =
+        input.assertCompanyBinding ||
+        input.replacesReusableLeaseId ||
+        input.reusesReusableLeaseId
+          ? await db.transaction(async (tx) => {
+              if (input.assertCompanyBinding) {
+                // Lock the environment row first. Managed reconciliation locks the
+                // same sandbox environment rows with `for update` before it writes a
+                // company binding, so this lock serializes the two transactions on
+                // this row and closes the time-of-check to time-of-use window.
+                await tx
+                  .select({ id: environments.id })
+                  .from(environments)
+                  .where(eq(environments.id, input.environmentId))
+                  .for("update");
+                // Re-read the company binding inside the locked transaction. A
+                // binding a reconciliation committed after the route guard now
+                // appears here. Reject a foreign-company environment before the
+                // insert, so the login holds no lease.
+                const boundRows = await tx
+                  .select({ companyId: builtInManagedResources.companyId })
+                  .from(builtInManagedResources)
+                  .where(
+                    and(
+                      eq(
+                        builtInManagedResources.resourceKind,
+                        MANAGED_ENVIRONMENT_RESOURCE_KIND,
+                      ),
+                      eq(
+                        builtInManagedResources.resourceId,
+                        input.environmentId,
+                      ),
+                    ),
+                  );
+                const boundCompanyIds = Array.from(
+                  new Set(boundRows.map((boundRow) => boundRow.companyId)),
+                );
+                if (
+                  boundCompanyIds.length > 0 &&
+                  !boundCompanyIds.includes(input.companyId)
+                ) {
+                  throw forbidden(
+                    "The selected environment belongs to another company.",
+                    {
+                      code: "environment_company_mismatch",
+                    },
+                  );
+                }
+              }
+              if (input.replacesReusableLeaseId) {
+                const retired = await tx
+                  .update(environmentLeases)
+                  .set({
+                    status: "expired",
+                    releasedAt: now,
+                    lastUsedAt: now,
+                    updatedAt: now,
+                    cleanupStatus: "success",
+                  })
+                  .where(
+                    and(
+                      eq(environmentLeases.id, input.replacesReusableLeaseId),
+                      eq(environmentLeases.companyId, input.companyId),
+                      eq(environmentLeases.environmentId, input.environmentId),
+                      eq(
+                        environmentLeases.executionWorkspaceId,
+                        input.executionWorkspaceId!,
+                      ),
+                      eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+                      eq(
+                        environmentLeases.providerLeaseId,
+                        input.providerLeaseId!,
+                      ),
+                      inArray(environmentLeases.status, [
+                        "released",
+                        "retained",
+                      ]),
+                    ),
+                  )
+                  .returning({ id: environmentLeases.id });
+                if (retired.length !== 1) {
+                  throw conflict(
+                    "Reusable sandbox lease ownership changed during acquisition.",
+                  );
+                }
+              }
+              if (input.reusesReusableLeaseId) {
+                const reacquired = await tx
+                  .update(environmentLeases)
+                  .set({
+                    status: "active",
+                    releasedAt: null,
+                    lastUsedAt: now,
+                    expiresAt: input.expiresAt ?? null,
+                    failureReason: null,
+                    cleanupStatus: null,
+                    metadata: input.metadata ?? null,
+                    updatedAt: now,
+                  })
+                  .where(
+                    and(
+                      eq(environmentLeases.id, input.reusesReusableLeaseId),
+                      eq(environmentLeases.companyId, input.companyId),
+                      eq(environmentLeases.environmentId, input.environmentId),
+                      eq(
+                        environmentLeases.executionWorkspaceId,
+                        input.executionWorkspaceId!,
+                      ),
+                      eq(
+                        environmentLeases.heartbeatRunId,
+                        input.heartbeatRunId!,
+                      ),
+                      eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+                      eq(
+                        environmentLeases.providerLeaseId,
+                        input.providerLeaseId!,
+                      ),
+                      inArray(environmentLeases.status, [
+                        "active",
+                        "released",
+                        "retained",
+                      ]),
+                    ),
+                  )
+                  .returning()
+                  .then((rows) => rows[0] ?? null);
+                if (!reacquired) {
+                  throw conflict(
+                    "Reusable sandbox lease ownership changed during reacquisition.",
+                  );
+                }
+                return reacquired;
+              }
+              return tx
+                .insert(environmentLeases)
+                .values(values)
+                .returning()
+                .then((rows) => rows[0] ?? null);
+            })
+          : await db
+              .insert(environmentLeases)
+              .values(values)
+              .returning()
+              .then((rows) => rows[0] ?? null);
       if (!row) {
         throw new Error("Failed to acquire environment lease");
       }
@@ -1277,6 +1632,82 @@ export function environmentService(db: Db) {
         .returning()
         .then((rows) => rows[0] ?? null);
       return row ? toEnvironmentLease(row) : null;
+    },
+
+    /**
+     * Record a lease-less orphan sandbox directly in the terminal
+     * `pending_cleanup` state with one atomic insert. The sweep reads a row with
+     * status `pending_cleanup` and cleanup status `failed`, so this insert makes
+     * the orphan visible to recovery immediately. It never passes through the
+     * `active` state, so a process or database crash cannot strand the row in an
+     * intermediate state that no sweep finds. The insert skips the company
+     * binding assertion, so it records the orphan even for a foreign-bound
+     * environment.
+     *
+     * The insert runs in a transaction that first locks the environment row with
+     * `for update`. The delete path (`removeIfDeletable`) refuses a delete while a
+     * `pending_cleanup` lease exists, so this lock serializes the two writes:
+     *
+     * - The environment still exists: the insert records the orphan with the
+     *   environment reference. A concurrent delete blocks on the lock, then its
+     *   `not exists (pending_cleanup)` predicate fails, so the delete refuses.
+     * - The environment is already gone (a delete won the race before this
+     *   insert): the insert records the orphan with a null environment
+     *   reference. The row carries the immutable provider metadata the sweep
+     *   needs, so the teardown still runs. This closes the window the finding
+     *   describes, where the foreign-key insert fails after a delete.
+     */
+    insertPendingCleanupLease: async (input: {
+      companyId: string;
+      environmentId: string;
+      executionWorkspaceId?: string | null;
+      issueId?: string | null;
+      heartbeatRunId?: string | null;
+      provider?: string | null;
+      providerLeaseId?: string | null;
+      metadata?: Record<string, unknown> | null;
+      failureReason: string;
+    }): Promise<EnvironmentLease> => {
+      const now = new Date();
+      const row = await db.transaction(async (tx) => {
+        // Lock the environment row so a concurrent delete cannot commit between
+        // this read and the insert. An absent row means a delete already removed
+        // the environment, so record the orphan with a null reference.
+        const environmentRows = await tx
+          .select({ id: environments.id })
+          .from(environments)
+          .where(eq(environments.id, input.environmentId))
+          .for("update");
+        const environmentIdForRow = environmentRows[0]?.id ?? null;
+        return tx
+          .insert(environmentLeases)
+          .values({
+            companyId: input.companyId,
+            environmentId: environmentIdForRow,
+            executionWorkspaceId: input.executionWorkspaceId ?? null,
+            issueId: input.issueId ?? null,
+            heartbeatRunId: input.heartbeatRunId ?? null,
+            status: "pending_cleanup" as const,
+            leasePolicy: "ephemeral",
+            provider: input.provider ?? null,
+            providerLeaseId: input.providerLeaseId ?? null,
+            acquiredAt: now,
+            lastUsedAt: now,
+            expiresAt: null,
+            releasedAt: now,
+            failureReason: input.failureReason,
+            cleanupStatus: "failed",
+            metadata: input.metadata ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
+      if (!row) {
+        throw new Error("Failed to record pending sandbox cleanup lease");
+      }
+      return toEnvironmentLease(row);
     },
 
     updateLeaseMetadata: async (

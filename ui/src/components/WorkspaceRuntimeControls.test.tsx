@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 
+import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { WorkspaceRuntimeService } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -12,12 +14,35 @@ import {
   WorkspaceRuntimeQuickControls,
   WorkspaceRuntimeControls,
 } from "./WorkspaceRuntimeControls";
+import { queryKeys } from "@/lib/queryKeys";
+
+const mockInstanceSettingsApi = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
+
+vi.mock("@/api/instanceSettings", () => ({
+  instanceSettingsApi: mockInstanceSettingsApi,
+}));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 function act(callback: () => void) {
   flushSync(callback);
+}
+
+/**
+ * The command rows read the managed-sandbox-only policy through the shared
+ * instance-settings query, so every render needs a query client. Renders here
+ * are synchronous and the guard fails closed until the policy resolves, so the
+ * cache is primed by default. Pass `null` to render with the policy unresolved.
+ */
+function withQueryClient(node: ReactNode, experimentalSettings: Record<string, unknown> | null = {}) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  if (experimentalSettings) {
+    queryClient.setQueryData(queryKeys.instance.experimentalSettings, experimentalSettings);
+  }
+  return <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>;
 }
 
 function createRuntimeService(overrides: Partial<WorkspaceRuntimeService> = {}): WorkspaceRuntimeService {
@@ -47,6 +72,7 @@ function createRuntimeService(overrides: Partial<WorkspaceRuntimeService> = {}):
     stoppedAt: overrides.stoppedAt ?? null,
     stopPolicy: overrides.stopPolicy ?? null,
     healthStatus: overrides.healthStatus ?? "unknown",
+    exposure: overrides.exposure ?? null,
     configIndex: overrides.configIndex ?? null,
     createdAt: overrides.createdAt ?? new Date("2026-04-12T00:00:00.000Z"),
     updatedAt: overrides.updatedAt ?? new Date("2026-04-12T00:00:00.000Z"),
@@ -261,10 +287,99 @@ describe("WorkspaceRuntimeControls", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({});
   });
 
   afterEach(() => {
     document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("shows the service working directory when the managed-sandbox-only policy is off", () => {
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev", cwd: "." }],
+      },
+      runtimeServices: [
+        createRuntimeService({ id: "service-web", serviceName: "web", status: "running", cwd: "/srv/repo" }),
+      ],
+      canStartServices: true,
+    });
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(withQueryClient(
+        <WorkspaceRuntimeControls sections={sections} onAction={vi.fn()} />,
+        {},
+      ));
+    });
+
+    expect(container.textContent).toContain("/srv/repo");
+    expect(container.textContent).toContain("pnpm dev");
+
+    act(() => root.unmount());
+  });
+
+  it("keeps the service working directory hidden while the policy is still loading", () => {
+    // A cold cache resolves the policy to false on the first render. The guard
+    // fails closed so a managed instance never flashes the execution-host path.
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev", cwd: "." }],
+      },
+      runtimeServices: [
+        createRuntimeService({ id: "service-web", serviceName: "web", status: "running", cwd: "/srv/repo" }),
+      ],
+      canStartServices: true,
+    });
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(withQueryClient(
+        <WorkspaceRuntimeControls sections={sections} onAction={vi.fn()} />,
+        null,
+      ));
+    });
+
+    expect(container.textContent).not.toContain("/srv/repo");
+    expect(container.textContent).toContain("pnpm dev");
+
+    act(() => root.unmount());
+  });
+
+  it("drops the service working directory when the managed-sandbox-only policy is on", () => {
+    const sections = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: {
+        commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev", cwd: "." }],
+      },
+      runtimeServices: [
+        createRuntimeService({
+          id: "service-web",
+          serviceName: "web",
+          status: "running",
+          cwd: "/srv/repo",
+          url: "http://127.0.0.1:5173",
+          port: 5173,
+        }),
+      ],
+      canStartServices: true,
+    });
+
+    const root = createRoot(container);
+    act(() => {
+      root.render(withQueryClient(
+        <WorkspaceRuntimeControls sections={sections} onAction={vi.fn()} />,
+        { enableManagedSandboxOnly: true },
+      ));
+    });
+
+    expect(container.textContent).not.toContain("/srv/repo");
+    // The URL, the port, and the command describe the service, not the host.
+    expect(container.textContent).toContain("http://127.0.0.1:5173");
+    expect(container.textContent).toContain("Port 5173");
+    expect(container.textContent).toContain("pnpm dev");
+
+    act(() => root.unmount());
   });
 
   it("renders service and job actions distinctly", () => {
@@ -284,12 +399,12 @@ describe("WorkspaceRuntimeControls", () => {
 
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <WorkspaceRuntimeControls
           sections={sections}
           onAction={vi.fn()}
         />,
-      );
+      ));
     });
 
     const buttons = Array.from(container.querySelectorAll("button")).map((button) => button.textContent?.trim());
@@ -315,12 +430,12 @@ describe("WorkspaceRuntimeControls", () => {
 
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <WorkspaceRuntimeQuickControls
           sections={sections}
           onAction={vi.fn()}
         />,
-      );
+      ));
     });
 
     const buttons = Array.from(container.querySelectorAll("button"));
@@ -350,13 +465,13 @@ describe("WorkspaceRuntimeControls", () => {
 
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <WorkspaceRuntimeControls
           sections={sections}
           disabledHint="Add a workspace path first."
           onAction={vi.fn()}
         />,
-      );
+      ));
     });
 
     const buttons = Array.from(container.querySelectorAll("button"));
@@ -381,13 +496,13 @@ describe("WorkspaceRuntimeControls", () => {
 
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <WorkspaceRuntimeControls
           sections={sections}
           disabledHint="Add runtime settings first."
           onAction={vi.fn()}
         />,
-      );
+      ));
     });
 
     expect(container.textContent).not.toContain("Add runtime settings first.");
@@ -410,18 +525,73 @@ describe("WorkspaceRuntimeControls", () => {
 
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <WorkspaceRuntimeControls
           sections={sections}
           onAction={vi.fn()}
         />,
-      );
+      ));
     });
 
     expect(container.textContent).not.toContain("unknown");
 
     act(() => root.unmount());
   });
+
+  it.each([
+    ["failed", "external HTTPS health probe did not validate", "HTTPS unavailable", "Check the Tailscale broker and node HTTPS configuration."],
+    ["cleanup_pending", "host broker cleanup confirmation timed out", "HTTPS cleanup pending", "Restart the host broker before reusing this port."],
+  ] as const)(
+    "shows %s exposure state, last error, and remediation on service cards",
+    (state, lastError, label, remediation) => {
+      const sections = buildWorkspaceRuntimeControlSections({
+        runtimeConfig: {
+          commands: [
+            { id: "web", name: "web", kind: "service", command: "pnpm dev" },
+          ],
+        },
+        runtimeServices: [
+          createRuntimeService({
+            id: "service-web",
+            serviceName: "web",
+            status: "stopped",
+            exposure: {
+              provider: "tailscale_https",
+              state,
+              publicUrl: null,
+              hostname: "paperclip-dev.tail29c1aa.ts.net",
+              listeners: [{ purpose: "app", publicPort: 42002, targetPort: 42002 }],
+              brokerRef: "service-web",
+              lastError,
+              updatedAt: "2026-08-12T00:00:00.000Z",
+            },
+          }),
+        ],
+        canStartServices: true,
+      });
+
+      const root = createRoot(container);
+      act(() => {
+        root.render(withQueryClient(
+          <WorkspaceRuntimeControls
+            sections={sections}
+            onAction={vi.fn()}
+          />,
+        ));
+      });
+
+      const alert = container.querySelector('[role="alert"]');
+      const summary = alert?.firstElementChild;
+      expect(alert?.classList.contains("text-destructive")).toBe(true);
+      expect(summary?.classList.contains("line-clamp-3")).toBe(true);
+      expect(summary?.getAttribute("title")).toBe(lastError);
+      expect(alert?.textContent).toContain(label);
+      expect(alert?.textContent).toContain(lastError);
+      expect(alert?.textContent).toContain(remediation);
+
+      act(() => root.unmount());
+    },
+  );
 
   it("can render square plain surfaces for embedded configuration pages", () => {
     const sections = buildWorkspaceRuntimeControlSections({
@@ -436,13 +606,13 @@ describe("WorkspaceRuntimeControls", () => {
 
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <WorkspaceRuntimeControls
           sections={sections}
           square
           onAction={vi.fn()}
         />,
-      );
+      ));
     });
 
     const summaryPanel = container.querySelector(".border.border-border\\/70");
@@ -472,14 +642,14 @@ describe("WorkspaceRuntimeControls", () => {
 
     const root = createRoot(container);
     act(() => {
-      root.render(
+      root.render(withQueryClient(
         <WorkspaceRuntimeControls
           items={items}
           emptyMessage="No runtime services have been started yet."
           disabledHint="Add runtime settings first."
           onAction={vi.fn()}
         />,
-      );
+      ));
     });
 
     expect(container.textContent).toContain("Services");
@@ -626,6 +796,98 @@ describe("buildWorkspaceServiceControlEntries", () => {
 
     expect(entries[0].state).toBe("failed");
     expect(entries[0].failureDetail).toMatch(/^Service failed · /);
+  });
+
+  it("surfaces HTTPS failure independently while the backend remains running", () => {
+    const running = createRuntimeService({
+      status: "running",
+      healthStatus: "healthy",
+      port: 42000,
+      url: null,
+      exposure: {
+        provider: "tailscale_https",
+        state: "failed",
+        publicUrl: null,
+        hostname: "runner.tail123.ts.net",
+        listeners: [{ purpose: "app", publicPort: 42000, targetPort: 42000 }],
+        brokerRef: "service-1",
+        lastError: "cli_error",
+        updatedAt: "2026-08-11T00:00:00.000Z",
+      },
+    });
+    const built = buildWorkspaceRuntimeControlSections({
+      runtimeConfig: { commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev" }] },
+      runtimeServices: [running],
+      canStartServices: true,
+    });
+    const [entry] = buildWorkspaceServiceControlEntries({ sections: built, runtimeServices: [running] });
+
+    expect(entry.state).toBe("running");
+    expect(entry.exposureState).toBe("failed");
+    expect(entry.exposureDetail).toMatch(/^HTTPS unavailable/);
+    expect(entry.exposureDetail).not.toContain("cli_error");
+  });
+
+  it("carries the verified HTTPS URL into the launch entry, and no HTTP fallback while pending", () => {
+    // PAP-17158: the workspace/project/issue launch links are rendered from these
+    // entries, so the tailnet HTTPS URL has to survive the mapping intact — and a
+    // service whose exposure is not yet verified must offer no URL at all rather
+    // than the loopback backend it is really listening on.
+    const httpsUrl = "https://paperclip-dev.tail29c1aa.ts.net:42010";
+    const buildEntry = (service: ReturnType<typeof createRuntimeService>) => {
+      const sections = buildWorkspaceRuntimeControlSections({
+        runtimeConfig: { commands: [{ id: "web", name: "web", kind: "service", command: "pnpm dev" }] },
+        runtimeServices: [service],
+        canStartServices: true,
+      });
+      return buildWorkspaceServiceControlEntries({ sections, runtimeServices: [service] })[0];
+    };
+
+    const ready = buildEntry(createRuntimeService({
+      status: "running",
+      healthStatus: "healthy",
+      port: 42_010,
+      url: httpsUrl,
+      exposure: {
+        provider: "tailscale_https",
+        state: "ready",
+        publicUrl: httpsUrl,
+        hostname: "paperclip-dev.tail29c1aa.ts.net",
+        listeners: [
+          { purpose: "app", publicPort: 42_010, targetPort: 42_010 },
+          { purpose: "vite_hmr", publicPort: 52_010, targetPort: 52_010 },
+        ],
+        brokerRef: "service-1",
+        lastError: null,
+        updatedAt: "2026-08-12T00:00:00.000Z",
+      },
+    }));
+    expect(ready.state).toBe("running");
+    expect(ready.url).toBe(httpsUrl);
+    expect(ready.exposureState).toBe("ready");
+    // A ready exposure reports plainly and never as a remediation prompt.
+    expect(ready.exposureDetail).toBe("HTTPS ready");
+    expect(ready.exposureDetail).not.toMatch(/unavailable|cleanup|Check the/i);
+
+    const pending = buildEntry(createRuntimeService({
+      status: "running",
+      healthStatus: "healthy",
+      port: 42_020,
+      url: null,
+      exposure: {
+        provider: "tailscale_https",
+        state: "pending",
+        publicUrl: null,
+        hostname: "paperclip-dev.tail29c1aa.ts.net",
+        listeners: [],
+        brokerRef: null,
+        lastError: null,
+        updatedAt: "2026-08-12T00:00:00.000Z",
+      },
+    }));
+    expect(pending.url ?? null).toBeNull();
+    expect(pending.exposureDetail).toBe("Provisioning HTTPS…");
+    expect(JSON.stringify(pending)).not.toContain("http://");
   });
 });
 

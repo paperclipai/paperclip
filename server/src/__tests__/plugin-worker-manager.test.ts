@@ -9,8 +9,27 @@ import {
   type HostServices,
   type HostToWorkerMethods,
 } from "@paperclipai/plugin-sdk";
+
+// Mock the shared logger, so a test reads the exact calls the manager makes
+// when it logs a route event. The child logger returns the same mock object,
+// so `log.warn`/`log.error` inside the manager are this mock's `warn`/`error`.
+vi.mock("../middleware/logger.js", () => {
+  const mockLogger: Record<string, unknown> = {
+    trace: vi.fn(),
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    fatal: vi.fn(),
+    child: vi.fn(() => mockLogger),
+  };
+  return { logger: mockLogger, httpLogger: vi.fn() };
+});
+
+import { logger } from "../middleware/logger.js";
 import {
   appendStderrExcerpt,
+  createDuplexRouteSlotController,
   createPluginWorkerHandle,
   formatWorkerFailureMessage,
   resolveRpcCallTimeoutMs,
@@ -1049,6 +1068,1338 @@ describe("plugin worker manager execute.log route", () => {
         executeParams({ logs: [{ stream: "stdout", chunk: "no-sink" }] }),
       );
       expect(result).toMatchObject({ exitCode: 0 });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Host-owned setup-token login pseudo-terminal route gate
+// ---------------------------------------------------------------------------
+
+const LOGIN_PTY_WORKER_ENTRYPOINT = path.join(
+  FIXTURES_DIR,
+  "plugin-worker-login-pty.cjs",
+);
+
+function makeLoginPtyHandle(extra?: Record<string, unknown>) {
+  return createPluginWorkerHandle("test.plugin", {
+    entrypointPath: LOGIN_PTY_WORKER_ENTRYPOINT,
+    manifest: TEST_MANIFEST,
+    config: {},
+    instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+    apiVersion: 1,
+    hostHandlers: {},
+    ...extra,
+  });
+}
+
+// One valid session home. The shape is the fixed root, one slash, and one UUID.
+const PTY_SESSION_HOME = "/tmp/paperclip-adapter-login/11111111-2222-4333-8444-555555555555";
+
+function ptyOpenInput(directive: unknown) {
+  return {
+    driverKey: "daytona",
+    companyId: "company-1",
+    environmentId: "env-1",
+    // The test directive rides in `providerLeaseId`, an opaque field the manager
+    // forwards to the worker unchanged. The manager carries the closed command
+    // key and the validated session home; it carries no command string.
+    providerLeaseId: JSON.stringify(directive),
+    loginCommandKey: "claude" as const,
+    sessionHome: PTY_SESSION_HOME,
+  };
+}
+
+describe("plugin worker manager setup-token pty route gate", () => {
+  it("rejects a command key that is not in the closed set before the worker call", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The provider driver key routes the worker; it confers no command
+      // authority. A key outside the closed set rejects with one fixed non-secret
+      // error before the worker call, so a caller cannot select an arbitrary
+      // command in the sandbox pseudo-terminal.
+      await expect(
+        handle.openLoginPtySession({
+          driverKey: "daytona",
+          companyId: "company-1",
+          environmentId: "env-1",
+          providerLeaseId: JSON.stringify({ mode: "normal" }),
+          loginCommandKey: "gemini" as unknown as "claude",
+          sessionHome: PTY_SESSION_HOME,
+        }),
+      ).rejects.toThrow("LOGIN_PTY_COMMAND_NOT_ALLOWED");
+      // The rejected open never consumed the single route, so a later open with a
+      // closed key still succeeds.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      expect(session).toBeDefined();
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("rejects a malformed session home before the worker call", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The host revalidates the server-controlled session home shape before the
+      // worker RPC. A traversal candidate fails closed at the last host gate.
+      await expect(
+        handle.openLoginPtySession({
+          driverKey: "daytona",
+          companyId: "company-1",
+          environmentId: "env-1",
+          providerLeaseId: JSON.stringify({ mode: "normal" }),
+          loginCommandKey: "claude" as const,
+          sessionHome: "/tmp/paperclip-adapter-login/../etc",
+        }),
+      ).rejects.toThrow("LOGIN_PTY_INVALID_SESSION_HOME");
+      // The rejected open never consumed the single route.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      expect(session).toBeDefined();
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("permits two concurrent credential pseudo-terminals on one worker", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // Neither open waits on the other. Both return a live route on the same
+      // worker, so a second owner is never blocked by a first owner's session.
+      const first = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal", workerSessionId: "ws-A" }),
+      );
+      const second = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal", workerSessionId: "ws-B" }),
+      );
+      expect(first).toBeDefined();
+      expect(second).toBeDefined();
+      await first.close();
+      await second.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("delivers output only for the exact bound worker session id and drops a mismatch", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-A",
+          outputs: [
+            { chunk: "good-1" },
+            { chunk: "forged", sid: "ws-EVIL" },
+            { chunk: "good-2" },
+          ],
+          exitCode: 0,
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      // The forged notification carries a wrong worker session id, so the host
+      // drops it. Only the two bound chunks reach the listener, in order.
+      expect(chunks).toEqual(["good-1", "good-2"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  }, 15_000);
+
+  it("routes delayed input to the worker and back to the listener", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      session.write("browser-code");
+      // The worker echoes the input as one output notification for the bound
+      // session, so the listener receives it.
+      await vi.waitFor(() => expect(chunks).toContain("echo:browser-code"));
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes the route when the cumulative output passes the per-route bound", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxTotalChars: 10 },
+    });
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // Each empty input produces the five-character `echo:` chunk. Attach the
+      // listener first, then drive exactly two accepted chunks and one overflow
+      // so process scheduling cannot move output ahead of listener registration.
+      session.write("");
+      session.write("");
+      session.write("");
+      // The per-route bound terminalizes the route, so the login wait resolves
+      // with a null exit code and the third chunk never reaches the listener.
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(chunks).toEqual(["echo:", "echo:"]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes and fails closed on a malformed open reply, then admits a later open", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      await expect(
+        handle.openLoginPtySession(ptyOpenInput({ mode: "malformed-open" })),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+      // The terminalize closed the route by the host route id and the worker
+      // acknowledged the close, so a later open is admitted.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      expect(session).toBeDefined();
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes the route on an open timeout", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { openTimeoutMs: 200 },
+    });
+    try {
+      await handle.start();
+      await expect(
+        handle.openLoginPtySession(ptyOpenInput({ mode: "no-open-reply" })),
+      ).rejects.toThrow();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("binds the worker session id one time and ignores a duplicate open reply", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          mode: "duplicate-open-reply",
+          workerSessionId: "ws-A",
+          outputs: [{ chunk: "hello" }],
+          exitCode: 0,
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // The duplicate open reply never rebinds or reopens the route, so the
+      // session runs normally on the one bind.
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["hello"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("closes the route with a fixed exit when the worker exits", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal" }),
+      );
+      const waitResult = session.wait();
+      await handle.stop();
+      // A worker exit closes the one route and resolves the login wait with the
+      // fixed non-secret exit.
+      await expect(waitResult).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("retires the worker on an unconfirmed close acknowledgement", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { closeTimeoutMs: 200 },
+    });
+    try {
+      await handle.start();
+      const exited = new Promise<void>((resolve) => {
+        handle.on("exit", () => resolve());
+      });
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal", closeMode: "bad-ack" }),
+      );
+      await session.close();
+      // The close acknowledgement carried a mismatched host route id, so the host
+      // fails closed and retires the worker before any reuse.
+      await exited;
+      await expect(
+        handle.openLoginPtySession(ptyOpenInput({ mode: "normal" })),
+      ).rejects.toThrow();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Login pseudo-terminal concurrency
+// ---------------------------------------------------------------------------
+// One shared plugin worker now holds more than one live login pseudo-terminal
+// route at once, so a second owner is never blocked by a first owner's
+// session. The host resolves an output or an exit notification by the host
+// route identifier first, then checks the bound worker session identifier,
+// so each route receives only its own data even while another route on the
+// same worker is live.
+
+describe("plugin worker manager login pseudo-terminal concurrency", () => {
+  it("delivers output to each concurrent route only, with no cross-talk", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const routeA = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-A",
+          outputs: [{ chunk: "a-1" }],
+          exitCode: 0,
+        }),
+      );
+      const routeB = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-B",
+          outputs: [{ chunk: "b-1" }],
+          exitCode: 0,
+        }),
+      );
+      const aChunks: string[] = [];
+      const bChunks: string[] = [];
+      routeA.onData((chunk) => aChunks.push(chunk));
+      routeB.onData((chunk) => bChunks.push(chunk));
+      await expect(routeA.wait()).resolves.toEqual({ exitCode: 0 });
+      await expect(routeB.wait()).resolves.toEqual({ exitCode: 0 });
+      // The host resolves each notification by its own host route identifier, so
+      // neither route ever sees the other's chunk.
+      expect(aChunks).toEqual(["a-1"]);
+      expect(bChunks).toEqual(["b-1"]);
+      await routeA.close();
+      await routeB.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles the exit of one route only, while a second concurrent route stays live", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const routeA = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const routeB = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-B", exitCode: 0 }),
+      );
+      await expect(routeB.wait()).resolves.toEqual({ exitCode: 0 });
+      // Route A never received an exit, so its wait is still pending. Race it
+      // against a short delay to prove it has not settled.
+      const stillPending = await Promise.race([
+        routeA.wait().then(() => "settled"),
+        new Promise((resolve) => setTimeout(() => resolve("pending"), 50)),
+      ]);
+      expect(stillPending).toBe("pending");
+      await routeA.close();
+      await routeB.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops a swapped (hostRouteId, workerSessionId) notification and delivers it to neither route", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const routeA = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      // Route B emits one output that carries route A's host route identifier
+      // but route B's own worker session identifier — a swapped pair. The host
+      // resolves route A by the host route identifier, then finds route B's
+      // worker session identifier does not match route A's bound identifier,
+      // so it drops the notification. It never reaches route A, and route B
+      // never sent it under its own host route identifier, so it never
+      // reaches route B either.
+      const routeB = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-B",
+          outputs: [{ chunk: "swapped", crossRoute: true }],
+        }),
+      );
+      const aChunks: string[] = [];
+      const bChunks: string[] = [];
+      routeA.onData((chunk) => aChunks.push(chunk));
+      routeB.onData((chunk) => bChunks.push(chunk));
+      // Give the swapped notification time to arrive and be dropped.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(aChunks).toEqual([]);
+      expect(bChunks).toEqual([]);
+      await routeA.close();
+      await routeB.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops an output notification for an unknown host route identifier", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-A",
+          sequence: [
+            { type: "output", chunk: "ghost", hostRouteId: "totally-unknown-route" },
+            { type: "output", chunk: "good" },
+          ],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await vi.waitFor(() => expect(chunks).toContain("good"));
+      // The unknown host route identifier resolves to no route on this worker,
+      // so the host drops it before it can reach any listener.
+      expect(chunks).toEqual(["good"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("replays a pre-bind output record to its own route while a second route is already open", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const routeA = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      // Route B's fixture writes its open reply and its output notification in
+      // one stdout write, so the host reads both before route B's bind, while
+      // route A is already open. The bind replays the held record into route
+      // B's own queue; it never reaches route A.
+      const routeB = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-B",
+          outputs: [{ chunk: "b-batched" }],
+        }),
+      );
+      const aChunks: string[] = [];
+      const bChunks: string[] = [];
+      routeA.onData((chunk) => aChunks.push(chunk));
+      routeB.onData((chunk) => bChunks.push(chunk));
+      expect(aChunks).toEqual([]);
+      expect(bChunks).toEqual(["b-batched"]);
+      await routeA.close();
+      await routeB.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("closes one route without affecting a second concurrent route on the same worker", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const routeA = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const routeB = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-B" }),
+      );
+      await routeA.close();
+      // Route B is still live: writing to it still round-trips through the
+      // worker and back to the listener.
+      const bChunks: string[] = [];
+      routeB.onData((chunk) => bChunks.push(chunk));
+      routeB.write("still-here");
+      await vi.waitFor(() => expect(bChunks).toContain("echo:still-here"));
+      await routeB.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles both concurrent routes exactly once when the worker exits", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const routeA = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const routeB = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-B" }),
+      );
+      const waitA = routeA.wait();
+      const waitB = routeB.wait();
+      await handle.stop();
+      // The worker exit closes every route it still holds and resolves each
+      // login wait with the fixed non-secret exit, in one sweep.
+      await expect(waitA).resolves.toEqual({ exitCode: null });
+      await expect(waitB).resolves.toEqual({ exitCode: null });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("retires the worker on an unconfirmed close, settling every concurrent route and logging no raw output", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { closeTimeoutMs: 200 },
+    });
+    const secretMarker = "super-secret-login-code-must-never-reach-a-log-line";
+    vi.mocked(logger.warn).mockClear();
+    vi.mocked(logger.error).mockClear();
+    vi.mocked(logger.info).mockClear();
+    vi.mocked(logger.debug).mockClear();
+    try {
+      await handle.start();
+      const exited = new Promise<void>((resolve) => {
+        handle.on("exit", () => resolve());
+      });
+      const routeA = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A", closeMode: "bad-ack" }),
+      );
+      const routeB = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-B", outputs: [{ chunk: secretMarker }] }),
+      );
+      const waitB = routeB.wait();
+      await routeA.close();
+      // Route A's close acknowledgement carried a mismatched host route id, so
+      // the host fails closed and retires the whole worker before any reuse.
+      // That retirement settles route B too, even though B's own close was
+      // never called.
+      await exited;
+      await expect(waitB).resolves.toEqual({ exitCode: null });
+      await expect(
+        handle.openLoginPtySession(ptyOpenInput({ mode: "normal" })),
+      ).rejects.toThrow();
+      const loggedText = [
+        ...vi.mocked(logger.warn).mock.calls,
+        ...vi.mocked(logger.error).mock.calls,
+        ...vi.mocked(logger.info).mock.calls,
+        ...vi.mocked(logger.debug).mock.calls,
+      ]
+        .flat()
+        .map((arg) => JSON.stringify(arg))
+        .join("\n");
+      expect(loggedText).not.toContain(secretMarker);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The missing-hostRouteId diagnostic. `hostRouteId` is the routing key the
+// current protocol tags every login pseudo-terminal notification with, but a
+// plugin build old enough to predate it still tags the same notification with
+// the worker session identifier, the sole routing key the previous protocol
+// used. The host warns once about the old build, then still resolves the
+// route by that identifier, so a legacy worker keeps its login output and its
+// exit notification instead of losing them.
+// ---------------------------------------------------------------------------
+
+describe("plugin worker manager login pseudo-terminal missing hostRouteId diagnostic", () => {
+  it("delivers output from a legacy worker with no hostRouteId, resolved by the worker session id, and warns once", async () => {
+    const handle = makeLoginPtyHandle();
+    vi.mocked(logger.warn).mockClear();
+    try {
+      await handle.start();
+      const chunks: string[] = [];
+      const route = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-A",
+          outputs: [{ chunk: "legacy-output", omitHostRouteId: true }],
+        }),
+      );
+      route.onData((chunk) => chunks.push(chunk));
+      await vi.waitFor(() => expect(chunks).toContain("legacy-output"));
+
+      const warnCalls = vi.mocked(logger.warn).mock.calls.flat().map((arg) => JSON.stringify(arg));
+      const matches = warnCalls.filter((call) => call.includes("hostRouteId"));
+      expect(matches).toHaveLength(1);
+      expect(matches[0]).toContain("plugin build is too old");
+      // No identifier and no raw output in the warning.
+      expect(matches[0]).not.toContain("legacy-output");
+      expect(matches[0]).not.toContain("ws-A");
+
+      await route.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles the login wait on a legacy worker's exit notification with no hostRouteId", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const route = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A", exitCode: 0, omitHostRouteIdOnExit: true }),
+      );
+      await expect(route.wait()).resolves.toEqual({ exitCode: 0 });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("repeats the warning no more than one time for one worker", async () => {
+    const handle = makeLoginPtyHandle();
+    vi.mocked(logger.warn).mockClear();
+    try {
+      await handle.start();
+      const route = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-A",
+          outputs: [
+            { chunk: "one", omitHostRouteId: true },
+            { chunk: "two", omitHostRouteId: true },
+            { chunk: "three", omitHostRouteId: true },
+          ],
+        }),
+      );
+      // Give every notification time to arrive.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+
+      const warnCalls = vi.mocked(logger.warn).mock.calls.flat().map((arg) => JSON.stringify(arg));
+      const matches = warnCalls.filter((call) => call.includes("hostRouteId"));
+      expect(matches).toHaveLength(1);
+
+      await route.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops a message with no hostRouteId and no worker session id", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const chunks: string[] = [];
+      const route = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-A",
+          outputs: [
+            { chunk: "unroutable", omitHostRouteId: true, sid: "" },
+            { chunk: "good" },
+          ],
+        }),
+      );
+      route.onData((chunk) => chunks.push(chunk));
+      await vi.waitFor(() => expect(chunks).toContain("good"));
+      expect(chunks).toEqual(["good"]);
+      await route.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops a no-hostRouteId message naming a concurrent route's session instead of cross-delivering it", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // Two live routes share this worker. A worker session id alone cannot
+      // prove which route a hostRouteId-less message belongs to once a
+      // second route is live, so the fallback must refuse to guess.
+      const first = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const second = await handle.openLoginPtySession(
+        ptyOpenInput({
+          workerSessionId: "ws-B",
+          outputs: [{ chunk: "cross-route", sid: "ws-A", omitHostRouteId: true }],
+        }),
+      );
+      const firstChunks: string[] = [];
+      const secondChunks: string[] = [];
+      first.onData((chunk) => firstChunks.push(chunk));
+      second.onData((chunk) => secondChunks.push(chunk));
+      // Give the ambiguous notification time to arrive and be dropped.
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(firstChunks).toEqual([]);
+      expect(secondChunks).toEqual([]);
+
+      await first.close();
+      await second.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The process-wide login pseudo-terminal route ceiling. A host process can
+// run only so many concurrent login pseudo-terminal routes before the
+// underlying resources are exhausted, so the ceiling protects the host
+// process itself, not one user or one worker.
+// ---------------------------------------------------------------------------
+// Every login pseudo-terminal route reserves one slot from the same
+// process-wide aggregate route-slot controller the duplex channel route
+// uses (`createDuplexRouteSlotController`), so the two route types share one
+// ceiling. This is a host-process safety ceiling across every worker in the
+// process, not a per-user or a per-worker quota.
+
+describe("plugin worker manager login pseudo-terminal route ceiling", () => {
+  it("rejects the second open with the fixed capacity error before the worker call, when the process-wide ceiling is full", async () => {
+    // A process-scoped ceiling of one slot. The manager injects one shared
+    // controller into every worker; the test injects a small one directly —
+    // the same controller shape the duplex channel route shares.
+    const handle = makeLoginPtyHandle({
+      duplexRouteSlots: createDuplexRouteSlotController(1),
+      loginPtyLimits: { openTimeoutMs: 300 },
+    });
+    try {
+      await handle.start();
+      const first = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const startedAt = Date.now();
+      // The refused open scripts `no-open-reply`: if it wrongly reached the
+      // worker, the promise would only settle after the 300ms open timeout,
+      // and with a different, timeout-shaped error — not the capacity error.
+      // A fast rejection with the exact capacity error proves the worker
+      // never received this open's request.
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({ workerSessionId: "ws-B", mode: "no-open-reply" }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_ROUTES_AT_CAPACITY");
+      expect(Date.now() - startedAt).toBeLessThan(150);
+      await first.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("admits a later open after the first route closes and releases its slot", async () => {
+    const handle = makeLoginPtyHandle({
+      duplexRouteSlots: createDuplexRouteSlotController(1),
+    });
+    try {
+      await handle.start();
+      const first = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      await expect(
+        handle.openLoginPtySession(ptyOpenInput({ workerSessionId: "ws-B" })),
+      ).rejects.toThrow("LOGIN_PTY_ROUTES_AT_CAPACITY");
+      // Closing the first route releases its slot, so a later open is admitted.
+      await first.close();
+      const second = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-C" }),
+      );
+      await second.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("admits a later open on a different worker after a worker exit releases the shared slot", async () => {
+    // One shared controller instance, the same shape the manager injects into
+    // every worker handle, so both handles below draw from the SAME ceiling.
+    const sharedSlots = createDuplexRouteSlotController(1);
+    const handle = makeLoginPtyHandle({ duplexRouteSlots: sharedSlots });
+    const secondHandle = makeLoginPtyHandle({ duplexRouteSlots: sharedSlots });
+    try {
+      await handle.start();
+      const first = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A" }),
+      );
+      const waitResult = first.wait();
+      await handle.stop();
+      // The worker exit settles the route and releases its slot.
+      await expect(waitResult).resolves.toEqual({ exitCode: null });
+      // Before the release, a second worker's open against the same shared
+      // ceiling would have rejected with the capacity error. After the
+      // release, the shared ceiling of one admits a fresh open on a
+      // different worker.
+      await secondHandle.start();
+      const second = await secondHandle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-B" }),
+      );
+      await second.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+      await secondHandle.stop().catch(() => undefined);
+    }
+  });
+
+  it("releases exactly one slot when a route's terminal exit is followed by an explicit close", async () => {
+    // A double release (once on the terminal exit, once on the later close)
+    // would let a third open through a ceiling of one before its true
+    // capacity. This test proves the ceiling still holds after both events.
+    const handle = makeLoginPtyHandle({
+      duplexRouteSlots: createDuplexRouteSlotController(1),
+    });
+    try {
+      await handle.start();
+      const first = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-A", exitCode: 0 }),
+      );
+      await expect(first.wait()).resolves.toEqual({ exitCode: 0 });
+      // The terminal exit already released the one slot. A second open now
+      // succeeds, consuming that same slot.
+      const second = await handle.openLoginPtySession(
+        ptyOpenInput({ workerSessionId: "ws-B" }),
+      );
+      // The explicit close on the first (already-exited) route must not
+      // release a second slot it no longer holds.
+      await first.close();
+      await expect(
+        handle.openLoginPtySession(ptyOpenInput({ workerSessionId: "ws-C" })),
+      ).rejects.toThrow("LOGIN_PTY_ROUTES_AT_CAPACITY");
+      await second.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Login pseudo-terminal pre-bind queue
+// ---------------------------------------------------------------------------
+// The host reads the worker pipe and `readline` dispatches every line of one
+// chunk synchronously. The route only becomes `open` inside the `await`
+// continuation of the `loginPtyOpen` reply, which runs as a microtask after
+// the whole synchronous line loop. So a worker that batches an output or an
+// exit notification with the open reply floods the host before the bind. The
+// tests below prove the host queues these pre-bind records and replays them
+// through the live router right after the bind, instead of dropping them.
+// The host holds every pre-bind record — output and exit alike — in one
+// arrival-ordered queue, and it replays each record through the live router
+// in that exact order. A replayed exit that carries the bound worker session
+// identifier settles the route, so a record that arrived behind it — a real
+// worker process cannot emit output after it exits, so this only matters for
+// a forged or a queued record — replays into a route that already settled
+// and is dropped.
+
+describe("plugin worker manager login pseudo-terminal pre-bind queue", () => {
+  it("queues and replays a coalesced output notification that arrives before the bind", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The fixture writes the open reply and the output notification in one
+      // stdout write, so the host reads both before the route binds.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          outputs: [{ chunk: "batched-output" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // The bind already replayed the queued record into `buffered`, so
+      // `onData` drains it synchronously with no wait.
+      expect(chunks).toEqual(["batched-output"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("delivers a coalesced output before the coalesced exit settles the wait", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          outputs: [{ chunk: "batched-output" }],
+          exitCode: 0,
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // Both the output and the exit arrived before the bind and queued in
+      // order. The replay preserves that order, so the output reaches the
+      // listener before the wait settles.
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["batched-output"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles the wait with a valid pre-bind exit that a later mismatched exit cannot displace", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The worker batches a valid exit for the real worker session id, then a
+      // second exit for a forged worker session id, both before the open
+      // reply. The bind still verifies the real session id, so the held valid
+      // exit settles the wait, and the mismatched exit that arrived after it
+      // never displaces it.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          exitCode: 0,
+          extraExits: [{ exitCode: 1, sid: "ws-EVIL" }],
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("delivers a pre-bind output, then the exit, and drops output that arrives behind the exit", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The worker batches an output, then a valid exit, then a further
+      // output, all before the open reply. The host replays the three held
+      // records in this exact arrival order. The exit settles the route
+      // right after the first output, so the record behind the exit finds a
+      // route that already settled and never reaches the listener.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          outputs: [{ chunk: "before-exit" }],
+          exitCode: 0,
+          outputsAfterExit: [{ chunk: "after-exit" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["before-exit"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops output that arrives behind a valid pre-bind exit", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          exitCode: 0,
+          // The worker batched this output behind the exit. The replay sends
+          // the exit first, in arrival order, which settles the route. The
+          // output record behind it then finds a route that is no longer
+          // `open`, the same drop the live path applies to output a real
+          // worker process could never emit after its own exit.
+          outputsAfterExit: [{ chunk: "late-output" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual([]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles the wait with the valid exit code and drops output behind it, even past the total-chars bound", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxTotalChars: 10, maxPreBindFrames: 1000, maxPreBindChars: 1000 },
+    });
+    try {
+      await handle.start();
+      // The worker batches a valid exit with the open reply, then an output
+      // record that would push the cumulative delivered total past the
+      // 10-character bound. The replay sends the exit first, in arrival
+      // order. The exit settles the route, so the replay drops the output
+      // record behind it before the total-chars check ever runs — the
+      // bound violation the check exists to catch never reaches it, because
+      // a real worker process could never emit that output in the first
+      // place.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          exitCode: 0,
+          outputsAfterExit: [{ chunk: "aaaaaaaaaaaa" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual([]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("delivers output that arrived behind a mismatched pre-bind exit and settles with the later valid exit", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The worker batches a mismatched exit, then a genuine output, then
+      // the valid exit, all before the open reply. The mismatched exit
+      // arrives first, but the exact-match gate fails it, so it changes no
+      // state and the replay continues. The output that follows it still
+      // reaches the listener, and the valid exit that follows the output
+      // settles the wait.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          sequence: [
+            { type: "exit", exitCode: 1, sid: "ws-EVIL" },
+            { type: "output", chunk: "genuine-output" },
+            { type: "exit", exitCode: 0 },
+          ],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: 0 });
+      expect(chunks).toEqual(["genuine-output"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("drops a forged pre-bind worker session id sent before the valid bind", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          outputs: [
+            { chunk: "forged", sid: "ws-EVIL" },
+            { chunk: "good" },
+          ],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // Both records queued before the bind, since the host cannot yet check
+      // a worker session id against a route that has not bound one. The
+      // replay applies the exact-match gate against the real bind ("ws-A"),
+      // so the forged record never reaches the listener.
+      expect(chunks).toEqual(["good"]);
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes the route when batched pre-bind records pass the frame-count bound", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxPreBindFrames: 2 },
+    });
+    try {
+      await handle.start();
+      // The worker batches three output notifications with the open reply, so
+      // all three arrive, and queue, before the bind. The third record passes
+      // the frame-count bound, so the host terminalizes the route before the
+      // bind can complete, and the open call itself fails.
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            batchWithOpenReply: true,
+            outputs: [{ chunk: "a" }, { chunk: "b" }, { chunk: "c" }],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes the route when batched pre-bind output passes the character bound", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxPreBindChars: 10 },
+    });
+    try {
+      await handle.start();
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            batchWithOpenReply: true,
+            // 5 + 5 = 10 admits; the third record brings the queued total to
+            // 15, past the 10-character bound, so the host terminalizes the
+            // route before the bind can complete.
+            outputs: [{ chunk: "aaaaa" }, { chunk: "bbbbb" }, { chunk: "ccccc" }],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("charges the retained worker session id characters on the pre-bind output path", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxPreBindChars: 10 },
+    });
+    try {
+      await handle.start();
+      // A 6-character worker session id and one 5-character chunk charge 11
+      // characters against the 10-character bound on the very first record,
+      // even though the chunk alone is under the bound. Without the identifier
+      // charge, this single record would pass.
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            batchWithOpenReply: true,
+            workerSessionId: "ABCDEF",
+            outputs: [{ chunk: "aaaaa" }],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes the route when batched pre-bind exit notifications with a large worker session id pass the character bound", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxPreBindChars: 10 },
+    });
+    try {
+      await handle.start();
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            batchWithOpenReply: true,
+            // An exit record carries no chunk, but it still retains the worker
+            // session id. This 5-character id makes 5 + 5 = 10 admit the first
+            // two exits; the third brings the queued total to 15, past the
+            // 10-character bound, so the host terminalizes the route before
+            // the bind can complete.
+            workerSessionId: "AAAAA",
+            sequence: [
+              { type: "exit", exitCode: 1 },
+              { type: "exit", exitCode: 2 },
+              { type: "exit", exitCode: 3 },
+            ],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles with the first exit code against a repeated pre-bind exit for the same session, behind a filled output queue", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxPreBindFrames: 50 },
+    });
+    try {
+      await handle.start();
+      // Fill the pre-bind queue with 40 output records, then repeat the exit
+      // for the same worker session id after more output arrives. The first
+      // exit settles the route during the replay, so the repeat exit and the
+      // output around it never reach the listener.
+      const fillerOutputs = Array.from({ length: 40 }, (_, index) => ({
+        type: "output" as const,
+        chunk: `filler-${index}`,
+      }));
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          sequence: [
+            ...fillerOutputs,
+            { type: "exit", exitCode: 1 },
+            { type: "output", chunk: "between-exits" },
+            { type: "exit", exitCode: 2 },
+            { type: "output", chunk: "after-repeat" },
+          ],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      // The wait settles with the FIRST exit code, and the exit drops every
+      // output that arrived behind it, so neither "between-exits" nor
+      // "after-repeat" reaches the listener.
+      await expect(session.wait()).resolves.toEqual({ exitCode: 1 });
+      expect(chunks).toEqual(fillerOutputs.map((entry) => entry.chunk));
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("settles with the first exit code against N repeated pre-bind exits for the same session", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The worker sends five repeat exits for the same session before the
+      // bind. The first exit settles the route during the replay, so every
+      // repeat drops there and the wait still settles with the first code.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          workerSessionId: "ws-A",
+          exitCode: 1,
+          extraExits: [
+            { exitCode: 2 },
+            { exitCode: 3 },
+            { exitCode: 4 },
+            { exitCode: 5 },
+          ],
+        }),
+      );
+      await expect(session.wait()).resolves.toEqual({ exitCode: 1 });
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("clears the pre-bind queue on a malformed open reply", async () => {
+    const handle = makeLoginPtyHandle();
+    try {
+      await handle.start();
+      // The malformed reply carries no worker session id, so the host cannot
+      // bind. It terminalizes the route and clears the queued output before
+      // it ever reaches a listener.
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            mode: "malformed-open",
+            batchWithOpenReply: true,
+            outputs: [{ chunk: "leaked" }],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+      // A later open on the same worker starts a fresh route and receives
+      // only its own scripted output, never the cleared queue.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({ mode: "normal", outputs: [{ chunk: "fresh" }] }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await vi.waitFor(() => expect(chunks).toContain("fresh"));
+      expect(chunks).not.toContain("leaked");
+      await session.close();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("clears the pre-bind queue when the worker exits during the open window", async () => {
+    const handle = makeLoginPtyHandle({ autoRestart: false });
+    try {
+      await handle.start();
+      // The fixture emits one output notification, then exits before it ever
+      // sends the open reply. The route never binds. The worker-exit path
+      // must clear the queued output along with the route.
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            mode: "exit-before-open-reply",
+            outputs: [{ chunk: "queued-before-exit" }],
+          }),
+        ),
+      ).rejects.toThrow();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("terminalizes at replay when the queued output would pass the cumulative total-chars bound", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxTotalChars: 10, maxPreBindFrames: 1000, maxPreBindChars: 1000 },
+    });
+    try {
+      await handle.start();
+      // The generous pre-bind bounds admit all three records at intake, so
+      // the bind completes and the replay runs. The replay sends each record
+      // through the same live router an open route uses, so the cumulative
+      // `maxTotalChars` gate still applies: the third record would bring the
+      // delivered total to 15, past the 10-character bound, so the replay
+      // terminalizes the route partway through. The directive carries no exit
+      // notification, so only a mid-replay terminalize can settle the wait;
+      // without the cumulative gate applying during replay, this call would
+      // hang.
+      const session = await handle.openLoginPtySession(
+        ptyOpenInput({
+          batchWithOpenReply: true,
+          outputs: [{ chunk: "aaaaa" }, { chunk: "bbbbb" }, { chunk: "ccccc" }],
+        }),
+      );
+      const chunks: string[] = [];
+      session.onData((chunk) => chunks.push(chunk));
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      // The terminalize clears `route.buffered` by design (a terminalized
+      // login route settles with a null exit code, so buffered data has no
+      // consumer), so even the two records the replay delivered before the
+      // bound tripped never reach the listener.
+      expect(chunks).toEqual([]);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("never logs the raw chunk content, including on the pre-bind overflow path", async () => {
+    const handle = makeLoginPtyHandle({
+      loginPtyLimits: { maxPreBindFrames: 1 },
+    });
+    const secretMarker = "super-secret-login-code-must-never-reach-a-log-line";
+    vi.mocked(logger.warn).mockClear();
+    vi.mocked(logger.error).mockClear();
+    vi.mocked(logger.info).mockClear();
+    vi.mocked(logger.debug).mockClear();
+    try {
+      await handle.start();
+      // The first record admits, then the second passes the frame-count
+      // bound and terminalizes the route. The overflow path logs a fixed
+      // warning that must never carry the chunk text.
+      await expect(
+        handle.openLoginPtySession(
+          ptyOpenInput({
+            batchWithOpenReply: true,
+            outputs: [{ chunk: secretMarker }, { chunk: "overflow" }],
+          }),
+        ),
+      ).rejects.toThrow("LOGIN_PTY_OPEN_FAILED");
+      const loggedText = [
+        ...vi.mocked(logger.warn).mock.calls,
+        ...vi.mocked(logger.error).mock.calls,
+        ...vi.mocked(logger.info).mock.calls,
+        ...vi.mocked(logger.debug).mock.calls,
+      ]
+        .flat()
+        .map((arg) => JSON.stringify(arg))
+        .join("\n");
+      expect(loggedText).not.toContain(secretMarker);
     } finally {
       await handle.stop().catch(() => undefined);
     }

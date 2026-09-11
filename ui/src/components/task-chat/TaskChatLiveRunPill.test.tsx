@@ -89,4 +89,5 @@ describe("TaskChatLiveRunPill", () => {
     expect(pill?.textContent).toContain("for 42 seconds");
     expect(pill?.textContent).toContain("ran 1 command");
   });
+
 });

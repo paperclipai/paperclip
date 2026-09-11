@@ -1,15 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-MIN_NODE_MAJOR=20
-DEFAULT_NODE_MAJOR=22
+MIN_NODE_MAJOR=24
+MIN_NODE_MINOR=11
+MIN_NODE_PATCH=0
+MIN_NODE_VERSION="${MIN_NODE_MAJOR}.${MIN_NODE_MINOR}.${MIN_NODE_PATCH}"
+DEFAULT_NODE_MAJOR=24
 PAPERCLIP_PACKAGE="paperclipai"
 PUBLIC_NPM_REGISTRY="https://registry.npmjs.org"
 HOMEBREW_INSTALL_COMMIT="99e13e96cbbdc1ac1ac09c0a40b450bf219ef3aa"
 HOMEBREW_INSTALL_SHA256="99287f194a8b3c9e6b0203a11a5fa54518be57209343e6bb954dec4635796d9d"
 NODESOURCE_DISTRIBUTIONS_COMMIT="9b431d8ae0f10df272598585855c6eca6c0e1bd2"
-NODESOURCE_DEB_SHA256="575583bbac2fccc0b5edd0dbc03e222d9f9dc8d724da996d22754d6411104fd1"
-NODESOURCE_RPM_SHA256="b0ed2b9b66002e7ee802e8777cf3a92b25f1ecc0129812dc6f59a43a536810cc"
+NODESOURCE_DEB_SHA256="6e3d580f5bd7ccf2aa1e8df8d35c60d78e873c3ff8beb282c9bebd914904ad72"
+NODESOURCE_RPM_SHA256="5550ad302050f887377a0451e720b800466573ebc83392fea80924393dba642b"
 
 CANARY=0
 VERSION=""
@@ -190,19 +193,19 @@ esac
 
 log "Detected $OS_NAME/$ARCH_NAME"
 
-node_major() {
-  local version
+has_supported_node() {
+  local version major minor patch
+  command -v node >/dev/null 2>&1 || return 1
   version="$(node --version 2>/dev/null || true)"
   version="${version#v}"
-  printf '%s' "${version%%.*}"
-}
-
-has_supported_node() {
-  local major
-  command -v node >/dev/null 2>&1 || return 1
-  major="$(node_major)"
-  [[ "$major" =~ ^[0-9]+$ ]] || return 1
-  [ "$major" -ge "$MIN_NODE_MAJOR" ] || return 1
+  IFS=. read -r major minor patch <<< "$version"
+  patch="${patch%%-*}"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ && "$patch" =~ ^[0-9]+$ ]] || return 1
+  if [ "$major" -lt "$MIN_NODE_MAJOR" ] ||
+    { [ "$major" -eq "$MIN_NODE_MAJOR" ] && [ "$minor" -lt "$MIN_NODE_MINOR" ]; } ||
+    { [ "$major" -eq "$MIN_NODE_MAJOR" ] && [ "$minor" -eq "$MIN_NODE_MINOR" ] && [ "$patch" -lt "$MIN_NODE_PATCH" ]; }; then
+    return 1
+  fi
   command -v npm >/dev/null 2>&1 || return 1
   command -v npx >/dev/null 2>&1 || return 1
 }
@@ -339,7 +342,7 @@ if has_supported_node; then
   log "Using Node.js $(node --version)"
 else
   if command -v node >/dev/null 2>&1; then
-    log "Node.js $(node --version 2>/dev/null || printf unknown) is too old; Node.js >= $MIN_NODE_MAJOR is required"
+    log "Node.js $(node --version 2>/dev/null || printf unknown) is too old; Node.js >= $MIN_NODE_VERSION is required"
   else
     log "Node.js was not found"
   fi
@@ -353,7 +356,7 @@ else
   else
     install_node_linux
   fi
-  has_supported_node || fail "Node.js installation finished, but Node.js >= $MIN_NODE_MAJOR with npm/npx is not available"
+  has_supported_node || fail "Node.js installation finished, but Node.js >= $MIN_NODE_VERSION with npm/npx is not available"
   log "Installed Node.js $(node --version)"
 fi
 

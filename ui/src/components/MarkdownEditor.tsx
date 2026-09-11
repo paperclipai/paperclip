@@ -44,13 +44,17 @@ import {
   buildRoutineMentionHref,
   buildUserMentionHref,
 } from "@paperclipai/shared";
-import { Boxes, CalendarClock, Hash, User, X } from "lucide-react";
+import { Boxes, CalendarClock, Flag, Hash, User, X } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 import { applyMentionChipDecoration, clearMentionChipDecoration, parseMentionChipHref } from "../lib/mention-chips";
 import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/mention-aware-link-node";
 import { mentionDeletionPlugin } from "../lib/mention-deletion";
 import { looksLikeMarkdownPaste } from "../lib/markdownPaste";
 import { normalizeMarkdown } from "../lib/normalize-markdown";
+import {
+  escapeUnsupportedAngleBrackets,
+  unescapeAngleBracketEscapes,
+} from "../lib/angle-bracket-markdown";
 import { unescapeBlockquoteMarkers } from "../lib/blockquote-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
@@ -89,6 +93,8 @@ interface MarkdownEditorProps {
   bordered?: boolean;
   /** List of mentionable entities. Enables @-mention autocomplete. */
   mentions?: MentionOption[];
+  /** Capability-aware action commands supplied by the owning composer. */
+  actionCommands?: SlashCommandOption[];
   /** Called on Cmd/Ctrl+Enter */
   onSubmit?: () => void;
   /** Render the rich editor without allowing edits. */
@@ -98,6 +104,7 @@ interface MarkdownEditorProps {
 export interface MarkdownEditorRef {
   focus: () => void;
   insertMarkdown: (markdown: string) => void;
+  clear: () => void;
 }
 
 class MarkdownEditorRichErrorBoundary extends Component<
@@ -149,12 +156,33 @@ function convertHtmlImagesToMarkdown(text: string): string {
   });
 }
 
+/**
+ * Convert a stored value into the exact markdown handed to MDXEditor.
+ *
+ * The angle-bracket escape runs last, after the `<img>` rewrite, because that
+ * rewrite has to match a bare `<img` tag before the escape hides it.
+ */
 function prepareMarkdownForEditor(value: string): string {
   const normalizedLineEndings = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   // Recover escaped blockquotes (`\>`) so `>`-prefixed content renders as a real
   // blockquote in the editor as well as on display (keeps import/export in sync).
   const withBlockquotes = unescapeBlockquoteMarkers(normalizedLineEndings);
-  return convertHtmlImagesToMarkdown(withBlockquotes);
+  const withImages = convertHtmlImagesToMarkdown(withBlockquotes);
+  // The editor runs with `suppressHtmlProcessing`, so a bare `<` that opens an
+  // HTML construct would throw and drop the whole component to raw source.
+  // Escaping those brackets keeps ordinary prose — `<name>`, `</close>` — in the
+  // rich editor. `toStoredMarkdown` reverses it on the way out.
+  return escapeUnsupportedAngleBrackets(withImages);
+}
+
+/**
+ * Convert markdown exported by MDXEditor back into the form this product
+ * stores. Inverse of the rewrites `prepareMarkdownForEditor` applies, so the
+ * stored value never carries the editor's transport escaping — these fields
+ * feed agent prompts and must stay in the clean, human-authored form.
+ */
+function toStoredMarkdown(markdown: string): string {
+  return unescapeAngleBracketEscapes(unescapeBlockquoteMarkers(markdown));
 }
 
 function escapeRegExp(value: string): string {
@@ -221,6 +249,30 @@ function richEditorErrorMessage(error: unknown): string {
   if (typeof error === "string") return error;
   return "Rich editor failed to render";
 }
+
+/**
+ * Why the rich editor was abandoned for this value. Surfaced in the fallback
+ * header so a bug report names the path that failed rather than describing the
+ * same generic message for three unrelated causes.
+ *
+ * - `MDE-PARSE`  the markdown importer rejected the source
+ * - `MDE-RENDER` the editor threw while rendering
+ * - `MDE-EMPTY`  the editor mounted but never painted the content
+ */
+type RichEditorErrorCode = "MDE-PARSE" | "MDE-RENDER" | "MDE-EMPTY";
+
+interface RichEditorError {
+  code: RichEditorErrorCode;
+  message: string;
+}
+
+/**
+ * The editor populates its DOM asynchronously, so "looks empty" is only
+ * trustworthy after it has had time to settle and then stayed empty. The first
+ * check debounces behind mutations; the second confirms the verdict once.
+ */
+const RICH_EDITOR_EMPTY_CHECK_MS = 100;
+const RICH_EDITOR_EMPTY_CONFIRM_MS = 200;
 
 /* ---- Mention detection helpers ---- */
 
@@ -499,10 +551,16 @@ function mentionMarkdown(option: MentionOption): string {
 }
 
 function slashCommandLabel(option: SlashCommandOption): string {
-  return option.kind === "routine" ? `/routine:${option.name}` : `/${option.slug}`;
+  if (option.kind === "routine") return `/routine:${option.name}`;
+  if (option.kind === "action") return `/${option.command}`;
+  return `/${option.slug}`;
 }
 
 function slashCommandMarkdown(option: SlashCommandOption): string {
+  // MDXEditor trims an ordinary trailing space when setMarkdown re-imports the
+  // command. Keep a non-breaking separator in the document so subsequent text
+  // is inserted as the command argument instead of being glued to the token.
+  if (option.kind === "action") return `/${option.command}\u00a0`;
   if (option.kind === "routine") {
     return `[${slashCommandLabel(option)}](${buildRoutineMentionHref(option.routineId)}) `;
   }
@@ -510,7 +568,7 @@ function slashCommandMarkdown(option: SlashCommandOption): string {
 }
 
 function autocompleteMarkdown(option: AutocompleteOption): string {
-  return option.kind === "skill" || option.kind === "routine"
+  return option.kind === "skill" || option.kind === "routine" || option.kind === "action"
     ? slashCommandMarkdown(option)
     : mentionMarkdown(option);
 }
@@ -539,6 +597,7 @@ export function isSameAutocompleteSession(
 }
 
 function autocompleteOptionMatchesLink(option: AutocompleteOption, href: string): boolean {
+  if (option.kind === "action") return false;
   const parsed = parseMentionChipHref(href);
   if (!parsed) return false;
 
@@ -620,6 +679,17 @@ export function placeCaretAfterMentionAnchor(target: HTMLAnchorElement): boolean
   return true;
 }
 
+export function placeCaretAtEditableEnd(target: HTMLElement): boolean {
+  const selection = window.getSelection();
+  if (!selection) return false;
+  const range = document.createRange();
+  range.selectNodeContents(target);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return true;
+}
+
 /** Replace the active autocomplete token in the markdown string with the selected token. */
 function applyMention(markdown: string, state: MentionState, option: AutocompleteOption): string {
   const search = `${state.marker}${state.query}`;
@@ -643,11 +713,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   fileDropTarget = "editor",
   bordered = true,
   mentions,
+  actionCommands = [],
   onSubmit,
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
-  const { slashCommands } = useEditorAutocomplete();
+  const { slashCommands: sharedSlashCommands } = useEditorAutocomplete();
+  const slashCommands = useMemo(
+    () => [...actionCommands, ...sharedSlashCommands],
+    [actionCommands, sharedSlashCommands],
+  );
   const containerRef = useRef<HTMLDivElement>(null);
   const ref = useRef<MDXEditorMethods>(null);
   const fallbackTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -663,7 +738,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   const echoIgnoreMarkdownRef = useRef<string | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [richEditorError, setRichEditorError] = useState<string | null>(null);
+  const [richEditorError, setRichEditorError] = useState<RichEditorError | null>(null);
   const dragDepthRef = useRef(0);
 
   // Stable ref for imageUploadHandler so plugins don't recreate on every render
@@ -735,7 +810,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       // (an editor that was never focused). Focus first — the callback runs
       // once focus (and a selection: caret kept, else rootEnd) is in place.
       const editor = ref.current;
-      editor.focus(() => editor.insertMarkdown(markdown), { defaultSelection: "rootEnd" });
+      // Inserted markdown reaches the same importer as the mounted document, so
+      // it needs the same angle-bracket escaping to survive it.
+      const editorMarkdown = escapeUnsupportedAngleBrackets(markdown);
+      editor.focus(() => editor.insertMarkdown(editorMarkdown), { defaultSelection: "rootEnd" });
       return;
     }
     const textarea = fallbackTextareaRef.current;
@@ -763,6 +841,12 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
     },
     insertMarkdown,
+    clear: () => {
+      latestValueRef.current = "";
+      echoIgnoreMarkdownRef.current = "";
+      ref.current?.setMarkdown("");
+      if (fallbackTextareaRef.current) fallbackTextareaRef.current.value = "";
+    },
   }), [insertMarkdown, richEditorError]);
 
   const autoSizeFallbackTextarea = useCallback((element: HTMLTextAreaElement | null) => {
@@ -781,22 +865,44 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     const container = containerRef.current;
     if (!container) return;
 
-    let timeoutId = 0;
+    let checkTimeoutId = 0;
+    let confirmTimeoutId = 0;
+    let mutationCount = 0;
+
+    const looksEmpty = () => {
+      const editable = container.querySelector('[contenteditable="true"]');
+      if (!(editable instanceof HTMLElement)) return false;
+      const activeElement = document.activeElement;
+      // A focused editor is the user's, not ours to second-guess.
+      if (activeElement === editable || editable.contains(activeElement)) return false;
+      return isRichEditorDomEmpty(editable, editorValue, placeholder);
+    };
+
+    // Two phases. Mounting (and especially remounting after "Retry rich
+    // editor", where focus sits on the button rather than the editor) leaves
+    // the editable momentarily empty, so a single immediate check reads a
+    // still-populating editor as a broken one. Wait, then confirm once; any
+    // mutation in between means content arrived and restarts the whole thing.
     const scheduleCheck = () => {
-      window.clearTimeout(timeoutId);
-      timeoutId = window.setTimeout(() => {
-        const editable = container.querySelector('[contenteditable="true"]');
-        if (!(editable instanceof HTMLElement)) return;
-        const activeElement = document.activeElement;
-        if (activeElement === editable || editable.contains(activeElement)) return;
-        if (isRichEditorDomEmpty(editable, editorValue, placeholder)) {
-          setRichEditorError("Rich editor failed to load content");
-        }
-      }, 0);
+      window.clearTimeout(checkTimeoutId);
+      window.clearTimeout(confirmTimeoutId);
+      checkTimeoutId = window.setTimeout(() => {
+        if (!looksEmpty()) return;
+        const mutationsAtCheck = mutationCount;
+        confirmTimeoutId = window.setTimeout(() => {
+          if (mutationCount !== mutationsAtCheck) return;
+          if (!looksEmpty()) return;
+          setRichEditorError({
+            code: "MDE-EMPTY",
+            message: "Rich editor failed to load content",
+          });
+        }, RICH_EDITOR_EMPTY_CONFIRM_MS);
+      }, RICH_EDITOR_EMPTY_CHECK_MS);
     };
 
     scheduleCheck();
     const observer = new MutationObserver(() => {
+      mutationCount += 1;
       scheduleCheck();
     });
     observer.observe(container, {
@@ -806,7 +912,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     });
 
     return () => {
-      window.clearTimeout(timeoutId);
+      window.clearTimeout(checkTimeoutId);
+      window.clearTimeout(confirmTimeoutId);
       observer.disconnect();
     };
   }, [editorValue, placeholder, richEditorError]);
@@ -836,7 +943,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 latestValueRef.current = updated;
                 echoIgnoreMarkdownRef.current = updated;
                 ref.current?.setMarkdown(updated);
-                onChange(updated);
+                // `updated` derives from `latestValueRef`, which is editor
+                // space; the parent only ever sees stored space.
+                onChange(toStoredMarkdown(updated));
                 requestAnimationFrame(() => {
                   ref.current?.focus(undefined, { defaultSelection: "rootEnd" });
                 });
@@ -1059,13 +1168,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       // update state between the last render and this callback firing).
       const state = mentionStateRef.current;
       if (!state) return false;
+      if (option.kind === "action" && option.disabled) return false;
       const current = latestValueRef.current;
       const next = applyMention(current, state, option);
       if (next !== current) {
         latestValueRef.current = next;
         echoIgnoreMarkdownRef.current = next;
         ref.current?.setMarkdown(next);
-        onChange(next);
+        // `next` derives from `latestValueRef`, which is editor space; the
+        // parent only ever sees stored space.
+        onChange(toStoredMarkdown(next));
       }
 
       const restoreSelection = (attemptsRemaining: number) => {
@@ -1074,6 +1186,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
 
         decorateProjectMentions();
         editable.focus();
+
+        if (option.kind === "action") {
+          placeCaretAtEditableEnd(editable);
+          return;
+        }
 
         const target = findClosestAutocompleteAnchor(editable, option, state);
         if (!target) {
@@ -1163,11 +1280,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     if (!looksLikeMarkdownPaste(rawText)) return;
 
     event.preventDefault();
-    ref.current.insertMarkdown(normalizeMarkdown(rawText));
+    ref.current.insertMarkdown(escapeUnsupportedAngleBrackets(normalizeMarkdown(rawText)));
   }, []);
 
-  const handleRichEditorError = useCallback((error: unknown) => {
-    setRichEditorError(richEditorErrorMessage(error));
+  const handleRichEditorRenderError = useCallback((error: unknown) => {
+    setRichEditorError({ code: "MDE-RENDER", message: richEditorErrorMessage(error) });
+  }, []);
+
+  const handleRichEditorParseError = useCallback((error: unknown) => {
+    setRichEditorError({ code: "MDE-PARSE", message: richEditorErrorMessage(error) });
   }, []);
 
   const mentionMenuPosition = mentionState
@@ -1189,11 +1310,20 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
         )}
       >
         <div className="flex items-start justify-between gap-3 px-3 pt-2 text-xs text-muted-foreground">
-          <p>Rich editor unavailable for this markdown. Showing raw source instead.</p>
+          <p>
+            Rich editor unavailable for this markdown. Showing raw source instead.{" "}
+            <span data-testid="markdown-editor-fallback-code" className="font-mono">
+              {richEditorError.code}
+            </span>
+          </p>
           <button
             type="button"
             className="shrink-0 underline underline-offset-2 hover:text-foreground"
             onClick={() => {
+              // The retry remounts MDXEditor, so re-arm the mount-time guard:
+              // a fresh mount can emit an empty onChange that would otherwise
+              // wipe the parent's value.
+              initialChildOnChangeRef.current = true;
               setRichEditorError(null);
             }}
           >
@@ -1336,7 +1466,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       }}
       onPasteCapture={handlePasteCapture}
     >
-      <MarkdownEditorRichErrorBoundary onError={handleRichEditorError}>
+      <MarkdownEditorRichErrorBoundary onError={handleRichEditorRenderError}>
         <MDXEditor
           ref={setEditorRef}
           markdown={editorValue}
@@ -1346,19 +1476,22 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           readOnly={readOnly}
           onChange={(rawNext) => {
             if (readOnly) return;
-            // Recover blockquotes the exporter escaped as `\>` (see
-            // unescapeBlockquoteMarkers) so a `>`-prefixed line the user typed
-            // always survives as a real blockquote, even when the WYSIWYG
-            // shortcut didn't fire.
-            const next = unescapeBlockquoteMarkers(rawNext);
+            // Reverse the editor-only rewrites: blockquotes the exporter escaped
+            // as `\>` (so a `>`-prefixed line the user typed survives even when
+            // the WYSIWYG shortcut didn't fire), and the `\<` transport escaping
+            // that keeps bare angle brackets off the HTML parser.
+            const next = toStoredMarkdown(rawNext);
             const echo = echoIgnoreMarkdownRef.current;
-            if (echo !== null && next === echo) {
-              echoIgnoreMarkdownRef.current = null;
-              latestValueRef.current = next;
-              return;
-            }
             if (echo !== null) {
               echoIgnoreMarkdownRef.current = null;
+              // `echo` is what we handed to `setMarkdown`, so it is in editor
+              // space while `next` is in stored space. Accept either form —
+              // otherwise every prop sync of a value containing an escaped
+              // bracket reads as a real edit and notifies the parent.
+              if (next === echo || next === toStoredMarkdown(echo)) {
+                latestValueRef.current = echo;
+                return;
+              }
             }
 
             if (initialChildOnChangeRef.current) {
@@ -1369,12 +1502,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 return;
               }
             }
-            latestValueRef.current = next;
+            // `latestValueRef` is compared against `editorValue`, so it has to
+            // hold editor space; storing `next` would make every edit containing
+            // an escaped bracket look like a pending prop sync and trigger a
+            // redundant `setMarkdown` that resets the caret.
+            latestValueRef.current = prepareMarkdownForEditor(next);
             onChange(next);
           }}
           onBlur={() => onBlur?.()}
           onError={(payload) => {
-            handleRichEditorError(payload.error);
+            handleRichEditorParseError(payload.error);
           }}
           className={cn("paperclip-mdxeditor", !bordered && "paperclip-mdxeditor--borderless")}
           contentEditableClassName={cn(
@@ -1415,12 +1552,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 key={option.id}
                 type="button"
                 tabIndex={-1}
+                disabled={option.kind === "action" && option.disabled === true}
+                aria-disabled={option.kind === "action" && option.disabled === true}
+                title={option.kind === "action" && option.disabled ? option.disabledReason ?? undefined : undefined}
                 ref={(node) => {
                   autocompleteOptionRefs.current[i] = node;
                 }}
                 className={cn(
                   "flex items-center gap-2 w-full px-3 py-1.5 text-sm text-left hover:bg-accent/50 transition-colors",
                   i === mentionIndex && "bg-accent",
+                  option.kind === "action" && option.disabled && "cursor-not-allowed opacity-60 hover:bg-transparent",
                 )}
                 onPointerDown={(e) => {
                   // Touch is handled via onTouchStart/onTouchEnd so vertical scrolling
@@ -1441,6 +1582,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               >
                 {option.kind === "routine" ? (
                   <CalendarClock className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                ) : option.kind === "action" ? (
+                  <Flag className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "skill" ? (
                   <Boxes className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 ) : option.kind === "issue" ? (
@@ -1467,7 +1610,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                   </span>
                 ) : (
                   <span className="truncate">
-                    {option.kind === "skill" || option.kind === "routine"
+                    {option.kind === "skill" || option.kind === "routine" || option.kind === "action"
                       ? slashCommandLabel(option)
                       : option.name}
                   </span>
@@ -1495,6 +1638,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 {option.kind === "routine" && (
                   <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
                     Routine
+                  </span>
+                )}
+                {option.kind === "action" && (
+                  <span className="ml-auto max-w-28 truncate text-(length:--text-nano) text-muted-foreground">
+                    {option.disabled ? option.disabledReason : option.description}
                   </span>
                 )}
               </button>

@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS,
+  hidesCompanyPage,
   type Agent,
 } from "@paperclipai/shared";
-import { Shield, ShieldCheck, Trash2, Users } from "lucide-react";
+import { Shield, ShieldCheck, Trash2 } from "lucide-react";
 import { accessApi, type CompanyMember } from "@/api/access";
 import { agentsApi } from "@/api/agents";
 import { ApiError } from "@/api/client";
@@ -19,12 +20,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
-import { Link, Navigate } from "@/lib/router";
+import { Link, Navigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { usePluginSlots } from "@/plugins/slots";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { PageTabBar } from "@/components/PageTabBar";
+import { useHiddenSettings } from "@/hooks/useHiddenSettings";
+import { InvitesSection } from "@/components/access/InvitesSection";
 
 const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
 type EditableMemberStatus = "pending" | "active" | "suspended";
@@ -34,6 +40,27 @@ export function CompanyAccess() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  // Invites render as a tab of this page; `company.invites` hides just that
+  // tab while `company.members` (the route gate) hides the whole page.
+  const { hidden: hiddenSettings } = useHiddenSettings();
+  const hideInvitesTab = hidesCompanyPage(hiddenSettings, "company.invites");
+  const requestedTab = searchParams.get("tab") === "invites" ? "invites" : "members";
+  const activeTab = hideInvitesTab ? "members" : requestedTab;
+  const handleTabChange = (value: string) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value === "invites") {
+          next.set("tab", "invites");
+        } else {
+          next.delete("tab");
+        }
+        return next;
+      },
+      { replace: true },
+    );
+  };
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
   const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
   const [reassignmentTarget, setReassignmentTarget] = useState<string>("__unassigned");
@@ -42,7 +69,7 @@ export function CompanyAccess() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
       { label: "Members" },
     ]);
@@ -201,20 +228,20 @@ export function CompanyAccess() {
   }, [removingMember]);
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company to manage access.</div>;
+    return <div className="text-sm text-muted-foreground">Select an organization to manage access.</div>;
   }
 
   if (membersQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading company access…</div>;
+    return <div className="text-sm text-muted-foreground">Loading organization access…</div>;
   }
 
   if (membersQuery.error) {
     const message =
       membersQuery.error instanceof ApiError && membersQuery.error.status === 403
-        ? "You do not have permission to manage company members."
+        ? "You do not have permission to manage organization members."
         : membersQuery.error instanceof Error
           ? membersQuery.error.message
-          : "Failed to load company members.";
+          : "Failed to load organization members.";
     return <div className="text-sm text-destructive">{message}</div>;
   }
 
@@ -235,43 +262,39 @@ export function CompanyAccess() {
 
   return (
     <div className="max-w-6xl space-y-8">
-      <div className="space-y-3">
-        <div className="flex items-center gap-2">
-          <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-          <h1 className="text-lg font-semibold">Company Members</h1>
-        </div>
-        <p className="max-w-3xl text-sm text-muted-foreground">
-          Manage the people who can work in {selectedCompany?.name}. Members can collaborate across the company by default.
-        </p>
-        <div className="rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
-          Core keeps this page focused on membership, invite approvals, and safe member removal.
-        </div>
+      <div className="flex items-center gap-2">
+        <ShieldCheck className="h-5 w-5 text-muted-foreground" />
+        <h1 className="text-lg font-semibold">Organization Members</h1>
       </div>
 
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="flex flex-col gap-4">
+        {!hideInvitesTab && (
+          <PageTabBar
+            items={[
+              { value: "members", label: "Members" },
+              { value: "invites", label: "Invites" },
+            ]}
+            align="start"
+            value={activeTab}
+            onValueChange={handleTabChange}
+          />
+        )}
+        <TabsContent value="members" className="space-y-8">
+
       {access && !access.currentUserRole && (
-        <div className="rounded-xl border border-amber-500/40 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
-          This account can manage access here through instance-admin privileges, but it does not currently hold an active company membership.
+        <div className="rounded-xl bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+          This account can manage access here through instance-admin privileges, but it does not currently hold an active organization membership.
         </div>
       )}
 
       <section className="space-y-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <Users className="h-4 w-4 text-muted-foreground" />
-            <h2 className="text-base font-semibold">Humans</h2>
-          </div>
-          <p className="max-w-3xl text-sm text-muted-foreground">
-            Manage human company memberships and status here.
-          </p>
-        </div>
-
         {access?.canApproveJoinRequests && pendingHumanJoinRequests.length > 0 ? (
-          <div className="space-y-3 rounded-xl border border-border px-4 py-4">
+          <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="text-sm font-semibold">Pending human joins</h3>
                 <p className="text-sm text-muted-foreground">
-                  Review pending join requests before they become active company members.
+                  Review pending join requests before they become active organization members.
                 </p>
               </div>
               <Badge variant="outline">{pendingHumanJoinRequests.length} pending</Badge>
@@ -309,62 +332,79 @@ export function CompanyAccess() {
           </div>
         ) : null}
 
-        <div className="overflow-hidden rounded-xl border border-border">
-          <div className="grid grid-cols-(--gtc-24) gap-3 border-b border-border px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-            <div>User account</div>
-            <div>Role</div>
-            <div>Status</div>
-            <div className="text-right">Action</div>
-          </div>
-          {members.length === 0 ? (
-            <div className="px-4 py-8 text-sm text-muted-foreground">No user memberships found for this company yet.</div>
-          ) : (
-            members.map((member) => {
-              const removalReason = member.removal?.reason ?? null;
-              const canArchive = member.removal?.canArchive ?? true;
-              return (
-                <div
-                  key={member.id}
-                  className="grid grid-cols-(--gtc-24) gap-3 border-b border-border px-4 py-3 last:border-b-0"
-                >
-                  <div className="min-w-0">
-                    <div className="truncate font-medium">{member.user?.name?.trim() || member.user?.email || member.principalId}</div>
-                    <div className="truncate text-xs text-muted-foreground">{member.user?.email || member.principalId}</div>
-                  </div>
-                  <div className="text-sm">
-                    {member.membershipRole
-                      ? HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS[member.membershipRole]
-                      : "Unset"}
-                  </div>
-                  <div>
-                    <Badge variant={member.status === "active" ? "secondary" : member.status === "suspended" ? "destructive" : "outline"}>
-                      {member.status.replace("_", " ")}
-                    </Badge>
-                  </div>
-                  <div className="space-y-1 text-right">
-                    <div className="flex justify-end gap-2">
-                      <Button size="sm" variant="outline" onClick={() => setEditingMemberId(member.id)}>
-                        Edit
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setRemovingMemberId(member.id)}
-                        disabled={!canArchive}
-                        title={removalReason ?? undefined}
-                      >
-                        <Trash2 className="mr-1 h-3.5 w-3.5" />
-                        Remove
-                      </Button>
-                    </div>
-                    {removalReason ? (
-                      <div className="text-xs text-muted-foreground">{removalReason}</div>
-                    ) : null}
-                  </div>
-                </div>
-              );
-            })
-          )}
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-(--sz-44rem) text-left text-sm">
+            <thead>
+              <tr className="border-b border-border text-muted-foreground">
+                <th className="px-3 py-2 font-medium">Name</th>
+                <th className="px-3 py-2 font-medium">Email</th>
+                <th className="px-3 py-2 font-medium">Role</th>
+                <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 text-right font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {members.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-3 py-8 text-muted-foreground">
+                    No user memberships found for this organization yet.
+                  </td>
+                </tr>
+              ) : members.map((member) => {
+                const removalReason = member.removal?.reason ?? null;
+                const canArchive = member.removal?.canArchive ?? true;
+                const displayName = memberDisplayName(member);
+                return (
+                  <tr key={member.id} className="border-b border-border last:border-b-0">
+                    <td className="px-3 py-3">
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        <Avatar size="sm">
+                          {member.user?.image ? <AvatarImage src={member.user.image} alt={displayName} /> : null}
+                          <AvatarFallback>{memberInitials(member)}</AvatarFallback>
+                        </Avatar>
+                        <span className="truncate font-medium">{displayName}</span>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3 text-muted-foreground">
+                      {member.user?.email || member.principalId}
+                    </td>
+                    <td className="px-3 py-3">
+                      {member.membershipRole
+                        ? HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS[member.membershipRole]
+                        : "Unset"}
+                    </td>
+                    <td className="px-3 py-3">
+                      <Badge variant={member.status === "active" ? "secondary" : member.status === "suspended" ? "destructive" : "outline"}>
+                        {member.status.replace("_", " ")}
+                      </Badge>
+                    </td>
+                    <td className="px-3 py-3 text-right">
+                      <div className="flex justify-end gap-2">
+                        <Button size="sm" variant="outline" onClick={() => setEditingMemberId(member.id)}>
+                          Edit
+                        </Button>
+                        <span
+                          className="inline-flex"
+                          title={!canArchive ? removalReason ?? undefined : undefined}
+                        >
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setRemovingMemberId(member.id)}
+                            disabled={!canArchive}
+                            title={!canArchive ? removalReason ?? undefined : undefined}
+                          >
+                            <Trash2 className="mr-1 h-3.5 w-3.5" />
+                            Remove
+                          </Button>
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </section>
 
@@ -373,14 +413,14 @@ export function CompanyAccess() {
           <DialogHeader>
             <DialogTitle>Edit member</DialogTitle>
             <DialogDescription>
-              Update company role and membership status for {editingMember?.user?.name || editingMember?.user?.email || editingMember?.principalId}.
+              Update organization role and membership status for {editingMember?.user?.name || editingMember?.user?.email || editingMember?.principalId}.
             </DialogDescription>
           </DialogHeader>
           {editingMember && (
             <div className="space-y-5">
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="space-y-2 text-sm">
-                  <span className="font-medium">Company role</span>
+                  <span className="font-medium">Organization role</span>
                   <select
                     className="w-full rounded-md border border-border bg-background px-3 py-2"
                     value={draftRole ?? ""}
@@ -519,6 +559,13 @@ export function CompanyAccess() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+        </TabsContent>
+        {!hideInvitesTab && (
+          <TabsContent value="invites">
+            <InvitesSection />
+          </TabsContent>
+        )}
+      </Tabs>
     </div>
   );
 }
@@ -556,7 +603,7 @@ export function CompanyAccessLegacyRoute() {
           <h1 className="text-lg font-semibold">Advanced Permissions</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Advanced access, scoped assignment, and explicit grant controls are provided by installed company settings extensions.
+          Advanced access, scoped assignment, and explicit grant controls are provided by installed organization settings extensions.
         </p>
       </div>
 
@@ -564,7 +611,7 @@ export function CompanyAccessLegacyRoute() {
         <div className="space-y-2">
           <h2 className="text-sm font-semibold">Advanced permissions unavailable</h2>
           <p className="text-sm text-muted-foreground">
-            Core Paperclip keeps enforcing company boundaries and any existing restrictive policy data, but editing advanced permissions requires an installed extension.
+            Core Paperclip keeps enforcing organization boundaries and any existing restrictive policy data, but editing advanced permissions requires an installed extension.
           </p>
           {errorMessage ? (
             <p className="text-sm text-destructive">Plugin extensions unavailable: {errorMessage}</p>
@@ -575,7 +622,7 @@ export function CompanyAccessLegacyRoute() {
             <Link to="/company/settings/members">Open Members</Link>
           </Button>
           <Button asChild variant="outline">
-            <Link to="/company/settings/invites">Open Invites</Link>
+            <Link to="/company/settings/members?tab=invites">Open Invites</Link>
           </Button>
         </div>
       </div>
@@ -586,6 +633,15 @@ export function CompanyAccessLegacyRoute() {
 function memberDisplayName(member: CompanyMember | null) {
   if (!member) return "this member";
   return member.user?.name?.trim() || member.user?.email || member.principalId;
+}
+
+function memberInitials(member: CompanyMember) {
+  const value = memberDisplayName(member).trim();
+  const parts = value.split(/\s+/).filter(Boolean);
+  if (parts.length > 1) {
+    return `${parts[0]?.[0] ?? ""}${parts.at(-1)?.[0] ?? ""}`.toUpperCase();
+  }
+  return value.slice(0, 2).toUpperCase();
 }
 
 function isAssignableAgent(agent: Agent) {
@@ -620,7 +676,7 @@ function PendingJoinRequestCard({
   onReject: () => void;
 }) {
   return (
-    <div className="rounded-xl border border-border px-4 py-4">
+    <div className="py-3">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="space-y-2">
           <div>

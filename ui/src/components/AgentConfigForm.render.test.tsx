@@ -5,22 +5,41 @@ import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Agent, Environment } from "@paperclipai/shared";
+import type { Agent, Environment, UserSecretDefinition } from "@paperclipai/shared";
+import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
-import { AgentConfigForm, AdapterLoginPanel, type AdapterLoginDescriptor } from "./AgentConfigForm";
+import { AgentConfigForm, AdapterLoginPanel, subtractPersistedOverlay, type AdapterLoginDescriptor } from "./AgentConfigForm";
 import { defaultCreateValues } from "./agent-config-defaults";
+import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
+import { ApiError } from "../api/client";
 
 const mockAgentsApi = vi.hoisted(() => ({
-  adapterModelProfiles: vi.fn(),
   adapterModels: vi.fn(),
   detectModel: vi.fn(),
   list: vi.fn(),
   testEnvironment: vi.fn(),
   startAdapterAuthLogin: vi.fn(),
   getAdapterAuthLoginStatus: vi.fn(),
+  getActiveAdapterAuthLoginSession: vi.fn(),
   cancelAdapterAuthLogin: vi.fn(),
+  startClaudeSetupTokenLogin: vi.fn(),
+  getClaudeSetupTokenLoginStatus: vi.fn(),
+  getActiveClaudeSetupTokenLoginSession: vi.fn(),
+  getClaudeSetupTokenLoginPrompt: vi.fn(),
+  submitClaudeSetupTokenBrowserCode: vi.fn(),
+  completeClaudeSetupTokenLogin: vi.fn(),
+  cancelClaudeSetupTokenLogin: vi.fn(),
+  getClaudeOAuthTokenStatus: vi.fn(),
 }));
+
+// The default resume read for a test that does not exercise resume: no active
+// session for the caller.
+function noActiveSession() {
+  return Promise.reject(
+    new ApiError("Adapter login session not found", 404, { error: "Adapter login session not found" }),
+  );
+}
 
 const mockClipboard = vi.hoisted(() => ({
   copyTextToClipboard: vi.fn(),
@@ -28,6 +47,7 @@ const mockClipboard = vi.hoisted(() => ({
 
 const mockEnvironmentsApi = vi.hoisted(() => ({
   list: vi.fn(),
+  capabilities: vi.fn(),
 }));
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
@@ -39,6 +59,7 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 const mockSecretsApi = vi.hoisted(() => ({
   list: vi.fn(),
   listProposals: vi.fn(),
+  listUserSecretDefinitions: vi.fn(async () => [] as unknown[]),
 }));
 
 vi.mock("../api/agents", () => ({
@@ -79,10 +100,23 @@ vi.mock("../adapters", () => ({
   getUIAdapter: (type: string) => ({
     type,
     label: type === "hermes_gateway" ? "Hermes Gateway" : "Codex",
-    ConfigFields: ({ adapterType }: { adapterType: string }) =>
+    // The stand-in also records the two gates the form resolves for every
+    // adapter, so a test can assert the plumbing without rendering a real
+    // adapter's fields.
+    ConfigFields: ({ adapterType, hideInstructionsFile, managedSandboxOnly }: {
+      adapterType: string;
+      hideInstructionsFile?: boolean;
+      managedSandboxOnly?: boolean;
+    }) =>
       adapterType === "hermes_gateway"
         ? <div data-testid="hermes-gateway-config-fields">Hermes Gateway fields</div>
-        : null,
+        : (
+          <div
+            data-testid="adapter-config-fields"
+            data-hide-instructions-file={String(hideInstructionsFile === true)}
+            data-managed-sandbox-only={String(managedSandboxOnly === true)}
+          />
+        ),
     buildAdapterConfig: (values: { model?: string }) => ({
       model: values.model || undefined,
     }),
@@ -90,15 +124,34 @@ vi.mock("../adapters", () => ({
   }),
 }));
 
+// The projected login capability per adapter type. The server projects these
+// safe scalar fields. `codex_local` drives the displayed-code panel; `claude_local`
+// drives the submitted-browser-code panel. A test overrides this map to add a
+// third adapter with a projected login capability.
+const mockLoginProjections = vi.hoisted(
+  () =>
+    new Map<string, { panelMode: string; timeoutPolicy: string }>([
+      ["codex_local", { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" }],
+      ["grok_local", { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" }],
+      ["claude_local", { panelMode: "submitted_browser_code", timeoutPolicy: "fixed" }],
+      // A third adapter, not a built-in, with a projected displayed-code login.
+      ["vendor_local", { panelMode: "displayed_code", timeoutPolicy: "caller_bounded" }],
+      // A non-built-in adapter with a submitted-browser-code login. Every login
+      // runs on a real pseudo-terminal, so the gate requires the provider pty
+      // capability from the login capability, not the adapter name.
+      ["pty_vendor_local", { panelMode: "submitted_browser_code", timeoutPolicy: "fixed" }],
+    ]),
+);
+
 vi.mock("../adapters/use-adapter-capabilities", () => ({
-  useAdapterCapabilities: () => (adapterType: string) =>
-    adapterType === "hermes_gateway"
+  useAdapterCapabilities: () => (adapterType: string) => {
+    const login = mockLoginProjections.get(adapterType);
+    return adapterType === "hermes_gateway"
       ? {
           supportsInstructionsBundle: false,
           supportsSkills: false,
           supportsLocalAgentJwt: false,
           requiresMaterializedRuntimeSkills: false,
-          supportsModelProfiles: false,
           supportsAcp: false,
         }
       : {
@@ -106,9 +159,10 @@ vi.mock("../adapters/use-adapter-capabilities", () => ({
           supportsSkills: true,
           supportsLocalAgentJwt: true,
           requiresMaterializedRuntimeSkills: false,
-          supportsModelProfiles: true,
           supportsAcp: true,
-        },
+          ...(login ? { login } : {}),
+        };
+  },
 }));
 
 vi.mock("../adapters/use-disabled-adapters", () => ({
@@ -208,6 +262,11 @@ async function renderForm(
   options: {
     showAdapterTestEnvironmentButton?: boolean;
     content?: "configuration" | "secrets";
+    environmentVariablesPlacement?: "configuration" | "secrets";
+    hideInlineSave?: boolean;
+    onDirtyChange?: (dirty: boolean) => void;
+    onSaveActionChange?: (save: (() => void) | null) => void;
+    onCancelActionChange?: (cancel: (() => void) | null) => void;
   } = {},
 ) {
   mockEnvironmentsApi.list.mockResolvedValue(environments);
@@ -215,6 +274,7 @@ async function renderForm(
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
+  const onSave = vi.fn();
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -230,9 +290,14 @@ async function renderForm(
             <AgentConfigForm
               mode="edit"
               agent={makeAgent(agentOverrides)}
-              onSave={vi.fn()}
+              onSave={onSave}
               hidePromptTemplate
               content={options.content}
+              environmentVariablesPlacement={options.environmentVariablesPlacement}
+              hideInlineSave={options.hideInlineSave}
+              onDirtyChange={options.onDirtyChange}
+              onSaveActionChange={options.onSaveActionChange}
+              onCancelActionChange={options.onCancelActionChange}
               showAdapterTypeField={false}
               showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
             />
@@ -243,7 +308,7 @@ async function renderForm(
   });
 
   await flushReact();
-  return { container, root };
+  return { container, root, onSave };
 }
 
 async function renderCreateForm(
@@ -306,6 +371,78 @@ const AUTH_MISSING_RESULT = {
   testedAt: new Date(0).toISOString(),
 };
 
+const VENDOR_AUTH_MISSING_RESULT = {
+  adapterType: "vendor_local",
+  status: "fail",
+  checks: [
+    {
+      code: "adapter_auth_missing",
+      level: "error",
+      message: "The sandbox has no ready authentication.",
+    },
+  ],
+  testedAt: new Date(0).toISOString(),
+};
+
+const GROK_AUTH_MISSING_RESULT = {
+  adapterType: "grok_local",
+  status: "warn",
+  checks: [
+    {
+      code: "grok_hello_probe_auth_required",
+      level: "warn",
+      message: "Grok CLI could not answer the hello probe because authentication is missing.",
+    },
+    {
+      code: "adapter_auth_missing",
+      level: "warn",
+      message: "This environment has no ready authentication for this adapter.",
+    },
+  ],
+  testedAt: new Date(0).toISOString(),
+};
+
+const PTY_VENDOR_AUTH_MISSING_RESULT = {
+  adapterType: "pty_vendor_local",
+  status: "fail",
+  checks: [
+    {
+      code: "adapter_auth_missing",
+      level: "error",
+      message: "The sandbox has no ready authentication.",
+    },
+  ],
+  testedAt: new Date(0).toISOString(),
+};
+
+const CLAUDE_AUTH_MISSING_RESULT = {
+  adapterType: "claude_local",
+  status: "warn",
+  checks: [
+    {
+      code: "claude_hello_probe_auth_required",
+      level: "warn",
+      message: "Claude CLI is installed, but login is required.",
+    },
+    {
+      code: "adapter_auth_missing",
+      level: "warn",
+      message: "The sandbox has no ready authentication for this adapter.",
+    },
+  ],
+  testedAt: new Date(0).toISOString(),
+};
+
+// The provider capabilities the form fetches. Daytona advertises the
+// setup-token login capability; E2B does not. The Claude login panel shows only
+// for a provider with the capability.
+const SANDBOX_CAPABILITIES = getEnvironmentCapabilities(["claude_local", "codex_local"], {
+  sandboxProviders: {
+    daytona: { supportsLoginPty: true, displayName: "Daytona" },
+    e2b: { supportsLoginPty: false, displayName: "E2B" },
+  },
+});
+
 function findButton(container: HTMLElement, label: string) {
   return Array.from(container.querySelectorAll("button")).find(
     (button) => button.textContent?.trim() === label,
@@ -322,14 +459,154 @@ async function renderCodexSandbox(agentOverrides: Partial<Agent> = {}) {
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
       makeEnvironment({
         id: "sandbox-1",
-        name: "E2B",
+        name: "Daytona",
         driver: "sandbox",
-        config: { provider: "e2b" },
+        config: { provider: "daytona" },
       }),
     ],
     { defaultEnvironmentId: "sandbox-1", ...agentOverrides },
     { showAdapterTestEnvironmentButton: true },
   );
+}
+
+// A third adapter, not a built-in, in a sandbox environment. Its projected login
+// capability drives the login affordance and the displayed-code panel. The
+// provider advertises the login pseudo-terminal capability the login needs.
+async function renderVendorSandbox(agentOverrides: Partial<Agent> = {}) {
+  return renderForm(
+    [
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "Daytona",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+      }),
+    ],
+    { adapterType: "vendor_local", defaultEnvironmentId: "sandbox-1", ...agentOverrides },
+    { showAdapterTestEnvironmentButton: true },
+  );
+}
+
+// A Grok agent in a sandbox environment. Its projected login capability
+// drives the login affordance and the displayed-code panel, the same as
+// Codex. The provider advertises the login pseudo-terminal capability the
+// login needs.
+async function renderGrokSandbox(agentOverrides: Partial<Agent> = {}) {
+  return renderForm(
+    [
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "Daytona",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+      }),
+    ],
+    { adapterType: "grok_local", defaultEnvironmentId: "sandbox-1", ...agentOverrides },
+    { showAdapterTestEnvironmentButton: true },
+  );
+}
+
+async function renderClaudeSandbox(agentOverrides: Partial<Agent> = {}) {
+  return renderForm(
+    [
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "Daytona",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+      }),
+    ],
+    { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1", ...agentOverrides },
+    { showAdapterTestEnvironmentButton: true },
+  );
+}
+
+async function renderCreateClaudeSandbox(
+  valueOverrides: Partial<typeof defaultCreateValues> = {},
+) {
+  return renderCreateForm(
+    [
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "Daytona",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+      }),
+    ],
+    { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1", ...valueOverrides },
+    { showAdapterTestEnvironmentButton: true },
+  );
+}
+
+// A create-mode harness that holds the form values in React state. A value
+// patch from the form (a login claim, an environment change) updates the props,
+// so the form re-runs its effects against the new state. The fixed-values
+// `renderCreateForm` harness cannot show the environment-change reset, because
+// its `values` prop never changes. `valuesRef` exposes the current merged
+// values to the test.
+async function renderStatefulCreateClaudeSandbox(environments: Environment[]) {
+  mockEnvironmentsApi.list.mockResolvedValue(environments);
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+
+  const valuesRef: { current: typeof defaultCreateValues } = {
+    current: {
+      ...defaultCreateValues,
+      adapterType: "claude_local",
+      defaultEnvironmentId: "sandbox-1",
+    },
+  };
+
+  function Harness() {
+    const [values, setValues] = useState(valuesRef.current);
+    valuesRef.current = values;
+    return (
+      <AgentConfigForm
+        mode="create"
+        values={values}
+        onChange={(patch) => setValues((prev) => ({ ...prev, ...patch }))}
+        hidePromptTemplate
+        showAdapterTypeField={false}
+        showAdapterTestEnvironmentButton
+      />
+    );
+  }
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <TooltipProvider>
+            <Harness />
+          </TooltipProvider>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+  });
+
+  await flushReact();
+  return { container, root, valuesRef };
+}
+
+async function selectEnvironment(container: HTMLElement, environmentId: string) {
+  const select = container.querySelector("select");
+  await act(async () => {
+    if (select) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+      setter?.call(select, environmentId);
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+  });
+  await flushReact();
 }
 
 async function clickByText(container: HTMLElement, label: string) {
@@ -352,7 +629,20 @@ async function runTest(container: HTMLElement) {
 }
 
 async function startLogin(container: HTMLElement) {
-  await clickByText(container, "Log in");
+  await clickByText(container, "Sign in");
+  await flushReact();
+}
+
+// Flush React effects and pending promises until a condition holds. The Claude
+// login chains a start, a status poll, and a completion read, so a single flush
+// does not settle every state transition.
+async function flushUntil(check: () => boolean, timeoutMs = 4000) {
+  const start = Date.now();
+  while (!check()) {
+    if (Date.now() - start > timeoutMs) break;
+    await flushReact();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
   await flushReact();
 }
 
@@ -360,7 +650,6 @@ describe("AgentConfigForm environment selector", () => {
   let roots: Root[] = [];
 
   beforeEach(() => {
-    mockAgentsApi.adapterModelProfiles.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.detectModel.mockResolvedValue(null);
     mockAgentsApi.list.mockResolvedValue([]);
@@ -373,8 +662,13 @@ describe("AgentConfigForm environment selector", () => {
     mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
     mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
     mockSecretsApi.list.mockResolvedValue([]);
     mockSecretsApi.listProposals.mockResolvedValue([]);
+    // Default: the caller has no active session. A resume test overrides this
+    // with a resolved session body.
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockImplementation(noActiveSession);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockImplementation(noActiveSession);
     mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({
       sessionId: "session-1",
       environmentId: "sandbox-1",
@@ -399,6 +693,39 @@ describe("AgentConfigForm environment selector", () => {
       prompt: null,
     });
     mockClipboard.copyTextToClipboard.mockResolvedValue(undefined);
+    mockAgentsApi.startClaudeSetupTokenLogin.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "starting",
+      expiresAt: null,
+      failure: null,
+      panelMode: "submitted_browser_code",
+      prompt: null,
+    });
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+    });
+    mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockResolvedValue({
+      authorizationUrl: "https://claude.example.test/authorize",
+    });
+    mockAgentsApi.submitClaudeSetupTokenBrowserCode.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+    });
+    mockAgentsApi.completeClaudeSetupTokenLogin.mockResolvedValue({
+      storedSessionId: "stored-session-1",
+    });
+    mockAgentsApi.cancelClaudeSetupTokenLogin.mockResolvedValue(undefined);
+    // Default: the owner has no stored Claude login. A test that needs a stored
+    // value overrides this with a status body.
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
   });
 
   afterEach(async () => {
@@ -412,6 +739,51 @@ describe("AgentConfigForm environment selector", () => {
     vi.clearAllMocks();
   });
 
+  it("promotes environment drafts through the page Save action and discards them through the page Discard action", async () => {
+    const dirty = vi.fn();
+    let save: (() => void) | null = null;
+    let discard: (() => void) | null = null;
+    const result = await renderForm([], {}, {
+      content: "secrets", environmentVariablesPlacement: "secrets", hideInlineSave: true,
+      onDirtyChange: dirty,
+      onSaveActionChange: action => { save = action; },
+      onCancelActionChange: action => { discard = action; },
+    });
+    roots.push(result.root);
+    const add = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Add variable")!;
+    await act(async () => add.click());
+    await act(async () => {
+      setInputValue(result.container.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')!, "ONBOARDING_SMOKE");
+      setInputValue(result.container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!, "true");
+    });
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(true);
+    expect([...result.container.querySelectorAll("button")].some(button => button.textContent?.trim() === "Save")).toBe(false);
+    await act(async () => { await save?.(); });
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ env: { ONBOARDING_SMOKE: { type: "plain", value: "true" } } }) }));
+    await act(async () => discard?.());
+    await flushReact();
+    expect(dirty).toHaveBeenLastCalledWith(false);
+    expect(result.container.querySelector('input[aria-label="Variable name"]')).toBeNull();
+  });
+
+  it("reads and saves Pi thinking effort using the Pi runtime key", async () => {
+    const result = await renderForm([], { adapterType: "pi_local", adapterConfig: { model: "openrouter/anthropic/claude-sonnet-4.6", thinking: "high" } });
+    roots.push(result.root);
+    const effort = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "high")!;
+    expect(effort).toBeTruthy();
+    await act(async () => effort.click());
+    await flushReact();
+    const low = [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "lowlow")!;
+    expect(low).toBeTruthy();
+    await act(async () => low.click());
+    await flushReact();
+    const save = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Save")!;
+    await act(async () => save.click());
+    expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ thinking: "low" }) }));
+    expect(result.onSave.mock.calls[0][0].adapterConfig.effort).toBeUndefined();
+  });
+
   it("hides the environment override when Local is the only configured environment", async () => {
     const result = await renderForm([
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
@@ -420,6 +792,95 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.textContent).not.toContain("Environment override");
     expect(result.container.querySelector("select")).toBeNull();
+  });
+
+  it("renders GPT-6 Astra and its model-specific reasoning efforts", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+      { id: "gpt-6-astra", label: "gpt-6-astra" },
+    ]);
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterConfig: {
+          model: "gpt-6-astra",
+          modelReasoningEffort: "ultra",
+        },
+      },
+    );
+    roots.push(result.root);
+
+    expect(result.container.textContent).toContain("gpt-6-astra");
+    const effortButton = Array.from(result.container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Ultra");
+    expect(effortButton).not.toBeUndefined();
+
+    await act(async () => {
+      effortButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const effortChoices = Array.from(document.body.querySelectorAll("button"))
+      .map((button) => button.textContent?.replace(/\s+/g, "").trim());
+    expect(effortChoices).toContain("Maxmax");
+    expect(effortChoices).toContain("Ultraultra");
+    expect(effortChoices).not.toContain("Minimalminimal");
+  });
+
+  it("removes a legacy incompatible effort when the model changes to Astra", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([
+      { id: "gpt-5.6-sol", label: "gpt-5.6-sol" },
+      { id: "gpt-6-astra", label: "gpt-6-astra" },
+    ]);
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      {
+        adapterConfig: {
+          model: "gpt-5.6-sol",
+          reasoningEffort: "minimal",
+        },
+      },
+    );
+    roots.push(result.root);
+
+    const modelButton = Array.from(result.container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "gpt-5.6-sol");
+    expect(modelButton).not.toBeUndefined();
+    await act(async () => {
+      modelButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const astraOption = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "gpt-6-astra");
+    expect(astraOption).not.toBeUndefined();
+    await act(async () => {
+      astraOption!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const saveButton = Array.from(result.container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Save");
+    expect(saveButton).not.toBeUndefined();
+    await act(async () => {
+      saveButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(result.onSave).toHaveBeenCalledWith({
+      adapterConfig: { model: "gpt-6-astra" },
+      replaceAdapterConfig: true,
+    });
+  });
+
+  it("names the Claude default for new and existing agents without pinning it", async () => {
+    const environments = [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })];
+    const existing = await renderForm(environments, { adapterType: "claude_local", adapterConfig: {} });
+    roots.push(existing.root);
+    const created = await renderCreateForm(environments, { adapterType: "claude_local", model: "" });
+    roots.push(created.root);
+    expect(existing.container.textContent).toContain("Default (claude-opus-5)");
+    expect(created.container.textContent).toContain("Default (claude-opus-5)");
+    expect(existing.onSave).not.toHaveBeenCalled();
   });
 
   it("keeps secret access out of the main Configuration content", async () => {
@@ -490,6 +951,28 @@ describe("AgentConfigForm environment selector", () => {
     expect(selector?.textContent).toContain("E2B · sandbox");
   });
 
+  it("shows the environment override for Kimi local agents", async () => {
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "E2B",
+          driver: "sandbox",
+          config: { provider: "e2b" },
+        }),
+      ],
+      { adapterType: "kimi_local" },
+    );
+    roots.push(result.root);
+
+    const text = result.container.textContent ?? "";
+    const selector = result.container.querySelector("select");
+
+    expect(text).toContain("Environment override");
+    expect(selector?.textContent).toContain("E2B · sandbox");
+  });
+
   it("keeps an existing non-runnable override visible so it can be cleared", async () => {
     const result = await renderForm(
       [
@@ -513,6 +996,27 @@ describe("AgentConfigForm environment selector", () => {
     expect(selector?.textContent).toContain("Fake Sandbox · sandbox");
   });
 
+  it("labels the platform-managed instance default by name, without the driver key", async () => {
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "managed-1" });
+    const result = await renderForm([
+      makeEnvironment({
+        id: "managed-1",
+        name: "Paperclip Computer",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+        metadata: { managedByPaperclip: true },
+      }),
+    ]);
+    roots.push(result.root);
+
+    const selector = result.container.querySelector("select");
+
+    expect(selector?.textContent).toContain("Default: Paperclip Computer");
+    expect(selector?.textContent).toContain("Paperclip Computer");
+    expect(selector?.textContent).not.toContain("(sandbox)");
+    expect(selector?.textContent).not.toContain("· sandbox");
+  });
+
   it("renders non-local adapter config fields in the Adapter card", async () => {
     const result = await renderForm(
       [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
@@ -528,51 +1032,6 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.querySelector('[data-testid="hermes-gateway-config-fields"]')).toBeTruthy();
     expect(result.container.textContent).toContain("Hermes Gateway fields");
-  });
-
-  it("tests both the primary and cheap models when a cheap profile is configured", async () => {
-    const result = await renderForm([
-      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
-    ], {
-      adapterConfig: { model: "gpt-5.4" },
-      runtimeConfig: {
-        modelProfiles: {
-          cheap: {
-            enabled: true,
-            adapterConfig: {
-              model: "gpt-5.4-mini",
-              baseUrl: "https://cheap-models.example.test",
-              provider: "budget-provider",
-            },
-          },
-        },
-      },
-    }, {
-      showAdapterTestEnvironmentButton: true,
-    });
-    roots.push(result.root);
-
-    const testButton = Array.from(result.container.querySelectorAll("button")).find(
-      (button) => button.textContent?.trim() === "Test",
-    );
-    expect(testButton).toBeTruthy();
-
-    await act(async () => {
-      testButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledTimes(2);
-    expect(mockAgentsApi.testEnvironment.mock.calls[0]?.[2]).toMatchObject({
-      adapterConfig: expect.objectContaining({ model: "gpt-5.4" }),
-    });
-    expect(mockAgentsApi.testEnvironment.mock.calls[1]?.[2]).toMatchObject({
-      adapterConfig: expect.objectContaining({
-        model: "gpt-5.4-mini",
-        baseUrl: "https://cheap-models.example.test",
-        provider: "budget-provider",
-      }),
-    });
   });
 
   it("tests a Codex agent after clearing the primary model to the adapter default", async () => {
@@ -708,14 +1167,6 @@ describe("AgentConfigForm environment selector", () => {
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
     ], {
       adapterConfig: { model: "gpt-5.4" },
-      runtimeConfig: {
-        modelProfiles: {
-          cheap: {
-            enabled: true,
-            adapterConfig: { model: "gpt-5.4-mini" },
-          },
-        },
-      },
     }, {
       showAdapterTestEnvironmentButton: true,
     });
@@ -740,11 +1191,203 @@ describe("AgentConfigForm environment selector", () => {
     const result = await renderCodexSandbox();
     roots.push(result.root);
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
 
     await runTest(result.container);
 
-    expect(findButton(result.container, "Log in")).toBeTruthy();
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
+  });
+
+  it("hides the Codex login for a provider without the login pseudo-terminal capability", async () => {
+    // The Codex device login runs on a real pseudo-terminal, so it needs a
+    // provider that advertises the login pseudo-terminal capability. E2B reports
+    // no capability, so the panel stays hidden even after the auth-missing check.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "E2B",
+          driver: "sandbox",
+          config: { provider: "e2b" },
+        }),
+      ],
+      { adapterType: "codex_local", defaultEnvironmentId: "sandbox-1" },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
+  });
+
+  it("shows the login affordance and the displayed-code panel for a third adapter with a projected login capability", async () => {
+    // The adapter is not a built-in. Its projected login capability drives the
+    // login affordance and the panel, so the form reads the capability, not the
+    // adapter name. The displayed-code panel shows the server code.
+    mockAgentsApi.testEnvironment.mockResolvedValue(VENDOR_AUTH_MISSING_RESULT);
+    const result = await renderVendorSandbox();
+    roots.push(result.root);
+
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
+
+    await runTest(result.container);
+
+    // The projected capability gates the login affordance on for the third
+    // adapter.
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
+
+    await startLogin(result.container);
+
+    // The displayed-code panel shows the one-time code and the authentication
+    // URL. It shows no browser-code input, so the dispatcher picked the panel
+    // from the projected `displayed_code` mode.
+    expect(result.container.textContent).toContain("WXYZ-1234");
+    expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
+  });
+
+  it("shows the login affordance and the displayed-code panel for a Grok sandbox with a projected login capability", async () => {
+    // The panel dispatcher reads the projected `displayed_code` mode from the
+    // capability, the same way it does for Codex. It shows the Grok code and
+    // URL.
+    mockAgentsApi.testEnvironment.mockResolvedValue(GROK_AUTH_MISSING_RESULT);
+    const result = await renderGrokSandbox();
+    roots.push(result.root);
+
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
+
+    await startLogin(result.container);
+
+    expect(result.container.textContent).toContain("WXYZ-1234");
+    expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
+  });
+
+  it("hides the Login button before Test and shows it after the adapter_auth_missing check for a Claude sandbox", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
+  });
+
+  it("hides the Login button for a Claude sandbox whose provider lacks the setup-token login capability", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "E2B",
+          driver: "sandbox",
+          config: { provider: "e2b" },
+        }),
+      ],
+      { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1" },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    await runTest(result.container);
+
+    // E2B does not advertise the setup-token login capability, so the panel
+    // stays hidden even after the auth-missing check.
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
+  });
+
+  it("hides the Login button for a Daytona sandbox while the capabilities report no setup-token support", async () => {
+    // Reproduces the reported defect: the Test carries the auth-missing check,
+    // but the capabilities endpoint reports `supportsLoginPty: false`
+    // for Daytona (a stale persisted plugin manifest). The gate hides the
+    // panel. The server-side fix refreshes the persisted manifest so the
+    // capability reports true and the panel shows (see the companion positive
+    // test above).
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockEnvironmentsApi.capabilities.mockResolvedValue(
+      getEnvironmentCapabilities(["claude_local", "codex_local"], {
+        sandboxProviders: {
+          daytona: { supportsLoginPty: false, displayName: "Daytona" },
+        },
+      }),
+    );
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "Daytona",
+          driver: "sandbox",
+          config: { provider: "daytona" },
+        }),
+      ],
+      { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1" },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
+  });
+
+  it("gates a pseudo-terminal login on the provider pty capability for a non-Claude adapter", async () => {
+    // The gate reads the adapter login transport, not the adapter name. This
+    // adapter is not `claude_local`, but its login runs on a pseudo-terminal.
+    // The E2B provider reports no pty capability, so the panel stays hidden even
+    // after the auth-missing check.
+    mockAgentsApi.testEnvironment.mockResolvedValue(PTY_VENDOR_AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "E2B",
+          driver: "sandbox",
+          config: { provider: "e2b" },
+        }),
+      ],
+      { adapterType: "pty_vendor_local", defaultEnvironmentId: "sandbox-1" },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
+  });
+
+  it("shows a pseudo-terminal login for a non-Claude adapter when the provider advertises pty support", async () => {
+    // The same non-Claude pseudo-terminal adapter on Daytona. Daytona advertises
+    // the pty capability, so the panel shows. This confirms the gate follows the
+    // provider capability, not the adapter name.
+    mockAgentsApi.testEnvironment.mockResolvedValue(PTY_VENDOR_AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "Daytona",
+          driver: "sandbox",
+          config: { provider: "daytona" },
+        }),
+      ],
+      { adapterType: "pty_vendor_local", defaultEnvironmentId: "sandbox-1" },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
   });
 
   it("shows the Login button when a parent lifts the test feedback and renders the panel from the descriptor", async () => {
@@ -757,9 +1400,9 @@ describe("AgentConfigForm environment selector", () => {
       makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
       makeEnvironment({
         id: "sandbox-1",
-        name: "E2B",
+        name: "Daytona",
         driver: "sandbox",
-        config: { provider: "e2b" },
+        config: { provider: "daytona" },
       }),
     ]);
 
@@ -812,11 +1455,11 @@ describe("AgentConfigForm environment selector", () => {
     });
     await flushReact();
 
-    expect(findButton(container, "Log in")).toBeFalsy();
+    expect(findButton(container, "Sign in")).toBeFalsy();
 
     await runTest(container);
 
-    expect(findButton(container, "Log in")).toBeTruthy();
+    expect(findButton(container, "Sign in")).toBeTruthy();
   });
 
   it("does not show the Login button when the Test result has no adapter_auth_missing check", async () => {
@@ -825,7 +1468,7 @@ describe("AgentConfigForm environment selector", () => {
 
     await runTest(result.container);
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
   });
 
   it("does not show the Login button when the effective environment is Local", async () => {
@@ -839,7 +1482,74 @@ describe("AgentConfigForm environment selector", () => {
 
     await runTest(result.container);
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
+  });
+
+  it("shows the Login button for an agent with no own environment under the managed-sandbox-only policy", async () => {
+    // The agent has no own environment, so the login target resolves the same
+    // way as the adapter Test target. The managed-sandbox-only policy redirects
+    // that resolution from the hidden local environment to the managed sandbox.
+    // The login affordance must read the managed sandbox, so it shows after the
+    // auth-missing check. A login target that stayed local would hide the panel
+    // for the target the real run uses.
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableEnvironments: true,
+      enableManagedSandboxOnly: true,
+    });
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({
+          id: "local-1",
+          name: "Local",
+          driver: "local",
+          metadata: { defaultForInstance: true },
+        }),
+        makeEnvironment({
+          id: "managed-1",
+          name: "Managed",
+          driver: "sandbox",
+          config: { provider: "daytona" },
+          metadata: { managedByPaperclip: true },
+        }),
+      ],
+      { adapterType: "claude_local", defaultEnvironmentId: null },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
+
+    await runTest(result.container);
+
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
+  });
+
+  it("keeps the Login button hidden under the managed-sandbox-only policy when no managed sandbox is available", async () => {
+    // The policy is on, but no managed sandbox environment exists, so the login
+    // target resolution fails closed. The render catches that failure and
+    // resolves no login environment, so the affordance stays hidden. The Test
+    // surfaces the same case as a fail-closed error.
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableEnvironments: true,
+      enableManagedSandboxOnly: true,
+    });
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderForm(
+      [
+        makeEnvironment({
+          id: "local-1",
+          name: "Local",
+          driver: "local",
+          metadata: { defaultForInstance: true },
+        }),
+      ],
+      { adapterType: "claude_local", defaultEnvironmentId: null },
+      { showAdapterTestEnvironmentButton: true },
+    );
+    roots.push(result.root);
+
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
   });
 
   it("starts a login session for the effective sandbox and shows the code and the authentication URL", async () => {
@@ -873,7 +1583,7 @@ describe("AgentConfigForm environment selector", () => {
     await runTest(result.container);
     await startLogin(result.container);
 
-    expect(result.container.textContent).toContain("Preparing the login");
+    expect(result.container.textContent).toContain("Preparing...");
     expect(result.container.textContent).not.toContain("https://");
   });
 
@@ -890,6 +1600,19 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(mockClipboard.copyTextToClipboard).toHaveBeenCalledWith("WXYZ-1234");
     expect(mockClipboard.copyTextToClipboard).toHaveBeenCalledWith("https://auth.example.test/device");
+
+    // Code above URL, and the numbering agrees. Opening the page is what leaves
+    // this screen for a form that wants the code from it, so the code is read
+    // while it is still in front of you. The panel used to run the other way.
+    const labels = [...result.container.querySelectorAll("div")]
+      .map((el) => el.textContent?.trim())
+      .filter((t) => t === "1. Code" || t === "2. Authentication URL");
+    expect(labels).toEqual(["1. Code", "2. Authentication URL"]);
+
+    const codeIndex = result.container.textContent!.indexOf("WXYZ-1234");
+    const urlIndex = result.container.textContent!.indexOf("https://auth.example.test/device");
+    expect(codeIndex).toBeGreaterThan(-1);
+    expect(urlIndex).toBeGreaterThan(codeIndex);
   });
 
   it("keeps the code and URL visible after a later poll returns no prompt", async () => {
@@ -953,11 +1676,596 @@ describe("AgentConfigForm environment selector", () => {
       "codex_local",
       "session-1",
     );
-    // The panel resets: the Log in button is available again and the code is gone.
-    const login = findButton(result.container, "Log in");
+    // The panel resets: the Sign in button is available again and the code is gone.
+    const login = findButton(result.container, "Sign in");
     expect(login?.disabled).toBe(false);
     expect(findButton(result.container, "Cancel")).toBeFalsy();
     expect(result.container.textContent).not.toContain("WXYZ-1234");
+  });
+
+  it("does not cancel an active login session when the panel unmounts", async () => {
+    // The owner-scoped active-session read and the manual Cancel button now
+    // take over the purpose the unmount cancel used to serve. The connect step
+    // unmounts the panel routinely — Cancel closes the canvas, switching source
+    // remounts it under a new key, closing the wizard drops it — and each of
+    // those unmounts must leave the session reachable by a later mount's resume
+    // read, not release it. Deliberately not pushed to `roots`: this test does
+    // the unmount itself, and that unmount is the thing under test.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    expect(findButton(result.container, "Cancel"), "the login should be active").toBeTruthy();
+
+    mockAgentsApi.cancelAdapterAuthLogin.mockClear();
+    await act(async () => {
+      result.root.unmount();
+    });
+
+    expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
+  });
+
+  it("offers no Cancel in the onboarding chrome", async () => {
+    // The card carried a Cancel beside its instruction, directly above the
+    // step's own Back. Two ways out of one screen is one too many, so the
+    // button went — and with it the only explicit release, since unmounting
+    // deliberately keeps the session alive for a later resume. An abandoned
+    // login is now collected by the server deadline, the same as one abandoned
+    // by closing the tab.
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="codex_local"
+                environmentId="sandbox-1"
+                chrome="onboarding"
+                autoStart
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    // Wait for the card itself, then assert it is actually there: an absence
+    // check over an empty render passes for the wrong reason.
+    await flushUntil(() => container.textContent?.includes("authorization code") ?? false);
+    expect(container.textContent).toContain("authorization code");
+
+    expect(findButton(container, "Cancel")).toBeFalsy();
+    expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
+  });
+  it("reports the account-binding claim upward exactly once when the session authenticates", async () => {
+    // The authenticated owner read can carry the non-secret Codex
+    // account-binding claim. The panel hands it to the caller once; the
+    // caller (the edit-mode form) decides whether a bind is warranted.
+    mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({
+      sessionId: "bind-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: { url: "https://auth.example.test/bind", code: "BIND-1" },
+    });
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "bind-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+      codexAccountBinding: { secretId: "secret-bind-1", companyIdentityDiffers: true },
+    });
+    const onAccountBinding = vi.fn();
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="codex_local"
+                environmentId="sandbox-1"
+                autoStart
+                onAccountBinding={onAccountBinding}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => onAccountBinding.mock.calls.length > 0);
+
+    expect(onAccountBinding).toHaveBeenCalledTimes(1);
+    expect(onAccountBinding).toHaveBeenCalledWith({
+      secretId: "secret-bind-1",
+      companyIdentityDiffers: true,
+    });
+    // The panel narrates the bind as its own state, separate from the login's
+    // success line — the bind is a second save that can still fail.
+    await flushUntil(() => container.textContent?.includes("Agent bound to the signed-in account") ?? false);
+  });
+
+  it("a failed bind save renders an explicit Retry instead of silently latching the claim", async () => {
+    // The status poll stops at the terminal state, so a rejected save behind
+    // a fire-and-forget latch would leave nothing to re-fire the bind. The
+    // panel keeps the claim and offers Retry.
+    mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({
+      sessionId: "bind-session-2",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: { url: "https://auth.example.test/bind", code: "BIND-2" },
+    });
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "bind-session-2",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+      codexAccountBinding: { secretId: "secret-bind-2", companyIdentityDiffers: true },
+    });
+    const onAccountBinding = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("save failed"))
+      .mockResolvedValueOnce(undefined);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="codex_local"
+                environmentId="sandbox-1"
+                autoStart
+                onAccountBinding={onAccountBinding}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => container.textContent?.includes("Could not bind this agent") ?? false);
+    const retry = findButton(container, "Retry");
+    expect(retry).toBeTruthy();
+
+    await act(async () => {
+      retry!.click();
+    });
+    await flushUntil(() => container.textContent?.includes("Agent bound to the signed-in account") ?? false);
+    expect(onAccountBinding).toHaveBeenCalledTimes(2);
+    expect(onAccountBinding).toHaveBeenLastCalledWith({
+      secretId: "secret-bind-2",
+      companyIdentityDiffers: true,
+    });
+  });
+
+  it("a second login in the same mounted panel runs its own bind", async () => {
+    // The terminal state re-enables Sign in without unmounting the panel. The
+    // bind latch is scoped to the session, so a second cross-account login
+    // binds again with ITS claim instead of being silently skipped.
+    mockAgentsApi.startAdapterAuthLogin
+      .mockResolvedValueOnce({
+        sessionId: "rebind-s1",
+        environmentId: "sandbox-1",
+        status: "waiting_for_user",
+        expiresAt: null,
+        failure: null,
+        prompt: { url: "https://auth.example.test/rebind", code: "REBIND-1" },
+      })
+      .mockResolvedValueOnce({
+        sessionId: "rebind-s2",
+        environmentId: "sandbox-1",
+        status: "waiting_for_user",
+        expiresAt: null,
+        failure: null,
+        prompt: { url: "https://auth.example.test/rebind", code: "REBIND-2" },
+      });
+    mockAgentsApi.getAdapterAuthLoginStatus.mockImplementation(
+      async (_companyId: string, _adapterType: string, sid: string) => ({
+        sessionId: sid,
+        environmentId: "sandbox-1",
+        status: "authenticated",
+        expiresAt: null,
+        failure: null,
+        prompt: null,
+        codexAccountBinding: {
+          secretId: sid === "rebind-s2" ? "secret-second" : "secret-first",
+          companyIdentityDiffers: true,
+        },
+      }),
+    );
+    const onAccountBinding = vi.fn().mockResolvedValue(undefined);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="codex_local"
+                environmentId="sandbox-1"
+                autoStart
+                onAccountBinding={onAccountBinding}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => onAccountBinding.mock.calls.length === 1);
+    expect(onAccountBinding).toHaveBeenLastCalledWith({
+      secretId: "secret-first",
+      companyIdentityDiffers: true,
+    });
+
+    const signIn = findButton(container, "Sign in");
+    expect(signIn).toBeTruthy();
+    await act(async () => {
+      signIn!.click();
+    });
+    await flushUntil(() => onAccountBinding.mock.calls.length === 2);
+    expect(onAccountBinding).toHaveBeenLastCalledWith({
+      secretId: "secret-second",
+      companyIdentityDiffers: true,
+    });
+  });
+
+  it("a new Sign in stays disabled while the bind save is in flight", async () => {
+    // Two overlapping bind saves can land out of order — the older save
+    // finishing last would silently revert the agent to the previous account.
+    // The panel serializes at its only entry point: Sign in is disabled until
+    // the current bind settles.
+    mockAgentsApi.startAdapterAuthLogin.mockResolvedValue({
+      sessionId: "serialize-s1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: { url: "https://auth.example.test/serialize", code: "SER-1" },
+    });
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "serialize-s1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+      codexAccountBinding: { secretId: "secret-serialize", companyIdentityDiffers: true },
+    });
+    let releaseSave: (() => void) | null = null;
+    const onAccountBinding = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseSave = resolve;
+        }),
+    );
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="codex_local"
+                environmentId="sandbox-1"
+                autoStart
+                onAccountBinding={onAccountBinding}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => container.textContent?.includes("Binding this agent") ?? false);
+    const signInWhileSaving = findButton(container, "Sign in");
+    expect(signInWhileSaving).toBeTruthy();
+    expect(signInWhileSaving!.disabled).toBe(true);
+
+    await act(async () => {
+      releaseSave?.();
+    });
+    await flushUntil(() => container.textContent?.includes("Agent bound to the signed-in account") ?? false);
+    const signInAfterSave = findButton(container, "Sign in");
+    expect(signInAfterSave!.disabled).toBe(false);
+  });
+
+  it("keeps edits made while the bind save is pending after the agent refresh", async () => {
+    // The bind save runs in the background while the form stays editable. The
+    // agent refresh that follows the save must subtract only what the save
+    // persisted — an edit made during "Binding this agent…" survives as
+    // pending dirty state instead of being wiped with the rest of the overlay.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+      codexAccountBinding: { secretId: "secret-keep-edits", companyIdentityDiffers: true },
+    });
+    const releaseSaves: Array<() => void> = [];
+    const onSave = vi.fn(
+      (_patch: Record<string, unknown>) =>
+        new Promise<void>((resolve) => {
+          releaseSaves.push(resolve);
+        }),
+    );
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "Daytona",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+      }),
+    ]);
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    // The harness swaps the agent object the way the page does after a save
+    // refresh: same mounted form, new agent identity.
+    let refreshAgent: (agent: Agent) => void = () => {};
+    function RefreshHarness() {
+      const [agent, setAgent] = useState(() => makeAgent({ defaultEnvironmentId: "sandbox-1" }));
+      refreshAgent = setAgent;
+      return (
+        <AgentConfigForm
+          mode="edit"
+          agent={agent}
+          onSave={onSave}
+          hidePromptTemplate
+          showAdapterTypeField={false}
+          showAdapterTestEnvironmentButton
+        />
+      );
+    }
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <RefreshHarness />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await runTest(container);
+    await startLogin(container);
+    await flushUntil(() => onSave.mock.calls.length > 0);
+
+    // Rename the agent while the bind save is still in flight.
+    const nameInput = container.querySelector<HTMLInputElement>('input[placeholder="Agent name"]');
+    expect(nameInput).toBeTruthy();
+    setInputValue(nameInput!, "Renamed during bind");
+    await flushReact();
+
+    // An UNRELATED refresh lands while the save is still pending — a poll or
+    // another actor's save, so this agent does NOT carry the binding yet. It
+    // must not consume the persisted snapshot (the bind save's own refresh
+    // still needs it), and it must not subtract the snapshot from the overlay
+    // either: with the binding entry gone from both the overlay and the
+    // refreshed agent, an ordinary Save racing the binding refresh would
+    // replace the config without CODEX_HOME and undo the just-persisted bind.
+    await act(async () => {
+      refreshAgent(makeAgent({ defaultEnvironmentId: "sandbox-1" }));
+    });
+    await flushReact();
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Agent name"]')!.value,
+    ).toBe("Renamed during bind");
+
+    // An ordinary Save in that window still carries the binding.
+    const persistedPatch = onSave.mock.calls[0]![0] as Record<string, unknown>;
+    const saveButton = findButton(container, "Save");
+    expect(saveButton).toBeTruthy();
+    await act(async () => {
+      saveButton!.click();
+    });
+    await flushReact();
+    expect(onSave.mock.calls.length).toBeGreaterThan(1);
+    const racingPatch = onSave.mock.calls.at(-1)![0] as Record<string, unknown>;
+    const racingEnv = (racingPatch.adapterConfig as Record<string, unknown>).env as Record<
+      string,
+      unknown
+    >;
+    expect(racingEnv.CODEX_HOME).toEqual({
+      type: "secret_ref",
+      secretId: "secret-keep-edits",
+      version: "latest",
+    });
+
+    // Both saves land, and the page refreshes the agent with the persisted
+    // binding — the same adapter config the bind save sent.
+    await act(async () => {
+      for (const release of releaseSaves) release();
+    });
+    await flushReact();
+    await act(async () => {
+      refreshAgent(
+        makeAgent({
+          defaultEnvironmentId: "sandbox-1",
+          adapterConfig: persistedPatch.adapterConfig as Record<string, unknown>,
+        }),
+      );
+    });
+    await flushReact();
+
+    // The rename survives the refresh instead of reverting to the refreshed
+    // agent's name.
+    expect(
+      container.querySelector<HTMLInputElement>('input[placeholder="Agent name"]')!.value,
+    ).toBe("Renamed during bind");
+  });
+
+  it("resumes an active login session on mount, adopting its session id and prompt", async () => {
+    // A page reload loses every piece of local state, so the panel must read
+    // the caller's active session and adopt it instead of starting a new one.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockResolvedValue({
+      sessionId: "resumed-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: { url: "https://auth.example.test/resumed", code: "RESUME-1" },
+    });
+    // The prompt survives every owner read while the session stays active, so
+    // the status poll for the resumed session agrees with the resumed read.
+    mockAgentsApi.getAdapterAuthLoginStatus.mockResolvedValue({
+      sessionId: "resumed-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: { url: "https://auth.example.test/resumed", code: "RESUME-1" },
+    });
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() => (result.container.textContent ?? "").includes("RESUME-1"));
+
+    // The prompt from the resumed read shows without a fresh start.
+    expect(result.container.textContent).toContain("RESUME-1");
+    expect(result.container.textContent).toContain("https://auth.example.test/resumed");
+    expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+    // The panel polls the resumed session id, not a freshly started one.
+    expect(mockAgentsApi.getAdapterAuthLoginStatus).toHaveBeenCalledWith(
+      "company-1",
+      "codex_local",
+      "resumed-session-1",
+    );
+    expect(findButton(result.container, "Cancel")).toBeTruthy();
+  });
+
+  it("starts a new session when the active-session read finds none", async () => {
+    // The default mock already answers with no active session (a 404). This
+    // pins the fallback: the panel still waits for the caller's press.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() => mockAgentsApi.getActiveAdapterAuthLoginSession.mock.calls.length > 0);
+    await flushReact();
+
+    expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
+
+    await startLogin(result.container);
+
+    expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledWith("company-1", "codex_local", {
+      environmentId: "sandbox-1",
+    });
+  });
+
+  it("releases a resumed session after an unrecoverable resume error, waiting for the cancel response", async () => {
+    // The active-session read finds a session, but by the time the status poll
+    // reaches the server the session is already gone (a race between the two
+    // reads). The panel cannot resume it, so it releases the reservation
+    // explicitly instead of trusting the 404 alone, and it waits for that
+    // release before it returns to its start state.
+    mockAgentsApi.testEnvironment.mockResolvedValue(AUTH_MISSING_RESULT);
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockResolvedValue({
+      sessionId: "resumed-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      prompt: null,
+    });
+    mockAgentsApi.getAdapterAuthLoginStatus.mockRejectedValue(
+      new ApiError("Adapter login session not found", 404, {
+        error: "Adapter login session not found",
+      }),
+    );
+    let resolveCancel!: () => void;
+    mockAgentsApi.cancelAdapterAuthLogin.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCancel = () => resolve({
+          sessionId: "resumed-session-1",
+          environmentId: "sandbox-1",
+          status: "cancelled",
+          expiresAt: null,
+          failure: null,
+          prompt: null,
+        });
+      }),
+    );
+    const result = await renderCodexSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() =>
+      mockAgentsApi.cancelAdapterAuthLogin.mock.calls.some((call) => call[2] === "resumed-session-1"),
+    );
+
+    // The cancel call fired, but the panel still shows the resumed login as
+    // active because it is waiting for the cancel response.
+    expect(findButton(result.container, "Cancel")).toBeTruthy();
+
+    resolveCancel();
+    await flushUntil(() => findButton(result.container, "Sign in")?.disabled === false);
+
+    expect(findButton(result.container, "Cancel")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
   });
 
   it("announces the login state through a polite live region", async () => {
@@ -995,7 +2303,7 @@ describe("AgentConfigForm environment selector", () => {
     await runTest(result.container);
     await startLogin(result.container);
 
-    const startButton = findButton(result.container, "Log in");
+    const startButton = findButton(result.container, "Sign in");
     expect(startButton).toBeTruthy();
     expect(startButton?.disabled).toBe(true);
     expect(mockAgentsApi.startAdapterAuthLogin).toHaveBeenCalledTimes(1);
@@ -1065,7 +2373,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     await runTest(result.container);
-    expect(findButton(result.container, "Log in")).toBeTruthy();
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
 
     const select = result.container.querySelector("select");
     await act(async () => {
@@ -1077,6 +2385,1477 @@ describe("AgentConfigForm environment selector", () => {
     });
     await flushReact();
 
-    expect(findButton(result.container, "Log in")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")).toBeFalsy();
+  });
+
+  it("shows the authorization URL and a browser-code input for a Claude sandbox", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("https://claude.example.test/authorize"),
+    );
+
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalledWith("company-1", {
+      environmentId: "sandbox-1",
+    });
+    // The panel shows the authorization URL and a browser-code input. It never
+    // shows a server-displayed code.
+    expect(result.container.textContent).toContain("https://claude.example.test/authorize");
+    expect(
+      result.container.querySelector('input[aria-label="Browser code"]'),
+    ).toBeTruthy();
+    // The default prompt carries no advisory: a confidential transport. So the
+    // panel shows no disclaimer.
+    expect(result.container.textContent).not.toContain("not encrypted");
+  });
+
+  it("shows a non-blocking disclaimer when the transport advisory is present", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    // The guarded prompt read reports a non-confidential transport. The server
+    // does not block the login; it attaches the advisory. The panel shows a
+    // disclaimer and the login still proceeds.
+    mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockResolvedValue({
+      authorizationUrl: "https://claude.example.test/authorize",
+      transportAdvisory: { code: "insecure_transport" },
+    });
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() => (result.container.textContent ?? "").includes("not encrypted"));
+
+    // The disclaimer states the transport risk in plain language.
+    expect(result.container.textContent).toContain("not encrypted");
+    expect(result.container.textContent).toContain("clear text");
+    // The login still proceeds: the panel shows the URL and the browser-code
+    // input, so the disclaimer never blocks the flow.
+    expect(result.container.textContent).toContain("https://claude.example.test/authorize");
+    expect(
+      result.container.querySelector('input[aria-label="Browser code"]'),
+    ).toBeTruthy();
+  });
+
+  it("submits one browser code and clears the input after submit", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      Boolean(result.container.querySelector('input[aria-label="Browser code"]')),
+    );
+
+    const input = result.container.querySelector<HTMLInputElement>(
+      'input[aria-label="Browser code"]',
+    );
+    setInputValue(input!, "BROWSERCODE-9");
+    await flushReact();
+    await clickByText(result.container, "Submit");
+    await flushReact();
+
+    expect(mockAgentsApi.submitClaudeSetupTokenBrowserCode).toHaveBeenCalledWith(
+      "company-1",
+      "claude-session-1",
+      "BROWSERCODE-9",
+    );
+    // The panel clears the browser code after submit, so the secret does not
+    // linger in the input.
+    const clearedInput = result.container.querySelector<HTMLInputElement>(
+      'input[aria-label="Browser code"]',
+    );
+    expect(clearedInput?.value).toBe("");
+  });
+
+  it("treats the server stored state as success and captures the stored-session claim", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+    });
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() => (result.container.textContent ?? "").includes("Authenticated"));
+
+    expect(mockAgentsApi.completeClaudeSetupTokenLogin).toHaveBeenCalledWith(
+      "company-1",
+      "claude-session-1",
+    );
+    expect(result.container.textContent).toContain("Authenticated");
+  });
+
+  it("clears the stored-session claim and the fixed binding when the effective environment changes", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+    });
+    const result = await renderStatefulCreateClaudeSandbox([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "Daytona One",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+      }),
+      makeEnvironment({
+        id: "sandbox-2",
+        name: "Daytona Two",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+      }),
+    ]);
+    roots.push(result.root);
+
+    // Sign in on the first sandbox. The stored state adds the fixed
+    // `CLAUDE_CODE_OAUTH_TOKEN` binding and the non-secret claim to the form.
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() => result.valuesRef.current.claudeStoredSessionId != null);
+
+    expect(result.valuesRef.current.claudeStoredSessionId).toBe("stored-session-1");
+    expect("CLAUDE_CODE_OAUTH_TOKEN" in (result.valuesRef.current.envBindings ?? {})).toBe(true);
+
+    // Change the effective environment. The reset drops the claim and the
+    // binding, so the create request cannot send a claim for the old target.
+    await selectEnvironment(result.container, "sandbox-2");
+
+    const values = result.valuesRef.current;
+    expect(values.claudeStoredSessionId ?? null).toBeNull();
+    expect(values.claudeApplyStoredLogin ?? false).toBe(false);
+    expect("CLAUDE_CODE_OAUTH_TOKEN" in (values.envBindings ?? {})).toBe(false);
+
+    // The create request body carries no stale claim.
+    const payload = buildNewAgentHirePayload({
+      name: "Cody",
+      effectiveRole: "Engineer",
+      configValues: values,
+      adapterConfig: {},
+    });
+    expect("storedSessionId" in payload).toBe(false);
+  });
+
+  it("clears the false missing-definition error on the bound row after a login stores the token", async () => {
+    // Regression: the user-secret-definitions list read at page load does not
+    // yet contain the Claude token key, but it is not empty. A stale non-empty
+    // list makes the bound row show a false "no longer exists" error. The login
+    // must invalidate the list so the refetch clears the error.
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+    });
+    const makeDefinition = (key: string): UserSecretDefinition => ({
+      id: `def-${key}`,
+      companyId: "company-1",
+      key,
+      name: key.toUpperCase(),
+      description: null,
+      status: "active",
+      provider: "local_encrypted",
+      managedMode: "paperclip_managed",
+      providerConfigId: null,
+      providerMetadata: null,
+      usageGuidance: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      updatedByAgentId: null,
+      updatedByUserId: null,
+      deletedAt: null,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    });
+    const staleList = [makeDefinition("OTHER_SECRET")];
+    const freshList = [makeDefinition("OTHER_SECRET"), makeDefinition("CLAUDE_CODE_OAUTH_TOKEN")];
+    mockSecretsApi.listUserSecretDefinitions.mockReset();
+    mockSecretsApi.listUserSecretDefinitions
+      .mockResolvedValueOnce(staleList)
+      .mockResolvedValue(freshList);
+
+    const result = await renderStatefulCreateClaudeSandbox([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({
+        id: "sandbox-1",
+        name: "Daytona",
+        driver: "sandbox",
+        config: { provider: "daytona" },
+      }),
+    ]);
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() => result.valuesRef.current.claudeStoredSessionId != null);
+
+    // The login bound the fixed Claude token row.
+    expect("CLAUDE_CODE_OAUTH_TOKEN" in (result.valuesRef.current.envBindings ?? {})).toBe(true);
+
+    // The invalidation refetched the definitions, so the stale list no longer
+    // drives the row.
+    await flushUntil(() => mockSecretsApi.listUserSecretDefinitions.mock.calls.length >= 2);
+    await flushUntil(() => {
+      const inputs = Array.from(result.container.querySelectorAll("input"));
+      return inputs.some((input) => (input as HTMLInputElement).value === "CLAUDE_CODE_OAUTH_TOKEN");
+    });
+
+    // Vacuous-pass guard: the bound row rendered.
+    const inputs = Array.from(result.container.querySelectorAll("input"));
+    expect(inputs.some((input) => (input as HTMLInputElement).value === "CLAUDE_CODE_OAUTH_TOKEN")).toBe(true);
+    // The row shows no false missing-definition error.
+    expect(result.container.textContent ?? "").not.toContain("no longer exists");
+  });
+
+  it("reports the non-secret stored-session claim to the parent on success", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+    });
+    const onStored = vi.fn();
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="claude_local"
+                environmentId="sandbox-1"
+                onStored={onStored}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await startLogin(container);
+    await flushUntil(() => onStored.mock.calls.length > 0);
+
+    expect(onStored).toHaveBeenCalledWith("stored-session-1");
+  });
+
+  it("offers no Cancel in the onboarding chrome", async () => {
+    // The card carried a Cancel beside its instruction, directly above the
+    // step's own Back. Two ways out of one screen is one too many, so the
+    // button went — and with it the only explicit release, since unmounting
+    // deliberately keeps the session alive for a later resume. An abandoned
+    // login is now collected by the server deadline, the same as one abandoned
+    // by closing the tab.
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="claude_local"
+                environmentId="sandbox-1"
+                chrome="onboarding"
+                autoStart
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    // Wait for the card itself, then assert it is actually there: an absence
+    // check over an empty render passes for the wrong reason.
+    await flushUntil(() => container.textContent?.includes("authorization code") ?? false);
+    expect(container.textContent).toContain("authorization code");
+
+    expect(findButton(container, "Cancel")).toBeFalsy();
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).not.toHaveBeenCalled();
+  });
+  it("offers an apply-existing affordance when the status route reports a stored value", async () => {
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue({
+      secretId: "secret-1",
+      latestVersion: 3,
+    });
+    const onApplyStored = vi.fn();
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="claude_local"
+                environmentId="sandbox-1"
+                onApplyStored={onApplyStored}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => Boolean(findButton(container, "Use saved login")));
+
+    await clickByText(container, "Use saved login");
+
+    expect(onApplyStored).toHaveBeenCalledTimes(1);
+    // The panel shows the applied confirmation and hides the apply affordance.
+    await flushUntil(() =>
+      (container.textContent ?? "").includes("The saved Claude login is bound to this agent now."),
+    );
+    expect(findButton(container, "Use saved login")).toBeUndefined();
+    // The apply-existing path never starts a login round trip.
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+  });
+
+  it("does not offer the apply-existing affordance when there is no stored value", async () => {
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
+    const onApplyStored = vi.fn();
+
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AdapterLoginPanel
+                companyId="company-1"
+                adapterType="claude_local"
+                environmentId="sandbox-1"
+                onApplyStored={onApplyStored}
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushUntil(() => Boolean(findButton(container, "Sign in")));
+
+    expect(findButton(container, "Use saved login")).toBeUndefined();
+    expect(onApplyStored).not.toHaveBeenCalled();
+  });
+
+  it("returns to its start state with a fixed message on a server failed state", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "failed",
+      failure: { reason: "rejected", message: "the provider rejected the browser code" },
+      expiresAt: null,
+    });
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("The login did not finish"),
+    );
+
+    // The panel shows a fixed message and returns to its start state. The Log in
+    // button is available again.
+    expect(result.container.textContent).toContain("The login did not finish");
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
+    // The panel never shows the provider failure message, which could carry a
+    // secret.
+    expect(result.container.textContent).not.toContain("the provider rejected the browser code");
+  });
+
+  it("returns to its start state on a server timed_out state", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "timed_out",
+      failure: null,
+      expiresAt: null,
+    });
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("The login did not finish"),
+    );
+
+    expect(result.container.textContent).toContain("The login did not finish");
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
+  });
+
+  it("shows a terminal failure and stops polling on a status 404 from server cleanup", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    // The server removes the row and the in-memory session at once on a
+    // non-stored terminal state, so the status route returns 404 when the login
+    // fails and the cleanup wins the race against the next poll. The panel must
+    // fail loudly instead of holding stale data.
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockRejectedValue(
+      new ApiError("Setup-token login session not found.", 404, {
+        error: "Setup-token login session not found.",
+      }),
+    );
+    // The prompt route also returns 404, so no authorization URL ever surfaces.
+    mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockRejectedValue(
+      new ApiError("Setup-token login session not found.", 404, {
+        error: "Setup-token login session not found.",
+      }),
+    );
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("The login did not finish"),
+    );
+
+    // The panel shows the fixed failure message and returns to its start state.
+    expect(result.container.textContent).toContain("The login did not finish");
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
+
+    // The panel shows no credential material: no authorization URL and no
+    // browser-code input.
+    expect(result.container.textContent).not.toContain("https://claude.example.test/authorize");
+    expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
+
+    // The stale polling stopped. The status call count stays fixed after the
+    // failure, so the panel does not poll a session the server removed.
+    const statusCallsAtFailure = mockAgentsApi.getClaudeSetupTokenLoginStatus.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    await flushReact();
+    expect(mockAgentsApi.getClaudeSetupTokenLoginStatus.mock.calls.length).toBe(
+      statusCallsAtFailure,
+    );
+  });
+
+  it("cancels an active Claude login and returns to its start state", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("https://claude.example.test/authorize"),
+    );
+
+    expect(findButton(result.container, "Cancel")).toBeTruthy();
+
+    await clickByText(result.container, "Cancel");
+    await flushReact();
+
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).toHaveBeenCalledWith(
+      "company-1",
+      "claude-session-1",
+    );
+    // The panel resets: the Sign in button is available again, and the URL and the
+    // browser-code input are gone.
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
+    expect(findButton(result.container, "Cancel")).toBeFalsy();
+    expect(result.container.textContent).not.toContain("https://claude.example.test/authorize");
+    expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
+  });
+
+  it("treats a 404 cancel the same as success and returns to its start state", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    // The server removes a terminal session, so a cancel of an already-terminal
+    // or unknown session can return a 404. The panel must treat that 404 the
+    // same as a successful cancel: clear the session and stop the polls.
+    mockAgentsApi.cancelClaudeSetupTokenLogin.mockRejectedValue(
+      new ApiError("Setup-token login session not found.", 404, {
+        error: "Setup-token login session not found.",
+      }),
+    );
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("https://claude.example.test/authorize"),
+    );
+
+    await clickByText(result.container, "Cancel");
+    await flushReact();
+
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).toHaveBeenCalledWith(
+      "company-1",
+      "claude-session-1",
+    );
+    // The panel reset even though the cancel returned a 404: the Sign in button is
+    // available again, and the URL and the browser-code input are gone. No error
+    // message remains.
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
+    expect(findButton(result.container, "Cancel")).toBeFalsy();
+    expect(result.container.textContent).not.toContain("https://claude.example.test/authorize");
+    expect(result.container.querySelector('input[aria-label="Browser code"]')).toBeFalsy();
+    expect(result.container.textContent).not.toContain("Could not cancel the login.");
+  });
+
+  it("does not cancel an active login session when the panel unmounts", async () => {
+    // The owner-scoped active-session read and the manual Cancel button now
+    // take over the purpose the unmount cancel used to serve, so an unmount
+    // must leave the session reachable by a later mount's resume read.
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("https://claude.example.test/authorize"),
+    );
+    // The login is active before the unmount.
+    expect(findButton(result.container, "Cancel")).toBeTruthy();
+
+    mockAgentsApi.cancelClaudeSetupTokenLogin.mockClear();
+    await act(async () => {
+      result.root.unmount();
+    });
+
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).not.toHaveBeenCalled();
+  });
+
+  it("does not cancel on unmount when no login is active", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+
+    await runTest(result.container);
+    // The panel shows the Sign in button but no session started, so no active
+    // session exists to cancel.
+    expect(findButton(result.container, "Sign in")).toBeTruthy();
+
+    await act(async () => {
+      result.root.unmount();
+    });
+
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).not.toHaveBeenCalled();
+  });
+
+  it("resumes an active Claude login session on mount, adopting its session id and authorization URL", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockResolvedValue({
+      sessionId: "resumed-claude-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      panelMode: "submitted_browser_code",
+      prompt: { authorizationUrl: "https://claude.example.test/resumed" },
+    });
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("https://claude.example.test/resumed"),
+    );
+
+    expect(result.container.textContent).toContain("https://claude.example.test/resumed");
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+    expect(mockAgentsApi.getClaudeSetupTokenLoginStatus).toHaveBeenCalledWith(
+      "company-1",
+      "resumed-claude-session-1",
+    );
+    expect(findButton(result.container, "Cancel")).toBeTruthy();
+  });
+
+  it("starts a new Claude login when the active-session read finds none", async () => {
+    // The default mock already answers with no active session (a 404).
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() => mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mock.calls.length > 0);
+    await flushReact();
+
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
+
+    await startLogin(result.container);
+
+    expect(mockAgentsApi.startClaudeSetupTokenLogin).toHaveBeenCalled();
+  });
+
+  it("cancels a resumed Claude login session with the manual Cancel button", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockResolvedValue({
+      sessionId: "resumed-claude-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      panelMode: "submitted_browser_code",
+      prompt: { authorizationUrl: "https://claude.example.test/resumed" },
+    });
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("https://claude.example.test/resumed"),
+    );
+
+    await clickByText(result.container, "Cancel");
+    await flushReact();
+
+    expect(mockAgentsApi.cancelClaudeSetupTokenLogin).toHaveBeenCalledWith(
+      "company-1",
+      "resumed-claude-session-1",
+    );
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
+    expect(findButton(result.container, "Cancel")).toBeFalsy();
+  });
+
+  it("releases a resumed Claude login after an unrecoverable resume error, waiting for the cancel response", async () => {
+    // The active-session read finds a session, but the status poll for that
+    // resumed session finds it already gone (a race between the two reads).
+    // The panel cannot resume it, so it releases the reservation explicitly
+    // and waits for that release before it returns to its start state.
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockResolvedValue({
+      sessionId: "resumed-claude-session-1",
+      environmentId: "sandbox-1",
+      status: "waiting_for_user",
+      expiresAt: null,
+      failure: null,
+      panelMode: "submitted_browser_code",
+      prompt: null,
+    });
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockRejectedValue(
+      new ApiError("Setup-token login session not found.", 404, {
+        error: "Setup-token login session not found.",
+      }),
+    );
+    mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockRejectedValue(
+      new ApiError("Setup-token login session not found.", 404, {
+        error: "Setup-token login session not found.",
+      }),
+    );
+    let resolveCancel!: () => void;
+    mockAgentsApi.cancelClaudeSetupTokenLogin.mockReturnValue(
+      new Promise((resolve) => {
+        resolveCancel = () => resolve(undefined);
+      }),
+    );
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await flushUntil(() =>
+      mockAgentsApi.cancelClaudeSetupTokenLogin.mock.calls.some(
+        (call) => call[1] === "resumed-claude-session-1",
+      ),
+    );
+
+    // The cancel call fired, but the panel still shows the resumed login as
+    // active because it is waiting for the cancel response.
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(true);
+
+    resolveCancel();
+    await flushUntil(() => findButton(result.container, "Sign in")?.disabled === false);
+
+    expect(findButton(result.container, "Cancel")).toBeFalsy();
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
+  });
+
+  it("stops both polls and shows the timed-out state at the server deadline", async () => {
+    vi.useFakeTimers();
+    // Pin the clock to a known base. The panel arms the timed-out timer from the
+    // status `expiresAt`, so the test clock and the server deadline share one
+    // base time.
+    const baseNowMs = 1_700_000_000_000;
+    vi.setSystemTime(baseNowMs);
+    // The server deadline for this session. It is far longer than the old fixed
+    // 60-second cutoff, so the test proves the panel now tracks `expiresAt`.
+    const serverDeadlineMs = 5 * 60_000;
+    const expiresAtIso = new Date(baseNowMs + serverDeadlineMs).toISOString();
+    try {
+      mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+      // The status never reaches a terminal state, and the prompt route returns
+      // 404 forever, so the authorization URL never surfaces. The status route
+      // carries `expiresAt`, which drives the client cutoff. Without the client
+      // cap the panel would poll both routes forever.
+      mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+        sessionId: "claude-session-1",
+        environmentId: "sandbox-1",
+        status: "waiting_for_user",
+        expiresAt: expiresAtIso,
+        failure: null,
+      });
+      mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockRejectedValue(
+        new ApiError("Setup-token login session not found.", 404, {
+          error: "Setup-token login session not found.",
+        }),
+      );
+
+      // Flush React effects and pending promises while the fake clock advances by
+      // zero, so the mocked queries settle without real time.
+      const flushFake = async () => {
+        await act(async () => {
+          for (let index = 0; index < 6; index += 1) {
+            await Promise.resolve();
+            await vi.advanceTimersByTimeAsync(0);
+          }
+        });
+      };
+      const clickFake = async (container: HTMLElement, label: string) => {
+        const button = findButton(container, label);
+        await act(async () => {
+          button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await flushFake();
+      };
+      const advanceFake = async (ms: number) => {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(ms);
+        });
+        await flushFake();
+      };
+
+      mockEnvironmentsApi.list.mockResolvedValue([
+        makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+        makeEnvironment({
+          id: "sandbox-1",
+          name: "Daytona",
+          driver: "sandbox",
+          config: { provider: "daytona" },
+        }),
+      ]);
+
+      const container = document.createElement("div");
+      document.body.appendChild(container);
+      const root = createRoot(container);
+      roots.push(root);
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+              <TooltipProvider>
+                <AgentConfigForm
+                  mode="edit"
+                  agent={makeAgent({
+                    adapterType: "claude_local",
+                    defaultEnvironmentId: "sandbox-1",
+                  })}
+                  onSave={vi.fn()}
+                  hidePromptTemplate
+                  showAdapterTypeField={false}
+                  showAdapterTestEnvironmentButton
+                />
+              </TooltipProvider>
+            </ToastProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await flushFake();
+
+      await clickFake(container, "Test");
+      await clickFake(container, "Sign in");
+
+      // The login is active: both polls have run at least once.
+      const statusCallsAtStart = mockAgentsApi.getClaudeSetupTokenLoginStatus.mock.calls.length;
+      const promptCallsAtStart = mockAgentsApi.getClaudeSetupTokenLoginPrompt.mock.calls.length;
+      expect(statusCallsAtStart).toBeGreaterThanOrEqual(1);
+      expect(promptCallsAtStart).toBeGreaterThanOrEqual(1);
+
+      // Advance six seconds: both polls run again, so polling is active. The panel
+      // has not timed out yet.
+      await advanceFake(6_000);
+      expect(mockAgentsApi.getClaudeSetupTokenLoginStatus.mock.calls.length).toBeGreaterThan(
+        statusCallsAtStart,
+      );
+      expect(mockAgentsApi.getClaudeSetupTokenLoginPrompt.mock.calls.length).toBeGreaterThan(
+        promptCallsAtStart,
+      );
+      expect(container.textContent).not.toContain("The login timed out");
+
+      // Advance past the old fixed sixty-second cutoff. The panel does NOT time
+      // out now, because the cutoff comes from the server `expiresAt`, which is
+      // far longer than sixty seconds. This proves the fixed 60-second cap is
+      // gone.
+      await advanceFake(60_000);
+      expect(container.textContent).not.toContain("The login timed out");
+
+      // Advance past the server deadline. The panel enters the timed-out state.
+      // Total elapsed after this step is 1 second past `serverDeadlineMs`.
+      await advanceFake(serverDeadlineMs - 66_000 + 1_000);
+      expect(container.textContent).toContain("The login timed out");
+      // The panel released the server session when the cutoff fired. The cancel
+      // frees the per-owner reservation now, so an immediate retry by the same
+      // owner starts a new session and does not hit the "too many active
+      // sessions" cap.
+      expect(mockAgentsApi.cancelClaudeSetupTokenLogin).toHaveBeenCalledWith(
+        "company-1",
+        "claude-session-1",
+      );
+      // The Log in button is available again, and the Cancel button is gone.
+      expect(findButton(container, "Sign in")?.disabled).toBe(false);
+      expect(findButton(container, "Cancel")).toBeFalsy();
+
+      // Both polls stopped. A further ten seconds adds no new poll call.
+      const statusCallsAtTimeout = mockAgentsApi.getClaudeSetupTokenLoginStatus.mock.calls.length;
+      const promptCallsAtTimeout = mockAgentsApi.getClaudeSetupTokenLoginPrompt.mock.calls.length;
+      await advanceFake(10_000);
+      expect(mockAgentsApi.getClaudeSetupTokenLoginStatus.mock.calls.length).toBe(
+        statusCallsAtTimeout,
+      );
+      expect(mockAgentsApi.getClaudeSetupTokenLoginPrompt.mock.calls.length).toBe(
+        promptCallsAtTimeout,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("opens the authorization URL in a new tab with a safe rel", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      Boolean(
+        result.container.querySelector('a[href="https://claude.example.test/authorize"]'),
+      ),
+    );
+
+    const link = result.container.querySelector(
+      'a[href="https://claude.example.test/authorize"]',
+    );
+    expect(link).toBeTruthy();
+    expect(link?.getAttribute("target")).toBe("_blank");
+    expect(link?.getAttribute("rel")).toBe("noreferrer noopener");
+  });
+
+  it("never renders the OAuth token in the Document Object Model", async () => {
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    // The mocks add a token field that the real response never carries. The
+    // panel must render neither the token nor any other unknown response field.
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+      oauthToken: "sk-ant-SECRET-TOKEN",
+    });
+    mockAgentsApi.completeClaudeSetupTokenLogin.mockResolvedValue({
+      storedSessionId: "stored-session-1",
+      oauthToken: "sk-ant-SECRET-TOKEN",
+    });
+    const result = await renderClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() => (result.container.textContent ?? "").includes("Authenticated"));
+
+    expect(result.container.textContent).toContain("Authenticated");
+    expect(result.container.textContent).not.toContain("sk-ant-SECRET-TOKEN");
+  });
+});
+
+const FIXED_CLAUDE_OAUTH_BINDING = {
+  type: "user_secret_ref",
+  key: "CLAUDE_CODE_OAUTH_TOKEN",
+  version: "latest",
+  required: true,
+};
+
+// Read the merged create-mode values after one or more onChange patches. The
+// create form emits a partial patch, so later assertions merge every patch onto
+// the seed values, the same way the parent page keeps the controlled state.
+function mergedCreateValues(
+  seed: Record<string, unknown>,
+  onChange: ReturnType<typeof vi.fn>,
+): Record<string, unknown> {
+  return onChange.mock.calls.reduce(
+    (acc, [patch]) => ({ ...acc, ...(patch as Record<string, unknown>) }),
+    { ...seed },
+  );
+}
+
+describe("AgentConfigForm create-mode Claude OAuth binding", () => {
+  let roots: Root[] = [];
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockImplementation(noActiveSession);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockImplementation(noActiveSession);
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.startClaudeSetupTokenLogin.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "starting",
+      expiresAt: null,
+      failure: null,
+      panelMode: "submitted_browser_code",
+      prompt: null,
+    });
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+    });
+    mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockResolvedValue({
+      authorizationUrl: "https://claude.example.test/authorize",
+    });
+    mockAgentsApi.completeClaudeSetupTokenLogin.mockResolvedValue({
+      storedSessionId: "stored-session-1",
+    });
+    mockAgentsApi.cancelClaudeSetupTokenLogin.mockResolvedValue(undefined);
+    // Default: the owner has no stored Claude login. A test that needs a stored
+    // value overrides this with a status body.
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
+  });
+
+  afterEach(async () => {
+    for (const root of roots) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    roots = [];
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("adds the fixed CLAUDE_CODE_OAUTH_TOKEN binding after the server stored state", async () => {
+    const result = await renderCreateClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      result.onChange.mock.calls.some(
+        ([patch]) => (patch as Record<string, unknown>).claudeStoredSessionId,
+      ),
+    );
+
+    const values = mergedCreateValues(
+      { adapterType: "claude_local", defaultEnvironmentId: "sandbox-1", envBindings: {} },
+      result.onChange,
+    );
+    expect(values.claudeStoredSessionId).toBe("stored-session-1");
+    const bindings = values.envBindings as Record<string, unknown>;
+    expect(bindings.CLAUDE_CODE_OAUTH_TOKEN).toEqual(FIXED_CLAUDE_OAUTH_BINDING);
+  });
+
+  it("preserves unrelated environment bindings when it adds the fixed binding", async () => {
+    const seedBindings = { EXISTING_VAR: { type: "plain", value: "keep-me" } };
+    const result = await renderCreateClaudeSandbox({ envBindings: seedBindings });
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      result.onChange.mock.calls.some(
+        ([patch]) => (patch as Record<string, unknown>).claudeStoredSessionId,
+      ),
+    );
+
+    const values = mergedCreateValues(
+      { adapterType: "claude_local", envBindings: seedBindings },
+      result.onChange,
+    );
+    const bindings = values.envBindings as Record<string, unknown>;
+    expect(bindings.EXISTING_VAR).toEqual({ type: "plain", value: "keep-me" });
+    expect(bindings.CLAUDE_CODE_OAUTH_TOKEN).toEqual(FIXED_CLAUDE_OAUTH_BINDING);
+  });
+
+  it("never puts a token value in the fixed binding", async () => {
+    const result = await renderCreateClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      result.onChange.mock.calls.some(
+        ([patch]) => (patch as Record<string, unknown>).claudeStoredSessionId,
+      ),
+    );
+
+    const values = mergedCreateValues(
+      { adapterType: "claude_local", envBindings: {} },
+      result.onChange,
+    );
+    const bindings = values.envBindings as Record<string, Record<string, unknown>>;
+    // The fixed binding is a reference. It carries no `value` field, so the
+    // adapter config never holds the token value.
+    expect(bindings.CLAUDE_CODE_OAUTH_TOKEN.type).toBe("user_secret_ref");
+    expect(bindings.CLAUDE_CODE_OAUTH_TOKEN).not.toHaveProperty("value");
+    expect(JSON.stringify(values.envBindings)).not.toContain("sk-ant");
+  });
+
+  it("returns to the login start state when the server claim write fails", async () => {
+    mockAgentsApi.completeClaudeSetupTokenLogin.mockRejectedValue(
+      new Error("the provider rejected the stored-session claim"),
+    );
+    const result = await renderCreateClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() =>
+      (result.container.textContent ?? "").includes("The login did not finish"),
+    );
+
+    // The panel shows a fixed, non-secret message and returns to its start state.
+    expect(result.container.textContent).toContain("The login did not finish");
+    expect(findButton(result.container, "Sign in")?.disabled).toBe(false);
+    expect(result.container.textContent).not.toContain(
+      "the provider rejected the stored-session claim",
+    );
+    // A failed claim adds no binding and holds no claim.
+    expect(
+      result.onChange.mock.calls.some(
+        ([patch]) => (patch as Record<string, unknown>).claudeStoredSessionId,
+      ),
+    ).toBe(false);
+  });
+
+});
+
+// Render the edit-mode form for an existing Claude agent in a sandbox
+// environment. The helper returns the `onSave` spy so a test can read the patch
+// that a stored login sends to the agent-update path.
+async function renderEditClaudeSandbox(agentOverrides: Partial<Agent> = {}) {
+  mockEnvironmentsApi.list.mockResolvedValue([
+    makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+    makeEnvironment({
+      id: "sandbox-1",
+      name: "Daytona",
+      driver: "sandbox",
+      config: { provider: "daytona" },
+    }),
+  ]);
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  const onSave = vi.fn().mockResolvedValue(undefined);
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <TooltipProvider>
+            <AgentConfigForm
+              mode="edit"
+              agent={makeAgent({
+                adapterType: "claude_local",
+                defaultEnvironmentId: "sandbox-1",
+                ...agentOverrides,
+              })}
+              onSave={onSave}
+              hidePromptTemplate
+              showAdapterTypeField={false}
+              showAdapterTestEnvironmentButton
+            />
+          </TooltipProvider>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+  });
+
+  await flushReact();
+  return { container, root, onSave };
+}
+
+describe("AgentConfigForm edit-mode Claude OAuth binding", () => {
+  let roots: Root[] = [];
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+    mockAgentsApi.getActiveAdapterAuthLoginSession.mockImplementation(noActiveSession);
+    mockAgentsApi.getActiveClaudeSetupTokenLoginSession.mockImplementation(noActiveSession);
+    mockAgentsApi.testEnvironment.mockResolvedValue(CLAUDE_AUTH_MISSING_RESULT);
+    mockAgentsApi.startClaudeSetupTokenLogin.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "starting",
+      expiresAt: null,
+      failure: null,
+      panelMode: "submitted_browser_code",
+      prompt: null,
+    });
+    mockAgentsApi.getClaudeSetupTokenLoginStatus.mockResolvedValue({
+      sessionId: "claude-session-1",
+      environmentId: "sandbox-1",
+      status: "authenticated",
+      expiresAt: null,
+      failure: null,
+    });
+    mockAgentsApi.getClaudeSetupTokenLoginPrompt.mockResolvedValue({
+      authorizationUrl: "https://claude.example.test/authorize",
+    });
+    mockAgentsApi.completeClaudeSetupTokenLogin.mockResolvedValue({
+      storedSessionId: "stored-session-1",
+    });
+    mockAgentsApi.cancelClaudeSetupTokenLogin.mockResolvedValue(undefined);
+    // Default: the owner has no stored Claude login. A test that needs a stored
+    // value overrides this with a status body.
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
+  });
+
+  afterEach(async () => {
+    for (const root of roots) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    roots = [];
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("adds the fixed CLAUDE_CODE_OAUTH_TOKEN binding to the agent and persists it", async () => {
+    const result = await renderEditClaudeSandbox();
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() => result.onSave.mock.calls.length > 0);
+
+    // A stored login sends one agent-update patch. The patch replaces the adapter
+    // config, and its env holds the fixed binding, so the agent keeps the binding
+    // without a manual step.
+    const patch = result.onSave.mock.calls.at(-1)![0] as Record<string, unknown>;
+    expect(patch.replaceAdapterConfig).toBe(true);
+    const adapterConfig = patch.adapterConfig as Record<string, unknown>;
+    const bindings = adapterConfig.env as Record<string, unknown>;
+    expect(bindings.CLAUDE_CODE_OAUTH_TOKEN).toEqual(FIXED_CLAUDE_OAUTH_BINDING);
+    // The persisted patch never carries a token value.
+    expect(JSON.stringify(adapterConfig.env)).not.toContain("sk-ant");
+    // An update can never consume the fresh login's stored-session claim -- only
+    // create and hire can, per `enforceClaudeOAuthBindingClaim`. So a save that
+    // introduces the binding through an update must set `applyStoredClaudeLogin`,
+    // or the server rejects the patch with the fixed claim error even though the
+    // login already stored the token. Regression coverage for that gap.
+    expect(patch.applyStoredClaudeLogin).toBe(true);
+  });
+
+  it("keeps every unrelated existing binding when it adds the fixed binding", async () => {
+    const result = await renderEditClaudeSandbox({
+      adapterConfig: { env: { EXISTING_VAR: { type: "plain", value: "keep-me" } } },
+    });
+    roots.push(result.root);
+
+    await runTest(result.container);
+    await startLogin(result.container);
+    await flushUntil(() => result.onSave.mock.calls.length > 0);
+
+    const patch = result.onSave.mock.calls.at(-1)![0] as Record<string, unknown>;
+    const adapterConfig = patch.adapterConfig as Record<string, unknown>;
+    const bindings = adapterConfig.env as Record<string, unknown>;
+    expect(bindings.EXISTING_VAR).toEqual({ type: "plain", value: "keep-me" });
+    expect(bindings.CLAUDE_CODE_OAUTH_TOKEN).toEqual(FIXED_CLAUDE_OAUTH_BINDING);
+  });
+
+});
+
+describe("AgentConfigForm managed-sandbox-only host surfaces", () => {
+  let roots: Root[] = [];
+
+  const MANAGED_AGENT_CONFIG = {
+    cwd: "/srv/agents/cody",
+    command: "claude",
+    engine: "acp",
+    agentCommand: "claude-agent-acp",
+    stateDir: "/srv/agents/cody/acp-state",
+  };
+
+  function setManagedSandboxOnly(enabled: boolean) {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableEnvironments: true,
+      enableManagedSandboxOnly: enabled,
+    });
+  }
+
+  /** Every `Field` renders its label in a `<label>`, so this reads the form. */
+  function fieldLabels(container: HTMLElement) {
+    return Array.from(container.querySelectorAll("label")).map((label) => label.textContent?.trim() ?? "");
+  }
+
+  function choosePathButtons(container: HTMLElement) {
+    return Array.from(container.querySelectorAll("button")).filter(
+      (button) => button.textContent?.trim() === "Choose",
+    );
+  }
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+    mockAgentsApi.getClaudeOAuthTokenStatus.mockResolvedValue(null);
+    setManagedSandboxOnly(false);
+  });
+
+  afterEach(async () => {
+    for (const root of roots) {
+      await act(async () => {
+        root.unmount();
+      });
+    }
+    roots = [];
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("shows the host path and execution-engine fields when the policy is off", async () => {
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "claude_local", adapterConfig: MANAGED_AGENT_CONFIG },
+    );
+    roots.push(result.root);
+
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
+    const labels = fieldLabels(result.container);
+    expect(labels).toContain("Working directory (deprecated)");
+    expect(labels).toContain("Command");
+    expect(labels).toContain("Execution engine");
+    expect(labels).toContain("ACP server command");
+    expect(labels).toContain("ACP state directory");
+    expect(choosePathButtons(result.container).length).toBeGreaterThan(0);
+
+    const adapterFields = result.container.querySelector('[data-testid="adapter-config-fields"]');
+    expect(adapterFields?.getAttribute("data-managed-sandbox-only")).toBe("false");
+    expect(adapterFields?.getAttribute("data-hide-instructions-file")).toBe("false");
+  });
+
+  it("hides the host path and execution-engine fields for claude_local when the policy is on", async () => {
+    setManagedSandboxOnly(true);
+    const result = await renderForm(
+      [makeEnvironment({ id: "managed-1", name: "Managed", driver: "sandbox", config: { provider: "daytona" } })],
+      { adapterType: "claude_local", adapterConfig: MANAGED_AGENT_CONFIG },
+    );
+    roots.push(result.root);
+
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
+    const labels = fieldLabels(result.container);
+    expect(labels).not.toContain("Working directory (deprecated)");
+    expect(labels).not.toContain("Command");
+    expect(labels).not.toContain("Execution engine");
+    expect(labels).not.toContain("ACP server command");
+    expect(labels).not.toContain("ACP state directory");
+    expect(choosePathButtons(result.container)).toHaveLength(0);
+    // The stored values stay untouched: hiding is presentation, and an import
+    // that carries adapter configuration from another instance must still save.
+    expect(result.container.textContent).not.toContain("/srv/agents/cody");
+  });
+
+  it("keeps the non-path ACP controls visible when the policy hides the engine choice", async () => {
+    setManagedSandboxOnly(true);
+    const result = await renderForm(
+      [makeEnvironment({ id: "managed-1", name: "Managed", driver: "sandbox", config: { provider: "daytona" } })],
+      { adapterType: "claude_local", adapterConfig: MANAGED_AGENT_CONFIG },
+    );
+    roots.push(result.root);
+
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
+    const labels = fieldLabels(result.container);
+    expect(labels).toContain("ACP session mode");
+    expect(labels).toContain("ACP non-interactive permissions");
+  });
+
+  it("keeps the host-path fields hidden while the policy is still loading", async () => {
+    // A cold cache resolves the policy to false on the first render. The gate
+    // fails closed so a managed instance never flashes a stored host path.
+    mockInstanceSettingsApi.getExperimental.mockImplementation(() => new Promise(() => {}));
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { adapterType: "claude_local", adapterConfig: MANAGED_AGENT_CONFIG },
+    );
+    roots.push(result.root);
+
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
+    const labels = fieldLabels(result.container);
+    expect(labels).not.toContain("Working directory (deprecated)");
+    expect(labels).not.toContain("Command");
+    expect(labels).not.toContain("Execution engine");
+    expect(choosePathButtons(result.container)).toHaveLength(0);
+    expect(result.container.textContent).not.toContain("/srv/agents/cody");
+  });
+
+  it("hides the command field and forces the instructions-file gate for codex_local when the policy is on", async () => {
+    setManagedSandboxOnly(true);
+    const result = await renderForm(
+      [makeEnvironment({ id: "managed-1", name: "Managed", driver: "sandbox", config: { provider: "daytona" } })],
+      { adapterType: "codex_local", adapterConfig: MANAGED_AGENT_CONFIG },
+    );
+    roots.push(result.root);
+
+    await act(async () => {
+      for (const button of result.container.querySelectorAll("button")) {
+        if (["Advanced", "Advanced Run Policy"].includes(button.textContent?.trim() ?? "")) button.click();
+      }
+    });
+    await flushReact();
+    const labels = fieldLabels(result.container);
+    expect(labels).not.toContain("Working directory (deprecated)");
+    expect(labels).not.toContain("Command");
+    expect(choosePathButtons(result.container)).toHaveLength(0);
+
+    const adapterFields = result.container.querySelector('[data-testid="adapter-config-fields"]');
+    expect(adapterFields?.getAttribute("data-managed-sandbox-only")).toBe("true");
+    expect(adapterFields?.getAttribute("data-hide-instructions-file")).toBe("true");
+  });
+});
+
+describe("subtractPersistedOverlay", () => {
+  const overlayWith = (adapterConfig: Record<string, unknown>) => ({
+    identity: {},
+    adapterConfig,
+    heartbeat: {},
+    debug: {},
+    runtime: {},
+  });
+
+  it("drops an entry whose value is structurally equal even with a new reference", () => {
+    // An edit-then-restore rebuilds the env object, so a reference compare
+    // would keep it falsely dirty after the refresh subtracts the snapshot —
+    // a false "Unsaved changes" state and a redundant full-config save.
+    const persisted = overlayWith({
+      env: { CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" } },
+    });
+    const current = overlayWith({
+      env: { CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" } },
+    });
+    expect(subtractPersistedOverlay(current, persisted).adapterConfig).toEqual({});
+  });
+
+  it("keeps an entry the user changed after the snapshot", () => {
+    const persisted = overlayWith({
+      env: { CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" } },
+    });
+    const current = overlayWith({
+      env: {
+        CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" },
+        EXTRA: { type: "plain", value: "added-during-save" },
+      },
+    });
+    expect(subtractPersistedOverlay(current, persisted).adapterConfig).toEqual({
+      env: {
+        CODEX_HOME: { type: "secret_ref", secretId: "s-1", version: "latest" },
+        EXTRA: { type: "plain", value: "added-during-save" },
+      },
+    });
+  });
+
+  it("keeps an entry the snapshot never carried", () => {
+    const persisted = overlayWith({});
+    const current = overlayWith({ model: "gpt-5.5" });
+    expect(subtractPersistedOverlay(current, persisted).adapterConfig).toEqual({
+      model: "gpt-5.5",
+    });
+  });
+
+  it("compares arrays structurally", () => {
+    const persisted = overlayWith({ args: ["--flag", "value"] });
+    const equal = overlayWith({ args: ["--flag", "value"] });
+    const changed = overlayWith({ args: ["--flag", "other"] });
+    expect(subtractPersistedOverlay(equal, persisted).adapterConfig).toEqual({});
+    expect(subtractPersistedOverlay(changed, persisted).adapterConfig).toEqual({
+      args: ["--flag", "other"],
+    });
   });
 });

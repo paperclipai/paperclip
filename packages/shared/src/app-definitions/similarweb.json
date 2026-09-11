@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "slug": "similarweb",
+  "name": "Similarweb",
+  "description": "Connect Similarweb's provider-hosted MCP server.",
+  "categories": [
+    "analytics"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/similarweb.svg",
+    "darkLogoUrl": "/brands/apps/similarweb-dark.svg"
+  },
+  "urlPatterns": [
+    "https://mcp.similarweb.com/*"
+  ],
+  "docsUrl": "https://developers.similarweb.com/docs/similarweb-mcp",
+  "methods": [
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://mcp.similarweb.com"
+      },
+      "guidanceMd": "Use a customer-created Similarweb key. A Similarweb subscription with API access and an API key.",
+      "riskTier": "S2",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Similarweb API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Similarweb API key",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "api-key",
+        "prefix": null
+      },
+      "consoleLinks": {
+        "keys": "https://developers.similarweb.com/docs/similarweb-mcp",
+        "docs": "https://developers.similarweb.com/docs/similarweb-mcp"
+      },
+      "warnings": [
+        "A Similarweb subscription with API access and an API key."
+      ]
+    }
+  ]
+}

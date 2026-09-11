@@ -19,6 +19,10 @@ const PLAYWRIGHT_CHANNEL = process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL;
 
 process.env.PAPERCLIP_HOME = PAPERCLIP_HOME;
 process.env.PAPERCLIP_CONFIG = PAPERCLIP_CONFIG;
+// Specs that mint agent JWTs in-process (via createLocalAgentJwt) must derive
+// the same per-instance signing key as the webServer, or verification fails
+// with a 401 instead of authenticating as the agent.
+process.env.PAPERCLIP_INSTANCE_ID = PAPERCLIP_INSTANCE_ID;
 process.env.PAPERCLIP_AGENT_JWT_SECRET = PAPERCLIP_AGENT_JWT_SECRET;
 process.env.PAPERCLIP_DECISION_SIGNING_SECRET = PAPERCLIP_DECISION_SIGNING_SECRET;
 process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = PAPERCLIP_TOOL_ACTION_SIGNING_SECRET;
@@ -28,7 +32,7 @@ export default defineConfig({
   testMatch: "**/*.spec.ts",
   // These suites target dedicated multi-user configurations/ports and are
   // intentionally not part of the default local_trusted e2e run.
-  testIgnore: ["multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
+  testIgnore: ["in-feed-native/**", "multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
   timeout: 60_000,
   retries: 0,
   // All specs share one throwaway server, and several toggle instance-level
@@ -66,6 +70,8 @@ export default defineConfig({
       ...process.env,
       NODE_ENV: "test",
       PORT: String(PORT),
+      PAPERCLIP_OPEN_ON_LISTEN: "false",
+      PAPERCLIP_API_URL: BASE_URL,
       PAPERCLIP_HOME,
       PAPERCLIP_INSTANCE_ID,
       PAPERCLIP_CONFIG,

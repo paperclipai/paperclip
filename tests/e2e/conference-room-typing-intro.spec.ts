@@ -18,7 +18,6 @@ import {
  * exactly that failing condition.
  */
 
-const MISSION = "Verify the first-task launch survives the wizard handoff.";
 const FIRST_TASK_TITLE = "Paperclip onboarding";
 
 /**
@@ -70,25 +69,39 @@ async function runOnboardingWizard(page: Page, companyName: string) {
   if (await startBtn.count()) await startBtn.first().click();
 
   // Step 0: front door (skipped when the wizard opens on the create path).
-  const frontDoor = page.getByText("Build a new company");
+  const frontDoor = page.getByText("Build a new organization");
   if (await frontDoor.count()) await frontDoor.first().click();
 
   // Step 1: company name.
-  await page.getByPlaceholder("Acme Corp").fill(companyName);
-  await page.getByRole("button", { name: /^Next/ }).click();
+  await page.getByPlaceholder("e.g. Northwind Labs").fill(companyName);
+  await page.getByRole("button", { name: /^Continue/ }).click();
 
-  // Step 2: mission (direct path default).
-  await page.getByPlaceholder("What is your team trying to achieve?").fill(MISSION);
-  await page.getByRole("button", { name: /Confirm mission/ }).click();
+  // Step 1's "Next" creates the company; the mission step no longer runs.
 
-  // Step 3: lead name (prefilled) → Next.
-  await page.waitForSelector('input[placeholder="Chief of staff"]', {
-    timeout: 15_000,
-  });
-  await page.getByRole("button", { name: /^Next/ }).click();
+  // Step 3: name the agent. The role picker is gone — the arc asks for a
+  // name and hires under the neutral `general` role.
+  await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
+  await page.locator("#onboarding-agent-name").fill("Ada");
+  await page.getByRole("button", { name: /^Next$/ }).click();
 
-  // Step 4: adapter (claude_local default); heartbeat is intercepted.
-  await page.getByRole("button", { name: /^Connect$/ }).click();
+  // Step 4: pick a model source, then advance. Nothing is selected on arrival
+  // — the row is a question, not a confirmation — so the CTA is disabled until
+  // a tile is pressed. By role rather than by label: which adapters the tiles
+  // offer depends on the registry this environment reports.
+  const source = page.getByRole("radio").first();
+  await source.waitFor({ timeout: 30_000 });
+  await source.click();
+
+  // "Connect", not "Next": this step's button starts the sign-in where there
+  // is one to start, so it is named for what it does. Here there is none —
+  // this instance has no sandbox environment, so the step has no login to
+  // offer and Connect goes straight to the hire.
+  //
+  // Waited on for enabled rather than for visible: it is already on screen,
+  // disabled, and clicking a disabled button raises nothing and does nothing.
+  const connectNext = page.getByRole("button", { name: /^Connect$/ });
+  await expect(connectNext).toBeEnabled({ timeout: 30_000 });
+  await connectNext.click();
 
   // Step 5: review → Get started creates the first task and opens its
   // detail page.

@@ -5,7 +5,7 @@ import {
   SUMMARY_SLOT_STATUSES,
 } from "../constants.js";
 
-const optionalScopeIdSchema = z.string().uuid().optional().nullable();
+const optionalScopeIdSchema = z.string().guid().optional().nullable();
 
 export const summarySlotScopeKindSchema = z.enum(SUMMARY_SLOT_SCOPE_KINDS);
 export const summarySlotKeySchema = z.enum(SUMMARY_SLOT_KEYS);
@@ -53,8 +53,8 @@ export const writeSummarySlotSchema = z
     markdown: z.string().trim().min(1).max(200_000),
     title: z.string().trim().min(1).max(200).optional().nullable(),
     changeSummary: z.string().trim().min(1).max(1_000).optional().nullable(),
-    baseRevisionId: z.string().uuid().optional().nullable(),
-    generationIssueId: z.string().uuid().optional().nullable(),
+    baseRevisionId: z.string().guid().optional().nullable(),
+    generationIssueId: z.string().guid().optional().nullable(),
     model: z.string().trim().min(1).max(200).optional().nullable(),
   })
   .strict();

@@ -23,6 +23,31 @@ function asString(value) {
   return typeof value === "string" ? value : "";
 }
 
+// Pull the reasoning text out of a `reasoning.available` event payload.
+// The exact field name is defined by the external Hermes gateway, so this
+// checks the plausible field names (mirroring the fallback chain used by
+// extractOutput() in gateway/server/execute.ts) and recurses one level into
+// nested `data` / `payload` records.
+function extractDirectReasoningText(data) {
+  return (
+    asString(data.reasoning).trim() ||
+    asString(data.reasoning_text).trim() ||
+    asString(data.thinking).trim() ||
+    asString(data.text).trim() ||
+    asString(data.summary).trim() ||
+    asString(data.content).trim()
+  );
+}
+
+function extractReasoningText(data) {
+  if (!data) return "";
+  const direct = extractDirectReasoningText(data);
+  if (direct) return stripAnsi(direct);
+  const nested = asRecord(data.data) || asRecord(data.payload);
+  const nestedDirect = nested ? extractDirectReasoningText(nested) : "";
+  return nestedDirect ? stripAnsi(nestedDirect) : "";
+}
+
 function parseStdoutLine(line, ts) {
   const cleaned = stripAnsi(line);
   const trimmed = cleaned.trim();
@@ -41,7 +66,8 @@ function parseStdoutLine(line, ts) {
       return [{ kind: "stderr", ts, text: message }];
     }
     if (eventName === "reasoning.available") {
-      return [{ kind: "thinking", ts, text: "Hermes reasoning available" }];
+      const reasoning = extractReasoningText(data);
+      return [{ kind: "thinking", ts, text: reasoning || "Hermes reasoning available" }];
     }
     return [{ kind: "system", ts, text: `Hermes event: ${eventName}` }];
   }

@@ -1,0 +1,29 @@
+{
+  "schema": "paperclip-runner/harness-driver-conformance-fixture/v1",
+  "validConfig": {
+    "schema": "paperclip-runner/deterministic-harness-driver-config/v1",
+    "scenario": "semantic-tool-success"
+  },
+  "invalidConfig": {
+    "schema": "paperclip-runner/deterministic-harness-driver-config/v1",
+    "scenario": "unknown"
+  },
+  "completionMessage": "Run deterministic semantic-tool conformance.",
+  "interruptMessage": "[conformance:interrupt] Keep the turn active until interrupted.",
+  "requiredCapabilities": [
+    "resume",
+    "typedEvents",
+    "interruption",
+    "structuredResult",
+    "read",
+    "reconciliation",
+    "usage",
+    "dynamicTools"
+  ],
+  "unsupportedFeatures": [
+    "steering",
+    "runtimeRequestResolution",
+    "goals",
+    "threadLineage"
+  ]
+}

@@ -33,8 +33,10 @@ import type {
 import {
   asNumber,
   asString,
+  asStringArray,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { normalizeCodexModel } from "../index.js";
 import { classifyCodexAuthRefreshFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
@@ -48,14 +50,14 @@ import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
-const MIN_ACP_NODE_VERSION = "22.13.0";
+const MIN_ACP_NODE_VERSION = "24.11.0";
 
 export type CodexExecutionEngine = "cli" | "acp";
 
 export interface CodexEngineSelection {
   engine: CodexExecutionEngine;
   explicit: boolean;
-  fallbackReason?: string;
+  unavailableReason?: string;
 }
 
 type CodexEngineResolutionInput =
@@ -84,45 +86,27 @@ export async function resolveCodexExecutionEngineForRun(
   input: CodexEngineResolutionInput,
 ): Promise<CodexEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  // Engine availability must never change the agent's execution or permission contract.
+  if (selection.engine === "cli") return selection;
+  const unavailable = (reason: string): CodexEngineSelection => ({
+    ...selection,
+    unavailableReason: `${reason} Repair the ACP setup, or explicitly set engine=cli to use the CLI engine.`,
+  });
   const target = readAdapterExecutionTarget({
     executionTarget: input.executionTarget,
     legacyRemoteExecution: input.executionTransport?.remoteExecution,
   });
   if (target?.workspaceRealization?.mode === "in_place") {
-    if (selection.explicit && selection.engine === "acp") {
-      throw new Error("In-place workspace realization requires the Codex CLI engine; ACP archive staging is not supported.");
-    }
-    return {
-      engine: "cli",
-      explicit: selection.explicit,
-      ...(!selection.explicit
-        ? { fallbackReason: "In-place workspace realization must run without ACP archive staging." }
-        : {}),
-    };
+    return unavailable("In-place workspace realization requires the Codex CLI engine; ACP archive staging is not supported.");
   }
   const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
   const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
   if (filesystemScope || networkScope) {
-    if (selection.explicit && selection.engine === "acp") {
-      throw new Error("Local filesystem/network confinement requires the Codex CLI engine; ACP confinement is not supported.");
-    }
-    return {
-      engine: "cli",
-      explicit: selection.explicit,
-      ...(!selection.explicit
-        ? { fallbackReason: "Local filesystem/network scope requires spawn-level confinement in the CLI lane." }
-        : {}),
-    };
+    return unavailable("Local filesystem/network confinement requires the Codex CLI engine; ACP confinement is not supported.");
   }
-  if (selection.explicit || selection.engine !== "acp") return selection;
 
-  const fallbackReason = await defaultCodexAcpFallbackReason(input);
-  if (!fallbackReason) return selection;
-  return { engine: "cli", explicit: false, fallbackReason };
-}
-
-export function formatCodexAcpFallbackMessage(reason: string): string {
-  return `[paperclip] Codex ACP default unavailable; falling back to Codex CLI. ${reason} Set engine=acp to require ACP or engine=cli to silence this fallback.\n`;
+  const reason = await codexAcpUnavailableReason(input);
+  return reason ? unavailable(reason) : selection;
 }
 
 function firstNonEmptyString(...values: unknown[]): string | undefined {
@@ -154,8 +138,17 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     typeof config.model === "string" ? config.model : "",
   );
 
+  const env = parseObject(config.env);
+  let networkAccess = env.PAPERCLIP_CODEX_ACP_NETWORK_ACCESS !== "false";
+  const extraArgs = asStringArray(config.extraArgs);
+  for (const arg of extraArgs.length > 0 ? extraArgs : asStringArray(config.args)) {
+    const match = /^(?:(?:--config=|-c=?)\s*)?sandbox_workspace_write\.network_access\s*=\s*(true|false)\s*$/.exec(arg);
+    if (match) networkAccess = match[1] === "true";
+  }
+
   return {
     ...config,
+    env: { ...env, PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: String(networkAccess) },
     agent: "codex",
     mode,
     permissionMode,
@@ -236,26 +229,16 @@ async function prepareCodexRemoteManagedHome(
     // without its staged home. Host staged-temp removal is deliberately NOT here
     // — see `disposeStaged` — so caching this runtime for reuse never destroys
     // resources the next resume needs.
-    teardown: async () => {
-      try {
-        await onLog(
-          "stdout",
-          "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
-        );
-        await stagedRuntime.restoreWorkspace((line) => onLog("stdout", line));
-      } catch (err) {
-        // Fail-soft: a teardown copy-back miss loses this rotation and surfaces
-        // loudly as refresh_token_reused on the next host Codex use (re-auth
-        // recovers) — never silent host-credential corruption, so it must not
-        // mask the run result.
-        await onLog(
-          "stderr",
-          `[paperclip] Codex ACP teardown restore/copy-back failed: ${
-            err instanceof Error ? err.message : String(err)
-          }\n`,
-        );
-      }
-    },
+    // Fail-soft: a teardown copy-back miss loses this rotation and surfaces
+    // loudly as refresh_token_reused on the next host Codex use (re-auth
+    // recovers) — never silent host-credential corruption, so it must not
+    // mask the run result.
+    teardown: createWorkspaceRestoreTeardown({
+      stagedRuntime,
+      onLog,
+      startMessage: "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
+      failurePrefix: "[paperclip] Codex ACP teardown restore/copy-back failed",
+    }),
     // One-time cleanup of the HOST staged home temp dir. Fired ONLY when the
     // staged runtime is dropped (failed/cancelled/timed-out turn, incompatible
     // re-stage, idle eviction) — never on a clean turn that keeps the runtime
@@ -460,7 +443,7 @@ async function resolveCodexAcpCommandForTarget(
   return resolveCodexAcpCommand(config);
 }
 
-async function defaultCodexAcpFallbackReason(
+async function codexAcpUnavailableReason(
   input: CodexEngineResolutionInput,
 ): Promise<string | null> {
   const target = readAdapterExecutionTarget({
@@ -474,7 +457,7 @@ async function defaultCodexAcpFallbackReason(
     return "Codex ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
   }
   if (!nodeVersionMeetsCodexAcpMinimum()) {
-    return `Node ${process.version} does not satisfy Codex ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
+    return `Node ${process.version} (${process.execPath}) does not satisfy Codex ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
   }
   const command = await resolveCodexAcpCommandForTarget(input.config, target);
   if (!(await commandIsResolvable(command, input))) {
@@ -540,7 +523,7 @@ export async function testCodexAcpEnvironment(
     level: nodeVersionMeetsCodexAcpMinimum() ? "info" : "error",
     message: nodeVersionMeetsCodexAcpMinimum()
       ? `Node ${process.version} satisfies ACP runtime requirements.`
-      : `Node ${process.version} does not satisfy ACP runtime requirements.`,
+      : `Node ${process.version} (${process.execPath}) does not satisfy ACP runtime requirements.`,
     hint: nodeVersionMeetsCodexAcpMinimum()
       ? undefined
       : `Run Codex ACP with Node >=${MIN_ACP_NODE_VERSION} or switch engine=cli.`,
@@ -628,8 +611,8 @@ export async function testCodexAcpEnvironment(
       checks.push({
         code: ADAPTER_AUTH_MISSING_CHECK_CODE,
         level: "warn",
-        message: "The sandbox has no ready authentication for this adapter.",
-        hint: "Provide credentials for this adapter, or start login in the sandbox.",
+        message: "This environment has no ready authentication for this adapter.",
+        hint: "Provide credentials for this adapter, or start login in the environment.",
       });
     }
   }

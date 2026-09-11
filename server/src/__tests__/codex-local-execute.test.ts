@@ -1322,7 +1322,7 @@ process.exit(1);
       await fs.rm(root, { recursive: true, force: true });
     }
   });
-  it("uses a worktree-isolated CODEX_HOME while preserving shared auth and config", async () => {
+  it("uses a worktree-isolated CODEX_HOME and mounts the operational skill by default", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
@@ -1380,9 +1380,6 @@ process.exit(1);
             PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
           },
           promptTemplate: "Follow the paperclip heartbeat.",
-          paperclipSkillSync: {
-            desiredSkills: ["paperclip"],
-          },
         },
         context: {},
         authToken: "run-jwt-token",

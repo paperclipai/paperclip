@@ -4,12 +4,15 @@ import type { StartupSpan, StartupTraceContext, StartupTracer } from "./startup-
 import {
   clampSpanLabel,
   createRuntimeSpanRunner,
+  emitRunPhaseTiming,
   emitSkippedStartupStep,
   getActiveStepContext,
   measureStartupStep,
   NOOP_STARTUP_SPAN,
   NOOP_STARTUP_TRACE_CONTEXT,
   normalizeProviderFamily,
+  RUN_PHASE_NAMES,
+  RUN_PHASE_TIMING_EVENT_TYPE,
   runWithoutActiveStep,
   runWithRuntimeParent,
   SANDBOX_STARTUP_SPAN_ATTR_PREFIX,
@@ -710,5 +713,61 @@ describe("createRuntimeSpanRunner", () => {
     });
     expect(result).toBe(7);
     expect(childStep).toBeNull();
+  });
+});
+
+describe("run phase timing telemetry", () => {
+  it("test_phase_telemetry_fields_are_exactly_phase_duration_outcome", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    const ctx = { onEvent: async (event: AdapterRuntimeEvent) => void events.push(event) };
+
+    await emitRunPhaseTiming(ctx, "create_runtime", 12, "ok");
+
+    expect(events).toHaveLength(1);
+    const event = events[0]!;
+    expect(event.eventType).toBe(RUN_PHASE_TIMING_EVENT_TYPE);
+    // The payload carries exactly the three closed fields and nothing else.
+    expect(Object.keys(event.payload ?? {}).sort()).toEqual(["durationMs", "outcome", "phase"]);
+    expect(event.payload).toEqual({ phase: "create_runtime", durationMs: 12, outcome: "ok" });
+  });
+
+  it("test_phase_telemetry_emits_no_command_path_environment_or_identifier_value", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    const ctx = { onEvent: async (event: AdapterRuntimeEvent) => void events.push(event) };
+
+    // Every allowlisted phase emits exactly one closed-shape event.
+    for (const phase of RUN_PHASE_NAMES) {
+      await emitRunPhaseTiming(ctx, phase, 5, "ok");
+    }
+    // A phase name outside the closed allowlist emits nothing, so a free-form
+    // label (a command, a path, an environment value, or a raw identifier) can
+    // never reach the stream.
+    await emitRunPhaseTiming(ctx, "/usr/bin/node --flag /secret/path", 5, "ok");
+    await emitRunPhaseTiming(ctx, "PAPERCLIP_API_KEY=abc123", 5, "ok");
+    await emitRunPhaseTiming(ctx, "run-7f3a-agent-42", 5, "ok");
+
+    expect(events).toHaveLength(RUN_PHASE_NAMES.length);
+    for (const event of events) {
+      // The phase field is only ever an allowlisted name.
+      expect(RUN_PHASE_NAMES).toContain(event.payload?.phase);
+      // No field carries a command, a path, an environment value, or an identifier.
+      const serialized = JSON.stringify(event);
+      expect(serialized).not.toContain("/usr/bin/node");
+      expect(serialized).not.toContain("/secret/path");
+      expect(serialized).not.toContain("PAPERCLIP_API_KEY");
+      expect(serialized).not.toContain("abc123");
+      expect(serialized).not.toContain("run-7f3a-agent-42");
+    }
+  });
+
+  it("test_telemetry_failure_does_not_fail_the_run", async () => {
+    const ctx = {
+      onEvent: async () => {
+        throw new Error("telemetry sink boom");
+      },
+    };
+
+    // A throwing telemetry sink never propagates, so the run continues.
+    await expect(emitRunPhaseTiming(ctx, "turn", 9, "failed")).resolves.toBeUndefined();
   });
 });

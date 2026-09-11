@@ -23,6 +23,7 @@ export {
 export { agentInstructionsService, syncInstructionsBundleConfigFromFilePath } from "./agent-instructions.js";
 export { assetService } from "./assets.js";
 export { documentService, extractLegacyPlanBody } from "./documents.js";
+export { artifactReviewDocumentService } from "./artifact-review-documents.js";
 export { statusCardService } from "./status-cards.js";
 export { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 export { documentAnnotationService } from "./document-annotations.js";
@@ -41,6 +42,7 @@ export {
   type IssueFilters,
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
+export { githubConnectionEventService, type GitHubConnectionEventPollResult } from "./github-connection-events.js";
 export {
   assertIssueReviewVerdictActorAllowed,
   type IssueReviewVerdictActor,
@@ -90,6 +92,13 @@ export { secretService } from "./secrets.js";
 export { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 export { createSecretProposalsService } from "./secret-proposals.js";
 export { googleSheetsRobotEmailFromEnv, toolAccessService } from "./tool-access.js";
+export {
+  createVercelConnectClient,
+  vercelConnectIntegrationStatus,
+  VercelConnectClientError,
+  type VercelConnectClient,
+} from "./vercel-connect.js";
+export { createComposioClient, ComposioApiError, type ComposioClient } from "./composio.js";
 export { smokeLabService } from "./smoke-lab.js";
 export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";
@@ -97,6 +106,14 @@ export { routineService } from "./routines.js";
 export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";
+export {
+  runnerGoalService,
+  applyRunnerGoalPrpEvent,
+  blockRunnerGoalRecovery,
+  failRunnerGoalAction,
+  RunnerGoalActionError,
+  RunnerGoalConflictError,
+} from "./runner-goals.js";
 export {
   productivityReviewService,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
@@ -158,8 +175,27 @@ export {
 } from "./environment-custom-image-terminal-sessions.js";
 export { executionWorkspaceService } from "./execution-workspaces.js";
 export { workspaceOperationService } from "./workspace-operations.js";
+export {
+  workspaceRuntimeLeaseService,
+  buildWorkspaceRuntimeLeaseOwnerKey,
+  LEASED_WORKSPACE_RUNTIME_ACTIONS,
+  WORKSPACE_RUNTIME_ELIGIBLE_ISSUE_STATUSES,
+  WORKSPACE_RUNTIME_LEASE_TTL_MS,
+  type WorkspaceRuntimeLeaseClaim,
+  type WorkspaceRuntimeLeaseOwner,
+  type WorkspaceRuntimeLeaseService,
+} from "./workspace-runtime-leases.js";
 export { workspaceFileResourceService } from "./workspace-file-resources.js";
-export { workProductService } from "./work-products.js";
+export {
+  createWorkspaceGitOperationScheduler,
+  getWorkspaceGitOperationSchedulerSnapshot,
+  workspaceGitOperationScheduler,
+  type WorkspaceGitSchedulerSnapshot,
+} from "./workspace-git-operation-scheduler.js";
+export {
+  enrichWorkProductMetadataWithDiff,
+  workProductService,
+} from "./work-products.js";
 export {
   logActivity,
   persistActivity,
@@ -176,3 +212,13 @@ export {
 } from "./codex-auth-reconciliation.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export {
+  managedAgentProfileService,
+  CLAUDE_MANAGED_BETA_VERSION,
+  type ManagedAgentProfileInput,
+} from "./managed-agent-profiles.js";
+export {
+  remoteAgentProfileService,
+  type RemoteAgentProfileInput,
+  type RemoteAgentService,
+} from "./remote-agent-profiles.js";

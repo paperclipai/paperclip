@@ -8,7 +8,8 @@
   ],
   "featured": false,
   "branding": {
-    "logoUrl": "https://www.google.com/s2/favicons?domain=sentry.io&sz=128"
+    "logoUrl": "/brands/apps/sentry.svg",
+    "darkLogoUrl": "/brands/apps/sentry-dark.svg"
   },
   "urlPatterns": [
     "https://mcp.sentry.dev/*"
@@ -35,5 +36,7 @@
         "environment"
       ]
     }
-  ]
+  ],
+  "docsUrl": "https://mcp.sentry.dev/.well-known/oauth-authorization-server",
+  "redirectConstraints": "https-or-loopback-http"
 }

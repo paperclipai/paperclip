@@ -8,16 +8,26 @@ const mocks = vi.hoisted(() => {
 
   return {
     externalRecords,
-    execFile: vi.fn((_file: string, _args: string[], optionsOrCallback: unknown, maybeCallback?: unknown) => {
-      const callback = typeof optionsOrCallback === "function" ? optionsOrCallback : maybeCallback;
-      if (typeof callback === "function") {
-        callback(null, "", "");
-      }
-      return {
-        kill: vi.fn(),
-        on: vi.fn(),
-      };
-    }),
+    execFile: vi.fn(
+      (
+        _file: string,
+        _args: string[],
+        optionsOrCallback: unknown,
+        maybeCallback?: unknown,
+      ) => {
+        const callback =
+          typeof optionsOrCallback === "function"
+            ? optionsOrCallback
+            : maybeCallback;
+        if (typeof callback === "function") {
+          callback(null, "", "");
+        }
+        return {
+          kill: vi.fn(),
+          on: vi.fn(),
+        };
+      },
+    ),
     listAdapterPlugins: vi.fn(),
     addAdapterPlugin: vi.fn((record: any) => {
       externalRecords.set(record.type, record);
@@ -123,7 +133,9 @@ function createApp(actor: Express.Request["actor"]) {
   app.use((req, _res, next) => {
     req.actor = {
       ...actor,
-      companyIds: Array.isArray(actor.companyIds) ? [...actor.companyIds] : actor.companyIds,
+      companyIds: Array.isArray(actor.companyIds)
+        ? [...actor.companyIds]
+        : actor.companyIds,
       memberships: Array.isArray(actor.memberships)
         ? actor.memberships.map((membership) => ({ ...membership }))
         : actor.memberships,
@@ -139,7 +151,8 @@ async function requestApp(
   app: express.Express,
   buildRequest: (baseUrl: string) => request.Test,
 ) {
-  const { createServer } = await vi.importActual<typeof import("node:http")>("node:http");
+  const { createServer } =
+    await vi.importActual<typeof import("node:http")>("node:http");
   const server = createServer(app);
   try {
     await new Promise<void>((resolve) => {
@@ -162,7 +175,9 @@ async function requestApp(
   }
 }
 
-function boardMember(membershipRole: "admin" | "operator" | "viewer"): Express.Request["actor"] {
+function boardMember(
+  membershipRole: "admin" | "operator" | "viewer",
+): Express.Request["actor"] {
   return {
     type: "board",
     userId: `${membershipRole}-user`,
@@ -213,11 +228,19 @@ function sendMutatingRequest(app: express.Express, name: string) {
           .send({ paused: true }),
       );
     case "delete":
-      return requestApp(app, (baseUrl) => request(baseUrl).delete(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}`));
+      return requestApp(app, (baseUrl) =>
+        request(baseUrl).delete(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}`),
+      );
     case "reload":
-      return requestApp(app, (baseUrl) => request(baseUrl).post(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}/reload`));
+      return requestApp(app, (baseUrl) =>
+        request(baseUrl).post(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}/reload`),
+      );
     case "reinstall":
-      return requestApp(app, (baseUrl) => request(baseUrl).post(`/api/adapters/${EXTERNAL_ADAPTER_TYPE}/reinstall`));
+      return requestApp(app, (baseUrl) =>
+        request(baseUrl).post(
+          `/api/adapters/${EXTERNAL_ADAPTER_TYPE}/reinstall`,
+        ),
+      );
     default:
       throw new Error(`Unknown mutating adapter route: ${name}`);
   }
@@ -238,7 +261,6 @@ function resetInstalledExternalAdapterState() {
 describe.sequential("adapter management route authorization", () => {
   beforeEach(async () => {
     vi.resetModules();
-    vi.doUnmock("node:child_process");
     vi.doUnmock("../services/adapter-plugin-store.js");
     vi.doUnmock("../adapters/plugin-loader.js");
     vi.doUnmock("../routes/adapters.js");
@@ -246,12 +268,14 @@ describe.sequential("adapter management route authorization", () => {
     vi.doUnmock("../middleware/index.js");
     vi.doUnmock("../adapters/registry.js");
     registerRouteMocks();
-    vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+    vi.doMock("../routes/authz.js", async () =>
+      vi.importActual("../routes/authz.js"),
+    );
 
     const [routes, middleware, registry] = await Promise.all([
-      vi.importActual<typeof import("../routes/adapters.js")>("../routes/adapters.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-      vi.importActual<typeof import("../adapters/registry.js")>("../adapters/registry.js"),
+      import("../routes/adapters.js"),
+      import("../middleware/index.js"),
+      import("../adapters/registry.js"),
     ]);
     adapterRoutes = routes.adapterRoutes;
     errorHandler = middleware.errorHandler;
@@ -263,13 +287,19 @@ describe.sequential("adapter management route authorization", () => {
 
     unregisterServerAdapter(EXTERNAL_ADAPTER_TYPE);
     setOverridePaused("claude_local", false);
-    mocks.listAdapterPlugins.mockImplementation(() => [...mocks.externalRecords.values()]);
-    mocks.getAdapterPluginsDir.mockReturnValue("/tmp/paperclip-adapter-route-authz-test");
+    mocks.listAdapterPlugins.mockImplementation(() => [
+      ...mocks.externalRecords.values(),
+    ]);
+    mocks.getAdapterPluginsDir.mockReturnValue(
+      "/tmp/paperclip-adapter-route-authz-test",
+    );
     mocks.getDisabledAdapterTypes.mockReturnValue([]);
     mocks.setAdapterDisabled.mockReturnValue(true);
     mocks.buildExternalAdapters.mockResolvedValue([]);
     mocks.loadExternalAdapterPackage.mockResolvedValue(createAdapter());
-    mocks.reloadExternalAdapter.mockImplementation(async (type: string) => createAdapter(type));
+    mocks.reloadExternalAdapter.mockImplementation(async (type: string) =>
+      createAdapter(type),
+    );
   }, 20_000);
 
   afterEach(() => {
@@ -313,7 +343,9 @@ describe.sequential("adapter management route authorization", () => {
 
       const res = await sendMutatingRequest(app, routeName);
 
-      expect(res.status, `${routeName}: ${JSON.stringify(res.body)}`).toBe(expectedStatus);
+      expect(res.status, `${routeName}: ${JSON.stringify(res.body)}`).toBe(
+        expectedStatus,
+      );
     }
   });
 
@@ -360,11 +392,65 @@ describe.sequential("adapter management route authorization", () => {
 
         const res = await sendMutatingRequest(app, routeName);
 
-        expect(res.status, `${routeName}: ${JSON.stringify(res.body)}`).toBe(403);
-        expect(res.body.details).toMatchObject({ code: "adapter_install_platform_managed" });
+        expect(res.status, `${routeName}: ${JSON.stringify(res.body)}`).toBe(
+          403,
+        );
+        expect(res.body.details).toMatchObject({
+          code: "adapter_install_platform_managed",
+        });
         expect(mocks.execFile).not.toHaveBeenCalled();
         expect(mocks.loadExternalAdapterPackage).not.toHaveBeenCalled();
       },
     );
+  });
+
+  describe("operator-hidden adapter management floor", () => {
+    beforeEach(() => {
+      process.env.PAPERCLIP_HIDDEN_SETTINGS = "instance.adapters";
+    });
+    afterEach(() => {
+      delete process.env.PAPERCLIP_HIDDEN_SETTINGS;
+    });
+
+    it.each([
+      "install",
+      "disable",
+      "override",
+      "delete",
+      "reload",
+      "reinstall",
+    ] as const)(
+      "floors adapter %s for instance admins when the operator hides the Adapters surface",
+      async (routeName) => {
+        resetInstalledExternalAdapterState();
+        if (routeName !== "install") {
+          seedInstalledExternalAdapter();
+        }
+        const app = createApp(instanceAdmin);
+
+        const res = await sendMutatingRequest(app, routeName);
+
+        expect(res.status, `${routeName}: ${JSON.stringify(res.body)}`).toBe(
+          403,
+        );
+        expect(res.body.details).toMatchObject({
+          code: "settings_operator_managed",
+        });
+        expect(mocks.execFile).not.toHaveBeenCalled();
+        expect(mocks.loadExternalAdapterPackage).not.toHaveBeenCalled();
+        expect(mocks.reloadExternalAdapter).not.toHaveBeenCalled();
+      },
+    );
+
+    it("keeps adapter reads open while the surface is hidden", async () => {
+      seedInstalledExternalAdapter();
+      const app = createApp(boardMember("admin"));
+
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get("/api/adapters"),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+    });
   });
 });

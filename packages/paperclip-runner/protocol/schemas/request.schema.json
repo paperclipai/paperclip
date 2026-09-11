@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/request.schema.json",
+  "title": "PRP request",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["schema", "requestKind", "requestId", "type", "status", "prompt", "input"],
+      "properties": {
+        "schema": { "const": "paperclip.runtime_request.v2" },
+        "requestKind": { "const": "runtime" },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "type": { "const": "input" },
+        "status": { "enum": ["pending", "resolved", "expired", "cancelled"] },
+        "prompt": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "input": { "$ref": "https://paperclip.dev/schemas/prp/v1/question-set.schema.json" },
+        "origin": {
+          "type": "object",
+          "required": ["adapter"],
+          "properties": {
+            "adapter": { "type": "string", "minLength": 1, "maxLength": 160 },
+            "provider": { "type": "string", "minLength": 1, "maxLength": 160 },
+            "method": { "type": "string", "minLength": 1, "maxLength": 500 }
+          },
+          "additionalProperties": false
+        },
+        "turnId": { "type": "string", "minLength": 1, "maxLength": 240 },
+        "itemId": { "type": "string", "minLength": 1, "maxLength": 240 }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["schema", "requestKind", "requestId", "type", "status", "prompt"],
+      "properties": {
+        "schema": { "const": "paperclip.runtime_request.v1" },
+        "requestKind": { "const": "runtime" },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "type": { "enum": ["permission", "input"] },
+        "status": { "enum": ["pending", "resolved", "expired", "cancelled"] },
+        "prompt": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "choices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["key", "label"],
+            "properties": {
+              "key": { "type": "string", "minLength": 1 },
+              "label": { "type": "string", "minLength": 1 }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": ["schema", "requestKind", "requestId", "kind", "blocking", "payload"],
+      "properties": {
+        "schema": { "const": "paperclip.interaction_request.v1" },
+        "requestKind": { "const": "issue_thread" },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "kind": {
+          "enum": [
+            "request_confirmation",
+            "request_checkbox_confirmation",
+            "request_item_verdicts",
+            "ask_user_questions",
+            "suggest_tasks"
+          ]
+        },
+        "blocking": { "type": "boolean" },
+        "payload": { "type": "object", "additionalProperties": true }
+      },
+      "additionalProperties": true
+    }
+  ]
+}

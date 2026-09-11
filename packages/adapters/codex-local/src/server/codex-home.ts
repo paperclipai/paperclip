@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
+import { isCodexAuthCachePath, readSubscriptionAccountId } from "./codex-auth-cache.js";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["config.json", "config.toml", "instructions.md"] as const;
@@ -89,6 +90,29 @@ function readApiKeyFromAuthPayload(authPayload: unknown): string | null {
   }
   const raw = (authPayload as Record<string, unknown>).OPENAI_API_KEY;
   return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : null;
+}
+
+/**
+ * The `last_refresh` timestamp of an auth.json payload, in epoch milliseconds,
+ * or null when the bytes are unreadable or carry no parseable timestamp. This is
+ * the same freshness field the shared merge decision predicate
+ * (`codex-auth-merge-decision.cjs`) compares, read the same way, so the seeding
+ * heal below and the credential writers agree on what "fresher" means.
+ */
+function readAuthLastRefreshMs(bytes: Buffer | null): number | null {
+  if (!bytes) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const raw = (parsed as Record<string, unknown>).last_refresh;
+  const ms = typeof raw === "string" ? Date.parse(raw) : NaN;
+  return Number.isFinite(ms) ? ms : null;
 }
 
 export function resolveSharedCodexHomeDir(
@@ -572,8 +596,12 @@ export async function stageCodexHomeForSync(
  * `auth.json` from the shared source home (so ChatGPT-subscription credentials
  * stay live and single-use refresh tokens are not copied), copies the static
  * shared config files, and — when an API key is supplied — writes an API-key
- * `auth.json` instead. Used both for the default company home and for the
- * per-agent home set by the server isolation guard.
+ * `auth.json` instead. A promoted device-login credential — a regular-file
+ * `auth.json` holding a subscription identity the shared source does not hold,
+ * or the same identity with a `last_refresh` the shared source has not strictly
+ * moved past — is kept authoritative: it is neither removed nor replaced by the
+ * shared symlink. Used both for the default company home and for the per-agent
+ * home set by the server isolation guard.
  */
 export async function seedManagedCodexHome(
   targetHome: string,
@@ -586,22 +614,119 @@ export async function seedManagedCodexHome(
   const sourceHome = resolveSharedCodexHomeDir(env);
   const seedFromShared = path.resolve(sourceHome) !== path.resolve(targetHome);
 
+  // A per-identity credential-store entry is not a seedable home: its
+  // auth.json is the durable, identity-anchored result of a device login,
+  // maintained by the promotion, the vend, and the copy-back under their own
+  // locks. An agent can bind `CODEX_HOME` to an entry through the login's
+  // account-home secret, and this pass runs before every probe and execute —
+  // symlinking the entry to the shared source would silently swap the bound
+  // account for the host login, and an API-key rewrite would destroy the
+  // stored credential outright. The static shared config files still copy
+  // in below, so a bound run gets the same config a per-agent home gets.
+  const credentialStoreEntry = isCodexAuthCachePath(env, targetHome);
+
   await fs.mkdir(targetHome, { recursive: true });
 
-  // If a previous run wrote an apikey-mode auth.json (regular file) and this
-  // run has no apiKey, remove it so the chatgpt-mode symlink can be restored.
-  // Without this cleanup, ensureSymlink bails on a non-symlink and Codex keeps
-  // authenticating with the stale key after it is removed from configuration.
-  if (!apiKey && seedFromShared) {
+  // A regular-file auth.json in the target home is one of two very different
+  // things. The device-login promotion writes the company credential as a
+  // regular file, and that file is the durable outcome of an interactive login,
+  // so it must survive re-seeding. Everything else — an apikey-mode file left by
+  // a previous run, a stale pre-symlink copy of the shared credential (#5028),
+  // or an unreadable payload — is residue, and removing it lets the chatgpt-mode
+  // symlink be restored (ensureSymlink would otherwise replace it and Codex
+  // would keep authenticating with the stale key).
+  //
+  // The discriminator is identity- and freshness-anchored, like the promotion
+  // and the cache vend: keep the file when it holds a usable subscription
+  // identity that the shared source does not also hold, and also when it holds
+  // the SAME identity but the shared source is not strictly fresher by
+  // `last_refresh`. A device login for the account the host is also signed in
+  // to promotes a file strictly newer than the host copy; swapping that file
+  // for the symlink would sign the company back in with the very credential the
+  // login just replaced — the failing one that made the user sign in. The
+  // #5028 stale copy is the strictly-older direction of the same comparison,
+  // and it still heals: the live host credential refreshes on use, so as soon
+  // as the shared source is strictly fresher the swap applies. Ties and
+  // unparseable freshness keep the file — the same fail-closed direction the
+  // shared merge decision predicate uses — because deleting a promoted
+  // credential is irreversible while keeping it self-corrects on the next seed
+  // once the source has provably moved past it. A different-identity (or
+  // source-less) subscription file is the promoted company credential; on a
+  // server with no shared login there is nothing to symlink at all, and
+  // deleting it would silently sign the company out right after a successful
+  // device login.
+  let keepPromotedAuth = false;
+  if (!apiKey && seedFromShared && !credentialStoreEntry) {
     const authPath = path.join(targetHome, "auth.json");
     const existing = await fs.lstat(authPath).catch(() => null);
     if (existing && !existing.isSymbolicLink()) {
-      await fs.rm(authPath, { force: true });
+      const targetBytes = await fs.readFile(authPath).catch(() => null);
+      const targetIdentity = targetBytes ? readSubscriptionAccountId(targetBytes) : null;
+      if (targetIdentity) {
+        // Any source read failure — absent or unreadable — keeps the usable
+        // target file. The alternative, removal plus the existence-only
+        // symlink pass below, links the home to a source this process just
+        // failed to read, and every downstream reader (the probe seeding, the
+        // sandbox stage sync, the CLI itself) runs with the same access, so
+        // that home is unusable in every scenario. Keeping the target is
+        // better or equal in each case: a promoted credential keeps working,
+        // and even a stale same-identity copy (#5028) can still work, while
+        // the unreadable symlink cannot. A transient read failure also
+        // self-corrects — the next seed with a readable source heals a
+        // same-identity copy into the symlink — whereas removing the promoted
+        // credential is irreversible. The #5028 heal therefore applies
+        // exactly when the source is readable and the identities match.
+        let sourceReadErrorCode: string | null = null;
+        const sourceBytes = await fs
+          .readFile(path.join(sourceHome, "auth.json"))
+          .catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT" && error.code !== "ENOTDIR") {
+              sourceReadErrorCode = error.code ?? "unknown";
+            }
+            return null;
+          });
+        const sourceIdentity = sourceBytes ? readSubscriptionAccountId(sourceBytes) : null;
+        if (sourceIdentity !== targetIdentity) {
+          keepPromotedAuth = true;
+        } else {
+          // Same identity: swap to the symlink only when the shared source is
+          // strictly fresher. A tie or an unparseable timestamp keeps the file
+          // (see the freshness rationale above).
+          const sourceLastRefresh = readAuthLastRefreshMs(sourceBytes);
+          const targetLastRefresh = readAuthLastRefreshMs(targetBytes);
+          keepPromotedAuth = !(
+            sourceLastRefresh !== null &&
+            targetLastRefresh !== null &&
+            sourceLastRefresh > targetLastRefresh
+          );
+        }
+        if (keepPromotedAuth && sourceReadErrorCode) {
+          // Deferred heal, made visible: seeding runs before every probe and
+          // every execute, so the next call with a readable source applies
+          // the same-identity symlink heal this call could not decide.
+          await onLog(
+            "stdout",
+            `[paperclip] Keeping the existing subscription auth.json in Codex home "${targetHome}" (shared source read failed: ${sourceReadErrorCode}); the next seed with a readable source reconciles it.\n`,
+          );
+        }
+      }
+      if (keepPromotedAuth) {
+        await onLog(
+          "stdout",
+          `[paperclip] Keeping the promoted subscription auth.json in Codex home "${targetHome}".\n`,
+        );
+      } else {
+        await fs.rm(authPath, { force: true });
+      }
     }
   }
 
   if (seedFromShared) {
     for (const name of SYMLINKED_SHARED_FILES) {
+      // The kept promoted credential is authoritative for this home; the shared
+      // symlink would silently swap the account back to the host login. A
+      // credential-store entry's auth.json is authoritative unconditionally.
+      if (name === "auth.json" && (keepPromotedAuth || credentialStoreEntry)) continue;
       const source = path.join(sourceHome, name);
       if (!(await pathExists(source))) continue;
       await ensureSymlink(path.join(targetHome, name), source);
@@ -620,11 +745,22 @@ export async function seedManagedCodexHome(
   }
 
   if (apiKey) {
-    await writeApiKeyAuthJson(targetHome, apiKey);
-    await onLog(
-      "stdout",
-      `[paperclip] Wrote API-key auth.json into Codex home "${targetHome}" from configured OPENAI_API_KEY.\n`,
-    );
+    if (credentialStoreEntry) {
+      // Refuse, loudly: overwriting a store entry's subscription credential
+      // with an API-key file would destroy the durable login the entry
+      // exists to hold. The operator combined an account binding with a
+      // configured OPENAI_API_KEY; the binding wins for this home.
+      await onLog(
+        "stdout",
+        `[paperclip] Refusing to write an API-key auth.json into credential-store entry "${targetHome}"; the bound account's stored login stays authoritative.\n`,
+      );
+    } else {
+      await writeApiKeyAuthJson(targetHome, apiKey);
+      await onLog(
+        "stdout",
+        `[paperclip] Wrote API-key auth.json into Codex home "${targetHome}" from configured OPENAI_API_KEY.\n`,
+      );
+    }
   }
 }
 

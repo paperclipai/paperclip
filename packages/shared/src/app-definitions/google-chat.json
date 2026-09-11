@@ -1,0 +1,197 @@
+{
+  "schemaVersion": 1,
+  "slug": "google-chat",
+  "name": "Google Chat",
+  "description": "Search and read Google Chat conversations and send messages.",
+  "categories": [
+    "communication",
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/google-chat.svg"
+  },
+  "urlPatterns": [
+    "https://chatmcp.googleapis.com/*",
+    "https://chat.google.com/*"
+  ],
+  "docsUrl": "https://developers.google.com/workspace/chat/api/reference/mcp",
+  "setupPrerequisite": {
+    "title": "Google Developer Preview access required",
+    "description": "Google must register both the Workspace email used to authorize Paperclip and the Google Cloud project that owns the OAuth client. Registration is limited to those emails and projects; it does not enable unrelated Paperclip customers.",
+    "steps": [
+      "Apply with the Workspace email that will sign in and the Google Cloud project that owns the OAuth client.",
+      "Wait for the Google Group notification and then Google's final project-registration email, usually within a couple of days.",
+      "Add every additional tester email or Cloud project through Google's member request forms before connecting."
+    ],
+    "actionLabel": "Apply or verify Developer Preview enrollment",
+    "actionUrl": "https://developers.google.com/workspace/preview"
+  },
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "paperclip-read",
+      "label": "Connect with Paperclip",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "oauthStrategy": "paperclip_cloud_connector",
+      "connectorProfile": "chat.read",
+      "capabilityProfile": {
+        "key": "read",
+        "label": "Read only",
+        "description": "Search conversations and read messages."
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "platform_shared"
+      ],
+      "whenToUse": "Use Paperclip-managed OAuth for read-only Chat access.",
+      "defaults": {
+        "serverUrl": "https://chatmcp.googleapis.com/mcp/v1",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/chat.spaces.readonly",
+          "https://www.googleapis.com/auth/chat.memberships.readonly",
+          "https://www.googleapis.com/auth/chat.messages.readonly",
+          "https://www.googleapis.com/auth/chat.users.readstate.readonly"
+        ]
+      },
+      "guidanceMd": "Connect Google Chat to search conversations and read messages.",
+      "warnings": [
+        "Google Workspace MCP servers are in Developer Preview."
+      ],
+      "riskTier": "S3"
+    },
+    {
+      "key": "customer-read-oauth",
+      "label": "Use your own Google OAuth app",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "capabilityProfile": {
+        "key": "read",
+        "label": "Read only",
+        "description": "Search conversations and read messages."
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a customer-owned OAuth client for read-only Chat access.",
+      "defaults": {
+        "serverUrl": "https://chatmcp.googleapis.com/mcp/v1",
+        "authorizationEndpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenEndpoint": "https://oauth2.googleapis.com/token",
+        "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/chat.spaces.readonly",
+          "https://www.googleapis.com/auth/chat.memberships.readonly",
+          "https://www.googleapis.com/auth/chat.messages.readonly",
+          "https://www.googleapis.com/auth/chat.users.readstate.readonly"
+        ],
+        "oauthAuthorizationParams": {
+          "access_type": "offline",
+          "prompt": "consent"
+        }
+      },
+      "guidanceMd": "Enable the Chat and Chat MCP APIs, configure a Chat app, then register Paperclip's callback URI.",
+      "consoleLinks": {
+        "register": "https://console.cloud.google.com/auth/clients",
+        "docs": "https://developers.google.com/workspace/guides/configure-mcp-servers"
+      },
+      "warnings": [
+        "A Google Chat app must be configured in the Cloud project.",
+        "Google Workspace MCP servers are in Developer Preview."
+      ],
+      "riskTier": "S3"
+    },
+    {
+      "key": "paperclip-write",
+      "label": "Connect with Paperclip",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "oauthStrategy": "paperclip_cloud_connector",
+      "connectorProfile": "chat.write",
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read & send",
+        "description": "Read Chat and send messages."
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "platform_shared"
+      ],
+      "whenToUse": "Use Paperclip-managed OAuth to read Chat and send messages.",
+      "defaults": {
+        "serverUrl": "https://chatmcp.googleapis.com/mcp/v1",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/chat.spaces.readonly",
+          "https://www.googleapis.com/auth/chat.memberships.readonly",
+          "https://www.googleapis.com/auth/chat.messages.readonly",
+          "https://www.googleapis.com/auth/chat.users.readstate.readonly",
+          "https://www.googleapis.com/auth/chat.messages.create"
+        ]
+      },
+      "guidanceMd": "Connect Google Chat to read conversations and send approved messages.",
+      "warnings": [
+        "Sending messages requires approval.",
+        "Google Workspace MCP servers are in Developer Preview."
+      ],
+      "riskTier": "S4"
+    },
+    {
+      "key": "customer-write-oauth",
+      "label": "Use your own Google OAuth app",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "capabilityProfile": {
+        "key": "write",
+        "label": "Read & send",
+        "description": "Read Chat and send messages."
+      },
+      "grantKinds": [
+        "user",
+        "organization"
+      ],
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a customer-owned OAuth client to read Chat and send messages.",
+      "defaults": {
+        "serverUrl": "https://chatmcp.googleapis.com/mcp/v1",
+        "authorizationEndpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+        "tokenEndpoint": "https://oauth2.googleapis.com/token",
+        "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
+        "scopesHint": [
+          "https://www.googleapis.com/auth/chat.spaces.readonly",
+          "https://www.googleapis.com/auth/chat.memberships.readonly",
+          "https://www.googleapis.com/auth/chat.messages.readonly",
+          "https://www.googleapis.com/auth/chat.users.readstate.readonly",
+          "https://www.googleapis.com/auth/chat.messages.create"
+        ],
+        "oauthAuthorizationParams": {
+          "access_type": "offline",
+          "prompt": "consent"
+        }
+      },
+      "guidanceMd": "Enable the Chat and Chat MCP APIs, configure a Chat app, then register Paperclip's callback URI.",
+      "consoleLinks": {
+        "register": "https://console.cloud.google.com/auth/clients",
+        "docs": "https://developers.google.com/workspace/guides/configure-mcp-servers"
+      },
+      "warnings": [
+        "Sending messages requires approval.",
+        "A Google Chat app must be configured in the Cloud project.",
+        "Google Workspace MCP servers are in Developer Preview."
+      ],
+      "riskTier": "S4"
+    }
+  ]
+}

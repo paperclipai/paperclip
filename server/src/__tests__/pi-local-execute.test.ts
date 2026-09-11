@@ -188,8 +188,8 @@ describe("pi_local execute", () => {
           cwd: workspace,
           model: "google/gemini-3-flash-preview",
           promptTemplate: "Keep working.",
-          // No explicit paperclipSkillSync preference →
-          // resolvePaperclipDesiredSkillNames returns [] → skill is not injected.
+          // The implicit legacy default applies only to the canonical Paperclip
+          // operational skill, so this unrelated skill remains unselected.
           paperclipRuntimeSkills: [
             { key: "not-injected", runtimeName: "not-injected", source: nonInjectedSkillDir },
           ],

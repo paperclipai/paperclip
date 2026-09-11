@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/workspace-file-reference.schema.json",
+  "title": "Paperclip workspace file reference",
+  "type": "object",
+  "required": ["schema", "referenceId", "source", "path", "displayName", "mediaType", "presentation", "line", "preview", "previewTruncated", "contentDigest"],
+  "properties": {
+    "schema": { "const": "paperclip.workspace.file_reference.v1" },
+    "referenceId": { "type": "string", "minLength": 1, "maxLength": 240 },
+    "source": { "enum": ["harness_reported", "runner_verified"] },
+    "path": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$" },
+    "displayName": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "mediaType": { "type": ["string", "null"], "maxLength": 160 },
+    "presentation": { "enum": ["document", "code", "image", "generic"] },
+    "line": { "type": ["integer", "null"], "minimum": 1 },
+    "preview": { "type": ["string", "null"], "maxLength": 262144 },
+    "previewTruncated": { "type": "boolean" },
+    "contentDigest": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

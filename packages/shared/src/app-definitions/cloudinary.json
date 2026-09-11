@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "slug": "cloudinary",
+  "name": "Cloudinary",
+  "description": "Connect Cloudinary's provider-hosted MCP server.",
+  "categories": [
+    "content"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/cloudinary.svg",
+    "darkLogoUrl": "/brands/apps/cloudinary-dark.svg"
+  },
+  "urlPatterns": [
+    "https://asset-management.mcp.cloudinary.com/*"
+  ],
+  "docsUrl": "https://cloudinary.com/documentation/cloudinary_llm_mcp",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://asset-management.mcp.cloudinary.com/mcp"
+      },
+      "guidanceMd": "Connect Cloudinary in the browser. A Cloudinary account; authorization is limited by the signed-in user's roles.",
+      "riskTier": "S3",
+      "label": "Sign in with Cloudinary",
+      "consoleLinks": {
+        "docs": "https://cloudinary.com/documentation/cloudinary_llm_mcp"
+      },
+      "warnings": [
+        "A Cloudinary account; authorization is limited by the signed-in user's roles."
+      ]
+    }
+  ]
+}

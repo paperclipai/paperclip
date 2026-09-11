@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
 import { ErrorState, RelativeTime } from "@/pages/tools/shared";
-import { AppsSubNav } from "./AppsSubNav";
+import { CopyableGatewayUrl } from "./CopyableGatewayUrl";
 import { NewGatewayDialog, gatewaysQueryKey } from "./NewGatewayDialog";
 import { gatewayTabHref } from "./gateway-tabs";
 import {
@@ -32,19 +32,18 @@ export function GatewaysList() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const { selectedCompany, selectedCompanyId } = useCompany();
+  const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [search, setSearch] = useState("");
   const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
+      { label: "Connectors", href: "/apps" },
       { label: "Gateways" },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [setBreadcrumbs]);
 
   const gatewaysQuery = useQuery({
     queryKey: gatewaysQueryKey(selectedCompanyId ?? "__none__"),
@@ -115,7 +114,7 @@ export function GatewaysList() {
   });
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select a company to manage gateways.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage gateways.</div>;
   }
 
   const gateways = gatewaysQuery.data?.gateways ?? [];
@@ -140,8 +139,6 @@ export function GatewaysList() {
           like Cursor or Claude Desktop.
         </p>
       </header>
-
-      <AppsSubNav active="gateways" />
 
       {gatewaysQuery.isLoading ? (
         <div className="space-y-3 pt-2">
@@ -213,12 +210,12 @@ export function GatewaysList() {
                   <table className="w-full min-w-(--sz-40rem) text-sm">
                     <thead>
                       <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-                        <th className="px-4 py-2.5">Gateway</th>
-                        <th className="px-4 py-2.5">Scope</th>
-                        <th className="px-4 py-2.5">Apps</th>
-                        <th className="px-4 py-2.5">Tokens</th>
-                        <th className="px-4 py-2.5">Last used</th>
-                        <th className="px-4 py-2.5 text-right">On</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">Gateway</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">Scope</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">Apps</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">Tokens</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">Last used</th>
+                        <th className="whitespace-nowrap px-4 py-2.5 text-right">On</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -228,18 +225,16 @@ export function GatewaysList() {
                           onClick={() => navigate(href)}
                           className="cursor-pointer border-b border-border transition-colors last:border-0 hover:bg-muted/30"
                         >
-                          <td className="px-4 py-3">
+                          <td className="w-64 max-w-64 whitespace-nowrap px-4 py-3">
                             <div className="font-medium text-foreground">{gateway.name}</div>
-                            <div className="truncate font-mono text-xs text-muted-foreground">
-                              {endpointHost(gateway.endpointPath, gateway.displaySlug)}
-                            </div>
+                            <CopyableGatewayUrl endpointPath={gateway.endpointPath} />
                           </td>
-                          <td className="px-4 py-3 text-muted-foreground">{scope}</td>
-                          <td className="px-4 py-3 text-muted-foreground">{appsLabel}</td>
-                          <td className="px-4 py-3 text-muted-foreground">
+                          <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{scope}</td>
+                          <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{appsLabel}</td>
+                          <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
                             {active} active{expiring > 0 ? ` · ${expiring} expiring` : ""}
                           </td>
-                          <td className="px-4 py-3 text-muted-foreground">
+                          <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
                             {lastUsed ? <RelativeTime value={lastUsed} /> : "—"}
                           </td>
                           <td className="px-4 py-3">
@@ -267,9 +262,7 @@ export function GatewaysList() {
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
                           <div className="font-medium text-foreground">{gateway.name}</div>
-                          <div className="truncate font-mono text-xs text-muted-foreground">
-                            {endpointHost(gateway.endpointPath, gateway.displaySlug)}
-                          </div>
+                          <CopyableGatewayUrl endpointPath={gateway.endpointPath} />
                         </div>
                         <div className="shrink-0">{toggle(gateway)}</div>
                       </div>
@@ -313,19 +306,6 @@ export function GatewaysList() {
       />
     </div>
   );
-}
-
-/** Show `mcp.host/g/<slug>` when the endpoint is absolute, else the raw path. */
-function endpointHost(endpointPath: string, slug: string): string {
-  if (typeof window !== "undefined") {
-    try {
-      const host = new URL(window.location.origin).host;
-      return `${host}${endpointPath}`;
-    } catch {
-      /* fall through */
-    }
-  }
-  return endpointPath || `/g/${slug}`;
 }
 
 /** One label:value pair inside a mobile stacked card. */

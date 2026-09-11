@@ -31,6 +31,42 @@ describe("stranded recovery notice seeds", () => {
     expect(seed.body).not.toContain("Recovery action:");
   });
 
+  it("names the sandbox provider plugin and its status when that is the configuration gap", () => {
+    const seed = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "sandbox_provider_plugin_not_ready",
+      pluginKey: "paperclip.kubernetes-sandbox-provider",
+      pluginStatus: "error",
+    });
+    expect(seed.title).toBe("Configuration incomplete");
+    expect(seed.tone).toBe("danger");
+    expect(seed.body).toContain("`paperclip.kubernetes-sandbox-provider`");
+    expect(seed.body).toContain("`error`");
+    expect(seed.body).toContain("enable the plugin");
+    expect(seed.body).not.toContain("secret/env bindings");
+  });
+
+  it("asks for a capability review before enabling an upgrade_pending plugin, and names an operator disable", () => {
+    const upgrade = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "sandbox_provider_plugin_not_ready",
+      pluginKey: "paperclip.daytona-sandbox-provider",
+      pluginStatus: "upgrade_pending",
+    });
+    expect(upgrade.body).toContain("review and approve the upgraded plugin's capabilities");
+    const disabled = buildConfigurationIncompleteRecoveryNoticeSeed({
+      reason: "sandbox_provider_plugin_not_ready",
+      pluginKey: "paperclip.daytona-sandbox-provider",
+      pluginStatus: "disabled",
+    });
+    expect(disabled.body).toContain("an operator disabled it");
+  });
+
+  it("keeps the secret-binding copy for other configuration gaps", () => {
+    expect(buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "secret_binding_missing" }).body).toContain(
+      "secret/env bindings",
+    );
+    expect(buildConfigurationIncompleteRecoveryNoticeSeed(null).body).toContain("secret/env bindings");
+  });
+
   it("distinguishes todo dispatch from in_progress continuation copy", () => {
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }).body).toContain("retried dispatch");
     expect(buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }).body).toContain(
@@ -101,7 +137,7 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
 
     const ownerRow = allRows(notice.metadata).find((row) => row.label === "Recovery owner");
     expect(ownerRow?.type).toBe("key_value");
-    expect(String(ownerRow?.value)).toContain("Board escalation");
+    expect(ownerRow?.value).toBe("Board decision required");
   });
 
   it("derives title from the recovery cause and body from the plain-comment fallback", () => {
@@ -154,6 +190,37 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     });
     expect(rows.some((row) => row.label === "Failure code")).toBe(false);
     expect(rows.some((row) => row.label === "Failure summary")).toBe(false);
+  });
+
+  it("leads with the classified run failure code over the generic seed title", () => {
+    const notice = buildStrandedRecoveryEscalationNotice({
+      seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "in_progress" }),
+      recoveryActionId: actionId,
+      recoveryOwner: owner,
+      sourceRun: {
+        ...sourceRun,
+        errorCode: "provider_quota",
+        errorSummary: "You've hit your limit · resets 2:30am (UTC)",
+      },
+    });
+
+    expect(notice.presentation.title).toBe("Error: usage limit reached");
+    expect(allRows(notice.metadata)).toContainEqual({
+      type: "key_value",
+      label: "Failure code",
+      value: "provider_quota",
+    });
+  });
+
+  it("titles auth-required run failures as a login error", () => {
+    expect(
+      buildStrandedRecoveryEscalationNotice({
+        seed: buildImmediateExecutionPathRecoveryNoticeSeed({ status: "todo" }),
+        recoveryActionId: actionId,
+        recoveryOwner: null,
+        sourceRun: { ...sourceRun, errorCode: "claude_auth_required" },
+      }).presentation.title,
+    ).toBe("Error: not logged in to Claude");
   });
 
   it("is matched by the metadata-based escalation dedupe matcher", () => {

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "slug": "netlify",
+  "name": "Netlify",
+  "description": "Connect Netlify's provider-hosted MCP server.",
+  "categories": [
+    "developer"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/netlify.svg"
+  },
+  "urlPatterns": [
+    "https://netlify-mcp.netlify.app/*"
+  ],
+  "docsUrl": "https://docs.netlify.com/build/build-with-ai/agent-setup-guides/agent-setup-overview/",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://netlify-mcp.netlify.app/mcp"
+      },
+      "guidanceMd": "Connect Netlify in the browser. A Netlify account with access to the relevant team and sites.",
+      "riskTier": "S3",
+      "label": "Sign in with Netlify",
+      "consoleLinks": {
+        "docs": "https://docs.netlify.com/build/build-with-ai/agent-setup-guides/agent-setup-overview/"
+      },
+      "warnings": [
+        "A Netlify account with access to the relevant team and sites."
+      ]
+    }
+  ]
+}

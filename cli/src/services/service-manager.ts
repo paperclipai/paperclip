@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -33,6 +34,7 @@ export interface ServiceManager {
   restart(): Promise<void>;
   status(): Promise<ServiceStatus>;
   logs(follow: boolean, lines: number): Promise<void>;
+  installedExecutablePath(): Promise<string | null>;
   enableLinger?(): Promise<void>;
 }
 
@@ -73,6 +75,45 @@ function escapeRegExp(value: string): string {
 
 export function resolveServiceShimPath(homeDir = os.homedir()): string {
   return process.env.PAPERCLIP_SHIM_PATH?.trim() || path.join(homeDir, ".local", "bin", "paperclipai");
+}
+
+// The installed definition, not the current environment, is the truth
+// about what the service executes: PAPERCLIP_SHIM_PATH may have changed
+// or been unset since the definition was written.
+function unescapeSystemd(value: string): string {
+  return value.replace(/\\\\|\\"|\$\$|%%/g, (m) =>
+    m === "\\\\" ? "\\" : m === '\\"' ? '"' : m === "$$" ? "$" : "%",
+  );
+}
+
+function unescapeXml(value: string): string {
+  return value.replace(/&(amp|lt|gt|quot|apos);/g, (_, name: string) =>
+    name === "amp" ? "&" : name === "lt" ? "<" : name === "gt" ? ">" : name === "quot" ? '"' : "'",
+  );
+}
+
+export function extractExecutableFromSystemdUnit(content: string): string | null {
+  const match = content.match(/^ExecStart="((?:\\.|[^"\\])*)"/m);
+  return match ? unescapeSystemd(match[1]) : null;
+}
+
+export function extractExecutableFromLaunchdPlist(content: string): string | null {
+  const match = content.match(/<key>ProgramArguments<\/key>\s*<array>\s*<string>([^<]+)<\/string>/);
+  return match ? unescapeXml(match[1]) : null;
+}
+
+// The service definition executes this path directly: existence is not
+// enough — a directory or a non-executable file would satisfy fs.access's
+// default mode and still crash the supervisor at spawn.
+export async function isExecutableFile(filePath: string): Promise<boolean> {
+  try {
+    const stats = await fs.stat(filePath);
+    if (!stats.isFile()) return false;
+    await fs.access(filePath, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function systemdServiceName(instanceId: string): string {
@@ -174,6 +215,14 @@ export class SystemdServiceManager implements ServiceManager {
     return renderSystemdUnit({ instanceId: this.instanceId, shimPath: this.shimPath, homeDir: this.homeDir });
   }
 
+  async installedExecutablePath(): Promise<string | null> {
+    try {
+      return extractExecutableFromSystemdUnit(await fs.readFile(this.definitionPath, "utf8"));
+    } catch {
+      return null;
+    }
+  }
+
   private async ensureCurrent(): Promise<boolean> {
     const changed = await writeIfChanged(this.definitionPath, this.renderDefinition());
     if (changed) await this.runner("systemctl", ["--user", "daemon-reload"]);
@@ -241,6 +290,14 @@ export class LaunchdServiceManager implements ServiceManager {
   }
 
   renderDefinition(): string { return renderLaunchdPlist({ instanceId: this.instanceId, shimPath: this.shimPath, homeDir: this.homeDir, stdoutPath: this.stdoutPath, stderrPath: this.stderrPath }); }
+
+  async installedExecutablePath(): Promise<string | null> {
+    try {
+      return extractExecutableFromLaunchdPlist(await fs.readFile(this.definitionPath, "utf8"));
+    } catch {
+      return null;
+    }
+  }
 
   async install(options: ServiceInstallOptions): Promise<{ changed: boolean }> {
     await fs.mkdir(path.dirname(this.stdoutPath), { recursive: true });

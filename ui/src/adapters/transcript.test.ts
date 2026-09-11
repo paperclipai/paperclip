@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildTranscript, type RunLogChunk } from "./transcript";
 import { grokLocalUIAdapter } from "./grok-local";
+import { kimiLocalUIAdapter } from "./kimi-local";
 import type { UIAdapterModule } from "./types";
 
 describe("buildTranscript", () => {
@@ -197,6 +198,33 @@ describe("buildTranscript", () => {
     expect(entries).toEqual([
       { kind: "assistant", ts, text: "Hello world", delta: true },
       { kind: "system", ts, text: "stop_reason=EndTurn session=sess-1" },
+    ]);
+  });
+
+  it("coalesces kimi_local ACP text deltas into one assistant entry", () => {
+    const entries = buildTranscript(
+      [
+        { ts, stream: "stdout", chunk: `${JSON.stringify({ type: "acpx.text_delta", channel: "output", text: "Hello " })}\n` },
+        { ts, stream: "stdout", chunk: `${JSON.stringify({ type: "acpx.text_delta", channel: "output", text: "world" })}\n` },
+        { ts, stream: "stdout", chunk: `${JSON.stringify({ type: "acpx.result", summary: "done", stopReason: "end_turn" })}\n` },
+      ],
+      kimiLocalUIAdapter,
+    );
+
+    expect(entries).toEqual([
+      { kind: "assistant", ts, text: "Hello world", delta: true },
+      {
+        kind: "result",
+        ts,
+        text: "done",
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedTokens: 0,
+        costUsd: 0,
+        subtype: "end_turn",
+        isError: false,
+        errors: [],
+      },
     ]);
   });
 });

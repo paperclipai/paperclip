@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../api/client";
 import { useLiveRunTranscripts } from "./useLiveRunTranscripts";
+import { TRANSCRIPT_REQUEST_TIMEOUT_MS } from "./read-transcript-request";
 
 const { useQueryMock, logMock, buildTranscriptMock } = vi.hoisted(() => ({
   useQueryMock: vi.fn(() => ({ data: { censorUsernameInLogs: false } })),
@@ -198,6 +199,36 @@ describe("useLiveRunTranscripts", () => {
     container.remove();
   });
 
+  it("releases stalled log hydration and permits a fresh retry without accepting late data", async () => {
+    vi.useFakeTimers();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    let latest!: ReturnType<typeof useLiveRunTranscripts>;
+    let resolveLate!: (result: Awaited<ReturnType<typeof logMock>>) => void;
+    const empty = { runId: "run-1", store: "memory", logRef: "log-1", content: "", nextOffset: 0 };
+    logMock.mockImplementationOnce(() => new Promise((resolve) => { resolveLate = resolve; }));
+    function Harness() {
+      latest = useLiveRunTranscripts({ companyId: "company-1", runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local" }] });
+      return null;
+    }
+    try {
+      await act(async () => { root.render(<Harness />); });
+      expect(latest.isInitialHydrating).toBe(true);
+      await act(async () => { await vi.advanceTimersByTimeAsync(TRANSCRIPT_REQUEST_TIMEOUT_MS); });
+      expect(latest.isInitialHydrating).toBe(false);
+      expect(latest.errorsByRun.get("run-1")?.message).toContain("too long");
+      await act(async () => { resolveLate(empty); });
+      expect(latest.errorsByRun.has("run-1")).toBe(true);
+      logMock.mockResolvedValue(empty);
+      await act(async () => { latest.retry(); });
+      expect(latest.errorsByRun.size).toBe(0);
+      expect(logMock).toHaveBeenCalledTimes(2);
+    } finally {
+      act(() => root.unmount());
+      vi.useRealTimers();
+    }
+  });
+
   it("stops retrying terminal runs whose persisted log never existed", async () => {
     logMock.mockReset();
     logMock.mockRejectedValue(new ApiError("Run log not found", 404, { error: "Run log not found" }));
@@ -261,7 +292,7 @@ describe("useLiveRunTranscripts", () => {
     });
 
     expect(logMock).toHaveBeenCalledTimes(1);
-    expect(logMock).toHaveBeenCalledWith("run-queued", 0, 256_000);
+    expect(logMock).toHaveBeenCalledWith("run-queued", 0, 256_000, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(FakeWebSocket.instances).toHaveLength(1);
 
     act(() => {
@@ -291,7 +322,7 @@ describe("useLiveRunTranscripts", () => {
     });
 
     expect(FakeWebSocket.instances).toHaveLength(0);
-    expect(logMock).toHaveBeenCalledWith("run-1", 0, 64_000);
+    expect(logMock).toHaveBeenCalledWith("run-1", 0, 64_000, expect.objectContaining({ signal: expect.any(AbortSignal) }));
 
     act(() => {
       root.unmount();
@@ -319,7 +350,7 @@ describe("useLiveRunTranscripts", () => {
       await Promise.resolve();
     });
 
-    expect(logMock).toHaveBeenCalledWith("run-1", 36_000, 64_000);
+    expect(logMock).toHaveBeenCalledWith("run-1", 36_000, 64_000, expect.objectContaining({ signal: expect.any(AbortSignal) }));
 
     act(() => {
       root.unmount();

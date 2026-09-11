@@ -82,6 +82,54 @@ describe("execution workspace policy helpers", () => {
     }).success).toBe(false);
   });
 
+  it("accepts an existing-branch pin only with isolated mode and a git_worktree strategy", () => {
+    expect(issueExecutionWorkspaceSettingsSchema.parse({
+      mode: "isolated_workspace",
+      workspaceStrategy: {
+        type: "git_worktree",
+        existingBranch: "PAP-14380-salvage-pap-9514",
+      },
+    }).workspaceStrategy?.existingBranch).toBe("PAP-14380-salvage-pap-9514");
+
+    // Fail closed at the contract layer: an exact-branch pin outside an
+    // isolated git worktree could silently land in the shared checkout.
+    expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+      workspaceStrategy: { type: "git_worktree", existingBranch: "some-branch" },
+    }).success).toBe(false);
+    expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+      mode: "shared_workspace",
+      workspaceStrategy: { type: "git_worktree", existingBranch: "some-branch" },
+    }).success).toBe(false);
+    expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+      mode: "isolated_workspace",
+      workspaceStrategy: { type: "project_primary", existingBranch: "some-branch" },
+    }).success).toBe(false);
+    expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+      mode: "isolated_workspace",
+      workspaceStrategy: {
+        type: "git_worktree",
+        existingBranch: "some-branch",
+        branchTemplate: "{{issue.identifier}}-{{slug}}",
+      },
+    }).success).toBe(false);
+
+    for (const invalidBranch of ["-leading-dash", "a..b", "has space", "ends/", "back\\slash", "a.lock", "../escape"]) {
+      expect(issueExecutionWorkspaceSettingsSchema.safeParse({
+        mode: "isolated_workspace",
+        workspaceStrategy: { type: "git_worktree", existingBranch: invalidBranch },
+      }).success).toBe(false);
+    }
+  });
+
+  it("carries the existing-branch pin through issue settings parsing", () => {
+    expect(
+      parseIssueExecutionWorkspaceSettings({
+        mode: "isolated_workspace",
+        workspaceStrategy: { type: "git_worktree", existingBranch: " PAP-14754-run-redaction " },
+      })?.workspaceStrategy,
+    ).toEqual({ type: "git_worktree", existingBranch: "PAP-14754-run-redaction" });
+  });
+
   it("centralizes unrunnable isolated worktree detection", () => {
     expect(
       isUnrunnableWorktreeCombo({

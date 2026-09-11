@@ -105,6 +105,84 @@ describe("grok_local testEnvironment", () => {
     );
   });
 
+  it("does not warn when the default-sentinel model is absent from the real model list", async () => {
+    // Real grok never lists the "grok-build" sentinel; execute.ts never sends
+    // it. The probe must treat the default as valid (info), not warn.
+    runProcessMock
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          "You are logged in with grok.com.",
+          "",
+          "Default model: grok-4.20-0309-non-reasoning",
+          "",
+          "Available models:",
+          "  * grok-4.20-0309-non-reasoning (default)",
+          "  * grok-4",
+        ].join("\n"),
+        stderr: "",
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "text", data: "hello" }),
+          JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "s", requestId: "r" }),
+        ].join("\n"),
+        stderr: "",
+      });
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "grok_local",
+      config: { command: "grok", cwd: "/tmp/project" }, // no model → default sentinel
+    });
+
+    const codes = result.checks.map((check: { code: string }) => check.code);
+    expect(codes).toContain("grok_model_configured");
+    expect(codes).not.toContain("grok_model_not_found");
+    expect(result.status).toBe("pass");
+  });
+
+  it("warns when an explicitly configured real model is not available", async () => {
+    runProcessMock
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          "You are logged in with grok.com.",
+          "",
+          "Default model: grok-4",
+          "",
+          "Available models:",
+          "  * grok-4",
+        ].join("\n"),
+        stderr: "",
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "text", data: "hello" }),
+          JSON.stringify({ type: "end", stopReason: "EndTurn", sessionId: "s", requestId: "r" }),
+        ].join("\n"),
+        stderr: "",
+      });
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "grok_local",
+      config: { command: "grok", cwd: "/tmp/project", model: "grok-nonexistent" },
+    });
+
+    expect(result.checks.map((check: { code: string }) => check.code)).toContain("grok_model_not_found");
+  });
+
   it("downgrades auth failures to warnings", async () => {
     runProcessMock
       .mockResolvedValueOnce({
@@ -137,6 +215,67 @@ describe("grok_local testEnvironment", () => {
         "grok_auth_required",
         "grok_hello_probe_auth_required",
       ]),
+    );
+  });
+
+  it("emits the canonical adapter_auth_missing check for a sandbox target with missing authentication", async () => {
+    // The user interface reads this neutral canonical code to decide login
+    // eligibility for the sandbox; it does not parse the message text.
+    runProcessMock
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "Not logged in. Run `grok login`.",
+      })
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "Not logged in. Run `grok login`.",
+      });
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "grok_local",
+      config: { command: "grok", cwd: "/tmp/project" },
+      executionTarget: { kind: "remote", transport: "sandbox" } as never,
+    });
+
+    expect(result.checks.some((check: { code: string }) => check.code === "adapter_auth_missing")).toBe(
+      true,
+    );
+  });
+
+  it("emits no adapter_auth_missing check for a local target with missing authentication", async () => {
+    // The canonical check gates sandbox login eligibility only. A local target
+    // has no sandbox login to offer, so the check must not appear.
+    runProcessMock
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "Not logged in. Run `grok login`.",
+      })
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "Not logged in. Run `grok login`.",
+      });
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "grok_local",
+      config: { command: "grok", cwd: "/tmp/project" },
+    });
+
+    expect(result.checks.some((check: { code: string }) => check.code === "adapter_auth_missing")).toBe(
+      false,
     );
   });
 });

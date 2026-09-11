@@ -179,6 +179,9 @@ describe("cursor_cloud execute", () => {
       PAPERCLIP_WAKE_REASON: "issue_commented",
       PAPERCLIP_API_KEY: "paperclip-run-jwt",
     });
+    // When a run JWT is present the callback URL is retained so the worker can
+    // authenticate its Paperclip API calls.
+    expect(createMock.mock.calls[0]?.[0]?.cloud?.envVars).toHaveProperty("PAPERCLIP_API_URL");
     expect(createMock.mock.calls[0]?.[0]?.cloud?.envVars).not.toHaveProperty("CURSOR_API_KEY");
 
     expect(result).toMatchObject({
@@ -202,6 +205,68 @@ describe("cursor_cloud execute", () => {
         expect.stringContaining('"type":"cursor_cloud.result"'),
       ]),
     );
+  });
+
+  it("omits empty environment values while preserving nonempty values exactly", async () => {
+    createMock.mockResolvedValue(createMockSdkAgent());
+    const ctx = createContext();
+    ctx.config.env = {
+      CURSOR_API_KEY: "cursor-secret",
+      GH_TOKEN: "",
+      GITHUB_TOKEN: "",
+      GIT_AUTHOR_NAME: "",
+      SSH_AUTH_SOCK: "",
+      EMPTY_PLAIN: { type: "plain", value: "" },
+      EXTRA_FLAG: "0",
+      PADDED_VALUE: "  retain whitespace  ",
+    };
+
+    await execute(ctx);
+
+    const env = createMock.mock.calls[0]?.[0]?.cloud?.envVars;
+    expect(env).not.toHaveProperty("GH_TOKEN");
+    expect(env).not.toHaveProperty("GITHUB_TOKEN");
+    expect(env).not.toHaveProperty("GIT_AUTHOR_NAME");
+    expect(env).not.toHaveProperty("SSH_AUTH_SOCK");
+    expect(env).not.toHaveProperty("EMPTY_PLAIN");
+    expect(env).not.toHaveProperty("CURSOR_API_KEY");
+    expect(env).toMatchObject({ EXTRA_FLAG: "0", PADDED_VALUE: "  retain whitespace  " });
+    expect(Object.values(env).every((value) => value !== "")).toBe(true);
+  });
+
+  it("reports dispatch before starting the first remote SDK operation", async () => {
+    const run = createMockRun({ agentId: "agent-dispatch" });
+    const sdkAgent = createMockSdkAgent({ agentId: "agent-dispatch", sendRun: run });
+    createMock.mockResolvedValue(sdkAgent);
+    const onDispatch = vi.fn();
+
+    await execute(createContext({ onDispatch }));
+
+    expect(onDispatch).toHaveBeenCalledTimes(1);
+    expect(onDispatch.mock.invocationCallOrder[0]).toBeLessThan(createMock.mock.invocationCallOrder[0]!);
+  });
+
+  it("omits the Paperclip API callback when no run JWT is issued (remote worker cannot call home)", async () => {
+    const run = createMockRun({ agentId: "agent-no-jwt" });
+    const sdkAgent = createMockSdkAgent({ agentId: "agent-no-jwt", sendRun: run });
+    createMock.mockResolvedValue(sdkAgent);
+    // cursor_cloud is registered with supportsLocalAgentJwt=false, so heartbeat
+    // passes no authToken. A remote cloud worker must not receive a callback URL
+    // it can neither reach nor authenticate against (the source of 401 noise).
+    const ctx = createContext({ authToken: undefined });
+
+    await execute(ctx);
+
+    const envVars = (createMock.mock.calls[0]?.[0]?.cloud?.envVars ?? {}) as Record<string, string>;
+    expect(envVars).not.toHaveProperty("PAPERCLIP_API_KEY");
+    expect(envVars).not.toHaveProperty("PAPERCLIP_API_URL");
+    expect(envVars).not.toHaveProperty("PAPERCLIP_API_BRIDGE_MODE");
+    // Informational Paperclip env (non-credential) still flows through.
+    expect(envVars).toMatchObject({
+      PAPERCLIP_RUN_ID: "run-heartbeat-1",
+      PAPERCLIP_AGENT_ID: "agent-1",
+      PAPERCLIP_COMPANY_ID: "company-1",
+    });
   });
 
   it("resumes a matching saved session when no active run can be reattached", async () => {
@@ -314,6 +379,36 @@ describe("cursor_cloud execute", () => {
         repoUrl: "https://github.com/paperclipai/paperclip.git",
       },
     });
+  });
+
+  it("explains a rejected Cursor default without silently choosing another model", async () => {
+    const sdkAgent = createMockSdkAgent();
+    sdkAgent.send.mockRejectedValue(new Error("[invalid_model] Model 'gpt-5' is not available or invalid."));
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext();
+    delete ctx.config.model;
+
+    const result = await execute(ctx);
+
+    expect(createMock.mock.calls[0]?.[0]).not.toHaveProperty("model");
+    expect(sdkAgent.send).toHaveBeenCalledWith(expect.any(String), {});
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toContain("Cursor rejected its configured default model");
+    expect(result.errorMessage).toContain("https://cursor.com/dashboard/cloud-agents");
+    expect(sdkAgent.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes Cursor repository setup failures actionable without launching another run", async () => {
+    const sdkAgent = createMockSdkAgent();
+    sdkAgent.send.mockRejectedValue(new Error("[validation_error] Failed to determine repository default branch"));
+    createMock.mockResolvedValue(sdkAgent);
+
+    const result = await execute(createContext());
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toContain("Cursor's GitHub integration can access https://github.com/paperclipai/paperclip.git");
+    expect(result.errorMessage).toContain("https://cursor.com/dashboard/cloud-agents");
+    expect(sdkAgent.send).toHaveBeenCalledTimes(1);
   });
 
   it("maps non-finished Cursor results to failing Paperclip runs", async () => {

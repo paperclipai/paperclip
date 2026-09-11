@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/workspace-diff.schema.json",
+  "title": "Paperclip workspace diff",
+  "type": "object",
+  "required": ["schema", "changeSetId", "revision", "source", "complete", "files", "totals", "patchArtifactRef"],
+  "properties": {
+    "schema": { "const": "paperclip.workspace.diff.v1" },
+    "changeSetId": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "source": { "enum": ["harness_reported", "runner_verified"] },
+    "complete": { "type": "boolean" },
+    "files": {
+      "type": "array",
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "required": ["path", "operation", "previousPath", "additions", "deletions", "binary", "diff"],
+        "properties": {
+          "path": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$" },
+          "operation": { "enum": ["create", "modify", "delete", "rename", "mode_change"] },
+          "previousPath": {
+            "oneOf": [
+              { "type": "null" },
+              { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$" }
+            ]
+          },
+          "additions": { "type": ["integer", "null"], "minimum": 0 },
+          "deletions": { "type": ["integer", "null"], "minimum": 0 },
+          "binary": { "type": "boolean" },
+          "diff": { "type": ["string", "null"], "maxLength": 262144 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "totals": {
+      "type": "object",
+      "required": ["files", "additions", "deletions"],
+      "properties": {
+        "files": { "type": "integer", "minimum": 0 },
+        "additions": { "type": ["integer", "null"], "minimum": 0 },
+        "deletions": { "type": ["integer", "null"], "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "patchArtifactRef": { "type": ["string", "null"], "maxLength": 2048 }
+  },
+  "additionalProperties": false
+}

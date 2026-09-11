@@ -122,8 +122,10 @@ All of these are optional; when unset, the driver defaults apply and behavior is
 ```sh
 DATABASE_PREPARED_STATEMENTS=false   # required for transaction-mode poolers; default: enabled
 DATABASE_POOL_MAX=25                 # connection pool size; default: 10
-DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: keep open
+DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: 60 (0 = keep open)
 DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
+DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this long; default: 30-60 min (random)
+DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default: paperclip
 ```
 
 ### Push the schema
@@ -167,6 +169,26 @@ When authoring migrations or one-time backfills:
 - Split schema changes, index creation, and data backfill into separate phases so each step has clear locking and rollback behavior.
 - Treat the `check:migrations` CI gate as the enforcement backstop for these rules. If it flags a migration, rewrite the migration or add a suppression comment with the indexed predicate, batch bound, and reason the remaining scan is safe.
 
+## Migration snapshots
+
+`drizzle-kit generate` diffs `packages/db/src/schema/` against the newest snapshot in `packages/db/src/migrations/meta/`. That snapshot must describe the schema that every migration produces when they run in order. A snapshot that drifts from the schema makes the *next* migration wrong, because `generate` folds the drift into it. The drift can add a column that an earlier migration already created, which makes that migration fail on a fresh database. It can also drop a column that the schema still uses.
+
+- Create every migration with `pnpm --filter @paperclipai/db generate`. Do not hand-write a snapshot.
+- Do not hand-edit a snapshot to resolve a merge conflict. Renumber your migration and run `generate` again, as `packages/db/.gitattributes` describes.
+- `packages/db/src/migration-snapshot-drift.test.ts` is the enforcement backstop. It repeats the diff that `generate` performs and fails when the newest snapshot no longer matches `packages/db/src/schema/`.
+
+## Cloud runtime identity singleton
+
+The private `instance_settings` row whose singleton key is
+`cloud-runtime-identity/v1` records the immutable Cloud stack id, warm-pool
+claim id, previous pool origin, canonical origin, and stack slug accepted from
+Cloud's signed pre-activation assertion. It is separate from the normal
+`default` settings row and never appears in the settings API. This is
+intentionally instance-scoped rather than company-scoped: an instance has one
+public identity, and the existing unique singleton-key index makes concurrent
+or later attempts to replace it fail closed. The server loads the row before
+constructing URL-dependent runtime services on every boot.
+
 ## Resource membership tables
 
 Paperclip stores current-user sidebar membership state in:
@@ -197,6 +219,96 @@ The decisions desk stores queue membership, decide-by/snooze state, and retentio
 Triage writes serialize on the company and attention-source identity so concurrent partial updates preserve both fields and produce monotonic history versions.
 
 `decision_retention` tracks the last observed source `activityAt`, Keep, reversible archive provenance, and monotonic source/archive versions. `decision_archive_notification_outbox` has a unique key over company, source identity, archive version, and immutable origin agent so repeated sweeps cannot enqueue duplicate notifications; delivery claims are retryable and coalesced per agent.
+
+## Native runner persistence
+
+Native runner state is additive to the existing heartbeat tables. Every existing
+`heartbeat_runs` row defaults to `runtime_mode = 'legacy'`; adding these columns
+does not select the native runtime or start a runner process. Native execution can
+record its resolved runtime profile, provider session, driver, completion
+contract, durable event cursor, and finalization phase on the run when a later
+rollout explicitly selects it.
+
+`completion_contracts`, `native_run_results`, `native_run_finalizations`,
+`work_assessments`, `status_decisions`, and `status_decision_effects` form the
+append-oriented evidence and status-decision chain. Unique fingerprints,
+versions, ordinals, and idempotency keys make retries deterministic. Composite
+foreign keys bind every contract, result, assessment, decision, effect, and
+finalization to one company, issue, and run. The database rejects mixed-owner
+evidence even when every referenced ID exists. Native source identities on
+`heartbeat_run_events` are nullable so legacy events remain readable without
+rewriting historical rows. Per-run native source identifiers are unique, while
+the existing legacy sequence behavior remains unchanged. The hidden native
+coordinator serializes on its bound `heartbeat_runs` row, allocates
+`next_event_seq`, and commits a validated PRP event before the transport sends
+its cumulative ACK. Byte-equivalent source retries return the existing cursor;
+gaps and conflicting replays fail closed. Accepted structured results enter the
+finalization ledger, whose retry time and owner lease are checked under a row
+lock. None of these writes selects a runtime or changes a legacy run's execution
+path.
+
+Durable agent session goals are an additive projection on
+`agent_task_sessions`, distinct from the business-goal hierarchy. The row stores
+the negotiated goal capability, normalized snapshot and status, desired state,
+provider source cursor, monotonic projection revision, and observation time.
+`agent_session_goal_actions` is the control outbox: `(session_id, request_id)`
+is unique, so retries return the original accepted action. Provider source
+ordering fences duplicate and stale updates, and a cleared projection retains
+its revision/cursor tombstone so an older provider event cannot resurrect it.
+
+Issue `status_version` advances only when `status` changes. The JavaScript backup
+path includes user-defined functions and triggers so a restored database keeps
+that invariant. Removing or disabling a future native rollout flag must not
+delete these records; persisted experimental runs remain available for recovery
+and inspection.
+
+`native_run_finalizations` also stores restart ownership and recovery state.
+The controller owner is a server boot id, PID, operating-system process-start
+timestamp, and monotonically increasing controller generation. Recovery writes
+its correlated request id, current state, and a bounded JSON history. A
+successor can take the lease immediately only when coordinated handoff or PID
+and process-start evidence proves the prior controller is gone, or when the
+lease expires. Recovery generation changes do not increment the independent
+provider-attempt counter.
+
+## Telegram private draft identities
+
+`chat_telegram_draft_ids` is a content-free, instance-wide PostgreSQL sequence,
+not a company-owned record. Telegram's native Stop callback carries a draft ID
+but no actor or Paperclip generation. IDs therefore must not be recycled when
+a transaction rolls back or an endpoint/company is deleted and its bot is
+connected again. The sequence allocates positive 31-bit IDs without cycling;
+exhaustion refuses new draft allocation rather than wrapping or falling back to
+random IDs. Never reset it as part of chat cleanup.
+
+The matching `chat_actions` entry remains company/endpoint-scoped and binds the
+draft to its exact conversation, publication attempt, runtime, credential and
+approved text. Stop can suppress that private draft's final publication; it
+cannot cancel a task or model run. Logical backups preserve the sequence, but
+restoring an older database may roll back its high-water mark: disaster recovery
+must not assume stale provider Stop events are safe to reuse. That restore
+boundary is not qualified by the rollback/concurrency regression.
+
+## Attachment upload provenance
+
+`issue_attachments.originating_run_id` records server-derived run attribution at
+upload time. It is not writable through attachment or work-product update APIs.
+Legacy attachments and uploads without a registered run keep a null value; the
+migration deliberately does not infer attribution from mutable work products.
+Deleting the originating run clears the reference and fails closed for automatic
+chat handoff. An agent's external file selection must match the attachment's
+company, task, agent, and originating run. Editing or recreating a work-product
+record cannot reassign that authority to a later run.
+
+## Question-response delivery receipts
+
+`issue_question_response_deliveries` is the retry-safe, content-free outbox for
+answered `ask_user_questions` interactions. Its unique interaction and correlation
+indexes enforce one causal delivery per response. It records source and target
+run/turn ids, payload digest, attempt/acknowledgement state, and one of `steered`,
+`coalesced`, or `wake_fallback`; answer content remains only in
+`issue_thread_interactions.result`. Deleting the interaction cascades its receipt,
+while deleting a referenced run clears that run pointer without deleting history.
 
 ## Plugin database namespaces
 
@@ -267,7 +379,7 @@ pnpm paperclipai configure --section secrets
 Inline secret migration command:
 
 ```sh
-pnpm exec paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+npx paperclipai secrets migrate-inline-env --company-id <company-id> --apply
 
 # direct database maintenance fallback
 pnpm secrets:migrate-inline-env --apply

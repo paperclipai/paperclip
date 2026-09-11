@@ -6,19 +6,29 @@ updates:
       interval: weekly
       day: monday
       time: "06:00"
-    open-pull-requests-limit: 10
+    # Each dependency update gets its own pull request, including major
+    # version bumps. A grouped major PR cannot merge when one member has
+    # a blocked upgrade, so it hides the other ready majors. Separate PRs
+    # let each major land on its own. The limit holds the initial burst
+    # of pending majors plus the regular minor and patch updates.
+    open-pull-requests-limit: 20
     labels:
       - "dependencies"
-    groups:
-      # Bundle all major version bumps into a single weekly PR so they
-      # stay visible without flooding the PR list. Minor/patch updates
-      # still get individual PRs.
-      major-updates:
-        applies-to: version-updates
+    # Dependabot's npm parser reads only dependencies, devDependencies, and
+    # optionalDependencies — never peerDependencies. It cannot see the
+    # optional OpenTelemetry peer dependencies in server/package.json, so it
+    # never bumps their declared versions. The same limit applies to the
+    # optional @sentry/node peer dependency in server/package.json: Dependabot
+    # cannot bump it either, for the same reason. @sentry/browser stays a
+    # normal devDependency of ui/package.json, so Dependabot does track that
+    # one.
+    ignore:
+      # @types/node describes the APIs available in the supported Node runtime.
+      # Runtime major upgrades are deliberate compatibility changes, so keep
+      # Dependabot on the current major until the runtime baseline moves too.
+      - dependency-name: "@types/node"
         update-types:
-          - "major"
-        patterns:
-          - "*"
+          - "version-update:semver-major"
 
   - package-ecosystem: github-actions
     directory: "/"

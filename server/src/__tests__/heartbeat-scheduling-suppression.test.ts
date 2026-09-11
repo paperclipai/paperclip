@@ -1,10 +1,16 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   resolveHeartbeatSchedulingSuppression,
   resolveSkillTestRunCompletionForHeartbeatOutcome,
+  startTaskDrain,
+  stopTaskDrain,
 } from "../services/heartbeat.ts";
 
 describe("heartbeat scheduling suppression", () => {
+  afterEach(() => {
+    stopTaskDrain();
+  });
+
   it("suppresses heartbeat scheduling for worktree runtimes", () => {
     expect(resolveHeartbeatSchedulingSuppression({
       PAPERCLIP_IN_WORKTREE: "true",
@@ -51,6 +57,26 @@ describe("heartbeat scheduling suppression", () => {
         },
         { allowWorktreeRunExecution: true },
       ),
+    ).toEqual({
+      suppressed: true,
+      reason: "database_restore_in_progress",
+    });
+  });
+
+  it("suppresses heartbeat scheduling while a task drain is active", () => {
+    startTaskDrain({});
+    expect(resolveHeartbeatSchedulingSuppression({})).toEqual({
+      suppressed: true,
+      reason: "task_drain",
+    });
+  });
+
+  it("still suppresses database restore even when a task drain is active", () => {
+    startTaskDrain({});
+    expect(
+      resolveHeartbeatSchedulingSuppression({
+        PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS: "1",
+      }),
     ).toEqual({
       suppressed: true,
       reason: "database_restore_in_progress",

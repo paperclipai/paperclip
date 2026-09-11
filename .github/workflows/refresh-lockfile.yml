@@ -31,11 +31,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
 
       - name: Refresh pnpm lockfile
-        run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+        run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
 
       - name: Fail on unexpected file changes
         run: |

@@ -13,7 +13,7 @@ export const feedbackDataSharingPreferenceSchema = z.enum(FEEDBACK_DATA_SHARING_
 
 export const upsertIssueFeedbackVoteSchema = z.object({
   targetType: feedbackTargetTypeSchema,
-  targetId: z.string().uuid(),
+  targetId: z.string().guid(),
   vote: feedbackVoteValueSchema,
   reason: z.string().trim().max(1000).optional(),
   allowSharing: z.boolean().optional(),

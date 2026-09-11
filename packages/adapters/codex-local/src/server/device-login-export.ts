@@ -247,6 +247,7 @@ export async function installDeviceLoginCredential(
       sandboxAuthBytes,
       cacheEntryPath: authPath,
       log,
+      env,
     });
     return outcome === "written" ? "seeded" : "kept";
   }

@@ -178,7 +178,7 @@ export function SmokeLabTab({ companyId }: { companyId: string }) {
         <p className="mt-1.5 max-w-xl text-sm text-muted-foreground">
           The Smoke Lab is an experimental developer surface for exercising the integration paths
           against deterministic local fixtures. Turn on <code className="rounded bg-muted px-1 py-0.5 text-xs">Smoke Lab</code>{" "}
-          under Instance settings → Experimental to enable it.
+          under Settings → Experimental to enable it.
         </p>
       </div>
     );

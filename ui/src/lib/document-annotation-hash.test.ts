@@ -15,6 +15,7 @@ describe("parseDocumentAnnotationHash", () => {
       documentKey: "plan",
       threadId: null,
       commentId: null,
+      viewer: null,
     });
   });
 
@@ -25,6 +26,25 @@ describe("parseDocumentAnnotationHash", () => {
       documentKey: "plan",
       threadId: "t1",
       commentId: "c2",
+      viewer: null,
+    });
+  });
+
+  it("parses the viewer=full request", () => {
+    expect(parseDocumentAnnotationHash("#document-direction-package&viewer=full")).toEqual({
+      documentKey: "direction-package",
+      threadId: null,
+      commentId: null,
+      viewer: "full",
+    });
+  });
+
+  it("ignores unknown viewer values", () => {
+    expect(parseDocumentAnnotationHash("#document-plan&viewer=huge")).toEqual({
+      documentKey: "plan",
+      threadId: null,
+      commentId: null,
+      viewer: null,
     });
   });
 
@@ -33,7 +53,12 @@ describe("parseDocumentAnnotationHash", () => {
       documentKey: "my notes",
       threadId: "abc",
       commentId: null,
+      viewer: null,
     });
+  });
+
+  it("returns null for a malformed encoded document key", () => {
+    expect(parseDocumentAnnotationHash("#document-%E0%A4%A")).toBeNull();
   });
 });
 
@@ -56,8 +81,24 @@ describe("buildDocumentAnnotationHash", () => {
     ).toBe("#document-plan&thread=t1&comment=c2");
   });
 
+  it("includes the viewer request", () => {
+    expect(
+      buildDocumentAnnotationHash({
+        documentKey: "direction-package",
+        threadId: null,
+        commentId: null,
+        viewer: "full",
+      }),
+    ).toBe("#document-direction-package&viewer=full");
+  });
+
   it("survives a round trip", () => {
-    const target = { documentKey: "plan-2", threadId: "t-abc", commentId: "c-xyz" };
+    const target = {
+      documentKey: "plan-2",
+      threadId: "t-abc",
+      commentId: "c-xyz",
+      viewer: "full" as const,
+    };
     expect(parseDocumentAnnotationHash(buildDocumentAnnotationHash(target))).toEqual(target);
   });
 });

@@ -714,7 +714,7 @@ describe("CompanyImport", () => {
     // Config edits while the import is in flight must not detach it from
     // the UI: the progress panel keeps reporting it until it settles.
     const midFlightNameInput = container.querySelector<HTMLInputElement>(
-      'input[placeholder="Imported Company"]',
+      'input[placeholder="Imported Organization"]',
     );
     expect(midFlightNameInput).toBeTruthy();
     await act(async () => {
@@ -738,7 +738,7 @@ describe("CompanyImport", () => {
 
     // The new-company name feeds the request payload too: editing it clears
     // the stale error panel without discarding the rendered preview.
-    const nameInput = container.querySelector<HTMLInputElement>('input[placeholder="Imported Company"]');
+    const nameInput = container.querySelector<HTMLInputElement>('input[placeholder="Imported Organization"]');
     expect(nameInput).toBeTruthy();
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
@@ -922,7 +922,14 @@ describe("CompanyImport", () => {
 
       // Success-leaning panel, not the failure panel.
       expect(container.textContent).toContain("Import completed");
-      expect(container.textContent).toContain("open it to view it");
+      // The readable company gives the panel a name and a direct CTA into the
+      // new company's dashboard, plus the paused-agents pointer.
+      expect(container.textContent).toContain("Imported Test");
+      // The default import submits with pauseAutomations checked, so the
+      // paused pointer must show; it is gated off when the user unchecks it.
+      expect(container.textContent).toContain("Imported agents arrived paused");
+      const openCompany = container.querySelector('[data-testid="import-expired-open-company"]');
+      expect(openCompany).not.toBeNull();
       expect(container.textContent).not.toContain("Import failed");
       expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "success" }));
       // The company list is refreshed so the new company appears in the switcher.
@@ -932,6 +939,20 @@ describe("CompanyImport", () => {
     } finally {
       invalidateSpy.mockRestore();
     }
+  });
+
+  it("falls back to switcher guidance when the expired job's company is unreadable", async () => {
+    mockCompaniesApi.getImportJob.mockResolvedValue({
+      job: { id: "job-1", status: "succeeded", result: { companyId: "company-2" } },
+    });
+    mockCompaniesApi.get.mockRejectedValue(new Error("forbidden"));
+
+    await renderPageAndImport();
+
+    expect(container.textContent).toContain("Import completed");
+    expect(container.textContent).toContain("select it from the organization switcher");
+    // No readable company, so no dashboard CTA — the switcher guidance stands in.
+    expect(container.querySelector('[data-testid="import-expired-open-company"]')).toBeNull();
   });
 
   it("surfaces a first-poll 404 as an error because the job never existed", async () => {
@@ -1073,6 +1094,34 @@ describe("CompanyImport", () => {
     expect(lastImportMeta().adapterOverrides).toEqual({
       coder: { adapterType: "codex_local" },
     });
+  });
+
+  it("hides Paperclip Runner import configuration while its experimental flag is off", async () => {
+    mockAdaptersApi.list.mockResolvedValue([
+      { type: "claude_local", disabled: false },
+      { type: "codex_local", disabled: false },
+      { type: "paperclip_runner", disabled: true },
+    ]);
+    await previewMixedAdapterPackage();
+
+    for (const select of findAdapterSelects()) {
+      expect(Array.from(select.options).map((option) => option.value))
+        .not.toContain("paperclip_runner");
+    }
+  });
+
+  it("offers Paperclip Runner import configuration after its experimental flag is enabled", async () => {
+    mockAdaptersApi.list.mockResolvedValue([
+      { type: "claude_local", disabled: false },
+      { type: "codex_local", disabled: false },
+      { type: "paperclip_runner", disabled: false },
+    ]);
+    await previewMixedAdapterPackage();
+
+    for (const select of findAdapterSelects()) {
+      expect(Array.from(select.options).map((option) => option.value))
+        .toContain("paperclip_runner");
+    }
   });
 
   it("falls back to the CEO adapter with a visible warning when a manifest adapter is not installed", async () => {

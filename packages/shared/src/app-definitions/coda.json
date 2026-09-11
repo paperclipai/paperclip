@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "slug": "coda",
+  "name": "Coda",
+  "description": "Connect Coda's provider-hosted MCP server.",
+  "categories": [
+    "productivity"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/coda.svg"
+  },
+  "urlPatterns": [
+    "https://coda.io/*"
+  ],
+  "docsUrl": "https://help.coda.io/hc/en-us/articles/44722769665549-Security-recommendations-for-the-Coda-MCP",
+  "redirectConstraints": "https-or-loopback-http",
+  "methods": [
+    {
+      "key": "mcp-oauth",
+      "transport": "mcp_remote",
+      "auth": "oauth",
+      "ownershipModes": [
+        "dcr"
+      ],
+      "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
+      "defaults": {
+        "serverUrl": "https://coda.io/apis/mcp"
+      },
+      "guidanceMd": "Connect Coda in the browser. A Coda account; the hosted MCP service is currently beta.",
+      "riskTier": "S3",
+      "label": "Sign in with Coda",
+      "consoleLinks": {
+        "docs": "https://help.coda.io/hc/en-us/articles/44722769665549-Security-recommendations-for-the-Coda-MCP"
+      },
+      "warnings": [
+        "A Coda account; the hosted MCP service is currently beta.",
+        "This provider's hosted MCP server is currently beta or preview."
+      ]
+    },
+    {
+      "key": "mcp-api-key",
+      "transport": "mcp_remote",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use a restricted customer-owned key when browser sign-in is not suitable.",
+      "defaults": {
+        "serverUrl": "https://coda.io/apis/mcp"
+      },
+      "guidanceMd": "Use a customer-created Coda key. A Coda account; the hosted MCP service is currently beta.",
+      "riskTier": "S3",
+      "label": "Use an API key",
+      "credentialFields": [
+        {
+          "key": "authorization",
+          "label": "Coda API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Coda API token",
+          "secret": true
+        }
+      ],
+      "keyPlacement": {
+        "location": "header",
+        "name": "Authorization",
+        "prefix": "Bearer "
+      },
+      "consoleLinks": {
+        "keys": "https://help.coda.io/hc/en-us/articles/44722769665549-Security-recommendations-for-the-Coda-MCP",
+        "docs": "https://help.coda.io/hc/en-us/articles/44722769665549-Security-recommendations-for-the-Coda-MCP"
+      },
+      "warnings": [
+        "A Coda account; the hosted MCP service is currently beta.",
+        "This provider's hosted MCP server is currently beta or preview."
+      ]
+    }
+  ]
+}

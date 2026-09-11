@@ -90,4 +90,28 @@ describe("AgentCapsule", () => {
     expect(render(<AgentCapsule state="online" gradient={0} />).dataset.gradient).toBe("10");
     expect(render(<AgentCapsule state="online" gradient={-1} />).dataset.gradient).toBe("9");
   });
+
+  it("traces the outline instead of cross-fading it when strokeDraw is set", () => {
+    // The cross-fade renders a bordered <span>; the trace renders an SVG rect
+    // animated from pathLength 0 to 1.
+    const cap = render(<AgentCapsule state="configured" strokeDraw />);
+    expect(cap.querySelector("svg rect")).not.toBeNull();
+    expect(cap.querySelector(".agent-cap-stroke")).toBeNull();
+  });
+
+  it("keeps the cross-fade when strokeDraw is not asked for", () => {
+    // Everywhere outside the onboarding arc the quieter default applies.
+    const cap = render(<AgentCapsule state="configured" />);
+    expect(cap.querySelector(".agent-cap-stroke")).not.toBeNull();
+    expect(cap.querySelector("svg rect")).toBeNull();
+  });
+
+  it("holds the dashed outline until the trace finishes", () => {
+    // Fading the dashed layer on the usual schedule would leave the capsule
+    // briefly outline-less in the middle of its own birth.
+    const cap = render(<AgentCapsule state="configured" strokeDraw />);
+    const dashed = cap.querySelector(".agent-cap-dash") as HTMLElement;
+    expect(dashed).not.toBeNull();
+    expect(dashed.style.transitionDelay).not.toBe("");
+  });
 });

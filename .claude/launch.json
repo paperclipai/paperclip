@@ -4,9 +4,12 @@
     {
       "name": "paperclip",
       "runtimeExecutable": "/bin/sh",
-      "runtimeArgs": ["-c", "TMPDIR=/tmp pnpm dev"],
+      "runtimeArgs": [
+        "-c",
+        "TMPDIR=/tmp pnpm dev"
+      ],
       "port": 3108,
-      "autoPort": false
+      "autoPort": true
     }
   ]
 }

@@ -339,7 +339,7 @@ describe("ProfileDetail", () => {
     });
     await Promise.resolve();
 
-    expect(document.body.textContent).toContain("Reassign the company default to another profile before deleting it.");
+    expect(document.body.textContent).toContain("Reassign the organization default to another profile before deleting it.");
     const dialogDelete = [...document.body.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent?.trim() === "Delete") as HTMLButtonElement | undefined;
     expect(dialogDelete?.disabled).toBe(true);
     expect(api.deleteProfile).not.toHaveBeenCalled();

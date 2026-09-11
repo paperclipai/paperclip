@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/result.schema.json",
+  "title": "PRP structured run result",
+  "type": "object",
+  "required": [
+    "schema",
+    "reportedWorkDisposition",
+    "summary",
+    "completionClaim",
+    "evidence",
+    "verification",
+    "attentionRequests",
+    "artifacts"
+  ],
+  "properties": {
+    "schema": { "const": "paperclip.run_result.v1" },
+    "reportedWorkDisposition": {
+      "enum": ["done", "blocked", "needs_review", "yielded"]
+    },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 12000 },
+    "completionClaim": {
+      "type": "object",
+      "required": ["contractRevision", "objectiveSatisfied", "criteria", "remainingWork"],
+      "properties": {
+        "contractRevision": { "type": "string", "minLength": 1 },
+        "objectiveSatisfied": { "type": "boolean" },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["criterionId", "status", "evidenceRefs"],
+            "properties": {
+              "criterionId": { "type": "string", "minLength": 1 },
+              "status": { "enum": ["satisfied", "not_satisfied", "unknown"] },
+              "evidenceRefs": { "type": "array", "items": { "type": "string" } },
+              "explanation": { "type": "string" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "remainingWork": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["description", "blocksCompletion"],
+            "properties": {
+              "description": { "type": "string", "minLength": 1 },
+              "blocksCompletion": { "type": "boolean" }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "evidence": { "type": "array", "items": { "type": "object" } },
+    "verification": {
+      "type": "array",
+      "description": "Checks used to verify the work. Use failed only when the check actually ran and found a defect in the work. If a check could not run or complete because the environment, tool, dependency, permission, credential, policy, external service, or budget was unavailable, use not_run with reasonCode even when the attempted command exited non-zero.",
+      "items": {
+        "type": "object",
+        "required": ["commandOrCheck", "status"],
+        "properties": {
+          "commandOrCheck": { "type": "string", "minLength": 1 },
+          "status": {
+            "enum": ["passed", "failed", "not_run"],
+            "description": "passed means the check ran and succeeded; failed means it ran to a meaningful verdict and found the work incorrect; not_run means no meaningful verdict was possible because the check was not attempted or could not complete."
+          },
+          "reasonCode": {
+            "description": "Required for not_run; identify why the check had no meaningful verdict.",
+            "enum": [
+              "environment_unavailable",
+              "tool_unavailable",
+              "dependency_missing",
+              "permission_denied",
+              "credential_missing",
+              "policy_restricted",
+              "external_service_unavailable",
+              "budget_exhausted",
+              "other"
+            ]
+          },
+          "detail": { "type": "string" },
+          "artifactRef": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "blocker": {
+      "type": "object",
+      "required": ["reasonCode", "owner", "unblockAction", "scope"],
+      "properties": {
+        "reasonCode": { "type": "string", "minLength": 1 },
+        "owner": {
+          "type": "object",
+          "required": ["kind", "name"],
+          "properties": {
+            "kind": { "enum": ["agent", "user", "system", "external"] },
+            "name": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": true
+        },
+        "unblockAction": { "type": "string", "minLength": 1 },
+        "scope": { "enum": ["current_track", "task_wide"] }
+      },
+      "additionalProperties": true
+    },
+    "attentionRequests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": { "type": "string", "minLength": 1 },
+          "summary": { "type": "string", "minLength": 1 },
+          "ownerClass": { "enum": ["human", "agent", "external_system"] },
+          "targetAgentId": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": true
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": { "type": "string", "minLength": 1 },
+          "ref": { "type": "string", "minLength": 1 },
+          "title": { "type": "string" }
+        },
+        "additionalProperties": true
+      }
+    },
+    "continuation": {
+      "type": "object",
+      "required": ["kind", "summary", "idempotencyKey"],
+      "properties": {
+        "kind": {
+          "enum": ["same_agent", "retry", "delegated_issue", "response_wake", "monitor"]
+        },
+        "summary": { "type": "string", "minLength": 1 },
+        "idempotencyKey": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "reportedWorkDisposition": { "const": "blocked" } } },
+      "then": { "required": ["blocker"] }
+    },
+    {
+      "if": { "properties": { "reportedWorkDisposition": { "const": "yielded" } } },
+      "then": { "required": ["continuation"] }
+    }
+  ],
+  "additionalProperties": true
+}

@@ -1,12 +1,27 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  buildIssueBlockersResolvedWakeStateKey,
+} from "../services/issue-dependency-wakeups.ts";
+
+// The first test in this suite imports the large `routes/issues.ts` module
+// through `vi.importActual` inside `createApp`. `vi.resetModules()` in
+// `beforeEach` forces a fresh import each test, so the first test pays the
+// one-time transform and execution cost of that module. Locally the first
+// test takes about 3.7s while the later tests take about 0.13s each. Under
+// the loaded serial shard (maxWorkers=1) this cold-start can cross vitest's
+// default 5000ms test timeout and produce a flaky "Test timed out in 5000ms"
+// failure. Give the suite generous headroom, far above the observed cold-start
+// yet still below the 30s hook timeout.
+vi.setConfig({ testTimeout: 30000 });
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
-const mockFindExistingIssueBlockersResolvedWake = vi.hoisted(() => vi.fn(async () => null));
+const mockFindExistingIssueBlockersResolvedWakeForReadyState = vi.hoisted(() => vi.fn(async () => null));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getById: vi.fn(),
+  getByIdForUpdate: vi.fn(),
   getByIdentifier: vi.fn(async () => null),
   getComment: vi.fn(),
   getCommentCursor: vi.fn(),
@@ -20,7 +35,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
-    getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
+    getById: vi.fn(async () => ({ id: "company-1" })),
   }),
   accessService: () => ({
     canUser: vi.fn(),
@@ -97,7 +112,8 @@ vi.mock("../services/issue-dependency-wakeups.js", async () => {
   );
   return {
     ...actual,
-    findExistingIssueBlockersResolvedWake: mockFindExistingIssueBlockersResolvedWake,
+    findExistingIssueBlockersResolvedWakeForReadyState:
+      mockFindExistingIssueBlockersResolvedWakeForReadyState,
   };
 });
 
@@ -114,6 +130,7 @@ async function createApp() {
     select: vi.fn(() => ({
       from: vi.fn(() => query),
     })),
+    transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
   };
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -143,8 +160,9 @@ describe("issue dependency wakeups in issue routes", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     vi.clearAllMocks();
-    mockFindExistingIssueBlockersResolvedWake.mockResolvedValue(null);
+    mockFindExistingIssueBlockersResolvedWakeForReadyState.mockResolvedValue(null);
     mockIssueService.getAncestors.mockResolvedValue([]);
+    mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.getCommentCursor.mockResolvedValue({
       totalComments: 0,
@@ -386,5 +404,281 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
+  });
+
+  function issueRecord(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-100",
+      title: "Issue",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      blockedTransitionAt: null,
+      labels: [],
+      labelIds: [],
+      ...overrides,
+    };
+  }
+
+  it("wakes a Release-like dependent after a terminal reset using the current blocked cycle", async () => {
+    const reviewIssueId = "11111111-1111-4111-8111-111111111111";
+    const releaseIssueId = "22222222-2222-4222-8222-222222222222";
+    const releaseBlockedAt = new Date("2026-08-01T15:00:00.000Z");
+    mockIssueService.getById.mockResolvedValue(issueRecord({
+      id: reviewIssueId,
+      identifier: "PAP-REVIEW",
+      title: "Review",
+      status: "in_progress",
+    }));
+    mockIssueService.update.mockResolvedValue(issueRecord({
+      id: reviewIssueId,
+      identifier: "PAP-REVIEW",
+      title: "Review",
+      status: "done",
+    }));
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: releaseIssueId,
+        assigneeAgentId: "agent-release",
+        blockerIssueIds: [reviewIssueId],
+        blockedTransitionAt: releaseBlockedAt,
+      },
+    ]);
+
+    const res = await request(await createApp()).patch(`/api/issues/${reviewIssueId}`).send({ status: "done" });
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockFindExistingIssueBlockersResolvedWakeForReadyState).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          companyId: "company-1",
+          dependentIssueId: releaseIssueId,
+          blockerIssueIds: [reviewIssueId],
+          blockedTransitionAt: releaseBlockedAt,
+        }),
+      );
+      expect(mockWakeup).toHaveBeenCalledTimes(1);
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-release",
+        expect.objectContaining({
+          reason: "issue_blockers_resolved",
+          idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+            dependentIssueId: releaseIssueId,
+            blockerIssueIds: [reviewIssueId],
+            blockedTransitionAt: releaseBlockedAt,
+          }),
+          payload: expect.objectContaining({
+            issueId: releaseIssueId,
+            resolvedBlockerIssueId: reviewIssueId,
+            mutation: "blocker_done",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("does not enqueue a second wake when the blocker is already done", async () => {
+    const reviewIssueId = "11111111-1111-4111-8111-111111111111";
+    mockIssueService.getById.mockResolvedValue(issueRecord({
+      id: reviewIssueId,
+      identifier: "PAP-REVIEW",
+      title: "Review",
+      status: "done",
+    }));
+    mockIssueService.update.mockResolvedValue(issueRecord({
+      id: reviewIssueId,
+      identifier: "PAP-REVIEW",
+      title: "Review",
+      status: "done",
+    }));
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: "22222222-2222-4222-8222-222222222222",
+        assigneeAgentId: "agent-release",
+        blockerIssueIds: [reviewIssueId],
+        blockedTransitionAt: new Date("2026-08-01T15:00:00.000Z"),
+      },
+    ]);
+
+    const res = await request(await createApp()).patch(`/api/issues/${reviewIssueId}`).send({ status: "done" });
+    expect(res.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mockWakeup).not.toHaveBeenCalled();
+    expect(mockIssueService.listWakeableBlockedDependents).not.toHaveBeenCalled();
+  });
+
+  it("wakes a QA-like chain one dependent at a time after each blocker completes", async () => {
+    const reviewIssueId = "11111111-1111-4111-8111-111111111111";
+    const releaseIssueId = "22222222-2222-4222-8222-222222222222";
+    const qaIssueId = "33333333-3333-4333-8333-333333333333";
+    const releaseBlockedAt = new Date("2026-08-02T10:00:00.000Z");
+    const qaBlockedAt = new Date("2026-08-02T10:05:00.000Z");
+    const app = await createApp();
+
+    mockIssueService.getById.mockResolvedValue(issueRecord({
+      id: reviewIssueId,
+      identifier: "PAP-REVIEW",
+      title: "Review",
+      status: "in_progress",
+    }));
+    mockIssueService.update.mockResolvedValue(issueRecord({
+      id: reviewIssueId,
+      identifier: "PAP-REVIEW",
+      title: "Review",
+      status: "done",
+    }));
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: releaseIssueId,
+        assigneeAgentId: "agent-release",
+        blockerIssueIds: [reviewIssueId],
+        blockedTransitionAt: releaseBlockedAt,
+      },
+    ]);
+
+    expect((await request(app).patch(`/api/issues/${reviewIssueId}`).send({ status: "done" })).status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledTimes(1);
+    });
+    expect(mockWakeup).toHaveBeenCalledWith(
+      "agent-release",
+      expect.objectContaining({
+        payload: expect.objectContaining({ issueId: releaseIssueId }),
+        idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+          dependentIssueId: releaseIssueId,
+          blockerIssueIds: [reviewIssueId],
+          blockedTransitionAt: releaseBlockedAt,
+        }),
+      }),
+    );
+
+    mockWakeup.mockClear();
+    mockFindExistingIssueBlockersResolvedWakeForReadyState.mockClear();
+    mockIssueService.getById.mockResolvedValue(issueRecord({
+      id: releaseIssueId,
+      identifier: "PAP-RELEASE",
+      title: "Release",
+      status: "blocked",
+      assigneeAgentId: "agent-release",
+      blockedTransitionAt: releaseBlockedAt,
+    }));
+    mockIssueService.update.mockResolvedValue(issueRecord({
+      id: releaseIssueId,
+      identifier: "PAP-RELEASE",
+      title: "Release",
+      status: "done",
+      assigneeAgentId: "agent-release",
+    }));
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: qaIssueId,
+        assigneeAgentId: "agent-qa",
+        blockerIssueIds: [releaseIssueId],
+        blockedTransitionAt: qaBlockedAt,
+      },
+    ]);
+
+    expect((await request(app).patch(`/api/issues/${releaseIssueId}`).send({ status: "done" })).status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockWakeup).toHaveBeenCalledTimes(1);
+    });
+    expect(mockWakeup).toHaveBeenCalledWith(
+      "agent-qa",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          issueId: qaIssueId,
+          resolvedBlockerIssueId: releaseIssueId,
+        }),
+        idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+          dependentIssueId: qaIssueId,
+          blockerIssueIds: [releaseIssueId],
+          blockedTransitionAt: qaBlockedAt,
+        }),
+      }),
+    );
+    expect(mockWakeup).not.toHaveBeenCalledWith("agent-release", expect.anything());
+  });
+
+  it("restores a blocked-and-ready dependent under the new blocked cycle key", async () => {
+    const parentIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    const childIssueId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const blockedTransitionAt = new Date("2026-08-03T18:00:00.000Z");
+    mockIssueService.getById.mockResolvedValue(issueRecord({
+      id: parentIssueId,
+      identifier: "PAP-200",
+      title: "Blocked after completion",
+      status: "done",
+      assigneeAgentId: "agent-2",
+    }));
+    mockIssueService.update.mockResolvedValue(issueRecord({
+      id: parentIssueId,
+      identifier: "PAP-200",
+      title: "Blocked after completion",
+      status: "blocked",
+      assigneeAgentId: "agent-2",
+      blockedTransitionAt,
+    }));
+    mockIssueService.getDependencyReadiness.mockResolvedValue({
+      issueId: parentIssueId,
+      blockerIssueIds: [childIssueId],
+      unresolvedBlockerIssueIds: [],
+      unresolvedBlockerCount: 0,
+      pendingFinalizeBlockerIssueIds: [],
+      allBlockersDone: true,
+      isDependencyReady: true,
+    });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${parentIssueId}`)
+      .send({
+        status: "blocked",
+        blockedByIssueIds: [childIssueId],
+        unblockDescriptor: { owner: "board", action: "Review the restored dependency" },
+      });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockFindExistingIssueBlockersResolvedWakeForReadyState).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          dependentIssueId: parentIssueId,
+          blockerIssueIds: [childIssueId],
+          blockedTransitionAt,
+        }),
+      );
+      expect(mockWakeup).toHaveBeenCalledWith(
+        "agent-2",
+        expect.objectContaining({
+          reason: "issue_blockers_resolved",
+          idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+            dependentIssueId: parentIssueId,
+            blockerIssueIds: [childIssueId],
+            blockedTransitionAt,
+          }),
+          payload: expect.objectContaining({
+            mutation: "blocked_dependency_restored",
+          }),
+        }),
+      );
+    });
+  });
+
+  it("does not emit a dependency wake when an unresolved or cancelled blocker remains", async () => {
+    mockIssueService.getById.mockResolvedValue(issueRecord({ status: "in_progress" }));
+    mockIssueService.update.mockResolvedValue(issueRecord({ status: "done" }));
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+
+    const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "done" });
+    expect(res.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mockWakeup).not.toHaveBeenCalled();
   });
 });

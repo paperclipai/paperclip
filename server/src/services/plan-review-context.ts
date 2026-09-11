@@ -66,7 +66,12 @@ function readPlanTarget(value: unknown, issueId: string): PlanReviewInteractionT
   const target = parseObject(value);
   if (target.type !== "issue_document") return null;
   if (target.key !== "plan") return null;
-  if (nonEmptyString(target.issueId) !== issueId) return null;
+  // Issue-scoped interaction routes historically allowed the target to omit
+  // issueId because the parent interaction already supplies that boundary.
+  // Preserve an explicit mismatch check without dropping otherwise valid
+  // plan-review results (including the reviewer's rejection reason).
+  const targetIssueId = nonEmptyString(target.issueId);
+  if (targetIssueId !== null && targetIssueId !== issueId) return null;
   return {
     issueId,
     documentId: nonEmptyString(target.documentId),
