@@ -719,7 +719,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processPid: input?.processPid ?? null,
       processGroupId: input?.processGroupId ?? null,
       processLossRetryCount: input?.processLossRetryCount ?? 0,
-      scheduledRetryAttempt: input?.scheduledRetryAttempt ?? null,
+      scheduledRetryAttempt: input?.scheduledRetryAttempt ?? 0,
       scheduledRetryReason: input?.scheduledRetryReason ?? null,
       scheduledRetryAt: input?.scheduledRetryAt ?? null,
       errorCode: input?.runErrorCode ?? null,
@@ -2556,6 +2556,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     expect(await heartbeat.reapOrphanedRuns()).toEqual({ reaped: 1, runIds: [runId] });
 
+    // After attempt 3, the bounded null-environment ladder must NOT queue another
+    // retry on the same reason chain. The release/promote path may still spin up
+    // an issue.continuation_recovery run as a separate auto-recovery attempt, but
+    // it must NOT carry the null-environment retry reason.
     const retries = await db
       .select()
       .from(heartbeatRuns)
@@ -2563,7 +2567,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         eq(heartbeatRuns.companyId, companyId),
         eq(heartbeatRuns.retryOfRunId, runId),
       ));
-    expect(retries).toHaveLength(0);
+    const nullEnvRetries = retries.filter(
+      (row) => row.scheduledRetryReason === "retry_transient_environment_failure",
+    );
+    expect(nullEnvRetries).toHaveLength(0);
 
     const exhaustionEvents = await db
       .select()
@@ -2576,7 +2583,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const exhaustion = exhaustionEvents.find((event) =>
       typeof event.message === "string"
       && event.message.includes("Bounded retry exhausted")
-      && event.message.includes("retry_transient_environment_failure"),
+      && (event.payload as Record<string, unknown> | null)?.retryReason === "retry_transient_environment_failure",
     );
     expect(exhaustion).toBeDefined();
   });
@@ -2605,11 +2612,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }),
     });
     expect(failed?.stderrExcerpt ?? "").not.toContain("[environment-allocation]");
+    // Legacy path enqueues an immediate retry (startNextQueuedRunForAgent may
+    // transition it to "running" before we query, so we don't pin the status).
     expect(retry).toMatchObject({
-      status: "queued",
       retryOfRunId: runId,
       processLossRetryCount: 1,
     });
+    expect(["queued", "running"]).toContain(retry?.status);
     // Legacy path uses the immediate process_lost_retry wake reason, not the
     // bounded environment retry wake reason.
     expect(retry?.contextSnapshot).toMatchObject({
@@ -2618,6 +2627,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(retry?.contextSnapshot).not.toMatchObject({
       wakeReason: "process_lost_environment_retry",
     });
+    // And it must NOT carry the null-environment scheduledRetryReason.
+    expect(retry?.scheduledRetryReason).not.toBe("retry_transient_environment_failure");
   });
 
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
