@@ -2383,7 +2383,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const renderQueuedAction = useCallback(
     (item: TaskChatMessageItem) => {
       const runId = item.queueTargetRunId;
-      if (item.optimistic !== "queued" || !runId || !onInterruptQueued)
+      if (composerPause || item.optimistic !== "queued" || !runId || !onInterruptQueued)
         return null;
 
       const isInterrupting = interruptingQueuedRunId === runId;
@@ -2399,7 +2399,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         </Button>
       );
     },
-    [interruptingQueuedRunId, onInterruptQueued],
+    [composerPause, interruptingQueuedRunId, onInterruptQueued],
   );
 
   const reopenToolReview = useCallback((interactionId: string) => {
@@ -2870,7 +2870,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   className="relative isolate flex flex-col"
                   data-testid="task-chat-composer-stack"
                 >
-                  {queuedMessageQueue ? (
+                  {queuedMessageQueue && !composerPause ? (
                     <TaskChatQueuedMessages
                       queue={queuedMessageQueue}
                       onEdit={beginQueuedEdit}

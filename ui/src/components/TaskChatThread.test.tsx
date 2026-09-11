@@ -2783,6 +2783,41 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     return container.textContent?.split(text).length! - 1;
   }
 
+  it("hides queued actions while paused and restores the queue after resume", () => {
+    const onSteerQueuedComment = vi.fn(async () => {});
+    const props = {
+      comments: [queuedComment],
+      onAdd: async () => {},
+      queuedCommentQueue: queue,
+      onEditQueuedComment: async () => {},
+      onReorderQueuedComments: async () => {},
+      onSteerQueuedComment,
+      onDiscardQueuedComment: async () => {},
+    };
+    render(<TaskChatThread {...props} />);
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).not.toBeNull();
+
+    render(<TaskChatThread {...props} composerPause={{ scope: "leaf", onResume: () => {} }} />);
+    expect(container.querySelector('[data-testid="paused-composer-takeover"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+    expect(onSteerQueuedComment).not.toHaveBeenCalled();
+
+    render(<TaskChatThread {...props} />);
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).not.toBeNull();
+    expect(occurrenceCount(queuedComment.body)).toBe(1);
+  });
+
+  it("hides legacy transcript interrupt actions while paused", () => {
+    render(<TaskChatThread
+      comments={[{ ...queuedComment, queueState: "queued", queueTargetRunId: "run-1" }]}
+      onAdd={async () => {}}
+      onInterruptQueued={async () => {}}
+      composerPause={{ scope: "leaf", onResume: () => {} }}
+    />);
+    expect(container.querySelector('[data-testid="paused-composer-takeover"]')).not.toBeNull();
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Interrupt")).toBe(false);
+  });
+
   it("suppresses the transcript echo until the queued entry is consumed", async () => {
     const props = {
       comments: [queuedComment],

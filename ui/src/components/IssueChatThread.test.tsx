@@ -3087,6 +3087,30 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("hides queued interrupt and cancel actions until the task resumes", () => {
+    const root = createRoot(container);
+    const comments = [{
+      id: "comment-paused-queue", companyId: "company-1", issueId: "issue-1",
+      authorAgentId: null, authorUserId: "user-1", authorType: "user" as const,
+      body: "Keep this queued message", presentation: null, metadata: null,
+      queueState: "queued" as const, queueTargetRunId: "run-1",
+      createdAt: new Date(), updatedAt: new Date(),
+    }];
+    for (const paused of [false, true, false]) {
+      act(() => root.render(<MemoryRouter><IssueChatThread
+        comments={comments} onAdd={async () => {}}
+        onInterruptQueued={async () => {}} onCancelQueued={() => {}}
+        composerPause={paused ? { scope: "leaf", onResume: () => {} } : null}
+        enableLiveTranscriptPolling={false}
+      /></MemoryRouter>));
+      const labels = [...container.querySelectorAll("button")].map((button) => button.textContent);
+      expect(labels.includes("Interrupt")).toBe(!paused);
+      expect(labels.includes("Cancel")).toBe(!paused);
+      expect(container.textContent).toContain("Keep this queued message");
+    }
+    act(() => root.unmount());
+  });
+
   it("shows deferred wake badge only for hold-deferred queued comments", () => {
     const root = createRoot(container);
 
