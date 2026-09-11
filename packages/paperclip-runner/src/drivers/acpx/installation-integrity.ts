@@ -1503,6 +1503,16 @@ function commandLease(
                 ],
           },
         );
+        activeChildren++;
+        let childSettled = false;
+        const settleChild = (): void => {
+          if (childSettled) return;
+          childSettled = true;
+          activeChildren--;
+          void closeSnapshotIfIdle().catch(() => undefined);
+        };
+        child.once("exit", settleChild);
+        child.once("error", settleChild);
         if (guarded) {
           const guardianOwnerPipe = child.stdio[
             providerOwnershipFd - 1
@@ -1534,22 +1544,14 @@ function commandLease(
         launchBytes.fill(0);
         verifiedBytes.fill(0);
         releaseDirectoriesBestEffort();
-        void privateSnapshot?.close();
+        closed = true;
+        void closeSnapshotIfIdle().catch(() => undefined);
         throw error;
       }
-      activeChildren++;
-      let childSettled = false;
-      const settleChild = (): void => {
-        if (childSettled) return;
-        childSettled = true;
-        activeChildren--;
-        void closeSnapshotIfIdle().catch(() => undefined);
-      };
-      child.once("exit", settleChild);
-      child.once("error", settleChild);
       if (!reusable) releaseDirectoriesBestEffort();
       const sourceInput = child.stdio[COMMAND_SOURCE_FD] as Writable | null;
       if (sourceInput === null) {
+        closed = true;
         consumed = true;
         launchBytes.fill(0);
         verifiedBytes.fill(0);

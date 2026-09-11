@@ -778,6 +778,22 @@ describe("ACPX installation integrity", () => {
     expect(() => lease.spawn()).toThrow("Verified ACPX command lease is closed");
   });
 
+  it("a failed reusable launch preserves the snapshot of an already spawned child", async () => {
+    const fixture = await installationFixture();
+    const installation = await verifyQualifiedAcpxInstallation(fixture.profile, fixture.resolve);
+    const lease = await installation.openCommand({ reusable: true });
+    try {
+      const output = expectPinnedOutput(lease.spawn(), "verified");
+      // Node rejects this argument synchronously, before creating another child.
+      expect(() => lease.spawn(["invalid\0argument"])).toThrow();
+      await lease.close();
+      await output;
+      expect(() => lease.spawn()).toThrow("Verified ACPX command lease is closed");
+    } finally {
+      await lease.close();
+    }
+  });
+
   it("launches the verified bytes after the open inode is modified", async () => {
     const fixture = await installationFixture();
     const installation = await verifyQualifiedAcpxInstallation(
