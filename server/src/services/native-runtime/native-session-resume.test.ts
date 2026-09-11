@@ -60,6 +60,7 @@ import {
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import {
   buildNativeExecutionWithCheckpoint,
+  findNativeGoalResumeAnchor,
   findNativeSessionResumeRun,
   NATIVE_TOOL_CONTRACT_FINGERPRINT,
   isUnusedLegacyNativeRetryReplacement,
@@ -68,6 +69,7 @@ import {
   nativeSessionProviderEvidence,
   prepareNativeSessionBootstrapPersistence,
   rebindNativeSessionCheckpoint,
+  resolveNativeGoalResumeAnchor,
   selectNativeSessionResumeRun,
 } from "./native-session-resume.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
@@ -416,6 +418,11 @@ it("wires exact-session recovery and guarded selected identity into heartbeat pe
     "utf8",
   );
   expect(source).toContain("await findNativeSessionResumeRun(db,");
+  expect(source).toContain("await findNativeGoalResumeAnchor(db,");
+  expect(source).toContain(
+    "nativeGoalResumeAnchor?.executionWorkspaceId",
+  );
+  expect(source).toContain("nativeGoalResumeAnchor.normalizedSessionId");
   expect(source).toContain(
     "await prepareNativeSessionBootstrapPersistence(tx,",
   );
@@ -429,6 +436,122 @@ it("wires exact-session recovery and guarded selected identity into heartbeat pe
 });
 
 const embeddedSupport = await getEmbeddedPostgresTestSupport();
+
+describe("native Goal resume authority", () => {
+  const runnerInstanceId = "80000000-0000-4000-8000-000000000008";
+  const managedWorkspaceId = "90000000-0000-4000-8000-000000000009";
+  const sourceRun = () => ({
+    ...previousRun({
+      nativeExecutionInput: execution(
+        previousRunId,
+        "/managed-workspace",
+        "standard",
+        { id: managedWorkspaceId },
+      ),
+    }),
+    runnerInstanceId,
+    nativeIssueId: issueId,
+    runtimeMode: "native",
+    status: "succeeded",
+  });
+
+  it("selects the Goal source session and workspace instead of a later failed task-session pointer", () => {
+    expect(
+      resolveNativeGoalResumeAnchor({
+        goalSourceId: `${runnerInstanceId}:${previousRunId}`,
+        companyId,
+        agentId,
+        issueId,
+        currentRunId,
+        sourceRun: sourceRun(),
+      }),
+    ).toEqual({
+      sourceRunId: previousRunId,
+      normalizedSessionId,
+      executionWorkspaceId: managedWorkspaceId,
+      workspaceCwd: "/managed-workspace",
+    });
+  });
+
+  it.each([
+    ["runner epoch", { runnerInstanceId: randomUUID() }],
+    ["task", { nativeIssueId: randomUUID() }],
+    ["agent", { agentId: randomUUID() }],
+    ["company", { companyId: randomUUID() }],
+    ["runtime", { runtimeMode: "legacy" }],
+    ["terminal state", { status: "running" }],
+    ["session", { nativeSessionId: randomUUID() }],
+    ["checkpoint", { runnerProfileJson: {} }],
+  ])("rejects a mismatched %s binding", (_label, override) => {
+    expect(
+      resolveNativeGoalResumeAnchor({
+        goalSourceId: `${runnerInstanceId}:${previousRunId}`,
+        companyId,
+        agentId,
+        issueId,
+        currentRunId,
+        sourceRun: { ...sourceRun(), ...override },
+      }),
+    ).toBeNull();
+  });
+
+  (embeddedSupport.supported ? it : it.skip)(
+    "loads only the exact server-authenticated Goal source run",
+    async () => {
+      const database = await startEmbeddedPostgresTestDatabase(
+        "paperclip-native-goal-anchor-",
+      );
+      const db = createDb(database.connectionString);
+      try {
+        await db.insert(companies).values({
+          id: companyId,
+          name: "Goal resume anchor",
+          issuePrefix: "NGA",
+        });
+        await db.insert(agents).values({
+          id: agentId,
+          companyId,
+          name: "Native goal runner",
+        });
+        await db.insert(issues).values({
+          id: issueId,
+          companyId,
+          title: "Resume exact Goal",
+        });
+        await db.insert(heartbeatRuns).values({
+          ...sourceRun(),
+          createdAt: new Date("2026-09-12T00:00:00.000Z"),
+        });
+        expect(
+          await findNativeGoalResumeAnchor(db, {
+            goalSourceId: `${runnerInstanceId}:${previousRunId}`,
+            companyId,
+            agentId,
+            issueId,
+            currentRunId,
+          }),
+        ).toEqual({
+          sourceRunId: previousRunId,
+          normalizedSessionId,
+          executionWorkspaceId: managedWorkspaceId,
+          workspaceCwd: "/managed-workspace",
+        });
+        expect(
+          await findNativeGoalResumeAnchor(db, {
+            goalSourceId: `${runnerInstanceId}:${previousRunId}`,
+            companyId,
+            agentId,
+            issueId: randomUUID(),
+            currentRunId,
+          }),
+        ).toBeNull();
+      } finally {
+        await database.cleanup();
+      }
+    },
+  );
+});
+
 const recoveryFakeCodex = resolve(
   import.meta.dirname,
   "../../../../packages/paperclip-runner/test/fixtures/fake-final-burst-codex-app-server.mjs",

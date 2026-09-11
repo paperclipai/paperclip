@@ -243,6 +243,138 @@ export async function findNativeSessionResumeRun(
   });
 }
 
+export type NativeGoalResumeAnchor = {
+  sourceRunId: string;
+  normalizedSessionId: string;
+  executionWorkspaceId: string;
+  workspaceCwd: string;
+};
+
+type NativeGoalSourceRun = {
+  id: string;
+  companyId: string;
+  agentId: string;
+  runnerInstanceId: string | null;
+  nativeSessionId: string | null;
+  nativeIssueId: string | null;
+  runtimeMode: string | null;
+  status: string;
+  runnerProfileJson: unknown;
+};
+
+function parseNativeGoalSourceId(value: string | null | undefined) {
+  const sourceId = value?.trim();
+  if (!sourceId) return null;
+  const separator = sourceId.lastIndexOf(":");
+  if (separator <= 0 || separator === sourceId.length - 1) return null;
+  const runnerInstanceId = sourceId.slice(0, separator);
+  const runId = sourceId.slice(separator + 1);
+  return isNativeSessionId(runId) ? { runnerInstanceId, runId } : null;
+}
+
+/**
+ * Resolve the immutable provider/workspace authority named by the durable Goal
+ * projection. Task-session lastRunId is intentionally not consulted: a failed
+ * offline control bootstrap can rotate that pointer before the established
+ * provider Goal accepts the command.
+ */
+export function resolveNativeGoalResumeAnchor(input: {
+  goalSourceId: string | null | undefined;
+  companyId: string;
+  agentId: string;
+  issueId: string;
+  currentRunId: string;
+  sourceRun: NativeGoalSourceRun | null;
+}): NativeGoalResumeAnchor | null {
+  const source = parseNativeGoalSourceId(input.goalSourceId);
+  const run = input.sourceRun;
+  if (
+    !source ||
+    !run ||
+    run.id === input.currentRunId ||
+    run.id !== source.runId ||
+    run.runnerInstanceId !== source.runnerInstanceId ||
+    run.companyId !== input.companyId ||
+    run.agentId !== input.agentId ||
+    run.nativeIssueId !== input.issueId ||
+    run.runtimeMode !== "native" ||
+    !LEGACY_RETRY_SOURCE_TERMINAL_STATUSES.has(run.status) ||
+    !isNativeSessionId(run.nativeSessionId)
+  )
+    return null;
+
+  const profile = record(run.runnerProfileJson);
+  if (profile.sessionCheckpoint == null) return null;
+  let execution: NativeExecutionInput;
+  try {
+    execution = parseNativeExecutionInput(profile.nativeExecutionInput);
+  } catch {
+    return null;
+  }
+  const checkpoint = record(profile.sessionCheckpoint);
+  const checkpointIdentity = record(checkpoint.identity);
+  if (
+    execution.binding.runId !== run.id ||
+    execution.binding.companyId !== input.companyId ||
+    execution.binding.issueId !== input.issueId ||
+    execution.binding.agentId !== input.agentId ||
+    execution.session.normalizedSessionId !== run.nativeSessionId ||
+    checkpointIdentity.runId !== run.id ||
+    checkpointIdentity.companyId !== input.companyId ||
+    checkpointIdentity.issueId !== input.issueId ||
+    checkpointIdentity.agentId !== input.agentId ||
+    checkpointIdentity.sessionId !== run.nativeSessionId ||
+    typeof checkpoint.sessionId !== "string"
+  )
+    return null;
+
+  return {
+    sourceRunId: run.id,
+    normalizedSessionId: run.nativeSessionId,
+    executionWorkspaceId: execution.binding.executionWorkspaceId,
+    workspaceCwd: execution.workspace.cwd,
+  };
+}
+
+/** Find a Goal projection's server-authenticated native resume authority. */
+export async function findNativeGoalResumeAnchor(
+  db: Db,
+  input: {
+    goalSourceId: string | null | undefined;
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    currentRunId: string;
+  },
+): Promise<NativeGoalResumeAnchor | null> {
+  const source = parseNativeGoalSourceId(input.goalSourceId);
+  if (!source) return null;
+  const sourceRun = await db
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      runnerInstanceId: heartbeatRuns.runnerInstanceId,
+      nativeSessionId: heartbeatRuns.nativeSessionId,
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      runtimeMode: heartbeatRuns.runtimeMode,
+      status: heartbeatRuns.status,
+      runnerProfileJson: heartbeatRuns.runnerProfileJson,
+    })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.id, source.runId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+        eq(heartbeatRuns.nativeIssueId, input.issueId),
+      ),
+    )
+    .limit(1)
+    .then((rows) => rows[0] ?? null);
+  return resolveNativeGoalResumeAnchor({ ...input, sourceRun });
+}
+
 /** A preassigned session id may rotate only before immutable native admission. */
 export function nativeSessionIdForBootstrapPersistence(input: {
   run: NativeSessionBootstrapState & { nativeSessionId: string | null };

@@ -183,6 +183,7 @@ import {
   ensureNativeCompletionContract,
   executePaperclipNativeSession,
   finalizeNativeRun,
+  findNativeGoalResumeAnchor,
   findNativeSessionResumeRun,
   isNativeSessionId,
   isUnusedNativeSessionBootstrap,
@@ -19775,8 +19776,21 @@ export function heartbeatService(
           : null;
       const persistedNativeExecutionWorkspaceId =
         persistedNativeExecutionInput?.binding.executionWorkspaceId ?? null;
+      const nativeGoalResumeAnchor =
+        issueRef &&
+        (readNonEmptyString(context.goalControlRequestId) ||
+          context.resumeSessionGoalHeartbeat === true)
+          ? await findNativeGoalResumeAnchor(db, {
+              goalSourceId: taskSession?.goalSourceId,
+              companyId: agent.companyId,
+              agentId: agent.id,
+              issueId: issueRef.id,
+              currentRunId: run.id,
+            })
+          : null;
       const requestedExecutionWorkspaceId =
         persistedNativeExecutionWorkspaceId ??
+        nativeGoalResumeAnchor?.executionWorkspaceId ??
         readNonEmptyString(issueRef?.executionWorkspaceId);
       const existingExecutionWorkspace = requestedExecutionWorkspaceId
         ? await executionWorkspacesSvc.getById(requestedExecutionWorkspaceId)
@@ -20237,6 +20251,21 @@ export function heartbeatService(
       const sessionResetReason =
         sessionConfigFreshness.reasons.join("; ") || null;
       const taskSessionForRun = resetTaskSession ? null : taskSession;
+      const nativeGoalResumeSessionParams =
+        nativeGoalResumeAnchor && taskSessionForRun
+          ? {
+              ...(normalizeResumeParamsForAdapter(
+                agent.adapterType,
+                stripPaperclipSessionMetadataFromSessionParams(
+                  sessionCodec.deserialize(
+                    taskSessionForRun.sessionParamsJson ?? null,
+                  ),
+                ),
+              ) ?? {}),
+              sessionId: nativeGoalResumeAnchor.normalizedSessionId,
+              cwd: nativeGoalResumeAnchor.workspaceCwd,
+            }
+          : null;
       const previousSessionParams =
         explicitResumeSessionParams ??
         (isCanonicalSessionIdForAdapter(
@@ -20245,6 +20274,7 @@ export function heartbeatService(
         )
           ? { sessionId: explicitResumeSessionDisplayId }
           : null) ??
+        nativeGoalResumeSessionParams ??
         normalizeResumeParamsForAdapter(
           agent.adapterType,
           stripPaperclipSessionMetadataFromSessionParams(
@@ -21860,7 +21890,9 @@ export function heartbeatService(
                   })(),
                 });
           const taskNativeSessionId = readNonEmptyString(
-            taskSessionDecodedParams?.sessionId,
+            nativeGoalResumeAnchor && taskSessionForRun
+              ? nativeGoalResumeAnchor.normalizedSessionId
+              : taskSessionDecodedParams?.sessionId,
           );
           // Compatibility for native retry rows created before same-run restart
           // recovery existed. Only an entirely unused replacement row may
