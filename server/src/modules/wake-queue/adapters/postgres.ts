@@ -279,6 +279,17 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
         .then((rows) => rows[0] ? toIssueSnapshot(rows[0]) : null);
     },
 
+    async lockDeferredWakeIssueForPromotion({ companyId, issueId }) {
+      if (!issueId) return null;
+      return tx
+        .select()
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+        .limit(1)
+        .for("update")
+        .then((rows) => rows[0] ? toIssueSnapshot(rows[0]) : null);
+    },
+
     async hasActiveRunForAgent({ companyId, agentId }) {
       const row = await tx
         .select({ id: heartbeatRuns.id })
@@ -338,7 +349,13 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           and(
             eq(agentWakeupRequests.id, wakeId),
             eq(agentWakeupRequests.companyId, companyId),
-            eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+            or(
+              eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
+              and(
+                eq(agentWakeupRequests.status, "queued"),
+                isNull(agentWakeupRequests.runId),
+              ),
+            ),
           ),
         )
         .returning({ id: agentWakeupRequests.id });

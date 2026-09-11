@@ -121,6 +121,15 @@ export interface WakeQueueTransaction {
     dueAt?: Date | null;
   }): Promise<DeferredWakeCandidate | null>;
   findDeferredWakeIssue(input: { companyId: string; issueId: string }): Promise<IssueSnapshot | null>;
+  /**
+   * Re-reads and locks the issue immediately before a claimed wake is
+   * finalized. The lock keeps a still-eligible snapshot authoritative until
+   * the queued run and execution lock commit in this transaction.
+   */
+  lockDeferredWakeIssueForPromotion(input: {
+    companyId: string;
+    issueId: string;
+  }): Promise<IssueSnapshot | null>;
   hasActiveRunForAgent(input: { companyId: string; agentId: string }): Promise<boolean>;
   recordDeferredWakeClaimFailure(input: {
     companyId: string;
@@ -130,6 +139,10 @@ export interface WakeQueueTransaction {
     nextAttemptAt: Date;
     now: Date;
   }): Promise<number | null>;
+  /**
+   * Terminally supersedes either an unclaimed deferred wake or this
+   * transaction's claimed-but-not-yet-linked promotion.
+   */
   supersedeDeferredWake(input: {
     companyId: string;
     wakeId: string;

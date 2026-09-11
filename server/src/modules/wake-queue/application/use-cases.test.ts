@@ -110,6 +110,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
     findInvokableAgent: vi.fn(async () => AGENT),
     findNextDeferredWake: vi.fn(async () => null),
     findDeferredWakeIssue: vi.fn(async () => ISSUE),
+    lockDeferredWakeIssueForPromotion: vi.fn(async () => ISSUE),
     hasActiveRunForAgent: vi.fn(async () => false),
     recordDeferredWakeClaimFailure: vi.fn(async () => 1),
     supersedeDeferredWake: vi.fn(async () => true),
@@ -624,6 +625,36 @@ describe("drainDueDeferredWake", () => {
     expect(transaction.supersedeDeferredWake).toHaveBeenCalledWith(
       expect.objectContaining({ attemptReason: "issue_terminal" }),
     );
+  });
+
+  it("revalidates terminal eligibility after claiming and before finalization", async () => {
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn()
+        .mockResolvedValueOnce(wakeCandidate())
+        .mockResolvedValueOnce(null),
+      // The initial unlocked read is eligible, then a concurrent status
+      // transition commits before the final locked read.
+      findDeferredWakeIssue: vi.fn(async () => ISSUE),
+      lockDeferredWakeIssueForPromotion: vi.fn(async () => ({ ...ISSUE, status: "done" })),
+    });
+    const drain = createDrainDueDeferredWake({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction),
+    });
+
+    const result = await drain({
+      companyId: RUN.companyId,
+      agentId: AGENT.id,
+      now: new Date("2026-09-11T00:02:00.000Z"),
+      retryDelayMs: 60_000,
+    });
+
+    expect(result.outcome.kind).toBe("idle");
+    expect(transaction.claimDeferredWakeForPromotion).toHaveBeenCalledTimes(1);
+    expect(transaction.lockDeferredWakeIssueForPromotion).toHaveBeenCalledTimes(1);
+    expect(transaction.supersedeDeferredWake).toHaveBeenCalledWith(
+      expect.objectContaining({ attemptReason: "issue_terminal" }),
+    );
+    expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
   });
 
   it("terminally supersedes a due wake after its issue is reassigned", async () => {

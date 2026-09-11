@@ -15,6 +15,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
+import { createDrainDueDeferredWake } from "../application/use-cases.js";
 import {
   createAdmissionTransactionScope,
   createPostgresWakeQueueAdapter,
@@ -418,6 +419,49 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.id, wakeId));
     expect(wakeRow?.status).toBe("queued");
+  });
+
+  it("fails closed when an issue becomes terminal after eligibility is read but before promotion finalizes", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId });
+    let terminalTransitionCount = 0;
+    const raceDeps: WakeQueuePostgresAdapterDeps = {
+      ...stubDeps,
+      resolveSessionBeforeForWakeup: async () => {
+        terminalTransitionCount += 1;
+        await db
+          .update(issues)
+          .set({ status: "done", completedAt: new Date() })
+          .where(eq(issues.id, issueId));
+        return null;
+      },
+    };
+    const drain = createDrainDueDeferredWake({
+      issueLock: createPostgresWakeQueueAdapter(db, raceDeps),
+    });
+
+    const result = await drain({
+      companyId,
+      agentId,
+      now: new Date(),
+      retryDelayMs: 1_000,
+    });
+
+    expect(result.outcome.kind).toBe("idle");
+    expect(terminalTransitionCount).toBe(1);
+    const [issueRow] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(issueRow).toMatchObject({ status: "done", executionRunId: null });
+    const [wakeRow] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
+    expect(wakeRow).toMatchObject({
+      status: "cancelled",
+      reason: "issue_execution_superseded",
+      attemptReason: "issue_terminal",
+      runId: null,
+    });
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    expect(runs).toHaveLength(0);
   });
 
   // `finalizePromotedWake`'s own writes guard against clobbering state a

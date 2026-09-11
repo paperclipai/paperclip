@@ -423,7 +423,7 @@ async function promoteDeferredWake(
   invokableAgent: InvokableAgentSnapshot,
   pauseHold: PauseHoldFacts,
   postCommitEffects: PostCommitEffect[],
-  input: { now: Date },
+  input: { now: Date; allowTerminalReopen: boolean },
 ): Promise<ReleaseTransactionResult | null> {
   // Claim the wake for promotion before any other write in this branch
   // (design choice: claim first, then reopen). A reopen write, or its
@@ -439,6 +439,79 @@ async function promoteDeferredWake(
   if (!claimedForPromotion) return null;
 
   let currentIssue = issue;
+
+  const promotedReason = workingCandidate.reason ?? "issue_execution_promoted";
+  const promotedSource = workingCandidate.source ?? "automation";
+  const promotedTriggerDetail = workingCandidate.triggerDetail ?? null;
+  const promotedPayload = { ...workingCandidate.payload };
+  delete promotedPayload["_paperclipWakeContext"];
+
+  const promotedContextSeed: Record<string, unknown> = { ...workingCandidate.deferredContextSeed };
+  if (pauseHold.activePauseHold) {
+    promotedContextSeed.treeHoldInteraction = true;
+    promotedContextSeed.activeTreeHold = {
+      holdId: pauseHold.holdId,
+      rootIssueId: pauseHold.rootIssueId,
+      mode: pauseHold.mode,
+      reason: pauseHold.reason,
+      releasePolicy: pauseHold.releasePolicy,
+      interaction: true,
+    };
+  }
+
+  const { contextSnapshot: promotedContextSnapshot, taskKey: promotedTaskKey } = enrichPromotedWakeContext({
+    contextSnapshot: promotedContextSeed,
+    reason: promotedReason,
+    source: promotedSource,
+    triggerDetail: promotedTriggerDetail,
+    payload: promotedPayload,
+  });
+
+  const sessionBefore =
+    readNonEmptyString(promotedContextSnapshot.resumeSessionDisplayId) ??
+    (await ports.host.resolveSessionBeforeForWakeup({
+      companyId: run.companyId,
+      agentId: invokableAgent.id,
+      taskKey: promotedTaskKey,
+    }));
+
+  // The first issue read intentionally does not lock: most candidates are
+  // rejected or normalized without needing to serialize an issue status
+  // transition. Once this transaction has won the wake claim, re-read the
+  // issue under a row lock and apply the same eligibility policy immediately
+  // before finalization. A terminal/reassignment write that committed after
+  // the first read is now observed and supersedes the claimed-but-unlinked
+  // wake; a writer arriving after this lock waits until promotion commits.
+  const lockedIssue = await ports.transaction.lockDeferredWakeIssueForPromotion({
+    companyId: run.companyId,
+    issueId: currentIssue.id,
+  });
+  const finalSupersession = lockedIssue
+    ? deferredWakeSupersessionReason(lockedIssue, workingCandidate, input.allowTerminalReopen)
+    : {
+        attemptReason: "issue_missing",
+        lastError: "Deferred wake superseded because its issue no longer exists",
+      };
+  if (finalSupersession) {
+    const superseded = await ports.transaction.supersedeDeferredWake({
+      companyId: run.companyId,
+      wakeId: workingCandidate.id,
+      ...finalSupersession,
+      now: input.now,
+    });
+    if (!superseded) {
+      throw new WakeQueueApplicationError(
+        "deferred_wake_not_advanced",
+        "Claimed deferred wake could not be terminally superseded after final eligibility changed",
+        { companyId: run.companyId, wakeId: workingCandidate.id, issueId: currentIssue.id },
+      );
+    }
+    return null;
+  }
+  if (!lockedIssue) {
+    throw new Error("wake-queue: final eligibility passed without a locked issue snapshot");
+  }
+  currentIssue = lockedIssue;
 
   if (
     !workingCandidate.authorizedFailedChatRetry &&
@@ -475,41 +548,6 @@ async function promoteDeferredWake(
       }
     }
   }
-
-  const promotedReason = workingCandidate.reason ?? "issue_execution_promoted";
-  const promotedSource = workingCandidate.source ?? "automation";
-  const promotedTriggerDetail = workingCandidate.triggerDetail ?? null;
-  const promotedPayload = { ...workingCandidate.payload };
-  delete promotedPayload["_paperclipWakeContext"];
-
-  const promotedContextSeed: Record<string, unknown> = { ...workingCandidate.deferredContextSeed };
-  if (pauseHold.activePauseHold) {
-    promotedContextSeed.treeHoldInteraction = true;
-    promotedContextSeed.activeTreeHold = {
-      holdId: pauseHold.holdId,
-      rootIssueId: pauseHold.rootIssueId,
-      mode: pauseHold.mode,
-      reason: pauseHold.reason,
-      releasePolicy: pauseHold.releasePolicy,
-      interaction: true,
-    };
-  }
-
-  const { contextSnapshot: promotedContextSnapshot, taskKey: promotedTaskKey } = enrichPromotedWakeContext({
-    contextSnapshot: promotedContextSeed,
-    reason: promotedReason,
-    source: promotedSource,
-    triggerDetail: promotedTriggerDetail,
-    payload: promotedPayload,
-  });
-
-  const sessionBefore =
-    readNonEmptyString(promotedContextSnapshot.resumeSessionDisplayId) ??
-    (await ports.host.resolveSessionBeforeForWakeup({
-      companyId: run.companyId,
-      agentId: invokableAgent.id,
-      taskKey: promotedTaskKey,
-    }));
 
   const responsibleUserId = await resolveResponsibleUserForQueuedRun(ports.host, {
     companyId: invokableAgent.companyId,
