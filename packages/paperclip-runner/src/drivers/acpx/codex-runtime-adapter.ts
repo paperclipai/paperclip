@@ -1221,11 +1221,20 @@ function turnWithVerifiedLifetimeOwnership(
     finishOwnershipAdmission(),
   );
   void ownershipVerified.catch(() => undefined);
+  const promptStarted = ownershipVerified.then(() => turn.promptStarted);
+  const result = ownershipVerified.then(() => turn.result);
+  // Some consumers (including the sidecar) drain events and await the result
+  // without awaiting this optional admission signal. Observe its rejection
+  // immediately so a failed cold start cannot terminate the host process as an
+  // unhandled rejection. Keep the original rejected promise for consumers.
+  void promptStarted.catch(() => undefined);
+  // Event drains can fail before their caller reaches the result promise.
+  void result.catch(() => undefined);
   return {
     requestId: turn.requestId,
-    promptStarted: ownershipVerified.then(() => turn.promptStarted),
+    promptStarted,
     events: eventsAfterLifetimeOwnership(turn.events, ownershipVerified),
-    result: ownershipVerified.then(() => turn.result),
+    result,
     cancel: (input) => turn.cancel(input),
     closeStream: (input) => turn.closeStream(input),
   };

@@ -1311,6 +1311,32 @@ describe("Codex ACPX runtime adapter", () => {
     });
   });
 
+  it("observes prompt admission rejection when the sidecar consumes only events and the result", async () => {
+    const runtime = fakeRuntime();
+    const failure = new Error("Recovered provider could not start the prompt");
+    vi.mocked(runtime.startTurn).mockImplementation(() => ({
+      requestId: "turn-recovered-failure",
+      promptStarted: Promise.reject(failure),
+      events: { async *[Symbol.asyncIterator]() { throw failure; } },
+      result: Promise.reject(failure),
+      cancel: vi.fn(),
+      closeStream: vi.fn(),
+    }));
+    const port = await openCodexAcpxRuntime(openOptions(fakeCommand()), {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: () => runtime,
+    });
+    const turn = port.startTurn({ text: "Resume", requestId: "turn-recovered-failure" });
+    const eventDrain = (async () => { for await (const _event of turn.events) { /* drain */ } })();
+    await expect(eventDrain).rejects.toBe(failure);
+    // The sidecar does not await promptStarted. Leave it unconsumed across a
+    // full event-loop turn so an unobserved derived rejection fails this test.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    // Observing internally must not replace failure with successful admission.
+    await expect(turn.result).rejects.toBe(failure);
+    await expect(turn.promptStarted).rejects.toBe(failure);
+    await port.close({ reason: "test complete" });
+  });
+
   it("verifies a lazy recovered provider spawned by model selection before returning", async () => {
     const runtime = fakeRuntime();
     const command = fakeCommand();
