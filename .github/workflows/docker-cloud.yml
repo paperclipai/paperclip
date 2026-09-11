@@ -6,7 +6,7 @@ on:
 
 permissions: {}
 
-# Independent SHAs can build immediately on separate existing hosted runners.
+# Independent SHAs can build immediately on separate runners.
 # Repeated requests for the same source serialize without cancelling a build.
 # No mutable canary channel is promoted here; docker.yml owns that operation.
 concurrency:
@@ -15,8 +15,12 @@ concurrency:
 
 jobs:
   build-and-push-cloud:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Only canonical master builds can consume the release Fleet. The runner
+    # group must also allow this workflow only at refs/heads/master.
+    # Keep an operator switch for a full-run retry on GitHub-hosted runners.
+    runs-on: ${{ vars.AWS_CLOUD_BUILDS_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'runs-on/fleet=paperclip-cloud-build-x64/env=public-ci' || 'ubuntu-latest' }}
+    # Fleet instances expire after 45 minutes, including bootstrap and cleanup.
+    timeout-minutes: ${{ vars.AWS_CLOUD_BUILDS_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 40 || 60 }}
     permissions:
       contents: read
       packages: write
