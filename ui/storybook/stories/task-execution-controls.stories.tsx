@@ -9,7 +9,6 @@ import { expect, userEvent, within } from "storybook/test";
 import { Bot, MoreHorizontal } from "lucide-react";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import {
-  TaskPauseNotice,
   TaskTreeControlDialog,
   TaskTreeControlMenuItems,
 } from "@/components/TaskTreeControls";
@@ -192,13 +191,6 @@ function TaskExecutionExample({
           </PopoverContent>
         </Popover>
       </div>
-      {state === "paused" ? (
-        <TaskPauseNotice
-          scope={scope}
-          className="mt-3"
-          onResume={() => openDialog("resume")}
-        />
-      ) : null}
       <div className="flex flex-col gap-6 py-6">
         <div className="space-y-2">
           <h1 className="text-xl font-semibold">
@@ -258,6 +250,7 @@ function TaskExecutionExample({
           </div>
         ))}
         <TaskChatComposer
+          pause={state === "paused" ? { scope, pending, onResume: () => openDialog("resume") } : null}
           draftKey={draftKey}
           workMode="standard"
           mobile={mobile}

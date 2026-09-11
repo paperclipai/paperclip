@@ -1262,6 +1262,10 @@ function invalidateActivityQueries(
   }
 
   if (entityType === "issue") {
+    if (action === "issue.tree_hold_created" || action === "issue.tree_hold_released" || action === "issue.updated") {
+      // An ancestor hold or reparenting changes descendants' effective pause.
+      queryClient.invalidateQueries({ queryKey: ["issues", "tree-control-state"] });
+    }
     queryClient.invalidateQueries({
       queryKey: queryKeys.issues.list(companyId),
     });

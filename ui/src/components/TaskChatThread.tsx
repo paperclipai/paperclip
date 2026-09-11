@@ -488,6 +488,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     composerAccessory,
     footer,
     showComposer = true,
+    composerPause,
     composerDisabledReason,
     emptyMessage = "No messages yet.",
     companyId,
@@ -2936,6 +2937,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       queuedEdit={queuedEdit}
                       onSaveQueuedEdit={saveQueuedEdit}
                       onCancelQueuedEdit={() => setQueuedEdit(null)}
+                      pause={composerPause}
                       takeover={composerTakeover}
                       runnerGoalCapability={runnerGoal.data?.capability ?? null}
                       onRunnerGoalCommand={runnerGoal.executeComposerCommand}

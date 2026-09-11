@@ -1,67 +1,8 @@
-import { useEffect, useId, useState } from "react";
-import { Bot, Loader2, Pause, Play } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { useEffect, useState } from "react";
+import { Bot } from "lucide-react";
 import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
 import { clearDraft, saveDraft } from "@/lib/composer-draft";
 import { cn } from "@/lib/utils";
-
-/** Design-only takeover. No task APIs or production composer behavior change. */
-export function PausedTaskComposer({
-  subtree = false,
-  hasDraft = false,
-  pending = false,
-  error = false,
-  onResume,
-}: {
-  subtree?: boolean;
-  hasDraft?: boolean;
-  pending?: boolean;
-  error?: boolean;
-  onResume: () => void;
-}) {
-  const headingId = useId();
-  return (
-    <section
-      aria-labelledby={headingId}
-      aria-busy={pending}
-      data-testid="paused-composer-takeover"
-      className="flex flex-col gap-4 rounded-(--radius-task-composer) border border-(--status-agent-paused)/40 bg-(--status-agent-paused)/10 p-(--sz-18px)"
-    >
-      <div className="flex items-start gap-3">
-        <Pause aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-(--status-task-icon-todo)" />
-        <div className="flex min-w-0 flex-col gap-1">
-          <h2 id={headingId} className="text-sm font-medium text-foreground">
-            {subtree ? "Subtree is paused." : "Task is paused."}
-          </h2>
-          <p className="text-sm text-muted-foreground">
-            {subtree
-              ? "Resume this subtree to send a message."
-              : "Resume this task to send a message."}
-          </p>
-        </div>
-      </div>
-      {error ? (
-        <p role="alert" className="text-sm text-destructive">
-          Couldn’t resume. Your task is still paused. Try again.
-        </p>
-      ) : null}
-      <div className="flex flex-wrap items-center justify-end gap-3">
-        {hasDraft ? (
-          <p className="mr-auto text-xs text-muted-foreground">Your draft is saved.</p>
-        ) : null}
-        <Button
-          size="sm"
-          disabled={pending}
-          onClick={onResume}
-          className="bg-(--status-agent-paused) text-foreground hover:bg-(--status-agent-paused)/80 dark:text-background"
-        >
-          {pending ? <Loader2 aria-hidden="true" className="animate-spin" /> : <Play aria-hidden="true" />}
-          {pending ? "Resuming…" : subtree ? "Resume subtree" : "Resume task"}
-        </Button>
-      </div>
-    </section>
-  );
-}
 
 export type PausedComposerPreviewProps = {
   subtree?: boolean;
@@ -121,23 +62,19 @@ export function PausedComposerPreview({
       {messages.map((message, index) => (
         <p key={index} className="self-end rounded-xl bg-muted px-4 py-3 text-sm">{message}</p>
       ))}
-      {state === "ready" ? (
-        <TaskChatComposer
-          workMode="standard"
-          draftKey={draftKey}
-          mobile={mobile}
-          placeholder="Send a message to Alex…"
-          onAdd={(body) => setMessages((current) => [...current, body])}
-        />
-      ) : (
-        <PausedTaskComposer
-          subtree={subtree}
-          hasDraft={Boolean(draft)}
-          pending={state === "resuming"}
-          error={state === "error"}
-          onResume={() => setState("resuming")}
-        />
-      )}
+      <TaskChatComposer
+        workMode="standard"
+        draftKey={draftKey}
+        mobile={mobile}
+        placeholder="Send a message to Alex…"
+        pause={state === "ready" ? null : {
+          scope: subtree ? "subtree" : "leaf",
+          pending: state === "resuming",
+          error: state === "error" ? "Couldn’t resume. Your task is still paused. Try again." : null,
+          onResume: () => setState("resuming"),
+        }}
+        onAdd={(body) => setMessages((current) => [...current, body])}
+      />
     </div>
   );
 }
