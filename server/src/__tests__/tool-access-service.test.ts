@@ -4992,7 +4992,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "github",
       ]),
     );
-    expect(res.body.apps).toHaveLength(40);
+    expect(res.body.apps).toHaveLength(44);
     expect(
       res.body.apps.find((app: { slug: string }) => app.slug === "gmail")
         .ownershipAvailability,

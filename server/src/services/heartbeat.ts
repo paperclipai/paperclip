@@ -1,4 +1,7 @@
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
+import { connectionIntentService } from "./connection-intents.js";
+import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
+import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
@@ -1472,6 +1475,7 @@ function assertLowTrustEnvConfigAllowed(envValue: unknown, source: string) {
 }
 
 export async function resolveExecutionRunAdapterConfig(input: {
+  managedAiCredentials?: boolean;
   companyId: string;
   agentId?: string | null;
   adapterType?: string | null;
@@ -1821,7 +1825,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
   // host-side login never exists at all. The adapter's execute-time gate
   // remains the authority there; it probes the sandbox before failing.
   if (
-    (input.adapterType ?? null) === "codex_local" &&
+    !input.managedAiCredentials && (input.adapterType ?? null) === "codex_local" &&
     (input.environmentDriver ?? null) !== "sandbox"
   ) {
     const resolvedEnv = parseObject(resolvedConfig.env);
@@ -5640,6 +5644,7 @@ type EffectiveRunWorkspaceConfigCategory =
   (typeof EFFECTIVE_RUN_WORKSPACE_CONFIG_CATEGORIES)[number];
 
 type EffectiveRunSessionConfigMetadata = {
+  aiCredentialIdentity?: string;
   version: typeof EFFECTIVE_RUN_CONFIG_FINGERPRINT_VERSION;
   fingerprint: string;
   categories: EffectiveRunSessionConfigCategory[];
@@ -6609,6 +6614,7 @@ function attachPaperclipSessionMetadataToSessionParams(
   const next = { ...(sessionParams ?? {}) };
   if (configuredModel) next[SESSION_CONFIGURED_MODEL_KEY] = configuredModel;
   if (configMetadata) {
+    if (configMetadata.aiCredentialIdentity) next.paperclipAiCredentialIdentity = configMetadata.aiCredentialIdentity;
     next[SESSION_CONFIG_FINGERPRINT_KEY] = configMetadata.fingerprint;
     next[SESSION_CONFIG_FINGERPRINT_VERSION_KEY] = configMetadata.version;
     next[SESSION_CONFIG_CATEGORIES_KEY] = configMetadata.categories;
@@ -19106,6 +19112,7 @@ export function heartbeatService(
             "keep_running" | "stop_and_reuse" | "destroy_after_turn";
         }
       | undefined;
+    let managedAiRuntime: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
     let providerTraceCapture: Awaited<
       ReturnType<typeof traceStore.prepare>
     > | null = null;
@@ -20108,8 +20115,10 @@ export function heartbeatService(
         ["local", "ssh"].includes(
           selectedEnvironmentForConfig?.driver ?? "local",
         );
+      const aiBinding = agent.runtimeConfig?.aiConnection ? aiConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
+          managedAiCredentials: Boolean(aiBinding),
           managedGitHubCredentials: !useHostGitHub,
           companyId: agent.companyId,
           agentId: agent.id,
@@ -20117,17 +20126,40 @@ export function heartbeatService(
           issueId,
           heartbeatRunId: run.id,
           environmentId: selectedEnvironmentForConfig?.id ?? null,
-          environmentEnv: selectedEnvironmentForConfig?.envVars ?? null,
+          environmentEnv: aiBinding ? stripAiAuthBindings(selectedEnvironmentForConfig?.envVars) : selectedEnvironmentForConfig?.envVars ?? null,
           environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
           projectId: projectContext?.id ?? null,
           routineId: routineEnvContext.routineId,
           responsibleUserId,
-          executionRunConfig,
-          projectEnv: projectContext?.env ?? null,
-          routineEnv: routineEnvContext.env,
+          executionRunConfig: aiBinding ? { ...executionRunConfig, env: stripAiAuthBindings(executionRunConfig.env) } : executionRunConfig,
+          projectEnv: aiBinding ? stripAiAuthBindings(projectContext?.env) : projectContext?.env ?? null,
+          routineEnv: aiBinding ? stripAiAuthBindings(routineEnvContext.env) : routineEnvContext.env,
           secretsSvc,
           trustPreset,
         });
+      if (aiBinding) {
+        try {
+          managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });
+        } catch (error) {
+          if (responsibleUserId && issueId && aiBinding.mode === "responsible_user") {
+            await connectionIntentService(db).request({ sub: agent.id, company_id: agent.companyId, run_id: run.id, responsible_user_id: responsibleUserId }, aiBinding.provider, { purpose: "ai" }).catch(() => {
+              logger.warn({ runId: run.id, agentId: agent.id }, "Could not attach AI connection request; runtime configuration action remains available");
+            });
+          }
+          throw new ConfigurationIncompleteFailure(error instanceof Error ? error.message : "Configure this agent’s AI connection", {
+            configurationIncomplete: { reason: "ai_connection_unavailable", companyId: agent.companyId, agentId: agent.id, responsibleUserId,
+              provider: aiBinding.provider, method: aiBinding.method, actionUrl: `/agents/${agent.id}/runtime`,
+              fingerprint: `ai:${agent.id}:${responsibleUserId}:${JSON.stringify(aiBinding)}` },
+          });
+        }
+        if (persistedNativeExecutionInput && parseObject(run.contextSnapshot?.aiConnection).identity !== managedAiRuntime.identity) {
+          throw new ConfigurationIncompleteFailure("The AI account changed while this native run was suspended. Start a new execution.", { configurationIncomplete: { reason: "ai_connection_changed", actionUrl: `/agents/${agent.id}/runtime` } });
+        }
+        Object.assign(resolvedConfig, managedAiRuntime.config);
+        for (const key of AI_AUTH_ENV_KEYS) secretKeys.add(key);
+        context.aiConnection = { ...managedAiRuntime.attribution, identity: managedAiRuntime.identity };
+        await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiConnection: context.aiConnection })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
+      }
       if (secretManifest.length > 0) {
         context.paperclipSecrets = {
           manifest: secretManifest,
@@ -21026,6 +21058,10 @@ export function heartbeatService(
       await bindIssueToPersistedExecutionWorkspace(persistedExecutionWorkspace);
       const workspaceRealization = realizationResult.workspaceRealization;
       const executionTarget = realizationResult.executionTarget;
+      if (managedAiRuntime && aiBinding) {
+        try { await assertManagedAiProjectAuth({ ...resolvedConfig, cwd: executionWorkspace.cwd }, aiBinding.provider, executionTarget); }
+        catch { throw new ConfigurationIncompleteFailure("Project authentication conflicts with this agent’s managed AI connection", { configurationIncomplete: { reason: "ai_connection_incompatible", actionUrl: `/agents/${agent.id}/runtime` } }); }
+      }
       const remoteExecution = realizationResult.remoteExecution;
       if (
         nativeChatWorkspaceScope &&
@@ -21385,6 +21421,15 @@ export function heartbeatService(
         delete context.paperclipPreviousSessionId;
       }
 
+      if (managedAiRuntime) {
+        sessionConfigMetadata.aiCredentialIdentity = managedAiRuntime.identity;
+        if (taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity) {
+          runtimeSessionIdForAdapter = null;
+          runtimeSessionParamsForAdapter = null;
+          previousSessionDisplayId = null;
+          delete executionContinuation?.resumeDelta;
+        }
+      }
       const runtimeForAdapter = {
         sessionId: runtimeSessionIdForAdapter,
         sessionParams: runtimeSessionParamsForAdapter,
@@ -21888,7 +21933,7 @@ export function heartbeatService(
                     return requests.length > 0 ? requests : undefined;
                   })(),
                 });
-          const taskNativeSessionId = readNonEmptyString(
+          const taskNativeSessionId = managedAiRuntime && taskSessionDecodedParams?.paperclipAiCredentialIdentity !== managedAiRuntime.identity ? null : readNonEmptyString(
             taskSessionDecodedParams?.sessionId,
           );
           // Compatibility for native retry rows created before same-run restart
@@ -21944,8 +21989,7 @@ export function heartbeatService(
                   .then((rows) => rows.length > 0)
               : false;
           const compatibleLegacyRetrySource =
-            context.forceFreshSession !== true &&
-            isUnusedLegacyNativeRetryReplacement({
+            !managedAiRuntime && context.forceFreshSession !== true && isUnusedLegacyNativeRetryReplacement({
               replacement: run,
               source: legacyRetrySource,
               hasProviderEvents: nativeBootstrapHasProviderEvidence,
@@ -22009,8 +22053,7 @@ export function heartbeatService(
             executionTarget.transport === "sandbox"
               ? (executionTarget.runnerLifecyclePolicy ?? null)
               : null;
-          const effectiveLifecyclePolicy =
-            environmentLifecyclePolicy ?? agentLifecyclePolicy;
+          const effectiveLifecyclePolicy = managedAiRuntime ? { mode: "per_turn" as const, idleTimeoutMs: null } : environmentLifecyclePolicy ?? agentLifecyclePolicy;
           if (
             effectiveLifecyclePolicy.mode === "warm" &&
             executionTarget?.kind === "remote" &&
@@ -22895,6 +22938,7 @@ export function heartbeatService(
                       // Bootstrap with executable/home discovery while keeping
                       // configured provider values and the server-selected
                       // workspace boundary authoritative.
+                      managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
                       runnerEnvironment: {
                         ...buildNativeProviderEnvironment(
                           adapterEnv,
@@ -24553,6 +24597,7 @@ export function heartbeatService(
         }
       }
     } finally {
+      if (managedAiRuntime) await managedAiRuntime.cleanup().catch(() => logger.warn({ runId: run.id }, "AI connection refresh or cleanup failed"));
       let latestRun = await getRun(run.id).catch(() => null);
       if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
         await db

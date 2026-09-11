@@ -1,3 +1,4 @@
+import { aiConnectionRoutes } from "./routes/ai-connections.js";
 import { toolActionDeliveryService } from "./services/tool-action-delivery.js";
 import express, { Router, type Request as ExpressRequest } from "express";
 import {
@@ -817,6 +818,7 @@ export async function createApp(
   app.locals.toolGateway = toolGateway;
   app.locals.toolActionDeliveries = toolActionDeliveries;
   app.use(mcpGatewayProtocolRoutes(toolGateway));
+  api.use(aiConnectionRoutes(db));
   api.use(
     toolAccessRoutes(db, {
       deploymentMode: opts.deploymentMode,

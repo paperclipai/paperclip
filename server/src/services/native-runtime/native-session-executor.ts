@@ -1,3 +1,4 @@
+import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import {
   boundedExecutionCleanup,
   EXECUTION_CONTROL_DEADLINE_MS,
@@ -6638,6 +6639,8 @@ export async function executePaperclipNativeSession(input: {
   preparationSpans?: NativeRunHistoricalSpan[];
   /** Resolved adapter env; the runner transport applies a provider allowlist before spawn. */
   runnerEnvironment?: NodeJS.ProcessEnv;
+  /** Private grant materialization; never a user-configured host path. */
+  managedAiCredentialHome?: string;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   /** Resolved per-run authorization; not an independent instance setting. */
   runnerIngressAuthorized?: boolean;
@@ -9524,6 +9527,8 @@ export async function createRunnerdBackend(input: {
     startedAt: string;
   }) => Promise<void>;
   runnerEnvironment?: NodeJS.ProcessEnv;
+  /** Private grant materialization; never a user-configured host path. */
+  managedAiCredentialHome?: string;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   /** Resolved per-run authorization; not an independent instance setting. */
   runnerIngressAuthorized?: boolean;
@@ -11608,6 +11613,34 @@ async function createRunnerdBackendWithinSessionClaim(
         },
       }).transport,
   });
+  const wrapManagedSession = (session: NativeSession): NativeSession => {
+    if (!input.managedAiCredentialHome || input.execution.provider.kind !== "codex") return session;
+    const close = session.close.bind(session);
+    let copied = false;
+    session.close = async (closeInput) => {
+      await close(closeInput);
+      if (copied) return;
+      copied = true;
+      const remoteAuth = remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, "codex-home", "auth.json") : null;
+      const localAuth = join(root, "codex-home", "auth.json");
+      try {
+        await copyBackCodexAuth({
+          hostAuthPath: join(input.managedAiCredentialHome!, "auth.json"),
+          readSandboxAuth: async () => {
+            if (!remoteAuth || !remoteCommandRunner) return readFileSync(localAuth);
+            const result = await remoteCommandRunner.execute({ command: "base64", args: [remoteAuth], bypassSession: true, timeoutMs: 10000 });
+            if (result.exitCode !== 0 || result.timedOut) throw new Error("AI credential copy-back failed");
+            return Buffer.from(result.stdout, "base64");
+          },
+          log: () => {},
+        });
+      } finally {
+        rmSync(localAuth, { force: true });
+        if (remoteAuth && remoteCommandRunner) await remoteCommandRunner.execute({ command: "rm", args: ["-f", "--", remoteAuth], bypassSession: true, timeoutMs: 10000 });
+      }
+    };
+    return session;
+  };
   const priorAuthorityEpoch = sessionToolAuthorityEpochs.get(sessionScopeId);
   if (priorAuthorityEpoch && priorAuthorityEpoch !== authorityEpoch) {
     priorAuthorityEpoch.revoke();
@@ -11615,14 +11648,11 @@ async function createRunnerdBackendWithinSessionClaim(
   sessionToolAuthorityEpochs.set(sessionScopeId, authorityEpoch);
   return {
     descriptor: () => backend.descriptor(),
-    openSession: (sessionInput) => backend.openSession(sessionInput),
-    recoverSession: (snapshot, options) =>
-      backend.recoverSession
-        ? backend.recoverSession(snapshot, options)
-        : Promise.resolve({
-            recovered: false,
-            reason: "driver does not support recovery",
-          }),
+    openSession: async (sessionInput) => wrapManagedSession(await backend.openSession(sessionInput)),
+    recoverSession: async (snapshot, options) => {
+      const result = backend.recoverSession ? await backend.recoverSession(snapshot, options) : { recovered: false, reason: "driver does not support recovery" };
+      return result.session ? { ...result, session: wrapManagedSession(result.session) } : result;
+    },
     openReplacementSession: async (sessionInput) => {
       await measureNativeRunnerSpan(
         input.trace,
@@ -11630,7 +11660,7 @@ async function createRunnerdBackendWithinSessionClaim(
         archiveContinuityState,
         { parentName: "native.session.execute" },
       );
-      return backend.openSession(sessionInput);
+      return wrapManagedSession(await backend.openSession(sessionInput));
     },
   } satisfies NativeSessionBackend;
 }

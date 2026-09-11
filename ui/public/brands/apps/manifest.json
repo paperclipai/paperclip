@@ -16,7 +16,7 @@
     {
       "slug": "anthropic",
       "provider": "Anthropic",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/anthropic.svg",
       "darkAsset": "/brands/apps/anthropic-dark.svg",
       "officialSourceUrl": "https://www.anthropic.com",
@@ -623,6 +623,42 @@
       "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/zapier.svg",
       "assetType": "svg",
       "darkVariantRequired": false
+    },
+    {
+      "slug": "openai",
+      "provider": "OpenAI",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/openai.svg",
+      "darkAsset": "/brands/apps/openai-dark.svg",
+      "officialSourceUrl": "https://openai.com/brand/",
+      "upstreamAssetUrl": "https://github.com/lobehub/lobe-icons/blob/a94750e3f5f8fc33757b839d85030e742284e43a/packages/static-svg/icons/openai.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true,
+      "verifiedAt": "2026-09-10"
+    },
+    {
+      "slug": "openrouter",
+      "provider": "OpenRouter",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/openrouter.svg",
+      "darkAsset": "/brands/apps/openrouter-dark.svg",
+      "officialSourceUrl": "https://openrouter.ai/blog/announcements/brand-refresh/",
+      "upstreamAssetUrl": "https://github.com/OpenRouterTeam/sign-in-with-openrouter/blob/main/public/openrouter-logo-light.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true,
+      "verifiedAt": "2026-09-10"
+    },
+    {
+      "slug": "xai",
+      "provider": "Grok",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/xai.svg",
+      "darkAsset": "/brands/apps/xai-dark.svg",
+      "officialSourceUrl": "https://x.ai/",
+      "upstreamAssetUrl": "https://github.com/lobehub/lobe-icons/blob/a94750e3f5f8fc33757b839d85030e742284e43a/packages/static-svg/icons/grok.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true,
+      "verifiedAt": "2026-09-10"
     }
   ]
 }

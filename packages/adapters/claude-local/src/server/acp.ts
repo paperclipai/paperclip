@@ -227,7 +227,7 @@ async function prepareClaudeRemoteManagedHome(
     typeof envConfig.CLAUDE_CONFIG_DIR === "string" && envConfig.CLAUDE_CONFIG_DIR.trim().length > 0
       ? envConfig.CLAUDE_CONFIG_DIR.trim()
       : "";
-  if (explicitClaudeConfigDir) {
+  if (explicitClaudeConfigDir && !input.config.managedAiConnection) {
     // User-managed escape hatch. Unlike the Claude CLI lane
     // (`claude-local/execute.ts`), which runs the process on the same host and can
     // forward the operator's path verbatim, the remote ACP lane spawns Claude
@@ -267,7 +267,9 @@ async function prepareClaudeRemoteManagedHome(
 
   // Content-addressed sanitized seed (managed cache under the instance root, not
   // a temp dir — reused across runs, so no teardown cleanup).
-  const claudeConfigSeedDir = await prepareClaudeConfigSeed(process.env, onLog, input.companyId);
+  const claudeConfigSeedDir = input.config.managedAiConnection
+    ? explicitClaudeConfigDir
+    : await prepareClaudeConfigSeed(process.env, onLog, input.companyId);
   // Ship the per-run skill bundle, staged only when the run selected at
   // least one skill. The bundle directory holds a plain copy of each
   // selected skill's files (`materializePaperclipSkillCopy` never copies a
@@ -625,6 +627,7 @@ export async function probeClaudeAcpSandboxLogin(input: {
   }
 
   const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+  if (config.managedAiConnection) args.push("--setting-sources", "user");
   args.push(
     ...buildClaudeProbePermissionArgs({
       dangerouslySkipPermissions: asBoolean(config.dangerouslySkipPermissions, true),
@@ -760,7 +763,7 @@ export async function testClaudeAcpEnvironment(
   });
 
   const envConfig = parseObject(config.env);
-  const considerHostEnv = !targetIsRemote;
+  const considerHostEnv = !targetIsRemote && !config.managedAiConnection;
   const hasBedrock =
     envConfig.CLAUDE_CODE_USE_BEDROCK === "1" ||
     envConfig.CLAUDE_CODE_USE_BEDROCK === "true" ||
@@ -860,6 +863,7 @@ export async function testClaudeAcpEnvironment(
     const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     checks.push(
       ...(await prepareSandboxClaudeProbeRuntime({
+      managedAiConnection: Boolean(config.managedAiConnection),
         runId,
         target,
         cwd,

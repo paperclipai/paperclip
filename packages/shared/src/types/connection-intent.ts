@@ -42,6 +42,7 @@ export interface ConnectionRequestResult {
 export type ConnectionIntentSetupConnection = Pick<ToolConnection, "id" | "applicationId" | "name" | "status" | "enabled">;
 
 export interface ConnectionIntentSetupOptions {
+  aiConnection?: import("../ai-connections.js").AiConnectionBinding;
   version: 1;
   interaction: ConnectionIntentInteraction;
   service: ConnectionSearchResultItem;

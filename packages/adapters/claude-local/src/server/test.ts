@@ -135,6 +135,7 @@ export async function testEnvironment(
     : await buildLocalAdapterTestProbeEnv({ callerEnv: env, trustedEnv: process.env });
   checks.push(
     ...(await prepareSandboxClaudeProbeRuntime({
+      managedAiConnection: Boolean(config.managedAiConnection),
       runId,
       target,
       cwd,
@@ -350,6 +351,7 @@ export async function testEnvironment(
       }
 
       const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
+      if (config.managedAiConnection) args.push("--setting-sources", "user");
       args.push(...buildClaudeProbePermissionArgs({
         dangerouslySkipPermissions,
         targetIsRemote,

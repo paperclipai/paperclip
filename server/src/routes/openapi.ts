@@ -6,6 +6,9 @@ import {
 import { Router } from "express";
 import { z } from "zod";
 import {
+  createAiConnectionSchema,
+  aiConnectionLoginIntentSchema,
+  localAiConnectionSchema,
   // Agent
   createAgentSchema,
   createAgentHireSchema,
@@ -1266,6 +1269,15 @@ const BOARD_ONLY_PREFIXES = [
 ];
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "GET /api/companies/{companyId}/ai-connections",
+  "POST /api/companies/{companyId}/ai-connections",
+  "POST /api/companies/{companyId}/ai-connections/local",
+  "POST /api/companies/{companyId}/ai-connections/local/attempts",
+  "DELETE /api/companies/{companyId}/ai-connections/local/attempts/{sessionId}",
+  "PUT /api/companies/{companyId}/ai-connections/default",
+  "GET /api/companies/{companyId}/ai-connections/{connectionId}/active-runs",
+  "GET /api/companies/{companyId}/ai-connections/login/{sessionId}",
+
   "GET /api/companies/{companyId}/project-repositories",
   "PUT /api/projects/{id}/repositories",
   "DELETE /api/issues/{id}/documents/{key}",
@@ -9740,6 +9752,51 @@ registerCurrentRoute({
   body: declineConnectionIntentSchema,
 });
 
+// --- AI runtime connections -------------------------------------------------
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/ai-connections",
+  tags: ["ai-connections"],
+  summary: "List available AI connections and personal defaults",
+  query: z.object({ agentId: z.string().uuid().optional() }),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connections",
+  tags: ["ai-connections"],
+  summary: "Validate and connect an AI API key, or reconnect its existing grant",
+  body: createAiConnectionSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/companies/{companyId}/ai-connections/default",
+  tags: ["ai-connections"],
+  summary: "Set the signed-in owner’s personal AI default",
+  body: z.object({ grantId: z.string().uuid() }),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/ai-connections/{connectionId}/active-runs",
+  tags: ["ai-connections"],
+  summary: "List active runs attributed to an AI connection",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/ai-connections/login/{sessionId}",
+  tags: ["ai-connections"],
+  summary: "Get the connection saved by an owned completed login",
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
 // --- Tool access -------------------------------------------------------------
 
 registerCurrentRoute({
@@ -10887,3 +10944,25 @@ export function openApiRoutes() {
   });
   return router;
 }
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connections/local",
+  tags: ["ai-connections"],
+  summary: "Verify and save the local operator's CLI subscription account",
+  body: localAiConnectionSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connections/local/attempts",
+  tags: ["ai-connections"], summary: "Prepare an isolated local subscription sign-in",
+  body: aiConnectionLoginIntentSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/companies/{companyId}/ai-connections/local/attempts/{sessionId}",
+  tags: ["ai-connections"], summary: "Cancel an owned local subscription sign-in",
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});

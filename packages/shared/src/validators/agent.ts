@@ -1,3 +1,4 @@
+import { aiConnectionBindingSchema } from "../ai-connections.js";
 import { z } from "zod";
 import {
   AGENT_ICON_NAMES,
@@ -60,6 +61,7 @@ export const createAgentInstructionsBundleSchema = z.object({
 });
 
 export const agentRuntimeConfigSchema = z.object({
+  aiConnection: aiConnectionBindingSchema.optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
@@ -242,6 +244,8 @@ export const resetAgentSessionSchema = z.object({
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;
 
 export const testAdapterEnvironmentSchema = z.object({
+  aiConnection: aiConnectionBindingSchema.optional(),
+  agentId: z.string().uuid().optional(),
   /** One-shot provider keys for a probe. Never persist these in agent config. */
   testCredentials: z.object({
     ANTHROPIC_API_KEY: z.string().max(16384),
