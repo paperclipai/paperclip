@@ -267,6 +267,26 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
   });
 
+  it("does not let malformed provider metadata defer cleanup forever", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    await insertPendingCleanupLease({ companyId, environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60_000), metadata: { pendingCleanupRetryAfterMs: 1e300 } });
+    const destroy = vi.fn(async () => null);
+    await heartbeatService(db, { environmentRuntime: fakeRuntime(destroy) }).sweepPendingCleanupLeases();
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts escalation and the long cooldown on the fifth failed attempt", async () => {
+    const { companyId, environmentId } = await seedCompanyAndEnvironment();
+    const leaseId = await insertPendingCleanupLease({ companyId, environmentId,
+      updatedAt: new Date(Date.now() - 60 * 60_000), metadata: { [ATTEMPTS_KEY]: ATTEMPT_CAP - 1 } });
+    const runtime = fakeRuntime(vi.fn(async () => null));
+    await heartbeatService(db, { environmentRuntime: runtime }).sweepPendingCleanupLeases();
+    const [saved] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+    expect(saved.metadata?.[CAP_WARNED_KEY]).toBe(true);
+    expect(Number(saved.metadata?.pendingCleanupRetryAfterMs)).toBeGreaterThan(Date.now() + 29 * 60_000);
+  });
+
   it("retries after a restart and cooldown when the provider recovers", async () => {
     const { companyId, environmentId } = await seedCompanyAndEnvironment();
     const leaseId = await insertOrphanEphemeralLease({ companyId, environmentId,
@@ -820,7 +840,7 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       .mocked(logger.warn)
       .mock.calls.filter(
         (call) =>
-          call[1] === "environment lease reached the pending_cleanup retry cap; left for manual cleanup",
+          call[1] === "environment lease needs operator attention; automatic cleanup continues with backoff",
       );
     expect(capWarnings.length).toBeLessThanOrEqual(1);
   });
@@ -1117,7 +1137,7 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       .mocked(logger.warn)
       .mock.calls.filter(
         (call) =>
-          call[1] === "environment lease reached the pending_cleanup retry cap; left for manual cleanup",
+          call[1] === "environment lease needs operator attention; automatic cleanup continues with backoff",
       );
     expect(capWarnings.length).toBe(0);
 
@@ -1127,7 +1147,7 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       companyId,
       environmentId,
       updatedAt: new Date(Date.now() - 60 * 60 * 1000),
-      metadata: { [ATTEMPTS_KEY]: ATTEMPT_CAP - 1 },
+      metadata: { [ATTEMPTS_KEY]: ATTEMPT_CAP - 2 },
     });
     await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
     const belowCapMetadata = await readMetadata(belowCapLeaseId);
