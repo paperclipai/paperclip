@@ -5569,9 +5569,12 @@ export function issueRoutes(
   async function getIssueThreadInteractionResolutionAuthorization(
     req: Request,
     res: Response,
-    issue: Parameters<typeof assertAgentIssueMutationAllowed>[2],
+    issue: Parameters<typeof assertAgentIssueMutationAllowed>[2] & { conversationAgentId?: string | null; conversationUserId?: string | null },
     interactionId: string,
   ) {
+    if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
+      throw forbidden("Only the conversation owner can respond to chat interactions");
+    }
     // Actor-only gates deliberately precede the interaction lookup. An actor
     // outside the issue's trusted/watchdog scope must not learn whether an
     // interaction id exists on that issue.
@@ -16959,16 +16962,32 @@ export function issueRoutes(
       if (issue.conversationAgentId && req.actor.type === "board") {
         if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
         if (!req.actor.userId) throw forbidden("Board user access required");
+        if (req.actor.userId !== issue.conversationUserId) throw forbidden("Only the conversation owner can send messages or start a new session");
         if (!req.body.clientRequestId) throw unprocessable("Chat messages require a clientRequestId for safe retries");
         if (!(await assertAgentIssueCommentAllowed(req, res, issue))) return;
         if (req.body.body.trim() !== "/new" && !(await assertBoardCommentNotPaused(req, res, issue))) return;
         const actor = getActorInfo(req);
-        const comment = await svc.addComment(issue.id, req.body.body, { userId: req.actor.userId }, {
-          clientRequestId: req.body.clientRequestId, authorType: "user", attachmentIds: req.body.attachmentIds,
+        const userId = req.actor.userId;
+        const publications: ActivityPublication[] = [];
+        const comment = await db.transaction(async (tx) => {
+          await tx.select({ id: issueRows.id }).from(issueRows).where(and(
+            eq(issueRows.id, issue.id), eq(issueRows.companyId, issue.companyId),
+          )).for("update");
+          const [existing] = await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+            eq(issueComments.issueId, issue.id), eq(issueComments.authorUserId, userId),
+            eq(issueComments.clientRequestId, req.body.clientRequestId),
+          ));
+          const saved = await svc.addComment(issue.id, req.body.body, { userId }, {
+            clientRequestId: req.body.clientRequestId, authorType: "user", attachmentIds: req.body.attachmentIds,
+          }, tx);
+          if (!existing) await logActivity(tx as unknown as Db, {
+            companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+            action: "issue.comment_added", entityType: "issue", entityId: issue.id,
+            details: { commentId: saved.id, identifier: issue.identifier },
+          }, publications);
+          return saved;
         });
-        await logActivity(db, { companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
-          action: "issue.comment_added", entityType: "issue", entityId: issue.id,
-          details: { commentId: comment.id, identifier: issue.identifier } });
+        for (const publication of publications) publishActivity(publication);
         await issueReferencesSvc.syncComment(comment.id);
         await deliverConversationComments(db, issue, heartbeat.wakeup);
         res.status(201).json(comment);
@@ -18131,6 +18150,9 @@ export function issueRoutes(
       }
       if (issue.conversationAgentId && req.actor.type === "board" && !(await instanceSettings.getExperimental()).enableAgentChat) {
         throw notFound("Agent Chat is disabled");
+      }
+      if (issue.conversationAgentId && req.actor.type === "board" && req.actor.userId !== issue.conversationUserId) {
+        throw forbidden("Only the conversation owner can upload attachments");
       }
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
       if (

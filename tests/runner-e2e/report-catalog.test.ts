@@ -239,4 +239,79 @@ describe("trusted report catalog discovery", () => {
       `data-execution-id="${missingId}"`,
     );
   });
+  it.each([
+    "1/../../../escape",
+    "<img src=x onerror=alert(1)>",
+    -1,
+    1.5,
+    Infinity,
+  ])("rejects malformed attempts before report staging: %s", (attempt) => {
+    expect(() =>
+      campaign([{ ...result(), attempt } as RunnerE2EResult]),
+    ).toThrow("result.attempt");
+  });
+
+  it("validates nested timing and billing fields before rendering", () => {
+    const malicious = {
+      ...result(),
+      turnTimings: [{ turn: "<script>alert(1)</script>" }],
+    } as unknown as RunnerE2EResult;
+    expect(() => campaign([malicious])).toThrow("result.turnTimings[0].turn");
+    const measured = campaign().results[0]!;
+    expect(() =>
+      campaign([
+        {
+          ...measured,
+          billing: {
+            ...measured.billing!,
+            llm: {
+              ...measured.billing!.llm,
+              runCount: "<img>" as unknown as number,
+            },
+          },
+        },
+      ]),
+    ).toThrow("result.billing.llm.runCount");
+  });
+
+  it("does not certify a same-sized replacement matrix or changed suite definition", () => {
+    const known = runnerMatrix.filter(
+      (entry) => entry.suite.id === runnerMatrix[0]!.suite.id,
+    );
+    const receipts = known.map((entry) => ({
+      ...result(),
+      executionId: entry.id,
+      suiteId: entry.suite.id,
+      suiteDefinitionHash: entry.suiteDefinitionHash,
+      profileId: entry.profile.id,
+      environmentId: entry.environment.id,
+      caseId: entry.task.id,
+    }));
+    const build = (results: RunnerE2EResult[]) =>
+      buildRunnerCampaign({
+        campaignId: "matrix-proof",
+        generatedAt: result().finishedAt,
+        expected: results.map((item) => item.executionId),
+        results,
+      });
+    expect(build(receipts).suites[0]!.complete).toBe(true);
+    const replacement = receipts.map((item, index) =>
+      index
+        ? item
+        : {
+            ...item,
+            caseId: "replacement",
+            executionId: item.executionId.replace(/[^.]+$/, "replacement"),
+          },
+    );
+    expect(build(replacement).suites[0]!.complete).toBe(false);
+    expect(
+      build(
+        receipts.map((item) => ({
+          ...item,
+          suiteDefinitionHash: "different-definition",
+        })),
+      ).suites[0]!.complete,
+    ).toBe(false);
+  });
 });

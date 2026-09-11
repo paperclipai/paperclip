@@ -1458,6 +1458,30 @@ describe("IssueDetail", () => {
     expect(ensureIssue).toHaveBeenCalledTimes(1);
   });
 
+  it("retries the chosen initial chat mode after creation succeeded but mode persistence failed", async () => {
+    mockIssuesApi.addComment.mockClear();
+    mockIssuesApi.update.mockClear();
+    const agent = createAgent();
+    const canonical = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1", conversationState: "waiting", status: "in_review", workMode: "standard" });
+    const ensureIssue = vi.fn().mockResolvedValue(canonical);
+    mockIssuesApi.update.mockRejectedValueOnce(new Error("Mode save failed")).mockResolvedValue({ ...canonical, workMode: "ask" });
+    mockIssuesApi.addComment.mockResolvedValue(createIssueComment({ body: "Research only" }));
+    const renderChat = async (issue: Issue | null) => {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><TaskDetailSurface conversation={{ agent, issue, ensureIssue }} /></QueryClientProvider>));
+      await flushReact();
+      return mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as { onWorkModeChange: (mode: string) => Promise<void>; onAdd: (body: string) => Promise<void> };
+    };
+    let props = await renderChat(null);
+    await act(async () => props.onWorkModeChange("ask"));
+    props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+    await act(async () => { await expect(props.onAdd("Research only")).rejects.toThrow("Mode save failed"); });
+    expect(mockIssuesApi.addComment).not.toHaveBeenCalled();
+    props = await renderChat(canonical);
+    await act(async () => props.onAdd("Research only"));
+    expect(mockIssuesApi.update).toHaveBeenNthCalledWith(2, canonical.id, { workMode: "ask" });
+    expect(mockIssuesApi.addComment).toHaveBeenCalledOnce();
+  });
+
   it("opens artifact cards in the shared gallery at the selected image without duplicating attachments", async () => {
     mockIssuesApi.get.mockResolvedValue(createIssue());
     mockIssuesApi.listAttachments.mockResolvedValue([

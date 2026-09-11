@@ -1,3 +1,4 @@
+import { validateRetainedRunnerResult } from "./result-validation.js";
 import {
   discoverReportCatalog,
   parseReportExecutionId,
@@ -25,6 +26,7 @@ export function canonicalExecutionId(id: string) {
 }
 
 export function upgradeRunnerResult(result: RunnerE2EResult): RunnerE2EResult {
+  validateRetainedRunnerResult(result);
   const executionId = canonicalExecutionId(result.executionId);
   const execution = runnerMatrix.find(
     (candidate) => candidate.id === executionId,
@@ -118,8 +120,20 @@ export function buildRunnerCampaign(input: {
           (result) => result.cleanup === "passed",
         ),
         complete:
-          knownCatalog.some((execution) => execution.suite.id === suite.id) &&
-          suiteExpected.length === suite.expectedMatrixSize,
+          suiteExpected.length === suite.expectedMatrixSize &&
+          knownCatalog.filter((execution) => execution.suite.id === suite.id)
+            .length === suiteExpected.length &&
+          knownCatalog
+            .filter((execution) => execution.suite.id === suite.id)
+            .every(
+              (execution) =>
+                suiteExpected.includes(execution.id) &&
+                suiteResults.every(
+                  (result) =>
+                    result.suiteDefinitionHash ===
+                    execution.suiteDefinitionHash,
+                ),
+            ),
         durationMs: suiteResults.reduce(
           (total, result) => total + result.durationMs,
           0,

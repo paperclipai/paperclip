@@ -519,7 +519,7 @@ describe("historical publication security", () => {
 
   it("requires trusted-fixture opt-in and rejects unsafe screenshot paths", () => {
     const execution = runnerMatrix[0]!;
-    const campaign = buildRunnerCampaign({
+    expect(() => buildRunnerCampaign({
       campaignId: "unsafe-screenshot",
       generatedAt: "2026-08-28T00:01:00.000Z",
       expected: [execution.id],
@@ -536,10 +536,7 @@ describe("historical publication security", () => {
           ],
         },
       ],
-    });
-    expect(() => publicScreenshotPaths(campaign)).toThrow(
-      "Cannot publish unsafe screenshot path",
-    );
+    })).toThrow("Invalid retained runner result field: result.screenshots[0].file");
 
     const failedCampaign = buildRunnerCampaign({
       campaignId: "failed-screenshot",

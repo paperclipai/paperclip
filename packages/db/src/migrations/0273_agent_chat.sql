@@ -17,6 +17,10 @@ DO $$ BEGIN
     ALTER TABLE "issue_comments" ADD CONSTRAINT "issue_comments_client_request_uq" UNIQUE("issue_id","author_user_id","client_request_id");
   END IF;
 END $$;--> statement-breakpoint
+-- The first development guard allowed NULL through SQL three-valued logic.
+-- Recover the server-owned idle/active state before enforcing the stronger guard.
+UPDATE "issues" SET "conversation_state" = CASE WHEN "status" = 'in_review' THEN 'waiting' ELSE 'active' END
+WHERE "conversation_agent_id" IS NOT NULL AND "conversation_state" IS NULL;--> statement-breakpoint
 ALTER TABLE "issues" DROP CONSTRAINT IF EXISTS "issues_conversation_identity_check";--> statement-breakpoint
 ALTER TABLE "issues" ADD CONSTRAINT "issues_conversation_identity_check" CHECK ((
       "issues"."conversation_agent_id" is null and "issues"."conversation_user_id" is null and "issues"."conversation_state" is null

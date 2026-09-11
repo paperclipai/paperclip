@@ -1,3 +1,4 @@
+import { validateRetainedRunnerResult } from "./result-validation.js";
 import { createHash } from "node:crypto";
 import type { MatrixExecution, RunnerE2EResult } from "./types.js";
 
@@ -42,6 +43,7 @@ export function parseReportExecutionId(id: string) {
 }
 
 export function validateReportResultIdentity(result: RunnerE2EResult) {
+  validateRetainedRunnerResult(result);
   const identity = parseReportExecutionId(result.executionId);
   if (
     (result.suiteId !== undefined && result.suiteId !== identity.suiteId) ||
