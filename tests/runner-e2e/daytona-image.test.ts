@@ -1,6 +1,6 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -16,6 +16,43 @@ import {
 const repositoryRoot = path.resolve(import.meta.dirname, "../..");
 
 describe("runner E2E Daytona image contract", () => {
+  it("accepts the frozen provider lock and rejects copied manifest drift offline", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-provider-lock-contract-"));
+    try {
+      for (const relative of [
+        ...DAYTONA_IMAGE_INPUT_PATHS.filter((entry) => entry.endsWith("package.json")),
+        ".npmrc", "pnpm-workspace.yaml", "patches",
+      ]) {
+        await mkdir(path.dirname(path.join(root, relative)), { recursive: true });
+        await cp(path.join(repositoryRoot, relative), path.join(root, relative), { recursive: true });
+      }
+      await cp(
+        path.join(repositoryRoot, "docker/daytona-runner/provider-dependencies.lock.yaml"),
+        path.join(root, "pnpm-lock.yaml"),
+      );
+      const validate = () => spawnSync("pnpm", [
+        "install", "--lockfile-only", "--ignore-scripts", "--frozen-lockfile", "--offline",
+        "--store-dir", path.join(root, "empty-store"),
+        "--filter", "@paperclipai/paperclip-runner...",
+      ], { cwd: root, encoding: "utf8", stdio: "pipe", timeout: 30_000 });
+      const valid = validate();
+      expect(valid.error).toBeUndefined();
+      expect(valid.status, valid.stdout + valid.stderr).toBe(0);
+
+      // pnpm validates copied workspace manifests even outside the install filter.
+      const serverPath = path.join(root, "server/package.json");
+      const server = JSON.parse(await readFile(serverPath, "utf8"));
+      server.dependencies["paperclip-lock-drift-fixture"] = "0.0.0";
+      await writeFile(serverPath, JSON.stringify(server));
+      const drift = validate();
+      expect(drift.error).toBeUndefined();
+      expect(drift.status).toBe(1);
+      expect(drift.stdout).toContain("ERR_PNPM_OUTDATED_LOCKFILE");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it("builds runnerd and the provider pack and verifies every required transport", async () => {
     const [dockerfile, dockerignore, workflow] = await Promise.all([
       readFile(
