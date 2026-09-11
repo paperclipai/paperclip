@@ -1,6 +1,6 @@
 import { useRef, useState, type ComponentType, type SVGProps } from "react";
 import type { ExecutionProjection } from "@paperclipai/shared";
-import { Brain, OctagonX } from "lucide-react";
+import { Brain, ChevronRight, OctagonX } from "lucide-react";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import { useSecondTick } from "@/hooks/useSecondTick";
 import { cn } from "@/lib/utils";
@@ -79,105 +79,116 @@ function currentActivityStatusItems(
   return items.slice(boundaryIndex + 1);
 }
 
-type FoldedNarration =
-  | { kind: "commentary"; item: TaskChatMessageItem; order: number }
-  | {
-      kind: "reasoning";
-      item: TaskChatThinkingItem;
-      line: string | null;
-      lineIndex: number;
-      order: number;
-    };
+type FoldedActivity = {
+  kind: "reasoning" | "tool" | "protocol";
+  logicalKey: string;
+  text: string;
+  icon: ComponentType<SVGProps<SVGSVGElement>>;
+  mono?: boolean;
+};
 
-function latestFoldedNarration(
+function latestFoldedActivity(
   items: readonly TaskChatItem[],
-): FoldedNarration | null {
-  let latest: FoldedNarration | null = null;
-  for (const [index, item] of items.entries()) {
-    const order =
-      item.kind === "message" || item.kind === "thinking"
-        ? (item.transcriptIndex ?? index)
-        : -1;
-    if (item.kind === "message" && item.interstitial && item.text.trim()) {
-      if (!latest || order >= latest.order)
-        latest = { kind: "commentary", item, order };
+): FoldedActivity | null {
+  let latest: FoldedActivity | null = null;
+  for (const item of items) {
+    if (item.kind === "thinking") {
+      for (
+        let lineIndex = item.lines.length - 1;
+        lineIndex >= 0;
+        lineIndex -= 1
+      ) {
+        const line = item.lines[lineIndex]?.trim();
+        if (line) {
+          latest = {
+            kind: "reasoning",
+            logicalKey: `${item.id}:${lineIndex}`,
+            text: line,
+            icon: Brain,
+          };
+          break;
+        }
+      }
       continue;
     }
-    if (item.kind !== "thinking") continue;
-    let lineIndex = -1;
-    for (
-      let candidate = item.lines.length - 1;
-      candidate >= 0;
-      candidate -= 1
-    ) {
-      if (item.lines[candidate]?.trim()) {
-        lineIndex = candidate;
-        break;
-      }
-    }
-    if (!latest || order >= latest.order) {
+    if (item.kind === "tool") {
+      const taxonomy = toolTaxonomy(item.rawName ?? item.name);
       latest = {
-        kind: "reasoning",
-        item,
-        line: lineIndex < 0 ? null : item.lines[lineIndex]!.trim(),
-        lineIndex,
-        order,
+        kind: "tool",
+        logicalKey: item.id,
+        text: item.target
+          ? `${taxonomy.verbLabel} · ${item.target}`
+          : taxonomy.verbLabel,
+        icon: taxonomy.icon,
+        mono: Boolean(item.target),
       };
+      continue;
+    }
+    if (isHeadlineProtocolActivity(item)) {
+      const presentation = protocolActivityPresentation(item);
+      if (presentation) {
+        const label = protocolActivityLabel(item, presentation);
+        latest = {
+          kind: "protocol",
+          logicalKey: item.id,
+          text: presentation.detail
+            ? `${label} · ${presentation.detail}`
+            : label,
+          icon: presentation.icon,
+        };
+      }
     }
   }
   return latest;
 }
 
-function FoldedReasoningTicker({
-  logicalKey,
-  text,
+function FoldedActivityTicker({
+  activity,
+  open,
+  onToggle,
 }: {
-  logicalKey: string;
-  text: string;
+  activity: FoldedActivity;
+  open: boolean;
+  onToggle: () => void;
 }) {
   const [ticker, setTicker] = useState({
-    logicalKey,
+    logicalKey: activity.logicalKey,
     motionKey: 0,
-    current: text,
-    exiting: null as string | null,
+    current: activity.text,
   });
-  if (ticker.logicalKey !== logicalKey) {
+  if (ticker.logicalKey !== activity.logicalKey) {
     setTicker({
-      logicalKey,
+      logicalKey: activity.logicalKey,
       motionKey: ticker.motionKey + 1,
-      current: text,
-      exiting: ticker.current,
+      current: activity.text,
     });
-  } else if (ticker.current !== text) {
+  } else if (ticker.current !== activity.text) {
     // Token fragments update the mounted line. Only a new logical line moves
     // the ticker, so streaming text does not restart the animation per token.
-    setTicker({ ...ticker, current: text });
+    setTicker({ ...ticker, current: activity.text });
   }
 
+  const Icon = activity.icon;
+
   return (
-    <div
-      className="flex min-w-0 gap-2 px-1 py-1.5"
+    <button
+      type="button"
+      aria-expanded={open}
+      onClick={onToggle}
+      className="group/live-reasoning flex min-h-8 w-full min-w-0 items-center gap-2 rounded-sm px-1 py-1.5 text-left hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       data-testid="task-chat-reasoning-ticker"
+      data-activity-kind={activity.kind}
     >
-      <div className="flex shrink-0 items-center">
-        <Brain className="h-3.5 w-3.5 text-muted-foreground/50" aria-hidden />
-      </div>
+      <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+        <Icon className="h-3.5 w-3.5 text-muted-foreground/50" aria-hidden />
+      </span>
       <div className="relative h-5 min-w-0 flex-1 overflow-hidden">
-        {ticker.exiting !== null ? (
-          <span
-            key={`out-${ticker.motionKey}`}
-            className="cot-line-exit absolute inset-x-0 truncate text-(length:--text-compact) italic leading-5 text-muted-foreground"
-            onAnimationEnd={() =>
-              setTicker((current) => ({ ...current, exiting: null }))
-            }
-          >
-            {ticker.exiting}
-          </span>
-        ) : null}
         <span
           key={`in-${ticker.motionKey}`}
           className={cn(
-            "absolute inset-x-0 truncate text-(length:--text-compact) italic leading-5 text-muted-foreground",
+            "absolute inset-x-0 truncate text-(length:--text-compact) leading-5 text-muted-foreground",
+            activity.kind === "reasoning" && "italic",
+            activity.mono && "font-mono",
             ticker.motionKey > 0 && "cot-line-enter",
           )}
           aria-live="polite"
@@ -186,21 +197,13 @@ function FoldedReasoningTicker({
           {ticker.current}
         </span>
       </div>
-    </div>
-  );
-}
-
-function FoldedLiveNarration({
-  narration,
-}: {
-  narration: Extract<FoldedNarration, { kind: "reasoning" }>;
-}) {
-  if (!narration.line) return null;
-  return (
-    <FoldedReasoningTicker
-      logicalKey={`${narration.item.id}:${narration.lineIndex}`}
-      text={narration.line}
-    />
+      <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+        <ChevronRight
+          className={cn("h-3 w-3 transition-transform", open && "rotate-90")}
+          aria-hidden
+        />
+      </span>
+    </button>
   );
 }
 
@@ -454,8 +457,9 @@ export function TaskChatRunnerTurn({
     decision: TaskChatRuntimeRequestDecision,
   ) => void | Promise<void>;
 }) {
+  const [liveActivityOpen, setLiveActivityOpen] = useState(false);
   const terminal = isTerminalRunStatus(status);
-  const narration = latestFoldedNarration(items);
+  const foldedActivity = latestFoldedActivity(items);
   const currentActivityItems = currentActivityStatusItems(items);
   const yielded = items.some(
     (item) =>
@@ -531,12 +535,16 @@ export function TaskChatRunnerTurn({
           continuedAfterSteering={continuedAfterSteering}
         />
       </div>
-      {!terminal && narration?.kind === "reasoning" && !final ? (
+      {!terminal && foldedActivity && !final ? (
         <div
           className="flex min-w-0 flex-col py-1"
           data-testid="task-chat-live-narration"
         >
-          <FoldedLiveNarration narration={narration} />
+          <FoldedActivityTicker
+            activity={foldedActivity}
+            open={liveActivityOpen}
+            onToggle={() => setLiveActivityOpen((value) => !value)}
+          />
         </div>
       ) : null}
       {activityUnavailable ? (
@@ -550,7 +558,12 @@ export function TaskChatRunnerTurn({
       ) : null}
       {timelineRows.length > 0 ? (
         <div
-          className="flex min-w-0 flex-col gap-2 py-1"
+          className={cn(
+            "min-w-0 flex-col gap-2 py-1",
+            !terminal && foldedActivity && !liveActivityOpen
+              ? "hidden"
+              : "flex",
+          )}
           data-testid="task-chat-turn-timeline"
         >
           {timelineRows.map((row) => (
@@ -604,7 +617,11 @@ export function TaskChatRunnerTurn({
           />
         </div>
       ) : null}
-      {!final ? <RunnerCurrentActivityTail items={currentActivityItems} status={status} /> : null}
+      {!final ? (
+        <div className={cn(foldedActivity && "hidden")}>
+          <RunnerCurrentActivityTail items={currentActivityItems} status={status} />
+        </div>
+      ) : null}
     </div>
   );
 }

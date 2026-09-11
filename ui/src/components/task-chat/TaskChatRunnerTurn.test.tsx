@@ -415,9 +415,112 @@ describe("TaskChatRunnerTurn", () => {
       '[data-testid="task-chat-reasoning-ticker"]',
     );
     expect(ticker?.textContent).toContain("Checking the steering path.");
+    expect(ticker?.getAttribute("aria-expanded")).toBe("false");
+    expect(
+      container.querySelector('[data-testid="task-chat-turn-timeline"]')
+        ?.classList.contains("hidden"),
+    ).toBe(true);
+    act(() => (ticker as HTMLButtonElement).click());
+    expect(ticker?.getAttribute("aria-expanded")).toBe("true");
+    expect(
+      container.querySelector('[data-testid="task-chat-turn-timeline"]')
+        ?.classList.contains("hidden"),
+    ).toBe(false);
     expect(
       container.querySelector('[data-testid="task-chat-thinking"]'),
     ).toBeNull();
+  });
+
+  it("keeps tool-only activity to one folded line and preserves explicit expansion", () => {
+    render([
+      {
+        id: "tool-one",
+        kind: "tool",
+        name: "Read",
+        rawName: "read_file",
+        target: "ui/src/components/task-chat/TaskChatRunnerTurn.tsx",
+        status: "completed",
+      },
+    ]);
+
+    const ticker = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-reasoning-ticker"]',
+    );
+    expect(ticker?.dataset.activityKind).toBe("tool");
+    expect(ticker?.textContent).toContain("TaskChatRunnerTurn.tsx");
+    expect(
+      container.querySelectorAll(
+        '[data-testid="task-chat-reasoning-ticker"]',
+      ),
+    ).toHaveLength(1);
+    expect(
+      container.querySelector('[data-testid="task-chat-turn-timeline"]')
+        ?.classList.contains("hidden"),
+    ).toBe(true);
+
+    act(() => ticker?.click());
+    expect(ticker?.getAttribute("aria-expanded")).toBe("true");
+    expect(
+      container.querySelector('[data-testid="task-chat-turn-timeline"]')
+        ?.classList.contains("hidden"),
+    ).toBe(false);
+
+    render([
+      {
+        id: "tool-one",
+        kind: "tool",
+        name: "Read",
+        rawName: "read_file",
+        target: "ui/src/components/task-chat/TaskChatRunnerTurn.tsx",
+        status: "completed",
+      },
+      {
+        id: "tool-two",
+        kind: "tool",
+        name: "Bash",
+        rawName: "bash",
+        target: "pnpm exec vitest run ui/src/components/task-chat/TaskChatRunnerTurn.test.tsx --runInBand",
+        status: "in_progress",
+      },
+    ]);
+
+    const updatedTicker = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-reasoning-ticker"]',
+    );
+    expect(updatedTicker?.textContent).toContain("pnpm exec vitest");
+    expect(updatedTicker?.getAttribute("aria-expanded")).toBe("true");
+    expect(
+      updatedTicker
+        ?.querySelector("span.absolute")
+        ?.classList.contains("truncate"),
+    ).toBe(true);
+  });
+
+  it("replaces mixed folded activity with the newest item", () => {
+    render([
+      {
+        id: "reasoning",
+        kind: "thinking",
+        lines: ["Inspecting the current UI."],
+        streaming: true,
+        channel: "summary",
+      },
+      {
+        id: "tool",
+        kind: "tool",
+        name: "Bash",
+        rawName: "bash",
+        target: "pnpm check:token-gates",
+        status: "in_progress",
+      },
+    ]);
+
+    const ticker = container.querySelector(
+      '[data-testid="task-chat-reasoning-ticker"]',
+    );
+    expect(ticker?.getAttribute("data-activity-kind")).toBe("tool");
+    expect(ticker?.textContent).toContain("pnpm check:token-gates");
+    expect(ticker?.textContent).not.toContain("Inspecting the current UI");
   });
 
   it("surfaces native activity transport failure while retrying", () => {
