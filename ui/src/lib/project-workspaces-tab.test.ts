@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, WorkspaceRuntimeService } from "@paperclipai/shared";
-import { buildProjectWorkspaceSummaries } from "./project-workspaces-tab";
+import { buildProjectWorkspaceSummaries, targetForExecutionWorkspace } from "./project-workspaces-tab";
 
 function createProjectWorkspace(overrides: Partial<ProjectWorkspace>): ProjectWorkspace {
   return {
@@ -320,5 +320,188 @@ describe("buildProjectWorkspaceSummaries", () => {
       primaryServiceUrlRunning: false,
       runningServiceCount: 0,
     });
+  });
+});
+
+describe("targetForExecutionWorkspace", () => {
+  it("classifies non-worktree strategies with a repoUrl as a repository target, not artifact-only", () => {
+    // Overview items and project_primary execution workspaces use strategyType "project_primary",
+    // but can still be backed by an authoritative repo checkout via repoUrl.
+    const target = targetForExecutionWorkspace(
+      {
+        strategyType: "project_primary",
+        repoUrl: "https://github.com/example/paperclip",
+        cwd: "/srv/paperclip/project",
+        providerType: "local_fs",
+        providerRef: null,
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+
+    expect(target.kind).toBe("repository");
+    expect(target.deliveryMethod).toBe("repository checkout");
+    expect(target.authoritativePath).toBe("https://github.com/example/paperclip");
+    expect(target.configurationIncomplete).toBe(false);
+  });
+
+  it("flags a project_primary workspace with no repository or provider reference as unconfigured, even though it has a cwd", () => {
+    // This is the standard shape for the default project_primary/local_fs execution
+    // workspace: it always has a cwd (the project's own folder), so a naive "has a cwd"
+    // check would wrongly treat it as configured artifact-only delivery and suppress the
+    // repair warning for a genuinely unversioned primary folder.
+    const target = targetForExecutionWorkspace(
+      {
+        strategyType: "project_primary",
+        repoUrl: null,
+        cwd: "/srv/paperclip/project",
+        providerType: "local_fs",
+        providerRef: null,
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+
+    expect(target.kind).toBe("unconfigured");
+    expect(target.configurationIncomplete).toBe(true);
+  });
+
+  it("does not flag a non-primary strategy (e.g. cloud_sandbox) with no repo or provider ref as unconfigured", () => {
+    const target = targetForExecutionWorkspace(
+      {
+        strategyType: "cloud_sandbox",
+        repoUrl: null,
+        cwd: "/mnt/ephemeral/run-1",
+        providerType: "cloud_sandbox",
+        providerRef: null,
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+
+    expect(target.kind).toBe("artifact_only");
+    expect(target.configurationIncomplete).toBe(false);
+  });
+
+  it("redacts credentials from URL remotes but preserves opaque provider references", () => {
+    const withCredentials = targetForExecutionWorkspace(
+      {
+        strategyType: "project_primary",
+        repoUrl: "https://oauth2:ghp_secrettoken@github.com/example/private-repo.git",
+        cwd: "/repo",
+        providerType: "local_fs",
+        providerRef: null,
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(withCredentials.authoritativePath).toBe("https://github.com/example/private-repo.git");
+    expect(withCredentials.authoritativePath).not.toContain("ghp_secrettoken");
+
+    const scpStyleRemote = targetForExecutionWorkspace(
+      {
+        strategyType: "project_primary",
+        repoUrl: "git@github.com:example/private-repo.git",
+        cwd: "/repo",
+        providerType: "local_fs",
+        providerRef: null,
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(scpStyleRemote.authoritativePath).toBe("git@github.com:example/private-repo.git");
+
+    const sandboxRef = targetForExecutionWorkspace(
+      {
+        strategyType: "adapter_managed",
+        repoUrl: null,
+        cwd: null,
+        providerType: "adapter_managed",
+        providerRef: "sandbox-8f21c0",
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(sandboxRef.kind).toBe("remote_operator");
+    expect(sandboxRef.authoritativePath).toBe("sandbox-8f21c0");
+
+    const filesystemRef = targetForExecutionWorkspace(
+      {
+        strategyType: "cloud_sandbox",
+        repoUrl: null,
+        cwd: "/mnt/artifacts/run-42",
+        providerType: "cloud_sandbox",
+        providerRef: "/mnt/artifacts/run-42",
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(filesystemRef.authoritativePath).toBe("/mnt/artifacts/run-42");
+  });
+
+  it("redacts non-URL remotes that don't match a known-safe shape, even without a colon-before-@ pattern", () => {
+    // Opaque-path form: parses as a URL (scheme "oauth2:") but with no authority/host, so
+    // the WHATWG parser never decomposes userinfo — it would otherwise leak unchanged into
+    // pathname. Doesn't match the SCP/path/opaque-token allowlist either, so it's redacted.
+    const nonUrlWithCredentials = targetForExecutionWorkspace(
+      {
+        strategyType: "project_primary",
+        repoUrl: "oauth2:ghp_secrettoken@gitlab.example.com/org/repo.git",
+        cwd: "/repo",
+        providerType: "local_fs",
+        providerRef: null,
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(nonUrlWithCredentials.authoritativePath).not.toContain("ghp_secrettoken");
+    expect(nonUrlWithCredentials.authoritativePath).toBe("(redacted)");
+
+    // A bare secret token with no URL/SCP/path shape at all (e.g. mistakenly stored as a
+    // raw providerRef) also doesn't match the allowlist and must be redacted, not shown
+    // verbatim just because it "looks opaque."
+    const bareSecretLikeRef = targetForExecutionWorkspace(
+      {
+        strategyType: "adapter_managed",
+        repoUrl: null,
+        cwd: null,
+        providerType: "adapter_managed",
+        providerRef: "user:sk-live-abc123@internal-provider-host/workspace",
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(bareSecretLikeRef.authoritativePath).not.toContain("sk-live-abc123");
+    expect(bareSecretLikeRef.authoritativePath).toBe("(redacted)");
+  });
+
+  it("only trusts an opaque bare-token shape verbatim when it comes from an adapter-managed provider", () => {
+    // A raw token-shaped providerRef on a *non*-adapter-managed provider isn't established
+    // as authoritative for anything (kind still resolves to artifact_only below), so it
+    // must not be trusted enough to render verbatim just because it happens to look like an
+    // opaque id — that shape is indistinguishable from an actual secret token.
+    const untrustedOpaqueRef = targetForExecutionWorkspace(
+      {
+        strategyType: "cloud_sandbox",
+        repoUrl: null,
+        cwd: "/mnt/ephemeral/run-1",
+        providerType: "cloud_sandbox",
+        providerRef: "ghp_looksLikeATokenButIsntAdapterManaged123",
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(untrustedOpaqueRef.kind).toBe("artifact_only");
+    expect(untrustedOpaqueRef.authoritativePath).toBe("(redacted)");
+  });
+
+  it("does not mark a project_primary workspace configured from a non-adapter-managed providerRef alone", () => {
+    // Previously any truthy providerRef counted towards "has a reference" for the
+    // completeness check, even though `kind` only treats adapter_managed providerRefs as
+    // authoritative (remote_operator). That let a project_primary workspace with a stray,
+    // non-authoritative providerRef suppress the repair warning while still resolving to
+    // artifact_only — inconsistent and misleading.
+    const target = targetForExecutionWorkspace(
+      {
+        strategyType: "project_primary",
+        repoUrl: null,
+        cwd: "/srv/paperclip/project",
+        providerType: "local_fs",
+        providerRef: "some-stray-non-authoritative-ref",
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(target.kind).toBe("unconfigured");
+    expect(target.configurationIncomplete).toBe(true);
   });
 });
