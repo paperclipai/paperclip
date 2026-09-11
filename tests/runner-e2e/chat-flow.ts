@@ -501,7 +501,7 @@ export async function runChatFlow(input: {
               (c) => c.authorAgentId && isChatClarificationReply(c.body),
             ),
         ).toBe(true);
-        const clarification = `It is the garden club; use the existing Garden ${nonce} project. Make one assigned task for yourself to write a two-sentence welcome note. Include ${marker} in that note, save it as the output document, and finish that execution task. Please get it started now.`;
+        const clarification = `It is the garden club; use the existing Garden ${nonce} project. Make one assigned task for yourself to write a two-sentence welcome note. Include ${marker} in that note, save it as a Paperclip document attached to that execution task, and finish that execution task. Please get it started now.`;
         if (pendingQuestions?.length) {
           for (const [index, question] of pendingQuestions.entries()) {
             const textInput = page
@@ -550,7 +550,7 @@ export async function runChatFlow(input: {
           .getByText("Plan mode", { exact: true })
           .click();
         await turn(
-          `Let's plan a two-sentence garden club welcome note. The finished welcome note itself must contain the exact phrase ${draftMarker}. Write a plan in the plan panel that includes this requirement, and present it for approval. When I approve the final revision, create a suitable repository-free project and an assigned task for yourself, copy the plan into that task, and have it save the note in its output document and finish. Do not create the project or task before approval.`,
+          `Let's plan a two-sentence garden club welcome note. The finished welcome note itself must contain the exact phrase ${draftMarker}. Write a plan in the plan panel that includes this requirement, and present it for approval. When I approve the final revision, create a suitable repository-free project and an assigned task for yourself, copy the plan into that task, and have it save the note as a Paperclip document attached to that execution task and finish. Do not create the project or task before approval.`,
           1,
         );
         const draft = await api.get<Plan>(
@@ -596,7 +596,7 @@ export async function runChatFlow(input: {
           .locator('[contenteditable="true"],textarea')
           .first()
           .fill(
-            `Revise the plan: the finished welcome note itself must contain the exact phrase ${marker} instead of ${draftMarker}. Include that requirement in the revised plan. The execution task should save that welcome note in its output document. Present this revised plan for approval; wait for that approval before handing it off as agreed.`,
+            `Revise the plan: the finished welcome note itself must contain the exact phrase ${marker} instead of ${draftMarker}. Include that requirement in the revised plan. The execution task should save that welcome note as a Paperclip document attached to that task. Present this revised plan for approval; wait for that approval before handing it off as agreed.`,
           );
         await reviseButton.click();
         await idle(2);
@@ -656,7 +656,7 @@ export async function runChatFlow(input: {
           ),
         ).toHaveLength(0);
         await turn(
-          `Create a project called Repository Discussion ${nonce} for work spanning https://github.com/octocat/Hello-World and https://github.com/octocat/Spoon-Knife. These existing public repositories are not in our catalog; register both URLs. Then make one assigned task for yourself to write a two-sentence description of the intended project in an output document, containing ${marker}, and complete that task. No code changes or remote repository creation are needed.`,
+          `Create a project called Repository Discussion ${nonce} for work spanning https://github.com/octocat/Hello-World and https://github.com/octocat/Spoon-Knife. These existing public repositories are not in our catalog; register both URLs. Then make one assigned task for yourself to write a two-sentence description of the intended project as a Paperclip document attached to that execution task, containing ${marker}, and complete that task. No code changes or remote repository creation are needed.`,
           2,
         );
       }

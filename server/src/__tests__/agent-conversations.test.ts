@@ -898,6 +898,15 @@ describe("conversation execution wake policy", () => {
 });
 
 describe("chat prompt policy", () => {
+  it("preserves explicit plan approval while avoiding ritual confirmations for ordinary chat", () => {
+    expect(AGENT_CHAT_DIRECTIVE).toContain("When the user asks to approve a plan before handoff");
+    expect(AGENT_CHAT_DIRECTIVE).toContain('interactionKind: "confirmation"');
+    expect(AGENT_CHAT_DIRECTIVE).toContain("targetRevisionId from the saved document's latestRevisionId");
+    expect(AGENT_CHAT_DIRECTIVE).toContain('payload.target to { type: "issue_document", key: "plan", revisionId: latestRevisionId }');
+    expect(AGENT_CHAT_DIRECTIVE).toContain("ordinary conversation replies and draft planning do not need confirmation");
+    expect(AGENT_CHAT_DIRECTIVE).toContain("In Ask mode, discuss the plan without creating or revising documents or approval cards");
+  });
+
   it.each([true, false])("preserves rejected-plan changes in task markdown (includeDescription=%s)", (includeDescription) => {
     const prompt = buildPaperclipTaskMarkdown({
       issue: { id: "chat", title: "Chat", workMode: "planning", conversationAgentId: "agent" },
