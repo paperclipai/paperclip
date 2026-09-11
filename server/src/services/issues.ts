@@ -9065,7 +9065,7 @@ export function issueService(db: Db) {
       if (!issue) throw notFound("Issue not found");
 
       const currentUserRedactionOptions = {
-        enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
+        enabled: (await instanceSettingsService(dbOrTx).getGeneral()).censorUsernameInLogs,
       };
       const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
       const authorType = issueCommentAuthorTypeSchema.parse(

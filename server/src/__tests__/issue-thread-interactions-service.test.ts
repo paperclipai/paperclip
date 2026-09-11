@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   companies,
   createDb,
   documentRevisions,
@@ -25,10 +26,11 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
+import { ONBOARDING_FIRST_TASK_ORIGIN_KIND, type AskUserQuestionsResult } from "@paperclipai/shared";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { recoveryService } from "../services/recovery/service.js";
 import { agentService } from "../services/agents.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -48,6 +50,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(agentWakeupRequests);
     await db.delete(issueThreadInteractions);
     await db.delete(activityLog);
     await db.delete(issueComments);
@@ -4697,6 +4700,1301 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       const [row] = await db.select().from(issueThreadInteractions)
         .where(eq(issueThreadInteractions.id, created.id));
       expect(row).toMatchObject({ status: "pending", result: null });
+    });
+  });
+
+  describe("advisor advice consultations", () => {
+    const PINNED_ADVISOR_MODEL = "openai-codex/gpt-5.6-sol";
+    const DRIFTED_MODEL = "dsv4/deepseek-v4-flash";
+    const REVISION = "0123456789abcdef0123456789abcdef01234567";
+    const OTHER_REVISION = "fedcba9876543210fedcba9876543210fedcba98";
+
+    async function seedAdviceActors(options?: { advisorModel?: string | null }) {
+      const { companyId, goalId, issueId } = await seedConfirmationIssue("Advisor advice");
+      const workerAgentId = randomUUID();
+      const advisorAgentId = randomUUID();
+      const otherAgentId = randomUUID();
+      const workerRunId = randomUUID();
+      const advisorRunId = randomUUID();
+      const otherRunId = randomUUID();
+      await db.insert(agents).values([
+        {
+          id: workerAgentId,
+          companyId,
+          name: "Implementation worker",
+          role: "engineer",
+          status: "active",
+          adapterType: "claude_local",
+          adapterConfig: { model: DRIFTED_MODEL },
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: advisorAgentId,
+          companyId,
+          name: "SOL advisor",
+          role: "reviewer",
+          status: "active",
+          adapterType: "claude_local",
+          adapterConfig: options?.advisorModel === null
+            ? {}
+            : { model: options?.advisorModel ?? PINNED_ADVISOR_MODEL },
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: otherAgentId,
+          companyId,
+          name: "Bystander agent",
+          role: "engineer",
+          status: "active",
+          adapterType: "claude_local",
+          adapterConfig: { model: DRIFTED_MODEL },
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+      await db.insert(heartbeatRuns).values([
+        {
+          id: workerRunId,
+          companyId,
+          agentId: workerAgentId,
+          invocationSource: "manual",
+          status: "running",
+          startedAt: new Date(),
+        },
+        {
+          id: advisorRunId,
+          companyId,
+          agentId: advisorAgentId,
+          invocationSource: "manual",
+          status: "running",
+          startedAt: new Date(),
+        },
+        {
+          id: otherRunId,
+          companyId,
+          agentId: otherAgentId,
+          invocationSource: "manual",
+          status: "running",
+          startedAt: new Date(),
+        },
+      ]);
+      return { companyId, goalId, issueId, workerAgentId, advisorAgentId, otherAgentId, workerRunId, advisorRunId, otherRunId };
+    }
+
+    function advicePayload(overrides?: { revision?: string; withoutCandidate?: boolean }) {
+      return {
+        version: 1 as const,
+        questions: [{
+          id: "advice",
+          prompt: "How should I sequence the cache invalidation fix?",
+          selectionMode: "single" as const,
+          options: [{ id: "free_text", label: "Type your advice", freeText: true }],
+        }],
+        advice: {
+          expectedModel: PINNED_ADVISOR_MODEL,
+          expectedThinking: "high" as const,
+          ...(overrides?.withoutCandidate ? {} : {
+            candidate: {
+              workspaceKey: "lane-7",
+              revision: overrides?.revision ?? REVISION,
+            },
+          }),
+        },
+      };
+    }
+
+    const adviceAnswer = {
+      answers: [{ questionId: "advice", optionIds: ["free_text"], otherText: "Fix the reader path before the writer path." }],
+    };
+
+    it("answers as the addressed advisor and records attributable evidence without approval effects", async () => {
+      const { companyId, issueId, workerAgentId, advisorAgentId, workerRunId, advisorRunId } =
+        await seedAdviceActors();
+
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "ask_user_questions",
+        addresseeAgentId: advisorAgentId,
+        payload: advicePayload(),
+      }, { agentId: workerAgentId, runId: workerRunId });
+
+      expect(created).toMatchObject({
+        kind: "ask_user_questions",
+        status: "pending",
+        title: "Implementation advice",
+        continuationPolicy: "wake_assignee",
+        addresseeAgentId: advisorAgentId,
+        createdByAgentId: workerAgentId,
+        requestedResolverPolicy: "anyone",
+        effectiveResolverPolicy: "anyone",
+        payload: {
+          supersedeOnUserComment: false,
+          advice: {
+            expectedModel: PINNED_ADVISOR_MODEL,
+            expectedThinking: "high",
+            candidate: { workspaceKey: "lane-7", revision: REVISION },
+          },
+        },
+      });
+
+      const answered = await interactionsSvc.answerQuestions(
+        { id: issueId, companyId },
+        created.id,
+        adviceAnswer,
+        { agentId: advisorAgentId, runId: advisorRunId },
+      );
+
+      expect(answered).toMatchObject({
+        id: created.id,
+        status: "answered",
+        resolvedByAgentId: advisorAgentId,
+        resolvedByRunId: advisorRunId,
+        resolvedByUserId: null,
+        result: {
+          version: 1,
+          summaryMarkdown: null,
+          advice: {
+            version: 1,
+            expectedModel: PINNED_ADVISOR_MODEL,
+            candidate: { workspaceKey: "lane-7", revision: REVISION },
+          },
+        },
+      });
+      expect(answered.result?.answers).toEqual(adviceAnswer.answers);
+
+      // An advice answer never moves the issue: no completion, no approval, no
+      // reassignment of the worker's checkout.
+      const [issueRow] = await db
+        .select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId })
+        .from(issues)
+        .where(eq(issues.id, issueId));
+      expect(issueRow).toMatchObject({ status: "in_progress", assigneeAgentId: null });
+    });
+
+    it("refuses advice answers from any agent other than the addressed advisor", async () => {
+      const { companyId, issueId, workerAgentId, advisorAgentId, otherAgentId, otherRunId, workerRunId } =
+        await seedAdviceActors();
+
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "ask_user_questions",
+        addresseeAgentId: advisorAgentId,
+        payload: advicePayload(),
+      }, { agentId: workerAgentId, runId: workerRunId });
+
+      await expect(interactionsSvc.answerQuestions(
+        { id: issueId, companyId },
+        created.id,
+        adviceAnswer,
+        { agentId: otherAgentId, runId: otherRunId },
+      )).rejects.toMatchObject({
+        status: 403,
+        details: expect.objectContaining({ code: "interaction_addressee_mismatch" }),
+      });
+
+      // A human board override cannot answer either: the pin demands the
+      // addressed advisor agent and never accepts a human substitute.
+      await expect(interactionsSvc.answerQuestions(
+        { id: issueId, companyId },
+        created.id,
+        adviceAnswer,
+        { userId: "local-board" },
+      )).rejects.toMatchObject({
+        status: 403,
+        message: expect.stringContaining("addressed advisor agent"),
+        details: expect.objectContaining({ code: "interaction_addressee_mismatch" }),
+      });
+
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(row).toMatchObject({ status: "pending", result: null });
+    });
+
+    it("refuses the requesting worker and its run from answering their own consultation", async () => {
+      const { companyId, goalId, issueId, workerAgentId, advisorAgentId, workerRunId, advisorRunId } =
+        await seedAdviceActors();
+
+      const selfAddressedId = randomUUID();
+      await db.insert(issueThreadInteractions).values({
+        id: selfAddressedId,
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "none",
+        createdByAgentId: workerAgentId,
+        addresseeAgentId: workerAgentId,
+        payload: advicePayload(),
+      });
+      await expect(interactionsSvc.answerQuestions(
+        { id: issueId, companyId },
+        selfAddressedId,
+        adviceAnswer,
+        { agentId: workerAgentId, runId: workerRunId },
+      )).rejects.toMatchObject({
+        status: 403,
+        message: expect.stringContaining("requested advice cannot answer"),
+        details: expect.objectContaining({
+          code: "interaction_creator_excluded",
+          requiredResolver: "advisor_other_than_requester",
+        }),
+      });
+
+      const runAuthoredId = randomUUID();
+      await db.insert(issueThreadInteractions).values({
+        id: runAuthoredId,
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "none",
+        createdByUserId: "local-board",
+        sourceRunId: advisorRunId,
+        addresseeAgentId: advisorAgentId,
+        payload: advicePayload(),
+      });
+      await expect(interactionsSvc.answerQuestions(
+        { id: issueId, companyId },
+        runAuthoredId,
+        adviceAnswer,
+        { agentId: advisorAgentId, runId: advisorRunId },
+      )).rejects.toMatchObject({
+        status: 403,
+        details: expect.objectContaining({
+          code: "interaction_creator_excluded",
+          requiredResolver: "advisor_other_than_requester",
+        }),
+      });
+
+      const [selfRow] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, selfAddressedId));
+      expect(selfRow).toMatchObject({ status: "pending", result: null });
+    });
+
+    it("refuses an advice answer after the advisor's configured model changes", async () => {
+      const { companyId, issueId, workerAgentId, advisorAgentId, workerRunId, advisorRunId } =
+        await seedAdviceActors();
+
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "ask_user_questions",
+        addresseeAgentId: advisorAgentId,
+        payload: advicePayload(),
+      }, { agentId: workerAgentId, runId: workerRunId });
+
+      await db.update(agents)
+        .set({ adapterConfig: { model: DRIFTED_MODEL } })
+        .where(eq(agents.id, advisorAgentId));
+
+      await expect(interactionsSvc.answerQuestions(
+        { id: issueId, companyId },
+        created.id,
+        adviceAnswer,
+        { agentId: advisorAgentId, runId: advisorRunId },
+      )).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("no longer matches the model pinned"),
+        details: expect.objectContaining({
+          code: "interaction_stale_target",
+          expectedModel: PINNED_ADVISOR_MODEL,
+          configuredModel: DRIFTED_MODEL,
+        }),
+      });
+
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(row).toMatchObject({ status: "pending", result: null });
+    });
+
+    it("enforces directed agent-only creation gates for advice", async () => {
+      const { companyId, issueId, workerAgentId, advisorAgentId } =
+        await seedAdviceActors({ advisorModel: DRIFTED_MODEL });
+
+      // Advice must be directed at the broker-pinned advisor agent.
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "ask_user_questions",
+        payload: advicePayload(),
+      }, { agentId: workerAgentId })).rejects.toMatchObject({
+        status: 422,
+        details: expect.objectContaining({ code: "interaction_advice_addressee_required" }),
+      });
+
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "ask_user_questions",
+        addresseeUserId: "local-board",
+        payload: advicePayload(),
+      }, { agentId: workerAgentId })).rejects.toMatchObject({
+        status: 422,
+        details: expect.objectContaining({ code: "interaction_advice_addressee_required" }),
+      });
+
+      // The pinned model must match the advisor's live configuration at create.
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "ask_user_questions",
+        addresseeAgentId: advisorAgentId,
+        payload: advicePayload(),
+      }, { agentId: workerAgentId })).rejects.toMatchObject({
+        status: 422,
+        details: expect.objectContaining({
+          code: "interaction_advice_model_mismatch",
+          expectedModel: PINNED_ADVISOR_MODEL,
+          configuredModel: DRIFTED_MODEL,
+        }),
+      });
+
+      // Advice cannot become a decision card even when correctly addressed.
+      const decisionAdvicePayload = {
+        version: 1 as const,
+        questions: [{
+          id: "advice",
+          prompt: "Should I merge?",
+          selectionMode: "single" as const,
+          required: true,
+          intent: "decision" as const,
+          recommendationRationale: "The checks are green and the diff is minimal.",
+          options: [
+            { id: "merge", label: "Merge", recommended: true },
+            { id: "hold", label: "Hold" },
+          ],
+        }],
+        advice: advicePayload().advice,
+      };
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "ask_user_questions",
+        addresseeAgentId: advisorAgentId,
+        payload: decisionAdvicePayload,
+      }, { agentId: workerAgentId })).rejects.toMatchObject({
+        status: 422,
+        details: expect.objectContaining({ code: "interaction_advice_decision_question_conflict" }),
+      });
+
+      await expect(interactionsSvc.listForIssue(issueId)).resolves.toEqual([]);
+    });
+
+    it("refuses advice addressed to the issue's current assignee", async () => {
+      const { companyId, issueId, workerAgentId, advisorAgentId } = await seedAdviceActors();
+      await db.update(issues).set({ assigneeAgentId: advisorAgentId }).where(eq(issues.id, issueId));
+
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "ask_user_questions",
+        addresseeAgentId: advisorAgentId,
+        payload: advicePayload(),
+      }, { agentId: workerAgentId })).rejects.toMatchObject({
+        status: 422,
+        message: expect.stringContaining("current assignee"),
+        details: expect.objectContaining({
+          code: "interaction_advice_assignee_independence_required",
+          advisorAgentId,
+          assigneeAgentId: advisorAgentId,
+        }),
+      });
+
+      await expect(interactionsSvc.listForIssue(issueId)).resolves.toEqual([]);
+    });
+
+    it("bounds distinct consultations per issue and candidate and exempts idempotent replays", async () => {
+      const { companyId, issueId, workerAgentId, advisorAgentId, workerRunId } =
+        await seedAdviceActors();
+      const base = {
+        kind: "ask_user_questions" as const,
+        addresseeAgentId: advisorAgentId,
+        payload: advicePayload(),
+      };
+
+      const first = await interactionsSvc.create({ id: issueId, companyId }, {
+        ...base,
+        idempotencyKey: `advice:${REVISION}:0`,
+      }, { agentId: workerAgentId, runId: workerRunId });
+      for (const suffix of [1, 2]) {
+        await interactionsSvc.create({ id: issueId, companyId }, {
+          ...base,
+          idempotencyKey: `advice:${REVISION}:${suffix}`,
+        }, { agentId: workerAgentId, runId: workerRunId });
+      }
+
+      // An idempotent replay returns the original row and consumes no budget.
+      const replayed = await interactionsSvc.create({ id: issueId, companyId }, {
+        ...base,
+        idempotencyKey: `advice:${REVISION}:0`,
+      }, { agentId: workerAgentId, runId: workerRunId });
+      expect(replayed.id).toBe(first.id);
+
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        ...base,
+        idempotencyKey: `advice:${REVISION}:3`,
+      }, { agentId: workerAgentId, runId: workerRunId })).rejects.toMatchObject({
+        status: 422,
+        details: expect.objectContaining({
+          code: "interaction_advice_consultation_limit_reached",
+          limit: 3,
+          candidateRevision: REVISION,
+        }),
+      });
+
+      // A distinct candidate revision owns its own bucket.
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        ...base,
+        payload: advicePayload({ revision: OTHER_REVISION }),
+      }, { agentId: workerAgentId, runId: workerRunId })).resolves.toMatchObject({
+        status: "pending",
+      });
+
+      // Upfront-scope consultations (no candidate) count in their own bucket.
+      const upfrontBase = {
+        kind: "ask_user_questions" as const,
+        addresseeAgentId: advisorAgentId,
+        payload: advicePayload({ withoutCandidate: true }),
+      };
+      for (const suffix of ["upfront-0", "upfront-1", "upfront-2"]) {
+        await interactionsSvc.create({ id: issueId, companyId }, {
+          ...upfrontBase,
+          idempotencyKey: suffix,
+        }, { agentId: workerAgentId, runId: workerRunId });
+      }
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        ...upfrontBase,
+        idempotencyKey: "upfront-3",
+      }, { agentId: workerAgentId, runId: workerRunId })).rejects.toMatchObject({
+        status: 422,
+        details: expect.objectContaining({
+          code: "interaction_advice_consultation_limit_reached",
+          limit: 3,
+          candidateRevision: null,
+        }),
+      });
+    });
+
+    it("refuses a tampered stored advice:null pin instead of downgrading it to a generic question", async () => {
+      const { companyId, issueId, workerAgentId, advisorAgentId, workerRunId, advisorRunId } =
+        await seedAdviceActors();
+
+      const created = await interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "ask_user_questions",
+        addresseeAgentId: advisorAgentId,
+        payload: advicePayload(),
+      }, { agentId: workerAgentId, runId: workerRunId });
+
+      await db.execute(sql`
+        update issue_thread_interactions
+        set payload = payload || '{"advice": null}'::jsonb
+        where id = ${created.id}
+      `);
+
+      await expect(interactionsSvc.answerQuestions(
+        { id: issueId, companyId },
+        created.id,
+        adviceAnswer,
+        { agentId: advisorAgentId, runId: advisorRunId },
+      )).rejects.toMatchObject({
+        status: 422,
+        message: expect.stringContaining("unusable advice pin"),
+        details: expect.objectContaining({ code: "interaction_stale_target" }),
+      });
+
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(row).toMatchObject({ status: "pending", result: null });
+    });
+  });
+
+  describe("advisor advice replay across successor author runs", () => {
+    const PINNED_ADVISOR_MODEL = "openai-codex/gpt-5.6-sol";
+    const DRIFTED_MODEL = "dsv4/deepseek-v4-flash";
+    const REVISION = "0123456789abcdef0123456789abcdef01234567";
+    const OTHER_REVISION = "fedcba9876543210fedcba9876543210fedcba98";
+    const CONSULTATION_KEY = "delivery_request_advice:lane-7";
+
+    async function seedTaskRuns() {
+      const { companyId, goalId, issueId } = await seedConfirmationIssue("Advice replay");
+      const workerAgentId = randomUUID();
+      const advisorAgentId = randomUUID();
+      const otherAgentId = randomUUID();
+      const workerRunId = randomUUID();
+      const successorRunId = randomUUID();
+      const otherRunId = randomUUID();
+      const taskContext = { issueId, taskId: issueId };
+      await db.insert(agents).values([
+        {
+          id: workerAgentId,
+          companyId,
+          name: "Implementation worker",
+          role: "engineer",
+          status: "active",
+          adapterType: "claude_local",
+          adapterConfig: { model: DRIFTED_MODEL },
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: advisorAgentId,
+          companyId,
+          name: "SOL advisor",
+          role: "reviewer",
+          status: "active",
+          adapterType: "claude_local",
+          adapterConfig: { model: PINNED_ADVISOR_MODEL },
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: otherAgentId,
+          companyId,
+          name: "Bystander agent",
+          role: "engineer",
+          status: "active",
+          adapterType: "claude_local",
+          adapterConfig: { model: DRIFTED_MODEL },
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+      await db.insert(heartbeatRuns).values([
+        {
+          id: workerRunId,
+          companyId,
+          agentId: workerAgentId,
+          invocationSource: "manual",
+          status: "running",
+          startedAt: new Date(),
+          contextSnapshot: taskContext,
+        },
+        {
+          id: successorRunId,
+          companyId,
+          agentId: workerAgentId,
+          invocationSource: "manual",
+          status: "running",
+          startedAt: new Date(),
+          contextSnapshot: taskContext,
+        },
+        {
+          id: otherRunId,
+          companyId,
+          agentId: otherAgentId,
+          invocationSource: "manual",
+          status: "running",
+          startedAt: new Date(),
+          contextSnapshot: taskContext,
+        },
+      ]);
+      return { companyId, goalId, issueId, workerAgentId, advisorAgentId, otherAgentId, workerRunId, successorRunId, otherRunId };
+    }
+
+    function replayAdvicePayload(revision: string = REVISION) {
+      return {
+        version: 1 as const,
+        questions: [{
+          id: "advice",
+          prompt: "How should I sequence the cache invalidation fix?",
+          selectionMode: "single" as const,
+          options: [{ id: "free_text", label: "Type your advice", freeText: true }],
+        }],
+        advice: {
+          expectedModel: PINNED_ADVISOR_MODEL,
+          expectedThinking: "high" as const,
+          candidate: { workspaceKey: "lane-7", revision },
+        },
+      };
+    }
+
+    it("returns the original consultation when a successor author run replays the same key on the same source task", async () => {
+      const { companyId, issueId, workerAgentId, advisorAgentId, workerRunId, successorRunId } =
+        await seedTaskRuns();
+      const request = {
+        kind: "ask_user_questions" as const,
+        addresseeAgentId: advisorAgentId,
+        idempotencyKey: CONSULTATION_KEY,
+        payload: replayAdvicePayload(),
+      };
+
+      // The route stamps sourceRunId from the calling run: the original create
+      // is attributed to the author's first run.
+      const original = await interactionsSvc.create({ id: issueId, companyId }, {
+        ...request,
+        sourceRunId: workerRunId,
+      }, { agentId: workerAgentId, runId: workerRunId });
+
+      // The resumed session replays the identical tool input; the broker
+      // forbids supplying the original sourceRunId, so the route re-derives it
+      // from the successor run. That replay must return the original
+      // consultation, not a 409 and not a second consultation.
+      const replayed = await interactionsSvc.create({ id: issueId, companyId }, {
+        ...request,
+        sourceRunId: successorRunId,
+      }, { agentId: workerAgentId, runId: successorRunId });
+
+      expect(replayed.id).toBe(original.id);
+      // Original provenance is untouched: the stored row still names the run
+      // that first requested the consultation.
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, original.id));
+      expect(row).toMatchObject({
+        status: "pending",
+        sourceRunId: workerRunId,
+        createdByAgentId: workerAgentId,
+      });
+
+      // The replay consumed no consultation budget: a distinct candidate
+      // revision still fits under the per-candidate limit.
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        ...request,
+        idempotencyKey: `${CONSULTATION_KEY}:other-candidate`,
+        payload: replayAdvicePayload(OTHER_REVISION),
+      }, { agentId: workerAgentId, runId: successorRunId })).resolves.toMatchObject({
+        status: "pending",
+      });
+    });
+
+    it("stays strict when the replay comes from another actor or a different candidate", async () => {
+      const { companyId, issueId, workerAgentId, advisorAgentId, otherAgentId, workerRunId, otherRunId } =
+        await seedTaskRuns();
+      const request = {
+        kind: "ask_user_questions" as const,
+        addresseeAgentId: advisorAgentId,
+        idempotencyKey: CONSULTATION_KEY,
+        payload: replayAdvicePayload(),
+      };
+      const original = await interactionsSvc.create({ id: issueId, companyId }, {
+        ...request,
+        sourceRunId: workerRunId,
+      }, { agentId: workerAgentId, runId: workerRunId });
+
+      // A different agent replaying the same key is a different request, even
+      // on the same task with an identical payload.
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        ...request,
+        sourceRunId: otherRunId,
+      }, { agentId: otherAgentId, runId: otherRunId })).rejects.toMatchObject({
+        status: 409,
+        details: expect.objectContaining({ idempotencyKey: CONSULTATION_KEY }),
+      });
+
+      // The same agent with a different candidate payload is also a different
+      // request, even from the original run.
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        ...request,
+        payload: replayAdvicePayload(OTHER_REVISION),
+      }, { agentId: workerAgentId, runId: workerRunId })).rejects.toMatchObject({
+        status: 409,
+        details: expect.objectContaining({ idempotencyKey: CONSULTATION_KEY }),
+      });
+
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, original.id));
+      expect(row).toMatchObject({ status: "pending", sourceRunId: workerRunId });
+      expect((await interactionsSvc.listForIssue(issueId)).length).toBe(1);
+    });
+
+    it("returns the original consultation after the advisor's configuration drifted and still pins fresh creates", async () => {
+      const { companyId, issueId, workerAgentId, advisorAgentId, workerRunId, successorRunId } =
+        await seedTaskRuns();
+      const request = {
+        kind: "ask_user_questions" as const,
+        addresseeAgentId: advisorAgentId,
+        idempotencyKey: CONSULTATION_KEY,
+        payload: replayAdvicePayload(),
+      };
+      const original = await interactionsSvc.create({ id: issueId, companyId }, {
+        ...request,
+        sourceRunId: workerRunId,
+      }, { agentId: workerAgentId, runId: workerRunId });
+
+      await db.update(agents)
+        .set({ adapterConfig: { model: DRIFTED_MODEL } })
+        .where(eq(agents.id, advisorAgentId));
+
+      // Config drift must not reject a stable replay.
+      const replayed = await interactionsSvc.create({ id: issueId, companyId }, {
+        ...request,
+        sourceRunId: successorRunId,
+      }, { agentId: workerAgentId, runId: successorRunId });
+      expect(replayed.id).toBe(original.id);
+
+      // A fresh consultation is still gated on the pinned model.
+      await expect(interactionsSvc.create({ id: issueId, companyId }, {
+        kind: "ask_user_questions",
+        addresseeAgentId: advisorAgentId,
+        idempotencyKey: `${CONSULTATION_KEY}:fresh`,
+        payload: replayAdvicePayload(OTHER_REVISION),
+      }, { agentId: workerAgentId, runId: successorRunId })).rejects.toMatchObject({
+        status: 422,
+        details: expect.objectContaining({
+          code: "interaction_advice_model_mismatch",
+          expectedModel: PINNED_ADVISOR_MODEL,
+          configuredModel: DRIFTED_MODEL,
+        }),
+      });
+    });
+  });
+
+  describe("orphaned advisor consultation reconciliation", () => {
+    const PINNED_ADVISOR_MODEL = "openai-codex/gpt-5.6-sol";
+    const WORKER_MODEL = "dsv4/deepseek-v4-flash";
+    const REVISION = "0123456789abcdef0123456789abcdef01234567";
+
+    interface WakeCall {
+      agentId: string;
+      idempotencyKey: string | null;
+      reason: string | null;
+      payload: Record<string, unknown> | null;
+      contextSnapshot: Record<string, unknown> | null;
+    }
+
+    function makeRecovery(options?: { failWakeup?: boolean }) {
+      const wakeCalls: WakeCall[] = [];
+      const recovery = recoveryService(db, {
+        enqueueWakeup: async (agentId, opts) => {
+          wakeCalls.push({
+            agentId,
+            idempotencyKey: opts?.idempotencyKey ?? null,
+            reason: opts?.reason ?? null,
+            payload: opts?.payload ?? null,
+            contextSnapshot: opts?.contextSnapshot ?? null,
+          });
+          if (options?.failWakeup) throw new Error("wakeup_admission_unavailable");
+          // Mirror the real admission: run the pre-admission fence, then write
+          // the durable receipt. A fence throw rolls the admission back (no
+          // receipt), exactly like heartbeat's native transaction.
+          const [wokenAgent] = await db
+            .select({ companyId: agents.companyId })
+            .from(agents)
+            .where(eq(agents.id, agentId));
+          if (!wokenAgent) throw new Error("wakeup_agent_missing");
+          if (opts?.bindWake) {
+            await opts.bindWake(db);
+          }
+          await db.insert(agentWakeupRequests).values({
+            companyId: wokenAgent.companyId,
+            agentId,
+            source: "automation",
+            triggerDetail: "system",
+            reason: opts?.reason ?? null,
+            payload: opts?.payload ?? null,
+            status: "queued",
+            idempotencyKey: opts?.idempotencyKey ?? null,
+          });
+          return null;
+        },
+      });
+      return { recovery, wakeCalls };
+    }
+
+    async function seedReconciliationScene() {
+      const { companyId, goalId, issueId } = await seedConfirmationIssue("Advice reconciliation");
+      const workerAgentId = randomUUID();
+      const advisorAgentId = randomUUID();
+      const workerRunId = randomUUID();
+      await db.insert(agents).values([
+        {
+          id: workerAgentId,
+          companyId,
+          name: "Implementation worker",
+          role: "engineer",
+          status: "active",
+          adapterType: "claude_local",
+          adapterConfig: { model: WORKER_MODEL },
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: advisorAgentId,
+          companyId,
+          name: "SOL advisor",
+          role: "reviewer",
+          status: "active",
+          adapterType: "claude_local",
+          adapterConfig: { model: PINNED_ADVISOR_MODEL },
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+      await db.insert(heartbeatRuns).values({
+        id: workerRunId,
+        companyId,
+        agentId: workerAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date(),
+        contextSnapshot: { issueId, taskId: issueId },
+      });
+      // The worker owns issue execution: the reconciliation continuation must
+      // land on the original owner, not on the advisor.
+      await db.update(issues).set({ assigneeAgentId: workerAgentId }).where(eq(issues.id, issueId));
+      return { companyId, goalId, issueId, workerAgentId, advisorAgentId, workerRunId };
+    }
+
+    function adviceConsultationPayload() {
+      return {
+        version: 1 as const,
+        questions: [{
+          id: "advice",
+          prompt: "How should I sequence the cache invalidation fix?",
+          selectionMode: "single" as const,
+          options: [{ id: "free_text", label: "Type your advice", freeText: true }],
+        }],
+        advice: {
+          expectedModel: PINNED_ADVISOR_MODEL,
+          expectedThinking: "high" as const,
+          candidate: { workspaceKey: "lane-7", revision: REVISION },
+        },
+      };
+    }
+
+    async function createPendingConsultation(scene: Awaited<ReturnType<typeof seedReconciliationScene>>) {
+      return interactionsSvc.create({ id: scene.issueId, companyId: scene.companyId }, {
+        kind: "ask_user_questions",
+        addresseeAgentId: scene.advisorAgentId,
+        payload: adviceConsultationPayload(),
+      }, { agentId: scene.workerAgentId, runId: scene.workerRunId });
+    }
+
+    async function seedAdvisorWakeEvidence(input: {
+      companyId: string;
+      issueId: string;
+      advisorAgentId: string;
+      interactionId: string;
+      runStatus: "failed" | "cancelled" | "timed_out" | "interrupted" | "succeeded" | "running" | "scheduled_retry";
+    }) {
+      const advisorRunId = randomUUID();
+      const liveStatuses = ["queued", "running", "scheduled_retry"];
+      await db.insert(heartbeatRuns).values({
+        id: advisorRunId,
+        companyId: input.companyId,
+        agentId: input.advisorAgentId,
+        invocationSource: "automation",
+        status: input.runStatus,
+        startedAt: new Date(),
+        finishedAt: liveStatuses.includes(input.runStatus) ? null : new Date(),
+        errorCode: ["failed", "timed_out"].includes(input.runStatus) ? "advice_admission_failed" : null,
+        contextSnapshot: {
+          issueId: input.issueId,
+          taskId: input.issueId,
+          interactionId: input.interactionId,
+          interactionKind: "ask_user_questions",
+          wakeReason: "interaction_pending",
+        },
+      });
+      await db.insert(agentWakeupRequests).values({
+        companyId: input.companyId,
+        agentId: input.advisorAgentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "interaction_pending",
+        payload: {
+          issueId: input.issueId,
+          interactionId: input.interactionId,
+          interactionKind: "ask_user_questions",
+          mutation: "interaction",
+        },
+        status: liveStatuses.includes(input.runStatus) ? "running" : "failed",
+        idempotencyKey: `interaction-pending:${input.interactionId}`,
+        runId: advisorRunId,
+      });
+      return advisorRunId;
+    }
+
+    async function ageInteraction(interactionId: string) {
+      await db.update(issueThreadInteractions)
+        .set({ createdAt: new Date(Date.now() - 20 * 60 * 1000) })
+        .where(eq(issueThreadInteractions.id, interactionId));
+    }
+
+    it("settles a pending consultation after the addressed advisor run fails and continues the original owner", async () => {
+      const scene = await seedReconciliationScene();
+      const created = await createPendingConsultation(scene);
+      const advisorRunId = await seedAdvisorWakeEvidence({
+        companyId: scene.companyId,
+        issueId: scene.issueId,
+        advisorAgentId: scene.advisorAgentId,
+        interactionId: created.id,
+        runStatus: "failed",
+      });
+      const { recovery, wakeCalls } = makeRecovery();
+
+      const outcome = await recovery.reconcileFailedAdviceForRun(advisorRunId);
+
+      expect(outcome.status).toBe("reconciled");
+      expect(outcome.settled).toBe(1);
+      expect(outcome.continuationWakesArranged).toBe(1);
+      expect(outcome.interactions[0]).toMatchObject({
+        interactionId: created.id,
+        issueId: scene.issueId,
+        outcome: "settled",
+        cause: "advisor_run_failed",
+        advisorRunId,
+      });
+
+      // Truthful cancellation evidence — never a fabricated answer or approval.
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(row).toMatchObject({
+        status: "cancelled",
+        resolvedByAgentId: null,
+        resolvedByRunId: null,
+        resolvedByUserId: null,
+      });
+      expect(row.result).toMatchObject({
+        version: 1,
+        cancelled: true,
+        answers: [],
+        summaryMarkdown: null,
+      });
+      const result = row.result as AskUserQuestionsResult | null;
+      expect(result?.cancellationReason).toContain("advisor run failed");
+      expect(result?.cancellationReason).toContain(advisorRunId);
+      expect(row.result).not.toHaveProperty("advice");
+      // The durable continuation marker: arranged means a durable wake
+      // receipt exists for the original owner.
+      expect(row.result).toMatchObject({
+        reconciliation: {
+          cause: "advisor_run_failed",
+          advisorRunId,
+          continuation: "arranged",
+        },
+      });
+
+      // One bounded, idempotent continuation wake to the original owner.
+      expect(wakeCalls).toHaveLength(1);
+      expect(wakeCalls[0]).toMatchObject({
+        agentId: scene.workerAgentId,
+        idempotencyKey: `advice-reconciliation:${created.id}`,
+        reason: "advice_reconciliation",
+      });
+      expect(wakeCalls[0].payload).toMatchObject({
+        issueId: scene.issueId,
+        interactionId: created.id,
+        interactionStatus: "cancelled",
+      });
+
+      // No approval, review, or assignment side effects.
+      const [issueRow] = await db.select().from(issues).where(eq(issues.id, scene.issueId));
+      expect(issueRow).toMatchObject({ status: "in_progress", assigneeAgentId: scene.workerAgentId });
+    });
+
+    it("settles a prelaunch-refused advisor run that was cancelled before dispatch", async () => {
+      const scene = await seedReconciliationScene();
+      const created = await createPendingConsultation(scene);
+      const advisorRunId = await seedAdvisorWakeEvidence({
+        companyId: scene.companyId,
+        issueId: scene.issueId,
+        advisorAgentId: scene.advisorAgentId,
+        interactionId: created.id,
+        runStatus: "cancelled",
+      });
+      const { recovery, wakeCalls } = makeRecovery();
+
+      const outcome = await recovery.reconcileFailedAdviceForRun(advisorRunId);
+
+      expect(outcome.settled).toBe(1);
+      expect(outcome.interactions[0]).toMatchObject({ cause: "advisor_run_cancelled" });
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(row.status).toBe("cancelled");
+      expect((row.result as AskUserQuestionsResult | null)?.cancellationReason)
+        .toContain("was cancelled before answering");
+      expect(wakeCalls).toHaveLength(1);
+    });
+
+    it("treats duplicate terminal processing as an honest no-op", async () => {
+      const scene = await seedReconciliationScene();
+      const created = await createPendingConsultation(scene);
+      const advisorRunId = await seedAdvisorWakeEvidence({
+        companyId: scene.companyId,
+        issueId: scene.issueId,
+        advisorAgentId: scene.advisorAgentId,
+        interactionId: created.id,
+        runStatus: "failed",
+      });
+      const { recovery, wakeCalls } = makeRecovery();
+
+      const first = await recovery.reconcileFailedAdviceForRun(advisorRunId);
+      expect(first.settled).toBe(1);
+
+      const second = await recovery.reconcileFailedAdviceForRun(advisorRunId);
+      expect(second.status).toBe("reconciled");
+      expect(second.settled).toBe(0);
+      expect(second.continuationWakesArranged).toBe(0);
+      expect(second.interactions).toHaveLength(0);
+      expect(wakeCalls).toHaveLength(1);
+
+      // A still-live run never reconciles: terminal handling only reports
+      // settled runs, and the method refuses to pre-empt a live advisor.
+      const liveOutcome = await recovery.reconcileFailedAdviceForRun(scene.workerRunId);
+      expect(liveOutcome.status).toBe("run_still_live");
+      expect(liveOutcome.settled).toBe(0);
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(row.status).toBe("cancelled");
+    });
+
+    it("preserves the owed continuation across an enqueue failure and completes it on the restart sweep", async () => {
+      const scene = await seedReconciliationScene();
+      const created = await createPendingConsultation(scene);
+      const advisorRunId = await seedAdvisorWakeEvidence({
+        companyId: scene.companyId,
+        issueId: scene.issueId,
+        advisorAgentId: scene.advisorAgentId,
+        interactionId: created.id,
+        runStatus: "failed",
+      });
+
+      // Wake admission fails after settlement: the cancellation commits, and
+      // the durable marker must keep the continuation owed.
+      const failing = makeRecovery({ failWakeup: true });
+      const first = await failing.recovery.reconcileFailedAdviceForRun(advisorRunId);
+      expect(first.settled).toBe(1);
+      expect(first.continuationWakesArranged).toBe(0);
+      expect(first.interactions[0]).toMatchObject({
+        outcome: "settled",
+        cause: "advisor_run_failed",
+        continuationState: "pending",
+        continuationWakeArranged: false,
+      });
+      const [settledRow] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(settledRow.status).toBe("cancelled");
+      expect(settledRow.result).toMatchObject({
+        cancelled: true,
+        reconciliation: {
+          cause: "advisor_run_failed",
+          advisorRunId,
+          continuation: "pending",
+        },
+      });
+
+      // The restart sweep retries the owed continuation with working
+      // admission and settles the marker once a durable receipt exists.
+      const { recovery, wakeCalls } = makeRecovery();
+      const second = await recovery.reconcileFailedAdvice(scene.companyId);
+      expect(second.settled).toBe(0);
+      expect(second.continuationsRetried).toBe(1);
+      expect(second.continuationWakesArranged).toBe(1);
+      expect(wakeCalls).toHaveLength(1);
+      expect(wakeCalls[0]).toMatchObject({
+        agentId: scene.workerAgentId,
+        idempotencyKey: `advice-reconciliation:${created.id}`,
+      });
+      const [retriedRow] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(retriedRow.result).toMatchObject({
+        reconciliation: { continuation: "arranged" },
+      });
+
+      // A further sweep pass is a no-op: the continuation is no longer owed.
+      const third = await recovery.reconcileFailedAdvice(scene.companyId);
+      expect(third.continuationsRetried).toBe(0);
+      expect(third.continuationWakesArranged).toBe(0);
+      expect(wakeCalls).toHaveLength(1);
+    });
+
+    it("fences a late duplicate enqueue through the pre-admission bindWake callback", async () => {
+      const scene = await seedReconciliationScene();
+      const created = await createPendingConsultation(scene);
+      const advisorRunId = await seedAdvisorWakeEvidence({
+        companyId: scene.companyId,
+        issueId: scene.issueId,
+        advisorAgentId: scene.advisorAgentId,
+        interactionId: created.id,
+        runStatus: "failed",
+      });
+
+      // A failing admission leaves the settled card owing its continuation.
+      const failing = makeRecovery({ failWakeup: true });
+      await failing.recovery.reconcileFailedAdviceForRun(advisorRunId);
+
+      // Two concurrent restart sweeps can both pass the receipt preflight
+      // (enqueue admission does not dedupe idempotencyKeys). Model the race:
+      // while the late arranger's admission is in flight, the competing
+      // arranger wins the bindWake fence and commits its durable receipt —
+      // the late admission's own fence must then refuse and roll back.
+      let bindWakeInvocations = 0;
+      const recovery = recoveryService(db, {
+        enqueueWakeup: async (agentId, opts) => {
+          const [wokenAgent] = await db
+            .select({ companyId: agents.companyId })
+            .from(agents)
+            .where(eq(agents.id, agentId));
+          if (!wokenAgent) throw new Error("wakeup_agent_missing");
+          // The winning arranger fenced the marker and committed its receipt
+          // while this admission was in flight.
+          await db
+            .update(issueThreadInteractions)
+            .set({
+              result: sql`jsonb_set(${issueThreadInteractions.result}, '{reconciliation,continuation}', '"arranged"'::jsonb)`,
+              updatedAt: new Date(),
+            })
+            .where(and(
+              eq(issueThreadInteractions.id, created.id),
+              eq(issueThreadInteractions.companyId, scene.companyId),
+              eq(issueThreadInteractions.status, "cancelled"),
+              sql`${issueThreadInteractions.result}->'reconciliation'->>'continuation' = 'pending'`,
+            ));
+          await db.insert(agentWakeupRequests).values({
+            companyId: wokenAgent.companyId,
+            agentId,
+            source: "automation",
+            triggerDetail: "system",
+            reason: opts?.reason ?? null,
+            payload: opts?.payload ?? null,
+            status: "queued",
+            idempotencyKey: opts?.idempotencyKey ?? null,
+          });
+          // The late admission's fence must refuse: the marker is no longer
+          // pending, so the duplicate rolls back instead of re-executing.
+          await opts?.bindWake?.(db);
+          bindWakeInvocations += 1;
+        },
+      });
+
+      const sweep = await recovery.reconcileFailedAdvice(scene.companyId);
+
+      // The late arranger lost the fence: its admission rolled back, the
+      // outcome reports the continuation as arranged via the winner's
+      // receipt, and exactly one durable wake exists (no double execution).
+      expect(sweep.continuationsRetried).toBe(1);
+      expect(sweep.continuationWakesArranged).toBe(1);
+      expect(bindWakeInvocations).toBe(0);
+      const receipts = await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.idempotencyKey, `advice-reconciliation:${created.id}`));
+      expect(receipts).toHaveLength(1);
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(row.result).toMatchObject({
+        reconciliation: { continuation: "arranged" },
+      });
+
+      // The continuation is no longer owed.
+      const again = await recovery.reconcileFailedAdvice(scene.companyId);
+      expect(again.continuationsRetried).toBe(0);
+    });
+
+    it("stands down while a genuine deferred advisor continuation is alive", async () => {
+      const scene = await seedReconciliationScene();
+      const created = await createPendingConsultation(scene);
+      await seedAdvisorWakeEvidence({
+        companyId: scene.companyId,
+        issueId: scene.issueId,
+        advisorAgentId: scene.advisorAgentId,
+        interactionId: created.id,
+        runStatus: "failed",
+      });
+      await db.update(agentWakeupRequests)
+        .set({ status: "deferred_issue_execution" })
+        .where(eq(agentWakeupRequests.idempotencyKey, `interaction-pending:${created.id}`));
+      const { recovery, wakeCalls } = makeRecovery();
+      await ageInteraction(created.id);
+
+      const outcome = await recovery.reconcileFailedAdvice(scene.companyId);
+
+      expect(outcome.settled).toBe(0);
+      expect(outcome.respectedLiveContinuation).toBe(1);
+      expect(wakeCalls).toHaveLength(0);
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(row).toMatchObject({ status: "pending", result: null });
+    });
+
+    it("restart sweep settles orphans once and respects live continuations", async () => {
+      const scene = await seedReconciliationScene();
+      const created = await createPendingConsultation(scene);
+      await seedAdvisorWakeEvidence({
+        companyId: scene.companyId,
+        issueId: scene.issueId,
+        advisorAgentId: scene.advisorAgentId,
+        interactionId: created.id,
+        runStatus: "failed",
+      });
+      await ageInteraction(created.id);
+      const { recovery, wakeCalls } = makeRecovery();
+
+      const first = await recovery.reconcileFailedAdvice(scene.companyId);
+      expect(first.companyId).toBe(scene.companyId);
+      expect(first.scanned).toBe(1);
+      expect(first.settled).toBe(1);
+      expect(first.continuationsRetried).toBe(0);
+      expect(first.truncated).toBe(false);
+      expect(first.interactions[0]).toMatchObject({
+        interactionId: created.id,
+        issueId: scene.issueId,
+        outcome: "settled",
+        cause: "advisor_run_failed",
+        advisorRunId: expect.any(String),
+        continuationState: "arranged",
+        continuationWakeArranged: true,
+      });
+      expect(wakeCalls).toHaveLength(1);
+
+      // A second restart pass is idempotent: nothing left to settle and no
+      // continuation left owed.
+      const second = await recovery.reconcileFailedAdvice(scene.companyId);
+      expect(second.scanned).toBe(0);
+      expect(second.settled).toBe(0);
+      expect(second.continuationsRetried).toBe(0);
+      expect(second.continuationWakesArranged).toBe(0);
+      expect(wakeCalls).toHaveLength(1);
+    });
+
+    it("settles a pending consultation when the advisor exits successfully without answering", async () => {
+      const scene = await seedReconciliationScene();
+      const created = await createPendingConsultation(scene);
+      const advisorRunId = await seedAdvisorWakeEvidence({
+        companyId: scene.companyId,
+        issueId: scene.issueId,
+        advisorAgentId: scene.advisorAgentId,
+        interactionId: created.id,
+        runStatus: "succeeded",
+      });
+      const { recovery } = makeRecovery();
+
+      const outcome = await recovery.reconcileFailedAdviceForRun(advisorRunId);
+      expect(outcome.settled).toBe(1);
+      expect(outcome.interactions[0]).toMatchObject({ cause: "advisor_run_exited_without_answer" });
+      const [row] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, created.id));
+      expect(row.status).toBe("cancelled");
+      expect((row.result as AskUserQuestionsResult | null)?.cancellationReason)
+        .toContain("exited without answering");
+    });
+
+    it("preserves review confirmations, approval state, and issue assignment while reconciling advice", async () => {
+      const scene = await seedReconciliationScene();
+      const created = await createPendingConsultation(scene);
+      const advisorRunId = await seedAdvisorWakeEvidence({
+        companyId: scene.companyId,
+        issueId: scene.issueId,
+        advisorAgentId: scene.advisorAgentId,
+        interactionId: created.id,
+        runStatus: "failed",
+      });
+      await ageInteraction(created.id);
+
+      // An unrelated pending confirmation card on the same issue must not be
+      // touched by advice reconciliation.
+      const reviewInteractionId = randomUUID();
+      await db.insert(issueThreadInteractions).values({
+        id: reviewInteractionId,
+        companyId: scene.companyId,
+        issueId: scene.issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "none",
+        createdByAgentId: scene.workerAgentId,
+        sourceRunId: scene.workerRunId,
+        payload: {
+          version: 1,
+          prompt: "Approve the dependency bump?",
+        },
+      });
+      const { recovery } = makeRecovery();
+
+      const outcome = await recovery.reconcileFailedAdviceForRun(advisorRunId);
+      expect(outcome.settled).toBe(1);
+
+      const [reviewRow] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, reviewInteractionId));
+      expect(reviewRow).toMatchObject({ kind: "request_confirmation", status: "pending", result: null });
+
+      const [issueRow] = await db.select().from(issues).where(eq(issues.id, scene.issueId));
+      expect(issueRow).toMatchObject({ status: "in_progress", assigneeAgentId: scene.workerAgentId });
     });
   });
 });

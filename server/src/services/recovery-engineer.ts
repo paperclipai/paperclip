@@ -95,6 +95,86 @@ const INITIAL_SWEEP_LOOKBACK_MS = 24 * 60 * 60 * 1_000;
 // the generation is superseded and the board owns the next action, so a stuck
 // dispatch can never become an infinite retry loop.
 const RESUME_DISPATCH_MAX_ATTEMPTS = 3;
+// The same bound for the incident's own dispatch intents (diagnose wake,
+// repair wake, post-activation resume wake). The agent_wakeup_requests rows
+// written under the dispatch idempotency key are the durable attempt ledger:
+// exactly one row per attempt, written by the wakeup path for suppressed or
+// refused enqueues and by the reconciliation sweep for a failure that
+// produced no row at all. A claim whose dispatch never materialized is
+// therefore re-armable after a restart, adoptable when the wake already
+// exists, and bounded instead of endlessly re-derived.
+const INCIDENT_DISPATCH_MAX_ATTEMPTS = 3;
+const DIAGNOSE_DISPATCH_KEY_PREFIX = "recovery-engineer:diagnose:";
+const REPAIR_WAKE_KEY_PREFIX = "recovery-engineer:repair-wake:";
+const ACTIVATED_WAKE_KEY_PREFIX = "recovery-engineer:activated:";
+const BOARD_ESCALATION_ACTION_PREFIX = "Inspect recovery incident ";
+/** Escalation reasons that mean "the dispatch intent never produced a run".
+ * Only these are re-armable: the single diagnosis attempt is still unspent in
+ * substance, so the sweep may spend another bounded enqueue on the same
+ * incident. Every other escalation reason is an outcome or authority decision
+ * the board owns and is never overwritten. */
+const DIAGNOSIS_DISPATCH_ESCALATION_REASONS = [
+  "diagnosis_enqueue_failed",
+  "diagnosis_not_enqueued",
+] as const;
+const REPAIR_DISPATCH_ESCALATION_REASONS = [
+  "repair_enqueue_failed",
+  "repair_not_enqueued",
+] as const;
+const ACTIVATED_DISPATCH_ESCALATION_REASONS = [
+  "post_activation_resume_wake_not_enqueued",
+] as const;
+const REARMABLE_DISPATCH_ESCALATION_REASONS = [
+  ...DIAGNOSIS_DISPATCH_ESCALATION_REASONS,
+  ...REPAIR_DISPATCH_ESCALATION_REASONS,
+  ...ACTIVATED_DISPATCH_ESCALATION_REASONS,
+] as const;
+const DIAGNOSIS_DISPATCH_EXHAUSTED_REASON = "diagnosis_dispatch_attempts_exhausted";
+const REPAIR_DISPATCH_EXHAUSTED_REASON = "repair_dispatch_attempts_exhausted";
+const ACTIVATED_DISPATCH_EXHAUSTED_REASON = "post_activation_resume_attempts_exhausted";
+/** Wake-request outcomes that mean a known real hold owns the dispatch
+ * (scheduling suppression, a paused or budget-held participant, an issue
+ * tree pause, the agent's scheduling policy, a heartbeat daily cap). They
+ * park the intent without spending a charge: the condition owner re-enables
+ * dispatching, and the sweep re-arms once the condition can be re-verified or
+ * the backoff has elapsed. Recognized holds never escalate on their own. */
+const DISPATCH_HOLD_SKIP_REASONS = [
+  "agent.not_invokable",
+  "budget.blocked",
+  "company.inactive",
+  "heartbeat.scheduling_suppressed",
+  "heartbeat.daily_run_limit",
+  "heartbeat.daily_cost_limit",
+  "issue_tree_hold_active",
+  "heartbeat.wakeOnDemand.disabled",
+  "heartbeat.disabled",
+  "heartbeat.timer.no_actionable_work",
+] as const;
+const DISPATCH_REARM_BASE_BACKOFF_MS = 30 * 60 * 1_000;
+const DISPATCH_REARM_MAX_BACKOFF_MS = 24 * 60 * 60 * 1_000;
+/** Ledger marker for a wake row whose run is a parked scheduled-retry
+ * carrier: the dispatch is durably parked by the scheduler and will mature
+ * or be superseded by its own owner. It is a wait, never an admission. */
+const DISPATCH_PARK_CARRIER_HOLD = "scheduled_retry_park_carrier";
+/** Durable in-flight marker for an incident dispatch pass: between the
+ * dispatch decision (a short advisory-locked transaction) and the enqueue —
+ * which runs OUTSIDE any connection-holding transaction so a supported pool
+ * size of 1 cannot deadlock — the claimed wake-request row is the intent's
+ * dispatch lease. A fresh claimed row makes concurrent dispatchers stand
+ * down; a stale one (crash between claim and enqueue) is converted into the
+ * failed-attempt row it represents and re-derived under the bounded cap. */
+const DISPATCH_CLAIM_REASON = "recovery_engineer_dispatch_claim";
+const DISPATCH_CLAIM_STALE_MS = 2 * 60 * 1_000;
+const DISPATCH_ENQUEUE_FAILED_REASON = "recovery_engineer_dispatch_enqueue_failed";
+/** Stable failure marker for a refused pre-start binding: the incident moved
+ * on (a terminal/manual outcome won) between the dispatch decision and the
+ * dispatcher's run-creation transaction, so the enqueue rolled back. The
+ * dispatch stands down; it is never a charge and never a duplicate. */
+const DISPATCH_BINDING_LOST_MESSAGE = "recovery_incident_dispatch_binding_lost";
+/** Stable failure marker for an enqueue whose dispatch claim was replaced:
+ * the lease expired and another dispatcher converted it and re-claimed the
+ * intent, so this late enqueue must not produce an executable run. */
+const DISPATCH_CLAIM_REPLACED_MESSAGE = "recovery_incident_dispatch_claim_replaced";
 const LIFENESS_ADVANCED_STATES = ["advanced", "completed"] as const;
 const ACTIVATION_WAIT_PREFIX = "Activate verified repair commit";
 /** Incident statuses that carry a newer manual/terminal disposition: a
@@ -119,6 +199,20 @@ export type RecoveryEngineerActor = {
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type DbOrTransaction = Db | DbTransaction;
 
+/** The minimal transactional surface a pre-start run binding may write
+ * through: a real transaction handle (the dispatcher's run-creation
+ * transaction) or the database client itself. */
+type DispatchBindingTx = Pick<Db, "select" | "insert" | "update" | "execute">;
+
+/** Binds a materialized run to its incident authority before the dispatcher
+ * can claim it. Receives the run row inside the dispatcher's own
+ * run-creation transaction (fresh wake or parked carrier); throwing refuses
+ * admission and rolls the enqueue back. */
+type RecoveryRunBinding = (
+  run: typeof heartbeatRuns.$inferSelect,
+  tx: DispatchBindingTx,
+) => Promise<void>;
+
 type RecoveryEngineerWakeup = (
   agentId: string,
   opts: {
@@ -130,6 +224,7 @@ type RecoveryEngineerWakeup = (
     requestedByActorType?: "agent" | "user" | "system";
     requestedByActorId?: string | null;
     idempotencyKey?: string;
+    bindRun?: RecoveryRunBinding | null;
   },
 ) => Promise<typeof heartbeatRuns.$inferSelect | null>;
 
@@ -141,6 +236,60 @@ type SourceRow = typeof recoveryEngineerIncidentSources.$inferSelect;
 type ProcedureRow = typeof recoveryEngineerProcedures.$inferSelect;
 type ProcedureReuseRow = typeof recoveryEngineerProcedureReuses.$inferSelect;
 type ParticipantRole = "recovery" | "repair" | "reviewer";
+
+/** The open failure generation a dispatch intent is bound to: the source
+ * issue it came from, the native generation key that captured it, and the
+ * owner that held the issue when the failure was observed. */
+type IncidentSourceGeneration = {
+  sourceIssueId: string;
+  generationKey: string;
+  originalOwnerAgentId: string | null;
+};
+
+/** Sweep pass over the incident's own dispatch intents (diagnose wake, repair
+ * wake, post-activation resume wake). `evaluated` counts selected incidents;
+ * `rearmed` counts intents that materialized a new or adopted run dispatch,
+ * `adopted` intents that converged on an existing live wake, `completed`
+ * intents whose adopted wake already carried an outcome, `held` intents kept
+ * pending (live path, gate, hold park, or unavailable participant) without
+ * spending a charge, and `exhausted` intents handed to the board at the
+ * attempt cap. */
+type IncidentDispatchReconciliation = {
+  evaluated: number;
+  rearmed: number;
+  adopted: number;
+  completed: number;
+  held: number;
+  exhausted: number;
+};
+
+/** The durable attempt ledger for one incident dispatch intent, classified
+ * from its agent_wakeup_requests rows: `charges` counts admitted dispatches
+ * (rows whose run materialized), this flow's own failure markers, and
+ * unrecognized skips; `newestHoldReason`/`holdStreak`/`newestRowAt` describe
+ * the recognized hold the intent is parked on, if any; `liveRealWake` is a
+ * wake whose dispatch materialized (or still owns a durable queued path);
+ * `freshClaim`/`staleClaim` are this flow's own dispatch lease rows (an
+ * in-flight enqueue, or a lease expired by a crash between claim and
+ * enqueue). */
+type IncidentDispatchLedger = {
+  charges: number;
+  newestHoldReason: string | null;
+  holdStreak: number;
+  newestRowAt: Date | null;
+  liveRealWake: typeof agentWakeupRequests.$inferSelect | null;
+  freshClaim: typeof agentWakeupRequests.$inferSelect | null;
+  staleClaim: typeof agentWakeupRequests.$inferSelect | null;
+};
+
+/** Linked-run facts classification needs beyond the raw status: whether the
+ * run is a suppressed-wake park carrier (its durable `suppressedWakePark`
+ * marker), which distinguishes a gate-cancelled carrier (a stale intent that
+ * never executed) from a genuinely cancelled execution. */
+type DispatchRunInfo = {
+  status: string | null;
+  parkCarrier: boolean;
+};
 
 /** Persisted dispatch intent for one source generation. Replaying the same key
  * after a restart converges on the same wake instead of minting a new one. */
@@ -1683,23 +1832,18 @@ export function recoveryEngineerService(
     return maintenanceIssue;
   }
 
-  async function escalateToBoard(incidentId: string, reason: string, runId?: string | null) {
-    const now = new Date();
-    const incident = await db
-      .update(recoveryEngineerIncidents)
-      .set({
-        status: "escalated",
-        boardEscalatedAt: now,
-        boardEscalationReason: reason,
-        updatedAt: now,
-      })
-      .where(and(
-        eq(recoveryEngineerIncidents.id, incidentId),
-        isNull(recoveryEngineerIncidents.boardEscalatedAt),
-      ))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    if (!incident) return false;
+  /**
+   * The maintenance-issue descriptor and activity record that accompany a
+   * fresh board escalation. Split from the incident-row update so a dispatch
+   * seam that must escalate under its own advisory lock (never across an
+   * outer-db callback while holding a connection) can commit the row inside
+   * its transaction and apply these follow-ups after it commits.
+   */
+  async function applyBoardEscalationFollowUps(
+    incident: IncidentRow,
+    reason: string,
+    runId: string | null,
+  ) {
     if (incident.maintenanceIssueId) {
       const maintenance = await issuesSvc.getById(incident.maintenanceIssueId);
       if (maintenance && !["done", "cancelled"].includes(maintenance.status)) {
@@ -1723,6 +1867,93 @@ export function recoveryEngineerService(
       entityId: incident.id,
       details: { reason, maintenanceIssueId: incident.maintenanceIssueId },
     });
+  }
+
+  async function escalateToBoard(incidentId: string, reason: string, runId?: string | null) {
+    const now = new Date();
+    const incident = await db
+      .update(recoveryEngineerIncidents)
+      .set({
+        status: "escalated",
+        boardEscalatedAt: now,
+        boardEscalationReason: reason,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(recoveryEngineerIncidents.id, incidentId),
+        isNull(recoveryEngineerIncidents.boardEscalatedAt),
+      ))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+    if (!incident) {
+      // Already escalated: the escalation itself stays single-shot, but a new
+      // terminal reason must not be silently swallowed — the recorded reason
+      // is refreshed to the exact current one (guarded on the reason it
+      // replaces) and the repeat is logged, so the board wait always names
+      // why automatic recovery stopped. The maintenance gate a previous
+      // escalation (or a later lifecycle stage) wrote is never rewritten here.
+      const current = await db
+        .select({
+          boardEscalationReason: recoveryEngineerIncidents.boardEscalationReason,
+        })
+        .from(recoveryEngineerIncidents)
+        .where(eq(recoveryEngineerIncidents.id, incidentId))
+        .then((rows) => rows[0] ?? null);
+      if (!current) return false;
+      if (current.boardEscalationReason === reason) return false;
+      const refreshed = await db
+        .update(recoveryEngineerIncidents)
+        .set({ boardEscalationReason: reason, updatedAt: now })
+        .where(and(
+          eq(recoveryEngineerIncidents.id, incidentId),
+          current.boardEscalationReason === null
+            ? isNull(recoveryEngineerIncidents.boardEscalationReason)
+            : eq(recoveryEngineerIncidents.boardEscalationReason, current.boardEscalationReason),
+        ))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!refreshed) return false;
+      // Keep the board gate exact: when the parked maintenance issue carries
+      // this flow's own escalation descriptor, refresh it to the current
+      // reason. A descriptor someone else wrote (or a later lifecycle stage's
+      // activation wait) is never rewritten, and a live path is never
+      // overwritten.
+      if (refreshed.maintenanceIssueId) {
+        const maintenance = await issuesSvc.getById(refreshed.maintenanceIssueId);
+        const action = maintenance?.unblockDescriptor?.action ?? null;
+        if (
+          maintenance &&
+          maintenance.status === "blocked" &&
+          action?.startsWith(`${BOARD_ESCALATION_ACTION_PREFIX}${incidentId}`) &&
+          !(await hasLiveExecutionPath(maintenance, maintenance.assigneeAgentId))
+        ) {
+          await issuesSvc.update(maintenance.id, {
+            status: "blocked",
+            unblockDescriptor: {
+              owner: "board",
+              action: `Inspect recovery incident ${incidentId}; automatic recovery stopped (${reason}).`,
+            },
+          });
+        }
+      }
+      await logActivity(db, {
+        companyId: refreshed.companyId,
+        actorType: "system",
+        actorId: "recovery_engineer",
+        agentId: null,
+        runId: runId ?? null,
+        action: "recovery_engineer.incident_escalation_reason_refreshed",
+        entityType: "recovery_engineer_incident",
+        entityId: incidentId,
+        details: {
+          previousReason: current.boardEscalationReason,
+          reason,
+          maintenanceIssueId: refreshed.maintenanceIssueId,
+        },
+      });
+      return false;
+    }
+    await applyBoardEscalationFollowUps(incident, reason, runId ?? null);
     return true;
   }
 
@@ -1850,11 +2081,79 @@ export function recoveryEngineerService(
     return true;
   }
 
+  /**
+   * The newest open failure generation of the incident, used to bind a
+   * dispatch intent to the generation it diagnoses (and to the original
+   * owner). A dispatch intent without this binding would be detachable from
+   * the failure it exists to recover.
+   */
+  async function newestOpenSourceGeneration(incidentId: string): Promise<IncidentSourceGeneration | null> {
+    return db
+      .select({
+        sourceIssueId: recoveryEngineerIncidentSources.sourceIssueId,
+        generationKey: recoveryEngineerIncidentSources.generationKey,
+        originalOwnerAgentId: recoveryEngineerIncidentSources.originalOwnerAgentId,
+      })
+      .from(recoveryEngineerIncidentSources)
+      .where(and(
+        eq(recoveryEngineerIncidentSources.incidentId, incidentId),
+        isNull(recoveryEngineerIncidentSources.recoveredAt),
+        isNull(recoveryEngineerIncidentSources.supersededAt),
+      ))
+      .orderBy(desc(recoveryEngineerIncidentSources.observedAt), desc(recoveryEngineerIncidentSources.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  function sourceGenerationIntentFields(generation: IncidentSourceGeneration | null) {
+    return generation
+      ? {
+        sourceIssueId: generation.sourceIssueId,
+        sourceGenerationKey: generation.generationKey,
+        originalOwnerAgentId: generation.originalOwnerAgentId,
+      }
+      : {};
+  }
+
+  /**
+   * The source issue describing the incident, for healing a missing
+   * maintenance-issue linkage: the newest observed source generation of any
+   * close state (a superseded generation still describes the failure the
+   * incident was opened for).
+   */
+  async function newestIncidentSourceIssue(incident: IncidentRow): Promise<IssueRow | null> {
+    const source = await db
+      .select({ sourceIssueId: recoveryEngineerIncidentSources.sourceIssueId })
+      .from(recoveryEngineerIncidentSources)
+      .where(eq(recoveryEngineerIncidentSources.incidentId, incident.id))
+      .orderBy(desc(recoveryEngineerIncidentSources.observedAt), desc(recoveryEngineerIncidentSources.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!source) return null;
+    return db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.id, source.sourceIssueId),
+        eq(issues.companyId, incident.companyId),
+      ))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  /**
+   * Claims the incident's single diagnosis attempt and dispatches its wake
+   * through the same advisory seam the sweep's re-arm uses, so the original
+   * producer and a concurrent sweep can never both enqueue the same
+   * diagnose wake. A recognized hold (drain, an unavailable or budget-held
+   * participant) parks the intent instead of escalating: the claim and the
+   * wake ledger row are the durable dispatch intent, and the sweep re-arms
+   * it when the condition clears.
+   */
   async function claimDiagnosis(
     incident: IncidentRow,
     config: ConfigRow,
     maintenanceIssue: IssueRow,
-  ) {
+  ): Promise<RunRow | null> {
     if (incident.diagnosisAttemptCount >= 1) return null;
     const claimed = await db
       .update(recoveryEngineerIncidents)
@@ -1872,57 +2171,62 @@ export function recoveryEngineerService(
       .then((rows) => rows[0] ?? null);
     if (!claimed) return null;
 
-    let run: RunRow | null = null;
-    try {
-      run = await deps.enqueueWakeup(config.agentId, {
-        source: "automation",
-        triggerDetail: "system",
-        reason: "recovery_engineer_diagnose",
-        idempotencyKey: `recovery-engineer:diagnose:${incident.id}`,
-        payload: {
-          issueId: maintenanceIssue.id,
-          incidentId: incident.id,
-          action: "diagnose",
-        },
-        contextSnapshot: {
-          issueId: maintenanceIssue.id,
-          taskId: maintenanceIssue.id,
-          incidentId: incident.id,
-          wakeReason: "recovery_engineer_diagnose",
-          source: "recovery_engineer.incident_detected",
-          recoveryRole: "diagnosis",
-        },
-        requestedByActorType: "system",
-        requestedByActorId: "recovery_engineer",
-      });
-    } catch {
-      await escalateToBoard(incident.id, "diagnosis_enqueue_failed");
-      return null;
-    }
-    if (!run) {
-      await escalateToBoard(incident.id, "diagnosis_not_enqueued");
-      return null;
-    }
-    await db
-      .update(recoveryEngineerIncidents)
-      .set({ diagnosisRunId: run.id, updatedAt: new Date() })
-      .where(eq(recoveryEngineerIncidents.id, incident.id));
-    await logActivity(db, {
-      companyId: incident.companyId,
-      actorType: "system",
-      actorId: "recovery_engineer",
+    // Read the source generation before the dispatch pass: the enqueue must
+    // never depend on a query issued while this flow holds a connection.
+    const generation = await newestOpenSourceGeneration(incident.id);
+
+    const pass = await rearmIncidentWake({
+      incidentId: incident.id,
+      companyId: config.companyId,
       agentId: config.agentId,
-      runId: run.id,
-      action: "recovery_engineer.diagnosis_requested",
-      entityType: "recovery_engineer_incident",
-      entityId: incident.id,
-      details: {
-        maintenanceIssueId: maintenanceIssue.id,
-        diagnosisAttempt: 1,
-        maxAttempts: 1,
+      idempotencyKey: `${DIAGNOSE_DISPATCH_KEY_PREFIX}${incident.id}`,
+      exhaustedReason: DIAGNOSIS_DISPATCH_EXHAUSTED_REASON,
+      bindingField: "diagnosisRunId",
+      guard: (current) => !current.diagnosisRunId && current.diagnosisAttemptCount === 1,
+      enqueue: (bindRun) => deps.enqueueWakeup(config.agentId, {
+        ...diagnoseWakeInput(
+          incident,
+          maintenanceIssue,
+          // The source generation is read before the dispatch pass, never
+          // while a connection-holding transaction is open.
+          generation,
+        ),
+        bindRun,
+      }),
+      onDispatched: async (runId) => {
+        await logActivity(db, {
+          companyId: incident.companyId,
+          actorType: "system",
+          actorId: "recovery_engineer",
+          agentId: config.agentId,
+          runId,
+          action: "recovery_engineer.diagnosis_requested",
+          entityType: "recovery_engineer_incident",
+          entityId: incident.id,
+          details: {
+            maintenanceIssueId: maintenanceIssue.id,
+            diagnosisAttempt: 1,
+            maxAttempts: 1,
+          },
+        });
+      },
+      onAdopted: async (wake) => {
+        await db
+          .update(recoveryEngineerIncidents)
+          .set({ diagnosisRunId: wake.runId, updatedAt: new Date() })
+          .where(and(
+            eq(recoveryEngineerIncidents.id, incident.id),
+            isNull(recoveryEngineerIncidents.diagnosisRunId),
+          ));
+        return "completed";
       },
     });
-    return run;
+    if (!pass.runId) return null;
+    return db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, pass.runId))
+      .then((rows) => rows[0] ?? null);
   }
 
   async function activateIncident(input: {
@@ -2369,13 +2673,28 @@ export function recoveryEngineerService(
       throw conflict("A concurrent repair request won for this incident");
     }
 
-    let repairRun: RunRow | null = null;
-    try {
-      repairRun = await deps.enqueueWakeup(config.repairAgentId, {
+    // The repair wake dispatches through the same advisory seam the sweep's
+    // re-arm uses, so the requesting run and a concurrent sweep serialize on
+    // the same intent key. A recognized hold (an unavailable or budget-held
+    // repair participant, drain) parks the intent without escalating: the
+    // repair issue and the claimed incident row are the durable dispatch
+    // intent, and the sweep re-arms it when the condition clears. The
+    // materialized repair run is bound to the incident inside the
+    // dispatcher's run-creation transaction, before it can be claimed.
+    const repairDispatch = await rearmIncidentWake({
+      incidentId: incident.id,
+      companyId: incident.companyId,
+      agentId: config.repairAgentId,
+      idempotencyKey: `${REPAIR_WAKE_KEY_PREFIX}${incident.id}:${input.target}`,
+      exhaustedReason: REPAIR_DISPATCH_EXHAUSTED_REASON,
+      bindingField: "repairRunId",
+      guard: (current) =>
+        !current.repairRunId && current.repairIssueId === result.issue.id,
+      enqueue: (bindRun) => deps.enqueueWakeup(config.repairAgentId, {
         source: "assignment",
         triggerDetail: "system",
         reason: "recovery_engineer_repair",
-        idempotencyKey: `recovery-engineer:repair-wake:${incident.id}:${input.target}`,
+        idempotencyKey: `${REPAIR_WAKE_KEY_PREFIX}${incident.id}:${input.target}`,
         payload: {
           issueId: result.issue.id,
           incidentId: incident.id,
@@ -2391,18 +2710,56 @@ export function recoveryEngineerService(
         },
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.agentId ?? actor.userId,
-      });
-    } catch {
-      await escalateToBoard(incident.id, "repair_enqueue_failed", actor.runId);
-    }
-    if (repairRun) {
-      await db
-        .update(recoveryEngineerIncidents)
-        .set({ repairRunId: repairRun.id, updatedAt: new Date() })
-        .where(eq(recoveryEngineerIncidents.id, incident.id));
-    } else {
-      await escalateToBoard(incident.id, "repair_not_enqueued", actor.runId);
-    }
+        bindRun,
+      }),
+      onDispatched: async (runId) => {
+        await logActivity(db, {
+          companyId: incident.companyId,
+          actorType: "system",
+          actorId: "recovery_engineer",
+          agentId: null,
+          runId,
+          action: "recovery_engineer.repair_dispatch_rearmed",
+          entityType: "recovery_engineer_incident",
+          entityId: incident.id,
+          details: {
+            repairIssueId: result.issue.id,
+            repairTarget: input.target,
+          },
+        });
+      },
+      onAdopted: async (wake) => {
+        await reopenDispatchFailureEscalation(incident.id, "repairing");
+        if (!wake.runId) return "adopted";
+        await db
+          .update(recoveryEngineerIncidents)
+          .set({ repairRunId: wake.runId, updatedAt: new Date() })
+          .where(and(
+            eq(recoveryEngineerIncidents.id, incident.id),
+            isNull(recoveryEngineerIncidents.repairRunId),
+          ));
+        const run = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, wake.runId))
+          .then((rows) => rows[0] ?? null);
+        if (
+          run &&
+          (run.status === "succeeded" ||
+            PARTICIPANT_FAILURE_STATUSES.includes(run.status as never))
+        ) {
+          await handleParticipantRun(effectiveIncident, config, run, "repair");
+        }
+        return "completed";
+      },
+    });
+    const repairRun = repairDispatch.runId
+      ? await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, repairDispatch.runId))
+        .then((rows) => rows[0] ?? null)
+      : null;
     await logActivity(db, {
       companyId: incident.companyId,
       actorType: actor.actorType,
@@ -2417,6 +2774,7 @@ export function recoveryEngineerService(
         repairProjectId: projectId,
         repairIssueId: result.issue.id,
         repairRunId: repairRun?.id ?? null,
+        dispatchOutcome: repairDispatch.outcome,
       },
     });
     return { incident: effectiveIncident, repairIssue: result.issue, created: Boolean(updated) };
@@ -2586,34 +2944,100 @@ export function recoveryEngineerService(
       await escalateToBoard(incident.id, "maintenance_issue_closed_before_activation");
       return null;
     }
-    if (maintenance.status === "blocked" || maintenance.status === "todo") {
-      await issuesSvc.update(maintenance.id, { status: "in_progress" });
-    }
-    const run = await deps.enqueueWakeup(config.agentId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: "recovery_engineer_activated",
-      idempotencyKey: `recovery-engineer:activated:${incident.id}:${incident.activatedRepairCommit}`,
-      payload: {
-        issueId: maintenance.id,
-        incidentId: incident.id,
-        action: "resume",
-        repairCommit: incident.activatedRepairCommit,
+    // The resume instruction wake dispatches through the same advisory seam
+    // the sweep's re-arm uses, so the activating request and a concurrent
+    // sweep serialize on the same intent key. A recognized hold parks the
+    // instruction without escalating: the confirmed activation and the wake
+    // ledger are the durable dispatch intent, and the sweep re-arms it when
+    // the condition clears.
+    const pass = await rearmIncidentWake({
+      incidentId: incident.id,
+      companyId: incident.companyId,
+      agentId: config.agentId,
+      idempotencyKey: `${ACTIVATED_WAKE_KEY_PREFIX}${incident.id}:${incident.activatedRepairCommit}`,
+      exhaustedReason: ACTIVATED_DISPATCH_EXHAUSTED_REASON,
+      // The instruction wake has no dedicated incident run column: the wake
+      // ledger row is its durable dispatch record.
+      bindingField: null,
+      guard: (current) =>
+        !current.resumedRunId &&
+        current.activatedRepairCommit !== null &&
+        current.activatedRepairCommit === current.repairCommit,
+      claim: async (tx) => {
+        // Mirror the original promotion: the activation is confirmed, so the
+        // activation wait is no longer the next action.
+        if (["blocked", "todo"].includes(maintenance.status)) {
+          await issuesSvc.update(maintenance.id, { status: "in_progress" }, tx);
+        }
+        return incident;
       },
-      contextSnapshot: {
-        issueId: maintenance.id,
-        taskId: maintenance.id,
-        incidentId: incident.id,
-        repairCommit: incident.activatedRepairCommit,
-        wakeReason: "recovery_engineer_activated",
-        source: "recovery_engineer.repair_activated",
-        recoveryRole: "resume",
+      enqueue: (bindRun) => deps.enqueueWakeup(config.agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "recovery_engineer_activated",
+        idempotencyKey: `${ACTIVATED_WAKE_KEY_PREFIX}${incident.id}:${incident.activatedRepairCommit}`,
+        payload: {
+          issueId: maintenance.id,
+          incidentId: incident.id,
+          action: "resume",
+          repairCommit: incident.activatedRepairCommit,
+        },
+        contextSnapshot: {
+          issueId: maintenance.id,
+          taskId: maintenance.id,
+          incidentId: incident.id,
+          repairCommit: incident.activatedRepairCommit,
+          wakeReason: "recovery_engineer_activated",
+          source: "recovery_engineer.repair_activated",
+          recoveryRole: "resume",
+        },
+        requestedByActorType: "system",
+        requestedByActorId: "recovery_engineer",
+        // The instruction wake has no dedicated incident run column: its
+        // durable dispatch record is the wake ledger row itself, deduped by
+        // the dispatch claim lease.
+        bindRun,
+      }),
+      onDispatched: async (runId) => {
+        await logActivity(db, {
+          companyId: incident.companyId,
+          actorType: "system",
+          actorId: "recovery_engineer",
+          agentId: null,
+          runId,
+          action: "recovery_engineer.post_activation_resume_rearmed",
+          entityType: "recovery_engineer_incident",
+          entityId: incident.id,
+          details: {
+            maintenanceIssueId: maintenance.id,
+            repairCommit: incident.activatedRepairCommit,
+          },
+        });
       },
-      requestedByActorType: "system",
-      requestedByActorId: "recovery_engineer",
+      onAdopted: async (wake) => {
+        await reopenDispatchFailureEscalation(incident.id, "verified");
+        if (!wake.runId) return "adopted";
+        const run = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, wake.runId))
+          .then((rows) => rows[0] ?? null);
+        if (
+          run &&
+          (run.status === "succeeded" ||
+            PARTICIPANT_FAILURE_STATUSES.includes(run.status as never))
+        ) {
+          await handleParticipantRun(incident, config, run, "recovery");
+        }
+        return "completed";
+      },
     });
-    if (!run) await escalateToBoard(incident.id, "post_activation_resume_wake_not_enqueued");
-    return run;
+    if (!pass.runId) return null;
+    return db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, pass.runId))
+      .then((rows) => rows[0] ?? null);
   }
 
   async function finalizeVerificationForRun(run: RunRow) {
@@ -4112,6 +4536,1245 @@ export function recoveryEngineerService(
   }
 
   /**
+   * Re-opens a dispatch-failure escalation so the bounded re-arm can spend
+   * another enqueue attempt on the same incident. Guarded on the exact
+   * escalation reason: an escalation that records an outcome or authority
+   * decision (a diagnosis that succeeded without its artifact, a human or
+   * provider gate, an admission refusal) is never overwritten.
+   */
+  async function reopenDispatchFailureEscalation(incidentId: string, nextStatus: string) {
+    const now = new Date();
+    return db
+      .update(recoveryEngineerIncidents)
+      .set({
+        status: nextStatus,
+        boardEscalatedAt: null,
+        boardEscalationReason: null,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(recoveryEngineerIncidents.id, incidentId),
+        isNotNull(recoveryEngineerIncidents.boardEscalatedAt),
+        inArray(recoveryEngineerIncidents.boardEscalationReason, [...REARMABLE_DISPATCH_ESCALATION_REASONS]),
+      ))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+  }
+
+  /**
+   * Restores the maintenance issue to its pre-dispatch state when the only
+   * thing that parked it was this flow's own dispatch-failure escalation.
+   * Never touches a descriptor someone else wrote, and never touches an
+   * issue whose next action a live path already owns.
+   */
+  async function restoreMaintenanceForDispatch(incident: IncidentRow, config: ConfigRow) {
+    if (!incident.maintenanceIssueId) return;
+    const maintenance = await issuesSvc.getById(incident.maintenanceIssueId);
+    if (!maintenance || maintenance.status !== "blocked") return;
+    if (maintenance.assigneeAgentId !== config.agentId || maintenance.assigneeUserId) return;
+    if (maintenance.executionState) return;
+    if (maintenance.checkoutRunId || maintenance.executionRunId || maintenance.executionLockedAt) return;
+    const action = maintenance.unblockDescriptor?.action ?? null;
+    if (!action || !action.startsWith(`${BOARD_ESCALATION_ACTION_PREFIX}${incident.id}`)) return;
+    if (await hasLiveExecutionPath(maintenance, config.agentId)) return;
+    // Leaving `blocked` clears this flow's own unblock descriptor.
+    await issuesSvc.update(maintenance.id, { status: "todo" });
+  }
+
+  /**
+   * Classifies the wake ledger for one incident dispatch intent. Charges
+   * follow admitted dispatches and unrecognized failures; a recognized hold
+   * (scheduling suppression, a paused or budget-held participant, an issue
+   * tree pause, the agent's scheduling policy, a heartbeat daily cap) parks
+   * the intent instead: no charge, no escalation, and re-derivation is
+   * rate-bounded by an exponential backoff so a parked intent waits for its
+   * condition to change instead of writing a row every sweep. A row whose run
+   * is a parked scheduled-retry carrier is a durable wait, not an admission:
+   * it neither charges the cap nor marks the dispatch executed. A row whose
+   * run is a CANCELLED park carrier is a stale intent — the scheduler
+   * cancelled the wait at promotion because a gate changed — never execution
+   * evidence: it charges the bounded cap and the intent is re-derived under
+   * the current gates. This flow's own dispatch-claim rows are bookkeeping of
+   * the in-flight enqueue and are neither holds nor charges nor live wakes.
+   */
+  function classifyIncidentDispatchLedger(
+    rows: Array<typeof agentWakeupRequests.$inferSelect>,
+    runInfoById: Map<string, DispatchRunInfo>,
+  ): IncidentDispatchLedger {
+    let charges = 0;
+    let newestHoldReason: string | null = null;
+    let holdStreak = 0;
+    let newestRowAt: Date | null = null;
+    let liveRealWake: typeof agentWakeupRequests.$inferSelect | null = null;
+    let freshClaim: typeof agentWakeupRequests.$inferSelect | null = null;
+    let staleClaim: typeof agentWakeupRequests.$inferSelect | null = null;
+    const now = Date.now();
+    for (const row of rows) {
+      if (row.reason === DISPATCH_CLAIM_REASON) {
+        if (row.status === "claimed") {
+          const claimedAt = row.claimedAt ?? row.requestedAt ?? row.createdAt;
+          const stale = claimedAt === null ||
+            now - claimedAt.getTime() >= DISPATCH_CLAIM_STALE_MS;
+          if (stale) {
+            staleClaim ??= row;
+          } else {
+            freshClaim ??= row;
+          }
+        }
+        // Finalized claim rows (coalesced/failed/skipped) are bookkeeping of
+        // an attempt whose real ledger row (or its absence) already owns the
+        // classification.
+        continue;
+      }
+      if (newestRowAt === null) {
+        newestRowAt = row.requestedAt ?? row.createdAt;
+      }
+      if (!liveRealWake && (Boolean(row.runId) || LIVE_WAKE_REQUEST_STATUSES.includes(row.status as never))) {
+        liveRealWake = row;
+      }
+      const isHold = row.status === "skipped" && row.reason !== null &&
+        (DISPATCH_HOLD_SKIP_REASONS as readonly string[]).includes(row.reason);
+      if (isHold) {
+        if (newestHoldReason === null) newestHoldReason = row.reason;
+        if (newestHoldReason === row.reason) holdStreak += 1;
+        continue;
+      }
+      const runInfo = row.runId !== null
+        ? runInfoById.get(row.runId) ?? null
+        : null;
+      if (runInfo?.status === "scheduled_retry") {
+        // A parked scheduled-retry carrier owns the dispatch durably; it is
+        // neither an admitted execution nor a charge.
+        if (newestHoldReason === null) newestHoldReason = DISPATCH_PARK_CARRIER_HOLD;
+        if (newestHoldReason === DISPATCH_PARK_CARRIER_HOLD) holdStreak += 1;
+        continue;
+      }
+      // Everything else — a terminal run (including a gate-cancelled park
+      // carrier, which never executed), an unrecognized skip, a failure — is
+      // an attempt the bounded cap must see.
+      charges += 1;
+    }
+    return { charges, newestHoldReason, holdStreak, newestRowAt, liveRealWake, freshClaim, staleClaim };
+  }
+
+  function dispatchRearmBackoffMs(holdStreak: number) {
+    const doublings = Math.max(0, holdStreak - 1);
+    const factor = 2 ** Math.min(doublings, 16);
+    return Math.min(DISPATCH_REARM_BASE_BACKOFF_MS * factor, DISPATCH_REARM_MAX_BACKOFF_MS);
+  }
+
+  /**
+   * Loads the wake ledger for one incident dispatch intent together with each
+   * linked run's status and park-carrier marker, so classification can tell
+   * an admitted dispatch from a parked or gate-cancelled carrier.
+   */
+  async function loadDispatchLedger(
+    companyId: string,
+    agentId: string,
+    idempotencyKey: string,
+    dbOrTx: DbOrTransaction = db,
+  ): Promise<{
+    rows: Array<typeof agentWakeupRequests.$inferSelect>;
+    runInfoById: Map<string, DispatchRunInfo>;
+  }> {
+    const rows = await dbOrTx
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+      ))
+      .orderBy(desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id));
+    const runIds = rows.map((row) => row.runId).filter((value): value is string => value !== null);
+    const runInfoById = new Map<string, DispatchRunInfo>();
+    if (runIds.length > 0) {
+      const runRows = await dbOrTx
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+        })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.id, runIds));
+      for (const runRow of runRows) {
+        runInfoById.set(runRow.id, {
+          status: runRow.status,
+          parkCarrier: parseObject(runRow.contextSnapshot).suppressedWakePark != null,
+        });
+      }
+    }
+    return { rows, runInfoById };
+  }
+
+  /**
+   * Binds a materialized dispatch run to its incident authority, conditionally
+   * on the intent's exact lifecycle pre-state AND on the exact dispatch claim
+   * this pass committed. Used as the dispatcher's pre-start binding hook: it
+   * runs inside the run-creation transaction, so the incident's run authority
+   * is durable before the dispatcher can claim the run (a fast participant
+   * observes it on its first action, and a parked carrier stays bound through
+   * promotion and restart). The claim check first: a lease another dispatcher
+   * already replaced (expired, then converted and re-claimed) makes this
+   * late enqueue stand down — it must never produce an executable run,
+   * including for intents without an incident run column. A lost race — the
+   * incident moved on, another run was already bound, or the claim was
+   * replaced — throws, which rolls the enqueue back and refuses admission
+   * instead of starting an unbound run.
+   */
+  function bindIncidentDispatchRun(input: {
+    incidentId: string;
+    claimId: string;
+    bindingField: "diagnosisRunId" | "repairRunId" | null;
+    /** The exact lifecycle state the binding is fenced to: a terminal or
+     * manual outcome that committed after the dispatch decision is never
+     * overridden by a late binding. */
+    expectedStatus: string;
+  }): RecoveryRunBinding {
+    return async (run, tx) => {
+      const current = await tx
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.id, input.claimId),
+          eq(agentWakeupRequests.status, "claimed"),
+        ))
+        .limit(1);
+      if (current.length === 0) {
+        throw conflict(DISPATCH_CLAIM_REPLACED_MESSAGE, {
+          incidentId: input.incidentId,
+          claimId: input.claimId,
+          runId: run.id,
+        });
+      }
+      if (!input.bindingField) {
+        // The instruction wake has no incident run column: the exact-current
+        // claim IS its admission fence.
+        return;
+      }
+      const runIdColumn = input.bindingField === "diagnosisRunId"
+        ? recoveryEngineerIncidents.diagnosisRunId
+        : recoveryEngineerIncidents.repairRunId;
+      const bound = await tx
+        .update(recoveryEngineerIncidents)
+        .set(
+          input.bindingField === "diagnosisRunId"
+            ? { diagnosisRunId: run.id, updatedAt: new Date() }
+            : { repairRunId: run.id, updatedAt: new Date() },
+        )
+        .where(and(
+          eq(recoveryEngineerIncidents.id, input.incidentId),
+          eq(recoveryEngineerIncidents.status, input.expectedStatus),
+          or(isNull(runIdColumn), eq(runIdColumn, run.id)),
+        ))
+        .returning({ id: recoveryEngineerIncidents.id });
+      if (bound.length === 0) {
+        throw conflict(DISPATCH_BINDING_LOST_MESSAGE, {
+          incidentId: input.incidentId,
+          runId: run.id,
+          bindingField: input.bindingField,
+        });
+      }
+    };
+  }
+
+  function isDispatchBindingLostMessage(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes(DISPATCH_BINDING_LOST_MESSAGE);
+  }
+
+  function isDispatchStandDownError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return message.includes(DISPATCH_BINDING_LOST_MESSAGE) ||
+      message.includes(DISPATCH_CLAIM_REPLACED_MESSAGE);
+  }
+
+  /**
+   * The incident-row escalation for an exhausted dispatch intent, fenced to
+   * the exact incident pre-state that was validated under the intent's lock.
+   * Because the row update carries the validated status and escalation
+   * reason in its WHERE clause, a terminal or manual outcome that commits
+   * first — even between this transaction's read and its write — wins, and
+   * the stale cap decision writes nothing. The maintenance descriptor and
+   * activity record are applied by the caller after the transaction commits.
+   */
+  async function escalateIncidentDispatchExhausted(
+    tx: DbTransaction,
+    validated: IncidentRow,
+    exhaustedReason: string,
+  ): Promise<IncidentRow | null> {
+    return tx
+      .update(recoveryEngineerIncidents)
+      .set({
+        status: "escalated",
+        boardEscalatedAt: new Date(),
+        boardEscalationReason: exhaustedReason,
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(recoveryEngineerIncidents.id, validated.id),
+        isNull(recoveryEngineerIncidents.boardEscalatedAt),
+        eq(recoveryEngineerIncidents.status, validated.status),
+        validated.boardEscalationReason === null
+          ? isNull(recoveryEngineerIncidents.boardEscalationReason)
+          : eq(recoveryEngineerIncidents.boardEscalationReason, validated.boardEscalationReason),
+      ))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+  }
+
+  /**
+   * One bounded, concurrency-safe dispatch pass for an incident dispatch
+   * intent, shared by the original producers (claim, repair request,
+   * activation) and the sweep's re-arm. The design never holds a pool
+   * connection across the enqueue: a short advisory-locked decision
+   * transaction validates the guard, the ledger, and the cap, then commits a
+   * durable dispatch claim (a `claimed` wake-request row under the intent's
+   * own idempotency key); the enqueue runs afterwards with no connection
+   * held, so a supported pool size of 1 cannot deadlock. The claim is the
+   * in-flight lease — a concurrent dispatcher that reads it fresh stands
+   * down, and a lease expired by a crash becomes the failed-attempt row it
+   * represents and is re-derived under the bounded cap. The materialized run
+   * is bound to its incident authority inside the dispatcher's own
+   * run-creation transaction (pre-start, including parked carriers), so
+   * execution can never outpace the binding; the enqueue's coalesced,
+   * deferred, and parked outcomes are adopted through the ledger instead of
+   * minting duplicates.
+   */
+  async function rearmIncidentWake(input: {
+    incidentId: string;
+    companyId: string;
+    agentId: string;
+    idempotencyKey: string;
+    exhaustedReason: string;
+    /** The incident column the materialized run is durably bound to, when the
+     * intent has one (the post-activation instruction wake has none — its
+     * durable dispatch record is the wake ledger row itself). */
+    bindingField: "diagnosisRunId" | "repairRunId" | null;
+    /** Re-validates the intent guard on the freshly read incident row inside
+     * the decision transaction (e.g. the dispatch is still unrecorded and the
+     * lifecycle state still owns the intent). */
+    guard: (incident: IncidentRow) => boolean;
+    /** Records the intent's lifecycle claim (status and escalation markers —
+     * never the run id) inside the decision transaction, on top of the exact
+     * pre-state that was validated under the lock. */
+    claim?: (tx: DbTransaction, validated: IncidentRow) => Promise<unknown>;
+    enqueue: (bindRun: RecoveryRunBinding | null) => Promise<RunRow | null>;
+    /** Post-commit activity logging for a materialized dispatch. */
+    onDispatched?: (runId: string) => Promise<void>;
+    /** Adopts a wake that already materialized a real (non-carrier) run.
+     * Returns "completed" when the adopted wake's outcome was fully applied,
+     * "adopted" when a live wake merely owns the dispatch. */
+    onAdopted: (wake: typeof agentWakeupRequests.$inferSelect) => Promise<"completed" | "adopted">;
+  }): Promise<{ outcome: "rearmed" | "completed" | "adopted" | "held" | "exhausted"; runId: string | null }> {
+    const ledger = await loadDispatchLedger(input.companyId, input.agentId, input.idempotencyKey);
+    const outer = classifyIncidentDispatchLedger(ledger.rows, ledger.runInfoById);
+
+    // Another dispatcher's enqueue is provably in flight (its lease is
+    // fresh): stand down without writing anything. If that enqueue fails or
+    // crashes, its lease ages out and a later pass re-derives the intent.
+    if (outer.freshClaim) {
+      return { outcome: "held", runId: null };
+    }
+
+    if (outer.liveRealWake) {
+      const liveWake = outer.liveRealWake;
+      if (liveWake.runId) {
+        const runInfo = ledger.runInfoById.get(liveWake.runId) ?? null;
+        if (!runInfo || runInfo.status === null) {
+          // A wake whose run vanished cannot be adopted nor safely
+          // re-enqueued: hold it for the next sweep instead of minting a
+          // duplicate.
+          return { outcome: "held", runId: null };
+        }
+        if (runInfo.status === "scheduled_retry") {
+          // A parked scheduled-retry carrier is a durable wait owned by the
+          // scheduler: stand down and preserve it — never record the intent's
+          // run from it, never charge it.
+          return { outcome: "adopted", runId: null };
+        }
+        if (runInfo.status === "cancelled" && runInfo.parkCarrier) {
+          // A gate-cancelled park carrier: the scheduler cancelled the wait
+          // at promotion because a gate (issue, assignee, agent, company)
+          // changed. It never executed, so it is not execution evidence —
+          // fall through and re-derive the dispatch under the current gates
+          // (charged against the bounded cap like any unrecognized refusal).
+        } else {
+          await input.onAdopted(liveWake);
+          return { outcome: "completed", runId: liveWake.runId };
+        }
+      } else {
+        await input.onAdopted(liveWake);
+        return { outcome: "adopted", runId: null };
+      }
+    }
+
+    // A recognized hold parks the intent without spending a charge. An
+    // agent-not-invokable row cannot be fresh here: the caller's
+    // invokability pre-flight just proved the participant runnable, so the
+    // hold re-arms immediately. Every other hold re-derives only after a
+    // bounded, exponentially growing backoff (a long drain or pause ages its
+    // hold row past the backoff while the sweep is itself gated, so a lifted
+    // condition re-arms within one pass), never writing a ledger row per
+    // sweep. A parked scheduled-retry carrier waits for its own owner.
+    if (outer.newestHoldReason !== null) {
+      const probedCleared = outer.newestHoldReason === "agent.not_invokable" ||
+        outer.newestHoldReason === DISPATCH_PARK_CARRIER_HOLD;
+      const backoff = dispatchRearmBackoffMs(outer.holdStreak);
+      const heldFresh = !probedCleared &&
+        outer.newestRowAt !== null &&
+        Date.now() - outer.newestRowAt.getTime() < backoff;
+      if (heldFresh) {
+        return { outcome: "held", runId: null };
+      }
+    }
+
+    const decision = await db.transaction(async (tx): Promise<{
+      action: "stand_down" | "exhausted" | "proceed";
+      escalated: IncidentRow | null;
+      claimId: string | null;
+    }> => {
+      // The advisory lock is the concurrency barrier shared by every
+      // producer of this intent (the original claim/repair/activation path
+      // and any re-arm): concurrent decision transactions serialize here,
+      // and the loser re-validates against the committed state instead of
+      // enqueueing a duplicate wake. The enqueue itself deliberately runs
+      // AFTER this transaction commits — never while a connection is held —
+      // so a supported pool size of 1 cannot deadlock; the committed claim
+      // row below keeps the post-commit enqueue single-flight.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`recovery-engineer:dispatch:${input.idempotencyKey}`}, 0))`);
+      let incidentNow = await tx
+        .select()
+        .from(recoveryEngineerIncidents)
+        .where(eq(recoveryEngineerIncidents.id, input.incidentId))
+        .then((rows) => rows[0] ?? null);
+      if (!incidentNow) {
+        return { action: "stand_down", escalated: null, claimId: null };
+      }
+      const ledgerInside = await loadDispatchLedger(
+        input.companyId,
+        input.agentId,
+        input.idempotencyKey,
+        tx,
+      );
+      const inside = classifyIncidentDispatchLedger(ledgerInside.rows, ledgerInside.runInfoById);
+      // The one live wake a re-derivation may proceed past: a gate-cancelled
+      // park carrier — the scheduler cancelled the wait at promotion, so the
+      // intent is stale and must be re-derived, not adopted as execution.
+      const insideStaleCarrierRunId = ledgerInside.rows.find((row) =>
+        row.runId !== null &&
+        row.reason !== DISPATCH_CLAIM_REASON &&
+        (ledgerInside.runInfoById.get(row.runId)?.status === "cancelled") &&
+        (ledgerInside.runInfoById.get(row.runId)?.parkCarrier ?? false),
+      )?.runId ?? null;
+      if (inside.freshClaim) {
+        // A concurrent dispatcher holds the in-flight lease: stand down and
+        // let the next sweep adopt its outcome.
+        return { action: "stand_down", escalated: null, claimId: null };
+      }
+      if (inside.liveRealWake && inside.liveRealWake.runId !== insideStaleCarrierRunId) {
+        // A concurrent dispatcher's enqueue landed between the outer read and
+        // the lock: stand down and let the next sweep adopt its outcome.
+        return { action: "stand_down", escalated: null, claimId: null };
+      }
+      if (inside.staleClaim) {
+        // The previous dispatch lease expired without the enqueue landing (a
+        // crash between claim and enqueue): convert the expired lease into
+        // the failed-attempt row it represents so the cap stays exact, then
+        // re-derive under that cap.
+        await tx
+          .update(agentWakeupRequests)
+          .set({
+            status: "failed",
+            reason: DISPATCH_ENQUEUE_FAILED_REASON,
+            finishedAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(agentWakeupRequests.id, inside.staleClaim.id),
+            eq(agentWakeupRequests.status, "claimed"),
+          ));
+      }
+      if (input.bindingField) {
+        // A gate-cancelled park carrier left the intent's run authority bound
+        // to a run that never executed: clear exactly that stale binding
+        // (fenced on the carrier's own run id) before the guard re-validates.
+        if (insideStaleCarrierRunId) {
+          const cleared = await tx
+            .update(recoveryEngineerIncidents)
+            .set(
+              input.bindingField === "diagnosisRunId"
+                ? { diagnosisRunId: null, updatedAt: new Date() }
+                : { repairRunId: null, updatedAt: new Date() },
+            )
+            .where(and(
+              eq(recoveryEngineerIncidents.id, input.incidentId),
+              input.bindingField === "diagnosisRunId"
+                ? eq(recoveryEngineerIncidents.diagnosisRunId, insideStaleCarrierRunId)
+                : eq(recoveryEngineerIncidents.repairRunId, insideStaleCarrierRunId),
+            ))
+            .returning()
+            .then((rows) => rows[0] ?? null);
+          if (cleared) incidentNow = cleared;
+        }
+      }
+      if (!incidentNow || !input.guard(incidentNow)) {
+        return { action: "stand_down", escalated: null, claimId: null };
+      }
+      const charges = inside.charges + (inside.staleClaim ? 1 : 0);
+      if (charges >= INCIDENT_DISPATCH_MAX_ATTEMPTS) {
+        // The cap decision and its escalation commit under the intent lock,
+        // fenced to the exact validated incident state, so a terminal or
+        // manual outcome that committed first always wins.
+        const escalated = await escalateIncidentDispatchExhausted(tx, incidentNow, input.exhaustedReason);
+        return { action: escalated ? "exhausted" : "stand_down", escalated, claimId: null };
+      }
+      if (inside.newestHoldReason !== null) {
+        const probedCleared = inside.newestHoldReason === "agent.not_invokable" ||
+          inside.newestHoldReason === DISPATCH_PARK_CARRIER_HOLD;
+        const backoff = dispatchRearmBackoffMs(inside.holdStreak);
+        const heldFresh = !probedCleared &&
+          inside.newestRowAt !== null &&
+          Date.now() - inside.newestRowAt.getTime() < backoff;
+        if (heldFresh) {
+          return { action: "stand_down", escalated: null, claimId: null };
+        }
+      }
+      const claimRow = await tx
+        .insert(agentWakeupRequests)
+        .values({
+          companyId: input.companyId,
+          agentId: input.agentId,
+          source: "automation",
+          triggerDetail: "system",
+          reason: DISPATCH_CLAIM_REASON,
+          payload: null,
+          status: "claimed",
+          requestedByActorType: "system",
+          requestedByActorId: "recovery_engineer",
+          idempotencyKey: input.idempotencyKey,
+          claimedAt: new Date(),
+        })
+        .returning({ id: agentWakeupRequests.id })
+        .then((rows) => rows[0]!);
+      if (input.claim) await input.claim(tx, incidentNow);
+      return { action: "proceed", escalated: null, claimId: claimRow.id };
+    });
+
+    if (decision.action === "exhausted") {
+      if (decision.escalated) {
+        await applyBoardEscalationFollowUps(decision.escalated, input.exhaustedReason, null);
+      }
+      return { outcome: "exhausted", runId: null };
+    }
+    if (decision.action === "stand_down") {
+      return { outcome: "held", runId: null };
+    }
+
+    // The enqueue runs with NO connection held by this flow: the decision
+    // transaction has committed, so the dispatcher's own transactions (and
+    // the pool it needs) are always available — a supported pool size of 1
+    // completes instead of deadlocking. The pre-start hook carries the exact
+    // claim row this pass committed, for every intent: it fences the enqueue
+    // on that still-current lease (a lease another dispatcher replaced after
+    // expiry refuses the late enqueue) and, for intents with an incident run
+    // column, binds the run atomically in the same transaction.
+    const claimId = decision.claimId;
+    if (!claimId) {
+      return { outcome: "held", runId: null };
+    }
+    const binding = bindIncidentDispatchRun({
+      incidentId: input.incidentId,
+      claimId,
+      bindingField: input.bindingField,
+      expectedStatus: input.bindingField
+        ? bindingExpectedStatus(input.bindingField)
+        : "verified",
+    });
+    let run: RunRow | null = null;
+    try {
+      run = await input.enqueue(binding);
+    } catch (error) {
+      if (isDispatchStandDownError(error)) {
+        // The incident moved on (a terminal or manual outcome won), or this
+        // pass's lease was replaced while the enqueue was in flight: the
+        // enqueue rolled back and the dispatch stands down without a charge.
+        // Finalization is fenced to THIS pass's own claim id, so it can never
+        // touch a replacement lease.
+        await finalizeDispatchClaim(claimId, {
+          status: "coalesced",
+          error: isDispatchBindingLostMessage(error)
+            ? DISPATCH_BINDING_LOST_MESSAGE
+            : DISPATCH_CLAIM_REPLACED_MESSAGE,
+        });
+        return { outcome: "held", runId: null };
+      }
+      // A refusal that wrote its own ledger row (a recognized hold or an
+      // unrecognized skip) is classified from that row. A refusal that wrote
+      // nothing converts this pass's dispatch claim into the durable
+      // failed-attempt row the cap counts.
+      const rowsNow = await db
+        .select({ id: agentWakeupRequests.id, reason: agentWakeupRequests.reason })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.agentId, input.agentId),
+          eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
+        ));
+      const realRows = rowsNow.filter((row) => row.reason !== DISPATCH_CLAIM_REASON);
+      const ledgerRows = ledger.rows.filter((row) => row.reason !== DISPATCH_CLAIM_REASON);
+      await finalizeDispatchClaim(claimId, realRows.length > ledgerRows.length
+        ? { status: "coalesced", error: "enqueue refused after recording its own ledger row" }
+        : { status: "failed", reason: DISPATCH_ENQUEUE_FAILED_REASON, error: null, finishedAt: new Date() });
+      return { outcome: "held", runId: null };
+    }
+
+    await finalizeDispatchClaim(claimId, {
+      status: "coalesced",
+      runId: run?.id ?? null,
+      finishedAt: new Date(),
+    });
+    if (run) {
+      if (input.bindingField) {
+        // A coalesced or merged wake returns an existing run that predates
+        // this pass, so its pre-start binding never ran: adopt it now, the
+        // same way the ledger adoption path records a converged wake. A
+        // freshly created run is already bound inside the enqueue
+        // transaction; this conditional record is a no-op for it.
+        await db
+          .update(recoveryEngineerIncidents)
+          .set(
+            input.bindingField === "diagnosisRunId"
+              ? { diagnosisRunId: run.id, updatedAt: new Date() }
+              : { repairRunId: run.id, updatedAt: new Date() },
+          )
+          .where(and(
+            eq(recoveryEngineerIncidents.id, input.incidentId),
+            isNull(
+              input.bindingField === "diagnosisRunId"
+                ? recoveryEngineerIncidents.diagnosisRunId
+                : recoveryEngineerIncidents.repairRunId,
+            ),
+          ));
+      }
+      if (input.onDispatched) await input.onDispatched(run.id);
+      return { outcome: "rearmed", runId: run.id };
+    }
+    // The dispatcher refused without a run (its own ledger row — a hold or an
+    // unrecognized skip — owns the classification). The intent waits for the
+    // next bounded re-arm.
+    return { outcome: "held", runId: null };
+  }
+
+  /** The lifecycle state a binding fences on, derived from the intent's
+   * binding field (the claim this pass just recorded set that state). */
+  function bindingExpectedStatus(bindingField: "diagnosisRunId" | "repairRunId"): string {
+    return bindingField === "diagnosisRunId" ? "diagnosing" : "repairing";
+  }
+
+  /** Finalizes THIS pass's exact dispatch claim row by id, and only while it
+   * is still the claimed lease: a late producer whose lease was replaced can
+   * never finalize (or resurrect) a replacement dispatcher's claim. */
+  async function finalizeDispatchClaim(
+    claimId: string,
+    patch: {
+      status: "coalesced" | "failed";
+      reason?: string;
+      runId?: string | null;
+      error?: string | null;
+      finishedAt?: Date | null;
+    },
+  ) {
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        status: patch.status,
+        ...(patch.reason !== undefined ? { reason: patch.reason } : {}),
+        ...(patch.runId !== undefined ? { runId: patch.runId } : {}),
+        ...(patch.error !== undefined ? { error: patch.error } : {}),
+        ...(patch.finishedAt !== undefined ? { finishedAt: patch.finishedAt } : {}),
+        updatedAt: new Date(),
+      })
+      .where(and(
+        eq(agentWakeupRequests.id, claimId),
+        eq(agentWakeupRequests.reason, DISPATCH_CLAIM_REASON),
+        eq(agentWakeupRequests.status, "claimed"),
+      ));
+  }
+
+  function diagnoseWakeInput(
+    incident: IncidentRow,
+    maintenanceIssue: IssueRow,
+    generation: IncidentSourceGeneration | null,
+  ) {
+    return {
+      source: "automation" as const,
+      triggerDetail: "system" as const,
+      reason: "recovery_engineer_diagnose",
+      idempotencyKey: `${DIAGNOSE_DISPATCH_KEY_PREFIX}${incident.id}`,
+      payload: {
+        issueId: maintenanceIssue.id,
+        incidentId: incident.id,
+        action: "diagnose",
+        ...sourceGenerationIntentFields(generation),
+      },
+      contextSnapshot: {
+        issueId: maintenanceIssue.id,
+        taskId: maintenanceIssue.id,
+        incidentId: incident.id,
+        wakeReason: "recovery_engineer_diagnose",
+        source: "recovery_engineer.incident_detected",
+        recoveryRole: "diagnosis",
+      },
+      requestedByActorType: "system" as const,
+      requestedByActorId: "recovery_engineer",
+    };
+  }
+
+  /**
+   * Re-arms the incident's own dispatch intents (diagnose wake, repair wake,
+   * post-activation resume wake) whose wake never materialized a run — a
+   * scheduling suppression or drain, an unavailable participant, or a crash
+   * between the durable claim and the enqueue. The same incident is re-armed
+   * in place under the same idempotency key: no second incident, no second
+   * maintenance issue, no duplicate wake. An unavailable participant holds
+   * the re-arm without spending an attempt; past the bounded attempt cap the
+   * board owns the next action.
+   */
+  async function reconcileIncidentDispatches(config: ConfigRow): Promise<IncidentDispatchReconciliation> {
+    const rows = await db
+      .select()
+      .from(recoveryEngineerIncidents)
+      .where(and(
+        eq(recoveryEngineerIncidents.companyId, config.companyId),
+        inArray(recoveryEngineerIncidents.status, [
+          "suspected",
+          "diagnosing",
+          "repairing",
+          "verified",
+          "escalated",
+        ]),
+        or(
+          // Interrupted activation: the maintenance issue may or may not have
+          // been linked before the crash (the claim never happened). The
+          // dispatch seam's advisory lock keeps a mid-activation observation
+          // path and this sweep from both enqueuing the same intent.
+          and(
+            eq(recoveryEngineerIncidents.diagnosisAttemptCount, 0),
+            eq(recoveryEngineerIncidents.status, "suspected"),
+          ),
+          // Claimed diagnosis whose dispatch never produced a run.
+          and(
+            eq(recoveryEngineerIncidents.diagnosisAttemptCount, 1),
+            isNull(recoveryEngineerIncidents.diagnosisRunId),
+          ),
+          // Claimed diagnosis whose bound run was a park carrier that the
+          // scheduler gate-cancelled at promotion: the never-executed wait is
+          // a stale intent to re-derive, never execution evidence.
+          and(
+            eq(recoveryEngineerIncidents.diagnosisAttemptCount, 1),
+            isNotNull(recoveryEngineerIncidents.diagnosisRunId),
+            eq(recoveryEngineerIncidents.status, "diagnosing"),
+            sql`exists (
+              select 1 from agent_wakeup_requests w
+              join heartbeat_runs r on r.id = w.run_id
+              where w.company_id = ${config.companyId}
+                and w.agent_id = ${config.agentId}
+                and w.idempotency_key = ${DIAGNOSE_DISPATCH_KEY_PREFIX} || recovery_engineer_incidents.id::text
+                and w.run_id = recovery_engineer_incidents.diagnosis_run_id
+                and r.status = 'cancelled'
+                and r.context_snapshot -> 'suppressedWakePark' is not null
+            )`,
+          ),
+          // Requested repair whose wake never produced a run.
+          and(
+            isNotNull(recoveryEngineerIncidents.repairIssueId),
+            isNull(recoveryEngineerIncidents.repairRunId),
+            isNotNull(recoveryEngineerIncidents.repairTarget),
+          ),
+          // Requested repair whose bound run was a gate-cancelled park
+          // carrier: the same stale-intent rule as the diagnosis intent.
+          and(
+            isNotNull(recoveryEngineerIncidents.repairIssueId),
+            isNotNull(recoveryEngineerIncidents.repairRunId),
+            isNotNull(recoveryEngineerIncidents.repairTarget),
+            eq(recoveryEngineerIncidents.status, "repairing"),
+            sql`exists (
+              select 1 from agent_wakeup_requests w
+              join heartbeat_runs r on r.id = w.run_id
+              where w.company_id = ${config.companyId}
+                and w.agent_id = ${config.repairAgentId}
+                and w.idempotency_key = ${REPAIR_WAKE_KEY_PREFIX} || recovery_engineer_incidents.id::text || ':' || recovery_engineer_incidents.repair_target::text
+                and w.run_id = recovery_engineer_incidents.repair_run_id
+                and r.status = 'cancelled'
+                and r.context_snapshot -> 'suppressedWakePark' is not null
+            )`,
+          ),
+          // Confirmed activation whose resume instruction never produced a
+          // run (a source resume dispatch is replayed by
+          // reconcileSourceDispatches; this covers the instruction wake).
+          and(
+            isNotNull(recoveryEngineerIncidents.activatedAt),
+            isNotNull(recoveryEngineerIncidents.activatedRepairCommit),
+            isNull(recoveryEngineerIncidents.resumedRunId),
+          ),
+        ),
+      ))
+      .orderBy(asc(recoveryEngineerIncidents.createdAt), asc(recoveryEngineerIncidents.id))
+      .limit(SWEEP_BATCH_SIZE);
+
+    const result: IncidentDispatchReconciliation = {
+      evaluated: rows.length,
+      rearmed: 0,
+      adopted: 0,
+      completed: 0,
+      held: 0,
+      exhausted: 0,
+    };
+
+    const agentInvokable = async (agentId: string) => {
+      const agent = await db
+        .select()
+        .from(agents)
+        .where(and(eq(agents.id, agentId), eq(agents.companyId, config.companyId)))
+        .then((rows2) => rows2[0] ?? null);
+      if (!agent) return false;
+      return (await evaluateAgentInvokabilityFromDb(db, agent)).invokable;
+    };
+
+    for (const candidate of rows) {
+      const incident = await db
+        .select()
+        .from(recoveryEngineerIncidents)
+        .where(eq(recoveryEngineerIncidents.id, candidate.id))
+        .then((rows2) => rows2[0] ?? null);
+      if (!incident) continue;
+
+      const escalationRearmable = incident.status !== "escalated" || (
+        incident.boardEscalationReason !== null &&
+        (REARMABLE_DISPATCH_ESCALATION_REASONS as readonly string[]).includes(incident.boardEscalationReason)
+      );
+      if (!escalationRearmable) continue;
+
+      // ---- diagnosis dispatch intent ----
+      if (
+        (incident.diagnosisAttemptCount === 0 && incident.status === "suspected") ||
+        (incident.diagnosisAttemptCount === 1 && (
+          (!incident.diagnosisRunId && (
+            incident.status === "diagnosing" ||
+            (incident.status === "escalated" &&
+              incident.boardEscalationReason !== null &&
+              (DIAGNOSIS_DISPATCH_ESCALATION_REASONS as readonly string[]).includes(incident.boardEscalationReason)))
+          ) ||
+          // The bound run is a gate-cancelled park carrier: the seam clears
+          // the stale binding and re-derives the dispatch under the cap.
+          (incident.diagnosisRunId && incident.status === "diagnosing"))
+        )
+      ) {
+        let maintenance = incident.maintenanceIssueId
+          ? await issuesSvc.getById(incident.maintenanceIssueId)
+          : null;
+        if (!maintenance) {
+          // The maintenance issue was never linked or disappeared: heal the
+          // linkage from the incident's own sources under the same
+          // idempotency key instead of minting a second incident. With no
+          // source generation left to describe, the board owns the incident.
+          const sourceIssue = await newestIncidentSourceIssue(incident);
+          if (!sourceIssue) {
+            await escalateToBoard(incident.id, "diagnosis_maintenance_issue_missing");
+            result.exhausted += 1;
+            continue;
+          }
+          maintenance = await ensureMaintenanceIssue(
+            incident,
+            config,
+            sourceIssue,
+            incident.evidence.slice(0, 20).join("\n"),
+          );
+        }
+        if (["done", "cancelled"].includes(maintenance.status)) continue;
+        if (maintenance.assigneeAgentId !== config.agentId || maintenance.assigneeUserId) continue;
+        if (incident.diagnosisAttemptCount === 0) {
+          // Complete the interrupted activation exactly as the observation
+          // path would have: claim, then enqueue under the dispatch key.
+          const claimed = await claimDiagnosis(incident, config, maintenance);
+          if (claimed) result.rearmed += 1;
+          else result.held += 1;
+          continue;
+        }
+        if (!(await agentInvokable(config.agentId))) {
+          result.held += 1;
+          continue;
+        }
+        const generation = await newestOpenSourceGeneration(incident.id);
+        const outcome = await rearmIncidentWake({
+          incidentId: incident.id,
+          companyId: config.companyId,
+          agentId: config.agentId,
+          idempotencyKey: `${DIAGNOSE_DISPATCH_KEY_PREFIX}${incident.id}`,
+          exhaustedReason: DIAGNOSIS_DISPATCH_EXHAUSTED_REASON,
+          bindingField: "diagnosisRunId",
+          guard: (current) =>
+            !current.diagnosisRunId &&
+            (current.status === "diagnosing" || (
+              current.status === "escalated" &&
+              current.boardEscalationReason !== null &&
+              (DIAGNOSIS_DISPATCH_ESCALATION_REASONS as readonly string[]).includes(current.boardEscalationReason))),
+          claim: (tx, validated) => tx
+            .update(recoveryEngineerIncidents)
+            .set({
+              status: "diagnosing",
+              boardEscalatedAt: null,
+              boardEscalationReason: null,
+              updatedAt: new Date(),
+            })
+            .where(and(
+              eq(recoveryEngineerIncidents.id, incident.id),
+              isNull(recoveryEngineerIncidents.diagnosisRunId),
+              validated.status === "escalated" && validated.boardEscalationReason !== null
+                ? eq(recoveryEngineerIncidents.boardEscalationReason, validated.boardEscalationReason)
+                : undefined,
+            ))
+            .returning()
+            .then((rows2) => rows2[0] ?? null),
+          // The run id is bound inside the dispatcher's own run-creation
+          // transaction (pre-start), never recorded after the enqueue.
+          enqueue: (bindRun) => deps.enqueueWakeup(config.agentId, {
+            ...diagnoseWakeInput(incident, maintenance!, generation),
+            bindRun,
+          }),
+          onAdopted: async (wake) => {
+            await reopenDispatchFailureEscalation(incident.id, "diagnosing");
+            if (!wake.runId) return "adopted";
+            const claimed = await db
+              .update(recoveryEngineerIncidents)
+              .set({ diagnosisRunId: wake.runId, updatedAt: new Date() })
+              .where(and(
+                eq(recoveryEngineerIncidents.id, incident.id),
+                isNull(recoveryEngineerIncidents.diagnosisRunId),
+              ))
+              .returning()
+              .then((rows2) => rows2[0] ?? null);
+            const current = claimed ?? await db
+              .select()
+              .from(recoveryEngineerIncidents)
+              .where(eq(recoveryEngineerIncidents.id, incident.id))
+              .then((rows2) => rows2[0] ?? null);
+            if (!current) return "adopted";
+            const run = await db
+              .select()
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, wake.runId))
+              .then((rows2) => rows2[0] ?? null);
+            if (
+              run &&
+              (run.status === "succeeded" ||
+                PARTICIPANT_FAILURE_STATUSES.includes(run.status as never))
+            ) {
+              // The adopted wake's run already terminalized while the claim
+              // was unreconciled: run the exact participant-outcome handling
+              // (a bounded board escalation with the precise reason) instead
+              // of leaving an unowned success or a generic failure.
+              await handleParticipantRun(current, config, run, "recovery");
+            }
+            return "completed";
+          },
+          onDispatched: async (runId) => {
+            await restoreMaintenanceForDispatch(incident, config);
+            await logActivity(db, {
+              companyId: config.companyId,
+              actorType: "system",
+              actorId: "recovery_engineer",
+              agentId: null,
+              runId,
+              action: "recovery_engineer.diagnosis_dispatch_rearmed",
+              entityType: "recovery_engineer_incident",
+              entityId: incident.id,
+              details: {
+                maintenanceIssueId: maintenance!.id,
+                diagnosisAttempt: incident.diagnosisAttemptCount,
+                resumedClaim: true,
+              },
+            });
+          },
+        });
+        if (outcome.outcome === "rearmed" || outcome.outcome === "completed") result.rearmed += 1;
+        else if (outcome.outcome === "adopted") result.adopted += 1;
+        else if (outcome.outcome === "exhausted") result.exhausted += 1;
+        else result.held += 1;
+        continue;
+      }
+
+      // ---- repair dispatch intent ----
+      if (incident.repairIssueId && incident.repairTarget && (
+        (!incident.repairRunId && (
+          incident.status === "repairing" ||
+          (incident.status === "escalated" &&
+            incident.boardEscalationReason !== null &&
+            (REPAIR_DISPATCH_ESCALATION_REASONS as readonly string[]).includes(incident.boardEscalationReason))
+        )) ||
+        // The bound run is a gate-cancelled park carrier: the seam clears
+        // the stale binding and re-derives the dispatch under the cap.
+        (incident.repairRunId && incident.status === "repairing")
+      )) {
+        const repairIssue = await issuesSvc.getById(incident.repairIssueId);
+        if (
+          !repairIssue ||
+          ["done", "cancelled"].includes(repairIssue.status) ||
+          repairIssue.assigneeAgentId !== config.repairAgentId ||
+          repairIssue.assigneeUserId
+        ) {
+          result.held += 1;
+          continue;
+        }
+        if (!(await agentInvokable(config.repairAgentId))) {
+          result.held += 1;
+          continue;
+        }
+        const outcome = await rearmIncidentWake({
+          incidentId: incident.id,
+          companyId: config.companyId,
+          agentId: config.repairAgentId,
+          idempotencyKey: `${REPAIR_WAKE_KEY_PREFIX}${incident.id}:${incident.repairTarget}`,
+          exhaustedReason: REPAIR_DISPATCH_EXHAUSTED_REASON,
+          bindingField: "repairRunId",
+          guard: (current) =>
+            !current.repairRunId &&
+            (current.status === "repairing" || (
+              current.status === "escalated" &&
+              current.boardEscalationReason !== null &&
+              (REPAIR_DISPATCH_ESCALATION_REASONS as readonly string[]).includes(current.boardEscalationReason))),
+          claim: (tx, validated) => tx
+            .update(recoveryEngineerIncidents)
+            .set({
+              status: "repairing",
+              boardEscalatedAt: null,
+              boardEscalationReason: null,
+              updatedAt: new Date(),
+            })
+            .where(and(
+              eq(recoveryEngineerIncidents.id, incident.id),
+              isNull(recoveryEngineerIncidents.repairRunId),
+              validated.status === "escalated" && validated.boardEscalationReason !== null
+                ? eq(recoveryEngineerIncidents.boardEscalationReason, validated.boardEscalationReason)
+                : undefined,
+            ))
+            .returning()
+            .then((rows2) => rows2[0] ?? null),
+          // The run id is bound inside the dispatcher's own run-creation
+          // transaction (pre-start), never recorded after the enqueue.
+          enqueue: (bindRun) => deps.enqueueWakeup(config.repairAgentId, {
+            source: "assignment",
+            triggerDetail: "system",
+            reason: "recovery_engineer_repair",
+            idempotencyKey: `${REPAIR_WAKE_KEY_PREFIX}${incident.id}:${incident.repairTarget}`,
+            payload: {
+              issueId: repairIssue.id,
+              incidentId: incident.id,
+              target: incident.repairTarget!,
+            },
+            contextSnapshot: {
+              issueId: repairIssue.id,
+              taskId: repairIssue.id,
+              incidentId: incident.id,
+              wakeReason: "recovery_engineer_repair",
+              source: "recovery_engineer.repair_requested",
+              recoveryRole: "repair",
+            },
+            requestedByActorType: "system",
+            requestedByActorId: "recovery_engineer",
+            bindRun,
+          }),
+          onAdopted: async (wake) => {
+            await reopenDispatchFailureEscalation(incident.id, "repairing");
+            if (!wake.runId) return "adopted";
+            const claimed = await db
+              .update(recoveryEngineerIncidents)
+              .set({ repairRunId: wake.runId, updatedAt: new Date() })
+              .where(and(
+                eq(recoveryEngineerIncidents.id, incident.id),
+                isNull(recoveryEngineerIncidents.repairRunId),
+              ))
+              .returning()
+              .then((rows2) => rows2[0] ?? null);
+            const current = claimed ?? incident;
+            const run = await db
+              .select()
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, wake.runId))
+              .then((rows2) => rows2[0] ?? null);
+            if (
+              run &&
+              (run.status === "succeeded" ||
+                PARTICIPANT_FAILURE_STATUSES.includes(run.status as never))
+            ) {
+              await handleParticipantRun(current, config, run, "repair");
+            }
+            return "completed";
+          },
+          onDispatched: async (runId) => {
+            await logActivity(db, {
+              companyId: config.companyId,
+              actorType: "system",
+              actorId: "recovery_engineer",
+              agentId: null,
+              runId,
+              action: "recovery_engineer.repair_dispatch_rearmed",
+              entityType: "recovery_engineer_incident",
+              entityId: incident.id,
+              details: {
+                repairIssueId: repairIssue.id,
+                repairTarget: incident.repairTarget,
+              },
+            });
+          },
+        });
+        if (outcome.outcome === "rearmed" || outcome.outcome === "completed") result.rearmed += 1;
+        else if (outcome.outcome === "adopted") result.adopted += 1;
+        else if (outcome.outcome === "exhausted") result.exhausted += 1;
+        else result.held += 1;
+        continue;
+      }
+
+      // ---- post-activation resume instruction intent ----
+      if (
+        incident.activatedAt &&
+        incident.activatedRepairCommit &&
+        incident.activatedRepairCommit === incident.repairCommit &&
+        !incident.resumedRunId && (
+          incident.status === "verified" || (
+            incident.status === "escalated" &&
+            incident.boardEscalationReason === "post_activation_resume_wake_not_enqueued")
+        )
+      ) {
+        const maintenance = incident.maintenanceIssueId
+          ? await issuesSvc.getById(incident.maintenanceIssueId)
+          : null;
+        if (!maintenance || ["done", "cancelled"].includes(maintenance.status)) {
+          result.held += 1;
+          continue;
+        }
+        if (!(await agentInvokable(config.agentId))) {
+          result.held += 1;
+          continue;
+        }
+        const outcome = await rearmIncidentWake({
+          incidentId: incident.id,
+          companyId: config.companyId,
+          agentId: config.agentId,
+          idempotencyKey: `${ACTIVATED_WAKE_KEY_PREFIX}${incident.id}:${incident.activatedRepairCommit}`,
+          exhaustedReason: ACTIVATED_DISPATCH_EXHAUSTED_REASON,
+          // The instruction wake has no dedicated incident run column: the
+          // wake ledger row is its durable dispatch record.
+          bindingField: null,
+          // The verified activation state itself is re-armable: the primary
+          // path leaves the incident `verified` with no resume run when the
+          // instruction wake never materialized, so the guard accepts both
+          // that state and the legacy not-enqueued escalation (with the same
+          // activation/repair commit fence either way).
+          guard: (current) =>
+            !current.resumedRunId &&
+            current.activatedRepairCommit !== null &&
+            current.activatedRepairCommit === current.repairCommit && (
+              current.status === "verified" || (
+                current.status === "escalated" &&
+                current.boardEscalationReason === "post_activation_resume_wake_not_enqueued")
+            ),
+          claim: (tx, validated) => tx
+            .update(recoveryEngineerIncidents)
+            .set({
+              status: "verified",
+              boardEscalatedAt: null,
+              boardEscalationReason: null,
+              updatedAt: new Date(),
+            })
+            .where(and(
+              eq(recoveryEngineerIncidents.id, incident.id),
+              isNull(recoveryEngineerIncidents.resumedRunId),
+              eq(recoveryEngineerIncidents.status, validated.status),
+              validated.boardEscalationReason === null
+                ? isNull(recoveryEngineerIncidents.boardEscalationReason)
+                : eq(recoveryEngineerIncidents.boardEscalationReason, validated.boardEscalationReason),
+            ))
+            .returning()
+            .then((rows2) => rows2[0] ?? null),
+          enqueue: (bindRun) => deps.enqueueWakeup(config.agentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "recovery_engineer_activated",
+            idempotencyKey: `${ACTIVATED_WAKE_KEY_PREFIX}${incident.id}:${incident.activatedRepairCommit}`,
+            payload: {
+              issueId: maintenance.id,
+              incidentId: incident.id,
+              action: "resume",
+              repairCommit: incident.activatedRepairCommit!,
+            },
+            contextSnapshot: {
+              issueId: maintenance.id,
+              taskId: maintenance.id,
+              incidentId: incident.id,
+              repairCommit: incident.activatedRepairCommit!,
+              wakeReason: "recovery_engineer_activated",
+              source: "recovery_engineer.repair_activated",
+              recoveryRole: "resume",
+            },
+            requestedByActorType: "system",
+            requestedByActorId: "recovery_engineer",
+            // The instruction wake's run id has no dedicated incident field;
+            // the durable dispatch record is the wake ledger row itself.
+            bindRun,
+          }),
+          onAdopted: async (wake) => {
+            await reopenDispatchFailureEscalation(incident.id, "verified");
+            if (!wake.runId) return "adopted";
+            const run = await db
+              .select()
+              .from(heartbeatRuns)
+              .where(eq(heartbeatRuns.id, wake.runId))
+              .then((rows2) => rows2[0] ?? null);
+            if (
+              run &&
+              (run.status === "succeeded" ||
+                PARTICIPANT_FAILURE_STATUSES.includes(run.status as never))
+            ) {
+              await handleParticipantRun(incident, config, run, "recovery");
+            }
+            return "completed";
+          },
+          // The instruction wake's run id has no dedicated incident field;
+          // the durable dispatch record is the wake ledger row itself.
+          onDispatched: async (runId) => {
+            // Mirror wakeRecoveryAfterActivation: the activation is
+            // confirmed, so the activation wait is no longer the next action.
+            if (["blocked", "todo"].includes(maintenance.status)) {
+              await issuesSvc.update(maintenance.id, { status: "in_progress" });
+            }
+            await logActivity(db, {
+              companyId: config.companyId,
+              actorType: "system",
+              actorId: "recovery_engineer",
+              agentId: null,
+              runId,
+              action: "recovery_engineer.post_activation_resume_rearmed",
+              entityType: "recovery_engineer_incident",
+              entityId: incident.id,
+              details: {
+                maintenanceIssueId: maintenance.id,
+                repairCommit: incident.activatedRepairCommit,
+              },
+            });
+          },
+        });
+        if (outcome.outcome === "rearmed" || outcome.outcome === "completed") result.rearmed += 1;
+        else if (outcome.outcome === "adopted") result.adopted += 1;
+        else if (outcome.outcome === "exhausted") result.exhausted += 1;
+        else result.held += 1;
+      }
+    }
+    return result;
+  }
+
+  /**
    * Retries the maintenance close for incidents that already reached
    * `recovered`. The close can legitimately be refused while the participant
    * run that observed the recovery still holds a live path on the maintenance
@@ -4182,6 +5845,7 @@ export function recoveryEngineerService(
     const verificationFinalized = await finalizePendingVerifications(config.companyId);
     const sourceOutcomes = await reconcileSourceOutcomes(config);
     const dispatches = await reconcileSourceDispatches(config);
+    const incidentDispatches = await reconcileIncidentDispatches(config);
     const recoveredClosures = await reconcileRecoveredIncidentClosures(config);
 
     const cursors: Date[] = [];
@@ -4216,6 +5880,10 @@ export function recoveryEngineerService(
       resumesReplayed: dispatches.replayed,
       resumesAdopted: dispatches.adopted,
       resumesExhausted: dispatches.exhausted,
+      incidentDispatchesEvaluated: incidentDispatches.evaluated,
+      incidentDispatchesRearmed: incidentDispatches.rearmed,
+      incidentDispatchesAdopted: incidentDispatches.adopted,
+      incidentDispatchesExhausted: incidentDispatches.exhausted,
       recoveredClosures: recoveredClosures.closed,
       backlog: cursors.length > 0,
     };
@@ -4256,6 +5924,10 @@ export function recoveryEngineerService(
       resumesReplayed: results.reduce((total, row) => total + row.resumesReplayed, 0),
       resumesAdopted: results.reduce((total, row) => total + row.resumesAdopted, 0),
       resumesExhausted: results.reduce((total, row) => total + row.resumesExhausted, 0),
+      incidentDispatchesEvaluated: results.reduce((total, row) => total + row.incidentDispatchesEvaluated, 0),
+      incidentDispatchesRearmed: results.reduce((total, row) => total + row.incidentDispatchesRearmed, 0),
+      incidentDispatchesAdopted: results.reduce((total, row) => total + row.incidentDispatchesAdopted, 0),
+      incidentDispatchesExhausted: results.reduce((total, row) => total + row.incidentDispatchesExhausted, 0),
       recoveredClosures: results.reduce((total, row) => total + row.recoveredClosures, 0),
       backlogCompanies: results.filter((row) => row.backlog).length,
     };
@@ -4275,6 +5947,7 @@ export function recoveryEngineerService(
     reconcileIncidentOutcome: rollUpIncidentOutcome,
     reconcileSourceOutcomes,
     reconcileSourceDispatches,
+    reconcileIncidentDispatches,
     reconcileRecoveredIncidentClosures,
     finalizePendingVerifications,
     reconcileDue,

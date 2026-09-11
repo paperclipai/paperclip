@@ -3393,7 +3393,28 @@ interface WakeupOptions {
     statuses: string[];
     assigneeAgentId: string;
   };
+  /** Fences every admitted wake in its transaction, including coalesced and
+   * deferred wakes without a new run. A throw rolls the admission back. */
+  bindWake?: (tx: WakeupBindingTx) => Promise<void> | void;
+  /**
+   * Durable pre-start binding for the dispatched run. Invoked inside the same
+   * transaction that inserts the run — a fresh wake, and a wake parked on a
+   * scheduled-retry carrier — before the dispatcher can claim it, so the
+   * caller's authority for the run is committed atomically with the run row
+   * and can never lag execution (a fast participant observes the binding on
+   * its first action). Throwing rolls back the entire enqueue (wake row and
+   * run), refusing admission instead of starting an unbound run; promotion
+   * keeps the run identity, so a parked carrier stays bound through
+   * restarts.
+   */
+  bindRun?:
+    | ((run: typeof heartbeatRuns.$inferSelect, tx: WakeupBindingTx) => Promise<void> | void)
+    | null;
 }
+
+/** The minimal transactional surface a pre-start binding may write through:
+ * a real transaction handle or the database client itself. */
+type WakeupBindingTx = Pick<Db, "select" | "insert" | "update" | "execute">;
 
 type UsageTotals = {
   inputTokens: number;
@@ -6965,6 +6986,19 @@ async function resolveAcceptedPlanWakeRoutingDecision(args: {
   };
 }
 
+function canCoalescePendingInteractionWake(
+  existingRaw: unknown,
+  incoming: Record<string, unknown>,
+) {
+  const existing = parseObject(existingRaw);
+  const existingPending = existing.wakeReason === "interaction_pending";
+  const incomingPending = incoming.wakeReason === "interaction_pending";
+  if (!existingPending && !incomingPending) return true;
+  const interactionId = readNonEmptyString(existing.interactionId);
+  return existingPending && incomingPending && interactionId !== null
+    && interactionId === readNonEmptyString(incoming.interactionId);
+}
+
 export function mergeCoalescedContextSnapshot(
   existingRaw: unknown,
   incoming: Record<string, unknown>,
@@ -9141,8 +9175,8 @@ export function heartbeatService(
       .then((rows) => rows[0] ?? null);
   }
 
-  async function getIssueExecutionContext(companyId: string, issueId: string) {
-    return db
+  async function getIssueExecutionContext(companyId: string, issueId: string, dbOrTx: Pick<Db, "select"> = db) {
+    return dbOrTx
       .select({
         id: issues.id,
         identifier: issues.identifier,
@@ -9235,6 +9269,7 @@ export function heartbeatService(
   async function getRoutineEnvForExecutionIssue(
     companyId: string,
     issueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null,
+    dbOrTx: Pick<Db, "select"> = db,
   ) {
     if (
       !issueContext ||
@@ -9245,7 +9280,7 @@ export function heartbeatService(
     }
 
     const routineRun = issueContext.originRunId
-      ? await db
+      ? await dbOrTx
           .select({
             routineRevisionId: routineRuns.routineRevisionId,
             responsibleUserId: routineRuns.responsibleUserId,
@@ -9262,7 +9297,7 @@ export function heartbeatService(
       : null;
 
     if (routineRun?.routineRevisionId) {
-      const revision = await db
+      const revision = await dbOrTx
         .select({
           snapshot: routineRevisions.snapshot,
           responsibleUserId: routineRevisions.responsibleUserId,
@@ -9291,7 +9326,7 @@ export function heartbeatService(
       }
     }
 
-    const routine = await db
+    const routine = await dbOrTx
       .select({
         env: routines.env,
         responsibleUserId: routines.responsibleUserId,
@@ -9312,8 +9347,8 @@ export function heartbeatService(
     };
   }
 
-  async function resolveCompanyDefaultResponsibleUserId(companyId: string) {
-    const company = await db
+  async function resolveCompanyDefaultResponsibleUserId(companyId: string, dbOrTx: Pick<Db, "select"> = db) {
+    const company = await dbOrTx
       .select({ defaultResponsibleUserId: companies.defaultResponsibleUserId })
       .from(companies)
       .where(eq(companies.id, companyId))
@@ -9323,7 +9358,7 @@ export function heartbeatService(
     );
     if (explicitDefault) return explicitDefault;
 
-    const owner = await db
+    const owner = await dbOrTx
       .select({ userId: companyMemberships.principalId })
       .from(companyMemberships)
       .where(
@@ -9339,7 +9374,7 @@ export function heartbeatService(
       .then((rows) => rows[0] ?? null);
     if (owner?.userId) return owner.userId;
 
-    const firstUser = await db
+    const firstUser = await dbOrTx
       .select({ userId: companyMemberships.principalId })
       .from(companyMemberships)
       .where(
@@ -9358,9 +9393,10 @@ export function heartbeatService(
   async function resolveParentIssueResponsibleUserId(
     companyId: string,
     parentId: string | null | undefined,
+    dbOrTx: Pick<Db, "select"> = db,
   ) {
     if (!parentId) return null;
-    const parent = await db
+    const parent = await dbOrTx
       .select({
         responsibleUserId: issues.responsibleUserId,
         createdByUserId: issues.createdByUserId,
@@ -9396,7 +9432,7 @@ export function heartbeatService(
     source?: WakeupOptions["source"] | null;
     triggerDetail?: WakeupOptions["triggerDetail"] | null;
     existingRunResponsibleUserId?: string | null;
-  }) {
+  }, dbOrTx: Pick<Db, "select"> = db) {
     const contextResponsibleUserId = readNonEmptyString(
       input.contextSnapshot.responsibleUserId,
     );
@@ -9408,7 +9444,7 @@ export function heartbeatService(
       ? input.contextSnapshot.wakeCommentIds.filter((id): id is string => typeof id === "string")
       : readNonEmptyString(input.contextSnapshot.wakeCommentId) ? [String(input.contextSnapshot.wakeCommentId)] : [];
     if (input.issueContext && messageIds.length && !input.contextSnapshot.retryOfRunId) {
-      const messages = await db.select({ id: issueComments.id, authorUserId: issueComments.authorUserId })
+      const messages = await dbOrTx.select({ id: issueComments.id, authorUserId: issueComments.authorUserId })
         .from(issueComments).where(and(eq(issueComments.companyId, input.companyId),
           eq(issueComments.issueId, input.issueContext.id), inArray(issueComments.id, messageIds)));
       for (const id of [...messageIds].reverse()) {
@@ -9421,7 +9457,7 @@ export function heartbeatService(
     }
     const retryOfRunId = readNonEmptyString(input.contextSnapshot.retryOfRunId);
     if (retryOfRunId) {
-      const [origin] = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+      const [origin] = await dbOrTx.select({ responsibleUserId: heartbeatRuns.responsibleUserId })
         .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, retryOfRunId)));
       if (origin?.responsibleUserId) return origin.responsibleUserId;
     }
@@ -9436,11 +9472,12 @@ export function heartbeatService(
     const parentResponsibleUserId = await resolveParentIssueResponsibleUserId(
       input.companyId,
       input.issueContext?.parentId,
+      dbOrTx,
     );
     if (parentResponsibleUserId) return parentResponsibleUserId;
     if (!input.issueContext && requestedUserId) return requestedUserId;
     input.contextSnapshot.executionIdentityCause = "company_default";
-    return resolveCompanyDefaultResponsibleUserId(input.companyId);
+    return resolveCompanyDefaultResponsibleUserId(input.companyId, dbOrTx);
   }
 
   async function resolveResponsibleUserIdForRun(input: {
@@ -18549,6 +18586,13 @@ export function heartbeatService(
   }
 
   async function reconcileStrandedAssignedIssues() {
+    const activeCompanies = await db.select({ id: companies.id }).from(companies)
+      .where(eq(companies.status, "active"));
+    for (const company of activeCompanies) {
+      await recovery.reconcileFailedAdvice(company.id).catch((err) => {
+        logger.error({ err, companyId: company.id }, "failed to reconcile orphaned advisor consultations");
+      });
+    }
     return recovery.reconcileStrandedAssignedIssues({
       issueCreatedAtGte: await getWorktreeExecutionCutoff(),
     });
@@ -24597,6 +24641,11 @@ export function heartbeatService(
         }
       }
       activeRunExecutions.delete(run.id);
+      if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status) && !shutdownInProgress) {
+        await recovery.reconcileFailedAdviceForRun(run.id).catch((err) => {
+          logger.error({ err, runId: run.id }, "failed to reconcile settled advisor consultations");
+        });
+      }
       if (
         !nativeSessionResumeScheduled &&
         !nativeWorkspaceFinalizeScheduled &&
@@ -25710,6 +25759,8 @@ export function heartbeatService(
     requestedByActorType: "user" | "agent" | "system" | null;
     requestedByActorId: string | null;
     idempotencyKey: string | null;
+    bindRun?: WakeupOptions["bindRun"] | null;
+    bindWake?: WakeupOptions["bindWake"];
     now: Date;
   };
 
@@ -25826,6 +25877,14 @@ export function heartbeatService(
           })
           .where(eq(agentWakeupRequests.id, existingPark.wakeupRequestId));
       }
+      // Coalescing onto an existing carrier re-verifies its pre-start binding
+      // inside the same transaction: an already-bound carrier satisfies the
+      // binding idempotently, an unbound one is bound here, and a binding the
+      // owner no longer accepts rolls the whole park back.
+      if (input.bindRun) {
+        await input.bindRun(existingPark, dbOrTx);
+      }
+      await input.bindWake?.(dbOrTx);
       return;
     }
 
@@ -25870,6 +25929,13 @@ export function heartbeatService(
       .update(agentWakeupRequests)
       .set({ runId: parkedRun.id, updatedAt: input.now })
       .where(eq(agentWakeupRequests.id, wake.id));
+    // The parked carrier is bound before it can ever be promoted and
+    // claimed: the binding commits with the carrier and survives restarts,
+    // so promotion executes an already-authorized run.
+    if (input.bindRun) {
+      await input.bindRun(parkedRun, dbOrTx);
+    }
+    await input.bindWake?.(dbOrTx);
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
@@ -25966,6 +26032,8 @@ export function heartbeatService(
           requestedByActorType: opts.requestedByActorType ?? null,
           requestedByActorId: opts.requestedByActorId ?? null,
           idempotencyKey: opts.idempotencyKey ?? null,
+          bindRun: opts.bindRun ?? null,
+          bindWake: opts.bindWake,
           now: new Date(),
         });
       });
@@ -26107,15 +26175,14 @@ export function heartbeatService(
     const isolatedWorkspacesEnabled = issueId
       ? (await instanceSettings.getExperimental()).enableIsolatedWorkspaces
       : false;
-    let queuedResponsibleUserIdPromise: Promise<string> | null = null;
-    const resolveQueuedResponsibleUserId = () => {
-      queuedResponsibleUserIdPromise ??= (async () => {
+    const resolveQueuedResponsibleUserId = async (dbOrTx: Pick<Db, "select">) => {
         const queuedIssueContext = issueId
-          ? await getIssueExecutionContext(agent.companyId, issueId)
+          ? await getIssueExecutionContext(agent.companyId, issueId, dbOrTx)
           : null;
         const queuedRoutineEnvContext = await getRoutineEnvForExecutionIssue(
           agent.companyId,
           queuedIssueContext,
+          dbOrTx,
         );
         const queuedResponsibleUserId =
           await resolveResponsibleUserIdForRunSeed({
@@ -26127,7 +26194,7 @@ export function heartbeatService(
             requestedByActorId: opts.requestedByActorId ?? null,
             source,
             triggerDetail,
-          });
+          }, dbOrTx);
         if (!queuedResponsibleUserId) {
           throw new HttpError(
             422,
@@ -26146,8 +26213,6 @@ export function heartbeatService(
           );
         }
         return queuedResponsibleUserId;
-      })();
-      return queuedResponsibleUserIdPromise;
     };
 
     const budgetBlock = await budgets.getInvocationBlock(
@@ -26273,6 +26338,9 @@ export function heartbeatService(
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const cancelledRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
+      // This cached filesystem/session probe uses the outer database.
+      // Resolve it before acquiring the issue transaction's connection.
+      if (isolatedWorkspacesEnabled) await resolveHasResolvablePriorSessionWorkspace();
 
       const outcome = await db.transaction(async (tx) => {
         await tx.execute(
@@ -26386,6 +26454,15 @@ export function heartbeatService(
             scheduledRun.status !== "scheduled_retry" ||
             (scheduledRun.agentId === issue.assigneeAgentId && !issueCancelled)
           ) {
+            return false;
+          }
+          // Addressed reviewers/advisors are not the issue assignee. Recheck
+          // their persisted interaction before declaring the retry reassigned.
+          if (!issueCancelled && issue.status !== "done" &&
+            await allowsAddressedInteractionWake(
+              tx, agent.companyId, issue.id, scheduledRun.agentId,
+              parseObject(scheduledRun.contextSnapshot),
+            )) {
             return false;
           }
 
@@ -26525,7 +26602,12 @@ export function heartbeatService(
           activeExecutionRun &&
           activeExecutionRun.status !== "running" &&
           issue.assigneeAgentId &&
-          activeExecutionRun.agentId !== issue.assigneeAgentId
+          activeExecutionRun.agentId !== issue.assigneeAgentId &&
+          !(issue.status !== "done" && issue.status !== "cancelled" &&
+            await allowsAddressedInteractionWake(
+              tx, issue.companyId, issue.id, activeExecutionRun.agentId,
+              parseObject(activeExecutionRun.contextSnapshot),
+            ))
         ) {
           const cancelled = await tx
             .update(heartbeatRuns)
@@ -26687,6 +26769,8 @@ export function heartbeatService(
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
+            bindRun: opts.bindRun ?? null,
+            bindWake: opts.bindWake,
             now: new Date(),
           });
           return { kind: "skipped" as const };
@@ -26864,7 +26948,8 @@ export function heartbeatService(
             isSameExecutionAgent &&
             !shouldDeferFollowupWake &&
             !shouldQueueFollowupForRunningWake &&
-            availableActiveExecutionRun
+            availableActiveExecutionRun &&
+            canCoalescePendingInteractionWake(availableActiveExecutionRun.contextSnapshot, enrichedContextSnapshot)
           ) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               availableActiveExecutionRun.contextSnapshot,
@@ -26901,6 +26986,7 @@ export function heartbeatService(
               finishedAt: new Date(),
             });
 
+            await opts.bindWake?.(tx);
             return { kind: "coalesced" as const, run: mergedRun };
           }
 
@@ -26920,6 +27006,10 @@ export function heartbeatService(
                   eq(agentWakeupRequests.agentId, agentId),
                   eq(agentWakeupRequests.status, "deferred_issue_execution"),
                   sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+                  enrichedContextSnapshot.wakeReason === "interaction_pending"
+                    ? sql`${agentWakeupRequests.payload} -> ${DEFERRED_WAKE_CONTEXT_KEY} ->> 'wakeReason' = 'interaction_pending'
+                        and ${agentWakeupRequests.payload} -> ${DEFERRED_WAKE_CONTEXT_KEY} ->> 'interactionId' = ${readNonEmptyString(enrichedContextSnapshot.interactionId)}`
+                    : sql`${agentWakeupRequests.payload} -> ${DEFERRED_WAKE_CONTEXT_KEY} ->> 'wakeReason' is distinct from 'interaction_pending'`,
                 ),
               )
               .orderBy(asc(agentWakeupRequests.requestedAt))
@@ -26954,6 +27044,7 @@ export function heartbeatService(
                 })
                 .where(eq(agentWakeupRequests.id, existingDeferred.id));
 
+              await opts.bindWake?.(tx);
               return { kind: "deferred" as const };
             }
 
@@ -26970,6 +27061,7 @@ export function heartbeatService(
               idempotencyKey: opts.idempotencyKey ?? null,
             });
 
+            await opts.bindWake?.(tx);
             return { kind: "deferred" as const };
           }
         }
@@ -27165,7 +27257,7 @@ export function heartbeatService(
             invocationSource: source,
             triggerDetail,
             status: "queued",
-            responsibleUserId: await resolveQueuedResponsibleUserId(),
+            responsibleUserId: await resolveQueuedResponsibleUserId(tx),
             wakeupRequestId: wakeupRequest.id,
             contextSnapshot: enrichedContextSnapshot,
             sessionIdBefore: sessionBefore,
@@ -27182,10 +27274,18 @@ export function heartbeatService(
           })
           .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
+        // Pre-start binding: the caller's authority for this run commits with
+        // the run row, before startNextQueuedRunForAgent can claim it. A
+        // refused binding rolls the whole wake back.
+        if (opts.bindRun) {
+          await opts.bindRun(newRun, tx);
+        }
+
         // executionRunId is NOT stamped here (enqueueWakeup queues the run but
         // doesn't start it). It will be stamped in claimQueuedRun() once the run
         // transitions to "running" — Fix A (lazy locking).
 
+        await opts.bindWake?.(tx);
         return { kind: "queued" as const, run: newRun };
       });
 
@@ -27238,17 +27338,20 @@ export function heartbeatService(
     const sameScopeQueuedRun = activeRuns.find(
       (candidate) =>
         candidate.status === "queued" &&
-        isSameTaskScope(runTaskKey(candidate), taskKey),
+        isSameTaskScope(runTaskKey(candidate), taskKey) &&
+        canCoalescePendingInteractionWake(candidate.contextSnapshot, enrichedContextSnapshot),
     );
     const sameScopeScheduledRetryRun = activeRuns.find(
       (candidate) =>
         candidate.status === "scheduled_retry" &&
-        isSameTaskScope(runTaskKey(candidate), taskKey),
+        isSameTaskScope(runTaskKey(candidate), taskKey) &&
+        canCoalescePendingInteractionWake(candidate.contextSnapshot, enrichedContextSnapshot),
     );
     const sameScopeRunningRun = activeRuns.find(
       (candidate) =>
         candidate.status === "running" &&
-        isSameTaskScope(runTaskKey(candidate), taskKey),
+        isSameTaskScope(runTaskKey(candidate), taskKey) &&
+        canCoalescePendingInteractionWake(candidate.contextSnapshot, enrichedContextSnapshot),
     );
     const shouldQueueFollowupForRunningWake =
       Boolean(sameScopeRunningRun) &&
@@ -27279,7 +27382,9 @@ export function heartbeatService(
             coalescedTargetRun.status === "scheduled_retry",
         },
       );
-      const mergedRun = await db
+      return db.transaction(async (tx) => {
+      await opts.bindWake?.(tx);
+      const mergedRun = await tx
         .update(heartbeatRuns)
         .set({
           contextSnapshot: mergedContextSnapshot,
@@ -27289,7 +27394,7 @@ export function heartbeatService(
         .returning()
         .then((rows) => rows[0] ?? coalescedTargetRun);
 
-      await db.insert(agentWakeupRequests).values({
+      await tx.insert(agentWakeupRequests).values({
         companyId: agent.companyId,
         agentId,
         source,
@@ -27305,6 +27410,7 @@ export function heartbeatService(
         finishedAt: new Date(),
       });
       return mergedRun;
+      });
     }
 
     const queueOutcome = await db.transaction(async (tx) => {
@@ -27378,7 +27484,7 @@ export function heartbeatService(
           invocationSource: source,
           triggerDetail,
           status: "queued",
-          responsibleUserId: await resolveQueuedResponsibleUserId(),
+          responsibleUserId: await resolveQueuedResponsibleUserId(tx),
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: enrichedContextSnapshot,
           sessionIdBefore: sessionBefore,
@@ -27395,6 +27501,12 @@ export function heartbeatService(
         })
         .where(eq(agentWakeupRequests.id, wakeupRequest.id));
 
+      // Pre-start binding, same contract as the issue-scoped wake path.
+      if (opts.bindRun) {
+        await opts.bindRun(newRun, tx);
+      }
+
+      await opts.bindWake?.(tx);
       return { kind: "queued" as const, run: newRun };
     });
 
@@ -28405,6 +28517,10 @@ export function heartbeatService(
       }),
 
     wakeup: trackWakeup,
+    // The dispatcher itself, exposed for callers that must drive a real wake
+    // through the enqueue seam (with its pre-start binding hook) rather than
+    // the fire-and-forget tracked wrapper.
+    enqueueWakeup,
     dispatchPendingNativeStatusWakeups,
     triggerIssueMonitor,
 

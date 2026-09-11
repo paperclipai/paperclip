@@ -272,7 +272,7 @@ import {
   type IssueThreadInteractionResolverAudienceDecision,
   type IssueThreadInteractionResolverRestriction,
 } from "../services/issue-thread-interaction-resolution.js";
-import { resolveSelectedSuggestedTasks } from "../services/issue-thread-interactions.js";
+import { readAskUserQuestionsAdvice, resolveSelectedSuggestedTasks } from "../services/issue-thread-interactions.js";
 import {
   crossIssueInfluenceLimitError,
   crossIssueInfluenceRunContextError,
@@ -4596,6 +4596,12 @@ export function issueRoutes(
     const payload = interaction.payload && typeof interaction.payload === "object"
       ? interaction.payload as { toolAction?: unknown; secretProposal?: unknown }
       : null;
+    // A pinned advice card narrows resolution to its addressed advisor agent;
+    // read the pin off the stored payload so the route-level evaluation fails
+    // closed exactly like the service does at answer time.
+    const storedAdvice = interaction.kind === "ask_user_questions"
+      ? readAskUserQuestionsAdvice(interaction.payload).present
+      : false;
     const actor = getActorInfo(req);
     const decision: IssueThreadInteractionResolverAudienceDecision =
       evaluateIssueThreadInteractionResolverAudience({
@@ -4607,6 +4613,7 @@ export function issueRoutes(
         governedAction:
           interaction.kind === "request_confirmation"
           && (payload?.toolAction !== undefined || payload?.secretProposal !== undefined),
+        storedAdvice,
       });
     if (!decision.allowed) {
       return denyIssueThreadInteractionResolution(res, {
@@ -12516,6 +12523,9 @@ export function issueRoutes(
           && interaction.payload !== null
           && "toolAction" in interaction.payload
           && interaction.payload.toolAction !== undefined,
+        storedAdvice: interaction.kind === "ask_user_questions"
+          ? readAskUserQuestionsAdvice(interaction.payload).present
+          : false,
       })
     ) {
       void heartbeat.wakeup(interaction.addresseeAgentId, {

@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -87,6 +87,7 @@ import {
 } from "./issues.js";
 import { questionResponseDeliveryValues } from "./question-response-delivery.js";
 import {
+  assertIssueThreadInteractionAdviceResolver,
   assertIssueThreadInteractionCodeReviewResolver,
   assertIssueThreadInteractionResolverAudience,
   canonicalizeStoredResolverPolicy,
@@ -390,6 +391,144 @@ async function assertRequestConfirmationReviewModelStillCurrent(
   );
 }
 
+type AskUserQuestionsAdvicePin = NonNullable<
+  z.infer<typeof askUserQuestionsPayloadSchema>["advice"]
+>;
+
+/**
+ * Maximum distinct advisor consultations per issue + candidate revision. A
+ * consultation without a candidate counts against the issue's upfront-scope
+ * bucket. Idempotent replays return the original row and never consume budget.
+ */
+export const MAX_ADVICE_CONSULTATIONS_PER_CANDIDATE = 3;
+
+/** Fixed visible title for every advisor consultation card. */
+export const ADVICE_INTERACTION_TITLE = "Implementation advice";
+
+/**
+ * Read the broker-pinned advice pin off a stored question payload.
+ *
+ * `present` keys off own-property presence, not value truthiness: a stored
+ * `advice: null` is a tampered or legacy payload and must fail closed rather
+ * than downgrade into a generic question anyone could answer. A pin that fails
+ * validation fails closed the same way.
+ */
+export function readAskUserQuestionsAdvice(payload: unknown): {
+  present: boolean;
+  advice: AskUserQuestionsAdvicePin | null;
+} {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return { present: false, advice: null };
+  }
+  const raw = payload as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(raw, "advice")) return { present: false, advice: null };
+  const parsed = askUserQuestionsPayloadSchema.safeParse(raw);
+  if (!parsed.success || !parsed.data.advice) return { present: true, advice: null };
+  return { present: true, advice: parsed.data.advice };
+}
+
+/**
+ * Creation gate: the addressed advisor's currently configured model must equal
+ * the model the broker pinned. The pin is trusted input, but the configured
+ * model is the live metadata this instance owns.
+ */
+function assertAdviceModelMatches(args: {
+  expectedModel: string;
+  advisorAgentId: string;
+  adapterConfig: unknown;
+}) {
+  const configuredModel = readConfiguredAgentModel(args.adapterConfig);
+  if (configuredModel === args.expectedModel) return;
+  throw unprocessable("The addressed advisor agent's configured model does not match the pinned advice model", {
+    code: "interaction_advice_model_mismatch",
+    advisorAgentId: args.advisorAgentId,
+    expectedModel: args.expectedModel,
+    configuredModel,
+  });
+}
+
+/**
+ * Answer gate: a model change after the request refuses the answer. The advice
+ * stays attached to its exact candidate and model; the worker must request a
+ * new consultation for the new model.
+ */
+async function assertAdviceModelStillCurrent(
+  tx: Db,
+  interaction: Pick<IssueThreadInteractionRow, "id" | "companyId" | "addresseeAgentId">,
+  advice: AskUserQuestionsAdvicePin,
+) {
+  const advisorAgentId = interaction.addresseeAgentId;
+  const advisor = advisorAgentId
+    ? await tx
+      .select({ id: agents.id, companyId: agents.companyId, adapterConfig: agents.adapterConfig })
+      .from(agents)
+      .where(eq(agents.id, advisorAgentId))
+      .then((rows) => rows[0] ?? null)
+    : null;
+  const configuredModel = readConfiguredAgentModel(advisor?.adapterConfig);
+  if (advisor && advisor.companyId === interaction.companyId && configuredModel === advice.expectedModel) {
+    return;
+  }
+  throw issueThreadInteractionResolutionError(
+    409,
+    "interaction_stale_target",
+    "The advisor agent's configured model no longer matches the model pinned when this advice was requested",
+    {
+      interactionId: interaction.id,
+      advisorAgentId: advisorAgentId ?? null,
+      expectedModel: advice.expectedModel,
+      configuredModel,
+    },
+  );
+}
+
+/**
+ * Bounded issuance: at most {@link MAX_ADVICE_CONSULTATIONS_PER_CANDIDATE}
+ * distinct advisor consultations per issue + candidate (a null candidate is
+ * the issue's upfront-scope bucket). Runs inside the create transaction after
+ * the issue row lock, so concurrent creates serialize behind the same lock the
+ * insert uses and the count cannot race. Every advice interaction in the
+ * bucket counts — expired, cancelled, or superseded ones consumed their
+ * consultation — while an idempotent replay returns the original row before
+ * this check and never consumes budget.
+ */
+async function assertAdviceConsultationBudgetAvailable(
+  tx: Pick<Db, "select">,
+  args: {
+    companyId: string;
+    issueId: string;
+    candidate: AskUserQuestionsAdvicePin["candidate"] | null;
+  },
+) {
+  const candidateBucket = args.candidate
+    ? and(
+      sql`${issueThreadInteractions.payload}->'advice'->'candidate'->>'workspaceKey' = ${args.candidate.workspaceKey}`,
+      sql`${issueThreadInteractions.payload}->'advice'->'candidate'->>'revision' = ${args.candidate.revision}`,
+    )
+    : sql`(${issueThreadInteractions.payload}->'advice' ? 'candidate') = false`;
+  const [countRow] = await tx
+    .select({ count: sql<number>`count(*)::int` })
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.companyId, args.companyId),
+      eq(issueThreadInteractions.issueId, args.issueId),
+      eq(issueThreadInteractions.kind, "ask_user_questions"),
+      sql`${issueThreadInteractions.payload} ? 'advice'`,
+      candidateBucket,
+    ));
+  if ((countRow?.count ?? 0) >= MAX_ADVICE_CONSULTATIONS_PER_CANDIDATE) {
+    throw unprocessable(
+      `This issue has reached the limit of ${MAX_ADVICE_CONSULTATIONS_PER_CANDIDATE} advisor consultations for this candidate revision`,
+      {
+        code: "interaction_advice_consultation_limit_reached",
+        limit: MAX_ADVICE_CONSULTATIONS_PER_CANDIDATE,
+        candidateWorkspaceKey: args.candidate?.workspaceKey ?? null,
+        candidateRevision: args.candidate?.revision ?? null,
+      },
+    );
+  }
+}
+
 export const DEFAULT_RESOLVER_POLICY_BY_KIND: Record<
   IssueThreadInteractionKind,
   IssueThreadInteractionCanonicalResolverPolicy
@@ -487,6 +626,12 @@ function assertInteractionResolutionAllowed(current: IssueThreadInteractionRow, 
         questions?: readonly { id: string; intent?: "decision" | "information" }[];
         questionSet?: { questions: readonly { id: string; intent?: "decision" | "information" }[] } | null;
       }),
+    // Same fail-closed source rule for pinned advice: presence in the stored
+    // payload — usable or not — narrows answering to the addressed advisor
+    // agent and refuses every human override.
+    storedAdvice: current.kind === "ask_user_questions" && readAskUserQuestionsAdvice(current.payload).present
+      ? true
+      : undefined,
   });
 }
 
@@ -636,7 +781,7 @@ function isIssueThreadInteractionIdempotencyConflict(error: unknown): boolean {
   return err.code === "23505" && constraint === ISSUE_THREAD_INTERACTION_IDEMPOTENCY_CONSTRAINT;
 }
 
-function isEquivalentCreateRequest(
+function isEquivalentCreateRequestCore(
   row: IssueThreadInteractionRow,
   input: CreateIssueThreadInteraction,
   actor: InteractionActor,
@@ -649,13 +794,88 @@ function isEquivalentCreateRequest(
     && row.continuationPolicy === input.continuationPolicy
     && (row.idempotencyKey ?? null) === (input.idempotencyKey ?? null)
     && (row.sourceCommentId ?? null) === (input.sourceCommentId ?? null)
-    && (row.sourceRunId ?? null) === (input.sourceRunId ?? null)
     && (row.title ?? null) === (input.title ?? null)
     && (row.summary ?? null) === (input.summary ?? null)
     && (row.createdByAgentId ?? null) === (actor.agentId ?? null)
     && (row.createdByUserId ?? null) === (actor.userId ?? null)
     && isDeepStrictEqual(row.payload, input.payload)
   );
+}
+
+/**
+ * The stable task identity a run was working when it authored an interaction:
+ * the run's context issueId (falling back to taskId), mirroring how recovery
+ * correlates runs to issues. Both ids are host-owned run context, so equality
+ * means the two runs executed the same authoring task.
+ */
+function stableRunTaskIdentity(contextSnapshot: unknown): string | null {
+  const context = contextSnapshot && typeof contextSnapshot === "object" && !Array.isArray(contextSnapshot)
+    ? contextSnapshot as Record<string, unknown>
+    : {};
+  const issueId = context.issueId;
+  const taskId = context.taskId;
+  const identity = typeof issueId === "string" && issueId.trim()
+    ? issueId.trim()
+    : typeof taskId === "string" && taskId.trim()
+      ? taskId.trim()
+      : null;
+  return identity;
+}
+
+/**
+ * ADVICE-REPLAY-001: an interrupted author run's stable replay must survive
+ * resume. The broker forbids the caller from supplying the original
+ * sourceRunId, so when the same worker session resumes as a successor run and
+ * repeats its identical delivery_request_advice input, the route re-derives
+ * sourceRunId from the new run. The replay is still the same request: same
+ * agent, same source task, same payload (and therefore the same candidate
+ * revision). Provenance stays original — the stored row is returned untouched
+ * and its sourceRunId is never rewritten.
+ *
+ * Strictness is preserved: both runs must exist in the interaction's company,
+ * both must belong to the same agent as the replaying actor, and both must
+ * carry the same non-null task identity. A replay from a different agent, a
+ * different task, or a run that cannot be verified stays a 409.
+ */
+async function isSuccessorAuthorRunReplay(
+  db: Pick<Db, "select">,
+  row: IssueThreadInteractionRow,
+  input: CreateIssueThreadInteraction,
+  actor: InteractionActor,
+) {
+  const priorRunId = row.sourceRunId ?? null;
+  const replayRunId = input.sourceRunId ?? null;
+  if (!priorRunId || !replayRunId || priorRunId === replayRunId) return false;
+  if (!actor.agentId || (row.createdByAgentId ?? null) !== actor.agentId) return false;
+  const runs = await db
+    .select({
+      id: heartbeatRuns.id,
+      agentId: heartbeatRuns.agentId,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+    })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.companyId, row.companyId),
+      inArray(heartbeatRuns.id, [priorRunId, replayRunId]),
+    ));
+  const priorRun = runs.find((run) => run.id === priorRunId) ?? null;
+  const replayRun = runs.find((run) => run.id === replayRunId) ?? null;
+  if (!priorRun || !replayRun) return false;
+  if (priorRun.agentId !== actor.agentId || replayRun.agentId !== actor.agentId) return false;
+  const priorTask = stableRunTaskIdentity(priorRun.contextSnapshot);
+  const replayTask = stableRunTaskIdentity(replayRun.contextSnapshot);
+  return priorTask !== null && priorTask === replayTask;
+}
+
+async function isEquivalentCreateRequest(
+  db: Pick<Db, "select">,
+  row: IssueThreadInteractionRow,
+  input: CreateIssueThreadInteraction,
+  actor: InteractionActor,
+) {
+  if (!isEquivalentCreateRequestCore(row, input, actor)) return false;
+  if ((row.sourceRunId ?? null) === (input.sourceRunId ?? null)) return true;
+  return isSuccessorAuthorRunReplay(db, row, input, actor);
 }
 
 /**
@@ -849,6 +1069,7 @@ type UserCommentSupersedeSubject = { kind: "connection_intent" } | {
     supersedeOnUserComment?: boolean | null;
     questions?: readonly { id: string; intent?: "decision" | "information" }[];
     questionSet?: { questions: readonly { id: string; intent?: "decision" | "information" }[] } | null;
+    advice?: unknown;
   };
 };
 
@@ -859,6 +1080,12 @@ export function shouldSupersedeInteractionOnUserComment(interaction: UserComment
   // stored payload (not just its create-time default) so a row whose canonical
   // presentation or mirror says "decision" stays unsuperseded.
   if (interaction.kind === "ask_user_questions" && askUserQuestionsHasDecisionQuestion(interaction.payload)) {
+    return false;
+  }
+  // A pinned advice consultation is likewise answered only by its addressed
+  // advisor: a plain comment must never expire a pending consultation, so the
+  // pin wins over any stored supersede flag.
+  if (interaction.kind === "ask_user_questions" && readAskUserQuestionsAdvice(interaction.payload).present) {
     return false;
   }
   return interaction.payload.supersedeOnUserComment === true;
@@ -1017,15 +1244,21 @@ export function normalizeCreateInteractionInput(input: CreateIssueThreadInteract
     case "ask_user_questions":
       return {
         ...input,
+        // A pinned advice card is what the pin says it is: the broker-pinned
+        // consultation title is server-owned so an advice card can never
+        // present itself as an approval or a plain question.
+        title: input.payload.advice ? ADVICE_INTERACTION_TITLE : input.title,
         payload: {
           ...input.payload,
           // A decision is answered only by an explicit selection. Defaulting
           // `supersedeOnUserComment` to true would let a later plain comment
           // expire the card, which reads as implicit consent for a gate nobody
-          // actually answered.
-          supersedeOnUserComment:
-            input.payload.supersedeOnUserComment
-            ?? !input.payload.questions.some((question) => question.intent === "decision"),
+          // actually answered. Advice is likewise answered only by its advisor,
+          // so a pinned consultation is never comment-supersedeable.
+          supersedeOnUserComment: input.payload.advice
+            ? false
+            : input.payload.supersedeOnUserComment
+              ?? !input.payload.questions.some((question) => question.intent === "decision"),
         },
       };
     case "request_confirmation":
@@ -3082,6 +3315,29 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         });
       }
 
+      // A pinned advice consultation is directed at one advisor agent, the one
+      // the host broker pinned. The pin is trusted input; the model match below
+      // is re-checked against the addressee's live configuration, and answering
+      // re-checks it again. A consultation is never a human-gated decision
+      // card: decision intent is reserved for a person's consequential choice.
+      const advice = normalizedData.kind === "ask_user_questions"
+        ? normalizedData.payload.advice ?? null
+        : null;
+      if (advice && !normalizedData.addresseeAgentId) {
+        throw unprocessable("A pinned advice consultation must address the advisor agent", {
+          code: "interaction_advice_addressee_required",
+        });
+      }
+      if (advice && hasDecisionQuestion) {
+        throw unprocessable(
+          "An advisor consultation cannot contain decision questions: only the addressed advisor agent may answer it, and decision questions are reserved for a person's consequential choice",
+          { code: "interaction_advice_decision_question_conflict" },
+        );
+      }
+
+      // Input-derived addressing gates run before the replay lookup: they are
+      // functions of the request payload, so a replay of the same input fails
+      // here exactly like the original create did.
       if (normalizedData.addresseeAgentId) {
         if (normalizedData.addresseeAgentId === actor.agentId) {
           throw unprocessable("Agents cannot address issue-thread interactions to themselves");
@@ -3092,6 +3348,31 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         if (normalizedData.kind === "request_confirmation" && normalizedData.payload.secretProposal !== undefined) {
           throw unprocessable("Secret-proposal confirmations cannot be addressed to agents");
         }
+      }
+
+      // Idempotent replay resolution runs ahead of every live-state gate so a
+      // stable replay returns the original interaction even when current
+      // advisor state has drifted (archived agent, changed configured model).
+      // A replay is evidence the consultation already exists; the pinned model
+      // is re-enforced at answer time, not re-checked against drifted
+      // configuration here. A fresh create still runs every gate below.
+      if (normalizedData.idempotencyKey) {
+        const existing = await getIdempotentInteraction({
+          issueId: issue.id,
+          companyId: issue.companyId,
+          idempotencyKey: normalizedData.idempotencyKey,
+        });
+        if (existing) {
+          if (!(await isEquivalentCreateRequest(db, existing, normalizedData, actor))) {
+            throw conflict("Interaction idempotency key already exists for a different request", {
+              idempotencyKey: normalizedData.idempotencyKey,
+            });
+          }
+          return hydrateInteraction(existing);
+        }
+      }
+
+      if (normalizedData.addresseeAgentId) {
         const addressee = await db
           .select({
             id: agents.id,
@@ -3121,21 +3402,12 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
             adapterConfig: addressee.adapterConfig,
           });
         }
-      }
-
-      if (normalizedData.idempotencyKey) {
-        const existing = await getIdempotentInteraction({
-          issueId: issue.id,
-          companyId: issue.companyId,
-          idempotencyKey: normalizedData.idempotencyKey,
-        });
-        if (existing) {
-          if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
-            throw conflict("Interaction idempotency key already exists for a different request", {
-              idempotencyKey: normalizedData.idempotencyKey,
-            });
-          }
-          return hydrateInteraction(existing);
+        if (advice) {
+          assertAdviceModelMatches({
+            expectedModel: advice.expectedModel,
+            advisorAgentId: addressee.id,
+            adapterConfig: addressee.adapterConfig,
+          });
         }
       }
 
@@ -3207,6 +3479,28 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               code: "interaction_review_assignee_independence_required",
               reviewerAgentId: normalizedData.addresseeAgentId,
               assigneeAgentId: issueRow.assigneeAgentId,
+            });
+          }
+          // An advice consultation must be answerable by someone other than the
+          // issue's current assignee: the answer wakes the assignee through the
+          // question-response delivery, so addressing the assignee would steer
+          // the advice back into the advisor's own run and the worker would
+          // never see it. The locked issue row is the authority here, matching
+          // the review independence gate above.
+          if (advice && normalizedData.addresseeAgentId === issueRow.assigneeAgentId) {
+            throw unprocessable("An advisor consultation cannot address the issue's current assignee as its advisor", {
+              code: "interaction_advice_assignee_independence_required",
+              advisorAgentId: normalizedData.addresseeAgentId,
+              assigneeAgentId: issueRow.assigneeAgentId,
+            });
+          }
+          // Bounded issuance for advice: at most three distinct consultations
+          // per issue + candidate, serialized behind this issue row lock.
+          if (advice) {
+            await assertAdviceConsultationBudgetAvailable(tx, {
+              companyId: issue.companyId,
+              issueId: issue.id,
+              candidate: advice.candidate ?? null,
             });
           }
           // Validate the plan/document confirmation target inside the same
@@ -3311,7 +3605,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
           idempotencyKey: normalizedData.idempotencyKey,
         });
         if (!existing) throw error;
-        if (!isEquivalentCreateRequest(existing, normalizedData, actor)) {
+        if (!(await isEquivalentCreateRequest(db, existing, normalizedData, actor))) {
           throw conflict("Interaction idempotency key already exists for a different request", {
             idempotencyKey: normalizedData.idempotencyKey,
           });
@@ -4207,6 +4501,18 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       if (current.status !== "pending") {
         throw interactionTerminalError(current);
       }
+      // Read the advice pin before hydration: a stored pin that fails
+      // validation is tampered or legacy and must fail closed with a clean
+      // resolution error instead of an unparseable-payload crash.
+      const advicePin = readAskUserQuestionsAdvice(current.payload);
+      if (advicePin.present && !advicePin.advice) {
+        throw issueThreadInteractionResolutionError(
+          422,
+          "interaction_stale_target",
+          "This question card carries an unusable advice pin; request a new consultation",
+          { interactionId: current.id },
+        );
+      }
 
       const interaction = hydrateInteraction(current) as AskUserQuestionsInteraction;
       const normalizedAnswers = normalizeQuestionAnswers({
@@ -4216,6 +4522,41 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       });
 
       const updated = await db.transaction(async (tx) => {
+        // A pinned advice consultation re-verifies its identity gates under a
+        // row lock so a concurrent model change or re-resolution cannot slip
+        // between the pre-transaction audience check and the answer write.
+        if (advicePin.present) {
+          const lockedCurrent = await tx
+            .select()
+            .from(issueThreadInteractions)
+            .where(eq(issueThreadInteractions.id, interactionId))
+            .for("update")
+            .then((rows) => rows[0] ?? null);
+          if (!lockedCurrent || lockedCurrent.companyId !== issue.companyId || lockedCurrent.issueId !== issue.id) {
+            throw interactionNotFoundError();
+          }
+          if (lockedCurrent.status !== "pending") {
+            throw interactionTerminalError(lockedCurrent);
+          }
+          const lockedAdvicePin = readAskUserQuestionsAdvice(lockedCurrent.payload);
+          if (!lockedAdvicePin.present || !lockedAdvicePin.advice) {
+            throw issueThreadInteractionResolutionError(
+              422,
+              "interaction_stale_target",
+              "This question card carries an unusable advice pin; request a new consultation",
+              { interactionId: lockedCurrent.id },
+            );
+          }
+          // Only the addressed advisor agent may answer; never the requesting
+          // worker or its run. The pinned model must still be the advisor's
+          // configured model.
+          assertIssueThreadInteractionAdviceResolver({
+            actor: resolverActor(actor),
+            interaction: lockedCurrent,
+          });
+          await assertAdviceModelStillCurrent(tx as unknown as Db, lockedCurrent, lockedAdvicePin.advice);
+        }
+
         const resolvedAt = new Date();
         const [row] = await tx
           .update(issueThreadInteractions)
@@ -4225,6 +4566,20 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
               version: 1,
               answers: normalizedAnswers,
               summaryMarkdown: input.summaryMarkdown ?? null,
+              // Answer-time evidence for a pinned consultation: the pinned
+              // model the answering advisor's live configuration was
+              // re-verified against above, and the candidate the advice was
+              // bound to. Configuration evidence, not an observed provider
+              // response identity. Recorded by the server only.
+              ...(advicePin.advice
+                ? {
+                    advice: {
+                      version: 1,
+                      expectedModel: advicePin.advice.expectedModel,
+                      candidate: advicePin.advice.candidate ?? null,
+                    },
+                  }
+                : {}),
             },
             resolvedByAgentId: actor.agentId ?? null,
             resolvedByRunId: actor.runId ?? null,
