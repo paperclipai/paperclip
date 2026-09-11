@@ -109,7 +109,6 @@ type ConnectionRemovalTarget = {
 function chatProviderForSlug(slug: string): ChatProvider | null {
   const method = getAppStoreDefinition(slug)?.methods.find(
     (candidate) =>
-      candidate.transport === "chat_sdk" &&
       candidate.purpose === "channel" &&
       candidate.provider,
   );
@@ -351,7 +350,7 @@ export function Browse() {
     const definition = getAppStoreDefinition(appDefinitionSlug(entry));
     return (
       chatConnectorsEnabled ||
-      !definition?.methods.some((method) => method.transport === "chat_sdk") ||
+      !definition?.methods.some((method) => method.purpose === "channel") ||
       appSupportsToolCatalogSetup(definition)
     );
   });
@@ -535,6 +534,7 @@ export function Browse() {
           discord: "Discord",
           "microsoft-teams": "Microsoft Teams",
           telegram: "Telegram",
+  agentmail: "AgentMail",
         } as const;
         target = {
           key: `chat:${endpoint.provider}`,
@@ -737,7 +737,7 @@ export function Browse() {
   );
 }
 
-function ConnectorCard({
+export function ConnectorCard({
   row,
   allConnections,
   userProfileById,
@@ -850,7 +850,7 @@ function ConnectorCard({
                     onNavigate(`/apps/chat/${endpoint.id}/settings`)
                   }
                 >
-                  {endpoint.assignedAgentName} · Chat
+                  {endpoint.assignedAgentName} · {endpoint.provider === "agentmail" ? "Email" : "Chat"}
                 </button>
                 <p className="truncate text-xs text-muted-foreground">
                   {endpoint.providerAccountLabel ??

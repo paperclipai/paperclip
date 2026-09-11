@@ -1,5 +1,7 @@
 import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
+import { EmailThreadProvider } from "../components/EmailMessageCard";
+import { EmailTaskActivity } from "../components/EmailTaskActivity";
 import { TaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
 import {
   memo,
@@ -2291,6 +2293,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             hash: scrollLocation.hash,
           }}
         >
+          <EmailThreadProvider companyId={companyId} issueId={issueId}>
           <ThreadComponent
             key={issueId}
             initialHistoryPending={
@@ -2450,6 +2453,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             externalReferences={externalReferences}
             linkCaseReferences={linkCaseReferences}
           />
+          </EmailThreadProvider>
         </TaskChatScrollNavigation.Provider>
       )}
     </div>
@@ -7692,7 +7696,7 @@ export function IssueDetail({ tasksTab }: { tasksTab?: TaskSidePanelProps["tasks
               )}
               {resolvedDetailTab === "chat" ? (
                 <IssueDetailChatTab
-                  threadHeader={taskChatThreadHeader}
+                  threadHeader={<>{taskChatThreadHeader}{instanceExperimentalSettings?.enableChatConnectors && <EmailTaskActivity key={issue.id} companyId={issue.companyId} issueId={issue.id} />}</>}
                   issueBrief={
                     // Suppress the seeded-description bubble for the onboarding first
                     // task: its description is agent instructions, not something the

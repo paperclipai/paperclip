@@ -1,3 +1,4 @@
+import { TASK_EMAIL_TOOL, executeTaskEmail } from "./task-email-tool.js";
 import { resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { RUNTIME_CONNECTION_TOOL_DEFINITIONS } from "../connection-tool-definitions.js";
@@ -184,7 +185,7 @@ export class PaperclipRunnerToolAuthority {
     definitions.push(LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION);
     definitions.push(REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION);
     definitions.push(READ_CHAT_ATTACHMENT_TOOL_DEFINITION);
-    return [...RUNTIME_CONNECTION_TOOL_DEFINITIONS, ...definitions];
+    return [...RUNTIME_CONNECTION_TOOL_DEFINITIONS, TASK_EMAIL_TOOL, ...definitions];
   }
 
   async execute(call: {
@@ -192,6 +193,12 @@ export class PaperclipRunnerToolAuthority {
     callId: string;
     arguments: unknown;
   }): Promise<unknown> {
+    if (call.tool === TASK_EMAIL_TOOL.name) {
+      const { run } = await this.#boundContext();
+      const snapshot = record(run.contextSnapshot);
+      if (isPaperclipExternalChatContractTurn(snapshot.paperclipWake) || String(snapshot.source ?? "").startsWith("chat:") || snapshot.paperclipExternalChatQuestionResponse) throw forbidden("Restricted chat runs cannot use email actions");
+      return executeTaskEmail(this.db, this.binding, call.arguments);
+    }
     if (RUNTIME_CONNECTION_TOOL_DEFINITIONS.some((tool) => tool.name === call.tool)) {
       await this.#boundContext();
       const { run } = await captureRunIdentity(this.db, this.binding);
@@ -1081,7 +1088,7 @@ export class PaperclipRunnerToolAuthority {
                 eq(chatEndpoints.assignedAgentId, this.binding.agentId),
               ),
             );
-          if (!endpoint) {
+          if (!endpoint || endpoint.provider === "agentmail") {
             throw new Error("paperclip_runner_chat_attachment_binding_denied");
           }
           provider = endpoint.provider;

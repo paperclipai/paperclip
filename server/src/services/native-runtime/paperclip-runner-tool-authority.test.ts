@@ -90,11 +90,12 @@ describe("PaperclipRunnerToolAuthority", () => {
       issueId,
       runId,
     });
-    expect(authority.definitions()).toHaveLength(22);
+    expect(authority.definitions()).toHaveLength(23);
     expect(authority.definitions().map((tool) => tool.name)).toEqual(
       expect.arrayContaining([
         "connections_search",
         "connection_request",
+        "task_email",
         "get_task_context",
         "get_task_history",
         "search_tasks",

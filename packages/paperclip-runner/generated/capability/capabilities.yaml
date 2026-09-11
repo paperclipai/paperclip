@@ -884,6 +884,15 @@
       "expectedMockState": "operation_result"
     },
     {
+      "id": "skill:skills/paperclip/references/api-reference.md:1513",
+      "kind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/api-reference.md#L1513:task-bound-email-agentmail",
+      "heading": "Task-bound email (AgentMail)",
+      "primaryDisposition": "optional_agent_tool",
+      "semanticOperation": "scoped_discovery",
+      "expectedMockState": "operation_result"
+    },
+    {
       "id": "skill:skills/paperclip/references/artifacts.md:1",
       "kind": "skill_heading",
       "sourceAnchor": "skills/paperclip/references/artifacts.md#L1:generated-artifacts-and-work-products",
