@@ -386,3 +386,18 @@ pnpm secrets:migrate-inline-env --apply
 ```
 
 Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVIDER.md).
+
+### Persistent agent conversations
+
+Migration `0274_agent_chat.sql` adds conversation identity/state and session generation/boundary columns to `issues`, plus idempotent client request IDs and processed session-boundary generations to `issue_comments`. The company/agent/user unique index resolves concurrent first writes to one issue. A check constraint preserves the assigned-agent identity and prevents terminal conversation status. Comment request IDs are unique per issue and user. There is no separate chat/message store. Provider sessions continue to use `agent_task_sessions`; `/new` removes only the matching conversation session, and session writers fence stale generations against the issue row.
+
+## Legacy controller ownership
+
+Legacy run claims atomically record `controller_boot_id`, a database-clock
+`controller_lease_expires_at`, and `execution_stage` before workspace provisioning.
+The lease renews independently of output. A different container must not infer
+controller death from its own process map or numeric PIDs. Expiration grants
+cleanup authority; it does not prove that remote inference has stopped. Recovery
+revokes the previous boot identity with a conditional update. Its own claim also
+expires so another sweep can finish cleanup after a restart. Historical rows keep
+null ownership fields and follow the previous recovery path.

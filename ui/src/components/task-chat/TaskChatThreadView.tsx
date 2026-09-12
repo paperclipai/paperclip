@@ -1,3 +1,4 @@
+import { TaskChatProjectCreatedCard } from "./TaskChatProjectCreatedCard";
 import { useMemo, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
@@ -93,6 +94,7 @@ function renderItem(
   attachments: IssueAttachment[] = [],
 ) {
   switch (item.kind) {
+    case "project_created": return <TaskChatProjectCreatedCard item={item} />;
     case "message": {
       // Compute the actions once: the bubble renders them for a runless reply
       // (footer = actions + timestamp), while an attached turn hands them to
@@ -429,7 +431,7 @@ export function TaskChatThreadView({
   const body = (
     <div
       className={cn(
-        "paperclip-mobile-thread mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col px-2 py-4 md:px-4",
+        "paperclip-mobile-thread mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col px-1 py-3 md:px-4 md:py-4",
         streamlined ? "md:px-0" : "gap-5",
         className,
       )}

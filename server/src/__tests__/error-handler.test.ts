@@ -64,6 +64,24 @@ describe("errorHandler", () => {
     expect(res.__errorContext?.error?.message).toBe("boom");
   });
 
+  it("ends aborted client requests without reporting a crash", () => {
+    // A closed tab or dropped network surfaces as `Error: aborted` with
+    // ECONNRESET; there is no server fault and nobody left to answer.
+    const req = makeReq();
+    const res = { ...makeRes(), end: vi.fn(), headersSent: false } as any;
+    (res.status as ReturnType<typeof vi.fn>).mockReturnValue(res);
+    const next = vi.fn() as unknown as NextFunction;
+    const err = Object.assign(new Error("aborted"), { code: "ECONNRESET" });
+
+    errorHandler(err, req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(499);
+    expect(res.end).toHaveBeenCalled();
+    expect(res.json).not.toHaveBeenCalled();
+    expect(captureExceptionMock).not.toHaveBeenCalled();
+    expect(telemetryMocks.trackErrorHandlerCrash).not.toHaveBeenCalled();
+  });
+
   it("exposes raw 500 messages for trusted Cloud tenant imports", () => {
     const req = {
       ...makeReq(),

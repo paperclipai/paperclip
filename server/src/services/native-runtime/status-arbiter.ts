@@ -1,6 +1,6 @@
 import type { NativeEvidenceAssessment } from "./evidence-classifier.js";
 
-export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v4";
+export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v5";
 
 export type NativeAuthoritativeIssueStatus =
   | "backlog"
@@ -20,6 +20,7 @@ export type NativeStatusEffect =
   | { kind: "create_interaction"; gate?: NativeGovernanceGate; prompt?: string }
   | {
       kind: "bind_reviewer";
+      requestKey?: string;
       prompt: string;
       detailsMarkdown?: string | null;
       ownerUserId?: string | null;
@@ -283,71 +284,23 @@ export function arbitrateNativeStatus(input: {
       effects: [{ kind: "release_checkout" }],
     };
   }
-  if (
-    input.assessment.reportedDisposition === "needs_review" ||
-    input.assessment.reportedDisposition === "done" ||
-    input.assessment.attentionRequests.length > 0
-  ) {
-    const failedVerification = input.assessment.verificationAssessments
-      .filter((entry) => entry.claimStatus === "failed")
-      .map((entry) => entry.commandOrCheck);
-    const unrunVerification = input.assessment.verificationCaveats.map(
-      (entry) => entry.commandOrCheck,
-    );
-    const attention = input.assessment.attentionRequests.map(
-      (entry) => entry.summary,
-    );
-    const reasonCode =
-      failedVerification.length > 0
-        ? "completion_claim_conflict"
-        : attention.length > 0
-          ? "actionable_attention_pending"
-          : input.completionClaimPolicyAccepted === true
-            ? "completion_claim_incomplete"
-            : "external_verification_required";
-    const reviewReasons = [
-      ...failedVerification.map((value) => `Failed verification: ${value}`),
-      ...unrunVerification.map((value) => `Verification not run: ${value}`),
-      ...attention.map((value) => `Action required: ${value}`),
-    ];
-    const reviewPrompt = [
-      "Review the persisted native-run evidence and confirm whether this issue may be completed.",
-      ...reviewReasons.slice(0, 5),
-    ]
-      .join("\n")
-      .slice(0, 1_000);
-    const detailsMarkdown = [
-      reviewReasons.length > 0
-        ? `## Missing or conflicting verification\n${reviewReasons.map((value) => `- ${value}`).join("\n")}`
-        : null,
-      input.assessment.acceptedEvidenceRefs.length > 0
-        ? `## Accepted evidence\n${input.assessment.acceptedEvidenceRefs.map((value) => `- \`${value}\``).join("\n")}`
-        : "## Accepted evidence\nNo durable accepted evidence was recorded.",
-    ]
-      .filter(Boolean)
-      .join("\n\n")
-      .slice(0, 20_000);
-    const requestedAgentOwner =
-      input.assessment.attentionRequests.find(
-        (entry) => entry.ownerClass === "agent" && entry.targetAgentId,
-      )?.targetAgentId ?? null;
+  // A completion claim is not a request for human approval. Only a concrete,
+  // explicitly reported attention request may create a review interaction.
+  if (input.assessment.attentionRequests.length > 0) {
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "in_review",
       toStatus: "in_review",
-      reasonCode,
+      reasonCode: "actionable_attention_pending",
       unblockDescriptor: null,
-      effects: [
-        {
-          kind: "bind_reviewer",
-          prompt: reviewPrompt,
-          detailsMarkdown,
-          ownerUserId: requestedAgentOwner
-            ? null
-            : (input.reviewOwnerUserId ?? null),
-          ownerAgentId: requestedAgentOwner,
-        },
-      ],
+      effects: input.assessment.attentionRequests.map((request, index) => ({
+        kind: "bind_reviewer",
+        requestKey: `attention-${index}`,
+        prompt: request.summary.slice(0, 1_000),
+        detailsMarkdown: input.assessment.summary,
+        ownerUserId: request.ownerClass === "agent" ? null : (input.reviewOwnerUserId ?? null),
+        ownerAgentId: request.ownerClass === "agent" ? request.targetAgentId : null,
+      })),
     };
   }
   if (
@@ -513,7 +466,7 @@ export function arbitrateNativeStatus(input: {
         kind: "enqueue_continuation",
         continuationKind: "same_agent",
         summary:
-          "Continue work on the missing or unverifiable completion-contract evidence.",
+          "Finish the remaining work and report done, or explicitly request a named reviewer decision. Waiting for checks or an incomplete completion report does not require human approval.",
         idempotencyKey: "native-completion-incomplete",
         agentId: input.agentId,
       },

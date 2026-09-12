@@ -1,6 +1,6 @@
 import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnectionCredentialStep";
 import { ConnectionChoiceList } from "./ConnectionChoiceList";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
   ArrowUpRight,
@@ -43,6 +43,7 @@ import {
   getConnectableAppDefinition,
   getAvailableConnectionMethods,
   getRecommendedConnectionMethod,
+  isGoogleWorkspaceConnectorProfileId,
 } from "@paperclipai/shared";
 import { useNavigate, useParams, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
@@ -2232,7 +2233,13 @@ export function ConnectionSetupFlow({
           methodKey={connectionMethodKey}
           onMethodChange={(nextMethod) => {
             setConnectionMethodKey(nextMethod?.key ?? "");
-            if (!reconnectGrantKind) {
+            // Capability/auth changes must not broaden the audience selected
+            // on Access (including choices restored after Cloud enrollment).
+            if (
+              !reconnectGrantKind
+              && nextMethod?.grantKinds
+              && !nextMethod.grantKinds.includes(grantKind)
+            ) {
               setGrantKind(defaultGrantKindFor(nextMethod, Boolean(requestedAgentId)));
             }
             setCredentials({});
@@ -3409,7 +3416,29 @@ function KeyStep({
       {!capabilityKey && <p className="mt-2 text-xs text-muted-foreground">Choose an access level to continue.</p>}
     </div>
   ) : null;
-  const authenticationSelection = capabilityMethods.length > 1 ? (
+  const managedGoogleMethod = capabilityMethods.find((candidate) =>
+    candidate.oauthStrategy === "paperclip_cloud_connector"
+    && isGoogleWorkspaceConnectorProfileId(candidate.connectorProfile ?? ""),
+  );
+  const customerGoogleMethod = managedGoogleMethod && capabilityMethods.find((candidate) =>
+    connectionMethodAcceptsCustomerOAuthClient(candidate)
+    && !connectionMethodSupportsAutomaticOAuth(candidate),
+  );
+  const usingCustomGoogleOAuth = method?.key === customerGoogleMethod?.key;
+  const googleOAuthFieldsId = useId();
+  const authenticationSelection = managedGoogleMethod && customerGoogleMethod && capabilityMethods.length === 2 ? (
+    <Button
+      type="button"
+      variant="link"
+      className="h-auto p-0 text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground"
+      aria-expanded={usingCustomGoogleOAuth}
+      aria-controls={googleOAuthFieldsId}
+      disabled={submitting}
+      onClick={() => onMethodChange(usingCustomGoogleOAuth ? managedGoogleMethod : customerGoogleMethod)}
+    >
+      {usingCustomGoogleOAuth ? "Use Paperclip instead" : "Use your own Google OAuth app"}
+    </Button>
+  ) : capabilityMethods.length > 1 ? (
     <div>
       <label className="text-sm font-medium text-foreground">How do you want to connect?</label>
       <RadioCardGroup
@@ -3600,16 +3629,18 @@ function KeyStep({
         )}
 
         {!usingVercel && method?.auth === "oauth" && customerOAuthClientRequired ? (
-          <OAuthClientFields
-            entry={entry}
-            method={method}
-            callbackUrl={oauthCallbackUrl}
-            clientId={oauthClientId}
-            onClientIdChange={onOAuthClientIdChange}
-            clientSecret={oauthClientSecret}
-            onClientSecretChange={onOAuthClientSecretChange}
-            required
-          />
+          <div id={googleOAuthFieldsId} role="region" aria-label="Your OAuth app">
+            <OAuthClientFields
+              entry={entry}
+              method={method}
+              callbackUrl={oauthCallbackUrl}
+              clientId={oauthClientId}
+              onClientIdChange={onOAuthClientIdChange}
+              clientSecret={oauthClientSecret}
+              onClientSecretChange={onOAuthClientSecretChange}
+              required
+            />
+          </div>
         ) : null}
 
         {usingVercel || !method || fields.length === 0 ? null : (

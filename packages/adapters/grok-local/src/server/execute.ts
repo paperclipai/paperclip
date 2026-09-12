@@ -34,11 +34,13 @@ import {
   readPaperclipRuntimeSkillEntries,
   renderTemplate,
   renderPaperclipWakePrompt,
+  selectPaperclipTaskMarkdown,
   isPaperclipRecoveryWakePayload,
   resolveLegacyPaperclipDesiredSkillNames,
   stringifyPaperclipWakePayload,
   refreshPaperclipWorkspaceEnvForExecution,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
@@ -202,7 +204,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const promptTemplate = asString(
     config.promptTemplate,
-    DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+    context.conversationMode === true
+      ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
+      : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const command = asString(config.command, "grok");
   const model = asString(config.model, DEFAULT_GROK_LOCAL_MODEL).trim();
@@ -474,7 +478,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       run: { id: runId, source: "on_demand" },
       context,
     };
-    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
+    const taskContextNote = context.conversationMode === true
+      ? selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) })
+      : "";
+    const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+      conversationMode: context.conversationMode === true,
+      resumedSession: Boolean(sessionId),
+      suppressIssueDescription: taskContextNote.length > 0,
+    });
     const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
     const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
       ? ""
@@ -484,6 +495,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const apiAccessNote = renderApiAccessNote(env);
     const prompt = joinPromptSections([
       wakePrompt,
+      taskContextNote,
       sessionHandoffNote,
       paperclipEnvNote,
       apiAccessNote,
@@ -492,6 +504,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const promptMetrics = {
       promptChars: prompt.length,
       wakePromptChars: wakePrompt.length,
+      taskContextChars: taskContextNote.length,
       sessionHandoffChars: sessionHandoffNote.length,
       runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
       heartbeatPromptChars: renderedPrompt.length,

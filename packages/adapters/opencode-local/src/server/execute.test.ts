@@ -34,6 +34,53 @@ function probeResult(overrides: Record<string, unknown>) {
 }
 
 describe("OpenCode local skill injection", () => {
+  let configHome: string;
+
+  beforeEach(async () => {
+    configHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-config-"));
+    vi.stubEnv("XDG_CONFIG_HOME", configHome);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fs.rm(configHome, { recursive: true, force: true });
+  });
+
+  it.each([false, true])("keeps chat policy with a legacy OpenCode prompt (custom=%s)", async (custom) => {
+    const commandPath = path.join(configHome, "fake-opencode");
+    await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValue(probeResult({ stdout: JSON.stringify({
+      type: "text", sessionID: "chat-session", part: { text: "Reply" },
+    }) }));
+    const directive = "Chat directive: clarify goals and hand plans off to project tasks.";
+    let prompt = "";
+    const result = await execute({
+      runId: "chat-run",
+      agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        command: commandPath, cwd: configHome, model: "openai/gpt-5", env: { OPENCODE_ALLOW_ALL_MODELS: "1" },
+        ...(custom ? { promptTemplate: "Custom agent instruction." } : {}),
+      },
+      context: {
+        conversationMode: true,
+        paperclipTaskMarkdown: directive,
+        paperclipWake: {
+          reason: "issue_commented", issue: { id: "chat-1", status: "in_progress", workMode: "planning" },
+          interactionKind: "request_confirmation", interactionStatus: "accepted",
+        },
+      },
+      onLog: async () => {},
+      onMeta: async (meta) => { prompt = String(meta.prompt ?? ""); },
+    });
+    expect(result.exitCode).toBe(0);
+    expect(prompt).toContain(directive);
+    expect(prompt).toContain(custom ? "Custom agent instruction." : "Continue your Paperclip conversation");
+    expect(prompt).not.toContain("Execution contract:");
+    expect(prompt).not.toContain("Create child issues");
+  });
+
   it("injects runtime skills into the configured child HOME", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-configured-home-"));
     const processHome = path.join(root, "process-home");

@@ -165,15 +165,12 @@ async function seedValidWorktreeSource(
     principalId: userId,
     status: "active",
   });
-  await db.insert(issues).values({
-    id: issueId,
-    companyId,
-    title: "Representative seed issue",
-    status: "backlog",
-    priority: "medium",
-    issueNumber: 1,
-    identifier: "SEED-1",
-  });
+  // This helper also seeds an intentionally older schema. Current Drizzle
+  // insert builders include defaults for newly added columns absent there.
+  await db.$client`
+    insert into issues (id, company_id, title, status, priority, issue_number, identifier)
+    values (${issueId}, ${companyId}, 'Representative seed issue', 'backlog', 'medium', 1, 'SEED-1')
+  `;
   await db.$client.end({ timeout: 5 });
   return { companyId, issueId };
 }

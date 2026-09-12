@@ -20,6 +20,7 @@ import {
   type ExecutionReconciliation,
 } from "@paperclipai/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
+import { isSupersededConversationRun } from "./agent-conversations.js";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 export async function validateExecutionReconciliation(input: {
@@ -463,6 +464,7 @@ export async function settleUnrecoverableExecutions(
         )
           return;
         const current =
+          !isSupersededConversationRun(task, run) &&
           action.returnOwnerAgentId !== null &&
           task.assigneeAgentId === action.returnOwnerAgentId &&
           !["done", "cancelled"].includes(task.status) &&

@@ -54,7 +54,7 @@ export const LongLabels: Story = {
   args: { initialStep: 8, autoPlay: false, narrow: true, longLabels: true },
 };
 export const Failure: Story = {
-  name: "06 · Failure stays visible",
+  name: "06 · Retry details",
   args: { initialStep: 12, autoPlay: false, failed: true },
 };
 export const Light: Story = { name: "07 · Light", globals: { theme: "light" } };
