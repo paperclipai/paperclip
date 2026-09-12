@@ -293,11 +293,12 @@ describe("TaskChatQueuedMessages", () => {
     ).toBeNull();
   });
 
-  it("uses interrupt instead of steer for legacy runners and keeps the row queued", async () => {
+  it.each(["run-1", null])("delivers legacy queued messages with target %s", async (targetRunId) => {
     const onInterrupt = vi.fn().mockResolvedValue(undefined);
     render({
       queue: {
         ...queue,
+        targetRunId,
         protocol: "legacy",
         steeringDisposition: "unsupported",
       },
@@ -324,7 +325,7 @@ describe("TaskChatQueuedMessages", () => {
       ),
     ).not.toBeNull();
     expect(container.textContent).toContain(
-      "Interruption requested. Queued messages will continue after the active turn stops.",
+      "Queued messages will be sent when the previous run has stopped.",
     );
   });
 });

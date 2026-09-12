@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRuns, startEmbeddedPostgresTestDatabase, type Db } from "@paperclipai/db";
 import * as processes from "../services/hot-restart.js";
 import * as adapters from "../adapters/index.js";
 import * as orchestration from "../services/environment-run-orchestrator.js";
 import * as compatibility from "../services/legacy-sandbox-workspace.js";
 import * as cancellation from "@paperclipai/adapter-utils/adapter-run-cancellation";
+import * as gitCredentials from "../services/git-credentials.js";
 import { bindAdapterRunStop, hasAdapterRunCancellation } from "@paperclipai/adapter-utils/adapter-run-cancellation";
 import * as executionTargets from "@paperclipai/adapter-utils/execution-target";
 import { heartbeatService, persistHeartbeatRunProcessMetadata } from "../services/heartbeat.js";
@@ -22,6 +23,12 @@ describe("heartbeat process identity persistence", () => {
     await db.insert(agents).values({ id: agentId, companyId, name: "Runner", role: "engineer", status: "idle", adapterType: "codex_local" });
   }, 60_000);
   afterEach(() => vi.restoreAllMocks());
+  beforeEach(() => {
+    // These tests exercise process/cancellation ownership, not Git transport.
+    // Their synthetic targets deliberately have no remote command runner.
+    vi.spyOn(executionTargets, "prepareGitHubExecutionEnvironment").mockImplementation(async (input) => input.env);
+    vi.spyOn(gitCredentials, "resolveManagedGitHubIdentitySelection").mockResolvedValue({ configured: true });
+  });
   afterAll(async () => { await database?.cleanup(); });
   async function running() {
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running", invocationSource: "on_demand", startedAt: new Date(),

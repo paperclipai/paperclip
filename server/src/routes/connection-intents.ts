@@ -180,8 +180,10 @@ export function connectionIntentBoardRoutes(db: Db, heartbeat: Heartbeat) {
   }
 
   router.get("/connection-intents/:interactionId/setup-options", async (req, res) => {
-    await addressedIntent(req);
-    res.json(await service.setupOptions(req.params.interactionId as string));
+    const { loaded } = await addressedIntent(req);
+    res.json(await service.setupOptions(req.params.interactionId as string, {
+      canManageOrganizationGrant: await canManageCompanyConnections(req, loaded.issue.companyId),
+    }));
   });
 
   router.post("/connection-intents/:interactionId/phase", async (req, res) => {

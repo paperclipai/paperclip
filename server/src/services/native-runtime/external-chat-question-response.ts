@@ -1,4 +1,5 @@
-import { and, eq, inArray, notExists, sql } from "drizzle-orm";
+import { photonAnswersMatch } from "../photon/interactions.js";
+import { and, or, eq, inArray, notExists, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -338,7 +339,7 @@ async function resolveQuestionResponseChain(
   const provider =
     parent?.provider ??
     (
-      ["slack", "github", "discord", "microsoft-teams", "telegram"] as const
+      ["slack", "github", "discord", "microsoft-teams", "telegram", "imessage-photon"] as const
     ).find(
       (candidate) =>
         sourceContext.source === `chat:${candidate}` ||
@@ -448,7 +449,7 @@ async function resolveQuestionResponseChain(
         eq(chatDeliveries.companyId, chatActions.companyId),
         eq(chatDeliveries.endpointId, chatActions.endpointId),
         eq(chatDeliveries.conversationId, chatActions.conversationId),
-        eq(chatDeliveries.principalId, chatActions.principalId),
+        or(eq(chatActions.kind, "photon_interaction"), eq(chatDeliveries.principalId, chatActions.principalId)),
       ),
     )
     .innerJoin(
@@ -485,7 +486,7 @@ async function resolveQuestionResponseChain(
     .where(
       and(
         eq(chatActions.companyId, binding.companyId),
-        inArray(chatActions.kind, ["question_answer", "question_form_submit"]),
+        inArray(chatActions.kind, ["question_answer", "question_form_submit", "photon_interaction"]),
         eq(chatActions.status, "processed"),
         sql`${chatActions.payload}->>'interactionId' = ${interaction.id}`,
         sql`${chatActions.result}->>'interactionId' = ${interaction.id}`,
@@ -686,6 +687,8 @@ async function resolveQuestionResponseChain(
       )
     )
       return null;
+  } else if (action.kind === "photon_interaction") {
+    if (provider !== "imessage-photon" || !photonAnswersMatch(interaction as unknown as AskUserQuestionsInteraction, action.result) || action.payload.version !== 1 || action.payload.sessionGeneration !== conversation.sessionGeneration || typeof action.payload.expiresAt !== "string" || Date.parse(action.payload.expiresAt) <= interaction.resolvedAt.getTime() || !Number.isFinite(Date.parse(action.payload.expiresAt))) return null;
   } else if (
     !completedQuestionFormMatchesInteraction(
       interaction as unknown as AskUserQuestionsInteraction,
@@ -697,12 +700,13 @@ async function resolveQuestionResponseChain(
   if (
     inbound.state !== "processed" ||
     comment.deletedAt !== null ||
-    comment.authorUserId !== interaction.resolvedByUserId ||
+    (action?.kind !== "photon_interaction" && comment.authorUserId !== interaction.resolvedByUserId) ||
     conversation.issueId !== binding.issueId ||
     !["active", "waiting"].includes(conversation.state) ||
     endpoint.provider !== provider ||
     endpoint.assignedAgentId !== binding.agentId ||
-    endpoint.status !== "active" ||
+    (endpoint.status !== "active" &&
+      !(provider === "imessage-photon" && endpoint.status === "verifying" && record(endpoint.setup).step === "test")) ||
     publication.state !== "published" ||
     !publication.providerMessageId ||
     publication.issueId !== binding.issueId ||
