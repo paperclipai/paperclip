@@ -425,7 +425,7 @@ describe("agent live run routes", () => {
     expect(res.body).not.toHaveProperty("resultJson");
     expect(res.body).not.toHaveProperty("contextSnapshot");
     expect(res.body).not.toHaveProperty("logRef");
-  }, 10_000);
+  });
 
   it("ignores a stale execution run from another issue and falls back to the assignee's matching run", async () => {
     mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
@@ -1677,7 +1677,7 @@ describe("agent live run routes", () => {
         id: "trace-1",
         status: "incomplete",
         deletedAt: null,
-        expiresAt: new Date(Date.now() + 60_000),
+        expiresAt: new Date("2099-01-01T00:00:00.000Z"),
       },
       "trace_incomplete",
     ],

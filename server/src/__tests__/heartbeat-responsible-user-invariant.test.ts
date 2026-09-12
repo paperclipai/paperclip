@@ -205,7 +205,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const issueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Private conversation", status: "todo",
-      assigneeAgentId: agentId, responsibleUserId: ownerUserId, conversationAgentId: agentId, conversationUserId: ownerUserId });
+      assigneeAgentId: agentId, responsibleUserId: ownerUserId, conversationAgentId: agentId, conversationUserId: ownerUserId, conversationState: "active" });
     await expect(heartbeat.wakeup(agentId, { manualUserWake: true, source: "on_demand", triggerDetail: "manual",
       payload: { issueId }, requestedByActorType: "user", requestedByActorId: "another-user" })).rejects.toThrow("conversation owner");
     expect(mockAdapterExecute).not.toHaveBeenCalled();
