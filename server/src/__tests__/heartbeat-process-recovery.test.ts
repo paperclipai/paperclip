@@ -5838,12 +5838,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(1);
   });
 
-  it("preserves productive continuation for a routine execution after fresh owner work", async () => {
-    const { agentId, runId, issueId } = await seedStrandedIssueFixture({
-      status: "in_progress",
-      runStatus: "succeeded",
-      livenessState: "advanced",
-    });
+  it("preserves productive continuation when fresh owner direction precedes its asynchronous wake", async () => {
+    const { companyId, agentId, runId, issueId } =
+      await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "succeeded",
+        livenessState: "advanced",
+      });
+    const recoveryRunAt = new Date(Date.now() - 1_000);
     await db
       .update(issues)
       .set({
@@ -5857,11 +5859,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         contextSnapshot: {
           issueId,
           taskId: issueId,
-          wakeReason: "issue_commented",
-          source: "issue.comment",
+          wakeReason: "source_scoped_recovery_action",
+          recoveryActionId: randomUUID(),
+          recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+          recoveryIntent: "status_only",
+          allowDeliverableWork: false,
+          allowDocumentUpdates: false,
+          resumeRequiresNormalModel: true,
         },
+        createdAt: recoveryRunAt,
       })
       .where(eq(heartbeatRuns.id, runId));
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorType: "user",
+      authorUserId: "local-board",
+      body: "Continue with this new owner instruction.",
+      createdAt: new Date(recoveryRunAt.getTime() + 500),
+    });
 
     const result =
       await heartbeatService(db).reconcileStrandedAssignedIssues();

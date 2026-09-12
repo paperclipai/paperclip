@@ -6,6 +6,7 @@ import {
   gt,
   gte,
   inArray,
+  isNotNull,
   isNull,
   not,
   notInArray,
@@ -1020,6 +1021,28 @@ export function recoveryService(
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function hasFreshUserDirectionAfterRun(
+    issue: Pick<typeof issues.$inferSelect, "companyId" | "id">,
+    latestRun: NonNullable<LatestIssueRun>,
+  ) {
+    return db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, issue.companyId),
+          eq(issueComments.issueId, issue.id),
+          isNotNull(issueComments.authorUserId),
+          isNull(issueComments.authorAgentId),
+          isNull(issueComments.createdByRunId),
+          isNull(issueComments.deletedAt),
+          gt(issueComments.createdAt, latestRun.createdAt),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
   }
 
   async function summarizeRecentContinuationRetries(
@@ -4987,9 +5010,17 @@ export function recoveryService(
         }
         continue;
       }
-      const handoffEvidence =
-        isExhaustedSuccessfulRunHandoff(latestRun) ??
+      const exhaustedHandoffEvidence =
+        isExhaustedSuccessfulRunHandoff(latestRun);
+      const routineRecoveryEvidence =
         routineMissingDispositionRecoveryEvidence(issue, latestRun);
+      const hasFreshUserDirection =
+        routineRecoveryEvidence && latestRun
+          ? await hasFreshUserDirectionAfterRun(issue, latestRun)
+          : false;
+      const handoffEvidence =
+        exhaustedHandoffEvidence ??
+        (hasFreshUserDirection ? null : routineRecoveryEvidence);
       if (handoffEvidence) {
         if (isPluginManagedIssueLifecycle(issue)) {
           result.skipped += 1;
