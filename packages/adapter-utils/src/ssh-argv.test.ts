@@ -109,26 +109,29 @@ describe("SSH environment argv isolation", () => {
     }
   });
 
-  it("rejects invalid environment keys before building either argv", async () => {
-    expect(() => buildSshRunCommandTarget({
-      remoteCommand: "true",
-      env: { "BAD KEY": "fixture" },
-    })).toThrow("Invalid SSH environment variable key: BAD KEY");
+  it.each(["BAD KEY", "PAPERCLIP_SSH_ENV_END", "__paperclip_env_complete"])(
+    "rejects invalid or protocol-reserved environment key %s before building either argv",
+    async (key) => {
+      expect(() => buildSshRunCommandTarget({
+        remoteCommand: "true",
+        env: { [key]: "fixture" },
+      })).toThrow(`Invalid SSH environment variable key: ${key}`);
 
-    await expect(buildSshSpawnTarget({
-      spec: {
-        host: "ssh.example.test",
-        port: 22,
-        username: "paperclip",
-        remoteWorkspacePath: "/srv/paperclip/workspace",
-        remoteCwd: "/srv/paperclip/workspace",
-        privateKey: null,
-        knownHosts: null,
-        strictHostKeyChecking: true,
-      },
-      command: "true",
-      args: [],
-      env: { "BAD KEY": "fixture" },
-    })).rejects.toThrow("Invalid SSH environment variable key: BAD KEY");
-  });
+      await expect(buildSshSpawnTarget({
+        spec: {
+          host: "ssh.example.test",
+          port: 22,
+          username: "paperclip",
+          remoteWorkspacePath: "/srv/paperclip/workspace",
+          remoteCwd: "/srv/paperclip/workspace",
+          privateKey: null,
+          knownHosts: null,
+          strictHostKeyChecking: true,
+        },
+        command: "true",
+        args: [],
+        env: { [key]: "fixture" },
+      })).rejects.toThrow(`Invalid SSH environment variable key: ${key}`);
+    },
+  );
 });

@@ -174,6 +174,16 @@ function isValidShellEnvKey(value: string) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
+function isReservedSshEnvKey(value: string) {
+  return value === SSH_ENV_STDIN_END || value.startsWith("__paperclip_env_");
+}
+
+function assertValidSshEnvKey(key: string) {
+  if (!isValidShellEnvKey(key) || isReservedSshEnvKey(key)) {
+    throw new Error(`Invalid SSH environment variable key: ${key}`);
+  }
+}
+
 function sshEnvStdinPrefix(entries: Array<[string, string]>): string | undefined {
   if (entries.length === 0) return undefined;
   return [
@@ -1239,9 +1249,7 @@ export function buildSshRunCommandTarget(input: {
   const envEntries = Object.entries(input.env ?? {})
     .filter((entry): entry is [string, string] => typeof entry[1] === "string");
   for (const [key] of envEntries) {
-    if (!isValidShellEnvKey(key)) {
-      throw new Error(`Invalid SSH environment variable key: ${key}`);
-    }
+    assertValidSshEnvKey(key);
   }
 
   // Login profiles still run before caller-owned variables are installed, so
@@ -1321,9 +1329,7 @@ export async function buildSshSpawnTarget(input: {
   cleanup: () => Promise<void>;
 }> {
   for (const key of Object.keys(input.env)) {
-    if (!isValidShellEnvKey(key)) {
-      throw new Error(`Invalid SSH environment variable key: ${key}`);
-    }
+    assertValidSshEnvKey(key);
   }
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [...auth.args];
