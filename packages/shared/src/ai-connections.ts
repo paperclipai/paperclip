@@ -212,6 +212,10 @@ export type AiConnectionLoginIntent = z.infer<
 export const localAiConnectionSchema = aiConnectionLoginIntentSchema.extend({
   localSessionId: z.string().uuid().optional(),
 });
+export const localAiLoginStartSchema = aiConnectionLoginIntentSchema.extend({ restart: z.boolean().optional() });
+export interface LocalAiLoginStatus {
+  status: "ready" | "sign_in_required" | "expired";
+}
 export interface LocalAiLoginAttempt {
   sessionId: string;
   command: string;

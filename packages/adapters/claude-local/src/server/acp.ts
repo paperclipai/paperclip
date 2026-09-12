@@ -787,10 +787,10 @@ export async function testClaudeAcpEnvironment(
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
     checks.push({
       code: "claude_acp_anthropic_api_key_detected",
-      level: "warn",
-      message: "ANTHROPIC_API_KEY is set. Claude ACP will use API-key auth instead of subscription credentials.",
+      level: config.managedAiConnection ? "info" : "warn",
+      message: config.managedAiConnection ? "Using the selected Claude API connection." : "ANTHROPIC_API_KEY is set. Claude ACP will use API-key auth instead of subscription credentials.",
       detail: `Detected in ${source}.`,
-      hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
+      hint: config.managedAiConnection ? undefined : "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
   } else if (
     isNonEmpty(envConfig.CLAUDE_CODE_OAUTH_TOKEN) ||

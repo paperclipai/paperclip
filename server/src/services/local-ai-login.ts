@@ -3,7 +3,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { and, eq, inArray, lte, sql } from "drizzle-orm";
 import { adapterAuthSessions, ADAPTER_AUTH_SESSION_ACTIVE_STATES, environments, type Db } from "@paperclipai/db";
-import type { AiConnectionLoginIntent, LocalAiLoginAttempt } from "@paperclipai/shared";
+import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { notFound, unprocessable } from "../errors.js";
 import { aiConnectionService } from "./ai-connections.js";
@@ -21,9 +21,17 @@ function presentAttempt(id: string, expiresAt: Date, provider: string): LocalAiL
   return {
     sessionId: id, expiresAt: expiresAt.toISOString(),
     command: provider === "openai"
-      ? `CODEX_HOME=${shellQuote(directory)} codex login`
-      : `GROK_HOME=${shellQuote(directory)} grok login --device-auth`,
+      ? `(export CODEX_HOME=${shellQuote(directory)} && mkdir -p "$CODEX_HOME" && codex -c 'cli_auth_credentials_store="file"' login)`
+      : `(export GROK_HOME=${shellQuote(directory)} && mkdir -p "$GROK_HOME" && grok login --device-auth)`,
   };
+}
+async function prepareHome(id: string, provider: string) {
+  const directory = loginHome(id);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  if (provider === "openai") {
+    // Idempotent: preserve credentials when a user returns to an active attempt.
+    await writeFile(path.join(directory, "config.toml"), 'cli_auth_credentials_store = "file"\n', { mode: 0o600 });
+  }
 }
 function sameTarget(a: AiConnectionLoginIntent, b: AiConnectionLoginIntent) {
   return a.provider === b.provider && a.method === b.method && a.ownership === b.ownership &&
@@ -54,7 +62,7 @@ export function localAiLoginService(db: Db) {
     }
   }
 
-  async function start(companyId: string, userId: string, intent: AiConnectionLoginIntent): Promise<LocalAiLoginAttempt> {
+  async function start(companyId: string, userId: string, intent: AiConnectionLoginIntent, restart = false): Promise<LocalAiLoginAttempt> {
     if (intent.provider !== "openai" && intent.provider !== "xai")
       throw unprocessable("This provider does not use a separate local login home.");
     await reapExpired();
@@ -67,11 +75,21 @@ export function localAiLoginService(db: Db) {
         inArray(adapterAuthSessions.status, [...ADAPTER_AUTH_SESSION_ACTIVE_STATES]),
       )).for("update");
       if (existing) {
-        if (existing.connectionMethod === LOCAL_LOGIN_METHOD && existing.status === "waiting_for_user" &&
+        if (!restart && existing.connectionMethod === LOCAL_LOGIN_METHOD && existing.status === "waiting_for_user" &&
             existing.aiConnection && sameTarget(existing.aiConnection, intent) &&
-            existing.expiresAt && existing.expiresAt.getTime() > Date.now())
+            existing.expiresAt && existing.expiresAt.getTime() > Date.now()) {
+          await prepareHome(existing.id, intent.provider);
           return presentAttempt(existing.id, existing.expiresAt, intent.provider);
-        throw unprocessable("Another sign-in is still open. Finish or cancel it before starting again.");
+        }
+        if (!restart || existing.connectionMethod !== LOCAL_LOGIN_METHOD)
+          throw unprocessable("Another sign-in is still open. Finish it, or choose Start sign-in again to replace a local attempt.");
+        await rm(loginHome(existing.id), { recursive: true, force: true });
+        await tx.update(adapterAuthSessions).set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
+          .where(eq(adapterAuthSessions.id, existing.id));
+        await logActivity(tx as unknown as Db, {
+          companyId, actorType: "user", actorId: userId, action: "ai_connection.local_login_cancelled",
+          entityType: "adapter_auth_session", entityId: existing.id, details: { provider: intent.provider },
+        });
       }
       const [environment] = await tx.select().from(environments)
         .where(and(eq(environments.driver, "local"), eq(environments.status, "active"))).limit(1);
@@ -79,10 +97,8 @@ export function localAiLoginService(db: Db) {
       const id = randomUUID();
       const directory = loginHome(id);
       const expiresAt = new Date(Date.now() + ATTEMPT_DURATION_MS);
-      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await prepareHome(id, intent.provider);
       try {
-        if (intent.provider === "openai")
-          await writeFile(path.join(directory, "config.toml"), 'cli_auth_credentials_store = "file"\n', { mode: 0o600 });
         await tx.insert(adapterAuthSessions).values({
           id, publicSessionId: id, companyId, environmentId: environment.id,
           adapterType: intent.provider === "openai" ? "codex_local" : "grok_local",
@@ -102,6 +118,31 @@ export function localAiLoginService(db: Db) {
       }
       return presentAttempt(id, expiresAt, intent.provider);
     });
+  }
+
+  // Read-only credential detection: never saves a connection or refreshes another
+  // login. Scope and intent are checked before touching an attempt's directory.
+  async function check(companyId: string, userId: string, intent: AiConnectionLoginIntent, id?: string): Promise<LocalAiLoginStatus> {
+    let directory: string | undefined;
+    if (intent.provider !== "anthropic") {
+      if (!id) throw unprocessable("Start local sign-in before checking this account.");
+      const [session] = await db.select().from(adapterAuthSessions).where(and(
+        eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),
+        eq(adapterAuthSessions.startedByUserId, userId),
+        eq(adapterAuthSessions.connectionMethod, LOCAL_LOGIN_METHOD),
+      ));
+      if (!session?.aiConnection || !sameTarget(session.aiConnection, intent))
+        throw notFound("Local sign-in attempt not found for this connection.");
+      if (session.status !== "waiting_for_user" || !session.expiresAt || session.expiresAt.getTime() <= Date.now())
+        return { status: "expired" };
+      directory = loginHome(id);
+    }
+    try {
+      await readVerifiedLocalAiCredential(intent.provider, directory);
+      return { status: "ready" };
+    } catch {
+      return { status: "sign_in_required" };
+    }
   }
 
   async function complete(companyId: string, userId: string, id: string, intent: AiConnectionLoginIntent) {
@@ -158,5 +199,5 @@ export function localAiLoginService(db: Db) {
       }
     });
   }
-  return { start, complete, cancel, reapExpired };
+  return { start, check, complete, cancel, reapExpired };
 }

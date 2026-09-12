@@ -7432,6 +7432,22 @@ export function toolAccessService(
     return localTools(connection);
   }
 
+  async function annotateAiGrantHealth(connections: ToolConnection[]) {
+    const aiConnections = connections.filter(connection => connection.connectionPurpose === "ai");
+    if (!aiConnections.length) return;
+    const grants = await db.select({ connectionId: connectionGrants.connectionId, status: connectionGrants.status })
+      .from(connectionGrants).where(and(eq(connectionGrants.companyId, aiConnections[0].companyId),
+        inArray(connectionGrants.connectionId, aiConnections.map(connection => connection.id))));
+    for (const connection of aiConnections) {
+      const identities = grants.filter(grant => grant.connectionId === connection.id);
+      if (identities.length && identities.every(grant => grant.status === "revoked")) {
+        connection.healthStatus = "missing_secret";
+        connection.healthMessage = "This credential was revoked. Reconnect the account to restore access.";
+        connection.requiresReauthorization = true;
+      }
+    }
+  }
+
   async function annotateGitHubAuthorization(
     connections: ToolConnection[],
     viewerUserId?: string,
@@ -17429,6 +17445,7 @@ export function toolAccessService(
       for (const connection of connections) {
         connection.lastUsedAt = lastUsedByConnection.get(connection.id) ?? null;
       }
+      await annotateAiGrantHealth(connections);
       await annotateGitHubAuthorization(connections, viewerUserId);
       return connections;
     },
@@ -17554,6 +17571,7 @@ export function toolAccessService(
         connection.id,
         connection.companyId,
       );
+      await annotateAiGrantHealth([connection]);
       await annotateGitHubAuthorization([connection], viewerUserId);
       return connection;
     },

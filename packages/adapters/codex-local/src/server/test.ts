@@ -254,6 +254,9 @@ export async function testEnvironment(
         code: "adapter_engine_unavailable",
         level: "error",
         message: engineSelection.unavailableReason,
+        hint: ctx.executionTarget?.kind === "remote"
+          ? "In the agent’s runtime settings, select the CLI engine, or use a sandbox image with the Codex ACP server installed."
+          : undefined,
       }],
       testedAt: new Date().toISOString(),
     };

@@ -194,3 +194,18 @@ These browser checks exercise the production list/detail pages, rejected API-key
 validation, cancellation, focus restoration, and adoption without saving agent
 changes. They submit an explicitly invalid fixture key and do not prove successful
 authentication with a live account.
+
+### Local sign-in checks
+
+Local subscription screens share the same credential check on entry and when the
+window regains focus. Waiting screens also poll until sign-in verifies. A successful
+check shows the account is signed in; only **Connect** creates or reconnects the grant.
+Claude checks the local operator's Claude Code login. Codex and Grok check only their
+connection-specific login home, preserving the operator's separate rotating CLI login.
+These checks are restricted to the local operator in local-trusted deployments.
+
+Leaving and returning to a local sign-in screen resumes its active attempt. Navigation
+does not delete a directory referenced by a copied command. **Start sign-in again**
+explicitly cancels the old attempt; abandoned attempts expire after 30 minutes.
+Commands create their directory if necessary, and completed/expired attempts are
+cleaned up through the existing lifecycle.

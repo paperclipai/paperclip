@@ -59,7 +59,7 @@ import {
   requireOpenCodeModelId,
 } from "./models.js";
 import { removeMaintainerOnlySkillSymlinks } from "@paperclipai/adapter-utils/server-utils";
-import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import { prepareOpenCodeRuntimeConfig, prepareManagedOpenCodeRemoteHomes } from "./runtime-config.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 import { resolveOpenCodeSkillsHome } from "./skills.js";
 
@@ -436,9 +436,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (localRuntimeConfigHome && preparedExecutionTargetRuntime.assetDirs.xdgConfig) {
         preparedRuntimeConfig.env.XDG_CONFIG_HOME = preparedExecutionTargetRuntime.assetDirs.xdgConfig;
       }
-      const remoteHomeDir = managedHome && preparedExecutionTargetRuntime.runtimeRootDir
-        ? preparedExecutionTargetRuntime.runtimeRootDir
-        : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
+      prepareManagedOpenCodeRemoteHomes({
+        env: preparedRuntimeConfig.env,
+        config,
+        runtimeRootDir: preparedExecutionTargetRuntime.runtimeRootDir,
+        runId,
+        configDir: preparedExecutionTargetRuntime.assetDirs.xdgConfig,
+      });
+      const remoteHomeDir = config.managedAiConnection
+        ? preparedRuntimeConfig.env.HOME
+        : managedHome && preparedExecutionTargetRuntime.runtimeRootDir
+          ? preparedExecutionTargetRuntime.runtimeRootDir
+          : await readAdapterExecutionTargetHomeDir(runId, executionTarget, {
             cwd,
             env: preparedRuntimeConfig.env,
             timeoutSec,

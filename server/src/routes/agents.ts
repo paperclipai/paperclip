@@ -1,3 +1,4 @@
+import { listOpenRouterModels } from "../services/openrouter-models.js";
 import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings } from "../services/ai-connection-runtime.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE, aiConnectionBindingSchema, type AiConnectionBinding } from "@paperclipai/shared";
 import { toolConnections } from "@paperclipai/db";
@@ -3098,6 +3099,10 @@ export function agentRoutes(
       return;
     }
     const provider = asNonEmptyString(req.query.provider);
+    if (type === "opencode_local" && provider === "openrouter") {
+      res.json(await listOpenRouterModels(refresh));
+      return;
+    }
     if (type === "paperclip_runner" && provider && !isPaperclipRunnerProvider(provider)) {
       throw unprocessable("Unknown Paperclip Runner provider");
     }
