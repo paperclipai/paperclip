@@ -1054,9 +1054,11 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
 
         // Enqueue does not stamp executionRunId until dispatch. A concurrent
         // queued successor still owns the next turn, including during a late
-        // finalization/stranded-queue retry under this issue lock.
+        // finalization/stranded-queue retry under this issue lock. Another
+        // agent's review participation retains its separate recovery path.
         const [successor] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, run.agentId),
           sql`${heartbeatRuns.id} <> ${run.id}`,
           or(eq(heartbeatRuns.nativeIssueId, issueRow.id),
             sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueRow.id}`),
