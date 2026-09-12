@@ -7430,6 +7430,75 @@ export function issueRoutes(
     return rawId;
   }
 
+  // Resolves a query parameter that points at an issue. Accepts either a UUID
+  // or a human identifier (e.g. "NUB-4382"); resolves the identifier to a UUID
+  // before it reaches Drizzle/Postgres so that uuid-typed columns don't blow up
+  // with a 500.
+  async function resolveIssueIdQueryParam(
+    raw: string,
+    paramName: "parentId" | "descendantOf",
+  ): Promise<
+    | { ok: true; uuid: string }
+    | { ok: false; status: 400 | 404; body: Record<string, unknown> }
+  > {
+    const trimmed = raw.trim();
+    if (isUuidLike(trimmed)) {
+      return { ok: true, uuid: trimmed };
+    }
+    const identifier = normalizeIssueReferenceIdentifier(trimmed);
+    if (identifier) {
+      const issue = await svc.getByIdentifier(identifier);
+      if (!issue) {
+        const errorKey = paramName === "parentId" ? "parent_not_found" : "descendant_not_found";
+        return { ok: false, status: 404, body: { error: errorKey, identifier } };
+      }
+      return { ok: true, uuid: issue.id };
+    }
+    const errorKey = paramName === "parentId" ? "invalid_parent_id" : "invalid_descendant_of";
+    return { ok: false, status: 400, body: { error: errorKey, value: trimmed } };
+  }
+
+  // Pulls the two issue-pointing query params (`parentId`, `descendantOf`) off
+  // a request, resolves them via {@link resolveIssueIdQueryParam}, and writes
+  // the validation error to `res` itself when one fails. Returns `null` after
+  // writing the error so the handler can simply `return`.
+  //
+  // Repeated query params (e.g. `?parentId=a&parentId=b`) arrive as arrays
+  // from Express' default query parser; opting into the `extended` (qs)
+  // parser would also produce objects for bracketed keys. The TypeScript
+  // cast is a compile-time no-op, so we validate the runtime type here and
+  // 400 explicitly instead of letting `raw.trim()` throw a 500 downstream.
+  async function resolveIssueIdListFilters(
+    req: Request,
+    res: Response,
+  ): Promise<{ parentId?: string; descendantOf?: string } | null> {
+    const out: { parentId?: string; descendantOf?: string } = {};
+    for (const paramName of ["parentId", "descendantOf"] as const) {
+      const rawUnknown: unknown =
+        paramName === "parentId"
+          ? req.query.parentId ?? req.query.parentIssueId
+          : req.query[paramName];
+      if (rawUnknown === undefined) continue;
+      if (typeof rawUnknown !== "string") {
+        const errorKey =
+          paramName === "parentId" ? "invalid_parent_id" : "invalid_descendant_of";
+        res.status(400).json({
+          error: errorKey,
+          reason: "expected a single string value, received a repeated or structured query parameter",
+        });
+        return null;
+      }
+      if (rawUnknown === "") continue;
+      const resolved = await resolveIssueIdQueryParam(rawUnknown, paramName);
+      if (!resolved.ok) {
+        res.status(resolved.status).json(resolved.body);
+        return null;
+      }
+      out[paramName] = resolved.uuid;
+    }
+    return out;
+  }
+
   async function resolveIssueProjectAndGoal(issue: {
     companyId: string;
     projectId: string | null;
@@ -7915,6 +7984,9 @@ export function issueRoutes(
     }
     const offset = parsedOffset ?? 0;
 
+    const issueIdFilters = await resolveIssueIdListFilters(req, res);
+    if (!issueIdFilters) return;
+
     const listFilters: IssueFilters = {
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
@@ -7926,11 +7998,9 @@ export function issueRoutes(
       unreadForUserId,
       projectId: req.query.projectId as string | undefined,
       workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as
-        string | undefined,
-      parentId: (req.query.parentId ?? req.query.parentIssueId) as
-        string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
+      executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
+      parentId: issueIdFilters.parentId,
+      descendantOf: issueIdFilters.descendantOf,
       createdFromIssueId: req.query.createdFromIssueId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
@@ -8143,6 +8213,9 @@ export function issueRoutes(
       return;
     }
 
+    const issueIdFilters = await resolveIssueIdListFilters(req, res);
+    if (!issueIdFilters) return;
+
     const blockedCountFilters = {
       attention: "blocked",
       status: req.query.status as string | string[] | undefined,
@@ -8151,11 +8224,9 @@ export function issueRoutes(
       assigneeUserId: req.query.assigneeUserId as string | undefined,
       projectId: req.query.projectId as string | undefined,
       workspaceId: req.query.workspaceId as string | undefined,
-      executionWorkspaceId: req.query.executionWorkspaceId as
-        string | undefined,
-      parentId: (req.query.parentId ?? req.query.parentIssueId) as
-        string | undefined,
-      descendantOf: req.query.descendantOf as string | undefined,
+      executionWorkspaceId: req.query.executionWorkspaceId as string | undefined,
+      parentId: issueIdFilters.parentId,
+      descendantOf: issueIdFilters.descendantOf,
       createdFromIssueId: req.query.createdFromIssueId as string | undefined,
       labelId: req.query.labelId as string | undefined,
       originKind: req.query.originKind as string | undefined,
