@@ -357,6 +357,9 @@ const queuedCommentSteeringTargetSchema =
   queuedCommentMutationTargetSchema.extend({
     targetRunId: z.string().min(1),
   });
+const queuedCommentInterruptTargetSchema = queuedCommentMutationTargetSchema.extend({
+  targetRunId: z.string().min(1).nullable(),
+});
 const editQueuedCommentSchema = queuedCommentMutationTargetSchema.extend({
   body: z
     .string()
@@ -6943,9 +6946,10 @@ export function issueRoutes(
     actor: ReturnType<typeof getActorInfo>;
     queueId: string;
     targetRunId?: string;
+    allowStoppedTarget?: boolean;
   }) {
-    await input.tx
-      .select({ id: issueRows.id })
+    const [currentIssue] = await input.tx
+      .select()
       .from(issueRows)
       .where(
         and(
@@ -6954,6 +6958,8 @@ export function issueRoutes(
         ),
       )
       .for("update");
+    if (!currentIssue) throw notFound("Issue not found");
+    input.issue = currentIssue;
     const wake = await input.tx
       .select()
       .from(agentWakeupRequests)
@@ -7030,7 +7036,7 @@ export function issueRoutes(
             and(
               eq(heartbeatRuns.id, activeRunId),
               eq(heartbeatRuns.companyId, input.issue.companyId),
-              eq(heartbeatRuns.status, "running"),
+              input.allowStoppedTarget ? undefined : eq(heartbeatRuns.status, "running"),
             ),
           )
           .for("update")
@@ -15216,12 +15222,14 @@ export function issueRoutes(
 
   router.post(
     "/issues/:id/queued-comments/interrupt",
-    validate(queuedCommentSteeringTargetSchema),
+    validate(queuedCommentInterruptTargetSchema),
     async (req, res) => {
       assertBoard(req);
       if (!req.actor.userId) throw forbidden("Board user context required");
       const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
+      const decision = await decideIssueAccess(req, issue, "issue:comment");
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       if (issue.conversationAgentId) {
         if (!(await instanceSettings.getExperimental()).enableAgentChat) throw notFound("Agent Chat is disabled");
         if (req.actor.userId !== issue.conversationUserId) {
@@ -15229,23 +15237,43 @@ export function issueRoutes(
         }
       }
       const actor = getActorInfo(req);
-      await db.transaction(async (tx) => {
+      const runToInterrupt = await db.transaction(async (tx) => {
         const locked = await lockQueuedCommentState({
-          tx, issue, actor, queueId: req.body.queueId, targetRunId: req.body.targetRunId,
+          tx, issue, actor, queueId: req.body.queueId, targetRunId: req.body.targetRunId ?? undefined,
+          allowStoppedTarget: true,
         });
         assertQueueMutationTarget({ queue: locked.queue, queueId: req.body.queueId, revision: req.body.revision });
-        if (locked.queue.protocol !== "legacy" || locked.activeRun?.agentId !== issue.assigneeAgentId) {
+        if (locked.queue.protocol !== "legacy" || locked.state !== "deferred" ||
+            !locked.queue.entries.length ||
+            (locked.activeRun && locked.activeRun.agentId !== locked.wake.agentId)) {
           throw conflict("This queue does not support legacy interruption");
         }
+        if (locked.activeRun && locked.activeRun.status !== "running" &&
+            !["succeeded", "failed", "timed_out", "interrupted", "cancelled"].includes(locked.activeRun.status)) {
+          throw conflict("The previous run has not stopped");
+        }
+        if (locked.activeRun?.status === "running" && locked.activeRun.id !== req.body.targetRunId) {
+          throw conflict("The queued message targets a stale run", { code: "queued_comment_stale_target" });
+        }
+        // The click is durable fresh user intent, including when the message
+        // predates a failed run's stop. Keep its content and original attribution.
+        await tx.update(agentWakeupRequests).set({
+          payload: { ...readObject(locked.wake.payload), queuedCommentInterrupt: {
+            actorId: actor.actorId, requestedAt: new Date().toISOString(),
+          } },
+          updatedAt: new Date(),
+        }).where(eq(agentWakeupRequests.id, locked.wake.id));
+        return locked.activeRun?.status === "running" ? locked.activeRun.id : null;
       });
       // Never hold the issue lock while joining the adapter. Queue edits and
       // discards stay authoritative until the dispatcher claims the successor.
       const options = operatorInterruptCancelOptions({ issueId: issue.id, actor });
-      await heartbeat.cancelRun(req.body.targetRunId, "Interrupted to send queued messages", {
+      if (runToInterrupt) await heartbeat.cancelRun(runToInterrupt, "Interrupted to send queued messages", {
         ...options,
         suppressImmediateRecovery: true,
         resultJson: { ...options.resultJson, queuedCommentInterruptQueueId: req.body.queueId },
       });
+      await heartbeat.resumeQueuedCommentInterrupt(issue.companyId, req.body.queueId, { retryCleanup: true });
       await logActivity(db, {
         companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
         agentId: actor.agentId, runId: actor.runId, agentApiKeyId: actor.agentApiKeyId,

@@ -1,10 +1,25 @@
-import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
+import type { AiConnectionBinding, AiManagedConnectionSummary, AiProvider, CompanySecret, EnvBinding } from "@paperclipai/shared";
 import type { MyUserSecretEntry } from "../api/secrets";
 
-export interface SavedProviderKey {
-  id: string;
-  label: string;
-  binding: EnvBinding;
+export type SavedProviderKey = { id: string; label: string } & (
+  | { binding: EnvBinding; aiConnection?: never }
+  | { binding?: never; aiConnection: AiConnectionBinding }
+);
+
+export function savedManagedProviderAccounts(
+  companyId: string, provider: AiProvider, currentUserId: string,
+  connections: AiManagedConnectionSummary[],
+): SavedProviderKey[] {
+  return connections.flatMap<SavedProviderKey>((account) => {
+    if (account.companyId !== companyId || account.provider !== provider || account.status !== "connected") return [];
+    if (account.ownership === "personal" && account.ownerUserId === currentUserId && account.isDefault) {
+      return [{ id: `ai:${account.grantId}`, label: `${account.name} (Your default)`, aiConnection: { provider, method: account.method, mode: "responsible_user" as const } }];
+    }
+    if (account.ownership === "shared") {
+      return [{ id: `ai:${account.grantId}`, label: `${account.name} (Company shared)`, aiConnection: { provider, method: account.method, mode: "shared" as const, connectionId: account.id, grantId: account.grantId } }];
+    }
+    return [];
+  });
 }
 
 /** Match the canonical onboarding key and distinct keys created by agent setup. */

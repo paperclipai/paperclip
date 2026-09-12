@@ -242,6 +242,24 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     });
   }
 
+  it.each(["queued", "running", "scheduled_retry"])("does not promote another turn behind a %s successor without an execution lock", async (status) => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "succeeded", contextSnapshot: { issueId } });
+    await seedRun({ companyId, agentId, status, contextSnapshot: { issueId } });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId });
+    const adapter = createPostgresWakeQueueAdapter(db, stubDeps);
+    let drained = false;
+    await adapter.withIssueExecutionLock({ companyId, runId, now: new Date() }, async () => {
+      drained = true;
+      return { outcome: { kind: "released" }, postCommitEffects: [] };
+    });
+    expect(drained).toBe(false);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
+    expect(wake.status).toBe("deferred_issue_execution");
+  });
+
   it("leaves deferred work untouched until the effective execution hold clears", async () => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });
