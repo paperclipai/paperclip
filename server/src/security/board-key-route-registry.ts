@@ -387,6 +387,7 @@ export function lookupBoardKeyRoute(methodInput: string, rawPath: string): Board
     "cases",
     "pipelines",
     "connection-intents",
+    "email",
     "_plugins",
   ].includes(top)) return denied(method, `/api/${top}/{*path}`);
 
