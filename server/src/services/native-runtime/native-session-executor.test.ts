@@ -6850,7 +6850,9 @@ describe("runnerd provider runtime wiring", () => {
     await writeFile(authPath, auth);
     const session = mode === "open"
       ? await backend.openSession({} as never)
-      : (await backend.recoverSession!({} as never)).session!;
+      : (await backend.recoverSession!({} as never, {
+          signal: new AbortController().signal,
+        })).session!;
 
     if (timing === "before-close") {
       await session.detachControllerForRestart!();
