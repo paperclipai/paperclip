@@ -157,7 +157,7 @@ async function findLatestBackup(backupDir: string, nowMs: number) {
 
 export async function inspectDatabaseBackupHealth(
   opts: InspectDatabaseBackupHealthOptions,
-): DatabaseBackupHealthStatus {
+): Promise<DatabaseBackupHealthStatus> {
   const warnings: DatabaseBackupHealthWarning[] = [];
   const now = opts.now ?? new Date();
   const maxAgeHours = Math.max(1, opts.maxAgeHours);
