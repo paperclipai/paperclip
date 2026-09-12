@@ -352,6 +352,19 @@ These browser suites are intended for targeted local verification and CI, not th
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
+### Task search evaluation
+
+The task search relevance rubric and regression corpus are documented in
+[SEARCH.md](SEARCH.md). Run the real PostgreSQL relevance suite with:
+
+```sh
+pnpm exec vitest run server/src/__tests__/task-search-quality.test.ts
+```
+
+Set `SEARCH_EVAL_SCALE=1` to additionally measure a disposable 10,000-task,
+30,000-comment dataset. `SEARCH_EVAL_REPORT=/tmp/search-quality.json` saves
+per-query results and latency measurements; scale measurements are opt-in.
+
 ### Recent task ordering
 
 The streamlined sidebar keeps five recent tasks per company and account in browser

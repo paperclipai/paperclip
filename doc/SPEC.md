@@ -586,3 +586,12 @@ allocation retains one selected number and individually enabled groups.
 
 See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
 contract, setup, recovery, boundaries, and qualification status.
+
+## Task search relevance
+
+Task discovery uses PostgreSQL and the existing search indexes, with no external
+search service or background indexing job. The task-list quick search and full
+company search share lexical matching and ranking. Known identifiers and direct
+title matches lead; current conversation and document content supplies supporting
+evidence. See [Task search relevance](SEARCH.md) for the evaluation rubric,
+matching contract and reproducible quality tests.
