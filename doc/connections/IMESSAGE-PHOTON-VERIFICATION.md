@@ -104,7 +104,7 @@ Some broad package runs encountered host embedded-Postgres startup limits during
 concurrent local development. These startup failures are not provider proof;
 inspect the linked PR for the current complete gate results.
 
-## Pro shared-DM qualification in progress (2026-09-12)
+## Pro shared-DM live qualification (2026-09-12)
 
 The operator approved Pro-compatible shared DMs with groups disabled. The live
 test uses the isolated instance on port 3109, a Photon Pro project, its enrolled
@@ -185,10 +185,12 @@ plus the shared-DM changes in this PR:
   environment failure, not a provider result.
 
 The expanded unit suite has 22 passing cases, including shared attachment alias
-ownership, header validation, and missing duplicate receipts. All original 14 integration cases passed; added
-setup poll/continuation cases passed in targeted reruns. Full workspace typecheck,
-build, and token gates passed during this qualification, with a subsequent server
-typecheck after the media changes. A broad `pnpm test:run` was started and stopped
+ownership, header validation, and missing duplicate receipts. After merging master
+and regenerating migration 0275, all 16 integration cases passed at code commit
+`fc4e4f0a32d35e41e56f6698404fca64cee3f32b`. Full workspace typecheck, build, token
+gates, and migration checks passed on that commit. The isolated instance then
+restarted successfully, reported startup ready on that commit, and retained the
+active shared-DM endpoint and linked identity. A broad `pnpm test:run` was started and stopped
 when the host's shared-memory limit prevented the live isolated PostgreSQL from
 restarting. Only this task's exited test database resources were removed. This
 interrupted run is not a full-suite pass; current CI must qualify the final commit.
@@ -201,7 +203,7 @@ observed iMessage. No RCS/SMS fallback was enabled.
 ## Live qualification still required
 
 Dedicated-line credentials were unavailable during the initial implementation.
-The Pro shared-DM test above has begun; the remaining matrix must be completed
+The Pro shared-DM journeys above passed; the remaining matrix must be completed
 before release readiness. Live inbound receipt alone is not full qualification.
 Record the tested commit, package versions, redacted project/line/chat IDs,
 participants, timestamps, and observable results when running it.
