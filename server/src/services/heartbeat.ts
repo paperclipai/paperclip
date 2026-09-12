@@ -6771,6 +6771,13 @@ export function shouldAutoCheckoutIssueForWake(input: {
   return true;
 }
 
+export function resolvedInteractionCheckoutExpectedStatuses() {
+  // A resolved interaction authorizes a new provider turn. Review describes
+  // the idle handoff state; once this turn acquires execution it must become
+  // in_progress in the same guarded checkout update.
+  return ["in_progress", "in_review"] as const;
+}
+
 export function shouldQueueFollowupForRunningIssueWake(input: {
   contextSnapshot: Record<string, unknown> | null | undefined;
   wakeCommentId: string | null;
@@ -19524,9 +19531,7 @@ export function heartbeatService(
           await issuesSvc.checkout(
             issueId,
             agent.id,
-            context.interactionKind === "connection_intent"
-              ? ["in_progress", "in_review"]
-              : ["in_progress"],
+            [...resolvedInteractionCheckoutExpectedStatuses()],
             run.id,
           );
           context[PAPERCLIP_HARNESS_CHECKOUT_KEY] = true;
