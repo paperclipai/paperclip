@@ -25775,7 +25775,10 @@ export function heartbeatService(
             const [pending] = await tx.select().from(agentWakeupRequests).where(and(
               eq(agentWakeupRequests.id, executionWaitRequestId), eq(agentWakeupRequests.companyId, agent.companyId),
               eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "deferred_issue_execution"),
-              eq(agentWakeupRequests.requestedByActorType, "user"),
+              // A user message can join a queue originally created by a
+              // system wake. The recorded board click supplies fresh authority.
+              opts.queuedCommentInterruptId === executionWaitRequestId
+                ? undefined : eq(agentWakeupRequests.requestedByActorType, "user"),
               opts.queuedCommentInterruptId === executionWaitRequestId
                 ? sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt'->>'actorId' = ${opts.requestedByActorId ?? ""}`
                 : eq(agentWakeupRequests.requestedByActorId, opts.requestedByActorId ?? ""),
