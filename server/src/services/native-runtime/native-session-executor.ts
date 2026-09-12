@@ -10133,6 +10133,13 @@ async function createRunnerdBackendWithinSessionClaim(
   const remoteRunnerFilesystemRoot = remoteSessionRoot
     ? posix.join(remoteSessionRoot, "filesystem")
     : null;
+  // Credential copy-back must use the same CLI home as launch and persistence.
+  const remoteCodexHome =
+    remoteTarget?.transport === "sandbox" && remoteTarget.workFolderHome
+      ? posix.join(remoteTarget.workFolderHome, ".codex")
+      : remoteRunnerFilesystemRoot
+        ? posix.join(remoteRunnerFilesystemRoot, "codex-home")
+        : null;
   const persistenceProfile = resolveNativeHarnessPersistenceProfile(
     input.execution,
   );
@@ -10143,8 +10150,8 @@ async function createRunnerdBackendWithinSessionClaim(
   const remotePersistencePath = (
     directory: NativeHarnessPersistenceDirectory,
   ): string | null =>
-    remoteTarget?.transport === "sandbox" && remoteTarget.workFolderHome && directory.name === "codex-home"
-      ? posix.join(remoteTarget.workFolderHome, ".codex")
+    directory.name === "codex-home"
+      ? remoteCodexHome
       : directory.location === "runner"
       ? (remoteStateDirectory ?? null)
       : remoteRunnerFilesystemRoot
@@ -11475,7 +11482,7 @@ async function createRunnerdBackendWithinSessionClaim(
         // permission profile. SSH retains its isolated provider home so its
         // host-home deny rules cannot shadow the assigned workspace.
         HOME: remoteTarget!.transport === "sandbox" && remoteTarget!.workFolderHome ? remoteTarget!.workFolderHome : posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
-        CODEX_HOME: remoteTarget!.transport === "sandbox" && remoteTarget!.workFolderHome ? posix.join(remoteTarget!.workFolderHome, ".codex") : posix.join(remoteRunnerFilesystemRoot!, "codex-home"),
+        CODEX_HOME: remoteCodexHome!,
         PAPERCLIP_WORKSPACE_CWD: remoteTarget!.remoteCwd,
         ...(remoteTarget!.transport === "sandbox"
           ? { PAPERCLIP_RUNNER_EXTERNAL_SANDBOX: "1" }
@@ -12026,7 +12033,7 @@ async function createRunnerdBackendWithinSessionClaim(
       await close(closeInput);
       if (copied) return;
       copied = true;
-      const remoteAuth = remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, "codex-home", "auth.json") : null;
+      const remoteAuth = remoteCodexHome ? posix.join(remoteCodexHome, "auth.json") : null;
       const localAuth = join(root, "codex-home", "auth.json");
       try {
         await copyBackCodexAuth({

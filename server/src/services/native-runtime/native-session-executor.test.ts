@@ -9831,6 +9831,63 @@ describe("runnerd provider runtime wiring", () => {
     }));
   });
 
+  it.each(["/home/daytona", undefined])(
+    "copies refreshed managed Codex auth from the actual remote CLI home (%s) and removes that copy",
+    async (workFolderHome) => {
+      const credentialHome = join(isolatedStateDirectory, "managed-credential");
+      await mkdir(credentialHome);
+      const auth = (refresh: string) => JSON.stringify({
+        tokens: { account_id: "same-account", id_token: "test-id",
+          access_token: `test-access-${refresh}`, refresh_token: `test-refresh-${refresh}` },
+        last_refresh: refresh,
+      });
+      const original = auth("2026-01-01T00:00:00Z");
+      const refreshed = auth("2026-01-02T00:00:00Z");
+      const hostAuth = join(credentialHome, "auth.json");
+      await writeFile(hostAuth, original, { mode: 0o600 });
+      let remoteAuthPath = "";
+      const operations: string[] = [];
+      const close = vi.fn(async () => { operations.push("close"); });
+      state.createBackend.mockReturnValueOnce({
+        kind: "test", openSession: async () => ({ close }),
+      } as never);
+      const remoteExecute = vi.fn(async (command: { command: string; args?: string[] }) => {
+        if (command.command === "base64") {
+          operations.push("read");
+          return { exitCode: command.args?.[0] === remoteAuthPath ? 0 : 1,
+            stdout: Buffer.from(refreshed).toString("base64"), stderr: "", timedOut: false };
+        }
+        if (command.command === "rm") operations.push("remove");
+        return { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+      });
+      const backend = await createRunnerdBackend({
+        db: leaseDb(execution), execution, runnerInstanceId: "managed-auth-runner",
+        managedAiCredentialHome: credentialHome,
+        runnerExecutionTarget: {
+          kind: "remote", transport: "sandbox", remoteCwd: "/home/daytona/repos/main",
+          workFolderHome, environmentId: "environment", leaseId: "lease", providerKey: "daytona",
+          runner: { execute: remoteExecute, syncIn: vi.fn() },
+        } as never,
+        runnerPublicUrl: "wss://paperclip.example.test",
+      });
+      const providerEnvironment = state.createBackend.mock.calls.at(-1)![1].environment!;
+      remoteAuthPath = `${providerEnvironment.CODEX_HOME}/auth.json`;
+      if (workFolderHome) {
+        expect(providerEnvironment.HOME).toBe(workFolderHome);
+        expect(remoteAuthPath).toBe(`${workFolderHome}/.codex/auth.json`);
+      }
+      const session = await backend.openSession({} as never);
+      await session.close({} as never);
+      expect(await readFile(hostAuth, "utf8")).toBe(refreshed);
+      expect((await lstat(hostAuth)).mode & 0o777).toBe(0o600);
+      expect(operations).toEqual(["close", "read", "remove"]);
+      expect(remoteExecute).toHaveBeenCalledWith(expect.objectContaining({ command: "base64", args: [remoteAuthPath] }));
+      expect(remoteExecute).toHaveBeenCalledWith(expect.objectContaining({ command: "rm", args: ["-f", "--", remoteAuthPath] }));
+      await session.close({} as never);
+      expect(remoteExecute).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("uses the image's shared Codex without uploading or installing artifacts", async () => {
     const syncIn = vi.fn(async () => undefined);
     const remoteExecute = vi.fn(

@@ -12,7 +12,8 @@ import { createDb, companies, agents, heartbeatRuns, companyMemberships, connect
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth } from "../services/ai-connection-runtime.js";
+import { prepareManagedAiRuntime, assertManagedAiProjectAuth, managedAiSessionFingerprintConfig } from "../services/ai-connection-runtime.js";
+import { buildEffectiveRunSessionConfigMetadata } from "../services/heartbeat.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { secretService } from "../services/secrets.js";
 import { connectionPurposeTransportSchema, isAiConnectionCompatible } from "@paperclipai/shared";
@@ -129,6 +130,34 @@ describe("managed AI connections", () => {
     await expect(service.select({ ...input, userId: "alice", adapterType: "codex_local" })).rejects.toThrow("compatible");
     const account = await service.select({ ...input, userId: "alice" });
     await expect(service.select({ ...input, companyId: otherCompanyId, userId: "alice", binding: { ...binding, mode: "shared", connectionId: account.connection.id, grantId: account.grant.id } })).rejects.toThrow();
+  });
+  it("keeps managed task sessions across temporary homes while detecting account and configuration changes", async () => {
+    const config = { model: "unchanged-model", env: { PLAIN_FLAG: "first" } };
+    const runtimes = await Promise.all(["alice", "alice", "bob"].map(responsibleUserId =>
+      prepareManagedAiRuntime(db, { ...input, responsibleUserId, config })));
+    try {
+      const fingerprint = async (runtime: typeof runtimes[number], effectiveConfig = runtime.config, managed = true) =>
+        (await buildEffectiveRunSessionConfigMetadata({
+          adapterType: input.adapterType,
+          effectiveAdapterConfig: managedAiSessionFingerprintConfig(effectiveConfig, managed ? runtime : undefined),
+          agentRuntimeConfig: { aiConnection: binding },
+          issueOverrides: null, workspaceConfig: null, environment: null,
+          environmentEnv: null, projectEnv: null, routineEnv: null, runtimeSkills: [],
+        })).fingerprint;
+      const [first, next, otherUser] = runtimes;
+      expect(first.config.env.HOME).not.toBe(next.config.env.HOME);
+      expect(first.identity).toBe(next.identity);
+      expect(await fingerprint(first)).toBe(await fingerprint(next));
+      expect(await fingerprint(first)).not.toBe(await fingerprint(otherUser));
+      expect(await fingerprint(next, { ...next.config, env: { ...next.config.env, PLAIN_FLAG: "changed" } })).not.toBe(await fingerprint(first));
+      expect(await fingerprint(next, { ...next.config, model: "changed-model" })).not.toBe(await fingerprint(first));
+      // Homes supplied by an ordinary local/SSH configuration remain meaningful.
+      expect(await fingerprint(first, first.config, false)).not.toBe(await fingerprint(next, next.config, false));
+      expect(first.config.env.HOME).toBeTruthy();
+      expect(next.config.env.CODEX_HOME).toBeTruthy();
+    } finally {
+      await Promise.all(runtimes.map(runtime => runtime.cleanup()));
+    }
   });
   it("resolves shared encrypted credentials through the existing secret binding system", async () => {
     const created = await create("alice", "Shared credential proof", "shared");

@@ -29,7 +29,7 @@ COPY cli/package.json ./cli/package.json
 # The complete resolved lock (including transitive integrity hashes) is reviewed.
 # Reject registry-time drift BEFORE installing packages or running lifecycle code.
 # Refresh this digest together with source/provider dependency changes.
-ARG PAPERCLIP_RUNNER_LOCK_SHA256=3d4577e64214452e3c1f65e32c9223cf34d17d5cf84aa4658f0fefa158fe6de5
+ARG PAPERCLIP_RUNNER_LOCK_SHA256=6e107822490361b4e46084c98b0c8ac11434bd3388186799d4cf3fe795481e07
 RUN printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
     && sha256sum -c /tmp/provider-lock.sha256 \
     && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...'

@@ -60,6 +60,24 @@ export function stripAiAuthBindings(env: unknown): Record<string, unknown> {
       delete result[key];
   return result;
 }
+
+/** Compare managed credentials by account identity, not their per-run staging directory. */
+export function managedAiSessionFingerprintConfig(
+  config: Record<string, unknown>,
+  runtime: { config: { env: Record<string, unknown> } } | undefined,
+): Record<string, unknown> {
+  if (!runtime) return config;
+  const env = { ...(config.env as Record<string, unknown> | undefined) };
+  // Only the host's exact generated paths are omitted. Ordinary home settings,
+  // provider routing, credentials, and the managed account identity still count.
+  for (const key of ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "CODEX_HOME", "GROK_HOME", "CLAUDE_CONFIG_DIR"]) {
+    if (typeof runtime.config.env[key] === "string" && env[key] === runtime.config.env[key]) {
+      delete env[key];
+    }
+  }
+  return { ...config, env };
+}
+
 export async function assertManagedAiProjectAuth(
   config: Record<string, unknown>,
   provider: AiConnectionBinding["provider"],

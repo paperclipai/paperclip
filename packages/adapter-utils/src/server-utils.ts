@@ -4751,11 +4751,26 @@ export async function runChildProcess(
 
         const stdin = child.stdin;
         if (opts.stdin != null && stdin) {
-          void spawnPersistPromise.finally(() => {
-            if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
-            stdin.end();
-          });
+          const reportStdinError = (err: unknown) => {
+            onLogError(err, runId, "failed to write child stdin");
+          };
+          // The child can close its input before this asynchronous write drains.
+          // Keep its exit and output authoritative, but handle the pipe's own
+          // error event so an early exit cannot crash the parent process.
+          stdin.on("error", reportStdinError);
+          void spawnPersistPromise
+            .then(() => {
+              if (
+                child.killed ||
+                child.exitCode !== null ||
+                child.signalCode !== null ||
+                stdin.destroyed
+              ) {
+                return;
+              }
+              stdin.end(opts.stdin as string);
+            })
+            .catch(reportStdinError);
         }
 
         child.on("error", (err: Error) => {

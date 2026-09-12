@@ -9,7 +9,7 @@ import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminati
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { connectionIntentService } from "./connection-intents.js";
-import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, AI_AUTH_ENV_KEYS } from "./ai-connection-runtime.js";
+import { prepareManagedAiRuntime, assertManagedAiProjectAuth, stripAiAuthBindings, AI_AUTH_ENV_KEYS, managedAiSessionFingerprintConfig } from "./ai-connection-runtime.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
@@ -20896,7 +20896,7 @@ export function heartbeatService(
       const sessionConfigMetadata =
         await measureSandboxOperation("heartbeat.build_effective_run_session_config_metadata", { operationIndex: 61 }, async () => (buildEffectiveRunSessionConfigMetadata({
           adapterType: agent.adapterType,
-          effectiveAdapterConfig: runtimeConfig,
+          effectiveAdapterConfig: managedAiSessionFingerprintConfig(runtimeConfig, managedAiRuntime),
           agentRuntimeConfig: agent.runtimeConfig,
           issueOverrides: issueAssigneeOverrides,
           workspaceConfig: {

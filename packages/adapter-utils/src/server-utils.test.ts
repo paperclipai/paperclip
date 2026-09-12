@@ -618,6 +618,59 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
+  it.each([0, 7])(
+    "preserves exit %i and output when the child closes stdin before an asynchronous write",
+    async (exitCode) => {
+      let ready!: () => void;
+      const stdinClosed = new Promise<void>((resolve) => {
+        ready = resolve;
+      });
+      let spawnCount = 0;
+      const errors: unknown[] = [];
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          [
+            "require('node:fs').closeSync(0);",
+            "process.stdout.write('stdin-closed\\n');",
+            "setTimeout(() => {",
+            "require('node:fs').writeSync(1, 'final-output');",
+            "require('node:fs').writeSync(2, 'final-error');",
+            `process.exit(${exitCode});`,
+            "}, 100);",
+          ].join(" "),
+        ],
+        {
+          cwd: process.cwd(),
+          env: {},
+          timeoutSec: 5,
+          graceSec: 1,
+          stdin: "input".repeat(1024 * 1024),
+          onSpawn: async () => {
+            spawnCount++;
+            await stdinClosed;
+          },
+          onLog: async (stream, chunk) => {
+            if (stream === "stdout" && chunk.includes("stdin-closed")) ready();
+          },
+          onLogError: (error) => {
+            errors.push(error);
+          },
+        },
+      );
+      expect(result.exitCode).toBe(exitCode);
+      expect(result.signal).toBeNull();
+      expect(result.timedOut).toBe(false);
+      expect(result.stdout).toBe("stdin-closed\nfinal-output");
+      expect(result.stderr).toBe("final-error");
+      expect(spawnCount).toBe(1);
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toMatchObject({ code: "EPIPE" });
+    },
+  );
+
   it.skipIf(process.platform === "win32")(
     "kills descendant processes on timeout via the process group",
     async () => {

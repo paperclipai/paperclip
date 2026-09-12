@@ -1,0 +1,3026 @@
+{
+  "sourceCommit": "64814d5a4b1cf9a61e6f0a661856d3c92401fa3b",
+  "journal": {
+    "version": "7",
+    "dialect": "postgresql",
+    "entries": [
+      {
+        "idx": 0,
+        "version": "7",
+        "when": 1771300567463,
+        "tag": "0000_mature_masked_marvel",
+        "breakpoints": true
+      },
+      {
+        "idx": 1,
+        "version": "7",
+        "when": 1771349039633,
+        "tag": "0001_fast_northstar",
+        "breakpoints": true
+      },
+      {
+        "idx": 2,
+        "version": "7",
+        "when": 1771349403162,
+        "tag": "0002_big_zaladane",
+        "breakpoints": true
+      },
+      {
+        "idx": 3,
+        "version": "7",
+        "when": 1771456737635,
+        "tag": "0003_shallow_quentin_quire",
+        "breakpoints": true
+      },
+      {
+        "idx": 4,
+        "version": "7",
+        "when": 1771545600000,
+        "tag": "0004_issue_identifiers",
+        "breakpoints": true
+      },
+      {
+        "idx": 5,
+        "version": "7",
+        "when": 1771545601000,
+        "tag": "0005_chief_luke_cage",
+        "breakpoints": true
+      },
+      {
+        "idx": 6,
+        "version": "7",
+        "when": 1771545602000,
+        "tag": "0006_overjoyed_mister_sinister",
+        "breakpoints": true
+      },
+      {
+        "idx": 7,
+        "version": "7",
+        "when": 1771545603000,
+        "tag": "0007_new_quentin_quire",
+        "breakpoints": true
+      },
+      {
+        "idx": 8,
+        "version": "7",
+        "when": 1771534160426,
+        "tag": "0008_amused_zzzax",
+        "breakpoints": true
+      },
+      {
+        "idx": 9,
+        "version": "7",
+        "when": 1771534211029,
+        "tag": "0009_fast_jackal",
+        "breakpoints": true
+      },
+      {
+        "idx": 10,
+        "version": "7",
+        "when": 1771605173513,
+        "tag": "0010_stale_justin_hammer",
+        "breakpoints": true
+      },
+      {
+        "idx": 11,
+        "version": "7",
+        "when": 1771616419708,
+        "tag": "0011_windy_corsair",
+        "breakpoints": true
+      },
+      {
+        "idx": 12,
+        "version": "7",
+        "when": 1771619674673,
+        "tag": "0012_perpetual_ser_duncan",
+        "breakpoints": true
+      },
+      {
+        "idx": 13,
+        "version": "7",
+        "when": 1771623691139,
+        "tag": "0013_dashing_wasp",
+        "breakpoints": true
+      },
+      {
+        "idx": 14,
+        "version": "7",
+        "when": 1771691806349,
+        "tag": "0014_many_mikhail_rasputin",
+        "breakpoints": true
+      },
+      {
+        "idx": 15,
+        "version": "7",
+        "when": 1771865100000,
+        "tag": "0015_project_color_archived",
+        "breakpoints": true
+      },
+      {
+        "idx": 16,
+        "version": "7",
+        "when": 1771955900000,
+        "tag": "0016_agent_icon",
+        "breakpoints": true
+      },
+      {
+        "idx": 17,
+        "version": "7",
+        "when": 1771883888199,
+        "tag": "0017_tiresome_gabe_jones",
+        "breakpoints": true
+      },
+      {
+        "idx": 18,
+        "version": "7",
+        "when": 1771897769629,
+        "tag": "0018_flat_sleepwalker",
+        "breakpoints": true
+      },
+      {
+        "idx": 19,
+        "version": "7",
+        "when": 1772029333401,
+        "tag": "0019_public_victor_mancha",
+        "breakpoints": true
+      },
+      {
+        "idx": 20,
+        "version": "7",
+        "when": 1772032176413,
+        "tag": "0020_white_anita_blake",
+        "breakpoints": true
+      },
+      {
+        "idx": 21,
+        "version": "7",
+        "when": 1772122471656,
+        "tag": "0021_chief_vindicator",
+        "breakpoints": true
+      },
+      {
+        "idx": 22,
+        "version": "7",
+        "when": 1772186400000,
+        "tag": "0022_company_brand_color",
+        "breakpoints": true
+      },
+      {
+        "idx": 23,
+        "version": "7",
+        "when": 1772139727599,
+        "tag": "0023_fair_lethal_legion",
+        "breakpoints": true
+      },
+      {
+        "idx": 24,
+        "version": "7",
+        "when": 1772806603601,
+        "tag": "0024_far_beast",
+        "breakpoints": true
+      },
+      {
+        "idx": 25,
+        "version": "7",
+        "when": 1772807461603,
+        "tag": "0025_nasty_salo",
+        "breakpoints": true
+      },
+      {
+        "idx": 26,
+        "version": "7",
+        "when": 1773089625430,
+        "tag": "0026_lying_pete_wisdom",
+        "breakpoints": true
+      },
+      {
+        "idx": 27,
+        "version": "7",
+        "when": 1773150731736,
+        "tag": "0027_tranquil_tenebrous",
+        "breakpoints": true
+      },
+      {
+        "idx": 28,
+        "version": "7",
+        "when": 1773432085646,
+        "tag": "0028_harsh_goliath",
+        "breakpoints": true
+      },
+      {
+        "idx": 29,
+        "version": "7",
+        "when": 1773417600000,
+        "tag": "0029_plugin_tables",
+        "breakpoints": true
+      },
+      {
+        "idx": 30,
+        "version": "7",
+        "when": 1773670925214,
+        "tag": "0030_rich_magneto",
+        "breakpoints": true
+      },
+      {
+        "idx": 31,
+        "version": "7",
+        "when": 1773511922713,
+        "tag": "0031_zippy_magma",
+        "breakpoints": true
+      },
+      {
+        "idx": 32,
+        "version": "7",
+        "when": 1773542934499,
+        "tag": "0032_pretty_doctor_octopus",
+        "breakpoints": true
+      },
+      {
+        "idx": 33,
+        "version": "7",
+        "when": 1773664961967,
+        "tag": "0033_shiny_black_tarantula",
+        "breakpoints": true
+      },
+      {
+        "idx": 34,
+        "version": "7",
+        "when": 1773697572188,
+        "tag": "0034_fat_dormammu",
+        "breakpoints": true
+      },
+      {
+        "idx": 35,
+        "version": "7",
+        "when": 1773698696169,
+        "tag": "0035_marvelous_satana",
+        "breakpoints": true
+      },
+      {
+        "idx": 36,
+        "version": "7",
+        "when": 1773756213455,
+        "tag": "0036_cheerful_nitro",
+        "breakpoints": true
+      },
+      {
+        "idx": 37,
+        "version": "7",
+        "when": 1773756922363,
+        "tag": "0037_friendly_eddie_brock",
+        "breakpoints": true
+      },
+      {
+        "idx": 38,
+        "version": "7",
+        "when": 1773931592563,
+        "tag": "0038_careless_iron_monger",
+        "breakpoints": true
+      },
+      {
+        "idx": 39,
+        "version": "7",
+        "when": 1773926116580,
+        "tag": "0039_fat_magneto",
+        "breakpoints": true
+      },
+      {
+        "idx": 40,
+        "version": "7",
+        "when": 1773927102783,
+        "tag": "0040_eager_shotgun",
+        "breakpoints": true
+      },
+      {
+        "idx": 41,
+        "version": "7",
+        "when": 1774011294562,
+        "tag": "0041_curly_maria_hill",
+        "breakpoints": true
+      },
+      {
+        "idx": 42,
+        "version": "7",
+        "when": 1774031825634,
+        "tag": "0042_spotty_the_renegades",
+        "breakpoints": true
+      },
+      {
+        "idx": 43,
+        "version": "7",
+        "when": 1774008910991,
+        "tag": "0043_reflective_captain_universe",
+        "breakpoints": true
+      },
+      {
+        "idx": 44,
+        "version": "7",
+        "when": 1774269579794,
+        "tag": "0044_illegal_toad",
+        "breakpoints": true
+      },
+      {
+        "idx": 45,
+        "version": "7",
+        "when": 1774530504348,
+        "tag": "0045_workable_shockwave",
+        "breakpoints": true
+      },
+      {
+        "idx": 46,
+        "version": "7",
+        "when": 1774960197878,
+        "tag": "0046_smooth_sentinels",
+        "breakpoints": true
+      },
+      {
+        "idx": 47,
+        "version": "7",
+        "when": 1775137972687,
+        "tag": "0047_overjoyed_groot",
+        "breakpoints": true
+      },
+      {
+        "idx": 48,
+        "version": "7",
+        "when": 1775145655557,
+        "tag": "0048_flashy_marrow",
+        "breakpoints": true
+      },
+      {
+        "idx": 49,
+        "version": "7",
+        "when": 1775349863293,
+        "tag": "0049_flawless_abomination",
+        "breakpoints": true
+      },
+      {
+        "idx": 50,
+        "version": "7",
+        "when": 1775487782768,
+        "tag": "0050_stiff_luckman",
+        "breakpoints": true
+      },
+      {
+        "idx": 51,
+        "version": "7",
+        "when": 1775524651831,
+        "tag": "0051_young_korg",
+        "breakpoints": true
+      },
+      {
+        "idx": 52,
+        "version": "7",
+        "when": 1775571715162,
+        "tag": "0052_mushy_trauma",
+        "breakpoints": true
+      },
+      {
+        "idx": 53,
+        "version": "7",
+        "when": 1775604018515,
+        "tag": "0053_sharp_wild_child",
+        "breakpoints": true
+      },
+      {
+        "idx": 54,
+        "version": "7",
+        "when": 1775750400000,
+        "tag": "0054_draft_routines",
+        "breakpoints": true
+      },
+      {
+        "idx": 55,
+        "version": "7",
+        "when": 1775825256196,
+        "tag": "0055_kind_weapon_omega",
+        "breakpoints": true
+      },
+      {
+        "idx": 56,
+        "version": "7",
+        "when": 1776084034244,
+        "tag": "0056_spooky_ultragirl",
+        "breakpoints": true
+      },
+      {
+        "idx": 57,
+        "version": "7",
+        "when": 1776309613598,
+        "tag": "0057_tidy_join_requests",
+        "breakpoints": true
+      },
+      {
+        "idx": 58,
+        "version": "7",
+        "when": 1776542245004,
+        "tag": "0058_wealthy_starbolt",
+        "breakpoints": true
+      },
+      {
+        "idx": 59,
+        "version": "7",
+        "when": 1776542246000,
+        "tag": "0059_plugin_database_namespaces",
+        "breakpoints": true
+      },
+      {
+        "idx": 60,
+        "version": "7",
+        "when": 1776717606743,
+        "tag": "0060_orange_annihilus",
+        "breakpoints": true
+      },
+      {
+        "idx": 61,
+        "version": "7",
+        "when": 1776785165389,
+        "tag": "0061_lively_thor_girl",
+        "breakpoints": true
+      },
+      {
+        "idx": 62,
+        "version": "7",
+        "when": 1776780000000,
+        "tag": "0062_routine_run_dispatch_fingerprint",
+        "breakpoints": true
+      },
+      {
+        "idx": 63,
+        "version": "7",
+        "when": 1776780001000,
+        "tag": "0063_issue_thread_interactions",
+        "breakpoints": true
+      },
+      {
+        "idx": 64,
+        "version": "7",
+        "when": 1776780002000,
+        "tag": "0064_issue_thread_interaction_idempotency",
+        "breakpoints": true
+      },
+      {
+        "idx": 65,
+        "version": "7",
+        "when": 1776903900000,
+        "tag": "0065_environments",
+        "breakpoints": true
+      },
+      {
+        "idx": 66,
+        "version": "7",
+        "when": 1776903901000,
+        "tag": "0066_issue_tree_holds",
+        "breakpoints": true
+      },
+      {
+        "idx": 67,
+        "version": "7",
+        "when": 1776904200000,
+        "tag": "0067_agent_default_environment",
+        "breakpoints": true
+      },
+      {
+        "idx": 68,
+        "version": "7",
+        "when": 1776959400000,
+        "tag": "0068_environment_local_driver_unique",
+        "breakpoints": true
+      },
+      {
+        "idx": 69,
+        "version": "7",
+        "when": 1776780003000,
+        "tag": "0069_liveness_recovery_dedupe",
+        "breakpoints": true
+      },
+      {
+        "idx": 70,
+        "version": "7",
+        "when": 1776780004000,
+        "tag": "0070_active_run_output_watchdog",
+        "breakpoints": true
+      },
+      {
+        "idx": 71,
+        "version": "7",
+        "when": 1777131234000,
+        "tag": "0071_default_hire_approval_off",
+        "breakpoints": true
+      },
+      {
+        "idx": 72,
+        "version": "7",
+        "when": 1777305216238,
+        "tag": "0072_large_sandman",
+        "breakpoints": true
+      },
+      {
+        "idx": 73,
+        "version": "7",
+        "when": 1777382021347,
+        "tag": "0073_shiny_salo",
+        "breakpoints": true
+      },
+      {
+        "idx": 74,
+        "version": "7",
+        "when": 1777384535070,
+        "tag": "0074_striped_genesis",
+        "breakpoints": true
+      },
+      {
+        "idx": 75,
+        "version": "7",
+        "when": 1777572332006,
+        "tag": "0075_cultured_sebastian_shaw",
+        "breakpoints": true
+      },
+      {
+        "idx": 76,
+        "version": "7",
+        "when": 1777675301279,
+        "tag": "0076_useful_elektra",
+        "breakpoints": true
+      },
+      {
+        "idx": 77,
+        "version": "7",
+        "when": 1777933347806,
+        "tag": "0077_unusual_karnak",
+        "breakpoints": true
+      },
+      {
+        "idx": 78,
+        "version": "7",
+        "when": 1778004024976,
+        "tag": "0078_white_darwin",
+        "breakpoints": true
+      },
+      {
+        "idx": 79,
+        "version": "7",
+        "when": 1777821410992,
+        "tag": "0079_company_search_document_indexes",
+        "breakpoints": true
+      },
+      {
+        "idx": 80,
+        "version": "7",
+        "when": 1777849000000,
+        "tag": "0080_company_search_fuzzystrmatch",
+        "breakpoints": true
+      },
+      {
+        "idx": 81,
+        "version": "7",
+        "when": 1778067785040,
+        "tag": "0081_optimal_dormammu",
+        "breakpoints": true
+      },
+      {
+        "idx": 82,
+        "version": "7",
+        "when": 1778067785041,
+        "tag": "0082_dry_vision",
+        "breakpoints": true
+      },
+      {
+        "idx": 83,
+        "version": "7",
+        "when": 1778074536410,
+        "tag": "0083_company_secret_provider_configs",
+        "breakpoints": true
+      },
+      {
+        "idx": 84,
+        "version": "7",
+        "when": 1778355326070,
+        "tag": "0084_issue_recovery_actions",
+        "breakpoints": true
+      },
+      {
+        "idx": 85,
+        "version": "7",
+        "when": 1778787362162,
+        "tag": "0085_tranquil_the_executioner",
+        "breakpoints": true
+      },
+      {
+        "idx": 86,
+        "version": "7",
+        "when": 1778976000000,
+        "tag": "0086_routine_env_runtime_contract",
+        "breakpoints": true
+      },
+      {
+        "idx": 87,
+        "version": "7",
+        "when": 1779360000000,
+        "tag": "0087_backfill_environment_manage_human_defaults",
+        "breakpoints": true
+      },
+      {
+        "idx": 88,
+        "version": "7",
+        "when": 1779446400000,
+        "tag": "0088_backfill_principal_access_compatibility",
+        "breakpoints": true
+      },
+      {
+        "idx": 89,
+        "version": "7",
+        "when": 1779129600000,
+        "tag": "0089_cloud_upstreams",
+        "breakpoints": true
+      },
+      {
+        "idx": 90,
+        "version": "7",
+        "when": 1779573019125,
+        "tag": "0090_resource_memberships",
+        "breakpoints": true
+      },
+      {
+        "idx": 91,
+        "version": "7",
+        "when": 1778810394522,
+        "tag": "0091_old_swarm",
+        "breakpoints": true
+      },
+      {
+        "idx": 92,
+        "version": "7",
+        "when": 1779999768200,
+        "tag": "0092_mighty_puma",
+        "breakpoints": true
+      },
+      {
+        "idx": 93,
+        "version": "7",
+        "when": 1780040470886,
+        "tag": "0093_giant_green_goblin",
+        "breakpoints": true
+      },
+      {
+        "idx": 94,
+        "version": "7",
+        "when": 1780533900000,
+        "tag": "0094_backfill_archived_company_agent_pauses",
+        "breakpoints": true
+      },
+      {
+        "idx": 95,
+        "version": "7",
+        "when": 1780507597454,
+        "tag": "0095_issue_comment_tombstones",
+        "breakpoints": true
+      },
+      {
+        "idx": 96,
+        "version": "7",
+        "when": 1780507597455,
+        "tag": "0096_document_annotation_issue_comment_links",
+        "breakpoints": true
+      },
+      {
+        "idx": 97,
+        "version": "7",
+        "when": 1780534000000,
+        "tag": "0097_low_trust_source_trust",
+        "breakpoints": true
+      },
+      {
+        "idx": 98,
+        "version": "7",
+        "when": 1780534200000,
+        "tag": "0098_project_icon",
+        "breakpoints": true
+      },
+      {
+        "idx": 99,
+        "version": "7",
+        "when": 1781130000000,
+        "tag": "0099_skills_store_foundation",
+        "breakpoints": true
+      },
+      {
+        "idx": 100,
+        "version": "7",
+        "when": 1781480000000,
+        "tag": "0100_skill_install_count_backfill",
+        "breakpoints": true
+      },
+      {
+        "idx": 101,
+        "version": "7",
+        "when": 1781490000000,
+        "tag": "0101_plugin_company_id_tenant_isolation",
+        "breakpoints": true
+      },
+      {
+        "idx": 102,
+        "version": "7",
+        "when": 1781490100000,
+        "tag": "0102_managed_sandbox_dedup_index",
+        "breakpoints": true
+      },
+      {
+        "idx": 103,
+        "version": "7",
+        "when": 1781490200000,
+        "tag": "0103_agent_error_reason",
+        "breakpoints": true
+      },
+      {
+        "idx": 104,
+        "version": "7",
+        "when": 1781733000000,
+        "tag": "0104_issue_watchdogs",
+        "breakpoints": true
+      },
+      {
+        "idx": 105,
+        "version": "7",
+        "when": 1781902000000,
+        "tag": "0105_instance_scoped_environments",
+        "breakpoints": true
+      },
+      {
+        "idx": 106,
+        "version": "7",
+        "when": 1781902100000,
+        "tag": "0106_external_object_references",
+        "breakpoints": true
+      },
+      {
+        "idx": 107,
+        "version": "7",
+        "when": 1782165200000,
+        "tag": "0107_external_object_display_metadata",
+        "breakpoints": true
+      },
+      {
+        "idx": 108,
+        "version": "7",
+        "when": 1781902200000,
+        "tag": "0108_workspace_operations_issue_id",
+        "breakpoints": true
+      },
+      {
+        "idx": 109,
+        "version": "7",
+        "when": 1781902300000,
+        "tag": "0109_routine_description_annotations",
+        "breakpoints": true
+      },
+      {
+        "idx": 110,
+        "version": "7",
+        "when": 1781902400000,
+        "tag": "0110_document_company_cascade",
+        "breakpoints": true
+      },
+      {
+        "idx": 111,
+        "version": "7",
+        "when": 1781902500000,
+        "tag": "0111_backfill_skill_create_human_defaults",
+        "breakpoints": true
+      },
+      {
+        "idx": 112,
+        "version": "7",
+        "when": 1781902600000,
+        "tag": "0112_rename_skill_create_permission_key",
+        "breakpoints": true
+      },
+      {
+        "idx": 113,
+        "version": "7",
+        "when": 1781902700000,
+        "tag": "0113_pipeline_foundation",
+        "breakpoints": true
+      },
+      {
+        "idx": 114,
+        "version": "7",
+        "when": 1781902800000,
+        "tag": "0114_pipeline_case_issue_unlinked_event",
+        "breakpoints": true
+      },
+      {
+        "idx": 115,
+        "version": "7",
+        "when": 1781902900000,
+        "tag": "0115_pipeline_routine_origin",
+        "breakpoints": true
+      },
+      {
+        "idx": 116,
+        "version": "7",
+        "when": 1781903000000,
+        "tag": "0116_pipeline_upstream_drift_event",
+        "breakpoints": true
+      },
+      {
+        "idx": 117,
+        "version": "7",
+        "when": 1781903100000,
+        "tag": "0117_pipeline_transition_forced_event",
+        "breakpoints": true
+      },
+      {
+        "idx": 118,
+        "version": "7",
+        "when": 1781903200000,
+        "tag": "0118_pipeline_case_agent_fanout",
+        "breakpoints": true
+      },
+      {
+        "idx": 119,
+        "version": "7",
+        "when": 1781903300000,
+        "tag": "0119_pipeline_drift_acknowledged_event",
+        "breakpoints": true
+      },
+      {
+        "idx": 120,
+        "version": "7",
+        "when": 1781903400000,
+        "tag": "0120_pipeline_stage_working_primitives",
+        "breakpoints": true
+      },
+      {
+        "idx": 121,
+        "version": "7",
+        "when": 1781903500000,
+        "tag": "0121_pipeline_automation_retry_effects",
+        "breakpoints": true
+      },
+      {
+        "idx": 122,
+        "version": "7",
+        "when": 1781903600000,
+        "tag": "0122_pipeline_case_documents",
+        "breakpoints": true
+      },
+      {
+        "idx": 123,
+        "version": "7",
+        "when": 1781903700000,
+        "tag": "0123_document_annotation_source_trust",
+        "breakpoints": true
+      },
+      {
+        "idx": 124,
+        "version": "7",
+        "when": 1782440000000,
+        "tag": "0124_agent_api_key_scope_config",
+        "breakpoints": true
+      },
+      {
+        "idx": 125,
+        "version": "7",
+        "when": 1782440100000,
+        "tag": "0125_environment_custom_image_templates",
+        "breakpoints": true
+      },
+      {
+        "idx": 127,
+        "version": "7",
+        "when": 1782526500000,
+        "tag": "0127_environment_custom_images_instance_scoped",
+        "breakpoints": true
+      },
+      {
+        "idx": 128,
+        "version": "7",
+        "when": 1782923938661,
+        "tag": "0128_user_specific_secrets",
+        "breakpoints": true
+      },
+      {
+        "idx": 129,
+        "version": "7",
+        "when": 1783025124120,
+        "tag": "0129_agent_api_key_responsible_user",
+        "breakpoints": true
+      },
+      {
+        "idx": 131,
+        "version": "7",
+        "when": 1783025324120,
+        "tag": "0131_repair_run_responsible_user_context_refs",
+        "breakpoints": true
+      },
+      {
+        "idx": 132,
+        "version": "7",
+        "when": 1783025424120,
+        "tag": "0132_issue_comment_derived_attribution_fast",
+        "breakpoints": true
+      },
+      {
+        "idx": 133,
+        "version": "7",
+        "when": 1783034521000,
+        "tag": "0133_resource_membership_stars",
+        "breakpoints": true
+      },
+      {
+        "idx": 134,
+        "version": "7",
+        "when": 1783025624120,
+        "tag": "0134_run_responsible_user_invariant",
+        "breakpoints": true
+      },
+      {
+        "idx": 135,
+        "version": "7",
+        "when": 1783025724120,
+        "tag": "0135_repair_run_responsible_user_updated_at_sweep",
+        "breakpoints": true
+      },
+      {
+        "idx": 136,
+        "version": "7",
+        "when": 1783555200000,
+        "tag": "0136_acpx_default_engine_migration",
+        "breakpoints": true
+      },
+      {
+        "idx": 137,
+        "version": "7",
+        "when": 1783555201000,
+        "tag": "0137_skill_studio_server_foundation",
+        "breakpoints": true
+      },
+      {
+        "idx": 138,
+        "version": "7",
+        "when": 1783555202000,
+        "tag": "0138_skill_studio_run_retention",
+        "breakpoints": true
+      },
+      {
+        "idx": 139,
+        "version": "7",
+        "when": 1783555203000,
+        "tag": "0139_skill_studio_run_templates",
+        "breakpoints": true
+      },
+      {
+        "idx": 140,
+        "version": "7",
+        "when": 1783555300000,
+        "tag": "0140_built_in_managed_resources",
+        "breakpoints": true
+      },
+      {
+        "idx": 141,
+        "version": "7",
+        "when": 1783555301000,
+        "tag": "0141_heartbeat_runs_company_created_at_index",
+        "breakpoints": true
+      },
+      {
+        "idx": 142,
+        "version": "7",
+        "when": 1783555301100,
+        "tag": "0142_company_search_sort_indexes",
+        "breakpoints": true
+      },
+      {
+        "idx": 143,
+        "version": "7",
+        "when": 1783457051766,
+        "tag": "0143_cases_foundation",
+        "breakpoints": true
+      },
+      {
+        "idx": 144,
+        "version": "7",
+        "when": 1783520000000,
+        "tag": "0144_case_document_annotations",
+        "breakpoints": true
+      },
+      {
+        "idx": 145,
+        "version": "7",
+        "when": 1783641600000,
+        "tag": "0145_inbox_dismissal_snooze_kind",
+        "breakpoints": true
+      },
+      {
+        "idx": 146,
+        "version": "7",
+        "when": 1783822632557,
+        "tag": "0146_routine_activity_gate",
+        "breakpoints": true
+      },
+      {
+        "idx": 147,
+        "version": "7",
+        "when": 1783953514660,
+        "tag": "0147_cost_event_status",
+        "breakpoints": true
+      },
+      {
+        "idx": 148,
+        "version": "7",
+        "when": 1783953515660,
+        "tag": "0148_tool_access_mcp_connections",
+        "breakpoints": true
+      },
+      {
+        "idx": 149,
+        "version": "7",
+        "when": 1783953516660,
+        "tag": "0149_agent_access_phase2_contracts",
+        "breakpoints": true
+      },
+      {
+        "idx": 150,
+        "version": "7",
+        "when": 1783953517660,
+        "tag": "0150_tool_invocation_catalog_snapshots",
+        "breakpoints": true
+      },
+      {
+        "idx": 151,
+        "version": "7",
+        "when": 1783953518660,
+        "tag": "0151_tool_gateway_sessions",
+        "breakpoints": true
+      },
+      {
+        "idx": 152,
+        "version": "7",
+        "when": 1783953519660,
+        "tag": "0152_tool_connection_application_no_cascade",
+        "breakpoints": true
+      },
+      {
+        "idx": 153,
+        "version": "7",
+        "when": 1783953520660,
+        "tag": "0153_tool_stdio_command_templates",
+        "breakpoints": true
+      },
+      {
+        "idx": 154,
+        "version": "7",
+        "when": 1783953521660,
+        "tag": "0154_tool_oauth_states",
+        "breakpoints": true
+      },
+      {
+        "idx": 155,
+        "version": "7",
+        "when": 1783953522660,
+        "tag": "0155_tool_oauth_state_actor_binding",
+        "breakpoints": true
+      },
+      {
+        "idx": 156,
+        "version": "7",
+        "when": 1783953523660,
+        "tag": "0156_tool_oauth_state_session_binding",
+        "breakpoints": true
+      },
+      {
+        "idx": 157,
+        "version": "7",
+        "when": 1783953524660,
+        "tag": "0157_tool_profile_new_tools_review",
+        "breakpoints": true
+      },
+      {
+        "idx": 158,
+        "version": "7",
+        "when": 1783953525660,
+        "tag": "0158_tool_invocation_connected_mcp_metadata",
+        "breakpoints": true
+      },
+      {
+        "idx": 159,
+        "version": "7",
+        "when": 1783953526660,
+        "tag": "0159_named_mcp_gateways",
+        "breakpoints": true
+      },
+      {
+        "idx": 160,
+        "version": "7",
+        "when": 1783953527660,
+        "tag": "0160_mcp_gateway_contract_expansion",
+        "breakpoints": true
+      },
+      {
+        "idx": 161,
+        "version": "7",
+        "when": 1783953528660,
+        "tag": "0161_environment_custom_image_company_scope_repair",
+        "breakpoints": true
+      },
+      {
+        "idx": 162,
+        "version": "7",
+        "when": 1783953529660,
+        "tag": "0162_tool_runtime_metric_counters",
+        "breakpoints": true
+      },
+      {
+        "idx": 163,
+        "version": "7",
+        "when": 1783953530660,
+        "tag": "0163_secret_binding_projection_class",
+        "breakpoints": true
+      },
+      {
+        "idx": 164,
+        "version": "7",
+        "when": 1783953531660,
+        "tag": "0164_plugin_config_company_scope",
+        "breakpoints": true
+      },
+      {
+        "idx": 165,
+        "version": "7",
+        "when": 1783953532660,
+        "tag": "0165_connection_token_issuances",
+        "breakpoints": true
+      },
+      {
+        "idx": 166,
+        "version": "7",
+        "when": 1783953533660,
+        "tag": "0166_smoke_lab_results",
+        "breakpoints": true
+      },
+      {
+        "idx": 167,
+        "version": "7",
+        "when": 1783953534660,
+        "tag": "0167_environment_custom_image_instance_scope_cleanup",
+        "breakpoints": true
+      },
+      {
+        "idx": 168,
+        "version": "7",
+        "when": 1783953535660,
+        "tag": "0168_tool_connection_installs",
+        "breakpoints": true
+      },
+      {
+        "idx": 169,
+        "version": "7",
+        "when": 1783953536660,
+        "tag": "0169_tool_gateway_protocol_rate_limit_counters",
+        "breakpoints": true
+      },
+      {
+        "idx": 170,
+        "version": "7",
+        "when": 1784037600000,
+        "tag": "0170_company_skill_policies",
+        "breakpoints": true
+      },
+      {
+        "idx": 171,
+        "version": "7",
+        "when": 1784160000000,
+        "tag": "0171_issue_create_idempotency_keys",
+        "breakpoints": true
+      },
+      {
+        "idx": 172,
+        "version": "7",
+        "when": 1784169959628,
+        "tag": "0172_inbox_archive_agent_policies",
+        "breakpoints": true
+      },
+      {
+        "idx": 173,
+        "version": "7",
+        "when": 1784210753027,
+        "tag": "0173_inbox_policy_agent_cleanup",
+        "breakpoints": true
+      },
+      {
+        "idx": 174,
+        "version": "7",
+        "when": 1784210754027,
+        "tag": "0174_folders",
+        "breakpoints": true
+      },
+      {
+        "idx": 175,
+        "version": "7",
+        "when": 1784210755027,
+        "tag": "0175_nested_skill_folders",
+        "breakpoints": true
+      },
+      {
+        "idx": 176,
+        "version": "7",
+        "when": 1784211956161,
+        "tag": "0176_issue_create_idempotency_key_expiry",
+        "breakpoints": true
+      },
+      {
+        "idx": 178,
+        "version": "7",
+        "when": 1784241826832,
+        "tag": "0177_activity_log_responsible_user",
+        "breakpoints": true
+      },
+      {
+        "idx": 178,
+        "version": "7",
+        "when": 1784241827832,
+        "tag": "0178_summary_slots",
+        "breakpoints": true
+      },
+      {
+        "idx": 179,
+        "version": "7",
+        "when": 1784241828832,
+        "tag": "0179_summary_slot_failure_reason",
+        "breakpoints": true
+      },
+      {
+        "idx": 180,
+        "version": "7",
+        "when": 1784216720808,
+        "tag": "0180_decision_training_examples",
+        "breakpoints": true
+      },
+      {
+        "idx": 181,
+        "version": "7",
+        "when": 1784231633059,
+        "tag": "0181_decision_training_retention_policy",
+        "breakpoints": true
+      },
+      {
+        "idx": 182,
+        "version": "7",
+        "when": 1784592000000,
+        "tag": "0182_connections_v3_schema_core",
+        "breakpoints": true
+      },
+      {
+        "idx": 183,
+        "version": "7",
+        "when": 1784653200000,
+        "tag": "0183_connection_user_authorization_state",
+        "breakpoints": true
+      },
+      {
+        "idx": 184,
+        "version": "7",
+        "when": 1784822400000,
+        "tag": "0184_routable_blocked",
+        "breakpoints": true
+      },
+      {
+        "idx": 185,
+        "version": "7",
+        "when": 1784826000000,
+        "tag": "0185_status_cards",
+        "breakpoints": true
+      },
+      {
+        "idx": 186,
+        "version": "7",
+        "when": 1784829600000,
+        "tag": "0186_status_card_compile_provenance",
+        "breakpoints": true
+      },
+      {
+        "idx": 187,
+        "version": "7",
+        "when": 1784833200000,
+        "tag": "0187_status_card_pending_change_hash",
+        "breakpoints": true
+      },
+      {
+        "idx": 188,
+        "version": "7",
+        "when": 1784837337101,
+        "tag": "0188_status_card_generation_issue_index",
+        "breakpoints": true
+      },
+      {
+        "idx": 189,
+        "version": "7",
+        "when": 1784840937101,
+        "tag": "0189_status_card_agent",
+        "breakpoints": true
+      },
+      {
+        "idx": 190,
+        "version": "7",
+        "when": 1784916885226,
+        "tag": "0190_status_card_single_prompt",
+        "breakpoints": true
+      },
+      {
+        "idx": 191,
+        "version": "7",
+        "when": 1784916885227,
+        "tag": "0191_status_card_mentioned_issue_ids",
+        "breakpoints": true
+      },
+      {
+        "idx": 192,
+        "version": "7",
+        "when": 1784916886226,
+        "tag": "0192_task_watchdog_stop_snapshots",
+        "breakpoints": true
+      },
+      {
+        "idx": 193,
+        "version": "7",
+        "when": 1785170000000,
+        "tag": "0193_document_memberships",
+        "breakpoints": true
+      },
+      {
+        "idx": 194,
+        "version": "7",
+        "when": 1784920485226,
+        "tag": "0194_company_skill_releases",
+        "breakpoints": true
+      },
+      {
+        "idx": 195,
+        "version": "7",
+        "when": 1785170000001,
+        "tag": "0195_built_in_agent_unique_marker",
+        "breakpoints": true
+      },
+      {
+        "idx": 196,
+        "version": "7",
+        "when": 1785170001001,
+        "tag": "0196_drop_cloud_upstream_tables",
+        "breakpoints": true
+      },
+      {
+        "idx": 197,
+        "version": "7",
+        "when": 1785175200000,
+        "tag": "0197_decisions_v1",
+        "breakpoints": true
+      },
+      {
+        "idx": 198,
+        "version": "7",
+        "when": 1785603158310,
+        "tag": "0198_decision_queues_and_triage",
+        "breakpoints": true
+      },
+      {
+        "idx": 199,
+        "version": "7",
+        "when": 1785605818353,
+        "tag": "0199_decision_queue_composite_key",
+        "breakpoints": true
+      },
+      {
+        "idx": 200,
+        "version": "7",
+        "when": 1785635155420,
+        "tag": "0200_yellow_maria_hill",
+        "breakpoints": true
+      },
+      {
+        "idx": 201,
+        "version": "7",
+        "when": 1785701828695,
+        "tag": "0201_concerned_captain_midlands",
+        "breakpoints": true
+      },
+      {
+        "idx": 202,
+        "version": "7",
+        "when": 1785702264747,
+        "tag": "0202_eminent_marvel_zombies",
+        "breakpoints": true
+      },
+      {
+        "idx": 203,
+        "version": "7",
+        "when": 1785702264748,
+        "tag": "0203_interaction_resolver_governance",
+        "breakpoints": true
+      },
+      {
+        "idx": 204,
+        "version": "7",
+        "when": 1785702264749,
+        "tag": "0204_interaction_addressee",
+        "breakpoints": true
+      },
+      {
+        "idx": 205,
+        "version": "7",
+        "when": 1785853648731,
+        "tag": "0205_narrow_shiva",
+        "breakpoints": true
+      },
+      {
+        "idx": 206,
+        "version": "7",
+        "when": 1785853648732,
+        "tag": "0206_review_path_recovery_idempotency_index",
+        "breakpoints": true
+      },
+      {
+        "idx": 207,
+        "version": "7",
+        "when": 1785903493352,
+        "tag": "0207_moaning_amazoness",
+        "breakpoints": true
+      },
+      {
+        "idx": 208,
+        "version": "7",
+        "when": 1785988680096,
+        "tag": "0208_keen_sharon_carter",
+        "breakpoints": true
+      },
+      {
+        "idx": 209,
+        "version": "7",
+        "when": 1786020026023,
+        "tag": "0209_heartbeat_context_snapshot_indexes",
+        "breakpoints": true
+      },
+      {
+        "idx": 210,
+        "version": "7",
+        "when": 1786032087897,
+        "tag": "0210_heartbeat_context_taskkey_index",
+        "breakpoints": true
+      },
+      {
+        "idx": 211,
+        "version": "7",
+        "when": 1786129601533,
+        "tag": "0211_bright_morg",
+        "breakpoints": true
+      },
+      {
+        "idx": 212,
+        "version": "7",
+        "when": 1786388759523,
+        "tag": "0212_onboarding_first_task_unique",
+        "breakpoints": true
+      },
+      {
+        "idx": 213,
+        "version": "7",
+        "when": 1786467951626,
+        "tag": "0213_complete_mystique",
+        "breakpoints": true
+      },
+      {
+        "idx": 214,
+        "version": "7",
+        "when": 1786467951627,
+        "tag": "0214_lively_lord_tyger",
+        "breakpoints": true
+      },
+      {
+        "idx": 215,
+        "version": "7",
+        "when": 1786467951628,
+        "tag": "0215_flat_daimon_hellstrom",
+        "breakpoints": true
+      },
+      {
+        "idx": 216,
+        "version": "7",
+        "when": 1786467952628,
+        "tag": "0216_company_onboarding_seeds",
+        "breakpoints": true
+      },
+      {
+        "idx": 217,
+        "version": "7",
+        "when": 1786643974972,
+        "tag": "0217_yielding_starbolt",
+        "breakpoints": true
+      },
+      {
+        "idx": 218,
+        "version": "7",
+        "when": 1786711898729,
+        "tag": "0218_mushy_jack_murdock",
+        "breakpoints": true
+      },
+      {
+        "idx": 219,
+        "version": "7",
+        "when": 1786711898730,
+        "tag": "0219_runtime_service_exposure",
+        "breakpoints": true
+      },
+      {
+        "idx": 220,
+        "version": "7",
+        "when": 1786711898731,
+        "tag": "0220_execution_workspace_runtime_leases",
+        "breakpoints": true
+      },
+      {
+        "idx": 221,
+        "version": "7",
+        "when": 1786983881320,
+        "tag": "0221_swift_justin_hammer",
+        "breakpoints": true
+      },
+      {
+        "idx": 222,
+        "version": "7",
+        "when": 1786983999395,
+        "tag": "0222_orphan_cleanup_env_reference_survives_delete",
+        "breakpoints": true
+      },
+      {
+        "idx": 223,
+        "version": "7",
+        "when": 1787000753489,
+        "tag": "0223_robust_zaladane",
+        "breakpoints": true
+      },
+      {
+        "idx": 224,
+        "version": "7",
+        "when": 1787000754489,
+        "tag": "0224_unified_adapter_auth_sessions",
+        "breakpoints": true
+      },
+      {
+        "idx": 225,
+        "version": "7",
+        "when": 1787101144413,
+        "tag": "0225_drop_claude_setup_token_sessions",
+        "breakpoints": true
+      },
+      {
+        "idx": 226,
+        "version": "7",
+        "when": 1787261199301,
+        "tag": "0226_tan_colossus",
+        "breakpoints": true
+      },
+      {
+        "idx": 227,
+        "version": "7",
+        "when": 1787668790923,
+        "tag": "0227_modern_pandemic",
+        "breakpoints": true
+      },
+      {
+        "idx": 228,
+        "version": "7",
+        "when": 1787837657366,
+        "tag": "0228_nasty_grim_reaper",
+        "breakpoints": true
+      },
+      {
+        "idx": 229,
+        "version": "7",
+        "when": 1787854369379,
+        "tag": "0229_drop_company_brand_color_and_attachment_max_bytes",
+        "breakpoints": true
+      },
+      {
+        "idx": 230,
+        "version": "7",
+        "when": 1787880484952,
+        "tag": "0230_better_auth_account_issuer",
+        "breakpoints": true
+      },
+      {
+        "idx": 231,
+        "version": "7",
+        "when": 1787922567272,
+        "tag": "0231_remove_app_connection_wide_includes",
+        "breakpoints": true
+      },
+      {
+        "idx": 232,
+        "version": "7",
+        "when": 1787922607497,
+        "tag": "0232_fixed_hannibal_king",
+        "breakpoints": true
+      },
+      {
+        "idx": 233,
+        "version": "7",
+        "when": 1787922658738,
+        "tag": "0233_living_dreaming_celestial",
+        "breakpoints": true
+      },
+      {
+        "idx": 234,
+        "version": "7",
+        "when": 1788184090416,
+        "tag": "0234_provider_trace_records",
+        "breakpoints": true
+      },
+      {
+        "idx": 235,
+        "version": "7",
+        "when": 1788198788171,
+        "tag": "0235_heartbeat_run_event_sequence_uniqueness",
+        "breakpoints": true
+      },
+      {
+        "idx": 236,
+        "version": "7",
+        "when": 1788283761224,
+        "tag": "0236_remove_cheap_model_profiles",
+        "breakpoints": true
+      },
+      {
+        "idx": 237,
+        "version": "7",
+        "when": 1788296836732,
+        "tag": "0237_clammy_colonel_america",
+        "breakpoints": true
+      },
+      {
+        "idx": 238,
+        "version": "7",
+        "when": 1788542862021,
+        "tag": "0238_graceful_infant_terrible",
+        "breakpoints": true
+      },
+      {
+        "idx": 239,
+        "version": "7",
+        "when": 1788557575279,
+        "tag": "0239_sturdy_santa_claus",
+        "breakpoints": true
+      },
+      {
+        "idx": 240,
+        "version": "7",
+        "when": 1788796987307,
+        "tag": "0240_pink_fantastic_four",
+        "breakpoints": true
+      },
+      {
+        "idx": 241,
+        "version": "7",
+        "when": 1788797555060,
+        "tag": "0241_conscious_adam_destine",
+        "breakpoints": true
+      },
+      {
+        "idx": 242,
+        "version": "7",
+        "when": 1788798139203,
+        "tag": "0242_wide_lightspeed",
+        "breakpoints": true
+      },
+      {
+        "idx": 243,
+        "version": "7",
+        "when": 1788798652047,
+        "tag": "0243_sleepy_metal_master",
+        "breakpoints": true
+      },
+      {
+        "idx": 244,
+        "version": "7",
+        "when": 1788804288225,
+        "tag": "0244_organic_meltdown",
+        "breakpoints": true
+      },
+      {
+        "idx": 245,
+        "version": "7",
+        "when": 1788804969749,
+        "tag": "0245_misty_nightshade",
+        "breakpoints": true
+      },
+      {
+        "idx": 246,
+        "version": "7",
+        "when": 1788812039026,
+        "tag": "0246_nostalgic_medusa",
+        "breakpoints": true
+      },
+      {
+        "idx": 247,
+        "version": "7",
+        "when": 1788812507973,
+        "tag": "0247_even_moon_knight",
+        "breakpoints": true
+      },
+      {
+        "idx": 248,
+        "version": "7",
+        "when": 1788901245075,
+        "tag": "0248_small_manta",
+        "breakpoints": true
+      },
+      {
+        "idx": 249,
+        "version": "7",
+        "when": 1788904803082,
+        "tag": "0249_fast_silverclaw",
+        "breakpoints": true
+      },
+      {
+        "idx": 250,
+        "version": "7",
+        "when": 1788904803083,
+        "tag": "0250_exotic_dakota_north",
+        "breakpoints": true
+      },
+      {
+        "idx": 251,
+        "version": "7",
+        "when": 1788904803084,
+        "tag": "0251_narrow_mastermind",
+        "breakpoints": true
+      },
+      {
+        "idx": 252,
+        "version": "7",
+        "when": 1788904803085,
+        "tag": "0252_friendly_kate_bishop",
+        "breakpoints": true
+      },
+      {
+        "idx": 253,
+        "version": "7",
+        "when": 1788906513181,
+        "tag": "0253_real_firebrand",
+        "breakpoints": true
+      },
+      {
+        "idx": 254,
+        "version": "7",
+        "when": 1788906545648,
+        "tag": "0254_military_calypso",
+        "breakpoints": true
+      },
+      {
+        "idx": 255,
+        "version": "7",
+        "when": 1788964999870,
+        "tag": "0255_previous_captain_america",
+        "breakpoints": true
+      },
+      {
+        "idx": 256,
+        "version": "7",
+        "when": 1788965003480,
+        "tag": "0256_married_king_cobra",
+        "breakpoints": true
+      },
+      {
+        "idx": 257,
+        "version": "7",
+        "when": 1788965006905,
+        "tag": "0257_bizarre_the_hunter",
+        "breakpoints": true
+      },
+      {
+        "idx": 258,
+        "version": "7",
+        "when": 1788965010559,
+        "tag": "0258_typical_sauron",
+        "breakpoints": true
+      },
+      {
+        "idx": 259,
+        "version": "7",
+        "when": 1788965014270,
+        "tag": "0259_tan_chat",
+        "breakpoints": true
+      },
+      {
+        "idx": 260,
+        "version": "7",
+        "when": 1788965018153,
+        "tag": "0260_chat_interaction_wakeup_idempotency",
+        "breakpoints": true
+      },
+      {
+        "idx": 261,
+        "version": "7",
+        "when": 1788965023236,
+        "tag": "0261_faulty_iceman",
+        "breakpoints": true
+      },
+      {
+        "idx": 262,
+        "version": "7",
+        "when": 1788965027575,
+        "tag": "0262_lying_avengers",
+        "breakpoints": true
+      },
+      {
+        "idx": 263,
+        "version": "7",
+        "when": 1788965029603,
+        "tag": "0263_nebulous_iron_lad",
+        "breakpoints": true
+      },
+      {
+        "idx": 264,
+        "version": "7",
+        "when": 1788965031515,
+        "tag": "0264_cynical_hellcat",
+        "breakpoints": true
+      },
+      {
+        "idx": 265,
+        "version": "7",
+        "when": 1788965033473,
+        "tag": "0265_chat_interaction_wakeup_provenance",
+        "breakpoints": true
+      },
+      {
+        "idx": 266,
+        "version": "7",
+        "when": 1788965035366,
+        "tag": "0266_brave_living_mummy",
+        "breakpoints": true
+      },
+      {
+        "idx": 267,
+        "version": "7",
+        "when": 1788965037225,
+        "tag": "0267_warm_wild_child",
+        "breakpoints": true
+      },
+      {
+        "idx": 268,
+        "version": "7",
+        "when": 1788965039217,
+        "tag": "0268_lively_runaways",
+        "breakpoints": true
+      },
+      {
+        "idx": 269,
+        "version": "7",
+        "when": 1788972722287,
+        "tag": "0269_fearless_young_avengers",
+        "breakpoints": true
+      },
+      {
+        "idx": 270,
+        "version": "7",
+        "when": 1788973120697,
+        "tag": "0270_harsh_queen_noir",
+        "breakpoints": true
+      },
+      {
+        "idx": 271,
+        "version": "7",
+        "when": 1788999440971,
+        "tag": "0271_woozy_silver_surfer",
+        "breakpoints": true
+      },
+      {
+        "idx": 272,
+        "version": "7",
+        "when": 1789137216452,
+        "tag": "0272_light_kate_bishop",
+        "breakpoints": true
+      },
+      {
+        "idx": 273,
+        "version": "7",
+        "when": 1789164595203,
+        "tag": "0273_aromatic_moondragon",
+        "breakpoints": true
+      },
+      {
+        "idx": 274,
+        "version": "7",
+        "when": 1789219070888,
+        "tag": "0274_agent_chat",
+        "breakpoints": true
+      },
+      {
+        "idx": 275,
+        "version": "7",
+        "when": 1789237657148,
+        "tag": "0275_sandbox_work_folders",
+        "breakpoints": true
+      }
+    ]
+  },
+  "files": [
+    {
+      "name": "0000_mature_masked_marvel.sql",
+      "sha256": "4a168f2905beecf8aba7c8a051028ebae7c603a957520fe84295ef7138bf4447"
+    },
+    {
+      "name": "0001_fast_northstar.sql",
+      "sha256": "217284002174a0adcbbb99716afcb92411151a947a8a487de7dcb83a70ba5607"
+    },
+    {
+      "name": "0002_big_zaladane.sql",
+      "sha256": "9cbdf1229ed84d34bdd56f5b8c3b22675ee4bc1365dd64a944e904bc2424a5e1"
+    },
+    {
+      "name": "0003_shallow_quentin_quire.sql",
+      "sha256": "f60c49b6ee7454c996a46b590e78b4c22b534981dc08d65d0dd722a46d337a71"
+    },
+    {
+      "name": "0004_issue_identifiers.sql",
+      "sha256": "86e2f6f9d47ba19103a637d886c302b272aac26ccf9ee9d4a321d8c352433182"
+    },
+    {
+      "name": "0005_chief_luke_cage.sql",
+      "sha256": "7040dd156d41369d8429ee83c01274a28cf45e195ffbea967d9b96f3052d72e1"
+    },
+    {
+      "name": "0006_overjoyed_mister_sinister.sql",
+      "sha256": "2b9151436c1ca83ae56c0a20915d229a8f22a1398db0f5e7219572026b804b22"
+    },
+    {
+      "name": "0007_new_quentin_quire.sql",
+      "sha256": "e9f9a84e20db5e428ae9213b248fa51872cb2fb7db627d06d9a4f1506a502ec9"
+    },
+    {
+      "name": "0008_amused_zzzax.sql",
+      "sha256": "d04b3303685364349c205964578bd5c4d62abf81dea54d971168c1bb6baa5b87"
+    },
+    {
+      "name": "0009_fast_jackal.sql",
+      "sha256": "2c560d142857e22379831a7bcedadd3dd44e02f363b80ca5abdca9eec22c18a5"
+    },
+    {
+      "name": "0010_stale_justin_hammer.sql",
+      "sha256": "0c2be1ee431b088695ab3d1f1471d50f8fb619701b50b3c6a6beef725307f82d"
+    },
+    {
+      "name": "0011_windy_corsair.sql",
+      "sha256": "06ef4c6d69108b55a7d618d76d4fb020e51a717d7519995f933b9ae021154659"
+    },
+    {
+      "name": "0012_perpetual_ser_duncan.sql",
+      "sha256": "363da95d93bf8f1e3f2c9d046684d66578b494e8cbadba6642432ea6db52b7a2"
+    },
+    {
+      "name": "0013_dashing_wasp.sql",
+      "sha256": "00e91acdaa63469f002158dbda1a2ff7362d41da4de334fe1e198482c8eaf9fb"
+    },
+    {
+      "name": "0014_many_mikhail_rasputin.sql",
+      "sha256": "cd2de941d6fc0f7fea6bb44fa41b978e88300e3ef3af68713aa57c6ea2a70241"
+    },
+    {
+      "name": "0015_project_color_archived.sql",
+      "sha256": "42b5f5c8ea4f81988a6064b2eb8491c74847a4279ee5a5f3255cd69966dc9877"
+    },
+    {
+      "name": "0016_agent_icon.sql",
+      "sha256": "949b6579d20aca89afb8efc0375e705a1b6a275e9d7cec5ff9ba2eebf24ef88d"
+    },
+    {
+      "name": "0017_tiresome_gabe_jones.sql",
+      "sha256": "7b8bc0a9c03438b78611e5601cba48222bfbc6fcee08aa9594f172f558b5aa29"
+    },
+    {
+      "name": "0018_flat_sleepwalker.sql",
+      "sha256": "96712cb18db3f02e74ce33aca6d0a2ae52d7216964387b4e507e705ef07837eb"
+    },
+    {
+      "name": "0019_public_victor_mancha.sql",
+      "sha256": "d07a384240e032c84ee5efbf040b12e78b3e670398dd39d5cf0157679b2a5b3a"
+    },
+    {
+      "name": "0020_white_anita_blake.sql",
+      "sha256": "2ef0a0fd958cf0c96df485ba8b3fff06dbed85c56a043991231a0d5258eec209"
+    },
+    {
+      "name": "0021_chief_vindicator.sql",
+      "sha256": "e5f5ec21df5031056ed92874dab3c770435ff092e3f8d15e7b07803ff29bf9e5"
+    },
+    {
+      "name": "0022_company_brand_color.sql",
+      "sha256": "2e627668cc677920c7fd5d02f4532be3e253c9c80790ceb97711792a110122f4"
+    },
+    {
+      "name": "0023_fair_lethal_legion.sql",
+      "sha256": "484e5c7d805eb96ea50b7f808bba8df2b9a4120f4e1452a97ae18c9468a1944b"
+    },
+    {
+      "name": "0024_far_beast.sql",
+      "sha256": "40ff648f3bc91a9a733f070db7e02649633485db4f91eda404f0612a0ab460d6"
+    },
+    {
+      "name": "0025_nasty_salo.sql",
+      "sha256": "eb01d64ec77c03859269e370af4850092fe592944f3cf1fa6ad4695cb0b3ab17"
+    },
+    {
+      "name": "0026_lying_pete_wisdom.sql",
+      "sha256": "605fae9ea9f92718a263550180e9102dc8f53d58827b236b8c6a3453cb0e9c64"
+    },
+    {
+      "name": "0027_tranquil_tenebrous.sql",
+      "sha256": "d434c7ec995d048f812a74d248e36797eb77e597c9d4b942808f2ee4c53ef3d8"
+    },
+    {
+      "name": "0028_harsh_goliath.sql",
+      "sha256": "68a66cce12c03e2e46f84d7a0a282e502b9f9d26e9b452e31b79f6c860928640"
+    },
+    {
+      "name": "0029_plugin_tables.sql",
+      "sha256": "893ff5bd4351dd79a5c51658beac7cbd6c92d1247eb76ac6364c87f763a4c8e2"
+    },
+    {
+      "name": "0030_rich_magneto.sql",
+      "sha256": "ec7e4985166e9cb3abcb9ccaabf3d79771e96ccbaaf789028f9e5120044af51a"
+    },
+    {
+      "name": "0031_zippy_magma.sql",
+      "sha256": "7ba5b686d334d3c0efbe6283ed9bb75aab35498c0b1b6fc363716e90b5572256"
+    },
+    {
+      "name": "0032_pretty_doctor_octopus.sql",
+      "sha256": "cc46d46a7167c57d3373827e6cf79d0807c093e29fb3ad90ac0092b42dd1deaa"
+    },
+    {
+      "name": "0033_shiny_black_tarantula.sql",
+      "sha256": "d4616d35c778c192e8a46d8b6b5942fd95ede5ed3f8dbc95c276221539fe8b0e"
+    },
+    {
+      "name": "0034_fat_dormammu.sql",
+      "sha256": "b3e8c916f07608ad6ab220df5783c49d6d76e5640042ee1b2a64f8f2dc27189f"
+    },
+    {
+      "name": "0035_marvelous_satana.sql",
+      "sha256": "e79ecacc261720c947b887a45b5ed99bd6bab8d924e887fe98336a24e636ca35"
+    },
+    {
+      "name": "0036_cheerful_nitro.sql",
+      "sha256": "f224c54bc3a5cea815854966d5ebab451eecc9fa4d1b9a1880efdf43c424cac4"
+    },
+    {
+      "name": "0037_friendly_eddie_brock.sql",
+      "sha256": "8a8c9b444812583524c2776edac092cb9b8c05ba1ee7fa89241789d9e7a69272"
+    },
+    {
+      "name": "0038_careless_iron_monger.sql",
+      "sha256": "359de5cfcaaaa5f4362f47f158e8a4d97d145896f6052ff118f44e23a2bae6b6"
+    },
+    {
+      "name": "0039_fat_magneto.sql",
+      "sha256": "dd1854c43854dd238055dc6ed9bcd5b06f43feebc0fbb8306766e7292f19bc04"
+    },
+    {
+      "name": "0040_eager_shotgun.sql",
+      "sha256": "0b14055c4f5617b8b944b8e15d51472cd919be335881aa63f942677ad19c56ec"
+    },
+    {
+      "name": "0041_curly_maria_hill.sql",
+      "sha256": "5bd65ef2947bd724b0ae5495db4527f4f191225a5fb425925f79294ebce7a03c"
+    },
+    {
+      "name": "0042_spotty_the_renegades.sql",
+      "sha256": "3772e9aada1d394b95cc588ac8e3756da7a5f57fcad8e9f661f96b4303820f53"
+    },
+    {
+      "name": "0043_reflective_captain_universe.sql",
+      "sha256": "e1119e9fdc94b36a0d77f806980a6d987b2d2e75b299727d1a5b02c9f8de03c8"
+    },
+    {
+      "name": "0044_illegal_toad.sql",
+      "sha256": "d0dda5d7787eff4aefe1ece4e6d25b7947acd08c95e80fa34b170fd1474a04ab"
+    },
+    {
+      "name": "0045_workable_shockwave.sql",
+      "sha256": "fe897560c8d543587b37891f0b422b7c334ed9a6a10355c86bd4fbce566c5454"
+    },
+    {
+      "name": "0046_smooth_sentinels.sql",
+      "sha256": "278631f7fd69ff46fd4d0b54c876fa81b317f7409c25790adb05c910b9a1dad7"
+    },
+    {
+      "name": "0047_overjoyed_groot.sql",
+      "sha256": "31ef6263f4dde97af16f2fbcf520646883295cc852213cfb99062eb504d349f9"
+    },
+    {
+      "name": "0048_flashy_marrow.sql",
+      "sha256": "5b6c43f3d2b5fa8a1998cbf14bcbf6ee0c5067317d539e20b13b6487d48b8d42"
+    },
+    {
+      "name": "0049_flawless_abomination.sql",
+      "sha256": "7d25e72a806b086a94e6f548e764a7393f1e4d917c9afcee4d051e54643028fc"
+    },
+    {
+      "name": "0050_stiff_luckman.sql",
+      "sha256": "0432fd6dda492288eea238a155ffb46e146bbe55efac99ab81a99a290bb528fb"
+    },
+    {
+      "name": "0051_young_korg.sql",
+      "sha256": "b6467b62ce525d470df92b97b0678c2568ae9d1ba8e6ca9d8a48ca2597899501"
+    },
+    {
+      "name": "0052_mushy_trauma.sql",
+      "sha256": "27fb10df284e95ecdf9e4029efa4df1a3b381b4073b9eeffb59b53cf4abc8c48"
+    },
+    {
+      "name": "0053_sharp_wild_child.sql",
+      "sha256": "f8ec8fad6aa7bca5068720c2f0a4ea74efbafc40f53ad709fd31b8727412457c"
+    },
+    {
+      "name": "0054_draft_routines.sql",
+      "sha256": "f21d1da197bb83eced58f6074e9ac74e003b266afd51eac0cfafe0c2083af1e8"
+    },
+    {
+      "name": "0055_kind_weapon_omega.sql",
+      "sha256": "d7b227b28f8ea3621cedcee0ec46d06203a9a75872dd48d181bcf8eef8d7cec7"
+    },
+    {
+      "name": "0056_spooky_ultragirl.sql",
+      "sha256": "f305ae7da5d1b5df1701152ef2fe9b200cc7c1c50814c08cc274ca1e9d9a150b"
+    },
+    {
+      "name": "0057_tidy_join_requests.sql",
+      "sha256": "cb435f82a01b567b72e27ceed83e3049502a2b284a08cfd32275e912c2f51741"
+    },
+    {
+      "name": "0058_wealthy_starbolt.sql",
+      "sha256": "f0b1525c737e32381bb9f5bef42751a08703b3e5cbf67128a13bd4de342bfcfe"
+    },
+    {
+      "name": "0059_plugin_database_namespaces.sql",
+      "sha256": "578ea35e2a3c828dec0c666305b59aaf6f16035be160a53a4bfc6d4b7eb7ad83"
+    },
+    {
+      "name": "0060_orange_annihilus.sql",
+      "sha256": "a1467b361ef79eb72a49d9474111775b2baaec62d86f98591c239658250e4c15"
+    },
+    {
+      "name": "0061_lively_thor_girl.sql",
+      "sha256": "da9b4301a9d02f5f44d173c595341d5a651b7a176837118d48df4ce5cd603b23"
+    },
+    {
+      "name": "0062_routine_run_dispatch_fingerprint.sql",
+      "sha256": "7ccc4880585927e45a2100c9faf0be169f198859e9ccb48102d8cf430138cc9c"
+    },
+    {
+      "name": "0063_issue_thread_interactions.sql",
+      "sha256": "a5859c4305fdf8719d4d1949d44e7029242286efb46a7ba7c4e5c5343d77ade3"
+    },
+    {
+      "name": "0064_issue_thread_interaction_idempotency.sql",
+      "sha256": "9e32e1e4a4dbd752ff087f5672de594668c3485553262a80257ca480286170fb"
+    },
+    {
+      "name": "0065_environments.sql",
+      "sha256": "280988e07dea328fe9815cb8c80dd16691ac1427ff9069cd2118038d4b2bb5cc"
+    },
+    {
+      "name": "0066_issue_tree_holds.sql",
+      "sha256": "1a5aadd183ecaf557ee23801ceb9725a6d56dab78a4e4df539280b551ed82ef1"
+    },
+    {
+      "name": "0067_agent_default_environment.sql",
+      "sha256": "a1e43ea1a68770252d36ff1a5c00e660dcbea2a05222559ab3d6b4ca84ed2ea9"
+    },
+    {
+      "name": "0068_environment_local_driver_unique.sql",
+      "sha256": "bbcbf800852e0e8f992db48b4653af73cd0478e494cbb71439f0ad664cc12cb8"
+    },
+    {
+      "name": "0069_liveness_recovery_dedupe.sql",
+      "sha256": "fbc93ff9b93ad70bafe93cc44ac231ef73a6ea91983a4ab2e1b128ea9f8bd4a1"
+    },
+    {
+      "name": "0070_active_run_output_watchdog.sql",
+      "sha256": "132aaa7a1ce516b815c26985a390ef78a1632730b939f82543fa8ea0e7b0246f"
+    },
+    {
+      "name": "0071_default_hire_approval_off.sql",
+      "sha256": "3b19e1d26124a927d13adc090864357667e3d73dac33a85594fe7bb0fdc610e9"
+    },
+    {
+      "name": "0072_large_sandman.sql",
+      "sha256": "008c2aab9a0e319f61018f2e7b4748e1454e24fa974eb404692fb6f4eac17cec"
+    },
+    {
+      "name": "0073_shiny_salo.sql",
+      "sha256": "cc105a068340f86984758d5b012343d7bfb3bf85fc636d93381361ef6f88270f"
+    },
+    {
+      "name": "0074_striped_genesis.sql",
+      "sha256": "5b4f58288af4351b14fce3e066255d8075e7a5a9732638b3038c910ecee00866"
+    },
+    {
+      "name": "0075_cultured_sebastian_shaw.sql",
+      "sha256": "dc1f8c66a5088068819954aadff948e5bde26b2d7c3222f27f0ebb649639f144"
+    },
+    {
+      "name": "0076_useful_elektra.sql",
+      "sha256": "601931acc7e344c9738f4ff52a64f9aae544c9c60c4292eb73e6fff5cd916f12"
+    },
+    {
+      "name": "0077_unusual_karnak.sql",
+      "sha256": "48fe3461dd7d75e0bf8d66f260f480d5cdad40895314352d5dc41e62cded344e"
+    },
+    {
+      "name": "0078_white_darwin.sql",
+      "sha256": "11573ddf41de1208831980dcbfb143922bbb374fe4e20ba5eaa96f6820033767"
+    },
+    {
+      "name": "0079_company_search_document_indexes.sql",
+      "sha256": "2b5a14a99abf4c6cbd753f52d806b8a999e4fb03a95b00493873f2c1227745a9"
+    },
+    {
+      "name": "0080_company_search_fuzzystrmatch.sql",
+      "sha256": "49c738698d5efa84a54c06def568721654d399427d4ae4ff05fad2646a0a3e1e"
+    },
+    {
+      "name": "0081_optimal_dormammu.sql",
+      "sha256": "79676a9996c0a8979ba19812c10393961d361ced758fa14d447d346300d8b334"
+    },
+    {
+      "name": "0082_dry_vision.sql",
+      "sha256": "2b6660781a0bc51fb4b255ecf90bd1a533888f6514114f324bd86e3c40b9bcb5"
+    },
+    {
+      "name": "0083_company_secret_provider_configs.sql",
+      "sha256": "a97be2bb8f67b0f5cf2782d43ea01d6ca8117e4b78bf600c9ebf6e9250578685"
+    },
+    {
+      "name": "0084_issue_recovery_actions.sql",
+      "sha256": "84ea5e794c63599a55fc15fbb4c9eaa098bcc0da4d4195ee515d4c3ce702cf51"
+    },
+    {
+      "name": "0085_tranquil_the_executioner.sql",
+      "sha256": "f9852e06c19b1ff4fcebb34bcda456d2995fb24beeac5b70432deee9b6d7b229"
+    },
+    {
+      "name": "0086_routine_env_runtime_contract.sql",
+      "sha256": "8ca00a87e4b1ca0b43411534f1218ca8b46ba0f601caa2159b33b9c1c6646e59"
+    },
+    {
+      "name": "0087_backfill_environment_manage_human_defaults.sql",
+      "sha256": "7a723ac2b61af1182f78a6a22af028a8bca4511b1a8f977eaecdd2131c80504d"
+    },
+    {
+      "name": "0088_backfill_principal_access_compatibility.sql",
+      "sha256": "4decca1b322d15430512bec78ae3b5caecaf5ea7a3754f5f7608ed3f0d59fe0d"
+    },
+    {
+      "name": "0089_cloud_upstreams.sql",
+      "sha256": "2a71008cbd4f11e8301d3d8b88431681ddc27c0ad8054484f1af01506a06f62a"
+    },
+    {
+      "name": "0090_resource_memberships.sql",
+      "sha256": "e044d13426fa26e95175cffe7e4f058a19052b4f55bbbbacc2ba6755bde20175"
+    },
+    {
+      "name": "0091_old_swarm.sql",
+      "sha256": "3db3cadcf2d0720a3c7c3adbe20d841f60f9361729204bbe1246fba46bd195b2"
+    },
+    {
+      "name": "0092_mighty_puma.sql",
+      "sha256": "c579402bcedfd5d380726b686fac9de79f5b6cdfcb25fc4520511a5887bb5149"
+    },
+    {
+      "name": "0093_giant_green_goblin.sql",
+      "sha256": "8524a4ba6635512364f7814d48d4fef98b08cb7edcfe9de290d333586a841fa3"
+    },
+    {
+      "name": "0094_backfill_archived_company_agent_pauses.sql",
+      "sha256": "371e08277bee0124438802f192b2e4dd01dff7956f0eb2451eac841f80bcac30"
+    },
+    {
+      "name": "0095_issue_comment_tombstones.sql",
+      "sha256": "f067265dd6fc675bd0522f575ae2ef3607568538c190cd94281ef2dc824c6af8"
+    },
+    {
+      "name": "0096_document_annotation_issue_comment_links.sql",
+      "sha256": "531673a6d8a7b9a448e3745874daeecfa6af36359c7dd44927860f22e8fd7ac5"
+    },
+    {
+      "name": "0097_low_trust_source_trust.sql",
+      "sha256": "97ce068d4819ab1e9fc7f1849c2d7e6eeb6adc72a361450eb77af8af527446ee"
+    },
+    {
+      "name": "0098_project_icon.sql",
+      "sha256": "9ec97f5d6513e1eb9de764b04cadbb49935eed4afab1b67f1a2e5257beb1729d"
+    },
+    {
+      "name": "0099_skills_store_foundation.sql",
+      "sha256": "aabfee13a3ac7dd59342a7f2398dbe1a6c87e75fcaead1f08f9d1a77fc829b3e"
+    },
+    {
+      "name": "0100_skill_install_count_backfill.sql",
+      "sha256": "9ac7e19e6a5a8eb6fa8c3ab5166a046306ed3e028fd43ad78b4367ca0f16e1ce"
+    },
+    {
+      "name": "0101_plugin_company_id_tenant_isolation.sql",
+      "sha256": "ed4ee607e26dd12cdfa491985360abd5de698997adefe9b77226c5274ef9b333"
+    },
+    {
+      "name": "0102_managed_sandbox_dedup_index.sql",
+      "sha256": "24b91cd38c63c70953a8653ed30ab1948a163a684056fe59718104e6a066e13a"
+    },
+    {
+      "name": "0103_agent_error_reason.sql",
+      "sha256": "9866d69c19e1e68647f9afb87fe1c40044a9a3657771b442decfb58a22d442f3"
+    },
+    {
+      "name": "0104_issue_watchdogs.sql",
+      "sha256": "d2dd64cfcb2125552b132a301bad2c0b27af76db8a33137689b4a31397e39192"
+    },
+    {
+      "name": "0105_instance_scoped_environments.sql",
+      "sha256": "a24935c1f8e9a244fc27240f6379d818f0006ce1c8f55906131c34511d5bb2e9"
+    },
+    {
+      "name": "0106_external_object_references.sql",
+      "sha256": "4def4f4d44b38a6db75141cacbb3762f976191ce97d95acda76bca993288d586"
+    },
+    {
+      "name": "0107_external_object_display_metadata.sql",
+      "sha256": "dd410e04746f3952997e83cd22a5d90129919676149c71c5e4f3914fa01361e9"
+    },
+    {
+      "name": "0108_workspace_operations_issue_id.sql",
+      "sha256": "fab257c41a95fbae8196d802bad35e1db05e1123c133f2961150a2a3b79fab1f"
+    },
+    {
+      "name": "0109_routine_description_annotations.sql",
+      "sha256": "e3086f4da253c6965b0a54c0532b6b16139c870fda7a0838f76b778b85708c65"
+    },
+    {
+      "name": "0110_document_company_cascade.sql",
+      "sha256": "bd980c083453ee6e009694950c97e92c751b9d0d440a7776b855b76d61719027"
+    },
+    {
+      "name": "0111_backfill_skill_create_human_defaults.sql",
+      "sha256": "c20c975d288f6afeea24658f07030b86992cebf03852dfbec7c50a1f052642b4"
+    },
+    {
+      "name": "0112_rename_skill_create_permission_key.sql",
+      "sha256": "0969f2f5bcd1468f39bc08a6f08035c43be1503f4f7de78dc66827a8ba7b8f1e"
+    },
+    {
+      "name": "0113_pipeline_foundation.sql",
+      "sha256": "c0156b2cf2cc87932d840c30d252a185143c8be67d250cfd6d686948d0531fc1"
+    },
+    {
+      "name": "0114_pipeline_case_issue_unlinked_event.sql",
+      "sha256": "e9b0149172f59ce1524dce011c1f2637ab23d7271f92f3682e9ae3c5b56bf4e7"
+    },
+    {
+      "name": "0115_pipeline_routine_origin.sql",
+      "sha256": "f08433ee3e7126d56abffa9d1305512b62627a301450f331541fdaea8b399e6e"
+    },
+    {
+      "name": "0116_pipeline_upstream_drift_event.sql",
+      "sha256": "b297028be5a5f23f4e55441062182146ce312e9e58ab807c529744839ceecb95"
+    },
+    {
+      "name": "0117_pipeline_transition_forced_event.sql",
+      "sha256": "01b7fb1d1e9325a7ad482ec3ccaae8ae96f0277a5c62667e21880dd700954ac5"
+    },
+    {
+      "name": "0118_pipeline_case_agent_fanout.sql",
+      "sha256": "5cdb096ac90c1f1287d3ccd245bd8005749e66f4e5c7ed2686937e9b46fc3ec2"
+    },
+    {
+      "name": "0119_pipeline_drift_acknowledged_event.sql",
+      "sha256": "032e13b12757813e9149339e199a6f74d0be32763ec126c0fecfe66a745703bb"
+    },
+    {
+      "name": "0120_pipeline_stage_working_primitives.sql",
+      "sha256": "b1a32f697fe739185c03ce695906ef962d263144bc4ae413e0b9685b24fc595d"
+    },
+    {
+      "name": "0121_pipeline_automation_retry_effects.sql",
+      "sha256": "cd74d31745d9eb497577b1985a90fbb5e53a1af1e00a8272ed527c9a85709bc6"
+    },
+    {
+      "name": "0122_pipeline_case_documents.sql",
+      "sha256": "eead2cf41c1ac1e3413f6f56ef556b9c8895f40c1be84571ad313bcede68c36f"
+    },
+    {
+      "name": "0123_document_annotation_source_trust.sql",
+      "sha256": "858a19e7b436cd064fbf3c5462fee3055653667d336a2620a2c18a4a5012455a"
+    },
+    {
+      "name": "0124_agent_api_key_scope_config.sql",
+      "sha256": "93ff6c94e14600c5f0e43aec79ce02b04cb344b2d1791df190c59a771a08e99f"
+    },
+    {
+      "name": "0125_environment_custom_image_templates.sql",
+      "sha256": "6e7bb3ab7b6fbf9926d79a1ead40e205e1bb26d08f5ddcd93cbfa64cca1d6001"
+    },
+    {
+      "name": "0127_environment_custom_images_instance_scoped.sql",
+      "sha256": "d8cfa7214ff61af7d8a1d7219e1d13a93017b825df14b9061fc0faa3d5a70fa6"
+    },
+    {
+      "name": "0128_user_specific_secrets.sql",
+      "sha256": "2d9414e39118d66da51a1c314deb040ffc845ae8d56fbfb1ab4c309f37facdc9"
+    },
+    {
+      "name": "0129_agent_api_key_responsible_user.sql",
+      "sha256": "a4a8e487517fba73b569a2f9aadbdf870b77a34e01b8bea0a43c3d4c88ce2a50"
+    },
+    {
+      "name": "0131_repair_run_responsible_user_context_refs.sql",
+      "sha256": "658a85151f870f1f89a3d3de61cde0f1b39bbc99a35c4bb27710590762d65a8d"
+    },
+    {
+      "name": "0132_issue_comment_derived_attribution_fast.sql",
+      "sha256": "80408941e435179af5441ec3c8207d7e31a78520d1ff8d18f3b8fe879ebde17d"
+    },
+    {
+      "name": "0133_resource_membership_stars.sql",
+      "sha256": "c2a7336b58e93aee41c48ffcf9bed6a2ca6255407a9e49b493ddbdf6deccc3b1"
+    },
+    {
+      "name": "0134_run_responsible_user_invariant.sql",
+      "sha256": "563b78f4ae4eb586820ecb9cdce5994b64ee840a6edc75e6a0e7feaf1f184630"
+    },
+    {
+      "name": "0135_repair_run_responsible_user_updated_at_sweep.sql",
+      "sha256": "fbe54ea1f702caf6241850697cbf6519e7d114641126db6ef469f38375c1815d"
+    },
+    {
+      "name": "0136_acpx_default_engine_migration.sql",
+      "sha256": "c9b2d8c4fbb751d67ff118ba66ce7efb6583346bd8883e1a69b62565b48a29b6"
+    },
+    {
+      "name": "0137_skill_studio_server_foundation.sql",
+      "sha256": "7a040c0e0a5b8924ce9d82eadfd324d811fb9f290b28eb4fa882fe0ac9f551b3"
+    },
+    {
+      "name": "0138_skill_studio_run_retention.sql",
+      "sha256": "e1942e00e81f24b0fbb0f5ba38d87962182bc6be529a70fde7f071dc311e5ebb"
+    },
+    {
+      "name": "0139_skill_studio_run_templates.sql",
+      "sha256": "bc9f1e4e1a969d08b667fffab14fe9ae3a94a13fc194d0749dedc12cff744165"
+    },
+    {
+      "name": "0140_built_in_managed_resources.sql",
+      "sha256": "60b0ee743270249998b8c49660cb13930dccf65ebb38fdf01c281d7a9c59e79f"
+    },
+    {
+      "name": "0141_heartbeat_runs_company_created_at_index.sql",
+      "sha256": "a92ce792c68668f356a20240faf505d07be40bb9e097b36c38335904555605c3"
+    },
+    {
+      "name": "0142_company_search_sort_indexes.sql",
+      "sha256": "bd362aced33dfd3cf0f1af3c9db98b9628966908e011ece41c5c0704524b0114"
+    },
+    {
+      "name": "0143_cases_foundation.sql",
+      "sha256": "19ea6be1aeadfed222822c3dfbfb504015ecd67744530e0e6f778a4ddb228dbe"
+    },
+    {
+      "name": "0144_case_document_annotations.sql",
+      "sha256": "670ba6343ceff77aefc892fe69b91fac7c73c79bb4f0b4bcb4e767966d914944"
+    },
+    {
+      "name": "0145_inbox_dismissal_snooze_kind.sql",
+      "sha256": "2fb01e46ff5adaf34ca84865d108621216d53b8009f30da42956dd4a5b80932a"
+    },
+    {
+      "name": "0146_routine_activity_gate.sql",
+      "sha256": "a5ad7d285f6c6ad19f2980b046ec74189a8e7b96c930175d78af73d7c3758c4e"
+    },
+    {
+      "name": "0147_cost_event_status.sql",
+      "sha256": "c97f6de83f6f45247122b71669322a52e025ca9ad896a74375bc993f386d50c2"
+    },
+    {
+      "name": "0148_tool_access_mcp_connections.sql",
+      "sha256": "59c99b0728610e2e7ea7f29a62364e6121e2cadac747b83c61735f355d4b38c2"
+    },
+    {
+      "name": "0149_agent_access_phase2_contracts.sql",
+      "sha256": "973497276131c631680c1b265b8d9d9110c3207c9eb066b1854426e4ca08347c"
+    },
+    {
+      "name": "0150_tool_invocation_catalog_snapshots.sql",
+      "sha256": "8ef76e87a40cab9ab5e7fd4fa114a91f29527e525837a043df1a74bebb133938"
+    },
+    {
+      "name": "0151_tool_gateway_sessions.sql",
+      "sha256": "db417e1c46c824c4282ec3bff4572ca816b554e2fd130acfb1ad698e78001f48"
+    },
+    {
+      "name": "0152_tool_connection_application_no_cascade.sql",
+      "sha256": "75ab3c38858e08b8ccc3b58704c449ffba67257a4904cc6ec0caebed444a0f35"
+    },
+    {
+      "name": "0153_tool_stdio_command_templates.sql",
+      "sha256": "7a446cd93a5b49228058a8ff999231497fceaa0bd95f960dea9d8e6a113da37f"
+    },
+    {
+      "name": "0154_tool_oauth_states.sql",
+      "sha256": "f42d9ed58ab8ebe52a880d6fc01013f785ab8a25c447293acca9d1ed57ad5584"
+    },
+    {
+      "name": "0155_tool_oauth_state_actor_binding.sql",
+      "sha256": "63d5854c39bafaca62c7e2ad22253b6d3b0590403b1438b5ad38a594f0cf113c"
+    },
+    {
+      "name": "0156_tool_oauth_state_session_binding.sql",
+      "sha256": "f47da5b40228b23f7aaab712b3c915fbf08876e013cea75ee76af938972fa429"
+    },
+    {
+      "name": "0157_tool_profile_new_tools_review.sql",
+      "sha256": "adb9256f4b32c7f73c738f89be8e0a3fe43cfd84f95cb6b833e81f0134adfaf9"
+    },
+    {
+      "name": "0158_tool_invocation_connected_mcp_metadata.sql",
+      "sha256": "ff7836f9082ed761cdcc9a6040ab4ea664295b959994d4db279dd286934d00dd"
+    },
+    {
+      "name": "0159_named_mcp_gateways.sql",
+      "sha256": "861b2e582fbb645c2982654fdcd9094f93d1c41c43527fb4787fff2bb3270fa3"
+    },
+    {
+      "name": "0160_mcp_gateway_contract_expansion.sql",
+      "sha256": "83f11418a9186bde3730d2539103123b03f73db1e9c16770a7e1aa2bdf03fd2d"
+    },
+    {
+      "name": "0161_environment_custom_image_company_scope_repair.sql",
+      "sha256": "cad090ef744bc10a6cb6a7ae4bf83dce3e577dd0522d140a4b7269b11908fee2"
+    },
+    {
+      "name": "0162_tool_runtime_metric_counters.sql",
+      "sha256": "57184b1fded85bfaa8db52b7cd80defd6383b246d987ded9954100d33aaf290c"
+    },
+    {
+      "name": "0163_secret_binding_projection_class.sql",
+      "sha256": "3f9c079cbdf1eb26e6b3568b13443376192b064bf316e0286456806d8730afcb"
+    },
+    {
+      "name": "0164_plugin_config_company_scope.sql",
+      "sha256": "7bebb273adc3938b535366249fab60af88ff842cfff27618ca026156bc61fe7a"
+    },
+    {
+      "name": "0165_connection_token_issuances.sql",
+      "sha256": "0a3d602fd1949a57b11bc83d72f7514ad2af41b9bf81ef38d167d00f0abdbfa6"
+    },
+    {
+      "name": "0166_smoke_lab_results.sql",
+      "sha256": "1316a83524f3c2d237a8c0dc101a63f3ec8a222816bd2d7fbc1bfc0174f38552"
+    },
+    {
+      "name": "0167_environment_custom_image_instance_scope_cleanup.sql",
+      "sha256": "c6c8c249b787885d59cd5ef0d7f65927f2b42bd08f9d9273fceaeebabc2e8933"
+    },
+    {
+      "name": "0168_tool_connection_installs.sql",
+      "sha256": "9c9c18ac797dc0b041c8a613594a1a20d5e7299d8e2ea374971909a256e368f2"
+    },
+    {
+      "name": "0169_tool_gateway_protocol_rate_limit_counters.sql",
+      "sha256": "adc841c1cb58927750ef6ad32e4a38262d69a58596db4c9b00e7adac406662e9"
+    },
+    {
+      "name": "0170_company_skill_policies.sql",
+      "sha256": "d2e85c848a1f56d9cd654b644fa51e137d9925ef4ae7f8dea0258ad7bd6db1a7"
+    },
+    {
+      "name": "0171_issue_create_idempotency_keys.sql",
+      "sha256": "6d19e7c22629a90a0fd660b79361f211225736817e5c9d9d7daa05b494325b95"
+    },
+    {
+      "name": "0172_inbox_archive_agent_policies.sql",
+      "sha256": "db36bf2e1ccf72c9681edc5bce1af24c64d2eadb486b1817ace7c85e2727ea17"
+    },
+    {
+      "name": "0173_inbox_policy_agent_cleanup.sql",
+      "sha256": "a4a1d0ebc11d81c59653b35d2daf8c874f45b8cf2cef836eec4ba2114bbcd642"
+    },
+    {
+      "name": "0174_folders.sql",
+      "sha256": "8483f2d9441b96cbf567a72f3728cda020940b2d18fb2a595775b62f995b0ed5"
+    },
+    {
+      "name": "0175_nested_skill_folders.sql",
+      "sha256": "be7e1e3b63c65cf227ce1c84f5282706e6b006edd0bdb923cf93bf8dc2e86060"
+    },
+    {
+      "name": "0176_issue_create_idempotency_key_expiry.sql",
+      "sha256": "119867da6baf0e9c6adef3387d640da7bbbed80bbcbb0fb88e35bd53371af953"
+    },
+    {
+      "name": "0177_activity_log_responsible_user.sql",
+      "sha256": "1eb4a204a06a54db7e887ff26c9adc4996059a904aba5592806a2a4bdbad051a"
+    },
+    {
+      "name": "0178_summary_slots.sql",
+      "sha256": "bd21302a0c52cd29557fa4da8cabc758be52a2f2e87228a42e4fde019d1feeb0"
+    },
+    {
+      "name": "0179_summary_slot_failure_reason.sql",
+      "sha256": "33063c60038f2ac962241d9ad511b71b2269488d3cf41872c9023ffcd22052c7"
+    },
+    {
+      "name": "0180_decision_training_examples.sql",
+      "sha256": "b578d26f5691fab742b68f4a34b2cff37329906b1c41127f60bbe8506d397ace"
+    },
+    {
+      "name": "0181_decision_training_retention_policy.sql",
+      "sha256": "5d783cbc61dd0522b91e18c7858415aafc1f5474d7aac32a1456a216e402ac85"
+    },
+    {
+      "name": "0182_connections_v3_schema_core.sql",
+      "sha256": "16ea6b8bbbf6000e26453ecc4f614e52830a5c6d8258dbf0f1ef0b743540e88c"
+    },
+    {
+      "name": "0183_connection_user_authorization_state.sql",
+      "sha256": "34fbfbca813c54004579aa5041042ea30a2b7e7ab82a185efe510de1720c5286"
+    },
+    {
+      "name": "0184_routable_blocked.sql",
+      "sha256": "fbbb9c10fff4cb62ad05a8eda39afb61180ba6184d8a1ab0661a9857ad79dda7"
+    },
+    {
+      "name": "0185_status_cards.sql",
+      "sha256": "c74b799ef4bb7a3de742fdbb193b9a417e351c9ecb16045d104bfdfbcc42d540"
+    },
+    {
+      "name": "0186_status_card_compile_provenance.sql",
+      "sha256": "721337870aab9a7164b2687d0924e0dd35ae3a4e56b580233715135ca679ba31"
+    },
+    {
+      "name": "0187_status_card_pending_change_hash.sql",
+      "sha256": "df2cc510cdd759e0ac34b861489548f6569bdc6fca979f141cdc4dbe0b5f9acb"
+    },
+    {
+      "name": "0188_status_card_generation_issue_index.sql",
+      "sha256": "f8aa6f315f346afc9837322734aa58d4c6b9e50a0489623a0bc5a1025b958782"
+    },
+    {
+      "name": "0189_status_card_agent.sql",
+      "sha256": "d04fe363ca70427d1be21ac04fe7f66307361e6aa099205a30df16c80bffedd4"
+    },
+    {
+      "name": "0190_status_card_single_prompt.sql",
+      "sha256": "63e911b48b78288908f808fbbe3e9da8fb8991a5a14bb813def82b9ce65f8104"
+    },
+    {
+      "name": "0191_status_card_mentioned_issue_ids.sql",
+      "sha256": "b8341e262a2b600be6e75b1d8a1f1e1a7a46ce55ecacd14c2ac29407fa7023d4"
+    },
+    {
+      "name": "0192_task_watchdog_stop_snapshots.sql",
+      "sha256": "0a5bba629fea3d9a2929f2f568171e7c87e6ba9040c068680773e83742eb7a5c"
+    },
+    {
+      "name": "0193_document_memberships.sql",
+      "sha256": "7fdf9adfb1c4235128c6a806434da0f2050c199d323b6eeb8fc26cd49a0d28bb"
+    },
+    {
+      "name": "0194_company_skill_releases.sql",
+      "sha256": "e76ee70f3968e0d6268acb64a561fd93e3ec33b3aa6301d52f5391aa09853b65"
+    },
+    {
+      "name": "0195_built_in_agent_unique_marker.sql",
+      "sha256": "956efc2dbda881521876b8deae835652079f407462596f230998d86f5fca26a8"
+    },
+    {
+      "name": "0196_drop_cloud_upstream_tables.sql",
+      "sha256": "41d1886d8b00f8484b27108e4538d219d9ed77fca10e6ad3006d9558dd9ec28d"
+    },
+    {
+      "name": "0197_decisions_v1.sql",
+      "sha256": "65da7612683361ab5c7c8362ffee6e2a863433cc7eda3712b9b8f3fc507c848a"
+    },
+    {
+      "name": "0198_decision_queues_and_triage.sql",
+      "sha256": "d48baf9a0240fe1ee0b071f4cbfc49cc36edd154760c9566d8064d510229862e"
+    },
+    {
+      "name": "0199_decision_queue_composite_key.sql",
+      "sha256": "49d1f187dcdb87462299625c8ac733fa5a9b9d7f328b0697931090a5803f597c"
+    },
+    {
+      "name": "0200_yellow_maria_hill.sql",
+      "sha256": "e270a2c71fc3cc115be52873decb60cc4089d9029d328fa6ac083fb7dce82dc9"
+    },
+    {
+      "name": "0201_concerned_captain_midlands.sql",
+      "sha256": "a4856727cf49bf0a2c0f862929cf11790a369a31ee4502c6a15890210d8f9e88"
+    },
+    {
+      "name": "0202_eminent_marvel_zombies.sql",
+      "sha256": "9b0346da3c4d48177d60d385e7f4c5255abc72ef9d3687b75dada0de994c86ad"
+    },
+    {
+      "name": "0203_interaction_resolver_governance.sql",
+      "sha256": "1880b804c5cf748d7b9fddfc79d21d55c7c4372ef1bf687c6b95a2a595886eea"
+    },
+    {
+      "name": "0204_interaction_addressee.sql",
+      "sha256": "07b288ec749d4a972621ff257d3de8a45574cc40cc3935f463f83a3c0e575fc3"
+    },
+    {
+      "name": "0205_narrow_shiva.sql",
+      "sha256": "91290b03590f77d8e9a98138ef039db29fa63c687ae3114573e72cbf8ddf651c"
+    },
+    {
+      "name": "0206_review_path_recovery_idempotency_index.sql",
+      "sha256": "2422b1c6e1f97a7eee6d2a8c8e2904c6a7c4af6af1ad22920bf33526434b5fd3"
+    },
+    {
+      "name": "0207_moaning_amazoness.sql",
+      "sha256": "335414dc280f133e43280873d072d6cad6282a88261c1537fc186f0a869b4d1a"
+    },
+    {
+      "name": "0208_keen_sharon_carter.sql",
+      "sha256": "75ca778c2a9772ac4645e977b60907554ae95261c172af54cad54fc46f265529"
+    },
+    {
+      "name": "0209_heartbeat_context_snapshot_indexes.sql",
+      "sha256": "442eec68b079796adc3be617e11dbc172943d1964926050e1e48cf7dae6cc709"
+    },
+    {
+      "name": "0210_heartbeat_context_taskkey_index.sql",
+      "sha256": "51fab2cb2112fa5c0e2cb94eb7d07ae2e82ef96f39aae32af0766f49db86d70a"
+    },
+    {
+      "name": "0211_bright_morg.sql",
+      "sha256": "9e0a9fb9f4a1da0321224c964ed50f758851cee9a319963922235fa4cf9484f9"
+    },
+    {
+      "name": "0212_onboarding_first_task_unique.sql",
+      "sha256": "016152f3a185fb344b3fe4c9ffa9bfb8e67964ab10ea519f1cfb8547587a5fb2"
+    },
+    {
+      "name": "0213_complete_mystique.sql",
+      "sha256": "3fefb83013b49a03ce86539fabddfd575baa3056ec95a53da142b399d5481d54"
+    },
+    {
+      "name": "0214_lively_lord_tyger.sql",
+      "sha256": "538115776591adc9afaee310bf547c4a73fcdee8273ce0e540b3abd5ae19081f"
+    },
+    {
+      "name": "0215_flat_daimon_hellstrom.sql",
+      "sha256": "de83454c3ddf80aa4fb3ec2466966865980a0feba8618c6142f1c94c9290802c"
+    },
+    {
+      "name": "0216_company_onboarding_seeds.sql",
+      "sha256": "29ab157b594c5e64f6d4563ce8aab0c352f3a6e6d079cdf99602722a033b4725"
+    },
+    {
+      "name": "0217_yielding_starbolt.sql",
+      "sha256": "482f59aee26225e873340d8f65c65b47324e6c08655c8040e62e1b13cfd4ab69"
+    },
+    {
+      "name": "0218_mushy_jack_murdock.sql",
+      "sha256": "ce4a407efcdbbad893204f32a18d14ab4e203fe79dfbc620cb16c874f0a37d3a"
+    },
+    {
+      "name": "0219_runtime_service_exposure.sql",
+      "sha256": "2686d3163b1f56023684a0bc4e4faa61d2e16862def217e0c6bda9f72ec961a5"
+    },
+    {
+      "name": "0220_execution_workspace_runtime_leases.sql",
+      "sha256": "28810008a1fef6f0b615d8789b8ac3cb1d9cf95a43462cf524f5670f990921ba"
+    },
+    {
+      "name": "0221_swift_justin_hammer.sql",
+      "sha256": "8e232efb846d6701968929b48b6f425b9984944f6834324685bf97d0af24fcfa"
+    },
+    {
+      "name": "0222_orphan_cleanup_env_reference_survives_delete.sql",
+      "sha256": "ccc8400fe923adb0aa29240718a00d92ca83a93a9d34ea5c376881479f61ef41"
+    },
+    {
+      "name": "0223_robust_zaladane.sql",
+      "sha256": "087d251ba5dce091f616334ad09e9ae671343b71267b8ed8c67d375e9270f775"
+    },
+    {
+      "name": "0224_unified_adapter_auth_sessions.sql",
+      "sha256": "e8532803be13d72e7ffa79e9b7ec404b1d9fc496767ab096047cf668bc938b72"
+    },
+    {
+      "name": "0225_drop_claude_setup_token_sessions.sql",
+      "sha256": "0af947705e2eb8c3bcba38f769cd1b68d59d635eaf1f8efb67d7d7c0bd6f2a55"
+    },
+    {
+      "name": "0226_tan_colossus.sql",
+      "sha256": "5ce422f128e4f31d73c478611c0d5b281032fac05a0d51460006d506c2eeb844"
+    },
+    {
+      "name": "0227_modern_pandemic.sql",
+      "sha256": "f3249811ae1d464eb84699b03e0fc7744166b16957e72294fcf8770ba22cf194"
+    },
+    {
+      "name": "0228_nasty_grim_reaper.sql",
+      "sha256": "6a6005ea7e35c5e28d10fe71388127fc26e77cf41c7fd679559028041fe43cc4"
+    },
+    {
+      "name": "0229_drop_company_brand_color_and_attachment_max_bytes.sql",
+      "sha256": "3ff5a85e012973bb05afa8cef6e8c50e8698d68e06a5644695cb4a22405b92d1"
+    },
+    {
+      "name": "0230_better_auth_account_issuer.sql",
+      "sha256": "25ac749aeac47191ad33b7404fd612cff1272bd0e3f78a13195e7a33f6b7257e"
+    },
+    {
+      "name": "0231_remove_app_connection_wide_includes.sql",
+      "sha256": "e3b537d5592580ee119aaf6957ad1f7c89bb5ad573924e9f38b4558a2e2e99db"
+    },
+    {
+      "name": "0232_fixed_hannibal_king.sql",
+      "sha256": "24105c1cdd63a2e66c07242ead92f8b4309e8b1a79b31745b238de311f73c297"
+    },
+    {
+      "name": "0233_living_dreaming_celestial.sql",
+      "sha256": "e40eb1d1010de116738b61aba2ebf4b6d652d62763fbb5c22062790414eee86a"
+    },
+    {
+      "name": "0234_provider_trace_records.sql",
+      "sha256": "09490d8922846dfa762d60d3465bdccfb57c0cf42ce1823647ea8b2e4b18d9a4"
+    },
+    {
+      "name": "0235_heartbeat_run_event_sequence_uniqueness.sql",
+      "sha256": "cd0605597778b0f6e44667bf3b5a1e033c5cf73fa888ecf1a2a91a5e49689fc1"
+    },
+    {
+      "name": "0236_remove_cheap_model_profiles.sql",
+      "sha256": "b0d67c3f7305a366952f1a5a84be0fceabe822a29193b241e68456d660a45ffe"
+    },
+    {
+      "name": "0237_clammy_colonel_america.sql",
+      "sha256": "2292cae4f2bd3bd8e364506f83b4149e316683c94500c5da3fb021f50bb0d78e"
+    },
+    {
+      "name": "0238_graceful_infant_terrible.sql",
+      "sha256": "d949769206d8c2a55a88d2fcd6753eda42bd0cde3c82e01c32a71a40da6bea10"
+    },
+    {
+      "name": "0239_sturdy_santa_claus.sql",
+      "sha256": "a6cd20235469e92a74ea4cc0b9b87c4f6b3344dbd7de1bcba2278a3aab9986d7"
+    },
+    {
+      "name": "0240_pink_fantastic_four.sql",
+      "sha256": "5a8fd8e0476e1b842777a480a68cda842b3590d9811a35f0c327052f35e195f9"
+    },
+    {
+      "name": "0241_conscious_adam_destine.sql",
+      "sha256": "2e618736d7e1f8837eb7a20c109718c77445a7be04a7533c5d1a1251a713aff7"
+    },
+    {
+      "name": "0242_wide_lightspeed.sql",
+      "sha256": "319b6cff78be30dac8dc732e2bec9c38c0d1bee8d1b7c4e04b874d09252c6ceb"
+    },
+    {
+      "name": "0243_sleepy_metal_master.sql",
+      "sha256": "bb3d1210638a19fec6b03db0e9abbb6944d117e3c15030eaec264dee53c902a2"
+    },
+    {
+      "name": "0244_organic_meltdown.sql",
+      "sha256": "235bbaac7bc78dcd6f6401f2b447f649dce59e1ad719616de49b93f6c78ac66b"
+    },
+    {
+      "name": "0245_misty_nightshade.sql",
+      "sha256": "c7f3ebb2fcf524a81c94021c2144edacbb30888c288dcd032dbeb1f673bcfa10"
+    },
+    {
+      "name": "0246_nostalgic_medusa.sql",
+      "sha256": "e1342e9fc55650a133101e798f146d3480475d578986abd6a34fb971102205d9"
+    },
+    {
+      "name": "0247_even_moon_knight.sql",
+      "sha256": "aca5ecf048a5fa648385a1c90ef2aead92e66110c3644c7c149d9c643bc3f8e8"
+    },
+    {
+      "name": "0248_small_manta.sql",
+      "sha256": "172c65356515db02b12b7d7d1c2c249b1e648bf49476bedbf39d33d331d885dc"
+    },
+    {
+      "name": "0249_fast_silverclaw.sql",
+      "sha256": "df0d8f6781b6f68f8c6ee160238cd99e1db1348a625e094213f919ae43b466be"
+    },
+    {
+      "name": "0250_exotic_dakota_north.sql",
+      "sha256": "838055a201358d82443eabf410435aa73481de221867133771db36614b8e7c16"
+    },
+    {
+      "name": "0251_narrow_mastermind.sql",
+      "sha256": "f08a1ec2ed049672608f1285c2708cf9f0e2d9744015dc3a7e748c1ad683caf8"
+    },
+    {
+      "name": "0252_friendly_kate_bishop.sql",
+      "sha256": "1953d4fb106d9c2edbf9a542a82950ef347000dc32deadc72e5cff3d9f1fbe64"
+    },
+    {
+      "name": "0253_real_firebrand.sql",
+      "sha256": "479c645e86403b630b6ee7764261a3cad28be47666ef0f254d09999316152317"
+    },
+    {
+      "name": "0254_military_calypso.sql",
+      "sha256": "1a17ff0a22caf90caf817e93b4ee270ca119b82b8ff41b2662454584a357209f"
+    },
+    {
+      "name": "0255_previous_captain_america.sql",
+      "sha256": "2cbd1eb88d3bf4c82b72fdfd78dce72ecd7899f85607a76fb7e40b2749fffa00"
+    },
+    {
+      "name": "0256_married_king_cobra.sql",
+      "sha256": "f352a8769496412df3be35050df02110714af3a189d92b3c2ac8d097e2612c7b"
+    },
+    {
+      "name": "0257_bizarre_the_hunter.sql",
+      "sha256": "4e4636a22fb06aac55a998a0c98d043ec70083c198c94a0f5e0a99f18a1debac"
+    },
+    {
+      "name": "0258_typical_sauron.sql",
+      "sha256": "f3cb8b9d3bb3691d98a830c7ba8b4f49bbe9bb01ce2e899583d0b5c9b84d423c"
+    },
+    {
+      "name": "0259_tan_chat.sql",
+      "sha256": "91012c36bfcf66615b537ce808c9cb2f1311bc6efa6aab3ed8afd0d01298af75"
+    },
+    {
+      "name": "0260_chat_interaction_wakeup_idempotency.sql",
+      "sha256": "5e181169a724173d17865d537bd84c385e97e6f78e71aa795cad91734cd37ea0"
+    },
+    {
+      "name": "0261_faulty_iceman.sql",
+      "sha256": "dd7a7571e080471148cff98d1138ddd046e8c1e3c256fa5bc11564d5f4766c28"
+    },
+    {
+      "name": "0262_lying_avengers.sql",
+      "sha256": "59909e4edae56117c7fe0af28aa10fe30a64d151e83fe6e06debcec90658ff09"
+    },
+    {
+      "name": "0263_nebulous_iron_lad.sql",
+      "sha256": "858eb11c0863e361c1ae6995e78ca365f8002e35dcb1e89dbcc8bf65dea879e3"
+    },
+    {
+      "name": "0264_cynical_hellcat.sql",
+      "sha256": "d9aeacc58ae3c52d34bf50f8ea38f55435a6f8f66dc6ee87d3b78e105a86602a"
+    },
+    {
+      "name": "0265_chat_interaction_wakeup_provenance.sql",
+      "sha256": "1547e6e597b50c621691ead1d25624c4bf94ca3259cf24ea4480f3fb915dd849"
+    },
+    {
+      "name": "0266_brave_living_mummy.sql",
+      "sha256": "7c38ccd2fa6a9bde19d62b111f892bcabae9a8eabe5f8bf438f73a407016b56a"
+    },
+    {
+      "name": "0267_warm_wild_child.sql",
+      "sha256": "6902ea71d481a26d6359c6c9b149ff0c8a388e65356b066b2fbaa33622a6c9b8"
+    },
+    {
+      "name": "0268_lively_runaways.sql",
+      "sha256": "20ebd2ac15d9b467abcc5552901ecf592b38499942b3eae7d593c79fd89bd0a8"
+    },
+    {
+      "name": "0269_fearless_young_avengers.sql",
+      "sha256": "aee07bbf7468bb5bfccc9de751df9287ffc2c6b4978775a3ec0366fc14111709"
+    },
+    {
+      "name": "0270_harsh_queen_noir.sql",
+      "sha256": "995dbb71f73e98ade062b626fea328c030539b4a3efe11f50f0ebc95e56680b8"
+    },
+    {
+      "name": "0271_woozy_silver_surfer.sql",
+      "sha256": "2502b1296abeeefa74fca28cf465c03c1159f27a67e2b6f945a28a67e007752f"
+    },
+    {
+      "name": "0272_light_kate_bishop.sql",
+      "sha256": "15d8b554fecc6bae31e92ad8ee1ee365a804a26039e4ac7d3682164d4630a2bf"
+    },
+    {
+      "name": "0273_aromatic_moondragon.sql",
+      "sha256": "0f05bc766ac021e02988b98f1383d66a18c421a66f82bd164b81bee53b8d5c53"
+    },
+    {
+      "name": "0274_agent_chat.sql",
+      "sha256": "7903d92a79fcc2d5ef6f2af16b9eb73c149543e1d1634b608f7df223e9096bb1"
+    },
+    {
+      "name": "0275_sandbox_work_folders.sql",
+      "sha256": "0c62020d37107e3b2284823c2a297a8dd4b505cbdd3993a0e757c93ac8f3a257",
+      "currentFile": "0277_sandbox_work_folders.sql"
+    }
+  ]
+}
