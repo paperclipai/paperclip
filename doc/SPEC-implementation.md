@@ -1633,6 +1633,11 @@ separate identity linking in Paperclip. Shared channels reserve one project, not
 a pool phone number; group admission and publication are disabled. Dedicated
 allocation retains one selected number and individually enabled groups.
 
+iMessage task completion ends a turn, not its conversation. Subsequent messages
+reopen the same task, including after restart; only explicit `/new` or `/close`
+allows the next message to start another task. The open task receives committed
+inbound comments live, with “Sent from iMessage” attribution on user bubbles.
+
 See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
 contract, setup, recovery, boundaries, and qualification status.
 

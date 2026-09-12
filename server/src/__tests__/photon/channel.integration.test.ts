@@ -38,6 +38,8 @@ import {
   heartbeatRuns,
   agentWakeupRequests,
   issueComments,
+  issues,
+  activityLog,
   issueQuestionResponseDeliveries,
   chatIdentityLinks,
   chatEndpointResources,
@@ -51,6 +53,7 @@ import {
 } from "../../services/chat-channels.js";
 import { ChatSdkRuntime } from "../../services/chat-sdk-runtime.js";
 import { issueService } from "../../services/issues.js";
+import { subscribeCompanyLiveEvents } from "../../services/live-events.js";
 import { issueThreadInteractionService } from "../../services/issue-thread-interactions.js";
 import { resolveExternalChatQuestionResponse } from "../../services/native-runtime/external-chat-question-response.js";
 import { resolveChatRunPresentationAuthorizationReason } from "../../services/chat-run-publications.js";
@@ -476,6 +479,12 @@ describe.sequential("iMessage Photon channel control plane", () => {
     expect(await t.service.listConversations(t.endpoint.id)).toHaveLength(1);
     await t.deliver(photonEvent(4, group, "Fresh group request"));
     expect(await t.service.listConversations(t.endpoint.id)).toHaveLength(2);
+    const conversation = (await t.service.listConversations(t.endpoint.id)).find((row) => !row.isDirectMessage)!;
+    await issueService(db).update(conversation.issueId, { status: "done", actorUserId: t.userId });
+    await t.deliver(photonEvent(5, group, "A group follow-up after completion"));
+    const conversations = await t.service.listConversations(t.endpoint.id);
+    expect(conversations).toHaveLength(2);
+    expect(conversations.find((row) => !row.isDirectMessage)).toMatchObject({ id: conversation.id, issueId: conversation.issueId, state: "active" });
   }, 30_000);
   it.each([true, false])("resolves an authorized exact poll vote once, including setup (qualified=%s)", async (qualified) => {
     const t = await setup();
@@ -840,6 +849,48 @@ describe.sequential("iMessage Photon channel control plane", () => {
           ),
         ),
     ).toHaveLength(1);
+  }, 30_000);
+
+  it.each([false, true])("keeps completed DM replies on one task through restart and publishes committed comments live (shared=%s)", async (shared) => {
+    const t = await setup(shared);
+    const original = await t.start();
+    await t.qualify();
+    await issueService(db).update(original.issueId, { status: "done", actorUserId: t.userId });
+    // Recover rows that the previous implementation marked completed without
+    // an explicit control. A restart must not require an SDK chat cache.
+    await db.update(chatConversations).set({ state: "completed" }).where(eq(chatConversations.id, original.id));
+    const service = await t.restart();
+    const visibleComments: Promise<unknown>[] = [];
+    const unsubscribe = subscribeCompanyLiveEvents(t.companyId, (event) => {
+      if (event.type === "activity.logged" && event.payload.action === "issue.comment_added") {
+        expect(event.payload.entityId).toBe(original.issueId);
+        const details = event.payload.details as { commentId: string };
+        visibleComments.push(db.select().from(issueComments).where(eq(issueComments.id, details.commentId)));
+      }
+    });
+    try {
+      const followUp = photonEvent(3, t.f.chat, "Continue our conversation");
+      await t.deliver(followUp);
+      await t.deliver(followUp);
+      expect(await service.listConversations(t.endpoint.id)).toMatchObject([{ id: original.id, issueId: original.issueId, state: "active" }]);
+      expect((await db.select().from(issues).where(eq(issues.id, original.issueId)))[0].status).toBe("todo");
+      expect(t.wakeup).toHaveBeenCalledTimes(2);
+      expect(visibleComments).toHaveLength(1);
+      expect(await visibleComments[0]).toMatchObject([{ issueId: original.issueId, body: "Continue our conversation", metadata: { sourceChannel: "imessage-photon" } }]);
+      expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, original.issueId), eq(activityLog.action, "issue.comment_added")))).toHaveLength(2);
+    } finally {
+      unsubscribe();
+    }
+    await issueService(db).update(original.issueId, { status: "done", actorUserId: t.userId });
+    await t.deliver(photonEvent(4, t.f.chat, "/status"));
+    await service.processPendingPublications();
+    expect(t.f.client.messages.sendText.mock.calls.some((call) => call[1].includes(original.issueIdentifier!))).toBe(true);
+    await t.deliver(photonEvent(5, t.f.chat, "/new"));
+    await service.processPendingPublications();
+    await t.deliver(photonEvent(6, t.f.chat, "An explicitly new task"));
+    const conversations = await service.listConversations(t.endpoint.id);
+    expect(conversations).toHaveLength(2);
+    expect(conversations.find((row) => row.id !== original.id)?.issueId).not.toBe(original.issueId);
   }, 30_000);
 
   it("preserves reply context, rejects old quoted controls, and starts a new generation after close", async () => {

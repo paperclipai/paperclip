@@ -92,8 +92,10 @@ never invent individual iMessage web permalinks.
 
 DMs/groups are linear: one active task generation per endpoint/chat. Fresh
 authorized input creates work when none is active; follow-ups append and use
-existing ordered queue/coalescing. Terminal/closed task followed by a fresh
-message creates a new generation. Support `/new`, `/close`, `/status`.
+existing ordered queue/coalescing. Per the September 12 product correction,
+terminal tasks reopen on the next message in the same conversation. Only an
+explicit `/new` or `/close` followed by a fresh message creates a new generation.
+Inbound comments appear live with “Sent from iMessage” attribution. Support `/status`.
 Preserve native reply GUID/part as context; it does not create a separate task.
 Chronology guards protect later generations from stale controls. Rename/avatar
 changes affect presentation only. Bot removal marks a group unavailable and

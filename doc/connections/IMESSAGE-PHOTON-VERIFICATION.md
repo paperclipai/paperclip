@@ -237,9 +237,30 @@ participants, timestamps, and observable results when running it.
 | Approval rejection reason reaches canonical interaction | Passed, including missing-reason correction and native continuation. |
 | Restart preserves DM/group replies and pending questions | Shared DM recovery and pending native poll passed; dedicated groups remain unrun. |
 | Pause/resume/reconnect/removal enforce authority | Passed for Pro DMs. Removal archived the endpoint and connection, cleared secret bindings, and stopped intake. |
-| Completed conversation stays idle until fresh input | Passed across successive tasks and status/authorization probes. |
+| Completed turn stays idle until fresh input | Passed. September 12 correction: two successive real follow-ups reopened PHOTON-17, with no new task. |
 | Provider ambiguous-send/idempotency behavior | Real repeated key suppressed duplicates but returned no original receipt. Unknown-send recovery remains an operator action; no induced network-timeout test. |
 | HEIF conversion on Linux glibc/Windows and deployment packaging | macOS arm64 and Linux CI conversion passed. Windows execution remains unrun. Linux musl has no packaged converter. |
 
 Keep this channel behind the existing experimental gate. Mocked tests, synthetic
 gRPC, and a visible catalog card do not establish these live results.
+
+### September 12: persistent conversation and live task bubbles
+
+The operator reported three messages creating PHOTON-15, PHOTON-16, and
+PHOTON-17. Task completion had incorrectly been treated as the end of an
+iMessage conversation, and channel admission did not emit the comment event
+used by an open task page. The fix preserves the latest task until an explicit
+`/new` or `/close`, publishes comment activity after its transaction commits,
+and labels inbound human bubbles in both task-chat renderers.
+
+Tested the fix in the isolated `codex/imessage-photon` worktree on September 12,
+2026 at 13:56–13:57 America/Chicago, against the operator's existing Pro DM
+endpoint (`99bebf95…3884`) and PHOTON-17 (`bd6d8379…ba15`). Left the task page
+open and sent two authorized messages through Apple Messages to the same Photon
+conversation, waiting for completion between sends. Both appeared without a
+page reload and both reopened PHOTON-17. Its bubbles showed “Sent from
+iMessage”; the agent returned “PHOTON-17 live follow-up received” and
+“PHOTON-17 still one conversation” through Photon. The earlier task records
+were preserved as history. No live `/new` was sent to replace the operator's
+current conversation; explicit reset, close, stale controls, duplicate delivery,
+restart, and dedicated-group continuity are covered by integration fixtures.

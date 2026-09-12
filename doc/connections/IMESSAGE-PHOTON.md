@@ -69,8 +69,10 @@ group, that destination becomes unavailable and publication is blocked.
 
 DMs and groups are linear conversations. An authorized request starts a task;
 follow-ups append to the current generation through the ordered delivery queue.
-After completion or closing the conversation, a fresh message starts the next
-generation. `/status` shows the current task, `/close` closes the conversation,
+Completing a task ends the current turn. The next message reopens that same task,
+including after a server restart. Incoming messages appear live on the open task
+as user bubbles labeled “Sent from iMessage.” `/status` shows the current task,
+`/close` closes the conversation,
 and `/new` closes the current generation so the next request starts a new task.
 Quoted message GUIDs and multipart references are retained as task context.
 Quotes do not create separate tasks. A quoted control from an older generation

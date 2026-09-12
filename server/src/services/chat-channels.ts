@@ -15354,9 +15354,14 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       if (
         isLinear &&
         existingConversation &&
-        (existingConversation.state === "completed" ||
-          existingIssue?.status === "done" ||
-          existingIssue?.status === "cancelled")
+        (endpoint.provider === "imessage-photon"
+          // A reply finishes an iMessage turn, not the conversation. Only a
+          // delivered /new or /close releases this chat's task binding. Use
+          // the durable control receipt so pre-fix completed rows also resume.
+          ? await hasCommittedTaskControlCompletion(existingConversation.id)
+          : existingConversation.state === "completed" ||
+            existingIssue?.status === "done" ||
+            existingIssue?.status === "cancelled")
       ) {
         if (existingConversation.state !== "completed") {
           await db
@@ -15809,6 +15814,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         return;
       }
 
+      const inboundActivityPublications: ActivityPublication[] = [];
       const persistTaskMutation = async (
         taskTx: DbOrTransaction,
         taskEndpoint: EndpointRow,
@@ -15972,6 +15978,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             authorType: taskUserId ? "user" : "system",
             metadata: {
               version: 1,
+              ...(endpoint.provider === "imessage-photon"
+                ? { sourceChannel: "imessage-photon" as const }
+                : {}),
               sections: [
                 {
                   title: `${PROVIDER_LABELS[endpoint.provider]} sender`,
@@ -16078,6 +16087,26 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           principalId: principalResolution.principal.id,
           actorUserId: taskUserId,
         });
+        if (taskEndpoint.provider === "imessage-photon") {
+          await logActivity(
+            taskTx as Db,
+            {
+              companyId: taskEndpoint.companyId,
+              actorType: taskUserId ? "user" : "system",
+              actorId: taskUserId ?? "chat:imessage-photon",
+              action: "issue.comment_added",
+              entityType: "issue",
+              entityId: issue.id,
+              details: {
+                commentId: comment.id,
+                issueIdentifier: issue.identifier,
+                source: "chat:imessage-photon",
+                endpointId: taskEndpoint.id,
+              },
+            },
+            inboundActivityPublications,
+          );
+        }
         return { actorUserId: taskUserId, comment, conversation, issue };
       };
       const taskMutation = await db.transaction(async (tx) => {
@@ -16207,6 +16236,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         );
       });
       if (!taskMutation) return;
+      // The open task can fetch the comment immediately, before attachments
+      // finish preparing or the agent starts. Never publish an uncommitted row.
+      for (const publication of inboundActivityPublications) {
+        publishActivity(publication);
+      }
       const { actorUserId, comment, conversation, issue } = taskMutation;
       const attachmentResult = await ingestAttachments({
         endpoint,
@@ -28054,7 +28088,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         issueTitle: issue?.title ?? null,
         isDirectMessage: conversation.isDirectMessage,
         state:
-          issue?.status === "done" || issue?.status === "cancelled"
+          record.endpoint.provider !== "imessage-photon" &&
+          (issue?.status === "done" || issue?.status === "cancelled")
             ? "completed"
             : conversation.state,
         lastActivityAt: conversation.lastActivityAt?.toISOString() ?? null,
