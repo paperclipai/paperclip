@@ -730,8 +730,10 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       agentNameKey: input.agentNameKey,
     });
 
+    // A manual click establishes a fresh execution identity. Even a matching
+    // requester can have a different originating identity on an exact retry.
     const shouldDeferFollowupWake =
-      deps.helpers.shouldDeferFollowupWakeForSameIssue({
+      Boolean(manualUserWakeActorId) || deps.helpers.shouldDeferFollowupWakeForSameIssue({
         activeRunStatus: input.activeExecutionRun.status,
         isSameExecutionAgent,
         wakeCommentId: input.wakeCommentId,

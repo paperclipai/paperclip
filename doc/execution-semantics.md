@@ -1065,6 +1065,8 @@ Ordinary board wake requests also persist the clicking user's identity, so
 adopting another author's queued message cannot change their execution authority.
 If that wake merges into an older deferred request, the same transaction updates
 the request's execution requester to the clicking user.
+Manual wake requests wait for their own run and execution identity. They do not
+merge into an agent's active run, with or without a task.
 Private agent conversations retain their owner-only wake and retry checks.
 
 These actions do not grant permission to hire agents or change their settings.

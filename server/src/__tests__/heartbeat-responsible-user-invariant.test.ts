@@ -224,7 +224,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       });
       expect(await heartbeat.wakeup(agentId, { manualUserWake: true, source: "on_demand", triggerDetail: "manual",
         payload: { issueId }, requestedByActorType: "user", requestedByActorId: operatorId,
-        contextSnapshot: { responsibleUserId: operatorId, forceFreshSession: true } })).toBeNull();
+        contextSnapshot: { responsibleUserId: operatorId } })).toBeNull();
       const [pending] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
       expect(pending).toMatchObject({ requestedByActorType: "user", requestedByActorId: operatorId,
         payload: { manualUserWake: true } });
@@ -236,6 +236,32 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     expect(successors.length).toBeGreaterThan(0);
     expect(successors.every(run => run.responsibleUserId === operatorId && run.status === "succeeded")).toBe(true);
     expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0].authorUserId).toBe(ownerUserId);
+  });
+
+  it("starts an unscoped manual wake with its own user instead of joining another user's run", async () => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    const operatorId = `operator-${randomUUID()}`;
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
+      membershipRole: "operator", status: "active" });
+    let finish!: () => void;
+    const blocked = new Promise<void>(resolve => { finish = resolve; });
+    const execute = mockAdapterExecute.getMockImplementation()!;
+    mockAdapterExecute.mockImplementationOnce(async () => { await blocked; return execute(); });
+    const first = await heartbeat.wakeup(agentId, { manualUserWake: true, source: "on_demand", triggerDetail: "manual",
+      requestedByActorType: "user", requestedByActorId: ownerUserId });
+    let second: Awaited<ReturnType<typeof heartbeat.wakeup>>;
+    try {
+      await vi.waitFor(() => expect(mockAdapterExecute).toHaveBeenCalled(), { timeout: 5_000 });
+      second = await heartbeat.wakeup(agentId, { manualUserWake: true, source: "on_demand", triggerDetail: "manual",
+        requestedByActorType: "user", requestedByActorId: operatorId });
+      expect(second?.id).not.toBe(first!.id);
+      expect(second?.responsibleUserId).toBe(operatorId);
+    } finally {
+      finish();
+    }
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    expect(await waitForRun(db, second!.id)).toMatchObject({ status: "succeeded", responsibleUserId: operatorId });
+    expect(await waitForRun(db, first!.id)).toMatchObject({ status: "succeeded", responsibleUserId: ownerUserId });
   });
 
   it("denies a manual wake of another user's private conversation", async () => {
