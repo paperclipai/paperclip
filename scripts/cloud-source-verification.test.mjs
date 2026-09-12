@@ -74,12 +74,19 @@ test("a rerun racing the jobs read cannot reuse the previous attempt", async () 
 
 test("the versioned proof must exist and be unique", async () => {
   for (const jobs of [[], [{ ...baseJob, name: "Cloud deployable v1" }]]) {
-    assert.equal(
-      await readSourceVerification(sha, fixture({ runs: [{ ...baseRun, status: "completed" }], jobs }).api),
-      undefined,
-    );
+    assert.equal(await readSourceVerification(sha, fixture({ jobs }).api), undefined, JSON.stringify(jobs));
   }
   await assert.rejects(readSourceVerification(sha, fixture({ jobs: [baseJob, baseJob] }).api), /ambiguous/);
+});
+
+test("a completed run that never produced the versioned job is a terminal configuration problem, not a retry", async () => {
+  for (const jobs of [[], [{ ...baseJob, name: "Cloud deployable v1" }]]) {
+    await assert.rejects(
+      readSourceVerification(sha, fixture({ runs: [{ ...baseRun, status: "completed" }], jobs }).api),
+      /completed without a "Cloud source verified v1" job/,
+      JSON.stringify(jobs),
+    );
+  }
 });
 
 test("proof may appear after the first page of jobs", async () => {

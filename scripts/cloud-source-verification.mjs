@@ -55,9 +55,18 @@ export async function readSourceVerification(sha, api) {
     if (!trustedRun(current, sha, workflow.id) || current.run_attempt !== run.run_attempt) return undefined;
     return { sha, runId: run.id, attempt: run.run_attempt, jobId: job.id };
   }
-  // A completed attempt without a passing job is not terminal: a rerun of the
-  // Cloud readiness workflow may already be in progress. Return undefined so
-  // waitForSourceVerification keeps polling and catches the next attempt.
+  // A completed run whose job list never contained the versioned job at all
+  // (as opposed to a job that ran and failed/was cancelled/was skipped) is a
+  // configuration or identity problem, not a flaky rerun: the job name may
+  // have changed, or the workflow no longer produces it. Fail fast instead of
+  // polling for the full timeout.
+  if (!job && run.status === "completed") {
+    throw new Error(`Cloud readiness run ${run.id} (attempt ${run.run_attempt}) completed without a "${sourceVerificationJob}" job. Check cloud-readiness.yml for a job rename or removal.`);
+  }
+  // A completed attempt with a failed, cancelled, or skipped job is not
+  // terminal: a rerun of the Cloud readiness workflow may already be in
+  // progress. Return undefined so waitForSourceVerification keeps polling
+  // and catches the next attempt.
   return undefined;
 }
 
