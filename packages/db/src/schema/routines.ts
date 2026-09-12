@@ -153,6 +153,9 @@ export const routineRuns = pgTable(
     idempotencyKey: text("idempotency_key"),
     triggerPayload: jsonb("trigger_payload").$type<Record<string, unknown>>(),
     dispatchFingerprint: text("dispatch_fingerprint"),
+    // NET-6788 / NET-6789: per-fire identity mixed into the dispatch fingerprint.
+    // Populated by routines.dispatchRoutineRun for new fires; null on legacy rows.
+    dispatchOccurrenceId: uuid("dispatch_occurrence_id"),
     linkedIssueId: uuid("linked_issue_id").references(() => issues.id, { onDelete: "set null" }),
     coalescedIntoRunId: uuid("coalesced_into_run_id"),
     failureReason: text("failure_reason"),
