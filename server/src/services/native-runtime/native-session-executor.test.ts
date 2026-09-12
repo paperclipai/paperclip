@@ -5210,9 +5210,12 @@ describe("native warm session supervision", () => {
     });
   });
 
-  it("checkpoints a busy warm session on release after the restart sweep", async () => {
+  it.each([false, true])("checkpoints a busy warm session on release after the restart sweep: checkpoint fails=%s", async (checkpointFails) => {
+    const checkpointError = new Error("restart checkpoint failed");
     let finishCheckpoint!: () => void;
-    const checkpoint = new Promise<void>((resolve) => { finishCheckpoint = resolve; });
+    const checkpoint = new Promise<void>((resolve, reject) => {
+      finishCheckpoint = checkpointFails ? () => reject(checkpointError) : resolve;
+    });
     const close = vi.fn(async () => checkpoint);
     const warmExecution = {
       ...execution,
@@ -5256,7 +5259,8 @@ describe("native warm session supervision", () => {
       expect(settled).toBe(false);
     } finally {
       finishCheckpoint();
-      await running;
+      if (checkpointFails) await expect(running).rejects.toBe(checkpointError);
+      else await running;
     }
     await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toEqual({ closed: 0, busy: 0, failed: 0 });
   });

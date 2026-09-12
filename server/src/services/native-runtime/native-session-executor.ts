@@ -5631,9 +5631,13 @@ async function releaseWarmNativeSession(
   if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
   if (failed || entry.closeOnReleaseReason !== undefined) {
     warmNativeSessions.delete(sessionId);
-    await entry.session
-      .close({ reason: entry.closeOnReleaseReason ?? "warm native session failed" })
-      .catch(() => undefined);
+    const closing = entry.session.close({
+      reason: entry.closeOnReleaseReason ?? "warm native session failed",
+    });
+    // Restart checkpointing is required to restore this successful session.
+    // Surface failure instead of reporting a clean release without authority.
+    if (entry.closeOnReleaseReason !== undefined) await closing;
+    else await closing.catch(() => undefined);
     return;
   }
   entry.idleTimer = setTimeout(() => {
