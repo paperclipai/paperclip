@@ -30,6 +30,18 @@ const providerCases = [
     detail: "The provider rejected the selected model. Check the model ID and your account's access, save the agent configuration, then retry. View the run for the provider's full error.",
     russianDetail: "Провайдер отклонил выбранную модель. Проверьте идентификатор модели и доступ к ней в своём аккаунте, сохраните настройки агента и повторите попытку. Полное сообщение об ошибке от провайдера можно посмотреть в журнале запуска.",
   },
+  {
+    label: "Run failed",
+    russianLabel: "Запуск завершился ошибкой",
+    detail: "The selected AI account is unavailable. Fix it in the connection card.",
+    russianDetail: "Выбранный аккаунт сервиса ИИ недоступен. Восстановите доступ в карточке подключения.",
+  },
+  {
+    label: "Run failed",
+    russianLabel: "Запуск завершился ошибкой",
+    detail: "This run stopped because its AI account was unavailable.",
+    russianDetail: "Запуск остановлен, потому что используемый аккаунт сервиса ИИ был недоступен.",
+  },
 ];
 
 describe("native provider failure marker localization", () => {
@@ -94,7 +106,7 @@ describe("native provider failure marker localization", () => {
 
   it("does not rewrite an unknown provider diagnostic or a near-match", async () => {
     await i18n.changeLanguage("ru");
-    for (const raw of ["provider_model_rejected: raw-model-77", `${providerCases[0].detail} [provider detail]`]) {
+    for (const raw of ["provider_model_rejected: raw-model-77", ...providerCases.map((entry) => `${entry.detail} [provider detail]`)]) {
       expect(taskThreadMarkerDetailDisplay(raw)).toBe(raw);
     }
   });

@@ -438,6 +438,8 @@ export function taskThreadErrorDisplay(value: string): string {
 /** Never alter marker.label in the model: retry eligibility compares "Run failed". */
 export function taskThreadMarkerDetailDisplay(value: string): string {
   const addedKeys: Readonly<Record<string, string>> = {
+    "The selected AI account is unavailable. Fix it in the connection card.": "sep13Marker.aiAccountNeedsRepair",
+    "This run stopped because its AI account was unavailable.": "sep13Marker.aiAccountStoppedRun",
     "Earlier messages and files are still available.": "sep12Chat.marker.earlierMessagesAvailable",
     "This turn was cancelled before it returned a response.": "sep12Chat.marker.cancelledBeforeResponse",
     "The previous execution needs to be checked before work can continue. See the task’s execution hold for the next action. Individual checks remain in the run history.": "sep12Chat.marker.executionCheckRequired",

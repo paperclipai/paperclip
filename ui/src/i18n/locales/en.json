@@ -17278,5 +17278,9 @@
     "closeSetup": "Close setup",
     "fixConnection": "Fix connection",
     "reconnectAccount": "Reconnect account"
+  },
+  "sep13Marker": {
+    "aiAccountNeedsRepair": "The selected AI account is unavailable. Fix it in the connection card.",
+    "aiAccountStoppedRun": "This run stopped because its AI account was unavailable."
   }
 }

@@ -84,4 +84,3 @@ it("translates ownership but never interprets a person's name as built-in copy",
   flushSync(() => { void i18n.changeLanguage("en"); });
   expect(host.textContent).toContain("Personal · You");
 });
-

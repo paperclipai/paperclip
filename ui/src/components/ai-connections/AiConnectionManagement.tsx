@@ -18,7 +18,7 @@ export function AiConnectionLegacyNotice({
         {t("sep13Connections.legacyDescription")}
       </p>
       {!readOnly && (
-        <Button variant="outline" className="self-start" onClick={onAdopt}>
+        <Button variant="outline" className="h-auto max-w-full self-start whitespace-normal" onClick={onAdopt}>
           {t("sep13Connections.chooseManaged")}
         </Button>
       )}
