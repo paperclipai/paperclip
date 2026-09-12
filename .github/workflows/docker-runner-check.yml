@@ -6,6 +6,7 @@ on:
       - .github/workflows/docker-runner-check.yml
       - Dockerfile
       - .dockerignore
+      - scripts/check-docker-runner-cache.sh
       - packages/paperclip-runner/rust-toolchain.toml
       - packages/paperclip-runner/runner/**
       - packages/paperclip-runner/protocol/**
@@ -20,7 +21,7 @@ jobs:
   runner:
     name: Compile isolated native Runner
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -30,8 +31,8 @@ jobs:
           persist-credentials: false
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
-      # Compile the real target with the real .dockerignore. This catches new
-      # Cargo or embedded protocol inputs that the isolated COPY set omits.
-      # No registry credentials, cache imports/exports, or image publication.
-      - name: Compile the Runner from its isolated Docker context
-        run: docker buildx build --target runner-build --progress plain .
+      # Compile the real target, then change source in a disposable context.
+      # Require dependency-layer reuse and changed metadata from the real binary.
+      # No registry credentials, external cache, or image publication.
+      - name: Verify native build and dependency cache reuse
+        run: bash scripts/check-docker-runner-cache.sh
