@@ -1031,4 +1031,6 @@ Legacy finalization retries deferred input after adapter and lease cleanup.
 The scheduler also revisits bounded batches of stranded queues after restart
 or a late enqueue. Both use normal admission; an existing queued successor
 owns the next turn even before it acquires the task execution lock. A recovery
-hold or a plain operator Stop does not by itself authorize old input.
+hold or a plain operator Stop does not by itself authorize old input. The
+successor guard is scoped to the same agent so another agent's review
+participation keeps its independent recovery path.
