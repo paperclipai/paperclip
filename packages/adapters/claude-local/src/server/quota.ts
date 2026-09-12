@@ -10,6 +10,9 @@ const execFileAsync = promisify(execFile);
 const CLAUDE_USAGE_SOURCE_OAUTH = "anthropic-oauth";
 const CLAUDE_USAGE_SOURCE_CLI = "claude-cli";
 
+const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
+const KEYCHAIN_TIMEOUT_MS = 5_000;
+
 export function claudeConfigDir(): string {
   const fromEnv = process.env.CLAUDE_CONFIG_DIR;
   if (typeof fromEnv === "string" && fromEnv.trim().length > 0) return fromEnv.trim();
@@ -85,13 +88,7 @@ function trimToLatestUsagePanel(text: string): string | null {
   return tail;
 }
 
-async function readClaudeTokenFromFile(credPath: string): Promise<string | null> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(credPath, "utf8");
-  } catch {
-    return null;
-  }
+function parseClaudeOauthAccessToken(raw: string): string | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -104,6 +101,38 @@ async function readClaudeTokenFromFile(credPath: string): Promise<string | null>
   if (typeof oauth !== "object" || oauth === null) return null;
   const token = (oauth as Record<string, unknown>)["accessToken"];
   return typeof token === "string" && token.length > 0 ? token : null;
+}
+
+async function readClaudeTokenFromFile(credPath: string): Promise<string | null> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(credPath, "utf8");
+  } catch {
+    return null;
+  }
+  return parseClaudeOauthAccessToken(raw);
+}
+
+/**
+ * macOS stores the Claude Code credentials in the login keychain instead of a
+ * file in the config directory. Read them with the `security` tool.
+ *
+ * The function returns null on other platforms. It also returns null if the
+ * keychain item is absent, the keychain is locked, or the item is not the
+ * expected JSON. The caller then continues to the CLI probe.
+ */
+async function readClaudeTokenFromKeychain(): Promise<string | null> {
+  if (process.platform !== "darwin") return null;
+  try {
+    const { stdout } = await execFileAsync(
+      "security",
+      ["find-generic-password", "-s", CLAUDE_KEYCHAIN_SERVICE, "-w"],
+      { timeout: KEYCHAIN_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
+    );
+    return parseClaudeOauthAccessToken(stdout.trim());
+  } catch {
+    return null;
+  }
 }
 
 interface ClaudeAuthStatus {
@@ -143,7 +172,7 @@ export async function readClaudeToken(): Promise<string | null> {
     const token = await readClaudeTokenFromFile(path.join(configDir, filename));
     if (token) return token;
   }
-  return null;
+  return readClaudeTokenFromKeychain();
 }
 
 interface AnthropicUsageWindow {
