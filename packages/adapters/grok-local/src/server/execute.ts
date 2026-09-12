@@ -46,6 +46,7 @@ import { DEFAULT_GROK_LOCAL_MODEL } from "../index.js";
 import { copyBackGrokAuth } from "./grok-auth-copyback.js";
 import { resolveManagedGrokHomeDir, stageGrokHomeForSync } from "./grok-home.js";
 import { isGrokUnknownSessionError, parseGrokJsonl } from "./parse.js";
+import { readGrokInstructions } from "./instructions.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -88,16 +89,9 @@ function renderApiAccessNote(env: Record<string, string>): string {
   ].join("\n");
 }
 
-type StageCleanup = {
-  kind: "file" | "dir";
-  path: string;
-};
-
 type StagedGrokAssets = {
   cleanup: () => Promise<void>;
   stagedSkillsCount: number;
-  stagedInstructionsPath: string | null;
-  rulesFilePath: string | null;
 };
 
 async function pathExists(candidate: string): Promise<boolean> {
@@ -106,44 +100,16 @@ async function pathExists(candidate: string): Promise<boolean> {
 
 async function stageGrokProjectAssets(input: {
   cwd: string;
-  instructionsFilePath: string;
   skillEntries: Array<{ key: string; runtimeName: string; source: string }>;
   desiredSkillNames: string[];
   onLog: AdapterExecutionContext["onLog"];
 }): Promise<StagedGrokAssets> {
-  const cleanup: StageCleanup[] = [];
+  const cleanup: string[] = [];
   const ensureCleanupDir = (candidate: string) => {
-    cleanup.push({ kind: "dir", path: candidate });
-  };
-  const ensureCleanupFile = (candidate: string) => {
-    cleanup.push({ kind: "file", path: candidate });
+    cleanup.push(candidate);
   };
 
-  let stagedInstructionsPath: string | null = null;
-  let rulesFilePath: string | null = null;
   let stagedSkillsCount = 0;
-
-  const instructionsTarget = path.join(input.cwd, "Agents.md");
-  if (input.instructionsFilePath) {
-    if (!await pathExists(instructionsTarget)) {
-      await fs.copyFile(input.instructionsFilePath, instructionsTarget);
-      ensureCleanupFile(instructionsTarget);
-      stagedInstructionsPath = instructionsTarget;
-    } else if (path.resolve(instructionsTarget) !== path.resolve(input.instructionsFilePath)) {
-      rulesFilePath = input.instructionsFilePath;
-      await input.onLog(
-        "stdout",
-        `[paperclip] Grok workspace already contains ${instructionsTarget}; using --rules @${input.instructionsFilePath} instead of overwriting it.\n`,
-      );
-    }
-  } else {
-    const canonicalAgents = path.join(input.cwd, "AGENTS.md");
-    if (!await pathExists(instructionsTarget) && await pathExists(canonicalAgents)) {
-      await fs.copyFile(canonicalAgents, instructionsTarget);
-      ensureCleanupFile(instructionsTarget);
-      stagedInstructionsPath = instructionsTarget;
-    }
-  }
 
   const desiredSet = new Set(input.desiredSkillNames);
   const selectedSkills = input.skillEntries.filter((entry) => desiredSet.has(entry.key));
@@ -176,15 +142,9 @@ async function stageGrokProjectAssets(input: {
 
   return {
     stagedSkillsCount,
-    stagedInstructionsPath,
-    rulesFilePath,
     cleanup: async () => {
       for (const entry of [...cleanup].reverse()) {
-        if (entry.kind === "file") {
-          await fs.rm(entry.path, { force: true }).catch(() => undefined);
-          continue;
-        }
-        await fs.rm(entry.path, { recursive: true, force: true }).catch(() => undefined);
+        await fs.rm(entry, { recursive: true, force: true }).catch(() => undefined);
       }
     },
   };
@@ -242,9 +202,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const grokSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredGrokSkillNames = resolveLegacyPaperclipDesiredSkillNames(config, grokSkillEntries);
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
+  let rulesSource = instructionsFilePath;
+  if (!rulesSource && !await pathExists(path.join(cwd, "Agents.md"))) {
+    const canonicalAgents = path.join(cwd, "AGENTS.md");
+    if (await pathExists(canonicalAgents)) rulesSource = canonicalAgents;
+  }
+  // Grok's --rules accepts text, not an @file reference. Read once per run so
+  // concurrent agents never create, replace or remove a shared Agents.md.
+  const rules = rulesSource ? await readGrokInstructions(rulesSource) : null;
   const stagedAssets = await stageGrokProjectAssets({
     cwd,
-    instructionsFilePath,
     skillEntries: grokSkillEntries,
     desiredSkillNames: desiredGrokSkillNames,
     onLog,
@@ -457,11 +424,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const commandNotes = (() => {
       const notes: string[] = ["Prompt is passed to Grok via --single in headless mode."];
       if (alwaysApprove) notes.push("Added --always-approve for unattended execution.");
-      if (stagedAssets.stagedInstructionsPath) {
-        notes.push(`Staged project instructions at ${stagedAssets.stagedInstructionsPath} for native Grok discovery.`);
-      }
-      if (stagedAssets.rulesFilePath) {
-        notes.push(`Applied fallback instructions via --rules @${stagedAssets.rulesFilePath}.`);
+      if (rules !== null) {
+        notes.push(`Appended instructions from ${rulesSource} to the system prompt via --rules.`);
       }
       if (stagedAssets.stagedSkillsCount > 0) {
         notes.push(`Staged ${stagedAssets.stagedSkillsCount} Paperclip skill(s) into .claude/skills for native Grok discovery.`);
@@ -519,7 +483,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       if (permissionMode) args.push("--permission-mode", permissionMode);
       if (alwaysApprove) args.push("--always-approve");
       if (disableWebSearch) args.push("--disable-web-search");
-      if (stagedAssets.rulesFilePath) args.push("--rules", `@${stagedAssets.rulesFilePath}`);
+      if (rules !== null) args.push("--rules", rules);
       const extraArgs = (() => {
         const fromExtraArgs = asStringArray(config.extraArgs);
         if (fromExtraArgs.length > 0) return fromExtraArgs;
@@ -538,9 +502,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           command: resolvedCommand,
           cwd: effectiveExecutionCwd,
           commandNotes,
-          commandArgs: args.map((value, index) => (
-            index === args.length - 1 ? `<prompt ${prompt.length} chars>` : value
-          )),
+          commandArgs: args.map((value, index) => {
+            if (index === args.length - 1) return `<prompt ${prompt.length} chars>`;
+            if (index > 0 && args[index - 1] === "--rules") return `<instructions ${value.length} chars>`;
+            return value;
+          }),
           env: loggedEnv,
           prompt,
           promptMetrics,

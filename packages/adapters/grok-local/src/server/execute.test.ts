@@ -173,7 +173,120 @@ describe("grok_local execute", () => {
     await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
   });
 
-  it("stages Grok-native instructions and skills into the workspace for the run and cleans them up afterward", async () => {
+  it.each([null, "Project instructions must remain unchanged.\n"])(
+    "keeps concurrent managed instructions separate without changing project Agents.md: %s",
+    async (projectInstructions) => {
+      const cwd = await makeTempRoot();
+      const managed = await makeTempRoot();
+      const projectPath = path.join(cwd, "Agents.md");
+      if (projectInstructions !== null) await fs.writeFile(projectPath, projectInstructions, "utf8");
+      const rules = ["You are Agent Alpha.\nKeep the first task private.\n", "You are Agent Beta.\nKeep the second task private.\n"];
+      const contexts = await Promise.all(rules.map(async (content, index) => {
+        const instructionsFilePath = path.join(managed, `agent-${index}.md`);
+        await fs.writeFile(instructionsFilePath, content, "utf8");
+        const ctx = await makeCtx(`concurrent-${index}`, cwd);
+        ctx.agent.id = `agent-${index}`;
+        ctx.config = { cwd, instructionsFilePath, paperclipRuntimeSkills: [], paperclipSkillSync: { desiredSkills: [] } };
+        ctx.onMeta = vi.fn(async () => {});
+        return ctx;
+      }));
+      let started = 0;
+      let release!: () => void;
+      const bothStarted = new Promise<void>((resolve) => { release = resolve; });
+      const delivered = new Map<string, string>();
+      runProcessMock.mockImplementation(async (runId, _target, _command, args: string[]) => {
+        if (++started === 2) release();
+        await bothStarted;
+        const rulesIndex = args.indexOf("--rules");
+        expect(rulesIndex).toBeGreaterThan(-1);
+        delivered.set(runId, args[rulesIndex + 1]!);
+        if (projectInstructions === null) expect(await pathExists(projectPath)).toBe(false);
+        else expect(await fs.readFile(projectPath, "utf8")).toBe(projectInstructions);
+        return makeSuccessfulRunResult();
+      });
+
+      const results = await Promise.all(contexts.map(execute));
+
+      expect(results.map((result) => result.exitCode)).toEqual([0, 0]);
+      for (const [index, ctx] of contexts.entries()) {
+        expect(delivered.get(ctx.runId)).toBe(rules[index]);
+        const metadata = vi.mocked(ctx.onMeta!).mock.calls[0]![0];
+        expect(metadata.commandArgs).not.toContain(rules[index]);
+      }
+      if (projectInstructions === null) expect(await pathExists(projectPath)).toBe(false);
+      else expect(await fs.readFile(projectPath, "utf8")).toBe(projectInstructions);
+    },
+  );
+
+  it("passes uppercase AGENTS.md through rules without creating a shared alias file", async () => {
+    const cwd = await makeTempRoot();
+    const canonical = path.join(cwd, "AGENTS.md");
+    await fs.writeFile(canonical, "Canonical project instructions.\n", "utf8");
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args: string[]) => {
+      expect(args[args.indexOf("--rules") + 1]).toBe("Canonical project instructions.\n");
+      expect(await pathExists(path.join(cwd, "Agents.md"))).toBe(false);
+      return makeSuccessfulRunResult();
+    });
+
+    await execute(await makeCtx("canonical-instructions", cwd));
+
+    expect(await fs.readFile(canonical, "utf8")).toBe("Canonical project instructions.\n");
+    expect(await pathExists(path.join(cwd, "Agents.md"))).toBe(false);
+  });
+
+  it("rejects unreadable managed instructions even when the project has Agents.md", async () => {
+    const cwd = await makeTempRoot();
+    const projectPath = path.join(cwd, "Agents.md");
+    await fs.writeFile(projectPath, "Existing project policy.\n", "utf8");
+    const ctx = await makeCtx("missing-instructions", cwd);
+    ctx.config.instructionsFilePath = path.join(cwd, "missing.md");
+    runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+    await expect(execute(ctx)).rejects.toMatchObject({ code: "ENOENT" });
+
+    expect(runProcessMock).not.toHaveBeenCalled();
+    expect(await fs.readFile(projectPath, "utf8")).toBe("Existing project policy.\n");
+  });
+
+  it.each([0, 1])("bounds inline instructions by UTF-8 bytes at 64 KiB plus %i", async (extraBytes) => {
+    const cwd = await makeTempRoot();
+    const instructionsFilePath = path.join(cwd, "managed-policy.md");
+    const content = "é".repeat(32 * 1024) + "x".repeat(extraBytes);
+    await fs.writeFile(instructionsFilePath, content, "utf8");
+    const ctx = await makeCtx("instruction-byte-limit", cwd);
+    ctx.config.instructionsFilePath = instructionsFilePath;
+    runProcessMock.mockResolvedValue(makeSuccessfulRunResult());
+
+    if (extraBytes === 0) {
+      await expect(execute(ctx)).resolves.toMatchObject({ exitCode: 0 });
+      const args = runProcessMock.mock.calls[0]![3] as string[];
+      expect(args[args.indexOf("--rules") + 1]).toBe(content);
+    } else {
+      await expect(execute(ctx)).rejects.toThrow(/64 KiB.*UTF-8.*Reduce/i);
+      expect(runProcessMock).not.toHaveBeenCalled();
+      expect(ensureRuntimeInstalledMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it("delivers managed instruction text to remote runs without a host file reference", async () => {
+    const cwd = await makeTempRoot();
+    const managed = await makeTempRoot();
+    const instructionsFilePath = path.join(managed, "instructions.md");
+    await fs.writeFile(instructionsFilePath, "Remote run policy.\n", "utf8");
+    remoteState.isRemote = true;
+    const ctx = await makeCtx("remote-instructions", cwd);
+    ctx.config = { cwd, instructionsFilePath, env: { XAI_API_KEY: "fixture-api-key" } };
+    runProcessMock.mockImplementation(async (_runId, _target, _command, args: string[]) => {
+      expect(args[args.indexOf("--rules") + 1]).toBe("Remote run policy.\n");
+      expect(args).not.toContain(`@${instructionsFilePath}`);
+      expect(await pathExists(path.join(cwd, "Agents.md"))).toBe(false);
+      return makeSuccessfulRunResult();
+    });
+
+    await execute(ctx);
+  });
+
+  it("passes managed rules directly while staging and cleaning up native skills", async () => {
     const root = await makeTempRoot();
     const instructionsPath = path.join(root, "managed", "AGENTS.md");
     const skillSource = path.join(root, "runtime-skills", "paperclip");
@@ -193,7 +306,8 @@ describe("grok_local execute", () => {
       // Grok >= 1.0 enforces `dontAsk` as deny-by-default over --always-approve,
       // so no permission mode may be passed unless explicitly configured.
       expect(args).not.toContain("--permission-mode");
-      expect(await fs.readFile(path.join(root, "Agents.md"), "utf8")).toContain("You are Grok.");
+      expect(args[args.indexOf("--rules") + 1]).toBe("You are Grok.\n");
+      expect(await pathExists(path.join(root, "Agents.md"))).toBe(false);
       expect(await pathExists(path.join(root, ".claude", "skills", "paperclip", "SKILL.md"))).toBe(true);
       await options.onLog?.("stdout", '{"type":"text","data":"done"}\n');
       return {
