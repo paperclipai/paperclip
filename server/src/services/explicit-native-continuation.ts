@@ -25,6 +25,41 @@ function processStopped(pid: number): boolean {
   catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
 }
 
+/** Validate the whole saved queue, preserving order and original authors.
+ * Call again under the task lock before adopting IDs into a new run.
+ */
+export async function undeliveredLegacyUserCommentIds(
+  db: Db, companyId: string, issueId: string, agentId: string, commentIds: string[],
+): Promise<string[]> {
+  if (!commentIds.length) return [];
+  const comments = await db.select({ id: issueComments.id }).from(issueComments).where(and(
+    eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+    inArray(issueComments.id, commentIds), eq(issueComments.authorType, "user"),
+    isNull(issueComments.createdByRunId), isNull(issueComments.deletedAt),
+    sql`nullif(trim(${issueComments.body}), '') is not null`,
+    sql`nullif(trim(${issueComments.authorUserId}), '') is not null`,
+  ));
+  const valid = new Set(comments.map(comment => comment.id));
+  const previous = await db.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId),
+    sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
+    // A rejected, never-started admission has not consumed any user input.
+    sql`not (${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.startedAt} is null
+      and coalesce(${heartbeatRuns.errorCode}, '') = 'execution_reconciliation_required')`,
+    or(...commentIds.map(id => or(
+      sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${id}`,
+      sql`${heartbeatRuns.contextSnapshot}->'wakeCommentIds' @> ${JSON.stringify([id])}::jsonb`,
+    ))),
+  ));
+  for (const { context } of previous) {
+    if (typeof context?.wakeCommentId === "string") valid.delete(context.wakeCommentId);
+    if (Array.isArray(context?.wakeCommentIds)) {
+      for (const id of context.wakeCommentIds) if (typeof id === "string") valid.delete(id);
+    }
+  }
+  return commentIds.filter(id => valid.has(id));
+}
+
 /** Called under the issue lock, in the transaction that creates the new turn.
  * A user request authorizes a new conversation, not replay of the failed run.
  * Unknown action outcomes and all prior records stay intact.
@@ -72,6 +107,11 @@ export async function admitExplicitNativeContinuation(input: {
     !savedQueue.idempotencyKey?.startsWith("chat-inbound:") &&
     queuedCommentIdsFromWakePayload(savedQueue.payload).includes(commentId));
   if (input.queuedCommentRequestId && !queuedRequest) return null;
+  if (queuedRequest) {
+    const ids = queuedCommentIdsFromWakePayload(savedQueue!.payload);
+    const undelivered = await undeliveredLegacyUserCommentIds(db, companyId, issueId, agentId, ids);
+    if (undelivered.length !== ids.length) return null;
+  }
   const [comment] = retry ? [] : await db.select().from(issueComments).where(and(
     eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
     eq(issueComments.id, commentId!), eq(issueComments.authorType, "user"),

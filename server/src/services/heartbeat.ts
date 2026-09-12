@@ -4,7 +4,7 @@ import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLea
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt, stoppedRemoteCleanupScopes } from "./remote-execution-termination.js";
 import { applyConnectorSkills, prepareConnectorSkillDelivery, resolveConnectorAssignments } from "./connector-runtime.js";
-import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
+import { admitExplicitNativeContinuation, undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 import { executionBlockerPredicate, getExecutionBlocker } from "./execution-blocker.js";
 import { CONVERSATION_CONTINUATION_POLICY, claimedAdapterType, runUsedConversationAdapter, hasConversationContinuationPolicy, isConversationAdapter } from "./conversation-continuation.js";
 import { recordExecutionWait } from "./execution-wait.js";
@@ -10109,10 +10109,12 @@ export function heartbeatService(
     if (!wake) return;
     const payload = parseObject(wake.payload);
     let actorId = readNonEmptyString(parseObject(payload.queuedCommentInterrupt).actorId);
-    const commentIds = queuedCommentIdsFromWakePayload(payload);
+    let commentIds = queuedCommentIdsFromWakePayload(payload);
     const issueId = readNonEmptyString(payload.issueId);
     if (!issueId || !commentIds.length || wake.idempotencyKey?.startsWith("chat-inbound:")) return;
     if (!interrupted) {
+      commentIds = await undeliveredLegacyUserCommentIds(db, companyId, issueId, wake.agentId, commentIds);
+      if (!commentIds.length) return;
       // The queue itself may have begun as a system wake. The saved human
       // comment, not that wake's origin or mutable caller payload, is authority.
       const [comment] = await db.select().from(issueComments).where(and(
@@ -10171,6 +10173,9 @@ export function heartbeatService(
         )).for("update");
         for (const lease of historical) {
           if (!lease.provider || lease.provider === "local" || !lease.providerLeaseId || hasRemoteTerminationReceipt(lease)) continue;
+          // Provider resource IDs identify physical sandboxes. A lease in any
+          // company can still own this resource; never destroy it on behalf of
+          // this company. This existence-only guard exposes no foreign data.
           const [otherOwner] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
             ne(environmentLeases.id, lease.id), eq(environmentLeases.provider, lease.provider),
             eq(environmentLeases.providerLeaseId, lease.providerLeaseId),
@@ -10186,7 +10191,7 @@ export function heartbeatService(
         companyId, runId: sourceRun.id, actorId, reason: "queued_comment_interrupt",
       } });
     }
-    const deliveryPayload = { ...payload };
+    const deliveryPayload = withQueuedCommentIdsInWakePayload(payload, commentIds);
     delete deliveryPayload.queuedCommentInterrupt;
     await enqueueWakeup(wake.agentId, {
       source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
@@ -25878,6 +25883,15 @@ export function heartbeatService(
             if (!pending || !wakeCommentId || !queuedCommentIdsFromWakePayload(pending.payload).includes(wakeCommentId)) {
               return { kind: "deferred" as const };
             }
+            if (opts.queuedCommentRequestId) {
+              const ids = await undeliveredLegacyUserCommentIds(tx as unknown as Db,
+                agent.companyId, issueId, agentId, queuedCommentIdsFromWakePayload(pending.payload));
+              if (!ids.includes(wakeCommentId)) return { kind: "deferred" as const };
+              pending.payload = withQueuedCommentIdsInWakePayload(parseObject(pending.payload), ids);
+              await tx.update(agentWakeupRequests).set({ payload: pending.payload }).where(and(
+                eq(agentWakeupRequests.id, pending.id), eq(agentWakeupRequests.companyId, agent.companyId),
+              ));
+            }
             if (opts.queuedCommentInterruptId || opts.queuedCommentRequestId) {
               // Edits/discards between the click and dispatch remain authoritative.
               Object.assign(enrichedContextSnapshot, withQueuedCommentIdsInRunContext(
@@ -27087,7 +27101,7 @@ export function heartbeatService(
               queuedCommentIdsFromWakePayload(wake.payload).length > 0
             );
           });
-          const adoptedCommentIds = [
+          let adoptedCommentIds = [
             ...new Set([
               ...adoptedComments.flatMap((wake) =>
                 queuedCommentIdsFromWakePayload(wake.payload),
@@ -27095,6 +27109,10 @@ export function heartbeatService(
               ...queuedCommentIdsFromRunContext(enrichedContextSnapshot),
             ]),
           ];
+          if (opts.queuedCommentRequestId) {
+            adoptedCommentIds = await undeliveredLegacyUserCommentIds(tx as unknown as Db,
+              agent.companyId, issueId, agentId, adoptedCommentIds);
+          }
           const newRun = await tx
             .insert(heartbeatRuns)
             .values({
