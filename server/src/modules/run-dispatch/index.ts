@@ -1,5 +1,7 @@
 import type { Db } from "@paperclipai/db";
 import { createPostgresRunDispatchAdapter } from "./adapters/postgres.js";
+export { verifyAddresseeInteractionWake } from "./adapters/postgres.js";
+export type { AddresseeInteractionWakeInput } from "./adapters/postgres.js";
 import {
   createCancelStaleQueuedRun,
   createDispatchResolvedInteractionIfCurrent,

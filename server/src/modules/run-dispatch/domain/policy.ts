@@ -140,6 +140,14 @@ export type QueuedRunFacts = {
   /** A connection resolution or tool refresh can resume an agent waiting in review. */
   isConnectionContinuation?: boolean;
   isInteractionWake: boolean;
+  /**
+   * True when the run is a server-issued `interaction_pending` wake and the
+   * adapter verified, from stored state, that a pending issue-thread
+   * interaction on this issue names the run agent as `addresseeAgentId`.
+   * The named addressee owns the response even when it is not the issue
+   * assignee, so the wake must not be cancelled as `issue_assignee_changed`.
+   */
+  isVerifiedAddresseeInteractionWake: boolean;
   isAuthorizedSourceScopedRecovery: boolean;
   isNonAssigneeWorkspaceBusyRetry: boolean;
 
@@ -162,6 +170,7 @@ type OwnershipFacts = {
   issueAssigneeAgentId: string | null;
   isNonAssigneeWorkspaceBusyRetry: boolean;
   isInteractionWake?: boolean;
+  isVerifiedAddresseeInteractionWake?: boolean;
   isCurrentReviewParticipant?: boolean;
   isAuthorizedSourceScopedRecovery?: boolean;
 };
@@ -177,6 +186,7 @@ function decideIssueOwnership(facts: OwnershipFacts): OwnershipOutcome {
   if (facts.issueAssigneeAgentId === facts.runAgentId) return "current_owner";
   if (facts.isNonAssigneeWorkspaceBusyRetry) return "current_owner";
   if (facts.isInteractionWake) return "current_owner";
+  if (facts.isVerifiedAddresseeInteractionWake) return "current_owner";
   if (facts.isCurrentReviewParticipant) return "current_owner";
   if (facts.isAuthorizedSourceScopedRecovery) return "current_owner";
   return "reassigned";
@@ -549,6 +559,7 @@ export function decideQueuedRunStaleness(
     issueAssigneeAgentId: facts.issueAssigneeAgentId,
     isNonAssigneeWorkspaceBusyRetry: facts.isNonAssigneeWorkspaceBusyRetry,
     isInteractionWake: facts.isInteractionWake,
+    isVerifiedAddresseeInteractionWake: facts.isVerifiedAddresseeInteractionWake,
     isCurrentReviewParticipant:
       facts.reviewParticipant.isInReview &&
       facts.reviewParticipant.participantIsAgent &&
@@ -625,7 +636,9 @@ export function decideQueuedRunStaleness(
   const participantOutcome = decideReviewParticipant({
     ...facts.reviewParticipant,
     runAgentId: facts.runAgentId,
-    bypass: facts.wakeCommentIdPresent,
+    // A verified named-addressee wake is authorized from stored interaction
+    // state, so the review-participant gate must not cancel it on its own.
+    bypass: facts.wakeCommentIdPresent || facts.isVerifiedAddresseeInteractionWake,
   });
   if (participantOutcome === "participant_changed") {
     return {
