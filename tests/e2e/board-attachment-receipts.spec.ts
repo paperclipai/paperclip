@@ -14,7 +14,7 @@ type Attachment = {
   issueCommentId: string | null;
   contentPath: string;
 };
-type Comment = { id: string; body: string };
+type Comment = { id: string; body: string; clientRequestId?: string | null };
 
 async function body<T>(
   response: Awaited<ReturnType<APIRequestContext["get"]>>,
@@ -212,7 +212,7 @@ for (const classic of [false, true]) {
     });
   });
 
-  test(`lost accepted response does not leave an apparently retryable bound receipt (classic=${classic})`, async ({
+  test(`lost accepted response settles from its exact receipt without replay (classic=${classic})`, async ({
     page,
     request,
   }, testInfo) => {
@@ -220,9 +220,13 @@ for (const classic of [false, true]) {
     await fixture.editor.fill("Accepted once: inspect this exact file.");
     const receipt = await upload(page, fixture, files[0]!);
     let accepted = false;
+    let attempts = 0;
+    let acceptedRequestId: string | undefined;
     await page.route("**/api/issues/*/comments", async (route) => {
-      if (route.request().method() !== "POST" || accepted)
-        return route.continue();
+      if (route.request().method() !== "POST") return route.continue();
+      attempts++;
+      if (accepted) return route.continue();
+      acceptedRequestId = route.request().postDataJSON().clientRequestId;
       const response = await route.fetch();
       expect(response.status()).toBe(201);
       accepted = true;
@@ -230,44 +234,27 @@ for (const classic of [false, true]) {
     });
     await fixture.send.click();
     await expect.poll(() => accepted).toBe(true);
-    await expect(fixture.editor).toContainText("Accepted once:");
     expect(await fixture.comments()).toHaveLength(1);
+    expect(acceptedRequestId).toEqual(expect.any(String));
+    expect((await fixture.comments())[0]!.clientRequestId).toBe(acceptedRequestId);
     expect(
       (await fixture.attachments()).find((row) => row.id === receipt.id)
         ?.issueCommentId,
     ).toBeTruthy();
     await page.reload();
-    await expect(fixture.editor).toContainText("Accepted once:");
-    await expect(fixture.composer.getByRole("alert")).toContainText(
-      "couldn’t confirm whether this comment was saved",
-    );
+    // The durable request receipt proves delivery even though the POST reply
+    // was lost. No manual Review/Discard bookkeeping or blind replay remains.
+    await expect(fixture.editor).toBeEmpty();
+    await expect(fixture.composer.getByRole("alert")).toHaveCount(0);
+    await expect(fixture.composer.getByText("board-fresh.txt", { exact: true })).toHaveCount(0);
     await expect(fixture.send).toBeDisabled();
-    // Neither click nor the editor keyboard shortcut may blindly replay it.
     await fixture.editor.press("Control+Enter");
+    expect(attempts).toBe(1);
     expect(await fixture.comments()).toHaveLength(1);
-    const refresh = page.waitForResponse(
-      (res) =>
-        res.request().method() === "GET" &&
-        new URL(res.url()).pathname.endsWith("/comments"),
-    );
-    await fixture.composer
-      .getByRole("button", { name: "Review conversation", exact: true })
-      .click();
-    expect((await refresh).ok()).toBe(true);
-    await expect(
-      fixture.composer.getByText(
-        "Discarding this draft does not remove any saved comment or uploaded file.",
-      ),
-    ).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath("accepted-response-lost.png"),
       fullPage: true,
     });
-    await fixture.composer
-      .getByRole("button", { name: "Discard draft and start new", exact: true })
-      .click();
-    await expect(fixture.editor).toBeEmpty();
-    expect(await fixture.comments()).toHaveLength(1);
     expect(
       (await fixture.attachments()).find((row) => row.id === receipt.id)
         ?.issueCommentId,
@@ -275,7 +262,7 @@ for (const classic of [false, true]) {
     await page.reload();
     await expect(fixture.composer.getByRole("alert")).toHaveCount(0);
     await fixture.editor.fill(
-      "A deliberately new comment after reviewing the saved original.",
+      "A deliberately new comment after the original receipt settled.",
     );
     await fixture.send.click();
     await expect.poll(async () => (await fixture.comments()).length).toBe(2);
@@ -314,7 +301,7 @@ for (const classic of [false, true]) {
     ).toBeTruthy();
   });
 
-  test(`reload during a pending text-only save preserves uncertainty without replay (classic=${classic})`, async ({
+  test(`reload during a pending save settles its receipt and preserves a newer draft (classic=${classic})`, async ({
     page,
     request,
   }) => {
@@ -326,9 +313,11 @@ for (const classic of [false, true]) {
     });
     let accepted = false;
     let attempts = 0;
+    let acceptedRequestId: string | undefined;
     await page.route("**/api/issues/*/comments", async (route) => {
       if (route.request().method() !== "POST") return route.continue();
       attempts++;
+      acceptedRequestId ??= route.request().postDataJSON().clientRequestId;
       const response = await route.fetch();
       expect(response.status()).toBe(201);
       accepted = true;
@@ -341,17 +330,25 @@ for (const classic of [false, true]) {
       await fixture.send.click();
       await expect.poll(() => accepted).toBe(true);
       expect(await fixture.comments()).toHaveLength(1);
+      await fixture.editor.fill("A newer draft written while delivery was pending.");
       await page.reload();
       release();
-      await expect(fixture.editor).toContainText(
-        "One text-only save interrupted by reload.",
+      await expect(fixture.editor).toHaveText(
+        "A newer draft written while delivery was pending.",
       );
-      await expect(fixture.composer.getByRole("alert")).toContainText(
-        "couldn’t confirm whether this comment was saved",
-      );
-      await expect(fixture.send).toBeDisabled();
+      await expect(fixture.composer.getByRole("alert")).toHaveCount(0);
+      await expect(fixture.send).toBeEnabled();
       expect(attempts).toBe(1);
       expect(await fixture.comments()).toHaveLength(1);
+      expect(acceptedRequestId).toEqual(expect.any(String));
+      expect((await fixture.comments())[0]!.clientRequestId).toBe(acceptedRequestId);
+      await fixture.send.click();
+      await expect.poll(async () => (await fixture.comments()).length).toBe(2);
+      expect(attempts).toBe(2);
+      expect((await fixture.comments()).map((comment) => comment.body).sort()).toEqual([
+        "A newer draft written while delivery was pending.",
+        "One text-only save interrupted by reload.",
+      ]);
     } finally {
       release();
     }
