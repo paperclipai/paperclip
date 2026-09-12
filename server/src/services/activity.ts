@@ -86,6 +86,7 @@ export function activityService(db: Db) {
     case
       when ${heartbeatRuns.resultJson} is null then null
       else jsonb_strip_nulls(jsonb_build_object(
+        'conversationReset', ${heartbeatRuns.resultJson} -> 'conversationReset',
         'billingType', coalesce(${heartbeatRuns.resultJson} -> 'billingType', ${heartbeatRuns.resultJson} -> 'billing_type'),
         'billing_type', coalesce(${heartbeatRuns.resultJson} -> 'billing_type', ${heartbeatRuns.resultJson} -> 'billingType'),
         'costUsd', coalesce(
@@ -370,9 +371,10 @@ export function activityService(db: Db) {
         .select()
         .from(activityLog)
         .where(
-          and(
-            eq(activityLog.entityType, "issue"),
-            eq(activityLog.entityId, issueId),
+          or(
+            and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId)),
+            and(eq(activityLog.action, "project.created"), sql`${activityLog.details}->>'sourceIssueId' = ${issueId}`,
+              sql`${activityLog.companyId} = (select company_id from issues where id = ${issueId})`),
           ),
         )
         .orderBy(desc(activityLog.createdAt)),

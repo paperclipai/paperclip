@@ -1,18 +1,25 @@
 /**
  * Per-task composer draft persistence, shared by the chat composers.
  *
- * Draft text is kept in localStorage under the caller-provided key. All
+ * Ordinary task drafts use localStorage; agent chat drafts use tab-scoped
+ * sessionStorage under the caller-provided key. All
  * access is guarded so disabled or full storage never throws into React.
  * Empty drafts remove the text key. Uploaded receipt metadata has a separate,
  * versioned task-keyed record; legacy text drafts remain plain strings.
  */
 
-/** Debounce before a keystroke lands in localStorage. */
+/** Debounce before a keystroke lands in browser storage. */
 export const DRAFT_DEBOUNCE_MS = 800;
+
+// Chat drafts and uncertain submissions belong to this browser tab. Sharing a
+// submission fence across tabs prevents intentional concurrent conversation turns.
+function draftStorage(draftKey: string): Storage {
+  return draftKey.startsWith("paperclip:agent-chat-draft:") ? sessionStorage : localStorage;
+}
 
 export function loadDraft(draftKey: string): string {
   try {
-    return localStorage.getItem(draftKey) ?? "";
+    return draftStorage(draftKey).getItem(draftKey) ?? "";
   } catch {
     return "";
   }
@@ -27,23 +34,23 @@ export function saveDraft(draftKey: string, value: string, attemptId?: string) {
   try {
     if (!mayWriteDraft(draftKey, attemptId)) return;
     if (value.trim()) {
-      localStorage.setItem(draftKey, value);
+      draftStorage(draftKey).setItem(draftKey, value);
     } else {
-      localStorage.removeItem(draftKey);
+      draftStorage(draftKey).removeItem(draftKey);
     }
   } catch {
-    // Ignore localStorage failures.
+    // Ignore browser storage failures.
   }
 }
 
 export function clearDraft(draftKey: string, attemptId?: string) {
   try {
     if (!mayWriteDraft(draftKey, attemptId)) return;
-    localStorage.removeItem(draftKey);
-    localStorage.removeItem(`${draftKey}:attachments:v1`);
-    localStorage.removeItem(`${draftKey}:submission:v1`);
+    draftStorage(draftKey).removeItem(draftKey);
+    draftStorage(draftKey).removeItem(`${draftKey}:attachments:v1`);
+    draftStorage(draftKey).removeItem(`${draftKey}:submission:v1`);
   } catch {
-    // Ignore localStorage failures.
+    // Ignore browser storage failures.
   }
 }
 
@@ -58,7 +65,7 @@ export function loadDraftSubmission(
   draftKey: string,
 ): ComposerDraftSubmission | null {
   try {
-    const raw = localStorage.getItem(`${draftKey}:submission:v1`);
+    const raw = draftStorage(draftKey).getItem(`${draftKey}:submission:v1`);
     if (!raw || raw.length > 2_048) return null;
     const record = JSON.parse(raw);
     return record?.version === 1 &&
@@ -82,7 +89,7 @@ export function saveDraftSubmission(
     // An old completion/review must not replace a different retained intent.
     // This is a local guard, not cross-tab atomicity or server idempotency.
     if (!mayWriteDraft(draftKey, submission.attemptId)) return;
-    localStorage.setItem(
+    draftStorage(draftKey).setItem(
       `${draftKey}:submission:v1`,
       JSON.stringify({ version: 1, draftKey, ...submission }),
     );
@@ -94,7 +101,7 @@ export function saveDraftSubmission(
 export function clearDraftSubmission(draftKey: string, attemptId: string) {
   try {
     if (loadDraftSubmission(draftKey)?.attemptId === attemptId)
-      localStorage.removeItem(`${draftKey}:submission:v1`);
+      draftStorage(draftKey).removeItem(`${draftKey}:submission:v1`);
   } catch {
     /* Disabled browser storage is supported in memory. */
   }
@@ -158,7 +165,7 @@ export function loadDraftAttachments(
   draftKey: string,
 ): ComposerDraftAttachment[] {
   try {
-    const raw = localStorage.getItem(`${draftKey}:attachments:v1`);
+    const raw = draftStorage(draftKey).getItem(`${draftKey}:attachments:v1`);
     if (!raw || raw.length > 32_768) return [];
     const value: unknown = JSON.parse(raw);
     if (!value || typeof value !== "object" || Array.isArray(value)) return [];
@@ -178,18 +185,18 @@ export function saveDraftAttachments(draftKey: string, attachments: unknown) {
     if (!mayWriteDraft(draftKey)) return;
     const selected = draftAttachments(attachments);
     if (selected.length)
-      localStorage.setItem(
+      draftStorage(draftKey).setItem(
         `${draftKey}:attachments:v1`,
         JSON.stringify({ version: 1, draftKey, attachments: selected }),
       );
-    else localStorage.removeItem(`${draftKey}:attachments:v1`);
+    else draftStorage(draftKey).removeItem(`${draftKey}:attachments:v1`);
   } catch {
     /* Disabled/full browser storage must not break the composer. */
   }
 }
 export function loadStructuredDraft<T>(draftKey: string, fallback: T): T {
   try {
-    const value = localStorage.getItem(draftKey);
+    const value = draftStorage(draftKey).getItem(draftKey);
     return value ? (JSON.parse(value) as T) : fallback;
   } catch {
     return fallback;
@@ -198,8 +205,8 @@ export function loadStructuredDraft<T>(draftKey: string, fallback: T): T {
 
 export function saveStructuredDraft(draftKey: string, value: unknown) {
   try {
-    localStorage.setItem(draftKey, JSON.stringify(value));
+    draftStorage(draftKey).setItem(draftKey, JSON.stringify(value));
   } catch {
-    // Ignore localStorage failures.
+    // Ignore browser storage failures.
   }
 }

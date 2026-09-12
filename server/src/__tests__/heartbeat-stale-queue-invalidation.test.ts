@@ -12,6 +12,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
@@ -153,6 +154,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-stale-queue-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db, {
+      runtimeEnv: { ...process.env, PAPERCLIP_IN_WORKTREE: "false" },
       beforeResolvedInteractionContinuationDispatchCheck: async (input) => {
         await beforeContinuationDispatchCheck?.(input);
       },
@@ -1590,15 +1592,53 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
-  it.each(["accepted", "rejected"])("resumes a %s connection outcome after native waiting moves the task to review", async (interactionStatus) => {
+  it.each([
+    ["accepted", "connection_intent"],
+    ["rejected", "connection_intent"],
+    ["rejected", "request_confirmation"],
+  ])("resumes a %s %s outcome and promotes the claimed review task", async (interactionStatus, interactionKind) => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const wakeCommentId = randomUUID();
+    let claimedIssue: { status: string; executionRunId: string | null } | null = null;
+    afterContinuationDispatchCheck = async ({ runId: checkedRunId, issueId: checkedIssueId }) => {
+      if (checkedIssueId !== issueId) return;
+      claimedIssue = await db
+        .select({ status: issues.status, executionRunId: issues.executionRunId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(claimedIssue).toEqual({ status: "in_progress", executionRunId: checkedRunId });
+    };
     await db.insert(issues).values({ id: issueId, companyId, title: "Waiting for connection", status: "in_review", priority: "medium", assigneeAgentId: agentId });
-    const { runId } = await seedQueuedRun({ companyId, agentId, issueId, wakeReason: "issue_commented", invocationSource: "automation",
-      contextExtras: { interactionId: randomUUID(), interactionKind: "connection_intent", interactionStatus,
-        interactionResolvedAt: new Date().toISOString(), mutation: "interaction", source: "connection_intent.resolved", forceFreshSession: true } });
+    await db.insert(issueComments).values({
+      id: wakeCommentId,
+      companyId,
+      issueId,
+      authorUserId: "local-board",
+      body: "Continue after the interaction result.",
+    });
+    if (interactionKind === "request_confirmation") {
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "rejected",
+        continuationPolicy: "wake_assignee",
+        payload: {},
+        result: { version: 1, outcome: "rejected", reason: "Needs more work" },
+        createdByAgentId: agentId,
+        resolvedAt: new Date(),
+      });
+    }
+    const { runId } = await seedQueuedRun({ companyId, agentId, issueId, wakeReason: "issue_commented",
+      contextExtras: { interactionId, interactionKind, interactionStatus, wakeCommentId,
+        originCommentIds: [wakeCommentId],
+        interactionResolvedAt: new Date().toISOString(), mutation: "interaction", source: `${interactionKind}.resolved`, forceFreshSession: true } });
     await heartbeat.resumeQueuedRuns();
-    await waitForCondition(async () => (await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status === "succeeded");
-    expect(countExecuteCallsForRun(runId)).toBe(1);
+    await waitForCondition(async () => claimedIssue !== null);
+    expect(claimedIssue).toEqual({ status: "in_progress", executionRunId: runId });
   });
 });

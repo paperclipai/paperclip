@@ -235,6 +235,8 @@ import {
   createComposioSessionManager,
 } from "./composio-session-manager.js";
 import {
+  appWithPaperclipCloudConnectorAvailability,
+  paperclipCloudConnectorCapabilitiesFromEnv,
   createPaperclipCloudConnector,
   isPaperclipCloudConnectorStrategy,
   paperclipCloudConnectorConfigFromEnv,
@@ -999,9 +1001,15 @@ function connectionMethodFor(app: AppDefinition, methodKey?: string | null) {
     app.slug === "gmail" && methodKey === "paperclip-id-oauth"
       ? "paperclip-draft"
       : methodKey;
-  const toolMethods = getAvailableConnectionMethods(app).filter(
+  // Stored managed connections must remain recognizable for callback, refresh,
+  // and revoke even though static definitions omit instance availability. New
+  // setup passes a definition filtered by signed profiles before reaching here;
+  // the broker independently enforces availability on authorization and refresh.
+  const availableMethods = new Set(getAvailableConnectionMethods(app));
+  const toolMethods = app.methods.filter(
     (candidate) =>
-      candidate.purpose !== "channel" && candidate.transport !== "chat_sdk",
+      candidate.purpose !== "channel" && candidate.transport !== "chat_sdk"
+      && (availableMethods.has(candidate) || isPaperclipCloudConnectorStrategy(candidate.oauthStrategy)),
   );
   const method = normalizedMethodKey
     ? (toolMethods.find((candidate) => candidate.key === normalizedMethodKey) ??
@@ -2982,6 +2990,15 @@ export function toolAccessService(
       : null;
     return cachedCloudConnector;
   };
+  async function appForConnectionSetup(app: AppDefinition): Promise<AppDefinition> {
+    if (!app.methods.some((method) => isPaperclipCloudConnectorStrategy(method.oauthStrategy))) {
+      return app;
+    }
+    const profiles = connectorWasProvided
+      ? (await currentCloudConnector()?.getCapabilities() ?? [])
+      : await paperclipCloudConnectorCapabilitiesFromEnv();
+    return appWithPaperclipCloudConnectorAvailability(app, profiles);
+  }
   let nextGitHubContinuitySweepAt = 0;
   const vercelConnect =
     options.vercelConnectClient === undefined
@@ -12114,11 +12131,13 @@ export function toolAccessService(
     input: ConnectToolApp,
     actor?: ActorInfo,
   ): Promise<ConnectToolAppResult> {
-    const galleryEntry = input.galleryKey
+    const definition = input.galleryKey
       ? getConnectableAppDefinition(input.galleryKey)
       : null;
-    if (input.galleryKey && !galleryEntry)
+    if (input.galleryKey && !definition)
       throw notFound("Tool app gallery entry not found");
+
+    const galleryEntry = definition ? await appForConnectionSetup(definition) : null;
 
     let existingApplication: typeof toolApplications.$inferSelect | null = null;
     let requestedResumeConnection: typeof toolConnections.$inferSelect | null =
