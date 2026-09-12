@@ -41,6 +41,7 @@ import {
 async function authenticatedRunner(
   core: DurablePrpControlPlane,
   identity: DurableRecoveryIdentity,
+  runnerBinary: string,
 ) {
   const framed = (domain: string, parts: Buffer[]) => {
     const values = [Buffer.from(domain), Buffer.from([0])];
@@ -84,7 +85,7 @@ async function authenticatedRunner(
         protocolMax: 1,
         ...identity,
         runnerVersion: "0.3.0",
-        runnerDigest: `sha256:${createHash("sha256").update(readFileSync(process.execPath)).digest("hex")}`,
+        runnerDigest: `sha256:${createHash("sha256").update(readFileSync(runnerBinary)).digest("hex")}`,
       },
     }),
   );
@@ -427,6 +428,10 @@ describe("Codex protocol integrity propagation", () => {
       const directory = mkdtempSync(
         join(tmpdir(), "paperclip-composed-integrity-"),
       );
+      // Only the process launcher is synthetic; hash a small fixture instead
+      // of cold-reading the host Node executable during the protocol deadline.
+      const runnerBinary = join(directory, "synthetic-runner");
+      writeFileSync(runnerBinary, "synthetic runner artifact\n", { mode: 0o600 });
       const identity: DurableRecoveryIdentity = {
         runnerInstanceId: `composed-runner-${scenario}`,
         environmentLeaseId: `composed-lease-${scenario}`,
@@ -526,7 +531,7 @@ describe("Codex protocol integrity propagation", () => {
       const bundle = createCapabilityRunnerdCodexTransport({
         stateDirectory: directory,
         prpIdentity: identity,
-        runnerBinary: process.execPath,
+        runnerBinary,
         codexCommand: process.execPath,
         codexArgs: [],
         sourceCodexHome: null,
@@ -575,7 +580,7 @@ describe("Codex protocol integrity propagation", () => {
       try {
         await vi.waitFor(() => expect(launch).toHaveBeenCalledTimes(1));
         const core = authority!;
-        client = await authenticatedRunner(core, identity);
+        client = await authenticatedRunner(core, identity, runnerBinary);
         const commandResult = async (
           type: string,
           result: Record<string, unknown> = {},
