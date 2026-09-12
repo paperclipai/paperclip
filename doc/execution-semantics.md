@@ -154,6 +154,11 @@ New comments received during an execution hold retain their individual deferred 
 
 The conversation groups repeated empty pre-start reconciliation cancellations into a neutral waiting notice. Started runs, actual startup failures, and run history remain inspectable. No historical run records are deleted.
 
+Workspace contention (`workspace_busy`) displays **Waiting for workspace** and
+continues automatically when the workspace is available. Internal scheduling
+attempts remain in the run log without conversation cancellation markers,
+cancellation toasts, or manual Retry controls. Users can keep sending instructions.
+
 The legacy remote ACP process-session relay runs on the control-plane host. Its
 launch command uses the host's absolute Node executable even when the adapter's
 launch environment is sanitized for a remote sandbox; the sandbox PATH remains
@@ -827,9 +832,36 @@ apply. Stream closure without a turn terminal is not proof of success. Event
 replay uses the existing source receipts and never repeats provider work merely
 to recover recorded output.
 
+Routine task completion and human-input requests must work under Conservative
+runner permissions. The isolated Claude runtime grants only the narrow task
+tools on the runner-owned bridge; it does not change general tool permissions.
+Questions must be created as durable interactions before the agent claims to be
+waiting. A direct Board comment reopening completed work has the same passive
+response-wait semantics as a comment on an open task, subject to the same source,
+identity, and governance checks. An automatic continuation is not a user reply.
+
+Provider-turn identity separates recovery responses from earlier assistant
+output. A recovery turn cannot overwrite a delivered answer. File attachments
+and work products refresh in the visible conversation when delivered. Composer
+delivery uncertainty is reconciled by the exact durable client request ID;
+another comment cannot settle it, and newer draft text must be preserved.
+
+The composer **Stop** action cancels the current response and verifies termination;
+it does not create a pause hold. An acknowledged intentional cancellation remains
+neutral even if teardown releases the run lease or returns no semantic result.
+**Pause work** separately controls future execution. A crash preventing progress
+is **Blocked**; **In Review** requires a concrete human decision.
+
 ### Provider continuity and bounded finalization
 
 A permanently unusable native runner session may be replaced only with evidence that its predecessor is stopped and fenced, completed results and workspace state are preserved, required task history is available, and pending effects have been reconciled. A provider-native shell command or external write without a reliable outcome receipt is unknown. Unknown effects, integrity failures, and unverified process ownership never authorize speculative replay. Once automatic recovery is ruled out, Paperclip selects a conservative default: preserve recorded work, stop the affected task, and retain a durable no-replay hold. Unknown action outcomes remain unknown. No reconciliation form or user diagnosis is required.
+
+Local Codex crash replacement can use a complete interrupted-turn inventory,
+authenticated process-stop evidence, and unchanged retained-state fingerprints.
+Only text and an exactly receipted task-completion call qualify for this path;
+unknown operations or partial transcripts do not. Replacement uses a fresh
+session and retires only the exact predecessor's obsolete recovery hold while
+recording the proof and successor lineage. Retained provider files are not edited.
 
 Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. Automatic attempts retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
 

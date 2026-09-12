@@ -229,6 +229,10 @@ vi.mock("../app.js", () => ({
   createApp: createAppMock,
 }));
 
+vi.mock("../services/native-runtime/native-session-executor.js", () => ({
+  verifyStoppedNativeSessionForReplacement: vi.fn(async () => null),
+}));
+
 vi.mock("../config.js", () => ({
   loadConfig: loadConfigMock,
 }));
