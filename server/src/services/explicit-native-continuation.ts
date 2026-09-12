@@ -44,11 +44,10 @@ export async function undeliveredLegacyUserCommentIds(
     eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId),
     sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
     // A queued turn cancelled before dispatch has not consumed input, whatever
-    // cancelled it (pause, stale assignment, or rejected admission). Preserve
-    // conservative treatment when process or native execution evidence exists.
-    sql`not (${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.startedAt} is null
-      and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
-      and ${heartbeatRuns.nativeIssueId} is null)`,
+    // cancelled it (pause, stale assignment, or rejected admission). Reserved
+    // native identity/process metadata is not proof that its prompt was sent.
+    // Admission separately verifies process termination before a new turn.
+    sql`not (${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.startedAt} is null)`,
     or(...commentIds.map(id => or(
       sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${id}`,
       sql`${heartbeatRuns.contextSnapshot}->'wakeCommentIds' @> ${JSON.stringify([id])}::jsonb`,
