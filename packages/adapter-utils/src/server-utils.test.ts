@@ -581,6 +581,69 @@ describe("runChildProcess", () => {
     expect(result.stdout).toBe("done");
   });
 
+  it("captures multilingual UTF-8 stdout exactly", async () => {
+    const expected = "مرحبا / Привет / 체크리스트 / 你好 / 😀";
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "process.stdout.write(process.env.PAPERCLIP_UTF8_PAYLOAD);"],
+      {
+        cwd: process.cwd(),
+        env: { PAPERCLIP_UTF8_PAYLOAD: expected },
+        timeoutSec: 10,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(expected);
+    expect(result.stdout).not.toContain("?");
+    expect(result.stdout).not.toContain("\uFFFD");
+  });
+
+  it("reassembles a 3-byte UTF-8 glyph split across stdout writes", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      [
+        "-e",
+        "const bytes = Buffer.from([0xe4, 0xbd, 0xa0]); process.stdout.write(bytes.subarray(0, 1)); process.stdout.write(bytes.subarray(1));",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 10,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("你");
+    expect(result.stdout).not.toContain("\uFFFD");
+    expect(result.stdout).not.toContain("?");
+  });
+
+  it("leaves ASCII-only stdout unchanged", async () => {
+    const result = await runChildProcess(
+      randomUUID(),
+      process.execPath,
+      ["-e", "process.stdout.write('hello world'); process.stderr.write('err');"],
+      {
+        cwd: process.cwd(),
+        env: {},
+        timeoutSec: 10,
+        graceSec: 1,
+        onLog: async () => {},
+      },
+    );
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe("hello world");
+    expect(result.stderr).toBe("err");
+  });
+
   it("waits for onSpawn before sending stdin to the child", async () => {
     const spawnDelayMs = 150;
     const startedAt = Date.now();
