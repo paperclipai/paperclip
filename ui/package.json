@@ -68,7 +68,7 @@
     "react-i18next": "^17.0.12",
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.12.3",
-    "react-router-dom": "^7.18.2",
+    "react-router-dom": "^7.18.3",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.6.0",
     "yjs": "13.6.32"
