@@ -6,26 +6,26 @@ import { builtInAgentsApi, type BuiltInAgentState } from "../api/builtInAgents";
 import { environmentsApi } from "../api/environments";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { accessApi } from "../api/access";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useSidebar } from "../context/SidebarContext";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
 import { queryKeys } from "../lib/queryKeys";
 import { isPlatformManagedEnvironment } from "../lib/managed-sandbox-environment";
 import { AgentStatusBadge, AgentStatusCapsule } from "../components/StatusBadge";
-import { AgentActionButtons } from "../components/AgentActionButtons";
 import { MembershipAction } from "../components/MembershipAction";
 import { StarToggle } from "../components/StarToggle";
 import { EntityRow } from "../components/EntityRow";
 import { BuiltInLifecycleChip } from "../components/BuiltInAgentBadges";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { OrgChart } from "./OrgChart";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { PageTabBar } from "../components/PageTabBar";
 import { Tabs } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle, Bot, Plus, List, GitBranch } from "lucide-react";
+import { AlertTriangle, Bot, Plus, List, Network } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
 import {
   isStarred,
@@ -189,26 +189,25 @@ function filterOrgTree(nodes: OrgNode[], tab: FilterTab, builtInAgentIds: Set<st
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-export function Agents() {
+export type AgentsView = "list" | "org";
+
+export function Agents({ initialView = "list" }: { initialView?: AgentsView } = {}) {
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const location = useLocation();
   const { isMobile } = useSidebar();
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const pathSegment = location.pathname.split("/").pop() ?? "all";
   const requestedTab: FilterTab = isFilterTab(pathSegment) ? pathSegment : "all";
-  const [view, setView] = useState<"list" | "org">("org");
-  const forceListView = isMobile;
-  const effectiveView: "list" | "org" = forceListView ? "list" : view;
-  const { data: boardAccess } = useQuery({
-    queryKey: queryKeys.access.currentBoardAccess,
-    queryFn: () => accessApi.getCurrentBoardAccess(),
-    retry: false,
-  });
-  const canUseProviderTrace =
-    boardAccess?.source === "local_implicit" ||
-    boardAccess?.isInstanceAdmin === true;
+  const [view, setView] = useState<AgentsView>(() => streamlinedUiEnabled ? initialView : "org");
+  const forceListView = !streamlinedUiEnabled && isMobile;
+  const effectiveView: AgentsView = forceListView ? "list" : view;
+
+  useEffect(() => {
+    setView(streamlinedUiEnabled ? initialView : "org");
+  }, [initialView, streamlinedUiEnabled]);
 
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
@@ -298,12 +297,6 @@ export function Agents() {
     return map;
   }, [runs]);
 
-  const agentMap = useMemo(() => {
-    const map = new Map<string, Agent>();
-    for (const a of agents ?? []) map.set(a.id, a);
-    return map;
-  }, [agents]);
-
   const environmentsById = useMemo(() => {
     const map = new Map<string, Environment>();
     for (const environment of environments ?? []) map.set(environment.id, environment);
@@ -365,10 +358,8 @@ export function Agents() {
     const agentStarred = isStarred(membershipsQuery.data, "agent", agent.id);
     const builtInState = builtInByAgentId.get(agent.id);
     const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
-    // Lifecycle chip + inline `Set up`. Rendered inline in
-    // `meta` at xl (where there's room and the meta columns align) and on a
-    // dedicated full-width line beneath the name below xl, so the chips never
-    // starve the name — the row's primary identifier — at narrow widths.
+    // Keep lifecycle controls with the metadata only when the content area
+    // has enough room; the sidebar can leave less space than the viewport suggests.
     const builtInCluster = builtInState && showBuiltInLifecycle ? (
       <>
         <BuiltInLifecycleChip status={builtInState.status} />
@@ -394,18 +385,13 @@ export function Agents() {
       <EntityRow
         key={agent.id}
         title={agent.name}
-        // Fixed (truncating) title width at xl so the `meta` group starts at a
-        // constant x on every row — that's what makes the model + timestamp
-        // columns line up vertically. Below xl the meta columns are hidden, so
-        // the title flexes instead: a fixed width there let the shrink-0
-        // trailing actions squeeze the name to zero width on mobile.
-        titleClassName="flex-1 xl:flex-none xl:w-56"
-        titleTextClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
-        subtitleClassName="whitespace-normal break-words xl:truncate xl:whitespace-nowrap"
+        titleClassName="flex-1 @5xl:flex-none @5xl:w-56"
+        titleTextClassName="truncate"
+        subtitleClassName="truncate"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
         className={cn(
-          "group",
+          "group py-3",
           agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
           resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "sm:text-foreground/55" : "",
         )}
@@ -414,21 +400,19 @@ export function Agents() {
         ) : (
           <AgentStatusCapsule status={agent.status} />
         )}
-        secondaryRow={
-          builtInCluster ? (
-            <div className="xl:hidden flex flex-wrap items-center gap-1.5">
-              {builtInCluster}
-            </div>
-          ) : undefined
-        }
+        secondaryRow={builtInCluster && (
+          <div className="@5xl:hidden flex flex-wrap items-center gap-1.5">
+            {builtInCluster}
+          </div>
+        )}
         meta={
           <div className="flex items-center gap-3">
             {builtInCluster && (
-              <div className="hidden xl:flex items-center gap-1.5">
+              <div className="hidden @5xl:flex items-center gap-1.5">
                 {builtInCluster}
               </div>
             )}
-            <div className="hidden xl:flex items-center gap-3">
+            <div className="hidden @5xl:flex items-center gap-3">
               <AgentMetaColumns
                 agent={agent}
                 environment={resolveRenderedEnvironment(agent.id)}
@@ -437,7 +421,7 @@ export function Agents() {
             </div>
           </div>
         }
-        metaSpacerClassName="hidden xl:block"
+        metaSpacerClassName="hidden @5xl:block"
         trailing={
           <div className="flex items-center gap-3">
             <div className="hidden sm:flex items-center gap-3">
@@ -451,23 +435,6 @@ export function Agents() {
               <span className="w-20 flex justify-end">
                 <AgentStatusBadge status={agent.status} />
               </span>
-              {/* Row actions mirror the agent detail page; stop the click
-                  from bubbling to the row link so buttons don't navigate.
-                  Hidden on mobile so the agent name keeps room to render. */}
-              <div
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
-              >
-                <AgentActionButtons
-                  agent={agent}
-                  companyId={selectedCompanyId}
-                  runLabel="Run Heartbeat"
-                  showStatus={false}
-                  canRunWithProviderTrace={canUseProviderTrace}
-                />
-              </div>
               <StarToggle
                 size="row"
                 starred={agentStarred}
@@ -506,8 +473,13 @@ export function Agents() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className={cn(
+      "@container",
+      effectiveView === "org"
+        ? "flex h-full min-h-0 flex-col gap-4"
+        : "space-y-4",
+    )}>
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <Tabs value={tab} onValueChange={(v) => navigate(`/agents/${v}`)}>
           <PageTabBar
             items={visibleTabItems}
@@ -516,35 +488,32 @@ export function Agents() {
           />
         </Tabs>
         <div className="flex items-center gap-2">
-          {/* View toggle */}
-          {!forceListView && (
-            <div className="flex items-center border border-border" role="group" aria-label="View mode">
-              <button
-                className={cn(
-                  "p-1.5 transition-colors",
-                  effectiveView === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
-                )}
+          {!forceListView ? <div className="flex items-center overflow-hidden rounded-md border border-border" role="group" aria-label="Agent view">
+              <Button
+                type="button"
+                size="icon-sm"
+                variant={effectiveView === "list" ? "secondary" : "ghost"}
+                className="rounded-none"
                 onClick={() => setView("list")}
                 title="List view"
                 aria-label="List view"
                 aria-pressed={effectiveView === "list"}
               >
                 <List className="h-3.5 w-3.5" />
-              </button>
-              <button
-                className={cn(
-                  "p-1.5 transition-colors",
-                  effectiveView === "org" ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/50"
-                )}
+              </Button>
+              <Button
+                type="button"
+                size="icon-sm"
+                variant={effectiveView === "org" ? "secondary" : "ghost"}
+                className="rounded-none border-l border-border"
                 onClick={() => setView("org")}
                 title="Org chart view"
                 aria-label="Org chart view"
                 aria-pressed={effectiveView === "org"}
               >
-                <GitBranch className="h-3.5 w-3.5" />
-              </button>
-            </div>
-          )}
+                <Network className="h-3.5 w-3.5" />
+              </Button>
+          </div> : null}
           <Button size="sm" variant="outline" onClick={openNewAgent}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
             New Agent
@@ -582,25 +551,7 @@ export function Agents() {
 
       {/* Org chart view */}
       {effectiveView === "org" && filteredOrg.length > 0 && (
-        <div className="py-1">
-          {filteredOrg.map((node) => (
-            <OrgTreeNode
-              key={node.id}
-              node={node}
-              depth={0}
-              agentMap={agentMap}
-              liveRunByAgent={liveRunByAgent}
-              environmentByAgentId={environmentByAgentId}
-              environmentDataLoading={environmentDataLoading}
-              showEnvironment={showEnvironmentColumn}
-              tab={tab}
-              memberships={membershipsQuery.data}
-              membershipMutation={membershipMutation}
-              builtInByAgentId={builtInByAgentId}
-              onConfigureBuiltIn={setConfigureState}
-            />
-          ))}
-        </div>
+        <OrgChart embedded orgTree={filteredOrg} agents={agents ?? []} />
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (

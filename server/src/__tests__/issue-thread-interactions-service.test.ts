@@ -160,7 +160,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     });
   }
 
-  it("creates idempotent, human-addressed connection intents and supersedes older runs", async () => {
+  it("reuses human-addressed connection intents across runs and ordinary comments", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Connection intent");
     const agentId = randomUUID();
     const firstRunId = randomUUID();
@@ -176,6 +176,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       runtimeConfig: {},
       permissions: {},
     });
+    await db.update(issues).set({ assigneeAgentId: agentId, status: "in_progress" }).where(eq(issues.id, issueId));
     await db.insert(heartbeatRuns).values([
       {
         id: firstRunId,
@@ -241,15 +242,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         idempotencyKey: `connection-intent:${secondRunId}:notion`,
       },
     );
-    const superseded = await interactionsSvc.getById(first.id);
-    expect(superseded).toMatchObject({
-      status: "expired",
-      result: {
-        version: 1,
-        outcome: "superseded",
-        supersededByInteractionId: newer.id,
-      },
-    });
+    expect(newer.id).toBe(first.id);
+    expect(await interactionsSvc.getById(first.id)).toMatchObject({ status: "pending" });
 
     const [expiredByComment] = await interactionsSvc.expireRequestConfirmationsSupersededByComment(
       { id: issueId, companyId },
@@ -261,15 +255,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       },
       { userId: "user-board" },
     );
-    expect(expiredByComment).toMatchObject({
-      id: newer.id,
-      status: "expired",
-      result: {
-        version: 1,
-        outcome: "expired",
-        reason: "Superseded by a newer user comment",
-      },
-    });
+    expect(expiredByComment).toBeUndefined();
   });
 
   it("persists addressees without allowing them to bypass human-only governance", async () => {
@@ -1904,6 +1890,56 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, requiresReason.id, {}, {
       userId: "local-board",
     })).rejects.toThrow("A decline reason is required for this confirmation");
+  });
+
+  it("reopens an in-review issue before waking the assignee after rejection", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue(
+      "Continue after review rejection",
+    );
+    const created = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "request_confirmation",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          prompt: "Continue the next turn?",
+          rejectLabel: "Continue work",
+          rejectRequiresReason: true,
+          target: {
+            type: "custom",
+            key: "warm_turn_1",
+            revisionId: "warm-turn-1",
+          },
+        },
+      },
+      {
+        userId: "local-board",
+      },
+    );
+    await db
+      .update(issues)
+      .set({ status: "in_review" })
+      .where(eq(issues.id, issueId));
+
+    await interactionsSvc.rejectInteraction(
+      {
+        id: issueId,
+        companyId,
+        status: "in_review",
+      },
+      created.id,
+      {
+        reason: "Proceed with turn two.",
+      },
+      {
+        userId: "local-board",
+      },
+    );
+
+    await expect(issuesSvc.getById(issueId)).resolves.toMatchObject({
+      status: "todo",
+    });
   });
 
   it("records an authorized agent as the review-confirmation resolver", async () => {

@@ -4612,7 +4612,9 @@ describe("ensureRuntimeServicesForRun", () => {
         command: serviceCommand,
         cwd: ".",
         port: { type: "auto" as const },
-        readiness: { type: "http" as const, urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 3, intervalMs: 100 },
+        // This checks replacement, not startup latency. Allow the same startup
+        // budget as other real-process fixtures on busy CI hosts.
+        readiness: { type: "http" as const, urlTemplate: "http://127.0.0.1:{{port}}", timeoutSec: 10, intervalMs: 100 },
         expose: { type: "url" as const, urlTemplate: "http://127.0.0.1:{{port}}" },
         lifecycle: "shared" as const,
         stopPolicy: { type: "manual" as const },
@@ -4638,7 +4640,7 @@ describe("ensureRuntimeServicesForRun", () => {
       });
       await fs.rm(workspaceRoot, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it("reuses a shared Paperclip dev runtime after one transient unhealthy response", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-transient-health-"));
@@ -7737,7 +7739,13 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     const reservePort = async () => {
       for (let attempt = 0; attempt < 100; attempt += 1) {
         const probe = net.createServer();
-        await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+        // macOS can allocate an entire ephemeral range above 55535. Pick a
+        // bounded candidate so the test's HMR companion remains a valid port.
+        await new Promise<void>((resolve) => {
+          probe.once("error", () => resolve());
+          probe.listen(20_000 + Math.floor(Math.random() * 20_000), "127.0.0.1", resolve);
+        });
+        if (!probe.listening) continue;
         const address = probe.address();
         const port = typeof address === "object" && address ? address.port : null;
         await new Promise<void>((resolve, reject) => {
@@ -8078,7 +8086,13 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     const reservePort = async () => {
       for (let attempt = 0; attempt < 100; attempt += 1) {
         const probe = net.createServer();
-        await new Promise<void>((resolve) => probe.listen(0, "127.0.0.1", resolve));
+        // macOS can allocate an entire ephemeral range above 55535. Pick a
+        // bounded candidate so the test's HMR companion remains a valid port.
+        await new Promise<void>((resolve) => {
+          probe.once("error", () => resolve());
+          probe.listen(20_000 + Math.floor(Math.random() * 20_000), "127.0.0.1", resolve);
+        });
+        if (!probe.listening) continue;
         const address = probe.address();
         const candidate = typeof address === "object" && address ? address.port : null;
         await new Promise<void>((resolve, reject) => {

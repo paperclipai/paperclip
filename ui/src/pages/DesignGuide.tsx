@@ -1,3 +1,10 @@
+import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
+import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKeySelect";
+import { RepositoryEditor } from "@/components/RepositoryEditor";
+import { TaskChatRunnerActivityGroup } from "@/components/task-chat/TaskChatRunnerActivityGroup";
+import { TaskChatMarker } from "@/components/task-chat/TaskChatMarker";
+import { TaskChatComposer } from "@/components/task-chat/TaskChatComposer";
+import { TaskTreeControlDialog, TaskTreeControlMenuItems } from "@/components/TaskTreeControls";
 import { useState } from "react";
 import { ServicesList } from "./apps/app-detail/ServicesPanel";
 import { ComposioProvenanceChip } from "./apps/ComposioProvenanceChip";
@@ -26,6 +33,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Badge } from "@/components/ui/badge";
 import { InlineBanner } from "@/components/InlineBanner";
 import { BuiltInLifecycleChip } from "@/components/BuiltInAgentBadges";
@@ -123,6 +131,7 @@ import {
   AvatarGroupCount,
 } from "@/components/ui/avatar";
 import { AgentCapsule, AGENT_GRADIENT_COUNT } from "@/components/AgentCapsule";
+import { AgentRunCard } from "@/components/ActiveAgentsPanel";
 import { StatusBadge, IssueStatusBadge } from "@/components/StatusBadge";
 import { StatusIcon } from "@/components/StatusIcon";
 import { EnforcementBanner } from "@/components/EnforcementBanner";
@@ -149,7 +158,9 @@ import {
   pendingConnectionIntentInteraction,
   retryConnectionIntentInteraction,
 } from "@/fixtures/issueThreadInteractionFixtures";
-import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
+import type { CompanySecret, EnvBinding, Issue } from "@paperclipai/shared";
+import { CollectionToolbar } from "@/components/CollectionToolbar";
+import { IssueRow } from "@/components/IssueRow";
 import {
   EnvInputsList,
   ExternalSourcesList,
@@ -238,6 +249,15 @@ const DESIGN_GUIDE_DEGRADED_OUTPUTS: IssueWorkProduct[] = [
     metadata: { attachmentId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", contentType: "video/mp4" },
   } as IssueWorkProduct,
 ];
+
+const DESIGN_GUIDE_TASK = {
+  id: "design-guide-task",
+  identifier: "PAP-427",
+  title: "Reconcile the navigation model across operator surfaces",
+  status: "in_progress",
+  priority: "medium",
+  blockerAttention: false,
+} as unknown as Issue;
 
 /* ------------------------------------------------------------------ */
 /*  Section wrapper                                                    */
@@ -435,6 +455,26 @@ function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
 /*  Page                                                               */
 /* ------------------------------------------------------------------ */
 
+function TaskExecutionControlsExample() {
+  const [running, setRunning] = useState(true);
+  const [dialogMode, setDialogMode] = useState<"resume" | "cancel" | "restore" | null>(null);
+  const [wake, setWake] = useState(true);
+  return <div className="max-w-xl space-y-4">
+    <div className="w-52 rounded-md border border-border p-1">
+      <TaskTreeControlMenuItems scope="subtree" canPause={running} canResume={!running} canCancel canRestore={!running}
+        onPause={() => setRunning(false)} onResume={() => setDialogMode("resume")}
+        onCancel={() => setDialogMode("cancel")} onRestore={() => setDialogMode("restore")} />
+    </div>
+    <p className="text-sm text-muted-foreground">{running ? "Running: type to switch Stop to Send." : "Paused: resume from the menu."}</p>
+    {!running ? <TaskChatMarker item={{ id: "design-cancelled", kind: "marker", variant: "interrupted", tone: "neutral", label: "Run cancelled", detail: "The run was cancelled before returning an answer.", collapsible: true }} /> : null}
+    <TaskChatComposer pause={!running ? { scope: "subtree", onResume: () => setDialogMode("resume") } : null} onAdd={async () => {}} workMode="standard" stopScope="subtree" onStop={running ? async () => setRunning(false) : undefined} />
+    <TaskTreeControlDialog open={dialogMode !== null} onOpenChange={(open) => { if (!open) setDialogMode(null); }}
+      mode={dialogMode ?? "cancel"} scope="subtree" affectedCount={3} affectedAgentCount={2} loading={false} pending={false} valid
+      wakeAgents={wake} onWakeAgentsChange={setWake} onRetry={() => {}}
+      onApply={() => { setRunning(dialogMode !== "cancel" && wake); setDialogMode(null); }} />
+  </div>;
+}
+
 export function DesignGuide() {
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
@@ -494,7 +534,8 @@ export function DesignGuide() {
                 "StatusBadge", "StatusIcon", "PriorityIcon", "EntityRow", "EmptyState", "MetricCard",
                 "FilterBar", "InlineEditor", "PageSkeleton", "Identity", "CommentThread", "MarkdownEditor",
                 "PropertiesPanel", "Sidebar", "CommandPalette", "EnvironmentVariablesEditor",
-                "InlineBanner", "BuiltInAgentGate", "BuiltInLifecycleChip",
+                "InlineBanner", "BuiltInAgentGate", "BuiltInLifecycleChip", "CollectionToolbar",
+                "IssueRow", "ContextualSidebarFrame",
               ].map((name) => (
                 <Badge key={name} variant="ghost" className="font-mono text-(length:--text-nano)">
                   {name}
@@ -503,6 +544,44 @@ export function DesignGuide() {
             </div>
           </SubSection>
         </div>
+      </Section>
+
+      <Section title="Task Execution Controls">
+        <TaskExecutionControlsExample />
+      </Section>
+
+      <Section title="Task Collection">
+        <p className="max-w-prose text-sm text-muted-foreground">
+          CollectionToolbar owns shared geometry while each page owns its state and behavior.
+          The canonical task row is opt-in during migration: status leads, unread work uses
+          title emphasis, metadata remains stable, and the task identifier trails.
+        </p>
+        <CollectionToolbar
+          context={<span className="text-sm font-medium">Recent tasks</span>}
+          search={<Input aria-label="Search task collection example" placeholder="Search tasks..." />}
+          controls={<Button variant="outline" size="sm">Filter</Button>}
+          actions={<Button size="sm">New task</Button>}
+          feedback={<span className="text-xs text-muted-foreground">1 task · Updated newest first</span>}
+        />
+        <div className="overflow-hidden rounded-lg border border-border">
+          <IssueRow
+            issue={DESIGN_GUIDE_TASK}
+            presentation="task"
+            unreadState="visible"
+            metadata={<span className="text-xs text-muted-foreground">Updated 12m ago</span>}
+            actions={<Button variant="ghost" size="xs">More</Button>}
+          />
+        </div>
+      </Section>
+
+      <Section title="Theme Toggle">
+        <SubSection title="Variants">
+          <div className="flex max-w-sm flex-col items-start gap-3">
+            <ThemeToggle />
+            <ThemeToggle variant="menu-action" />
+            <ThemeToggle variant="compact-menu-action" />
+          </div>
+        </SubSection>
       </Section>
 
       {/* ============================================================ */}
@@ -547,6 +626,17 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TYPOGRAPHY                                                   */}
       {/* ============================================================ */}
+      <Section title="Runner activity">
+        <TaskChatRunnerActivityGroup item={{ id: "design-runner-activity", kind: "activity_phase", active: true, summary: "", interstitial: { id: "design-runner-commentary", kind: "message", author: "agent", text: "I’ll inspect the activity feed and check the layout.", interstitial: true }, items: [
+          { id: "design-runner-read", kind: "tool", name: "read", target: "TaskChatRunnerTurn.tsx", status: "completed", detail: "Found the activity groups." },
+          { id: "design-runner-check", kind: "tool", name: "exec_command", target: "pnpm check:token-gates", status: "in_progress" },
+        ] }} />
+        <TaskChatRunnerActivityGroup item={{ id: "design-runner-completed", kind: "activity_phase", active: false, summary: "", items: [
+          { id: "design-completed-read", kind: "tool", name: "read", target: "TaskChatRunnerTurn.tsx", status: "completed", detail: "Read the activity groups." },
+          { id: "design-completed-check", kind: "tool", name: "exec_command", target: "pnpm check:token-gates", status: "failed", detail: "A token check needs another pass." },
+        ] }} />
+      </Section>
+
       <Section title="Typography">
         <div className="space-y-3">
           <h2 className="text-xl font-bold">Page Title — text-xl font-bold</h2>
@@ -754,6 +844,8 @@ export function DesignGuide() {
           <p className="text-xs text-muted-foreground">
             Used wherever a task is referenced — in markdown, the Related Work tab, and activity summaries.
             Pass <code className="font-mono">status</code> to show the target issue&apos;s state at a glance.
+            Use <code className="font-mono">variant="property"</code> for compact badges with direct navigation.
+            Pass <code className="font-mono">onRemove</code> for a separate blocker removal control with reserved space.
             Use <code className="font-mono">strikethrough</code> for &quot;removed&quot; contexts.
           </p>
           <div className="flex items-center gap-2 flex-wrap">
@@ -761,6 +853,7 @@ export function DesignGuide() {
             <IssueReferencePill issue={{ id: "demo-2", identifier: "PAP-456", title: "With in_progress status", status: "in_progress" }} />
             <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: "Done status", status: "done" }} />
             <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: "Blocked status", status: "blocked" }} />
+            <IssueReferencePill onRemove={() => window.alert("Blocker removed")} issue={{ id: "demo-blocker", identifier: "PAP-303", title: "Hover or focus to remove blocker", status: "in_review" }} />
             <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
           </div>
         </SubSection>
@@ -1111,6 +1204,23 @@ export function DesignGuide() {
       {/*  CARDS                                                        */}
       {/* ============================================================ */}
       <Section title="Cards">
+        <SubSection title="Dashboard agent runs">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {["running", "queued", "succeeded", "failed", "timed_out", "cancelled", "interrupted"].map((status) => (
+              <AgentRunCard
+                key={status}
+                companyId="design-guide"
+                run={{
+                  id: `design-guide-${status}`, agentId: "design-guide-agent", agentName: "CodexCoder",
+                  status, adapterType: "codex_local", invocationSource: "on_demand", triggerDetail: "manual",
+                  startedAt: null, finishedAt: null, createdAt: "2026-09-11T12:00:00Z", issueId: "design-guide-task",
+                }}
+                issue={{ identifier: "PAP-559", title: "Recreate this wireframe on pages Paperclip", status: status === "succeeded" ? "done" : "in_progress" }}
+              />
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">The dashboard and Live runs page use the same compact cards. In-progress task icons animate across the app, including between runs, to represent task workflow status. Live indicators report active execution. Open a run to view its status and transcript.</p>
+        </SubSection>
         <SubSection title="Standard Card">
           <Card>
             <CardHeader>
@@ -2068,6 +2178,18 @@ export function DesignGuide() {
         </SubSection>
       </Section>
 
+      <Section title="Source Repositories">
+        <SubSection title="Empty and disconnected">
+          <RepositoryEditor selected={[]} onChange={() => {}} state="disconnected" onConnect={() => {}} onRetry={() => {}} />
+        </SubSection>
+        <SubSection title="Selected and searchable">
+          <RepositoryEditor selected={[{ id: "1", fullName: "paperclipai/paperclip", url: "https://github.com/paperclipai/paperclip", connections: ["Your GitHub"] }]}
+            available={[{ id: "2", fullName: "paperclipai/docs", url: "https://github.com/paperclipai/docs", connections: ["Company GitHub"] }]}
+            onChange={() => {}} onConnect={() => {}} onRetry={() => {}} />
+        </SubSection>
+        <p className="text-sm text-muted-foreground">Loading, errors, empty search, mobile, and short viewports are covered in the Project repos Storybook stories.</p>
+      </Section>
+
       <Section title="Environment Variables Editor">
         <p className="text-sm text-muted-foreground">
           Reusable env-var editor (agents, projects, environments, routines). One shared grid, an
@@ -2079,11 +2201,49 @@ export function DesignGuide() {
         <EnvironmentVariablesEditorShowcase />
       </Section>
 
+      <Section title="Tasks created from a task">
+        <SubSection title="Subtasks and created work are independent">
+          <div className="max-w-xl">
+            <TaskDetailTasksPanel
+              subtasks={[DESIGN_GUIDE_TASK]}
+              createdTasks={[
+                { ...DESIGN_GUIDE_TASK, projectId: "design-board", project: { id: "design-board", name: "Board UI" } as Issue["project"] },
+                { ...DESIGN_GUIDE_TASK, id: "design-followup", identifier: "PAP-428", title: "Write release notes", status: "todo", projectId: null },
+              ]}
+              projects={[]}
+            />
+          </div>
+        </SubSection>
+        <SubSection title="Empty, loading and failed">
+          <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} />
+          <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} isLoading />
+          <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} hasError onRetry={() => {}} />
+        </SubSection>
+      </Section>
+
+      <Section title="Execution recovery">
+        <p className="text-sm text-muted-foreground">
+          Recovery runs in the background. Task lists keep their ordinary status without
+          execution badges. Active transcript headers keep saying Working during automatic
+          recovery. Recovery decisions and attempts belong in the run log;
+          there is no execution status card or reconciliation form.
+        </p>
+      </Section>
+
+      <Section title="Saved provider API keys">
+        <SavedProviderKeySelect options={[{ id: "example", label: "Claude API key (Your key)", binding: { type: "user_secret_ref", key: "ANTHROPIC_API_KEY", version: "latest" } }]} value="example" onChange={() => {}} loading={false} error={false} />
+        <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading error={false} />
+        <SavedProviderKeySelect options={[]} value="" onChange={() => {}} loading={false} error />
+      </Section>
+
       <Section title="Connection Intent">
         <p className="text-sm text-muted-foreground">
           The task card is the dialog host for the shared connection setup flow. Provider forms,
           validation, OAuth, access selection, and completion come from the same feature module as
           the full-page Apps setup; this card owns only audience, dialog, and task refresh behavior.
+          Pending connections stay in the timeline beside a usable composer. The independently
+          addressable Connections/In-task connections stories cover access, OAuth recovery, narrow
+          layouts, completion, and historical outcomes.
         </p>
         <div className="grid gap-4 xl:grid-cols-3">
           <IssueThreadInteractionCard

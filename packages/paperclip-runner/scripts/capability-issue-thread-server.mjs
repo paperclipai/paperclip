@@ -208,14 +208,20 @@ class RouteError extends Error {
 
 function harnessConfiguration(source, fallbackModel) {
   const provider = source.provider === undefined ? "codex" : String(source.provider).trim();
-  if (provider !== "codex" && provider !== "opencode" && provider !== "acpx") {
-    throw new RouteError(400, "invalid_provider", "Provider must be codex, opencode, or acpx.");
+  if (provider !== "codex" && provider !== "opencode" && provider !== "claude_managed" && provider !== "aws_agentcore" && provider !== "acpx") {
+    throw new RouteError(400, "invalid_provider", "Provider must be codex, opencode, claude_managed, aws_agentcore, or acpx.");
   }
   const rawModel = source.model === undefined ? fallbackModel : source.model;
   const model = rawModel === undefined || rawModel === null ? "" : String(rawModel).trim();
   if (model.length > 256) throw new RouteError(400, "invalid_model", "Model is too long.");
   if (provider === "opencode" && (!model || !model.includes("/"))) {
     throw new RouteError(400, "invalid_model", "OpenCode requires a provider/model value.");
+  }
+  if (provider === "claude_managed" && model !== "claude-sonnet-5") {
+    throw new RouteError(400, "invalid_model", "Claude Managed requires exact model claude-sonnet-5.");
+  }
+  if (provider === "aws_agentcore" && model !== "global.anthropic.claude-sonnet-4-6") {
+    throw new RouteError(400, "invalid_model", "AWS AgentCore requires exact model global.anthropic.claude-sonnet-4-6.");
   }
   const acpxAgent = source.acpxAgent === undefined ? "codex" : String(source.acpxAgent).trim();
   if (provider === "acpx") {
@@ -225,6 +231,38 @@ function harnessConfiguration(source, fallbackModel) {
     if (model !== ACPX_QUALIFIED_MODELS[acpxAgent]) {
       throw new RouteError(400, "invalid_model", `The qualified ACPX ${acpxAgent} profile requires exact model ${ACPX_QUALIFIED_MODELS[acpxAgent]}.`);
     }
+  }
+  const requestedManagedProfileId = source.managedProfileId === undefined || source.managedProfileId === null
+    ? "default"
+    : String(source.managedProfileId).trim();
+  const configuredManagedProfileId = process.env.PAPERCLIP_CLAUDE_MANAGED_PROFILE_ID?.trim();
+  const managedProfileId = provider === "claude_managed" && requestedManagedProfileId === "default" && configuredManagedProfileId
+    ? configuredManagedProfileId
+    : requestedManagedProfileId;
+  const maxSessionListCostUsd = source.maxSessionListCostUsd === undefined || source.maxSessionListCostUsd === null
+    ? 1
+    : Number(source.maxSessionListCostUsd);
+  if (provider === "claude_managed" && !managedProfileId) {
+    throw new RouteError(400, "invalid_managed_profile", "Claude Managed requires a qualified profile ID.");
+  }
+  if (provider === "claude_managed" && (!Number.isFinite(maxSessionListCostUsd) || maxSessionListCostUsd <= 0)) {
+    throw new RouteError(400, "invalid_spend_cap", "Claude Managed requires a positive session spend ceiling.");
+  }
+  const requestedAgentCoreProfileId = source.agentCoreProfileId === undefined || source.agentCoreProfileId === null
+    ? "default"
+    : String(source.agentCoreProfileId).trim();
+  const configuredAgentCoreProfileId = process.env.PAPERCLIP_AWS_AGENTCORE_PROFILE_ID?.trim();
+  const agentCoreProfileId = provider === "aws_agentcore" && requestedAgentCoreProfileId === "default" && configuredAgentCoreProfileId
+    ? configuredAgentCoreProfileId
+    : requestedAgentCoreProfileId;
+  const maxEstimatedSessionCostUsd = source.maxEstimatedSessionCostUsd === undefined || source.maxEstimatedSessionCostUsd === null
+    ? 1
+    : Number(source.maxEstimatedSessionCostUsd);
+  if (provider === "aws_agentcore" && !agentCoreProfileId) {
+    throw new RouteError(400, "invalid_agentcore_profile", "AWS AgentCore requires a qualified profile ID.");
+  }
+  if (provider === "aws_agentcore" && (!Number.isFinite(maxEstimatedSessionCostUsd) || maxEstimatedSessionCostUsd <= 0)) {
+    throw new RouteError(400, "invalid_spend_cap", "AWS AgentCore requires a positive session spend ceiling.");
   }
   const suppliedLifecycle = source.lifecyclePolicy && typeof source.lifecyclePolicy === "object"
     ? source.lifecyclePolicy
@@ -252,9 +290,79 @@ function harnessConfiguration(source, fallbackModel) {
     provider,
     model: model || null,
     ...(provider === "acpx" ? { acpxAgent } : {}),
+    ...(provider === "claude_managed" ? { managedProfileId, maxSessionListCostUsd } : {}),
+    ...(provider === "aws_agentcore" ? { agentCoreProfileId, maxEstimatedSessionCostUsd } : {}),
     lifecyclePolicy,
   };
 }
+
+function resolveManagedProfile(configuration) {
+  const profileId = process.env.PAPERCLIP_CLAUDE_MANAGED_PROFILE_ID?.trim() || configuration.managedProfileId;
+  if (profileId !== configuration.managedProfileId) {
+    throw new RouteError(400, "managed_profile_not_found", "The selected Claude Managed profile is not configured on this Runner Lab server.");
+  }
+  const anthropicAgentId = process.env.ANTHROPIC_MANAGED_AGENT_ID?.trim();
+  const agentVersion = process.env.ANTHROPIC_MANAGED_AGENT_VERSION?.trim();
+  const environmentId = process.env.ANTHROPIC_MANAGED_ENVIRONMENT_ID?.trim();
+  const canonicalAgentVersion = agentVersion !== undefined
+    && /^[1-9][0-9]*$/.test(agentVersion)
+    && BigInt(agentVersion) <= 2_147_483_647n;
+  if (!process.env.ANTHROPIC_API_KEY || !profileId || !anthropicAgentId || !canonicalAgentVersion || !environmentId) {
+    throw new RouteError(
+      503,
+      "managed_profile_unavailable",
+      "The selected Claude Managed profile is not fully qualified on this Runner Lab server.",
+    );
+  }
+  return {
+    profileId,
+    anthropicAgentId,
+    agentVersion,
+    environmentId,
+    betaVersion: "managed-agents-2026-04-01",
+    maxSessionListCostUsd: configuration.maxSessionListCostUsd,
+  };
+}
+
+function resolveAgentCoreProfile(configuration) {
+  const required = (name) => {
+    const value = process.env[name]?.trim();
+    if (!value) throw new RouteError(503, "agentcore_profile_unavailable", `AWS AgentCore profile is missing ${name}. Run aws-agentcore:provision and aws-agentcore:lab.`);
+    return value;
+  };
+  const profileId = required("PAPERCLIP_AWS_AGENTCORE_PROFILE_ID");
+  if (profileId !== configuration.agentCoreProfileId) {
+    throw new RouteError(400, "agentcore_profile_not_found", "The selected AWS AgentCore profile is not configured on this Runner Lab server.");
+  }
+  return {
+    profileId,
+    region: required("AWS_REGION"),
+    accountId: required("PAPERCLIP_AWS_AGENTCORE_ACCOUNT_ID"),
+    harnessArn: required("PAPERCLIP_AWS_AGENTCORE_HARNESS_ARN"),
+    harnessVersion: required("PAPERCLIP_AWS_AGENTCORE_HARNESS_VERSION"),
+    endpointArn: required("PAPERCLIP_AWS_AGENTCORE_ENDPOINT_ARN"),
+    endpointQualifier: required("PAPERCLIP_AWS_AGENTCORE_ENDPOINT_QUALIFIER"),
+    agentRuntimeArn: required("PAPERCLIP_AWS_AGENTCORE_RUNTIME_ARN"),
+    memoryArn: required("PAPERCLIP_AWS_AGENTCORE_MEMORY_ARN"),
+    memoryId: required("PAPERCLIP_AWS_AGENTCORE_MEMORY_ID"),
+    invocationRoleArn: required("PAPERCLIP_AWS_AGENTCORE_INVOCATION_ROLE_ARN"),
+    contextBucket: required("PAPERCLIP_AWS_AGENTCORE_CONTEXT_BUCKET"),
+    contextPrefix: required("PAPERCLIP_AWS_AGENTCORE_CONTEXT_PREFIX"),
+    contextKmsKeyArn: required("PAPERCLIP_AWS_AGENTCORE_CONTEXT_KMS_KEY_ARN"),
+    qualificationRevision: required("PAPERCLIP_AWS_AGENTCORE_QUALIFICATION_REVISION"),
+    eventExpiryDays: 90,
+    maxEstimatedSessionCostUsd: configuration.maxEstimatedSessionCostUsd,
+    maxIterations: 8,
+    maxOutputTokens: 4096,
+    timeoutSeconds: 300,
+  };
+}
+
+export const capabilityIssueThreadServerInternals = Object.freeze({
+  harnessConfiguration,
+  resolveManagedProfile,
+  resolveAgentCoreProfile,
+});
 
 export function createCapabilityIssueThreadMiddleware(options = {}) {
   const load = options.loadRunner ?? loadCapabilityIssueThreadRunner;
@@ -325,7 +433,9 @@ export function createCapabilityIssueThreadMiddleware(options = {}) {
   function liveView(runner, entry) {
     const snapshot = entry.session.snapshot();
     const provider = snapshot.config.provider ?? "codex";
-    const expectedAgentLabel = provider === "opencode" ? "Real OpenCode"
+    const expectedAgentLabel = provider === "claude_managed" ? "Claude Agent"
+      : provider === "opencode" ? "Real OpenCode"
+      : provider === "aws_agentcore" ? "Real AWS AgentCore"
       : provider === "acpx"
         ? `Real ${snapshot.config.acpxAgent === "claude" ? "Claude" : snapshot.config.acpxAgent === "codex" ? "Codex" : "Pi"} via ACPX`
         : "Real Codex";
@@ -434,7 +544,13 @@ export function createCapabilityIssueThreadMiddleware(options = {}) {
       session = await service.create({
         ...input,
         provider: configuration.provider,
+        ...(configuration.provider === "claude_managed"
+          ? { managedProfile: resolveManagedProfile(configuration) }
+          : {}),
         ...(configuration.provider === "acpx" ? { acpxAgent: configuration.acpxAgent } : {}),
+        ...(configuration.provider === "aws_agentcore"
+          ? { agentCoreProfile: resolveAgentCoreProfile(configuration) }
+          : {}),
         lifecyclePolicy: configuration.lifecyclePolicy,
         ...(configuration.model === null ? {} : { requestedModel: configuration.model }),
       });
@@ -464,12 +580,24 @@ export function createCapabilityIssueThreadMiddleware(options = {}) {
     const configuration = {
       provider: snapshot.config.provider ?? "codex",
       model: snapshot.config.requestedModel ?? null,
+      ...(snapshot.config.managedProfile === undefined ? {} : {
+        managedProfileId: snapshot.config.managedProfile.profileId,
+        maxSessionListCostUsd: snapshot.config.managedProfile.maxSessionListCostUsd,
+      }),
+      ...(snapshot.config.agentCoreProfile === undefined ? {} : {
+        agentCoreProfileId: snapshot.config.agentCoreProfile.profileId,
+        maxEstimatedSessionCostUsd: snapshot.config.agentCoreProfile.maxEstimatedSessionCostUsd,
+      }),
       lifecyclePolicy: snapshot.config.lifecyclePolicy ?? { mode: "per_turn", idleTimeoutMs: null },
     };
     if (
       entry.configuration !== undefined
       && (entry.configuration.provider !== configuration.provider
         || entry.configuration.model !== configuration.model
+        || entry.configuration.managedProfileId !== configuration.managedProfileId
+        || entry.configuration.maxSessionListCostUsd !== configuration.maxSessionListCostUsd
+        || entry.configuration.agentCoreProfileId !== configuration.agentCoreProfileId
+        || entry.configuration.maxEstimatedSessionCostUsd !== configuration.maxEstimatedSessionCostUsd
         || JSON.stringify(entry.configuration.lifecyclePolicy) !== JSON.stringify(configuration.lifecyclePolicy))
     ) {
       throw new RouteError(
@@ -489,14 +617,16 @@ export function createCapabilityIssueThreadMiddleware(options = {}) {
         providerSessionId: snapshot.providerSessionId ?? null,
         driverSessionId: snapshot.providerThreadId ?? null,
         runnerPid: snapshot.process?.runnerPid ?? null,
-        providerPid: snapshot.process?.providerPid ?? snapshot.process?.codexPid ?? null,
+        providerPid: configuration.provider === "claude_managed" || configuration.provider === "aws_agentcore"
+          ? null
+          : snapshot.process?.providerPid ?? snapshot.process?.codexPid ?? null,
         sidecarPid: snapshot.process?.sidecarPid ?? null,
         agentPid: snapshot.process?.agentPid ?? null,
         providerVersion: snapshot.process?.providerVersion ?? null,
         agentServerVersion: snapshot.process?.agentServerVersion ?? null,
         agentRuntimeVersion: snapshot.process?.agentRuntimeVersion ?? null,
         acpProtocolVersion: snapshot.process?.acpProtocolVersion ?? null,
-        executionKind: "local_process",
+        executionKind: snapshot.process?.providerExecutionKind ?? (configuration.provider === "claude_managed" || configuration.provider === "aws_agentcore" ? "remote_service" : "local_process"),
         status: snapshot.status,
       },
       view: liveView(runner, entry),
@@ -649,6 +779,10 @@ export function createCapabilityIssueThreadMiddleware(options = {}) {
         provider: body.provider ?? url.searchParams.get("provider") ?? undefined,
         model: body.model ?? url.searchParams.get("model") ?? undefined,
         acpxAgent: body.acpxAgent ?? url.searchParams.get("acpxAgent") ?? undefined,
+        managedProfileId: body.managedProfileId ?? url.searchParams.get("managedProfileId") ?? undefined,
+        maxSessionListCostUsd: body.maxSessionListCostUsd ?? url.searchParams.get("maxSessionListCostUsd") ?? undefined,
+        agentCoreProfileId: body.agentCoreProfileId ?? url.searchParams.get("agentCoreProfileId") ?? undefined,
+        maxEstimatedSessionCostUsd: body.maxEstimatedSessionCostUsd ?? url.searchParams.get("maxEstimatedSessionCostUsd") ?? undefined,
         lifecyclePolicy: body.lifecyclePolicy,
         lifecycleMode: body.lifecycleMode ?? url.searchParams.get("lifecycleMode") ?? undefined,
         idleTimeoutMs: body.idleTimeoutMs ?? url.searchParams.get("idleTimeoutMs") ?? undefined,
@@ -803,9 +937,6 @@ export function createCapabilityIssueThreadMiddleware(options = {}) {
         const capabilityHash = sha256(capability);
         let fork;
         try {
-          if (snapshot.config.provider === "claude_managed" || snapshot.config.provider === "aws_agentcore") {
-            throw new RouteError(409, "provider_deferred", "Managed provider sessions are readable but cannot be forked in this release.");
-          }
           fork = await service.create({
             seed,
             workingDirectory: forkDirectory,
@@ -821,6 +952,12 @@ export function createCapabilityIssueThreadMiddleware(options = {}) {
             ...(snapshot.config.requestedModel === undefined
               ? {}
               : { requestedModel: snapshot.config.requestedModel }),
+            ...(snapshot.config.managedProfile === undefined
+              ? {}
+              : { managedProfile: snapshot.config.managedProfile }),
+            ...(snapshot.config.agentCoreProfile === undefined
+              ? {}
+              : { agentCoreProfile: snapshot.config.agentCoreProfile }),
           });
         } catch (error) {
           await rm(forkDirectory, { recursive: true, force: true }).catch(() => undefined);
@@ -877,6 +1014,40 @@ export function createCapabilityIssueThreadMiddleware(options = {}) {
         return;
       } else if (route === "interrupt") {
         await entry.session.interrupt("operator stopped the turn");
+      } else if (route === "managed-budget") {
+        const requestedCap = body.maxSessionListCostUsd ??
+          body.maxEstimatedSessionCostUsd;
+        const nextCap = Number(requestedCap);
+        if (!Number.isFinite(nextCap) || nextCap <= 0) {
+          throw new RouteError(
+            400,
+            "invalid_spend_cap",
+            "The new managed-session spend ceiling must be positive.",
+          );
+        }
+        await entry.session.increaseManagedSessionBudget(nextCap);
+        if (entry.configuration?.provider === "claude_managed") {
+          entry.configuration.maxSessionListCostUsd = nextCap;
+        }
+        if (entry.configuration?.provider === "aws_agentcore") {
+          entry.configuration.maxEstimatedSessionCostUsd = nextCap;
+        }
+      } else if (route === "managed-session-delete") {
+        if (body.confirm !== true) {
+          throw new RouteError(
+            400,
+            "confirmation_required",
+            "Remote session deletion requires explicit confirmation.",
+          );
+        }
+        await entry.session.deleteManagedRemoteSession();
+        await retire(
+          service,
+          entry.session.id,
+          "remote managed session explicitly deleted",
+        );
+        send(response, 200, { deleted: true, sessionId: entry.session.id });
+        return;
       } else if (route === "reconnect") {
         entry.connection = { state: "reconnecting", attempt: entry.connection.attempt + 1 };
         await entry.session.reconnect();

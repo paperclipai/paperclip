@@ -387,7 +387,7 @@ describe("TaskChatInteractionCard", () => {
     const requestChanges = Array.from(
       container.querySelectorAll<HTMLButtonElement>("button"),
     ).find((button) => button.textContent?.trim() === "Request changes");
-    await act(async () => requestChanges?.click());
+    flushSync(() => requestChanges?.click());
 
     expect(container.textContent).not.toContain("Do you accept this plan?");
     expect(container.textContent).toContain("What should change?");
@@ -400,8 +400,8 @@ describe("TaskChatInteractionCard", () => {
         .querySelector('[data-testid="mock-markdown-editor"]')
         ?.getAttribute("data-image-upload"),
     ).toBe("true");
-    expect(container.textContent).toContain("Attach image");
-    expect(container.textContent).toContain("drop/paste an image");
+    expect(container.textContent).not.toContain("Attach image");
+    expect(container.textContent).not.toContain("drop/paste an image");
     const reasonGroup = container.querySelector(
       '[data-testid="plan-revision-composer"]',
     )?.parentElement;
@@ -437,6 +437,7 @@ describe("TaskChatInteractionCard", () => {
         button.textContent?.includes("Only collapse hidden descendants"),
     );
     await act(async () => firstAnswer?.click());
+    expect(submit).not.toHaveBeenCalled();
 
     expect(container.textContent).toContain("2 of 2");
     expect(container.textContent).toContain(
@@ -522,11 +523,22 @@ describe("TaskChatInteractionCard", () => {
     expect(container.textContent).not.toContain("Resolved by:");
   });
 
-  it("collapses accepted confirmations and selections to one borderless row", () => {
+  it("collapses resolved confirmations and selections to one borderless row", () => {
     const acceptedConfirmation = createRequestConfirmation({
       status: "accepted",
       resolvedAt: new Date("2026-08-24T13:30:00.000Z"),
       result: { version: 1, outcome: "accepted" },
+    });
+    const continuedConfirmation = createRequestConfirmation({
+      id: "confirmation-continued",
+      status: "rejected",
+      resolvedAt: new Date("2026-08-24T13:30:30.000Z"),
+      payload: {
+        version: 1,
+        prompt: "Is this task ready to complete?",
+        rejectLabel: "Continue work",
+      },
+      result: { version: 1, outcome: "rejected" },
     });
     const acceptedSelection = structuredClone(
       pendingRequestCheckboxConfirmationInteraction,
@@ -548,6 +560,9 @@ describe("TaskChatInteractionCard", () => {
                 item={interactionItem(acceptedConfirmation)}
               />
               <TaskChatInteractionCard
+                item={interactionItem(continuedConfirmation)}
+              />
+              <TaskChatInteractionCard
                 item={interactionItem(acceptedSelection)}
               />
             </>
@@ -559,11 +574,14 @@ describe("TaskChatInteractionCard", () => {
     const receipts = container.querySelectorAll<HTMLDetailsElement>(
       '[data-testid="task-chat-interaction-receipt"]',
     );
-    expect(receipts).toHaveLength(2);
+    expect(receipts).toHaveLength(3);
     expect(receipts[0]?.querySelector("summary")?.textContent).toBe(
       "Confirmed request",
     );
     expect(receipts[1]?.querySelector("summary")?.textContent).toBe(
+      "Selected “Continue work”",
+    );
+    expect(receipts[2]?.querySelector("summary")?.textContent).toBe(
       "Confirmed with no options selected",
     );
     for (const receipt of receipts) {
@@ -879,7 +897,7 @@ describe("TaskChatThreadView interaction items", () => {
     expect(
       container
         .querySelector('[data-testid="task-chat-interaction"]')
-        ?.parentElement?.classList.contains("-mt-3"),
+        ?.parentElement?.classList.contains("mt-3"),
     ).toBe(true);
   });
 

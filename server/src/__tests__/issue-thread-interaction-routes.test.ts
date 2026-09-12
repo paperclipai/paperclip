@@ -312,13 +312,26 @@ describe.sequential("issue thread interaction routes", () => {
     vi.doUnmock("../middleware/index.js");
     vi.doUnmock("../services/index.js");
     registerModuleMocks();
-    vi.clearAllMocks();
-    mockInteractionService.getForIssue.mockReset();
+    // Every mock here is a vi.hoisted() singleton. All 70+ tests share it.
+    // A queued mockResolvedValueOnce() value can outlive its own test and
+    // leak into a later, unrelated test. vi.resetAllMocks() drains that
+    // queue for every mock in one call. It also keeps each mock's
+    // constructor-provided vi.fn(impl) default. So the code below only
+    // sets values that must differ from that default.
+    // vi.clearAllMocks() clears call history only. It does not drain the
+    // queue. That gap once let a leftover queued value deny an unrelated
+    // later test.
+    vi.resetAllMocks();
+    // mockRunAttribution.value is a plain object, not a vi.fn().
+    // resetAllMocks() does not reset it. createApp() overwrites it for an
+    // agent actor. A board actor leaves whatever value a prior test set here.
+    mockRunAttribution.value = {
+      companyId: "company-1",
+      agentId: CREATED_AGENT_ID,
+      responsibleUserId: null,
+    };
     mockQuestionResponseDeliveries.deliver.mockResolvedValue(null);
     mockRequestNativeQuestionRunCancellation.mockResolvedValue(null);
-    mockResolveTaskWatchdogMutationScope.mockReset();
-    mockResolveCoreTrustPreset.mockReset();
-    mockAccessDecide.mockReset();
     mockResolveTaskWatchdogMutationScope.mockResolvedValue({ kind: "none" });
     mockResolveCoreTrustPreset.mockReturnValue({ kind: "standard" });
     mockAccessDecide.mockImplementation(async (input: { action?: string }) => ({
@@ -1981,6 +1994,62 @@ describe.sequential("issue thread interaction routes", () => {
         }),
         contextSnapshot: expect.objectContaining({
           planReviewInteraction: expect.objectContaining({ status: "rejected" }),
+        }),
+      }),
+    );
+  });
+
+  it("delivers generic confirmation rejection feedback as the next turn message", async () => {
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      id: "interaction-warm-turn",
+      companyId: "company-1",
+      issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "wake_assignee",
+      idempotencyKey: "warm-turn-1",
+      sourceCommentId: null,
+      sourceRunId: RUN_3,
+      payload: {
+        version: 1,
+        prompt: "Continue to turn two?",
+        target: {
+          type: "custom",
+          key: "warm_turn_1",
+          revisionId: "turn-1",
+        },
+      },
+      result: {
+        version: 1,
+        outcome: "rejected",
+        reason: "Read T1, append T2, and verify both lines.",
+      },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+
+    const res = await request(await createApp())
+      .post(
+        "/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-warm-turn/reject",
+      )
+      .send({ reason: "Read T1, append T2, and verify both lines." });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          paperclipAgentMessage: {
+            text: "Read T1, append T2, and verify both lines.",
+            source: "interaction_rejection",
+            sessionId: "interaction-warm-turn",
+          },
+        }),
+        contextSnapshot: expect.objectContaining({
+          paperclipAgentMessage: expect.objectContaining({
+            text: "Read T1, append T2, and verify both lines.",
+          }),
         }),
       }),
     );

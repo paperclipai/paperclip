@@ -1,4 +1,23 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
+export {
+  RUNNER_GOAL_MAX_OBJECTIVE_CHARS,
+  runnerGoalAvailabilitySchema,
+  runnerGoalCapabilityActionSchema,
+  runnerGoalStatusSchema,
+  runnerGoalActionSchema,
+  runnerGoalPendingActionSchema,
+  runnerGoalActionRequestSchema,
+  type RunnerGoalAvailability,
+  type RunnerGoalCapabilityAction,
+  type RunnerGoalStatus,
+  type RunnerGoalAction,
+  type RunnerGoalPendingAction,
+  type RunnerGoalCapability,
+  type RunnerGoalSnapshot,
+  type RunnerGoalProjection,
+  type RunnerGoalActionRequest,
+  type RunnerGoalActionAccepted,
+} from "./runner-goal.js";
 export { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./adapter-auth-check-code.js";
 export {
   CONNECTION_INTENT_AGENT_GUIDANCE,
@@ -49,6 +68,7 @@ export type {
   ConnectionsSearchResult,
   ConnectionRequestResult,
   ConnectionIntentSetupOptions,
+  ConnectionIntentSetupConnection,
   CompleteConnectionIntentInput,
   DeclineConnectionIntentInput,
 } from "./types/connection-intent.js";
@@ -314,6 +334,7 @@ export {
 } from "./app-definitions.js";
 export { APP_DEFINITIONS } from "./app-definitions.generated.js";
 export * from "./google-workspace-connectors.js";
+export * from "./github-connectors.js";
 export {
   BLOCKED_MCP_PROVIDERS,
   SELF_SERVE_MCP_CANDIDATES,
@@ -321,6 +342,8 @@ export {
 } from "./self-serve-mcp-research.js";
 export * from "./validators/status-card.js";
 export { appDefinitionSchema, appDefinitionsSchema, connectionMethodDefSchema } from "./validators/app-definition.js";
+export * from "./types/chat-channels.js";
+export * from "./validators/chat-channels.js";
 export {
   humanizeConnectionDisplayName,
   connectionDisplaySecondaryHint,
@@ -915,6 +938,7 @@ export type {
   AdapterAuthSessionResponse,
   AdapterAuthSessionPrompt,
   AdapterAuthSessionOwnerResponse,
+  CodexAccountBindingClaim,
   StartAdapterAuthSessionRequest,
   AdapterAuthPanelMode,
   ClaudeSetupTokenSessionPrompt,
@@ -927,6 +951,8 @@ export type {
   AssetImage,
   Project,
   ProjectBudgetSummary,
+  ProjectRepository,
+  ProjectRepositoryOptions,
   ProjectCodebase,
   ProjectCodebaseOrigin,
   ProjectGoalRef,
@@ -1049,6 +1075,9 @@ export type {
   DocumentTextRange,
   UpdateDocumentAnnotationThreadRequest,
   AttachmentArtifactWorkProductMetadata,
+  PullRequestWorkProductState,
+  PullRequestWorkProductMetadata,
+  CommitWorkProductMetadata,
   ExternalObject,
   ExternalObjectMention,
   ExternalObjectMentionGroup,
@@ -1093,8 +1122,6 @@ export type {
   IssueBlockedInboxReason,
   IssueBlockedInboxSeverity,
   IssueBlockedInboxState,
-  IssueProductivityReview,
-  IssueProductivityReviewTrigger,
   IssueRecoveryAction,
   IssueWatchdog,
   IssueWatchdogStatus,
@@ -1194,6 +1221,7 @@ export type {
   IssueLabel,
   IssueTreeControlPreview,
   IssueTreeHold,
+  ReleaseIssueTreeHoldResponse,
   IssueTreeHoldMember,
   IssueTreeHoldReleasePolicy,
   IssueTreePreviewAgent,
@@ -1224,6 +1252,7 @@ export type {
   FinanceByBiller,
   FinanceByKind,
   AgentWakeupResponse,
+  ChatFailedRunRetryResponse,
   AgentWakeupSkipped,
   GitWorktreeBranchAncestryVerdict,
   GitWorktreeBranchIncoherenceEvidence,
@@ -1414,6 +1443,7 @@ export type {
   ToolConnectionCredentialSource,
   ToolConnectionCredentialPolicy,
   ToolConnectionOwnership,
+  ToolConnectionPurpose,
   ToolConnectionTransport,
   ToolConnectionStatus,
   ToolConnectionKind,
@@ -2117,6 +2147,7 @@ export {
   toolCatalogEntryStatusSchema,
   toolConnectionHealthStatusSchema,
   toolConnectionKindSchema,
+  toolConnectionPurposeSchema,
   toolConnectionTransportSchema,
   toolConnectionStatusSchema,
   toolCredentialPlacementSchema,
@@ -2723,3 +2754,11 @@ export {
   isPaperclipDevRunnerCommand,
   rewriteUrlHostToLoopback,
 } from "./runtime-exposure/loopback-bind.js";
+export { ACCOUNT_HANDLE_MAX_LENGTH, toAccountHandle } from "./account-handle.js";
+export type { ExecutionContinuationEnvelope } from "./types/execution-continuation.js";
+export type { ExecutionProjection, ExecutionReconciliation, ExecutionBlocker } from "./types/execution-projection.js";
+
+export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from "./types/execution-projection.js";
+
+export * from "./types/email.js";
+export * from "./validators/email.js";

@@ -12,6 +12,51 @@ WebSocket acceptance header are not authentication. A production bridge should
 still use `wss://` for defense in depth and remains a separately reviewed
 deployment phase.
 
+## Execution duration and operation deadlines
+
+Native turns have no total elapsed-time limit unless the operator configures
+`timeoutSec` on the agent. Zero means unlimited. The controller passes that
+setting separately from bootstrap, recovery, checkpoint, and finalization
+operation bounds. A live turn must not inherit the internal 15-minute operation
+deadline; tool waits count toward an explicitly configured turn duration.
+
+The native-session API exposes `turnTimeoutMs` for that duration. An explicit
+`timeoutMs` retains its prior operation/turn behavior for existing embedding
+callers, while `turnTimeoutMs: 0` overrides its turn bound. Cancellation, budget
+controls, input handoffs, and bounded cleanup remain independent.
+
+Normal runner launches also set `--max-runtime-ms 0`, meaning no total process
+lifetime limit. The standalone durable runner defaults to the same value.
+Explicit positive limits still stop at their deadline; connection/auth attempts,
+reconnect grace, cancellation, and idle cleanup remain bounded independently.
+Neither quiet tool execution nor a productive turn is an idle session.
+
+The authenticated welcome advertises `connectionLeaseRenewalVersion: 1`.
+Supporting runners send `lease_renew` halfway through the remaining lease,
+independently of provider output. The request carries the current expiry and
+revocation epoch under the exact connection, lease, and run identity. The
+controller persists an extended expiry before returning `lease_renewed`, which
+also echoes the request's previous expiry. The runner updates its in-memory
+lease without replacing its process, provider, thread, turn, token, or epoch.
+Retries of the same observed expiry replay the persisted extension. Renewal
+never admits an expired, revoked, or differently bound credential.
+
+If a reply is lost, reconnect authentication may reconcile a later expiry only
+when this runner has an outstanding renewal on that same credential. Warm
+handoff receipts continue to bind exact expiry and renewal pauses during their
+transition. Old controllers that do not advertise renewal retain their bounded
+lease behavior; deploying both updated controller and runner is required.
+
+Tests simulate three weeks of renewal on one authenticated connection, exercise
+lost-reply reconnect without reexecuting provider startup, and keep a quiet
+active Codex fixture in the same runner/provider PIDs beyond its original lease
+expiry. These are boundary regressions, not a weeks-long real-provider soak.
+
+Provider startup ownership summaries validate goal commands with their required
+PRP v2 command vocabulary. Incoming wire commands still undergo the negotiated
+protocol validation before execution; ordinary persisted v1 summaries remain
+compatible.
+
 ## Connection and authentication
 
 The connection starts in this order:
@@ -33,7 +78,7 @@ The connection starts in this order:
 6. Both sides derive directional AES-256-GCM keys from the capability and both
    nonces. Strict per-direction counters reject replays and out-of-order frames.
 7. Only after mutual authentication does the core send an encrypted `welcome`.
-   The welcome selects PRP v1, returns a short-lived connection lease, reports
+   The welcome selects a supported PRP version, returns a short-lived connection lease, reports
    the cumulative committed event cursor, and carries at most one pending
    command. Every later ACK, command, revoke, event, and command result remains
    inside the encrypted session.
@@ -87,6 +132,11 @@ The state contains:
   prior result, plus a fixed-size fail-closed replay filter for compacted IDs;
 - lifecycle, reconnect, backpressure, harness generation, and recovery facts;
 - bounded, redacted diagnostics.
+
+Raw runner stdout and stderr are never redirected to durable files. The runner
+itself redacts and bounds a terminal diagnostic before publishing it through an
+atomic private-file replacement, so neither an output burst nor controller
+restart can create a transient unbounded or unredacted diagnostic file.
 
 Authentication capabilities and arbitrary command bodies are not stored. A
 recent command is represented by a SHA-256 comparison digest from the vetted
@@ -178,6 +228,33 @@ same cursor.
 If recovery cannot be truthful, state names the outcome. For example, failure
 to reserve storage for a P0 event records `p0_storage_exhausted` and the
 `unrecoverable` lifecycle. It never reports a fresh session as resumed.
+
+## Protocol versions and warm handoff
+
+Ordinary PRP v1 connections remain supported. A warm `run.attach` that changes
+run authority requires negotiated PRP v2, as well as the warm-transition
+capability. The runner refuses a v1 warm attachment before provider work. A v1
+peer acknowledges placeholders for native session-goal and capability events;
+those acknowledgements do not prove that the peer observed the native state.
+Rotation must not discard that retained evidence or relabel it as a new run.
+
+A connection lease fixes its protocol version. Advertising v2 on reconnect
+does not upgrade an existing v1 lease. For a v2-capable runner holding a v1
+lease, the owned transport's process-recovery path can replace the process
+with fresh authorization when configured with a reconnect grace. It preserves
+validated state and original authority and issues a new one-use bootstrap.
+The old process must exit first; any old provider owner must also be retired.
+The connection lease exists only in process
+memory; no credential or journal file needs to be edited. The replacement
+negotiates v2 and replays retained native session state on the original
+authority. Its native event acknowledgements must settle before warm handoff.
+The controller must still authorize replacement and verify current process,
+artifact, and run ownership. This is not an automatic in-place lease upgrade
+or a general operator UI migration flow. An old binary stays old when its
+immutable launcher restarts it. Replacing a legacy binary or an adopted owner
+requires separate artifact and ownership admission; this path does not qualify
+that migration. Pending warm-transition receipts
+require their separate exact recovery admission, not an ordinary bootstrap.
 
 ## Backpressure and bounded storage
 

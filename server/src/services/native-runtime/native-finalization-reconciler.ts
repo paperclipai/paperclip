@@ -1,5 +1,6 @@
+import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   completionContracts,
@@ -14,7 +15,12 @@ import {
   workAssessments,
   workspaceOperations,
 } from "@paperclipai/db";
-import { finalizeNativeRun, recordNativeFinalizationFailure } from "./native-run-finalizer.js";
+import {
+  finalizeNativeRun,
+  recordNativeFinalizationFailure,
+  repairCommittedNativeReviewResponse,
+  repairCommittedNativeChatResponse,
+} from "./native-run-finalizer.js";
 import {
   commitNativeStatusDecision,
   dispatchPendingNativeStatusEffects,
@@ -22,9 +28,20 @@ import {
 } from "./status-decision-committer.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
+import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
+import { dismissObsoleteNativePolicyReviews } from "./obsolete-policy-reviews.js";
+import {
+  cleanupNativeWorkspaceSync,
+  readNativeWorkspaceSyncReference,
+} from "./native-workspace-sync.js";
+import type { EnvironmentRuntimeService } from "../environment-runtime.js";
 import { classifyNativeEvidence } from "./evidence-classifier.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
+import {
+  isNativeRunnerOwnershipHeld,
+  nativeRunnerOwnershipNotHeldCondition,
+} from "./native-runner-ownership.js";
 import {
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
   type NativeAuthoritativeIssueStatus,
@@ -41,7 +58,6 @@ export type NativeReconciliationFacts = {
   newEvidenceSatisfiesContract?: boolean;
   dependencyResolved?: boolean;
   authorizedResume?: boolean;
-  policyVersionChanged?: boolean;
   statusVersionAdvanced?: boolean;
 };
 
@@ -95,22 +111,6 @@ export function resolveNativeReconciliationStatus(input: {
   if (input.facts.authoritativeStatusChanged) {
     return preserve("prior_status_terminal_preserved", [{ kind: "append_superseding_assessment" }]);
   }
-  if (input.facts.policyVersionChanged) {
-    if (["done", "cancelled"].includes(input.priorIssueStatus)) {
-      return preserve("prior_status_terminal_preserved", [{ kind: "append_superseding_assessment" }]);
-    }
-    return {
-      policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
-      statusAction: "in_review",
-      toStatus: "in_review",
-      reasonCode: "completion_review_required",
-      unblockDescriptor: null,
-      effects: [
-        { kind: "bind_reviewer", prompt: "Review the superseding native policy assessment.", ownerUserId: null },
-        { kind: "append_superseding_assessment" },
-      ],
-    };
-  }
   if (input.facts.statusVersionAdvanced) {
     return preserve("arbitration_conflict_reloaded", [
       { kind: "increment_status_version" },
@@ -157,6 +157,145 @@ export function resolveNativeReconciliationStatus(input: {
 
 export type NativeSessionResumeClaim = { runId: string; leaseOwner: string };
 
+type NativeCleanupOutcome = {
+  runId: string;
+  status: "settled" | "not_eligible" | "operator_required";
+};
+type NativeCleanupSweep = {
+  cursor: string | null;
+  pending: Promise<NativeCleanupOutcome[]> | null;
+};
+const nativeCleanupSweeps = new WeakMap<Db, NativeCleanupSweep>();
+
+/** Candidate discovery is not cleanup authority. The exact-state operation
+ * claims its own durable lease and rechecks every physical owner. Keep this
+ * lane joined and bounded, and advance even past ineligible candidates so one
+ * damaged checkpoint cannot starve another company's recoverable session. */
+export function reconcileRetainedNativeSessionCleanups(
+  db: Db,
+  options: {
+    cleanup: (input: {
+      companyId: string;
+      runId: string;
+    }) => Promise<NativeCleanupOutcome>;
+    onError?: (error: unknown, runId: string) => void;
+    limit?: number;
+  },
+): Promise<NativeCleanupOutcome[]> {
+  let sweep = nativeCleanupSweeps.get(db);
+  if (!sweep) {
+    sweep = { cursor: null, pending: null };
+    nativeCleanupSweeps.set(db, sweep);
+  }
+  if (sweep.pending) return sweep.pending;
+  const owned = sweep;
+  const limit = Number.isInteger(options.limit)
+    ? Math.max(1, Math.min(5, options.limit!))
+    : 1;
+  const operation = async () => {
+    const selectCandidates = (cursor: string | null) =>
+      db
+        .select({
+          runId: heartbeatRuns.id,
+          companyId: heartbeatRuns.companyId,
+        })
+        .from(heartbeatRuns)
+        .innerJoin(
+          nativeRunFinalizations,
+          and(
+            eq(nativeRunFinalizations.runId, heartbeatRuns.id),
+            eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
+            eq(nativeRunFinalizations.issueId, heartbeatRuns.nativeIssueId),
+          ),
+        )
+        .innerJoin(
+          nativeRunResults,
+          and(
+            eq(nativeRunResults.id, nativeRunFinalizations.resultId),
+            eq(nativeRunResults.runId, heartbeatRuns.id),
+            eq(nativeRunResults.companyId, heartbeatRuns.companyId),
+            eq(nativeRunResults.issueId, heartbeatRuns.nativeIssueId),
+          ),
+        )
+        .where(
+          and(
+            eq(heartbeatRuns.runtimeMode, "native"),
+            inArray(heartbeatRuns.status, ["succeeded", "failed"]),
+            isNotNull(heartbeatRuns.finishedAt),
+            nativeRunnerOwnershipNotHeldCondition(),
+            eq(nativeRunFinalizations.phase, "committed"),
+            eq(nativeRunResults.schemaStatus, "accepted"),
+            isNotNull(nativeRunFinalizations.assessmentId),
+            isNotNull(nativeRunFinalizations.decisionId),
+            isNull(nativeRunFinalizations.nextAttemptAt),
+            or(
+              isNull(nativeRunFinalizations.leaseOwner),
+              isNull(nativeRunFinalizations.leaseExpiresAt),
+              lte(nativeRunFinalizations.leaseExpiresAt, sql`now()`),
+            ),
+            // The accepted-result projector preserves a recovered close failure
+            // privately after clearing the visible successful run's stale error.
+            sql`coalesce(${heartbeatRuns.errorCode}, ${heartbeatRuns.resultJson}->'recoveredExecutionFailure'->>'errorCode') = 'adapter_failed'`,
+            sql`coalesce(${heartbeatRuns.error}, ${heartbeatRuns.resultJson}->'recoveredExecutionFailure'->>'error') = 'provider_transport_failed: runner did not durably suspend before checkpoint'`,
+            sql`not (${nativeRunFinalizations.recoveryHistory} @> '[{"kind":"native_cleanup_runner_epoch"}]'::jsonb)`,
+            sql`not (${nativeRunFinalizations.recoveryHistory} @> '[{"kind":"native_cleanup_source_archive","phase":"operator_required"}]'::jsonb)`,
+            // One legacy pre-ownership attempt may be inspected by the closed,
+            // artifact-pinned no-launch verifier. Discovery grants no authority
+            // to reuse its directory or start a provider. New recorded epochs,
+            // staged attempts and ambiguous histories never enter this lane.
+            sql`(
+              select coalesce(
+                jsonb_array_length(history.entries) = 0 or (
+                  jsonb_array_length(history.entries) = 2
+                  and history.entries->0->>'version' = '1'
+                  and history.entries->1->>'version' = '1'
+                  and history.entries->0->>'phase' = 'started'
+                  and history.entries->1->>'phase' = 'operator_required'
+                  and history.entries->1->>'code' = 'native_cleanup_maintenance_unproven'
+                  and history.entries->0->>'requestId' like 'native-cleanup:%'
+                  and history.entries->0->>'requestId' = history.entries->1->>'requestId'
+                  and history.entries->0->>'sourceFingerprint' ~ '^[a-f0-9]{64}$'
+                ), false
+              )
+              from (
+                select coalesce(jsonb_agg(entry.value order by entry.ordinal), '[]'::jsonb) as entries
+                from jsonb_array_elements(${nativeRunFinalizations.recoveryHistory})
+                  with ordinality as entry(value, ordinal)
+                where entry.value->>'kind' = 'native_cleanup_maintenance'
+              ) history
+            )`,
+            ...(cursor ? [gt(heartbeatRuns.id, cursor)] : []),
+          ),
+        )
+        .orderBy(asc(heartbeatRuns.id))
+        .limit(limit);
+    let candidates = await selectCandidates(owned.cursor);
+    if (candidates.length === 0 && owned.cursor !== null) {
+      owned.cursor = null;
+      candidates = await selectCandidates(null);
+    }
+    const outcomes: NativeCleanupOutcome[] = [];
+    for (const candidate of candidates) {
+      owned.cursor = candidate.runId;
+      try {
+        outcomes.push(await options.cleanup(candidate));
+      } catch (error) {
+        options.onError?.(error, candidate.runId);
+      }
+    }
+    return outcomes;
+  };
+  // Deferring the query one microtask installs the joined owner before any
+  // asynchronous work begins. Cleanup never creates a heartbeat or wake.
+  const pending = Promise.resolve()
+    .then(operation)
+    .finally(() => {
+      if (owned.pending === pending) owned.pending = null;
+    });
+  owned.pending = pending;
+  return pending;
+}
+
 export async function dispatchNativeSessionResumptions(input: {
   db: Db;
   runnerInstanceId: string;
@@ -184,28 +323,41 @@ export async function claimNativeSessionResumptions(input: {
   limit?: number;
 }): Promise<NativeSessionResumeClaim[]> {
   const now = input.now ?? new Date();
-  const candidates = await input.db.select({ runId: heartbeatRuns.id })
+  const candidates = await input.db
+    .select({ runId: heartbeatRuns.id })
     .from(heartbeatRuns)
-    .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
-    .where(and(
-      eq(heartbeatRuns.runtimeMode, "native"),
-      isNull(heartbeatRuns.processPid),
-      isNull(heartbeatRuns.processGroupId),
-      isNull(nativeRunFinalizations.resultId),
-      eq(nativeRunFinalizations.phase, "retryable_failure"),
-      or(isNull(nativeRunFinalizations.nextAttemptAt), lte(nativeRunFinalizations.nextAttemptAt, now)),
-      or(
-        isNull(nativeRunFinalizations.leaseOwner),
-        isNull(nativeRunFinalizations.leaseExpiresAt),
-        lte(nativeRunFinalizations.leaseExpiresAt, now),
+    .innerJoin(
+      nativeRunFinalizations,
+      eq(nativeRunFinalizations.runId, heartbeatRuns.id),
+    )
+    .where(
+      and(
+        eq(heartbeatRuns.runtimeMode, "native"),
+        nativeRunnerOwnershipNotHeldCondition(),
+        isNull(heartbeatRuns.processPid),
+        isNull(heartbeatRuns.processGroupId),
+        isNull(nativeRunFinalizations.resultId),
+        eq(nativeRunFinalizations.phase, "retryable_failure"),
+        or(
+          isNull(nativeRunFinalizations.nextAttemptAt),
+          lte(nativeRunFinalizations.nextAttemptAt, now),
+        ),
+        or(
+          isNull(nativeRunFinalizations.leaseOwner),
+          isNull(nativeRunFinalizations.leaseExpiresAt),
+          lte(nativeRunFinalizations.leaseExpiresAt, now),
+        ),
+        ...(input.runIds?.length
+          ? [inArray(heartbeatRuns.id, input.runIds)]
+          : []),
       ),
-      ...(input.runIds?.length ? [inArray(heartbeatRuns.id, input.runIds)] : []),
-    ))
+    )
     .limit(input.limit ?? 25);
 
   const claims: NativeSessionResumeClaim[] = [];
   for (const candidate of candidates) {
     const leaseOwner = `${input.runnerInstanceId}:resume:${randomUUID()}`;
+    let terminalRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
     const claimed = await input.db.transaction(async (tx) => {
       const row = await tx.select({
         run: heartbeatRuns,
@@ -218,19 +370,20 @@ export async function claimNativeSessionResumptions(input: {
         .then((rows) => rows[0] ?? null);
       if (!row) return false;
       if (
-        row.run.runtimeMode !== "native"
-        || row.run.processPid !== null
-        || row.run.processGroupId !== null
-        || row.coordinator.resultId
-        || row.coordinator.phase !== "retryable_failure"
-        || (row.coordinator.nextAttemptAt && row.coordinator.nextAttemptAt > now)
-        || (
-          row.coordinator.leaseOwner
-          && row.coordinator.leaseExpiresAt
-          && row.coordinator.leaseExpiresAt > now
-        )
-        || !["running", "failed"].includes(row.run.status)
-      ) return false;
+        row.run.runtimeMode !== "native" ||
+        isNativeRunnerOwnershipHeld(row.run) ||
+        row.run.processPid !== null ||
+        row.run.processGroupId !== null ||
+        row.coordinator.resultId ||
+        row.coordinator.phase !== "retryable_failure" ||
+        (row.coordinator.nextAttemptAt &&
+          row.coordinator.nextAttemptAt > now) ||
+        (row.coordinator.leaseOwner &&
+          row.coordinator.leaseExpiresAt &&
+          row.coordinator.leaseExpiresAt > now) ||
+        !["running", "failed"].includes(row.run.status)
+      )
+        return false;
 
       const profile = row.run.runnerProfileJson ?? {};
       const persistedInput = profile.nativeExecutionInput;
@@ -294,7 +447,7 @@ export async function claimNativeSessionResumptions(input: {
           nextAttemptAt: null,
           updatedAt: now,
         }).where(eq(nativeRunFinalizations.runId, row.run.id));
-        await tx.update(heartbeatRuns).set({
+        const [updatedRun] = await tx.update(heartbeatRuns).set({
           status: "failed",
           finishedAt: now,
           nativePhase: "terminal_failure",
@@ -304,7 +457,8 @@ export async function claimNativeSessionResumptions(input: {
             ? failureDetail.message
             : "Persisted native session state is ambiguous and cannot be resumed safely",
           updatedAt: now,
-        }).where(eq(heartbeatRuns.id, row.run.id));
+        }).where(eq(heartbeatRuns.id, row.run.id)).returning();
+        terminalRunToEmit = updatedRun ?? null;
         await issueService(tx as unknown as Db).update(
           row.coordinator.issueId,
           { status: "in_review" },
@@ -359,25 +513,48 @@ export async function claimNativeSessionResumptions(input: {
       }).where(eq(heartbeatRuns.id, row.run.id));
       return true;
     });
+    // Telemetry is best-effort background work; it must not delay claiming
+    // the remaining candidates in this loop, so fire it and do not await it.
+    if (terminalRunToEmit) {
+      void emitAgentTaskRun(input.db, terminalRunToEmit);
+    }
     if (claimed) claims.push({ runId: candidate.runId, leaseOwner });
   }
   return claims;
 }
 
 /** Recovery is keyed only by persisted mode/coordinator state, never the live flag. */
-export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
-  const rows = await db.select({
-    runId: heartbeatRuns.id,
-    companyId: heartbeatRuns.companyId,
-    agentId: heartbeatRuns.agentId,
-    issueId: nativeRunFinalizations.issueId,
-    issueStatus: issues.status,
-    issueStatusVersion: issues.statusVersion,
-    issueDecisionId: issues.lastStatusDecisionId,
-    coordinatorPhase: nativeRunFinalizations.phase,
-    assessmentId: nativeRunFinalizations.assessmentId,
-    decisionId: nativeRunFinalizations.decisionId,
-  })
+export async function reconcileNativeFinalizations(
+  db: Db,
+  runIds?: string[],
+  options: {
+    environmentRuntime?: EnvironmentRuntimeService;
+    onWorkspaceSettled?: (input: {
+      runId: string;
+      companyId: string;
+      agentId: string;
+      succeeded: boolean;
+    }) => Promise<void>;
+  } = {},
+) {
+  await dismissObsoleteNativePolicyReviews(db, runIds).catch((err) => {
+    logger.warn({ err }, "Obsolete native policy review lookup failed; continuing native reconciliation");
+  });
+  const rows = await db
+    .select({
+      runId: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      issueId: nativeRunFinalizations.issueId,
+      issueStatus: issues.status,
+      issueStatusVersion: issues.statusVersion,
+      issueDecisionId: issues.lastStatusDecisionId,
+      coordinatorPhase: nativeRunFinalizations.phase,
+      resultId: nativeRunFinalizations.resultId,
+      assessmentId: nativeRunFinalizations.assessmentId,
+      decisionId: nativeRunFinalizations.decisionId,
+      runnerProfileJson: heartbeatRuns.runnerProfileJson,
+    })
     .from(heartbeatRuns)
     .innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
     .innerJoin(issues, and(
@@ -454,7 +631,6 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
             ),
           )).limit(1).then((entries) => entries[0] ?? null)
         : null;
-      const policyVersionChanged = assessment?.policyVersion !== NATIVE_STATUS_ARBITER_POLICY_VERSION;
       const currentDecision = row.decisionId
         ? await db.select({
             assessmentId: statusDecisions.assessmentId,
@@ -468,6 +644,33 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
           )).limit(1).then((entries) => entries[0] ?? null)
         : null;
       const currentDecisionJson = record(currentDecision?.decisionJson);
+      if (row.coordinatorPhase === "committed") {
+        // A later decision can supersede this run's task status, but cannot
+        // erase its accepted, still-authorized response. Repair presentation
+        // before the status-only early return below, without rerunning work.
+        await repairCommittedNativeChatResponse(db, {
+          companyId: row.companyId, issueId: row.issueId, runId: row.runId,
+        });
+      }
+      if (
+        row.coordinatorPhase === "committed" &&
+        row.decisionId &&
+        row.resultId &&
+        row.assessmentId &&
+        currentDecisionJson.externalChatReviewPresentation
+      ) {
+        // A later chat turn may retain the same pending review. Recover the
+        // earlier response independently before status reconciliation skips
+        // its superseded decision; this cannot change issue disposition.
+        await repairCommittedNativeReviewResponse(db, {
+          companyId: row.companyId,
+          issueId: row.issueId,
+          runId: row.runId,
+          decisionId: row.decisionId,
+          resultId: row.resultId,
+          assessmentId: row.assessmentId,
+        });
+      }
       if (row.coordinatorPhase === "committed" && row.decisionId && !currentDecision) {
         throw new Error("native_committed_decision_missing");
       }
@@ -499,7 +702,7 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
       let reassessment = null;
       let resultRow = null;
       let contractRow = null;
-      if (assessment && (policyVersionChanged || authoritativeStatusChanged || changedEvidence)) {
+      if (assessment && (authoritativeStatusChanged || changedEvidence)) {
         [resultRow, contractRow] = await Promise.all([
           db.select().from(nativeRunResults).where(and(
             eq(nativeRunResults.id, assessment.resultId),
@@ -530,11 +733,9 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
         && reassessment.verificationPassed === true;
       const facts: NativeReconciliationFacts = authoritativeStatusChanged
         ? { authoritativeStatusChanged: true }
-        : policyVersionChanged
-          ? { policyVersionChanged: true }
-          : newEvidenceSatisfiesContract
-            ? { newEvidenceSatisfiesContract: true }
-            : {};
+        : newEvidenceSatisfiesContract
+          ? { newEvidenceSatisfiesContract: true }
+          : {};
       if (Object.keys(facts).length > 0) {
         if (!assessment || !reassessment || !resultRow || !contractRow) {
           throw new Error("native_reconciliation_reassessment_missing");
@@ -609,14 +810,59 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
       if (!recoveryDecision.effects.some((effect) => effect.kind === "resume_workspace_operation")) {
         throw new Error("native_reconciliation_workspace_resume_policy_missing");
       }
-      const operation = await resumeNativeWorkspaceFinalization({ db, runId: row.runId });
-      const workspaceFinalizeStatus = operation.status === "succeeded" ? "succeeded" : "failed";
+      const operation = await resumeNativeWorkspaceFinalization({
+        db,
+        runId: row.runId,
+        environmentRuntime: options.environmentRuntime,
+      });
+      const workspaceFinalizeStatus =
+        operation.status === "succeeded" ? "succeeded" : "failed";
+      if (workspaceFinalizeStatus === "failed") {
+        const unrecoverable = operation.stderrExcerpt?.includes(
+          "workspace_sync_out_unrecoverable",
+        );
+        const failure = await recordNativeFinalizationFailure({
+          db,
+          runId: row.runId,
+          error: new Error(
+            unrecoverable
+              ? "native_workspace_sync_out_unrecoverable"
+              : "native_workspace_sync_out_failed",
+          ),
+          projectRunStatus: true,
+          failureScope: "workspace",
+          permanent: unrecoverable,
+        });
+        results.push({
+          ...failure,
+          reconciliationAction: "resume_workspace_operation" as const,
+          workspaceOperationId: operation.id,
+          workspaceFinalizeStatus,
+          reconciliationDecision: recoveryDecision,
+        });
+        if (failure.phase === "terminal_failure") {
+          await options
+            .onWorkspaceSettled?.({
+              runId: row.runId,
+              companyId: row.companyId,
+              agentId: row.agentId,
+              succeeded: false,
+            })
+            .catch(() => undefined);
+        }
+        continue;
+      }
       try {
         const finalized = await finalizeNativeRun({
           db,
           runId: row.runId,
           workspaceFinalizeStatus,
           projectRunStatus: true,
+          preserveProviderAttempt: Boolean(
+            readNativeWorkspaceSyncReference(
+              record(row.runnerProfileJson).nativeWorkspaceSync,
+            ),
+          ),
         });
         results.push({
           ...finalized,
@@ -625,6 +871,20 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
           workspaceFinalizeStatus,
           reconciliationDecision: recoveryDecision,
         });
+        if (
+          workspaceFinalizeStatus === "succeeded" &&
+          finalized.phase === "committed"
+        ) {
+          await cleanupNativeWorkspaceSync(row.runId).catch(() => undefined);
+          await options
+            .onWorkspaceSettled?.({
+              runId: row.runId,
+              companyId: row.companyId,
+              agentId: row.agentId,
+              succeeded: true,
+            })
+            .catch(() => undefined);
+        }
       } catch (error) {
         const failure = await recordNativeFinalizationFailure({
           db,
@@ -651,12 +911,29 @@ export async function reconcileNativeFinalizations(db: Db, runIds?: string[]) {
       throw new Error("native_reconciliation_replay_policy_invalid");
     }
     try {
-      results.push(await finalizeNativeRun({
+      const finalized = await finalizeNativeRun({
         db,
         runId: row.runId,
         workspaceFinalizeStatus: barrier.status as "succeeded" | "failed",
         projectRunStatus: true,
-      }));
+        preserveProviderAttempt: Boolean(
+          readNativeWorkspaceSyncReference(
+            record(row.runnerProfileJson).nativeWorkspaceSync,
+          ),
+        ),
+      });
+      results.push(finalized);
+      if (finalized.phase === "committed") {
+        await cleanupNativeWorkspaceSync(row.runId).catch(() => undefined);
+        await options
+          .onWorkspaceSettled?.({
+            runId: row.runId,
+            companyId: row.companyId,
+            agentId: row.agentId,
+            succeeded: true,
+          })
+          .catch(() => undefined);
+      }
     } catch (error) {
       results.push(await recordNativeFinalizationFailure({
         db,

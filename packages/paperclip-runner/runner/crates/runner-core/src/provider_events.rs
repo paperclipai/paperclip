@@ -46,7 +46,12 @@ pub(crate) fn normalized_codex_terminal_event_type(
 pub struct AcpxEventProjectionContext {
     pub run_id: String,
     pub normalized_session_id: String,
+    /// Immutable controller-owned turn identity used by durable PRP event
+    /// correlation. This must not be replaced by an ACP provider turn ID.
     pub turn_id: String,
+    /// Provider-owned turn identity used only to validate provider-originated
+    /// assistant and terminal events while an ACP turn is active.
+    pub provider_turn_id: Option<String>,
     pub item_id: String,
 }
 
@@ -67,7 +72,18 @@ impl AcpxEventProjectionContext {
         ] {
             validate_projection_identity(value, label, max_chars)?;
         }
+        if let Some(provider_turn_id) = self.provider_turn_id.as_deref() {
+            validate_projection_identity(
+                provider_turn_id,
+                "provider turn",
+                DURABLE_STABLE_ID_CHARS,
+            )?;
+        }
         Ok(())
+    }
+
+    fn active_provider_turn_id(&self) -> &str {
+        self.provider_turn_id.as_deref().unwrap_or(&self.turn_id)
     }
 
     fn correlation(&self) -> Value {
@@ -96,7 +112,31 @@ pub fn project_acpx_state_event(
         }])
     };
     match event {
-        AcpxProviderStateEvent::Activity(event) => Ok(vec![event.clone()]),
+        AcpxProviderStateEvent::Activity(event) => {
+            let mut event = event.clone();
+            if event.event_type == "item.delta"
+                && event.payload.get("kind").and_then(Value::as_str) == Some("agentMessage")
+            {
+                let payload = event
+                    .payload
+                    .as_object_mut()
+                    .expect("normalized ACPX item delta has an object payload");
+                if let Some(provider_item_id) = payload
+                    .get("itemId")
+                    .and_then(Value::as_str)
+                    .filter(|item_id| *item_id != context.item_id.as_str())
+                    .map(str::to_owned)
+                {
+                    payload.insert("providerItemId".to_owned(), Value::String(provider_item_id));
+                }
+                // PRP exposes one canonical assistant item for the turn. This
+                // lets streamed deltas and the completed provider response
+                // coalesce by identity while retaining the opaque ACP message
+                // identity as trace metadata above.
+                payload.insert("itemId".to_owned(), Value::String(context.item_id.clone()));
+            }
+            Ok(vec![event])
+        }
         AcpxProviderStateEvent::ToolCall {
             call_id,
             operation_id,
@@ -237,6 +277,18 @@ pub fn project_acpx_state_event(
                 "details": details,
             }),
         ),
+        AcpxProviderStateEvent::Goal(details) => {
+            let goal = details.get("goal").cloned().unwrap_or(Value::Null);
+            one(
+                if goal.is_null() {
+                    "session.goal.cleared"
+                } else {
+                    "session.goal.updated"
+                },
+                EventPriority::P0,
+                details.clone(),
+            )
+        }
         AcpxProviderStateEvent::Diagnostic { code, message } => one(
             "harness.diagnostic",
             EventPriority::P1,
@@ -296,8 +348,8 @@ fn project_runtime_request_origin(origin: Option<&Value>) -> Result<Value, Local
     let Some(origin) = origin else {
         return Ok(json!({
             "adapter": "codex-acpx",
-            "provider": "codex",
-            "method": "runtime.input_requested",
+            "provider": "acpx",
+            "method": "item/tool/requestUserInput",
         }));
     };
     let object = origin.as_object().ok_or_else(|| {
@@ -359,16 +411,69 @@ fn require_projected_turn(
     context: &AcpxEventProjectionContext,
     turn_id: &str,
 ) -> Result<(), LocalRunnerError> {
-    if turn_id != context.turn_id {
+    if turn_id != context.active_provider_turn_id() {
         return Err(LocalRunnerError::invalid(
-            "ACPX state event does not match its durable turn projection",
+            "ACPX state event does not match its active provider turn projection",
         ));
     }
     Ok(())
 }
 
 fn bounded_text(value: &str, max_chars: usize) -> String {
-    redact_text(value).chars().take(max_chars).collect()
+    let redacted = redact_text(value);
+    if redacted.chars().count() <= max_chars {
+        return redacted;
+    }
+    let marker = "…[truncated]";
+    let retained_chars = max_chars.saturating_sub(marker.chars().count());
+    let mut bounded: String = redacted.chars().take(retained_chars).collect();
+    bounded.push_str(marker);
+    bounded
+}
+
+fn bounded_sanitized_value(value: &Value, max_chars: usize) -> Value {
+    match value {
+        Value::Object(values) => Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), bounded_sanitized_value(value, max_chars)))
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(|value| bounded_sanitized_value(value, max_chars))
+                .collect(),
+        ),
+        Value::String(value) => Value::String(bounded_text(value, max_chars)),
+        value => value.clone(),
+    }
+}
+
+fn codex_terminal_error(params: &Value, event_type: &str) -> Value {
+    if event_type != "turn.failed" {
+        return Value::Null;
+    }
+    let error = [
+        "/turn/error",
+        "/turn/failure",
+        "/turn/reason",
+        "/turn/message",
+        "/error",
+        "/failure",
+        "/reason",
+        "/message",
+    ]
+    .into_iter()
+    .find_map(|pointer| params.pointer(pointer).filter(|value| !value.is_null()));
+    match error {
+        Some(Value::String(message)) => Value::String(bounded_text(message, MAX_TEXT_CHARS)),
+        Some(value) => bounded_sanitized_value(&sanitize_value(value), MAX_TEXT_CHARS),
+        None => json!({
+            "code": "provider_terminal_error_missing",
+            "message": "Codex reported a failed turn without error details",
+        }),
+    }
 }
 
 fn string(value: Option<&Value>) -> &str {
@@ -494,6 +599,7 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     "provider": "codex",
                     "providerTurnId": params.pointer("/turn/id").or_else(|| params.get("turnId")).and_then(Value::as_str),
                     "status": provider_status(status, true),
+                    "error": codex_terminal_error(params, event_type),
                 }),
             );
         }
@@ -546,6 +652,19 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 }),
             );
         }
+        "paperclip/resumeUsageSnapshot" => push(
+            &mut events,
+            "harness.diagnostic",
+            EventPriority::P0,
+            json!({
+                "code": "codex_resume_usage_snapshot",
+                "method": "thread/tokenUsage/updated",
+                "classification": "resume_usage_snapshot",
+                "receivedThreadId": params.get("threadId"),
+                "receivedTurnId": params.get("turnId"),
+                "cumulative": measurement(params.get("total").unwrap_or(&Value::Null)),
+            }),
+        ),
         "thread/tokenUsage/updated" => {
             let cumulative = params
                 .get("tokenUsage")
@@ -586,7 +705,13 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                 "scope": if method.contains("config") { "environment" } else { "turn" },
                 "recoverable": method != "error",
                 "userActionable": true,
-                "summary": bounded_text(string(params.get("message")), MAX_TEXT_CHARS),
+                "summary": bounded_text(
+                    ["summary", "message", "details"].iter()
+                        .map(|key| string(params.get(*key)))
+                        .find(|value| !value.trim().is_empty())
+                        .unwrap_or("Provider notice"),
+                    MAX_TEXT_CHARS,
+                ),
             }),
         ),
         "item/agentMessage/delta" => push(
@@ -606,12 +731,16 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
             let provider_item = item(params);
             let item_id = stable_id(string(provider_item.get("id")), "codex-item");
             let item_type = string(provider_item.get("type"));
+            let provider_phase = string(provider_item.get("phase"));
             let completed = method == "item/completed";
-            if matches!(item_type, "commandExecution" | "mcpToolCall") {
+            if matches!(
+                item_type,
+                "commandExecution" | "mcpToolCall" | "dynamicToolCall"
+            ) {
                 let mut payload = json!({
                     "schema": "paperclip.tool.execution.v1",
                     "executionId": item_id,
-                    "transport": if item_type == "mcpToolCall" { "mcp" } else { "process" },
+                    "transport": match item_type { "mcpToolCall" => "mcp", "dynamicToolCall" => "dynamic", _ => "process" },
                     "operation": if item_type == "commandExecution" { "execute" } else { "unknown" },
                     "name": provider_item.get("tool").or_else(|| provider_item.get("command")).and_then(Value::as_str).map(|value| bounded_text(value, 240)),
                     "target": Value::Null,
@@ -647,6 +776,29 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     payload,
                 );
             } else {
+                let mut payload = json!({
+                    "provider": "codex",
+                    "itemId": item_id,
+                    "kind": bounded_text(item_type, 160),
+                    "status": provider_status(string(provider_item.get("status")), completed),
+                    "channel": if item_type == "agentMessage" && provider_phase == "final_answer" {
+                        "final"
+                    } else if item_type == "agentMessage" {
+                        "progress"
+                    } else {
+                        "detail"
+                    },
+                    "text": provider_item.get("text").and_then(Value::as_str).map(|value| bounded_text(value, MAX_TEXT_CHARS)),
+                });
+                if !provider_phase.is_empty() {
+                    payload
+                        .as_object_mut()
+                        .expect("item payload is an object")
+                        .insert(
+                            "providerPhase".to_owned(),
+                            Value::String(bounded_text(provider_phase, 160)),
+                        );
+                }
                 push(
                     &mut events,
                     if completed {
@@ -659,14 +811,7 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
                     } else {
                         EventPriority::P2
                     },
-                    json!({
-                        "provider": "codex",
-                        "itemId": item_id,
-                        "kind": bounded_text(item_type, 160),
-                        "status": provider_status(string(provider_item.get("status")), completed),
-                        "channel": if item_type == "agentMessage" { "progress" } else { "detail" },
-                        "text": provider_item.get("text").and_then(Value::as_str).map(|value| bounded_text(value, MAX_TEXT_CHARS)),
-                    }),
+                    payload,
                 );
             }
         }
@@ -679,7 +824,9 @@ pub fn normalize_codex_notification(method: &str, params: &Value) -> Vec<Normali
 /// Converts an already scope-checked and payload-validated ACPX runtime event
 /// into provider-neutral PRP activity. Operational events such as semantic
 /// results and turn completion remain owned by the stateful provider adapter.
-/// That adapter also suppresses repeated reasoning-start boundaries in a turn.
+/// ACP thought deltas are provider-authored display summaries. Preserve each
+/// bounded delta on a stable reasoning identity rather than dropping the text
+/// or collapsing the stream to an empty start marker.
 pub fn normalize_acpx_runtime_event(
     kind: AcpxRuntimeEventKind,
     payload: &Value,
@@ -688,14 +835,21 @@ pub fn normalize_acpx_runtime_event(
     turn_id: &str,
     provider_requests: u64,
 ) -> Vec<NormalizedProviderEvent> {
-    let item_id = stable_id(
-        match kind {
-            AcpxRuntimeEventKind::ToolCall => string(payload.get("toolCallId")),
-            AcpxRuntimeEventKind::Plan => turn_id,
-            _ => string(payload.get("messageId")),
-        },
-        fallback_item_id,
-    );
+    let item_id = match kind {
+        AcpxRuntimeEventKind::TextDelta => acpx_message_item_id(
+            string(payload.get("messageId")),
+            turn_id,
+            "assistant-message",
+        ),
+        AcpxRuntimeEventKind::Thinking => {
+            acpx_message_item_id(string(payload.get("messageId")), turn_id, "reasoning")
+        }
+        AcpxRuntimeEventKind::ToolCall => {
+            acpx_opaque_item_id(string(payload.get("toolCallId")), fallback_item_id, "tool")
+        }
+        AcpxRuntimeEventKind::Plan => stable_id(turn_id, fallback_item_id),
+        _ => stable_id(string(payload.get("messageId")), fallback_item_id),
+    };
     match kind {
         AcpxRuntimeEventKind::TextDelta => vec![NormalizedProviderEvent {
             event_type: "item.delta".to_owned(),
@@ -710,15 +864,15 @@ pub fn normalize_acpx_runtime_event(
             }),
         }],
         AcpxRuntimeEventKind::Thinking => vec![NormalizedProviderEvent {
-            event_type: "item.started".to_owned(),
+            event_type: "item.delta".to_owned(),
             priority: EventPriority::P2,
             payload: json!({
                 "provider": "acpx",
                 "itemId": item_id,
                 "kind": "reasoning",
-                "status": "running",
-                "channel": "detail",
-                "text": Value::Null,
+                "channel": "summary",
+                "providerMethod": "runtime.event",
+                "text": bounded_text(string(payload.get("text")), MAX_TEXT_CHARS),
             }),
         }],
         AcpxRuntimeEventKind::Plan => normalize_acpx_plan(payload, &item_id),
@@ -781,7 +935,11 @@ fn normalize_acpx_plan(payload: &Value, plan_id: &str) -> Vec<NormalizedProvider
         payload: json!({
             "schema": "paperclip.plan.updated.v1",
             "planId": plan_id,
-            "revision": 1,
+            "revision": payload
+                .get("revision")
+                .and_then(Value::as_u64)
+                .filter(|revision| *revision > 0)
+                .unwrap_or(1),
             "explanation": Value::Null,
             "steps": steps,
             "complete": complete,
@@ -789,6 +947,31 @@ fn normalize_acpx_plan(payload: &Value, plan_id: &str) -> Vec<NormalizedProvider
             "documentRevision": Value::Null,
         }),
     }]
+}
+
+fn acpx_message_item_id(message_id: &str, turn_id: &str, channel: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"paperclip.acpx.message-item.v1\0");
+    digest.update(channel.as_bytes());
+    digest.update(b"\0");
+    digest.update(turn_id.as_bytes());
+    let fallback = format!("acpx-{channel}-{:x}", digest.finalize());
+    acpx_opaque_item_id(message_id, &fallback, channel)
+}
+
+fn acpx_opaque_item_id(value: &str, fallback: &str, kind: &str) -> String {
+    if value.is_empty() {
+        return fallback.to_owned();
+    }
+    if is_stable_id(value, SHORT_STABLE_ID_CHARS) {
+        return value.to_owned();
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"paperclip.acpx.opaque-item.v1\0");
+    digest.update(kind.as_bytes());
+    digest.update(b"\0");
+    digest.update(value.as_bytes());
+    format!("acpx-{kind}-{:x}", digest.finalize())
 }
 
 fn normalize_acpx_status(
@@ -800,26 +983,70 @@ fn normalize_acpx_status(
     let tag = string(payload.get("tag"));
     if tag == "usage_update" {
         let breakdown = payload.get("breakdown").unwrap_or(&Value::Null);
-        let usage = json!({
-            "inputTokens": nonnegative_u64(breakdown.get("inputTokens")),
-            "outputTokens": nonnegative_u64(breakdown.get("outputTokens")),
-            "cacheReadTokens": nonnegative_u64(
-                breakdown
-                    .get("cachedReadTokens")
-                    .or_else(|| breakdown.get("cacheReadTokens")),
-            ),
-            "cacheWriteTokens": nonnegative_u64(
-                breakdown
-                    .get("cachedWriteTokens")
-                    .or_else(|| breakdown.get("cacheWriteTokens")),
-            ),
+        let cache_read = breakdown
+            .get("cachedReadTokens")
+            .or_else(|| breakdown.get("cacheReadTokens"));
+        let cache_write = breakdown
+            .get("cachedWriteTokens")
+            .or_else(|| breakdown.get("cacheWriteTokens"));
+        // ACPX marks every breakdown field optional and defines omission as
+        // unknown. Only advertise a complete per-turn delta when every field
+        // that feeds a Paperclip token budget is explicitly present.
+        let run_delta_available = breakdown
+            .get("inputTokens")
+            .and_then(Value::as_u64)
+            .is_some()
+            && breakdown
+                .get("outputTokens")
+                .and_then(Value::as_u64)
+                .is_some()
+            && breakdown
+                .get("thoughtTokens")
+                .and_then(Value::as_u64)
+                .is_some()
+            && cache_read.and_then(Value::as_u64).is_some()
+            && cache_write.and_then(Value::as_u64).is_some();
+        let cost_is_usd = match payload.pointer("/cost/currency") {
+            None => true,
+            Some(Value::String(currency)) => currency.eq_ignore_ascii_case("USD"),
+            Some(_) => false,
+        };
+        // ACPX 0.13.1 documents breakdown as per-turn usage while cost is
+        // session-cumulative. Keep those authorities separate so consumers do
+        // not add the same tokens twice or treat cumulative cost as a delta.
+        let cumulative = json!({
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "cacheReadTokens": 0,
+            "cacheWriteTokens": 0,
             "activeSeconds": 0.0,
             "requests": provider_requests,
-            "providerCostUsd": payload
-                .pointer("/cost/amount")
-                .and_then(Value::as_f64)
-                .filter(|value| value.is_finite() && *value >= 0.0)
-                .unwrap_or(0.0),
+            "providerCostUsd": if cost_is_usd {
+                payload
+                    .pointer("/cost/amount")
+                    .and_then(Value::as_f64)
+                    .filter(|value| value.is_finite() && *value >= 0.0)
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            },
+        });
+        let run_delta = json!({
+            "inputTokens": nonnegative_u64(breakdown.get("inputTokens")),
+            // PRP v1 has no separate reasoning-token field. Fold ACPX thought
+            // tokens into output so spend and token ceilings cannot undercount
+            // reasoning work.
+            "outputTokens": nonnegative_u64(breakdown.get("outputTokens"))
+                .saturating_add(nonnegative_u64(breakdown.get("thoughtTokens"))),
+            "cacheReadTokens": nonnegative_u64(
+                cache_read,
+            ),
+            "cacheWriteTokens": nonnegative_u64(
+                cache_write,
+            ),
+            "activeSeconds": 0.0,
+            "requests": 1,
+            "providerCostUsd": 0.0,
         });
         return vec![NormalizedProviderEvent {
             event_type: "usage.reported".to_owned(),
@@ -832,8 +1059,9 @@ fn normalize_acpx_status(
                     .map(|value| bounded_text(value, 240)),
                 "providerSessionId": Value::Null,
                 "providerRequestId": Value::Null,
-                "cumulative": usage,
-                "runDelta": usage,
+                "cumulative": cumulative,
+                "runDeltaAvailable": run_delta_available,
+                "runDelta": run_delta,
             }),
         }];
     }
@@ -1037,6 +1265,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn preserves_codex_notice_text_from_current_and_legacy_payloads() {
+        for method in ["configWarning", "deprecationNotice", "warning"] {
+            for (params, expected) in [
+                (
+                    json!({"summary": "Repository is not trusted", "message": "old message"}),
+                    "Repository is not trusted",
+                ),
+                (
+                    json!({"summary": "", "message": "Legacy warning"}),
+                    "Legacy warning",
+                ),
+                (
+                    json!({"details": "Additional warning details"}),
+                    "Additional warning details",
+                ),
+                (json!({}), "Provider notice"),
+            ] {
+                let events = normalize_codex_notification(method, &params);
+                assert_eq!(events[0].event_type, "provider.notice.recorded");
+                assert_eq!(events[0].payload["summary"], expected);
+            }
+        }
+        let events = normalize_codex_notification(
+            "configWarning",
+            &json!({
+                "summary": "x".repeat(MAX_TEXT_CHARS + 100), "accessToken": "not-for-the-log"
+            }),
+        );
+        assert!(
+            events[0].payload["summary"]
+                .as_str()
+                .unwrap()
+                .chars()
+                .count()
+                <= MAX_TEXT_CHARS
+        );
+        assert!(!events[0].payload.to_string().contains("not-for-the-log"));
+    }
+
+    #[test]
+    fn preserves_dynamic_tool_identity_without_arguments() {
+        for method in ["item/started", "item/completed"] {
+            let events = normalize_codex_notification(
+                method,
+                &json!({"item": {
+                    "id": "finish-1", "type": "dynamicToolCall", "tool": "paperclip_finish",
+                    "status": if method == "item/started" { "inProgress" } else { "completed" },
+                    "arguments": {"secret": "not-for-the-log"}
+                }}),
+            );
+            assert_eq!(events.len(), 1);
+            assert_eq!(events[0].payload["name"], "paperclip_finish");
+            assert_eq!(events[0].payload["transport"], "dynamic");
+            assert_eq!(events[0].payload["executionId"], "finish-1");
+            assert!(events[0].event_type.starts_with("tool.execution."));
+            assert!(!events[0].payload.to_string().contains("not-for-the-log"));
+        }
+    }
+
+    #[test]
     fn enforces_the_declared_safe_path_contract() {
         for location in [
             "/absolute/path",
@@ -1144,13 +1432,68 @@ mod tests {
     }
 
     #[test]
+    fn maps_codex_final_answer_as_final_agent_message() {
+        let final_answer = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "msg-final",
+                "type": "agentMessage",
+                "phase": "final_answer",
+                "status": "completed",
+                "text": "2 + 2 is 4.",
+            }}),
+        );
+        assert_eq!(final_answer[0].event_type, "item.completed");
+        assert_eq!(final_answer[0].payload["channel"], "final");
+        assert_eq!(final_answer[0].payload["providerPhase"], "final_answer");
+        assert_eq!(final_answer[0].payload["text"], "2 + 2 is 4.");
+
+        let commentary = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "msg-progress",
+                "type": "agentMessage",
+                "phase": "commentary",
+                "status": "completed",
+                "text": "I am checking the result.",
+            }}),
+        );
+        assert_eq!(commentary[0].payload["channel"], "progress");
+        assert_eq!(commentary[0].payload["providerPhase"], "commentary");
+
+        let legacy = normalize_codex_notification(
+            "item/completed",
+            &json!({"item": {
+                "id": "msg-legacy",
+                "type": "agentMessage",
+                "status": "completed",
+                "text": "Legacy response.",
+            }}),
+        );
+        assert!(legacy[0].payload.get("providerPhase").is_none());
+    }
+
+    #[test]
     fn maps_terminal_and_usage_events_at_priority_zero() {
         let terminal = normalize_codex_notification(
             "turn/completed",
-            &json!({"turn": {"id": "provider-turn", "status": "failed"}}),
+            &json!({"turn": {
+                "id": "provider-turn",
+                "status": "failed",
+                "error": {
+                    "message": "provider rejected the turn",
+                    "accessToken": "secret-value",
+                },
+            }}),
         );
         assert_eq!(terminal[0].event_type, "turn.failed");
         assert_eq!(terminal[0].priority, EventPriority::P0);
+        assert_eq!(
+            terminal[0].payload["error"]["message"],
+            "provider rejected the turn"
+        );
+        assert_eq!(terminal[0].payload["error"]["accessToken"], "[REDACTED]");
+        assert!(!terminal[0].payload.to_string().contains("secret-value"));
         for (method, expected) in [
             ("turn/failed", "turn.failed"),
             ("turn/cancelled", "turn.cancelled"),
@@ -1160,6 +1503,12 @@ mod tests {
                 normalize_codex_notification(method, &json!({"turnId": "provider-turn"}));
             assert_eq!(terminal[0].event_type, expected);
             assert_eq!(terminal[0].priority, EventPriority::P0);
+            if method == "turn/failed" {
+                assert_eq!(
+                    terminal[0].payload["error"]["code"],
+                    "provider_terminal_error_missing"
+                );
+            }
         }
 
         let usage = normalize_codex_notification(
@@ -1171,6 +1520,47 @@ mod tests {
         assert_eq!(usage[0].payload["runDeltaAvailable"], false);
         assert_eq!(usage[0].payload["runDelta"]["inputTokens"], 0);
         assert_eq!(usage[0].priority, EventPriority::P0);
+    }
+
+    #[test]
+    fn preserves_bounded_actionable_opencode_proxy_failure_details() {
+        let terminal = normalize_codex_notification(
+            "turn/failed",
+            &json!({
+                "threadId": "opencode-session-1",
+                "turnId": "opencode-turn-1",
+                "turn": {
+                    "id": "opencode-turn-1",
+                    "status": "failed",
+                    "error": {
+                        "code": "provider_rate_limited",
+                        "message": "Retry after the provider window resets.",
+                        "retryAfterMs": 1500,
+                        "accessToken": "provider-secret",
+                        "debug": "x".repeat(MAX_TEXT_CHARS + 500),
+                    }
+                }
+            }),
+        );
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].event_type, "turn.failed");
+        assert_eq!(terminal[0].payload["providerTurnId"], "opencode-turn-1");
+        assert_eq!(
+            terminal[0].payload["error"]["code"],
+            "provider_rate_limited"
+        );
+        assert_eq!(
+            terminal[0].payload["error"]["message"],
+            "Retry after the provider window resets."
+        );
+        assert_eq!(terminal[0].payload["error"]["retryAfterMs"], 1500);
+        assert_eq!(terminal[0].payload["error"]["accessToken"], "[REDACTED]");
+        let debug = terminal[0].payload["error"]["debug"]
+            .as_str()
+            .expect("debug detail remains text");
+        assert!(debug.chars().count() <= MAX_TEXT_CHARS + 32);
+        assert!(debug.ends_with("…[truncated]"));
+        assert!(!terminal[0].payload.to_string().contains("provider-secret"));
     }
 
     #[test]
@@ -1191,5 +1581,38 @@ mod tests {
         assert_eq!(second[0].payload["runDelta"]["outputTokens"], 0);
         assert_eq!(second[0].payload["runDeltaAvailable"], false);
         assert_eq!(second[0].payload["cumulative"]["inputTokens"], 20);
+    }
+
+    #[test]
+    fn preserves_proxy_shaped_current_run_usage_as_an_explicit_delta() {
+        let usage = normalize_codex_notification(
+            "thread/tokenUsage/updated",
+            &json!({"tokenUsage": {
+                "total": {
+                    "inputTokens": 24,
+                    "outputTokens": 14,
+                    "cachedInputTokens": 3,
+                    "requests": 3,
+                    "providerCostUsd": 0.021
+                },
+                "last": {
+                    "inputTokens": 7,
+                    // The OpenCode proxy folds reasoning into output because
+                    // PRP v1 has no separate reasoning field.
+                    "outputTokens": 4,
+                    "cachedInputTokens": 1,
+                    "requests": 1,
+                    "providerCostUsd": 0.004
+                }
+            }}),
+        );
+
+        assert_eq!(usage[0].payload["runDeltaAvailable"], true);
+        assert_eq!(usage[0].payload["cumulative"]["inputTokens"], 24);
+        assert_eq!(usage[0].payload["cumulative"]["outputTokens"], 14);
+        assert_eq!(usage[0].payload["cumulative"]["providerCostUsd"], 0.021);
+        assert_eq!(usage[0].payload["runDelta"]["inputTokens"], 7);
+        assert_eq!(usage[0].payload["runDelta"]["outputTokens"], 4);
+        assert_eq!(usage[0].payload["runDelta"]["providerCostUsd"], 0.004);
     }
 }

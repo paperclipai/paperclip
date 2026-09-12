@@ -33,4 +33,5 @@ jobs:
           jq --exit-status '.status == "ahead" or .status == "identical"' <<<"$comparison"
 
   ci:
-    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@39b8ee2960541d14b380f95365deecba6723d9bd
+    # Pin: #13300 merge — restore-only dependency caches and parallel native verification.
+    uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@44dde2dec42a22746a2f36b595acacc9ccfa1df6

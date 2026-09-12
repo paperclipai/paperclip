@@ -1,8 +1,19 @@
 {
   "schemaVersion": 1,
-  "verifiedAt": "2026-08-26",
+  "verifiedAt": "2026-09-04",
   "simpleIconsVersion": "16.28.0",
   "providers": [
+    {
+      "slug": "agentmail",
+      "provider": "AgentMail",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/agentmail.svg",
+      "darkAsset": "/brands/apps/agentmail-dark.svg",
+      "officialSourceUrl": "https://docs.agentmail.to",
+      "upstreamAssetUrl": "https://github.com/agentmail-to/agentmail-docs/blob/main/fern/assets/logos/agentmail-logo-landscape-light.svg",
+      "assetType": "svg",
+      "darkVariantRequired": true
+    },
     {
       "slug": "airtable",
       "provider": "Airtable",
@@ -149,6 +160,16 @@
       "darkVariantRequired": true
     },
     {
+      "slug": "discord",
+      "provider": "Discord",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/discord.svg",
+      "officialSourceUrl": "https://discord.com/branding",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/discord.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
       "slug": "egnyte",
       "provider": "Egnyte",
       "catalogVisible": false,
@@ -171,7 +192,7 @@
     {
       "slug": "github",
       "provider": "GitHub",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/github.svg",
       "darkAsset": "/brands/apps/github-dark.svg",
       "officialSourceUrl": "https://github.com/logos",
@@ -345,6 +366,16 @@
       "darkVariantRequired": false
     },
     {
+      "slug": "microsoft-teams",
+      "provider": "Microsoft Teams",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/microsoft-teams.svg",
+      "officialSourceUrl": "https://www.microsoft.com/en-us/microsoft-365/microsoft-teams/group-chat-software",
+      "upstreamAssetUrl": "https://github.com/vercel/chat/blob/51322dde8f4aafd8a7fc7a20cbfd7ae45cafaa5c/apps/docs/lib/logos.tsx",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
       "slug": "netlify",
       "provider": "Netlify",
       "catalogVisible": true,
@@ -485,7 +516,7 @@
     {
       "slug": "slack",
       "provider": "Slack",
-      "catalogVisible": false,
+      "catalogVisible": true,
       "localAsset": "/brands/apps/slack.png",
       "officialSourceUrl": "https://slack.com/brand-guidelines",
       "upstreamAssetUrl": "https://a.slack-edge.com/80588/marketing/img/meta/slack_hash_256.png",
@@ -509,6 +540,16 @@
       "localAsset": "/brands/apps/supabase.svg",
       "officialSourceUrl": "https://github.com/supabase/supabase/blob/4031a7549f5d46da7bc79c01d56be4177dc7c114/packages/common/assets/images/supabase-logo-wordmark--light.svg",
       "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/supabase.svg",
+      "assetType": "svg",
+      "darkVariantRequired": false
+    },
+    {
+      "slug": "telegram",
+      "provider": "Telegram",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/telegram.svg",
+      "officialSourceUrl": "https://telegram.org/tour/screenshots",
+      "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/telegram.svg",
       "assetType": "svg",
       "darkVariantRequired": false
     },

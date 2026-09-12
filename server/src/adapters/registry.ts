@@ -5,9 +5,9 @@ import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
-  resolvePaperclipRunnerPermissionMode,
 } from "@paperclipai/adapter-utils";
 import type { AdapterLoginCapability } from "@paperclipai/adapter-utils";
+import { runAdapterExecutionTargetShellCommand } from "@paperclipai/adapter-utils/execution-target";
 import {
   execute as claudeExecute,
   listClaudeSkills,
@@ -135,6 +135,13 @@ import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
+import {
+  DEFAULT_OPENCODE_RUNNER_MODEL,
+  PaperclipRunnerProviderProfileError,
+  QUALIFIED_ACPX_RUNNER_MODELS,
+  QUALIFIED_OPENCODE_RUNNER_VERSION,
+  resolvePaperclipRunnerProviderProfile,
+} from "../services/native-runtime/provider-profile.js";
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -362,70 +369,164 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
       timedOut: false,
       errorMessage: message,
       errorCode: "paperclip_runner_coordinator_required",
-      provider: "codex",
+      provider: ctx.config.provider === "opencode"
+        ? "opencode"
+        : ctx.config.provider === "claude_managed"
+          ? "anthropic"
+          : ctx.config.provider === "aws_agentcore"
+            ? "amazon-bedrock"
+        : ctx.config.provider === "acpx"
+            ? "acpx"
+            : "codex",
       summary: message,
     };
   },
   async testEnvironment(context) {
-    const configuredProvider = context.config.provider ?? "codex";
-    if (configuredProvider !== "codex") {
+    let profile: ReturnType<typeof resolvePaperclipRunnerProviderProfile>;
+    try {
+      profile = resolvePaperclipRunnerProviderProfile(context.config);
+    } catch (error) {
+      const profileError = error instanceof PaperclipRunnerProviderProfileError
+        ? error
+        : new PaperclipRunnerProviderProfileError(
+            "paperclip_runner_provider_unsupported",
+            "Paperclip Runner provider configuration is invalid.",
+          );
       return {
         adapterType: "paperclip_runner",
         status: "fail" as const,
         testedAt: new Date().toISOString(),
         checks: [{
-          code: "paperclip_runner_provider_unsupported",
+          code: profileError.code,
           level: "error" as const,
-          message: "Paperclip Runner currently supports only the Codex provider.",
+          message: profileError.message,
         }],
       };
     }
-    if (context.executionTarget?.kind === "remote") {
+    if (profile.provider === "acpx") {
+      try {
+        if (profile.acpxAgent !== "claude") throw new Error("Select Codex to use the native Codex runner.");
+        const target = context.executionTarget;
+        if (target?.kind === "remote") {
+          const probe = await runAdapterExecutionTargetShellCommand(
+            `acpx-platform-${crypto.randomUUID()}`, target, "uname -s && uname -m",
+            { cwd: target.remoteCwd, env: {}, timeoutSec: 15 },
+          );
+          if (probe.timedOut || probe.exitCode !== 0) throw new Error("Could not verify the remote ACPX runner platform.");
+          const [os, arch] = probe.stdout.trim().split(/\s+/);
+          if (!((os === "Linux" && arch === "x86_64") || (os === "Darwin" && ["arm64", "x86_64"].includes(arch ?? "")))) {
+            throw new Error("ACPX Claude requires Linux x64 or macOS ARM64/x64.");
+          }
+          return {
+            adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
+            checks: [{ code: "acpx_remote_runtime_unverified", level: "warn" as const,
+              message: "The remote platform is supported. Runtime package integrity and readiness must still be verified by the remote runner before launch." }],
+          };
+        }
+        const { probeAcpxClaudeInstallation } = await import("@paperclipai/paperclip-runner/live");
+        await probeAcpxClaudeInstallation(profile.model);
+        return {
+          adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date().toISOString(),
+          checks: [{ code: "acpx_runtime_ready", level: "info" as const, message: "ACPX Claude runtime is installed and verified. Model access is checked when Claude runs." }],
+        };
+      } catch (error) {
+        return {
+          adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(),
+          checks: [{ code: "acpx_runtime_unavailable", level: "error" as const, message: error instanceof Error ? error.message : "ACPX Claude runtime could not be verified." }],
+        };
+      }
+    }
+    if (profile.provider === "claude_managed") {
       return {
         adapterType: "paperclip_runner",
-        status: "fail" as const,
+        status: "warn" as const,
         testedAt: new Date().toISOString(),
         checks: [{
-          code: "paperclip_runner_environment_unsupported",
-          level: "error" as const,
-          message: "Paperclip Runner currently requires a local execution environment.",
+          code: "claude_managed_profile_selected",
+          level: "info" as const,
+          message: `Claude Managed profile ${profile.managedProfileId} is selected with retention acknowledged. Its stored qualification, API-key binding, and spend ceiling are verified before the first turn.`,
+        }, {
+          code: "claude_managed_retention_notice",
+          level: "warn" as const,
+          message: "Claude Managed is a stateful beta service and is not eligible for ZDR or HIPAA modes.",
         }],
       };
     }
-    const configuredPermission = context.config.codexPermissionMode;
-    if (
-      configuredPermission !== undefined
-      && resolvePaperclipRunnerPermissionMode("codex", configuredPermission)
-        !== configuredPermission
-    ) {
+    if (profile.provider === "aws_agentcore") {
       return {
         adapterType: "paperclip_runner",
-        status: "fail" as const,
+        status: "warn" as const,
         testedAt: new Date().toISOString(),
         checks: [{
-          code: "runner_permission_mode_invalid",
-          level: "error" as const,
-          message: "codexPermissionMode is not supported by Codex.",
+          code: "aws_agentcore_profile_selected",
+          level: "info" as const,
+          message: `AWS AgentCore profile ${profile.agentCoreProfileId} is selected with retention acknowledged. Its stored qualification, invocation limits, and estimated spend ceiling are verified before the first turn.`,
+        }, {
+          code: "aws_agentcore_retention_notice",
+          level: "warn" as const,
+          message: "AgentCore Memory retains short-term events for 90 days; the spend ceiling is an estimate, not an AWS currency hard stop.",
         }],
       };
     }
-    const result = await codexTestEnvironment(context);
+    const result = profile.provider === "opencode"
+      ? await openCodeTestEnvironment(context)
+      : await codexTestEnvironment(context);
     return { ...result, adapterType: "paperclip_runner" };
   },
   listSkills: listCodexSkills,
   syncSkills: syncCodexSkills,
   sessionCodec: codexSessionCodec,
-  models: codexModels,
-  listModels: listCodexModels,
-  refreshModels: refreshCodexModels,
+  models: [
+    ...codexModels,
+    { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
+    { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
+  ],
+  listModels: async () => [
+    ...await listCodexModels(),
+    { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
+    { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
+  ],
+  refreshModels: async () => [
+    ...await refreshCodexModels(),
+    { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
+    { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
+  ],
   supportsLocalAgentJwt: false,
-  supportsInstructionsBundle: false,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
-  getRuntimeCommandSpec: (config) => buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex"),
+  getRuntimeCommandSpec: (config) => config.provider === "claude_managed"
+    || config.provider === "aws_agentcore"
+    || config.provider === "acpx"
+    ? { command: "paperclip-runnerd", detectCommand: null, installCommand: null }
+    : config.provider === "opencode"
+      ? buildNpmRuntimeCommandSpec(
+          config,
+          "opencode",
+          `opencode-ai@${QUALIFIED_OPENCODE_RUNNER_VERSION}`,
+        )
+      : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.153.4"),
   agentConfigurationDoc:
-    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex through the Rust Paperclip runner and authenticated PRP transport.\n",
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude through the Rust Paperclip runner and authenticated PRP transport. Pi is not available through the qualified ACPX profile. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
   getConfigSchema: () => ({
     fields: [
+      {
+        key: "provider",
+        label: "Provider",
+        type: "select" as const,
+        default: "codex",
+        options: [
+          { value: "codex", label: "Codex" },
+          { value: "opencode", label: `OpenCode ${QUALIFIED_OPENCODE_RUNNER_VERSION}` },
+          { value: "claude_managed", label: "Claude Managed" },
+          { value: "aws_agentcore", label: "AWS AgentCore" },
+          { value: "acpx", label: "ACPX Claude" },
+        ],
+        hint: "Select a local provider, company-qualified managed provider, or ACPX Claude.",
+      },
       {
         key: "codexPermissionMode",
         label: "Codex permission mode",
@@ -435,6 +536,110 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           ({ value, label }) => ({ value, label }),
         ),
         hint: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.description,
+        meta: { visibleWhen: { key: "provider", value: "codex" } },
+      },
+      {
+        key: "opencodePermissionMode",
+        label: "OpenCode permission mode",
+        type: "select" as const,
+        default: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.opencode.defaultMode,
+        options: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.opencode.options.map(
+          ({ value, label }) => ({ value, label }),
+        ),
+        hint: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.opencode.description,
+        meta: { visibleWhen: { key: "provider", value: "opencode" } },
+      },
+      {
+        key: "acpxPermissionMode",
+        label: "ACPX permission mode",
+        type: "select" as const,
+        default: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.acpx.defaultMode,
+        options: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.acpx.options.map(
+          ({ value, label }) => ({ value, label }),
+        ),
+        hint: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.acpx.description,
+        meta: { visibleWhen: { key: "provider", value: "acpx" } },
+      },
+      {
+        key: "model",
+        label: "Provider model",
+        type: "text" as const,
+        default: "",
+        placeholder: DEFAULT_OPENCODE_RUNNER_MODEL,
+        hint: "OpenCode uses provider/model form. ACPX Claude accepts Claude model IDs, including custom IDs.",
+        meta: { visibleWhen: { key: "provider", value: "opencode" } },
+      },
+      {
+        key: "managedProfileId",
+        label: "Managed Agent profile",
+        type: "text" as const,
+        required: true,
+        hint: "Company-scoped qualified profile ID or key.",
+        meta: { visibleWhen: { key: "provider", value: "claude_managed" } },
+      },
+      {
+        key: "maxSessionListCostUsd",
+        label: "Session spend ceiling (USD)",
+        type: "number" as const,
+        default: 1,
+        hint: "Hard ceiling for one Claude Managed session.",
+        meta: { visibleWhen: { key: "provider", value: "claude_managed" } },
+      },
+      {
+        key: "managedAgentsRetentionAcknowledged",
+        label: "Acknowledge managed retention",
+        type: "toggle" as const,
+        default: false,
+        hint: "Claude Managed is stateful beta and is not eligible for ZDR or HIPAA modes.",
+        meta: { visibleWhen: { key: "provider", value: "claude_managed" } },
+      },
+      {
+        key: "agentCoreProfileId",
+        label: "AgentCore profile",
+        type: "text" as const,
+        required: true,
+        hint: "Company-scoped qualified AgentCore profile ID or key.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "maxEstimatedSessionCostUsd",
+        label: "Estimated session ceiling (USD)",
+        type: "number" as const,
+        default: 1,
+        hint: "Paperclip estimate; AWS does not provide a per-session currency hard stop.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "maxIterations",
+        label: "Maximum iterations",
+        type: "number" as const,
+        default: 8,
+        hint: "Must be between 1 and the qualified maximum of 8.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "maxOutputTokens",
+        label: "Maximum output tokens",
+        type: "number" as const,
+        default: 4_096,
+        hint: "Must be between 1 and the qualified maximum of 4096.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "timeoutSeconds",
+        label: "Invocation timeout (seconds)",
+        type: "number" as const,
+        default: 300,
+        hint: "Must be between 1 and the qualified maximum of 300 seconds.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
+      },
+      {
+        key: "agentCoreRetentionAcknowledged",
+        label: "Acknowledge 90-day Memory retention",
+        type: "toggle" as const,
+        default: false,
+        hint: "The qualified AgentCore profile retains short-term Memory events for 90 days.",
+        meta: { visibleWhen: { key: "provider", value: "aws_agentcore" } },
       },
       {
         key: "lifecycleMode",
@@ -453,6 +658,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         type: "number" as const,
         default: 300_000,
         hint: "Warm sessions suspend after this much inactivity.",
+        meta: { visibleWhen: { key: "lifecycleMode", value: "warm" } },
       },
     ],
   }),

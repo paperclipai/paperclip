@@ -20,6 +20,7 @@ interface TaskChatRichInputProps {
   ariaLabelledBy?: string;
   testId?: string;
   attachAriaLabel?: string;
+  showImageAttachControls?: boolean;
 }
 
 /** Composer-grade rich text field for takeover answers and revision notes. */
@@ -36,6 +37,7 @@ export function TaskChatRichInput({
   ariaLabelledBy,
   testId = "task-chat-rich-input",
   attachAriaLabel = "Attach image",
+  showImageAttachControls = true,
 }: TaskChatRichInputProps) {
   const editorRef = useRef<MarkdownEditorRef>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -104,7 +106,7 @@ export function TaskChatRichInput({
         bordered={false}
         contentClassName="max-h-(--sz-28dvh) min-h-(--sz-72px) overflow-y-auto px-0 py-0 text-sm scrollbar-auto-hide"
       />
-      {imageUploadHandler ? (
+      {imageUploadHandler && showImageAttachControls ? (
         <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
           <input
             ref={fileInputRef}

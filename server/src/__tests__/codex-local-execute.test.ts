@@ -698,6 +698,39 @@ describe("codex execute", () => {
     }
   });
 
+  it.each([true, false])("retries missing resume only before a session starts (started=%s)", async (started) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-resume-stop-"));
+    const commandPath = path.join(root, "codex");
+    const attemptsPath = path.join(root, "attempts");
+    await seedSharedCodexAuth(root);
+    await fs.writeFile(commandPath, `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.appendFileSync(${JSON.stringify(attemptsPath)}, "attempt\\n");
+if (process.argv.includes("resume")) {
+  console.error("state db missing rollout path for thread unrelated-old-thread");
+  ${started ? 'console.log(JSON.stringify({ type: "thread.started", thread_id: "existing-session" }));' : ''}
+  process.exitCode = 1;
+} else {
+  console.log(JSON.stringify({ type: "thread.started", thread_id: "fresh-session" }));
+  console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } }));
+}
+`, "utf8");
+    await fs.chmod(commandPath, 0o755);
+    try {
+      const result = await execute({
+        runId: `resume-stop-${started}`,
+        agent: { id: "agent-1", companyId: "company-1", name: "Codex", adapterType: "codex_local", adapterConfig: { engine: "cli" } },
+        runtime: { sessionId: "existing-session", sessionParams: null, sessionDisplayId: "existing-session", taskKey: null },
+        config: { engine: "cli", command: commandPath, cwd: root, promptTemplate: "Test resume." },
+        context: {}, onLog: async () => {},
+      });
+      expect((await fs.readFile(attemptsPath, "utf8")).trim().split("\n")).toHaveLength(started ? 1 : 2);
+      expect(result.sessionId).toBe(started ? "existing-session" : "fresh-session");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("classifies mid-turn harness crashes as retryable transient upstream errors", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-harness-crash-"));
     const workspace = path.join(root, "workspace");
@@ -1436,6 +1469,68 @@ process.exit(1);
       else process.env.PAPERCLIP_IN_WORKTREE = previousPaperclipInWorktree;
       if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousCodexHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("isolates connector skills by agent and revision without changing the selected model identity", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-connector-codex-"));
+    const workspace = path.join(root, "workspace");
+    const command = path.join(root, "codex");
+    const capture = path.join(root, "capture.json");
+    const sourceHome = path.join(root, "selected-account");
+    const skillSource = path.join(root, "skill-v1");
+    await fs.mkdir(workspace, { recursive: true });
+    await fs.mkdir(sourceHome, { recursive: true });
+    await fs.mkdir(skillSource, { recursive: true });
+    await fs.writeFile(path.join(sourceHome, "auth.json"), fakeCodexAuthJson);
+    await fs.writeFile(path.join(skillSource, "SKILL.md"), "# AgentMail\nAssigned inbox one.");
+    await writeFakeCodexCommand(command);
+    const keys = ["PAPERCLIP_HOME", "PAPERCLIP_INSTANCE_ID", "CODEX_HOME"] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    process.env.PAPERCLIP_HOME = path.join(root, "paperclip");
+    process.env.PAPERCLIP_INSTANCE_ID = "connectors";
+    process.env.CODEX_HOME = sourceHome;
+    const invoke = async (agentId: string, digest: string | null, source = skillSource, connectorSkillInstructions = "") => {
+      const config = {
+        engine: "cli", command, cwd: workspace,
+        env: { CODEX_HOME: sourceHome, PAPERCLIP_TEST_CAPTURE_PATH: capture },
+        paperclipConnectorSkillDigest: digest,
+        paperclipSkillSync: { desiredSkills: digest ? ["paperclipai/paperclip/agentmail"] : [] },
+        paperclipRuntimeSkills: digest ? [{ key: "paperclipai/paperclip/agentmail", runtimeName: "agentmail", source }] : [],
+      };
+      const result = await execute({ runId: `run-${agentId}-${digest?.slice(0, 1) ?? "none"}`,
+        agent: { id: agentId, companyId: "company-1", name: "Email agent", adapterType: "codex_local", adapterConfig: config },
+        runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        config, context: { paperclipWake: { connectorSkillInstructions } }, authToken: "test-token", onLog: async () => {},
+      });
+      expect(result.errorMessage).toBeNull();
+      expect(result.exitCode).toBe(0);
+      return JSON.parse(await fs.readFile(capture, "utf8")) as CapturePayload;
+    };
+    try {
+      const first = await invoke("agent-1", "a".repeat(64));
+      expect(first.codexHome).toContain("connector-runtimes/agent-1/");
+      expect(await fs.realpath(path.join(first.codexHome!, "auth.json"))).toBe(await fs.realpath(path.join(sourceHome, "auth.json")));
+      expect(await fs.readFile(path.join(first.codexHome!, "skills/agentmail/SKILL.md"), "utf8")).toContain("inbox one");
+      await expect(fs.stat(path.join(sourceHome, "skills/agentmail"))).rejects.toMatchObject({ code: "ENOENT" });
+      const other = await invoke("agent-2", "a".repeat(64));
+      expect(other.codexHome).not.toBe(first.codexHome);
+      const nextSource = path.join(root, "skill-v2");
+      await fs.mkdir(nextSource);
+      await fs.writeFile(path.join(nextSource, "SKILL.md"), "# AgentMail\nAssigned inbox two.");
+      const next = await invoke("agent-1", "b".repeat(64), nextSource);
+      expect(next.codexHome).not.toBe(first.codexHome);
+      expect(await fs.readFile(path.join(next.codexHome!, "skills/agentmail/SKILL.md"), "utf8")).toContain("inbox two");
+      const inline = await invoke("agent-1", null, skillSource, "# AgentMail\nAssigned inbox inline@example.test");
+      expect(inline.prompt).toContain("Assigned inbox inline@example.test");
+      await expect(fs.stat(path.join(sourceHome, "skills/agentmail"))).rejects.toMatchObject({ code: "ENOENT" });
+      const removed = await invoke("agent-1", null);
+      expect(removed.prompt).not.toContain("inline@example.test");
+      expect(removed.codexHome).toBe(sourceHome);
+      await expect(fs.stat(path.join(removed.codexHome!, "skills/agentmail"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; }
       await fs.rm(root, { recursive: true, force: true });
     }
   });

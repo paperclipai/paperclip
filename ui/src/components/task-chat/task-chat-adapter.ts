@@ -29,10 +29,18 @@ function effectiveAgentId(comment: IssueChatComment): string | null {
 }
 
 function authorKind(comment: IssueChatComment): TaskChatAuthorKind {
-  // System authorship wins over any derivable run→agent linkage (PAP-443):
-  // recovery notices carry a derivedAuthorAgentId but must not render as
-  // agent bubbles.
-  if (comment.authorType === "system") return "system";
+  // The server-authored presentation contract wins over attribution. Some
+  // control-plane notices keep the run agent as their author for audit and
+  // authorization, but they must still use the system-notice renderer.
+  // System authorship also wins over any derivable run→agent linkage
+  // (PAP-443): recovery notices carry a derivedAuthorAgentId but must not
+  // render as agent bubbles.
+  if (
+    comment.presentation?.kind === "system_notice" ||
+    comment.authorType === "system"
+  ) {
+    return "system";
+  }
   if (effectiveAgentId(comment)) return "agent";
   if (comment.authorType === "user") return "human";
   return "agent";
@@ -44,6 +52,14 @@ export function formatTaskChatTimestamp(value: unknown): string | undefined {
   const d = value instanceof Date ? value : new Date(value as string);
   if (Number.isNaN(d.getTime())) return undefined;
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+/** Keep every comment footer on the same compact, user-visible timestamp. */
+export function formatTaskChatCommentTimestamp(
+  comment: IssueChatComment,
+  _kind: TaskChatAuthorKind,
+): string | undefined {
+  return formatTaskChatTimestamp(comment.createdAt);
 }
 
 export function commentsToTaskChatItems(
@@ -95,11 +111,12 @@ export function commentsToTaskChatItems(
       ?? null;
     items.push({
       id: comment.id || comment.clientId || `${comment.createdAt}`,
+      renderKey: comment.clientId ?? comment.id,
       kind: "message",
       author: kind,
       authorName,
       text: comment.body,
-      timestamp: formatTaskChatTimestamp(comment.createdAt),
+      timestamp: formatTaskChatCommentTimestamp(comment, kind),
       optimistic,
       queueTargetRunId: queued ? comment.queueTargetRunId ?? null : null,
       verificationCaveats: sourceRunId

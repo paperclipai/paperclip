@@ -127,6 +127,60 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     ).not.toBeNull();
   });
 
+  it("shows workspace-ready comments as a compact row with expandable workspace metadata", () => {
+    renderNotice({
+      text: [
+        "## Workspace Ready",
+        "",
+        "- Strategy: `git_worktree`",
+        "- Branch: `fix/workspace-ready-notice`",
+        "- CWD: `/worktrees/workspace-ready-notice`",
+      ].join("\n"),
+      presentation: {
+        kind: "system_notice",
+        tone: "info",
+        title: "Workspace ready · fix/workspace-ready-notice",
+        detailsDefaultOpen: false,
+        density: "compact",
+      },
+      metadata: {
+        version: 1,
+        sections: [
+          {
+            title: "Workspace",
+            rows: [
+              { type: "key_value", label: "Strategy", value: "git_worktree" },
+              {
+                type: "key_value",
+                label: "Branch",
+                value: "fix/workspace-ready-notice",
+              },
+              { type: "key_value", label: "CWD", value: "/worktrees/workspace-ready-notice" },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(toggleButton().getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector('[data-testid="task-chat-system-notice"]')?.className).toContain(
+      "items-start",
+    );
+    expect(toggleButton().textContent).toContain(
+      "Workspace ready · fix/workspace-ready-notice",
+    );
+    expect(container.textContent).not.toContain("git_worktree");
+
+    flushSync(() => toggleButton().click());
+
+    const details = container.querySelector('[data-testid="task-chat-system-notice-details"]');
+    expect(details?.textContent).toContain("Workspace");
+    expect(details?.textContent?.match(/git_worktree/g)).toHaveLength(1);
+    expect(details?.textContent?.match(/fix\/workspace-ready-notice/g)).toHaveLength(1);
+    expect(details?.textContent).toContain("/worktrees/workspace-ready-notice");
+    expect(details?.querySelector(".paperclip-markdown")).toBeNull();
+  });
+
   it("shows Try again while folded and invokes it without expanding the notice", async () => {
     const onTryAgain = vi.fn();
     renderNotice(
@@ -151,6 +205,11 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
 
     expect(onTryAgain).toHaveBeenCalledTimes(1);
     expect(toggleButton().getAttribute("aria-expanded")).toBe("false");
+    expect(
+      container
+        .querySelector('[data-testid="task-chat-system-notice"]')
+        ?.classList.contains("items-start"),
+    ).toBe(true);
   });
 
   it("moves Try again into the expanded notice footer", () => {
@@ -218,5 +277,33 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     expect(
       container.querySelector('[data-testid="task-chat-no-live-path-try-again"]'),
     ).toBeNull();
+  });
+
+  it("keeps workspace-ready events as a compact expandable notice", () => {
+    renderNotice({
+      text: "Workspace ready. The isolated worktree is available at `/tmp/paperclip/worktrees/PAP-91`.",
+      metadata: null,
+    });
+
+    const button = toggleButton();
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+    expect(button.textContent).toContain("System update");
+    expect(button.textContent).toContain("Workspace ready.");
+    expect(button.querySelector("code")).toBeNull();
+    expect(container.textContent).not.toContain("/tmp/paperclip/worktrees/PAP-91");
+
+    flushSync(() => button.click());
+    expect(container.textContent).toContain("/tmp/paperclip/worktrees/PAP-91");
+  });
+
+  it("ignores malformed metadata while preserving expandable raw detail", () => {
+    renderNotice({
+      text: "Workspace ready. Runtime metadata could not be decoded.",
+      metadata: { version: 1, sections: "malformed" } as unknown as TaskChatMessageItem["metadata"],
+    });
+
+    expect(() => flushSync(() => toggleButton().click())).not.toThrow();
+    expect(container.querySelector('[data-testid="task-chat-system-notice-details"]')).not.toBeNull();
+    expect(container.textContent).toContain("Runtime metadata could not be decoded");
   });
 });

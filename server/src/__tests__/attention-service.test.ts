@@ -616,13 +616,13 @@ describeEmbeddedPostgres("attention service", () => {
 
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
 
-    expect(feed.totalCount).toBe(12);
+    expect(feed.totalCount).toBe(11);
     expect(feed.countsBySourceKind).toMatchObject({
       approval: 1,
       issue_thread_interaction: 1,
       join_request: 1,
       recovery_action: 1,
-      productivity_review: 1,
+      productivity_review: 0,
       blocker_attention: 1,
       review: 2,
       failed_run: 1,
@@ -634,7 +634,6 @@ describeEmbeddedPostgres("attention service", () => {
       "issue_thread_interaction",
       "join_request",
       "recovery_action",
-      "productivity_review",
       "blocker_attention",
       "review",
       "failed_run",
@@ -651,7 +650,14 @@ describeEmbeddedPostgres("attention service", () => {
       expect(item.rank).toBeGreaterThan(0);
     }
     expect(feed.items.some((item) => item.subject.title === "Revision requested")).toBe(false);
+    expect(feed.items.some((item) => item.sourceKind === "productivity_review")).toBe(false);
     expect(feed.items.some((item) => item.subject.title === "Agent productivity review excluded")).toBe(false);
+    const legacyReviews = await db.select().from(issues).where(eq(issues.originKind, "issue_productivity_review"));
+    expect(legacyReviews).toHaveLength(2);
+    expect(legacyReviews).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Human productivity review", status: "todo", assigneeUserId: "board-user", parentId: productivitySourceIssueId }),
+      expect.objectContaining({ title: "Agent productivity review excluded", status: "todo", assigneeAgentId: workerId, parentId: agentProductivitySourceIssueId }),
+    ]));
     expect(feed.items.some((item) => item.subject.title === "Agent review excluded")).toBe(false);
     expect(feed.items.some((item) =>
       item.sourceKind === "failed_run" && item.subject.metadata?.errorCode === "provider_quota"

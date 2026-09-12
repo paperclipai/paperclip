@@ -23,6 +23,7 @@ import type {
   PrpStructuredRunResult,
   PrpTerminalState,
 } from "@paperclipai/paperclip-runner";
+import { NativeSessionProtocolIntegrityError } from "../../vendor/paperclip-runner/index.js";
 
 import {
   getEmbeddedPostgresTestSupport,
@@ -374,7 +375,7 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
     });
     await expect(
       nativeStore.appendEvent({ ...event, priority: 2 }),
-    ).rejects.toThrow("native_event_replay_conflict");
+    ).rejects.toBeInstanceOf(NativeSessionProtocolIntegrityError);
     await expect(nativeStore.appendEvent(runnerEvent(seed, 3))).rejects.toThrow(
       "native_event_source_gap",
     );

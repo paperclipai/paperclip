@@ -1,11 +1,10 @@
 // @vitest-environment jsdom
 
-// Regression guard for PAP-16302: `/audit` was merged into the single rich
-// Activity page. Both the company-prefixed `/:company/audit` and the bare
-// `/audit` (PAP-16300's unprefixed redirect) must keep resolving — as redirects
-// into `/:company/activity?mode=agents`, so old deep links land on the
-// agent-actions scope instead of 404ing. This drives the real <App> route table
-// so removing either registration fails loudly.
+// Regression guard for the Audit hub: Activity remains the canonical root,
+// while Runs, Costs, and Budgets live beneath it. Company-prefixed and bare
+// legacy routes must keep resolving with their query filters intact; `/audit`
+// specifically retains the historical Agent Actions preset. This drives the
+// real <App> route table so removing either registration fails loudly.
 
 import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
@@ -13,6 +12,12 @@ import { createRoot } from "react-dom/client";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+
+const streamlinedUiState = vi.hoisted(() => ({ enabled: true, loaded: true }));
+
+vi.mock("./hooks/useStreamlinedUiEnabled", () => ({
+  useStreamlinedUiEnabled: () => streamlinedUiState,
+}));
 
 // jsdom's CSS parser rejects the custom-property marker rule stitches inserts
 // (`--sxs{--sxs:N}`), pulled into <App>'s eager import graph transitively via
@@ -48,6 +53,11 @@ vi.mock("./components/Layout", async () => {
   return { Layout: () => <Outlet /> };
 });
 
+vi.mock("./components/Layout.production", async () => {
+  const { Outlet } = await import("react-router-dom");
+  return { Layout: () => <Outlet /> };
+});
+
 // Rendered by <App> outside <Routes> and needs DialogProvider; irrelevant here.
 vi.mock("./components/OnboardingWizardVariant", () => ({
   OnboardingWizardVariant: () => null,
@@ -69,11 +79,40 @@ vi.mock("./pages/audit/CompanyActivity", () => ({
   },
 }));
 
+vi.mock("./pages/audit/AuditHub", () => ({
+  AuditHub: ({ section }: { section: string }) => {
+    const location = useLocation();
+    return <div>{`AUDIT_${section.toUpperCase()}@${location.pathname}${location.search}`}</div>;
+  },
+}));
+
 vi.mock("./pages/Issues", () => ({
   Issues: () => {
     const location = useLocation();
     return <div>{`TASKS_PAGE@${location.pathname}`}</div>;
   },
+}));
+
+vi.mock("./pages/audit/CompanyActivity.production", () => ({
+  CompanyActivity: () => {
+    const location = useLocation();
+    return <div>{`PRODUCTION_ACTIVITY@${location.pathname}${location.search}`}</div>;
+  },
+}));
+
+vi.mock("./pages/Costs.production", () => ({
+  Costs: () => {
+    const location = useLocation();
+    return <div>{`PRODUCTION_COSTS@${location.pathname}${location.search}`}</div>;
+  },
+}));
+
+vi.mock("./pages/NotFound", () => ({
+  NotFoundPage: ({ scope }: { scope: string }) => <div>{`NOT_FOUND:${scope}`}</div>,
+}));
+
+vi.mock("./pages/PluginPage", () => ({
+  PluginPage: () => <div>PRODUCTION_PLUGIN_FALLBACK</div>,
 }));
 
 const PAP_COMPANY = {
@@ -137,6 +176,8 @@ describe("App Activity routing (PAP-16302)", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     companyState = { companies: [PAP_COMPANY], selected: PAP_COMPANY };
+    streamlinedUiState.enabled = true;
+    streamlinedUiState.loaded = true;
   });
 
   afterEach(() => {
@@ -152,9 +193,42 @@ describe("App Activity routing (PAP-16302)", () => {
     flushSync(() => root.unmount());
   });
 
+  it("serves organization and entity-scoped run history beneath Activity", async () => {
+    const root = renderAppAt(
+      container,
+      "/PAP/activity/runs?entityType=routine&entityId=routine-1",
+    );
+    await waitForRoute(
+      container,
+      "AUDIT_RUNS@/PAP/activity/runs?entityType=routine&entityId=routine-1",
+    );
+    flushSync(() => root.unmount());
+  });
+
   it("redirects /:company/audit to Activity with the agent-actions mode preset", async () => {
     const root = renderAppAt(container, "/PAP/audit");
     await waitForRoute(container, "ACTIVITY_PAGE@/PAP/activity?mode=agents");
+    flushSync(() => root.unmount());
+  });
+
+  it("serves each canonical Audit section under Activity", async () => {
+    const root = renderAppAt(container, "/PAP/activity/runs?agentId=agent-1");
+    await waitForRoute(container, "AUDIT_RUNS@/PAP/activity/runs?agentId=agent-1");
+    flushSync(() => root.unmount());
+  });
+
+  it("redirects legacy costs and preserves its deep-link filters", async () => {
+    const root = renderAppAt(container, "/PAP/costs?range=30d#usage");
+    await waitForRoute(container, "AUDIT_COSTS@/PAP/activity/costs?range=30d");
+    flushSync(() => root.unmount());
+  });
+
+  it("redirects legacy Audit sections to their canonical destination", async () => {
+    const root = renderAppAt(container, "/PAP/audit/budgets?projectId=project-1");
+    await waitForRoute(
+      container,
+      "AUDIT_BUDGETS@/PAP/activity/budgets?projectId=project-1",
+    );
     flushSync(() => root.unmount());
   });
 
@@ -184,6 +258,50 @@ describe("App Activity routing (PAP-16302)", () => {
     const root = renderAppAt(container, "/tasks");
     await waitForRoute(container, "TASKS_PAGE@/PAP/issues");
     expect(container.textContent).not.toContain("/tasks/dashboard");
+    flushSync(() => root.unmount());
+  });
+
+  it("redirects a bare legacy section through to the prefixed Audit hub", async () => {
+    const root = renderAppAt(container, "/runs?runStatus=succeeded");
+    await waitForRoute(container, "AUDIT_RUNS@/PAP/activity/runs?runStatus=succeeded");
+    flushSync(() => root.unmount());
+  });
+
+  it("uses the production Activity and Costs routes when Streamlined UI is disabled", async () => {
+    streamlinedUiState.enabled = false;
+    const activityRoot = renderAppAt(container, "/PAP/activity");
+    await waitForRoute(container, "PRODUCTION_ACTIVITY@/PAP/activity");
+    flushSync(() => activityRoot.unmount());
+
+    const costsRoot = renderAppAt(container, "/PAP/costs?range=30d");
+    await waitForRoute(container, "PRODUCTION_COSTS@/PAP/costs?range=30d");
+    flushSync(() => costsRoot.unmount());
+  });
+
+  it("omits streamlined-only Audit routes when Streamlined UI is disabled", async () => {
+    streamlinedUiState.enabled = false;
+    const root = renderAppAt(container, "/PAP/activity/runs");
+    await waitForRoute(container, "PRODUCTION_PLUGIN_FALLBACK");
+    expect(container.textContent).not.toContain("AUDIT_RUNS");
+    flushSync(() => root.unmount());
+  });
+
+  it("does not mount streamlined routes before the experiment setting loads", async () => {
+    streamlinedUiState.loaded = false;
+    const root = renderAppAt(container, "/PAP/activity");
+    expect(container.textContent).not.toContain("ACTIVITY_PAGE");
+    expect(container.textContent).not.toContain("PRODUCTION_ACTIVITY");
+
+    streamlinedUiState.enabled = false;
+    streamlinedUiState.loaded = true;
+    flushSync(() => {
+      root.render(
+        <MemoryRouter initialEntries={["/PAP/activity"]}>
+          <App />
+        </MemoryRouter>,
+      );
+    });
+    await waitForRoute(container, "PRODUCTION_ACTIVITY@/PAP/activity");
     flushSync(() => root.unmount());
   });
 });

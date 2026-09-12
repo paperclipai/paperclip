@@ -223,7 +223,10 @@ export function buildIssueThreadInteractionSummary(
 
   if (interaction.kind === "request_confirmation") {
     if (interaction.status === "accepted") return "Confirmed request";
-    if (interaction.status === "rejected") return "Declined request";
+    if (interaction.status === "rejected") {
+      const rejectLabel = interaction.payload.rejectLabel?.trim();
+      return rejectLabel ? `Selected “${rejectLabel}”` : "Declined request";
+    }
     if (interaction.status === "expired") {
       const outcome = interaction.result?.outcome;
       if (outcome === "superseded_by_comment") return "Confirmation expired after comment";

@@ -1381,23 +1381,28 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       loginPty: {
-        output(workerSessionId: string, chunk: string): void {
+        output(hostRouteId: string, workerSessionId: string, chunk: string): void {
           // Forward one raw output chunk of a live login pseudo-terminal. The
-          // notification carries the worker session identifier, so the host binds
-          // the chunk to the open route by that identifier while the route is
-          // open. The host drops an unknown or a mismatched identifier and never
-          // logs the raw bytes. This notification carries no invocation id,
-          // because it fires after the open reply returns.
+          // notification echoes the host route identifier and the worker session
+          // identifier, so the host can hold more than one concurrent login
+          // pseudo-terminal per worker and binds the chunk to its own route
+          // while that route is open. The host drops an unknown, a stale, or a
+          // mismatched identifier and never logs the raw bytes. This
+          // notification carries no invocation id, because it fires after the
+          // open reply returns.
+          if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
           if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
           if (typeof chunk !== "string" || chunk.length === 0) return;
-          notifyHost(LOGIN_PTY_OUTPUT_NOTIFICATION, { workerSessionId, chunk });
+          notifyHost(LOGIN_PTY_OUTPUT_NOTIFICATION, { hostRouteId, workerSessionId, chunk });
         },
-        exit(workerSessionId: string, exitCode: number | null): void {
+        exit(hostRouteId: string, workerSessionId: string, exitCode: number | null): void {
           // Forward the child exit of a live login pseudo-terminal. The host
-          // resolves the open route's wait promise by the worker session
-          // identifier while the route is open.
+          // resolves its own route's wait promise by the host route identifier
+          // and the bound worker session identifier while that route is open.
+          if (typeof hostRouteId !== "string" || hostRouteId.length === 0) return;
           if (typeof workerSessionId !== "string" || workerSessionId.length === 0) return;
           notifyHost(LOGIN_PTY_EXIT_NOTIFICATION, {
+            hostRouteId,
             workerSessionId,
             exitCode: typeof exitCode === "number" ? exitCode : null,
           });

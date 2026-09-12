@@ -77,7 +77,10 @@ commands have a separate boundary: an empty-by-default environment with no
 permission profile requesting read-only minimal runtime files, no host-home or
 Codex-home access, and write access to the assigned workspace. The driver
 refuses filesystem-root workspaces, workspaces containing host `HOME`, and any
-workspace overlapping host `CODEX_HOME`.
+workspace overlapping host `CODEX_HOME`. A workspace below host `HOME` is
+valid, but when `PAPERCLIP_WORKSPACE_CWD` is present its canonical path must be
+equal to or below that assigned workspace so sibling and symlink escapes fail
+before provider startup.
 
 The returned sandbox facts remain authoritative. Codex 0.132.0 may inject a
 provider-managed writable root such as `~/.codex/memories` after a first run,

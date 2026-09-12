@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Building2, Loader2, UserRound } from "lucide-react";
+import { Building2, Loader2, Lock, RefreshCw, TriangleAlert, UserRound } from "lucide-react";
 import type {
   ConnectionAudienceMember,
   ConnectionGrant,
@@ -8,6 +8,7 @@ import type {
 } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/Identity";
+import { GithubIcon } from "@/components/icons/github-icon";
 import { Skeleton } from "@/components/ui/skeleton";
 import { InlineBanner } from "@/components/InlineBanner";
 import { MemberMultiSelect } from "@/components/MemberMultiSelect";
@@ -30,8 +31,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { cn } from "@/lib/utils";
-import { brandChipBadge } from "@/lib/status-colors";
+import { Link } from "@/lib/router";
+import { brandBanner, brandChipBadge } from "@/lib/status-colors";
+import { agentUrl, cn } from "@/lib/utils";
 import {
   audienceUserIds,
   grantAccountLabel,
@@ -77,11 +79,15 @@ export function IdentitiesSection({
   credentialPolicy,
   ownerUserId,
   connectedUser,
+  dedicatedAgent,
   grantsQuery,
   loading,
   error,
   onConnectAsMe,
   onConnectOrganization,
+  onConnectAgent,
+  onRefreshAccess,
+  refreshAccessPending = false,
   onReplaceAudience,
   connectPending,
   audiencePending,
@@ -94,11 +100,15 @@ export function IdentitiesSection({
   credentialPolicy: ToolConnectionCredentialPolicy;
   ownerUserId: string | null;
   connectedUser: { label: string; image: string | null } | null;
+  dedicatedAgent: { id: string; name: string; urlKey?: string | null } | null;
   grantsQuery: ConnectionGrantsResponse | undefined;
   loading: boolean;
   error: boolean;
   onConnectAsMe: () => void;
   onConnectOrganization: () => void;
+  onConnectAgent: (agentId: string) => void;
+  onRefreshAccess?: () => void;
+  refreshAccessPending?: boolean;
   onReplaceAudience: (grant: ConnectionGrant, memberUserIds: string[]) => void;
   connectPending: boolean;
   audiencePending: boolean;
@@ -126,6 +136,12 @@ export function IdentitiesSection({
       ?? personalGrants[0]
       ?? null;
   }, [grants, myGrant, ownerUserId]);
+  const agentGrant = useMemo(
+    () => grants.find((grant) => grant.kind === "agent" && grant.subjectAgentId === dedicatedAgent?.id)
+      ?? grants.find((grant) => grant.kind === "agent")
+      ?? null,
+    [dedicatedAgent?.id, grants],
+  );
   const personalSubjectLabel = memberLabel(
     members,
     personalGrant?.subjectUserId ?? ownerUserId ?? currentUserId,
@@ -156,16 +172,61 @@ export function IdentitiesSection({
     );
   }
 
+  if (credentialPolicy === "per_agent") {
+    const github = agentGrant?.providerTenant?.github;
+    return (
+      <section className="space-y-5">
+        <h2 className="text-sm font-semibold text-foreground">GitHub identity</h2>
+        <p className="text-sm text-muted-foreground">This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.</p>
+        <IdentityRow
+          title={github ? `@${github.login}` : "Dedicated GitHub account"}
+          status={agentGrant?.status ?? null}
+          detail={dedicatedAgent ? (
+            <Link
+              to={agentUrl(dedicatedAgent)}
+              className="transition-colors hover:text-foreground hover:underline"
+            >
+              Used only by {dedicatedAgent.name}
+            </Link>
+          ) : "Dedicated to one agent"}
+          actions={!agentGrant && dedicatedAgent && capabilities?.canConfigure ? (
+            <Button size="sm" disabled={connectPending} onClick={() => onConnectAgent(dedicatedAgent.id)}>
+              {connectPending ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+              Connect dedicated account
+            </Button>
+          ) : null}
+        />
+        {github ? <GitHubConnectionSummary grant={agentGrant} onRefreshAccess={onRefreshAccess} refreshPending={refreshAccessPending} /> : null}
+      </section>
+    );
+  }
+
   return (
     <section className="space-y-5">
       <IdentitiesHeading />
 
-      <ConnectionAudienceCallout
+      <HumanAccessCards
         personal={usesPersonalIdentity}
+        restricted={!usesPersonalIdentity && Boolean(orgGrant?.members?.length)}
         connectedName={usesPersonalIdentity ? personalSubjectLabel ?? connectedUser?.label ?? null : null}
         connectedImage={usesPersonalIdentity ? connectedUser?.image ?? null : null}
         status={(usesPersonalIdentity ? personalGrant : orgGrant)?.status ?? null}
+        canEditAudience={orgGrant?.capabilities?.canEditAudience ?? false}
+        onChooseAll={() => {
+          if (orgGrant) onReplaceAudience(orgGrant, []);
+        }}
+        onChooseSelected={() => {
+          if (orgGrant) onOpenAudience(orgGrant.id);
+        }}
       />
+
+      {(usesPersonalIdentity ? personalGrant : orgGrant)?.providerTenant?.github ? (
+        <GitHubConnectionSummary
+          grant={(usesPersonalIdentity ? personalGrant : orgGrant)!}
+          onRefreshAccess={onRefreshAccess}
+          refreshPending={refreshAccessPending}
+        />
+      ) : null}
 
       <div>
         {usesPersonalIdentity ? (
@@ -223,40 +284,164 @@ export function IdentitiesSection({
   );
 }
 
-function IdentitiesHeading() {
-  return <h2 className="text-sm font-semibold text-foreground">Account</h2>;
+function GitHubConnectionSummary({
+  grant,
+  onRefreshAccess,
+  refreshPending,
+}: {
+  grant: ConnectionGrant;
+  onRefreshAccess?: () => void;
+  refreshPending: boolean;
+}) {
+  const github = grant.providerTenant?.github;
+  if (!github) return null;
+  const configurationUrl = github.appSlug
+    ? `https://github.com/apps/${encodeURIComponent(github.appSlug)}/installations/new`
+    : /^https:\/\/github\.com\/apps\/[a-z0-9-]+\/installations\/new$/.test(github.installationUrl ?? "")
+      ? github.installationUrl
+      : null;
+  const repositoryWarning = github.repositorySelection === "all"
+    ? "All current and future repositories"
+    : github.repositorySelection === "mixed"
+      ? "Mixed access; scope varies by installation"
+      : null;
+  const repositorySummary = github.repositorySelection === "none"
+    ? "No repositories selected"
+    : `${github.repositoryCount} selected ${github.repositoryCount === 1 ? "repository" : "repositories"}`;
+  return (
+    <div className="divide-y divide-border border-y border-border">
+      <div className="py-3">
+        <div className="text-sm font-medium text-foreground">GitHub account</div>
+        <a className="text-sm text-muted-foreground hover:underline" href={`https://github.com/${encodeURIComponent(github.login)}`} target="_blank" rel="noreferrer">
+          @{github.login}
+        </a>
+      </div>
+      <div className="space-y-3 py-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-foreground">Repositories</div>
+            {repositoryWarning ? (
+              <div
+                role="note"
+                className={cn(
+                  "mt-1 inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs",
+                  brandBanner.warning,
+                )}
+              >
+                <TriangleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                {repositoryWarning}
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground">{repositorySummary}</div>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            {onRefreshAccess && configurationUrl ? (
+              <Button size="icon-sm" variant="outline" aria-label="Refresh access" title="Refresh access" disabled={refreshPending} onClick={onRefreshAccess}>
+                {refreshPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
+              </Button>
+            ) : null}
+            {configurationUrl ? (
+              <Button asChild size="sm" variant="outline">
+                <a href={configurationUrl} target="_blank" rel="noreferrer">Add More Repos on GitHub</a>
+              </Button>
+            ) : onRefreshAccess ? (
+              <Button size="sm" variant="outline" disabled={refreshPending} onClick={onRefreshAccess}>
+                {refreshPending ? <Loader2 className="animate-spin" aria-hidden="true" /> : <RefreshCw aria-hidden="true" />}
+                Load GitHub configuration
+              </Button>
+            ) : null}
+          </div>
+        </div>
+        {github.repositories ? (
+          github.repositories.length ? <ul aria-label="Accessible GitHub repositories" tabIndex={0} className="max-h-(--sz-github-repository-list) space-y-2 overflow-y-auto text-sm">
+            {github.repositories.map((repository) => (
+              <li key={repository.id}>
+                <a className="flex items-center gap-2 text-muted-foreground hover:underline" href={`https://github.com/${repository.fullName.split("/").map(encodeURIComponent).join("/")}`} target="_blank" rel="noreferrer">
+                  <GithubIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span className="break-all">{repository.fullName}</span>
+                  {repository.private === true ? <Lock className="h-3 w-3 shrink-0" role="img" aria-label="Private repository" /> : null}
+                </a>
+              </li>
+            ))}
+          </ul> : <p role="status" className="text-sm text-muted-foreground">
+            No accessible repositories.
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">Refresh access to load the current repository list.</p>
+        )}
+        {configurationUrl ? <p className="text-xs text-muted-foreground">
+          Missing an organization or repository? <a href={configurationUrl} target="_blank" rel="noreferrer" className="text-foreground hover:underline">Configure access on GitHub</a>, then refresh this list.
+        </p> : null}
+      </div>
+    </div>
+  );
 }
 
-function ConnectionAudienceCallout({
+function IdentitiesHeading() {
+  return <h2 className="text-sm font-semibold text-foreground">Which humans can use this credential?</h2>;
+}
+
+function HumanAccessCards({
   personal,
+  restricted,
   connectedName,
   connectedImage,
   status,
+  canEditAudience,
+  onChooseAll,
+  onChooseSelected,
 }: {
   personal: boolean;
+  restricted: boolean;
   connectedName: string | null;
   connectedImage: string | null;
   status: ConnectionGrant["status"] | null;
+  canEditAudience: boolean;
+  onChooseAll: () => void;
+  onChooseSelected: () => void;
 }) {
-  const Icon = personal ? UserRound : Building2;
   return (
-    <div className="flex items-start gap-4 rounded-lg border border-border bg-card p-5">
-      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-muted text-foreground">
-        <Icon className="h-5 w-5" />
-      </div>
-      <div className="min-w-0 space-y-3">
-        <p className="text-lg font-semibold text-foreground">
-          {personal
-            ? "Only you can use this connection"
-            : "Anyone in your company can use this connection"}
-        </p>
-        {connectedName && status !== null ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <Identity name={connectedName} avatarUrl={connectedImage} />
-            {status === "active" ? null : <StatusText status={status} />}
-          </div>
-        ) : null}
-      </div>
+    <div className="space-y-3">
+      <RadioCardGroup
+        ariaLabel="Which humans can use this credential"
+        value={personal ? "personal" : restricted ? "selected" : "company"}
+        className="sm:grid-cols-2"
+        onValueChange={(next) => {
+          if (!canEditAudience || personal) return;
+          if (next === "company") onChooseAll();
+          if (next === "selected") onChooseSelected();
+        }}
+        options={personal ? [
+          {
+            value: "personal",
+            title: "Just me",
+            description: "Only you can use this connection.",
+            icon: <UserRound className="h-4 w-4" />,
+          },
+        ] : [
+          {
+            value: "selected",
+            title: "Humans I pick",
+            description: "Only selected people in your company.",
+            icon: <UserRound className="h-4 w-4" />,
+            disabled: !canEditAudience,
+          },
+          {
+            value: "company",
+            title: "Any human in the company",
+            description: "Anyone in your company can use this connection.",
+            icon: <Building2 className="h-4 w-4" />,
+            disabled: !canEditAudience,
+          },
+        ]}
+      />
+      {connectedName && status !== null ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <Identity name={connectedName} avatarUrl={connectedImage} />
+          {status === "active" ? null : <StatusText status={status} />}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -271,7 +456,7 @@ function IdentityRow({
   id?: string;
   title: string;
   status: ConnectionGrant["status"] | null;
-  detail: string | null;
+  detail: ReactNode;
   actions: ReactNode;
 }) {
   return (

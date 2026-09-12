@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { heartbeatRuns, type Db } from "@paperclipai/db";
 import type { PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
 import { isToolConnectionAttentionHealth } from "@paperclipai/shared";
 import {
@@ -21,6 +22,7 @@ import {
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { agentInstructionsService } from "../agent-instructions.js";
 import { toolAccessService } from "../tool-access.js";
+import { filterResolvedGitHubConnectionsForRun } from "../git-credentials.js";
 
 const MAX_ASSET_FILES = 10_000;
 const MAX_ASSET_BYTES = 64 * 1024 * 1024;
@@ -85,7 +87,7 @@ async function verifyMaterializedAsset(
   }
 }
 
-async function materializeAsset(files: AssetFile[]): Promise<NativeRuntimeAssetReference> {
+export async function materializeAsset(files: AssetFile[]): Promise<NativeRuntimeAssetReference> {
   const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path));
   const manifestFiles = sorted.map((file) => ({ path: safeRelativePath(file.path, "runtime context path"), sha256: sha256(file.content), mode: file.mode & 0o555, size: file.content.byteLength }));
   const totalBytes = manifestFiles.reduce((sum, file) => sum + file.size, 0);
@@ -166,13 +168,43 @@ async function materializeSelectedSkills(runtimeConfig: Record<string, unknown>,
 export async function resolveNativeRuntimeMcpSnapshot(input: { db: Db; agent: Pick<RuntimeAgent, "id" | "companyId">; runId: string }) {
   const effective = await toolAccessService(input.db).getEffectiveProfilesForAgent(input.agent.companyId, input.agent.id);
   const permitted = new Set([...effective.entries.filter((entry) => entry.effect === "include" && entry.connectionId).map((entry) => entry.connectionId!), ...effective.allowedTools.map((tool) => tool.connectionId)]);
+  const hasGitHubConnection = effective.installedConnections.some((connection) => {
+    const config = connection.config && typeof connection.config === "object"
+      ? connection.config as Record<string, unknown>
+      : {};
+    const transportConfig = connection.transportConfig && typeof connection.transportConfig === "object"
+      ? connection.transportConfig as Record<string, unknown>
+      : {};
+    return config.sourceTemplateKey === "github" || transportConfig.sourceTemplateKey === "github";
+  });
+  const [runIdentity] = hasGitHubConnection
+    ? await input.db.select({ responsibleUserId: heartbeatRuns.responsibleUserId, activeIdentityContextId: heartbeatRuns.activeIdentityContextId })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.id, input.runId),
+        eq(heartbeatRuns.companyId, input.agent.companyId),
+        eq(heartbeatRuns.agentId, input.agent.id),
+      ))
+      .limit(1)
+    : [];
+  // Broker runs pin the permitted tool catalog, not one person’s credential.
+  // Selection happens at each operation and can change through steering.
+  const resolvedInstalledConnections = runIdentity?.activeIdentityContextId
+    ? effective.installedConnections : await filterResolvedGitHubConnectionsForRun({
+    db: input.db,
+    companyId: input.agent.companyId,
+    agentId: input.agent.id,
+    responsibleUserId: runIdentity?.responsibleUserId ?? null,
+    connections: effective.installedConnections,
+  });
   // App access is optional runtime context. Keep usable assignments pinned, but
   // do not stop unrelated work because an assigned app needs attention.
-  const availableConnectionIds = new Set(effective.installedConnections.filter((connection) =>
+  const availableConnectionIds = new Set(resolvedInstalledConnections.filter((connection) =>
     permitted.has(connection.id)
     && connection.status === "active"
     && connection.enabled
-    && !isToolConnectionAttentionHealth(connection.healthStatus)
+    && (Boolean(runIdentity?.activeIdentityContextId) && (connection.config?.sourceTemplateKey === "github" || connection.transportConfig?.sourceTemplateKey === "github")
+      || !isToolConnectionAttentionHealth(connection.healthStatus))
     && ["mcp_remote", "local_stdio"].includes(connection.transport)
   ).map((connection) => connection.id));
   const assignment = {

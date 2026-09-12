@@ -29,9 +29,9 @@ describe("paperclip runner transcript projection", () => {
     }), "2026-08-21T12:00:00.000Z");
 
     expect(event("item.delta", { kind: "reasoning", text: "Inspecting the runner" }, "reason-1"))
-      .toEqual([{ kind: "thinking", ts: expect.any(String), text: "Inspecting the runner", delta: true, channel: "unknown" }]);
+      .toEqual([{ kind: "thinking", ts: expect.any(String), text: "Inspecting the runner", delta: true, channel: "unknown", itemId: "reason-1" }]);
     expect(event("item.delta", { kind: "agentMessage", text: "Here is" }, "message-1"))
-      .toEqual([{ kind: "assistant", ts: expect.any(String), text: "Here is", delta: true, channel: "unknown" }]);
+      .toEqual([{ kind: "assistant", ts: expect.any(String), text: "Here is", delta: true, channel: "unknown", itemId: "message-1" }]);
     expect(event("item.started", {
       kind: "commandExecution",
       item: { id: "exec-1", type: "commandExecution", command: "pnpm test", status: "inProgress" },
@@ -46,7 +46,7 @@ describe("paperclip runner transcript projection", () => {
     ]);
   });
 
-  it("emits a proposed and accepted terminal summary only once", () => {
+  it("emits semantic result governance once without racing the provider final", () => {
     const parse = paperclipRunnerUIAdapter.createStdoutParser!().parseLine;
     const line = (eventType: string, payload: Record<string, unknown>) => parse(JSON.stringify({
       type: "paperclip.prp.event",
@@ -56,7 +56,6 @@ describe("paperclip runner transcript projection", () => {
     expect(line("run.result.proposed", { summary: "Finished the task" }))
       .toEqual([
         expect.objectContaining({ kind: "run_result", disposition: "done", summary: "Finished the task" }),
-        { kind: "assistant", ts: expect.any(String), text: "Finished the task", channel: "final" },
       ]);
     expect(line("run.result.accepted", { result: { summary: "Finished the task" } }))
       .toEqual([]);
@@ -71,16 +70,16 @@ describe("paperclip runner transcript projection", () => {
 
     expect(event("item.started", { kind: "agentMessage", channel: "progress", item: { id: "p1", type: "agentMessage", phase: "commentary", text: "" } }, "p1")).toEqual([]);
     expect(event("item.delta", { kind: "agentMessage", channel: "progress", text: "Running it now." }, "p1"))
-      .toEqual([{ kind: "assistant", ts: expect.any(String), text: "Running it now.", delta: true, channel: "progress" }]);
+      .toEqual([{ kind: "assistant", ts: expect.any(String), text: "Running it now.", delta: true, channel: "progress", itemId: "p1" }]);
 
     expect(event("item.started", { kind: "agentMessage", channel: "final", item: { id: "f1", type: "agentMessage", phase: "final_answer", text: "" } }, "f1")).toEqual([]);
     expect(event("item.delta", { kind: "agentMessage", channel: "final", text: "Completed." }, "f1"))
-      .toEqual([{ kind: "assistant", ts: expect.any(String), text: "Completed.", delta: true, channel: "final" }]);
+      .toEqual([{ kind: "assistant", ts: expect.any(String), text: "Completed.", delta: true, channel: "final", itemId: "f1" }]);
 
     expect(event("item.delta", { kind: "reasoning", channel: "summary", text: "Inspecting" }, "r1"))
-      .toEqual([{ kind: "thinking", ts: expect.any(String), text: "Inspecting", delta: true, channel: "summary" }]);
+      .toEqual([{ kind: "thinking", ts: expect.any(String), text: "Inspecting", delta: true, channel: "summary", itemId: "r1" }]);
     expect(event("item.delta", { kind: "reasoning", channel: "detail", text: "Detailed trace" }, "r1"))
-      .toEqual([{ kind: "thinking", ts: expect.any(String), text: "Detailed trace", delta: true, channel: "detail" }]);
+      .toEqual([{ kind: "thinking", ts: expect.any(String), text: "Detailed trace", delta: true, channel: "detail", itemId: "r1" }]);
   });
 
   it("preserves empty reasoning lifecycle events as real thinking activity", () => {
@@ -124,7 +123,6 @@ describe("paperclip runner transcript projection", () => {
     expect(event("run.result.proposed", { summary: "Human-readable completion." }))
       .toEqual([
         expect.objectContaining({ kind: "run_result", summary: "Human-readable completion." }),
-        { kind: "assistant", ts: expect.any(String), text: "Human-readable completion.", channel: "final" },
       ]);
   });
 

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { IssueChatComment } from "@/lib/issue-chat-messages";
-import { commentsToTaskChatItems } from "./task-chat-adapter";
+import {
+  commentsToTaskChatItems,
+  formatTaskChatTimestamp,
+} from "./task-chat-adapter";
 
 describe("commentsToTaskChatItems", () => {
   it("classifies a recovered local-board comment as an agent bubble", () => {
@@ -124,5 +127,144 @@ describe("commentsToTaskChatItems", () => {
     expect(agent.metadata).toBeUndefined();
     expect(agent.runAgentId).toBeUndefined();
     expect(agent.createdAtIso).toBeUndefined();
+  });
+
+  it("keeps the regular comment time for a causally repositioned steered follow-up", () => {
+    const createdAt = "2026-09-04T14:09:33.000Z";
+    const conversationAnchorAt = "2026-09-04T14:10:14.000Z";
+    const [item] = commentsToTaskChatItems([
+      {
+        id: "c-steered",
+        body: "Use three seconds instead.",
+        authorType: "user",
+        authorUserId: "user-1",
+        authorAgentId: null,
+        followUpRequested: true,
+        consumedByRunId: "run-1",
+        steeredIntoRunId: "run-1",
+        conversationAnchorAt,
+        createdAt,
+      } as unknown as IssueChatComment,
+    ]);
+
+    expect(item).toMatchObject({
+      kind: "message",
+      timestamp: formatTaskChatTimestamp(createdAt),
+    });
+  });
+
+  it("keeps the regular comment time for a successor-run follow-up", () => {
+    const createdAt = "2026-09-04T14:09:33.000Z";
+    const conversationAnchorAt = "2026-09-04T14:10:35.000Z";
+    const [item] = commentsToTaskChatItems([
+      {
+        id: "c-delivered",
+        body: "Use three seconds instead.",
+      authorType: "user",
+      authorUserId: "user-1",
+      authorAgentId: null,
+      followUpRequested: true,
+      consumedByRunId: "run-2",
+      conversationAnchorAt,
+      createdAt,
+      } as unknown as IssueChatComment,
+    ]);
+
+    expect(item).toMatchObject({
+      kind: "message",
+      timestamp: formatTaskChatTimestamp(createdAt),
+    });
+  });
+
+  it("keeps an ordinary first message on the compact timestamp", () => {
+    const createdAt = "2026-09-04T14:09:33.000Z";
+    const [item] = commentsToTaskChatItems([
+      {
+        id: "c-initial",
+        body: "Start the task.",
+        authorType: "user",
+        authorUserId: "user-1",
+        authorAgentId: null,
+        consumedByRunId: "run-1",
+        conversationAnchorAt: "2026-09-04T14:10:35.000Z",
+        createdAt,
+      } as unknown as IssueChatComment,
+    ]);
+
+    expect(item).toMatchObject({
+      kind: "message",
+      timestamp: formatTaskChatTimestamp(createdAt),
+    });
+  });
+
+  it("routes an agent-authored workspace-ready notice through the system renderer", () => {
+    const presentation = {
+      kind: "system_notice",
+      tone: "info",
+      title: "Workspace ready · fix/workspace-ready-notice",
+      detailsDefaultOpen: false,
+      density: "compact",
+    } as const;
+    const metadata = {
+      version: 1,
+      sections: [
+        {
+          title: "Workspace",
+          rows: [
+            { type: "key_value", label: "Strategy", value: "git_worktree" },
+            {
+              type: "key_value",
+              label: "Branch",
+              value: "fix/workspace-ready-notice",
+            },
+            { type: "key_value", label: "CWD", value: "/worktrees/workspace-ready-notice" },
+          ],
+        },
+      ],
+    } as const;
+    const items = commentsToTaskChatItems([
+      {
+        id: "workspace-ready",
+        body: "## Workspace Ready\n\n- Strategy: `git_worktree`",
+        authorType: "agent",
+        authorAgentId: "agent-1",
+        createdByRunId: "run-1",
+        presentation,
+        metadata,
+        createdAt: "2026-09-02T12:59:03.318Z",
+      } as unknown as IssueChatComment,
+    ]);
+
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({
+      id: "workspace-ready",
+      kind: "message",
+      author: "system",
+      presentation,
+      metadata,
+      runAgentId: null,
+      createdAtIso: "2026-09-02T12:59:03.318Z",
+    });
+    expect(items[0]).toHaveProperty("authorName", undefined);
+    expect(items[0]).toHaveProperty("agentIcon", undefined);
+  });
+
+  it("keeps an agent comment with message presentation as an agent bubble", () => {
+    const [item] = commentsToTaskChatItems([
+      {
+        id: "agent-message",
+        body: "Implementation is complete.",
+        authorType: "agent",
+        authorAgentId: "agent-1",
+        presentation: { kind: "message" },
+        metadata: { version: 1, sections: [] },
+        createdAt: "2026-09-02T13:00:00.000Z",
+      } as unknown as IssueChatComment,
+    ]);
+
+    expect(item).toMatchObject({ kind: "message", author: "agent" });
+    if (item.kind !== "message") throw new Error("expected message item");
+    expect(item.presentation).toBeUndefined();
+    expect(item.metadata).toBeUndefined();
   });
 });

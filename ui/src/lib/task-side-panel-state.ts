@@ -6,6 +6,7 @@ const MAX_TASK_STATES = 50;
 
 export type TaskSidePanelTabPayload =
   | { kind: "properties" }
+  | { kind: "subtasks" }
   | { kind: "artifacts" }
   | { kind: "issue-document"; documentKey: string }
   | {
@@ -62,6 +63,7 @@ function parsePayload(value: unknown): TaskSidePanelTabPayload | null {
   if (!input) return null;
   const kind = input.kind;
   if (kind === "properties") return { kind };
+  if (kind === "subtasks") return { kind };
   if (kind === "artifacts") return { kind };
   if (kind === "issue-document") {
     return typeof input.documentKey === "string" && input.documentKey.length > 0
@@ -182,6 +184,10 @@ export function writeTaskSidePanelState(
 
 export function taskPanelPropertiesTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {
   return { id: "properties", type: "properties", label: "Properties", closable: true, contentMode: "padded", payload: { kind: "properties" } };
+}
+
+export function taskPanelSubtasksTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {
+  return { id: "subtasks", type: "subtasks", label: "Subtasks", closable: true, contentMode: "padded", payload: { kind: "subtasks" } };
 }
 
 export function taskPanelArtifactsTab(): SidePanelTabRecord<TaskSidePanelTabPayload> {

@@ -1,4 +1,11 @@
-const CACHE_NAME = "paperclip-v2";
+// The build id is stamped into this file at production build time (see
+// stampServiceWorkerBuildId in vite.config.ts), so a deploy that changes only
+// the app bundle still changes sw.js byte-for-byte. That is what makes the
+// browser install a new worker, which — via skipWaiting + controllerchange —
+// reloads parked tabs onto the fresh bundle. Left as the literal placeholder in
+// dev, where HMR (not the worker) drives refreshes.
+const BUILD_ID = "__PAPERCLIP_BUILD_ID__";
+const CACHE_NAME = `paperclip-${BUILD_ID}`;
 
 self.addEventListener("install", () => {
   self.skipWaiting();

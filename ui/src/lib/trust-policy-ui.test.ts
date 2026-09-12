@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import {
+  buildPermissionsForTrustPreset,
   clearSingleLowTrustBoundaryTarget,
   getLowTrustBoundary,
   getSingleLowTrustBoundaryTarget,
@@ -10,6 +11,28 @@ import {
 } from "./trust-policy-ui";
 
 describe("trust-policy-ui low-trust boundary helpers", () => {
+  it("drops hire authority when switching to the low-trust preset", () => {
+    const demoted = buildPermissionsForTrustPreset(
+      { canCreateAgents: true, canCreateSkills: true },
+      "low_trust_review",
+    );
+    expect(demoted.canCreateAgents).toBe(false);
+    expect(demoted.canCreateSkills).toBe(true);
+
+    const restored = buildPermissionsForTrustPreset(demoted, "standard");
+    expect(restored.canCreateAgents).toBe(false);
+    expect(restored.trustPreset).toBe("standard");
+  });
+
+  it("clears containment across a JSON permissions patch when restoring standard trust", () => {
+    const lowTrust = setSingleLowTrustBoundaryTarget(null, "company-1", { type: "root_issue", id: "issue-1" });
+    const patch = JSON.parse(JSON.stringify(buildPermissionsForTrustPreset(lowTrust, "standard")));
+    const persisted = { ...lowTrust, ...patch };
+    expect(persisted.trustPreset).toBe("standard");
+    expect(persisted.authorizationPolicy).toEqual({});
+    expect(getLowTrustBoundary(persisted)).toBeNull();
+  });
+
   it("writes one project boundary with mode and company id", () => {
     const permissions = setSingleLowTrustBoundaryTarget(null, "company-1", {
       type: "project",

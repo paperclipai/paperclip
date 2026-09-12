@@ -1,5 +1,7 @@
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
+import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
+import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import type {
   TaskChatInteractionItem,
   TaskChatItem,
@@ -13,12 +15,15 @@ import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatStatusPill } from "./TaskChatStatusPill";
 import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
+import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
 import { TaskChatThinking } from "./TaskChatThinking";
 import { TaskMessageScroller } from "./TaskMessageScroller";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
+
+const EMPTY_ATTACHMENTS: IssueAttachment[] = [];
 
 interface TaskChatThreadViewProps {
   items: TaskChatItem[];
@@ -56,6 +61,8 @@ interface TaskChatThreadViewProps {
   /** Requeues a blocked task from its no-live-execution-path failure surfaces. */
   onTryAgainNoLiveExecutionPath?: () => Promise<void> | void;
   tryAgainNoLiveExecutionPathPending?: boolean;
+  onRetryFailedRun?: (runId: string) => Promise<void> | void;
+  retryFailedRunId?: string | null;
   /** Content appended inside the transcript scroller after the settled thread. */
   tail?: ReactNode;
   /** Optional streaming-aware key when `tail` changes without changing `items`. */
@@ -63,6 +70,7 @@ interface TaskChatThreadViewProps {
   className?: string;
   /** When false, render the list without the scroll container (e.g. previews). */
   scroll?: boolean;
+  attachments?: IssueAttachment[];
 }
 
 function renderItem(
@@ -80,6 +88,9 @@ function renderItem(
   onTryAgainNoLiveExecutionPath?: () => Promise<void> | void,
   tryAgainNoLiveExecutionPathPending = false,
   retryableMarkerId?: string,
+  onRetryFailedRun?: (runId: string) => Promise<void> | void,
+  retryFailedRunId?: string | null,
+  attachments: IssueAttachment[] = [],
 ) {
   switch (item.kind) {
     case "message": {
@@ -113,6 +124,12 @@ function renderItem(
               undefined,
               onRuntimeRequestDecision,
               item.attachedTurn?.standaloneHeader ? "runner" : "classic",
+              undefined,
+              false,
+              undefined,
+              undefined,
+              undefined,
+              attachments,
             )
           }
         />
@@ -120,13 +137,9 @@ function renderItem(
       return (
         <TaskChatBubble
           item={item}
-          // Human messages are inserted optimistically and later replaced by
-          // their canonical server IDs. Animating either mount makes the same
-          // text visibly fade twice during that handoff; user sends should
-          // paint immediately and remain visually stable.
-          animateEntry={
-            item.author !== "human" && !item.attachedTurn?.standaloneHeader
-          }
+          // Hydration and live-to-durable reconciliation may move a logical
+          // message between parents. Mounting must never replay a fade.
+          animateEntry={false}
           actions={
             item.attachedTurn?.standaloneHeader
               ? actions
@@ -139,7 +152,10 @@ function renderItem(
           attachedTurn={item.attachedTurn?.standaloneHeader ? undefined : turn}
           hideAgentIdentity={Boolean(item.attachedTurn?.standaloneHeader)}
           onTryAgainNoLiveExecutionPath={onTryAgainNoLiveExecutionPath}
-          tryAgainNoLiveExecutionPathPending={tryAgainNoLiveExecutionPathPending}
+          tryAgainNoLiveExecutionPathPending={
+            tryAgainNoLiveExecutionPathPending
+          }
+          attachments={attachments}
         />
       );
     }
@@ -149,10 +165,16 @@ function renderItem(
           item={item}
           onTryAgain={
             item.id === retryableMarkerId
-              ? onTryAgainNoLiveExecutionPath
+              ? item.runId && onRetryFailedRun
+                ? () => onRetryFailedRun(item.runId!)
+                : onTryAgainNoLiveExecutionPath
               : undefined
           }
-          tryAgainPending={tryAgainNoLiveExecutionPathPending}
+          tryAgainPending={
+            item.runId
+              ? retryFailedRunId === item.runId
+              : tryAgainNoLiveExecutionPathPending
+          }
         />
       );
     case "thinking":
@@ -171,6 +193,7 @@ function renderItem(
     case "usage":
       return <TaskChatUsageReadout item={item} />;
     case "activity_phase":
+      if (activityAppearance === "runner") return <TaskChatRunnerActivityGroup item={item} />;
       return (
         <TaskChatActivityPhase
           item={item}
@@ -187,6 +210,13 @@ function renderItem(
                 undefined,
                 undefined,
                 onRuntimeRequestDecision,
+                activityAppearance,
+                undefined,
+                false,
+                undefined,
+                undefined,
+                undefined,
+                attachments,
               )
             )
           }
@@ -198,6 +228,11 @@ function renderItem(
       return (
         <TaskChatPlanPreviewCard
           source={{ kind: "saved", document: item.document }}
+          testId={
+            item.placement === "fallback"
+              ? "task-chat-plan-preview-fallback"
+              : "task-chat-plan-preview"
+          }
         />
       );
     case "brief":
@@ -216,6 +251,12 @@ function renderItem(
               undefined,
               onRuntimeRequestDecision,
               item.standaloneHeader ? "runner" : "classic",
+              undefined,
+              false,
+              undefined,
+              undefined,
+              undefined,
+              attachments,
             )
           }
         />
@@ -235,6 +276,28 @@ function renderItem(
   }
 }
 
+function isSystemLikeItem(item: TaskChatItem): boolean {
+  return (
+    item.kind === "marker" ||
+    (item.kind === "message" && item.author === "system")
+  );
+}
+
+export function taskChatItemSpacingClass(
+  item: TaskChatItem,
+  previousItem: TaskChatItem | null,
+): string | undefined {
+  if (!previousItem) return undefined;
+  const currentIsSystemLike = isSystemLikeItem(item);
+  const previousIsSystemLike = isSystemLikeItem(previousItem);
+  if (currentIsSystemLike && previousIsSystemLike) return "mt-2";
+  if (currentIsSystemLike || previousIsSystemLike) return "mt-3";
+  if (item.kind === "turn" || previousItem.kind === "turn") return "mt-3";
+  if (item.kind === "interaction" || previousItem.kind === "interaction")
+    return "mt-4";
+  return "mt-6";
+}
+
 /**
  * Presentational render layer for the redesigned task thread. Consumed by both
  * the live thread (adapter over comment/run props) and the dev harness
@@ -252,62 +315,135 @@ export function TaskChatThreadView({
   renderQueuedAction,
   onTryAgainNoLiveExecutionPath,
   tryAgainNoLiveExecutionPathPending = false,
+  onRetryFailedRun,
+  retryFailedRunId = null,
   tail,
   contentKey,
   className,
   scroll = true,
+  attachments = EMPTY_ATTACHMENTS,
 }: TaskChatThreadViewProps) {
-  const retryableMarkerId = onTryAgainNoLiveExecutionPath
-    ? [...items]
-        .reverse()
-        .find(
-          (item) =>
-            item.kind === "marker" &&
-            item.variant === "interrupted" &&
-            item.label === "Run failed",
-        )?.id
-    : undefined;
+  const streamlined = useStreamlinedTaskChatPresentation();
+  const retryableMarkerId =
+    onRetryFailedRun || onTryAgainNoLiveExecutionPath
+      ? [...items]
+          .reverse()
+          .find(
+            (item) =>
+              item.kind === "marker" &&
+              item.variant === "interrupted" &&
+              (item.label === "Run failed" ||
+                item.label === "Usage limit reached"),
+          )?.id
+      : undefined;
+  // Streaming tail and header updates must not rebuild settled markdown/tool trees.
+  const history = useMemo(() => {
+    const renderedItems = streamlined
+      ? items
+          .map((item) => ({
+            item,
+            content: renderItem(
+              item,
+              onApprovalDecision,
+              renderInteraction,
+              renderBrief,
+              renderMessageActions,
+              renderQueuedAction,
+              onRuntimeRequestDecision,
+              "classic",
+              onTryAgainNoLiveExecutionPath,
+              tryAgainNoLiveExecutionPathPending,
+              retryableMarkerId,
+              onRetryFailedRun,
+              retryFailedRunId,
+              attachments,
+            ),
+          }))
+          .filter((entry) => entry.content !== null)
+      : [];
+    return (
+      <>
+        {streamlined
+          ? renderedItems.map(({ item, content }, index) => (
+              <div
+                key={
+                  item.kind === "message" ? (item.renderKey ?? item.id) : item.id
+                }
+                data-thread-anchor={
+                  item.kind === "message" ? (item.renderKey ?? item.id) : item.id
+                }
+                id={item.kind === "message" ? `comment-${item.id}` : undefined}
+                className={taskChatItemSpacingClass(
+                  item,
+                  renderedItems[index - 1]?.item ?? null,
+                )}
+                data-thread-item-kind={
+                  item.kind === "message" ? item.author : item.kind
+                }
+              >
+                {content}
+              </div>
+            ))
+          : items.map((item, index) => (
+              <div
+                key={
+                  item.kind === "message" ? (item.renderKey ?? item.id) : item.id
+                }
+                data-thread-anchor={
+                  item.kind === "message" ? (item.renderKey ?? item.id) : item.id
+                }
+                id={item.kind === "message" ? `comment-${item.id}` : undefined}
+                className={cn(
+                  index > 0 &&
+                    item.kind === "interaction" &&
+                    item.interaction.status !== "pending" &&
+                    "-mt-3",
+                )}
+              >
+                {renderItem(
+                  item,
+                  onApprovalDecision,
+                  renderInteraction,
+                  renderBrief,
+                  renderMessageActions,
+                  renderQueuedAction,
+                  onRuntimeRequestDecision,
+                  "classic",
+                  onTryAgainNoLiveExecutionPath,
+                  tryAgainNoLiveExecutionPathPending,
+                  retryableMarkerId,
+                  onRetryFailedRun,
+                  retryFailedRunId,
+                  attachments,
+                )}
+              </div>
+            ))}
+      </>
+    );
+  }, [
+    items, streamlined, onApprovalDecision, onRuntimeRequestDecision,
+    renderInteraction, renderBrief, renderMessageActions, renderQueuedAction,
+    onTryAgainNoLiveExecutionPath, tryAgainNoLiveExecutionPathPending,
+    retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments,
+  ]);
   const body = (
     <div
       className={cn(
-        "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-5 px-4 py-4",
+        "paperclip-mobile-thread mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col px-2 py-4 md:px-4",
+        streamlined ? "md:px-0" : "gap-5",
         className,
       )}
     >
       {header ? (
         <div
-          className="flex flex-col gap-6 pb-2"
+          className={cn("flex flex-col gap-6", streamlined ? "pb-4" : "pb-2")}
           data-testid="task-chat-thread-header"
         >
           {header}
         </div>
       ) : null}
-      {items.map((item, index) => (
-        <div
-          key={item.id}
-          className={cn(
-            index > 0 &&
-              item.kind === "interaction" &&
-              item.interaction.status !== "pending" &&
-              "-mt-3",
-          )}
-        >
-          {renderItem(
-            item,
-            onApprovalDecision,
-            renderInteraction,
-            renderBrief,
-            renderMessageActions,
-            renderQueuedAction,
-            onRuntimeRequestDecision,
-            "classic",
-            onTryAgainNoLiveExecutionPath,
-            tryAgainNoLiveExecutionPathPending,
-            retryableMarkerId,
-          )}
-        </div>
-      ))}
-      {tail}
+      {history}
+      {tail ? streamlined ? <div className="mt-4">{tail}</div> : tail : null}
     </div>
   );
 

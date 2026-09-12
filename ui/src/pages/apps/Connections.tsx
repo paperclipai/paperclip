@@ -126,12 +126,11 @@ export function Connections() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
+      { label: "Connectors", href: "/apps" },
       { label: "Connections" },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [setBreadcrumbs]);
 
   const galleryQuery = useQuery({
     queryKey: queryKeys.apps.gallery(selectedCompanyId ?? "__none__"),
@@ -426,13 +425,13 @@ export function Connections() {
                             ? application.name
                             : null;
                   const appHref = connection
-                    ? `/apps/${connection.id}/setup`
-                    : `/apps/app/${application.id}/setup`;
+                    ? `/apps/${connection.id}/permissions`
+                    : `/apps/app/${application.id}/permissions`;
                   const actionLabel = !connection
                     ? "Connect"
                     : status.tone === "attention"
                       ? "Reconnect"
-                      : "Edit";
+                      : "Permissions";
                   return (
                     <tr
                       key={connection?.id ?? application.id}

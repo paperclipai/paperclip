@@ -163,7 +163,7 @@ describe("adapter routes", () => {
       .toMatchObject({
         disabled: false,
         capabilities: {
-          supportsInstructionsBundle: false,
+          supportsInstructionsBundle: true,
         },
       });
   });
@@ -331,6 +331,53 @@ describe("adapter routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.fields).toEqual([]);
+  });
+
+  it("serves provider-scoped Paperclip Runner configuration fields", async () => {
+    const app = createApp();
+
+    const res = await request(app).get("/api/adapters/paperclip_runner/config-schema");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: "provider",
+        options: expect.arrayContaining([
+          expect.objectContaining({ value: "codex" }),
+          expect.objectContaining({ value: "opencode" }),
+          expect.objectContaining({ value: "claude_managed" }),
+          expect.objectContaining({ value: "aws_agentcore" }),
+          expect.objectContaining({ value: "acpx" }),
+        ]),
+      }),
+      expect.objectContaining({
+        key: "codexPermissionMode",
+        default: "never",
+        meta: { visibleWhen: { key: "provider", value: "codex" } },
+      }),
+      expect.objectContaining({
+        key: "opencodePermissionMode",
+        default: "ask",
+        meta: { visibleWhen: { key: "provider", value: "opencode" } },
+      }),
+      expect.objectContaining({
+        key: "acpxPermissionMode",
+        default: "approve-reads",
+        meta: { visibleWhen: { key: "provider", value: "acpx" } },
+      }),
+      expect.objectContaining({
+        key: "model",
+        meta: { visibleWhen: { key: "provider", value: "opencode" } },
+      }),
+      expect.objectContaining({
+        key: "idleTimeoutMs",
+        meta: { visibleWhen: { key: "lifecycleMode", value: "warm" } },
+      }),
+    ]));
+    const acpxAgent = res.body.fields.find((field: { key?: string }) => field.key === "acpxAgent");
+    expect(acpxAgent).toBeUndefined();
+    expect(JSON.stringify(res.body)).toContain("ACPX Claude");
+    expect(JSON.stringify(res.body)).not.toContain("Codex via ACPX");
   });
 
   it("serves the built-in claude_local ACP engine config schema", async () => {

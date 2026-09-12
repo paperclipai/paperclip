@@ -53,10 +53,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
   enableNativeRunner: {
     title: "Paperclip Runner",
     description:
-      "Allow new Codex agents to use the experimental Rust Paperclip Runner, including authenticated sandbox ingress when required.",
+      "Allow explicitly configured local Codex, OpenCode, and qualified ACPX agents to use the experimental Rust Paperclip Runner, including authenticated sandbox ingress when required. Onboarding remains on legacy adapters.",
     tier: "managed",
     cloudDefault: false,
-    selfHostedDefault: false,
+    // On by default for self-hosted instances. Requires a Rust toolchain (or
+    // PAPERCLIP_RUNNER_BINARY) for `pnpm dev`, which builds runnerd whenever
+    // this is on.
+    selfHostedDefault: true,
   },
   enableManagedSandboxOnly: {
     title: "Managed Environment Only",
@@ -81,10 +84,26 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: true,
     selfHostedDefault: true,
   },
-  enableApps: {
-    title: "Apps",
+  enableStreamlinedUi: {
+    title: "Streamlined UI",
     description:
-      "Show the Apps navigation and allow access to app connections, gateways, and advanced app tooling.",
+      "Use the streamlined application shell, shared task collections, focused task detail layout, contextual navigation, and simplified main sidebar.",
+    tier: "preference",
+    cloudDefault: true,
+    selfHostedDefault: true,
+  },
+  enableApps: {
+    title: "Apps (compatibility)",
+    description:
+      "Deprecated compatibility key. Apps is always enabled; stored and managed values are ignored.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: true,
+  },
+  enableChatConnectors: {
+    title: "Chat connectors",
+    description:
+      "Show experimental chat connector setup and Board surfaces. Existing connections keep running when hidden; GitHub and other tool connectors are unaffected.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -274,6 +293,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     description:
       "Let the scheduler execute runs inside an isolated git-worktree preview instance for tasks created after activation.",
     tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableFirstTaskPlanProposal: {
+    title: "First task: propose with a plan document",
+    description:
+      "When the user's first request is a single task, the chief of staff writes a short plan document and a checkbox card instead of a one-card confirmation. Applies to organizations created after the toggle is flipped.",
+    tier: "preference",
     cloudDefault: false,
     selfHostedDefault: false,
   },

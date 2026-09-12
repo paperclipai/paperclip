@@ -7,6 +7,7 @@ import {
   text,
   timestamp,
   integer,
+  index,
   jsonb,
 } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
@@ -26,16 +27,31 @@ export const nativeRunFinalizations = pgTable(
     attempt: integer("attempt").notNull().default(0),
     leaseOwner: text("lease_owner"),
     leaseExpiresAt: timestamp("lease_expires_at", { withTimezone: true }),
+    controllerBootId: text("controller_boot_id"),
+    controllerPid: integer("controller_pid"),
+    controllerProcessStartedAt: timestamp("controller_process_started_at", {
+      withTimezone: true,
+    }),
+    controllerGeneration: integer("controller_generation").notNull().default(0),
+    recoveryState: text("recovery_state"),
+    recoveryRequestId: text("recovery_request_id"),
+    recoveryHistory: jsonb("recovery_history")
+      .$type<Array<Record<string, unknown>>>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     resultId: uuid("result_id"),
     assessmentId: uuid("assessment_id"),
     decisionId: uuid("decision_id"),
     failureCode: text("failure_code"),
     failureDetail: jsonb("failure_detail").$type<Record<string, unknown>>(),
+    controlDeadlineAt: timestamp("control_deadline_at", { withTimezone: true }),
     nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    controlDeadlineIdx: index("native_run_finalizations_control_deadline_idx")
+      .on(table.controlDeadlineAt).where(sql`${table.controlDeadlineAt} is not null`),
     issueCompanyFk: foreignKey({
       columns: [table.companyId, table.issueId],
       foreignColumns: [issues.companyId, issues.id],

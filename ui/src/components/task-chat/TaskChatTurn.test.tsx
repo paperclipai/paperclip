@@ -214,6 +214,19 @@ describe("TaskChatTurn", () => {
     );
   });
 
+  it("labels a later segment as a continuation of the steered run", () => {
+    renderTurn({
+      ...SETTLED,
+      standaloneHeader: true,
+      continuedAfterSteering: true,
+      agentName: "Codex",
+    });
+
+    expect(summaryBtn()?.textContent).toContain(
+      "Continued after steering · Worked for 38s",
+    );
+  });
+
   it("keeps a yielded runner summary after the settled timeline", () => {
     renderTurn({
       ...SETTLED,
@@ -331,7 +344,7 @@ describe("TaskChatTurn", () => {
       ],
     });
 
-    expect(fold()?.textContent).toContain("c1");
+    expect(fold()?.textContent).not.toContain("c1");
     expect(fold()?.textContent).not.toContain("question-history");
     const history = container.querySelector(
       '[data-testid="task-chat-turn-persistent-history"]',
@@ -342,7 +355,9 @@ describe("TaskChatTurn", () => {
 
   it("toggles open on summary click", () => {
     renderTurn(SETTLED);
+    expect(fold()?.textContent).not.toContain("c1");
     flushSync(() => summaryBtn()!.click());
+    expect(fold()?.textContent).toContain("c1");
     expect(fold()?.getAttribute("data-folded")).toBe("false");
     expect(
       summaryBtn()
@@ -370,7 +385,10 @@ describe("TaskChatTurn", () => {
     expect(header?.textContent).toContain("Editing files…");
     expect(header?.textContent).toContain("Edit · server/src/routes/auth.ts");
     expect(header?.getAttribute("aria-expanded")).toBe("false");
-    expect(header?.firstElementChild?.firstElementChild?.tagName).toBe("svg");
+    expect(
+      header?.querySelector('[data-testid="task-chat-status-caret-slot"] svg')
+        ?.tagName,
+    ).toBe("svg");
     // All activity is folded behind it — no rows visible, no summary line.
     expect(fold()?.getAttribute("data-folded")).toBe("true");
     expect(summaryBtn()).toBeNull();
@@ -476,6 +494,8 @@ describe("TaskChatTurn", () => {
     // expandable fold — so expanding the tool history can't drag it down.
     expect(fold()?.contains(lead!)).toBe(false);
     expect(summaryBtn()).not.toBeNull();
+    expect(summaryBtn()!.compareDocumentPosition(lead!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(lead?.parentElement?.parentElement?.className).toContain("justify-between");
     // Expanding still works and the leading slot stays put outside the fold.
     flushSync(() => summaryBtn()!.click());
     expect(fold()?.getAttribute("data-folded")).toBe("false");

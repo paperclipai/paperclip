@@ -18,6 +18,7 @@ export interface SidePanelTabProps {
   onClose?: () => void;
   onAuxClick?: (event: MouseEvent<HTMLButtonElement>) => void;
   onKeyDown?: ButtonHTMLAttributes<HTMLButtonElement>["onKeyDown"];
+  appearance?: "default" | "streamlined-task";
   className?: string;
 }
 
@@ -36,17 +37,19 @@ export function SidePanelTab({
   onClose,
   onAuxClick,
   onKeyDown,
+  appearance = "default",
   className,
 }: SidePanelTabProps) {
   const closeLabel = `Close ${label}`;
   const wrapperRef = useRef<HTMLDivElement>(null);
   const labelRef = useRef<HTMLSpanElement>(null);
   const [labelIsTruncated, setLabelIsTruncated] = useState(false);
-  const sizingKey = `${label}:${icon ? "icon" : "no-icon"}:${status ? "status" : "no-status"}:${closable ? "closable" : "fixed"}`;
+  const sizingKey = `${appearance}:${label}:${icon ? "icon" : "no-icon"}:${status ? "status" : "no-status"}:${closable ? "closable" : "fixed"}`;
   const [stableWidth, setStableWidth] = useState<{ key: string; width: number } | null>(null);
   const hasStableWidth = stableWidth?.key === sizingKey;
 
   useLayoutEffect(() => {
+    if (appearance === "streamlined-task") return;
     if (hasStableWidth) return;
     const measuredWidth = wrapperRef.current?.getBoundingClientRect().width ?? 0;
     if (measuredWidth <= 0) return;
@@ -71,18 +74,25 @@ export function SidePanelTab({
       ref={wrapperRef}
       data-side-panel-tab-wrapper={id}
       data-active={active ? "true" : "false"}
-      style={hasStableWidth ? { width: stableWidth.width } : undefined}
+      data-appearance={appearance}
+      style={appearance === "default" && hasStableWidth ? { width: stableWidth.width } : undefined}
       className={cn(
-        "group/side-panel-tab relative flex h-(--side-panel-tab-height) min-w-0 shrink-0 items-center rounded-(--side-panel-tab-radius) border border-transparent",
+        appearance === "streamlined-task"
+          ? "group/side-panel-tab relative mx-1.5 flex h-7 min-w-0 flex-1 basis-0 items-center rounded-md border border-transparent"
+          : "group/side-panel-tab relative flex h-(--side-panel-tab-height) min-w-0 shrink-0 items-center rounded-(--side-panel-tab-radius) border border-transparent",
         "side-panel-tab-motion",
         active
-          ? "bg-(--side-panel-tab-active-bg) text-accent-foreground"
-          : "text-muted-foreground hover:bg-(--side-panel-tab-hover-bg) hover:text-foreground",
+          ? appearance === "streamlined-task"
+            ? "text-foreground hover:bg-accent/50"
+            : "bg-(--side-panel-tab-active-bg) text-accent-foreground"
+          : appearance === "streamlined-task"
+            ? "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+            : "text-muted-foreground hover:bg-(--side-panel-tab-hover-bg) hover:text-foreground",
         disabled && "opacity-50",
         className,
       )}
     >
-      <Tooltip>
+      <Tooltip open={labelIsTruncated ? undefined : false}>
         <TooltipTrigger asChild>
           <button
             {...dragHandleProps}
@@ -90,6 +100,7 @@ export function SidePanelTab({
             type="button"
             role="tab"
             data-side-panel-tab-target={id}
+            data-side-panel-tab-tooltip={labelIsTruncated ? "enabled" : "disabled"}
             id={`side-panel-tab-${id}`}
             aria-controls={`side-panel-content-${id}`}
             aria-selected={active}
@@ -100,43 +111,66 @@ export function SidePanelTab({
             onAuxClick={onAuxClick}
             onKeyDown={onKeyDown}
             className={cn(
-              "flex h-full w-full min-w-0 items-center gap-1.5 rounded-(--side-panel-tab-radius) py-1.5 pl-2 text-xs font-medium outline-none",
-              closable && (!hasStableWidth || active) ? "pr-7" : "pr-2.5",
+              appearance === "streamlined-task"
+                ? "flex h-full w-full min-w-0 items-center justify-start rounded-md px-3 text-sm font-medium outline-none"
+                : "flex h-full w-full min-w-0 items-center gap-1.5 rounded-(--side-panel-tab-radius) py-1.5 pl-2 text-xs font-medium outline-none",
+              appearance === "default" && (closable && (!hasStableWidth || active) ? "pr-7" : "pr-2.5"),
               "focus-visible:ring-2 focus-visible:ring-ring/60",
               dragHandleProps?.className,
             )}
           >
-            {icon ? <span className="flex size-3.5 shrink-0 items-center justify-center [&_svg]:size-3.5">{icon}</span> : null}
+            {icon && appearance === "default" ? <span className="flex size-3.5 shrink-0 items-center justify-center [&_svg]:size-3.5">{icon}</span> : null}
             <span
               ref={labelRef}
               data-truncated={labelIsTruncated ? "true" : undefined}
               className={cn(
-                "overflow-hidden whitespace-nowrap",
-                closable && hasStableWidth && !active
-                  ? "max-w-(--side-panel-tab-label-expanded-max-width)"
-                  : "max-w-(--side-panel-tab-label-max-width)",
-                labelIsTruncated && "side-panel-tab-label-fade",
+                appearance === "streamlined-task"
+                  ? "side-panel-tab-label-close-fade task-detail-pane-tab-label min-w-0 flex-1 overflow-hidden whitespace-nowrap text-center"
+                  : "overflow-hidden whitespace-nowrap",
+                appearance === "default" && (
+                  closable && hasStableWidth && !active
+                    ? "max-w-(--side-panel-tab-label-expanded-max-width)"
+                    : "max-w-(--side-panel-tab-label-max-width)"
+                ),
+                appearance === "default" && labelIsTruncated && "side-panel-tab-label-fade",
               )}
             >
               {label}
             </span>
-            {status ? <span className="flex shrink-0 items-center">{status}</span> : null}
+            {status ? (
+              <span className={cn(
+                "flex shrink-0 items-center",
+                appearance === "streamlined-task" && "transition-opacity group-hover/side-panel-tab:opacity-0 group-focus-within/side-panel-tab:opacity-0",
+              )}>
+                {status}
+              </span>
+            ) : null}
           </button>
         </TooltipTrigger>
-        <TooltipContent side="bottom">{label}</TooltipContent>
+        {labelIsTruncated ? <TooltipContent side="bottom">{label}</TooltipContent> : null}
       </Tooltip>
-      {closable && onClose && active ? (
+      {closable && onClose && (appearance === "streamlined-task" || active) ? (
         <button
           type="button"
           aria-label={closeLabel}
           title={closeLabel}
+          onPointerDown={(event) => {
+            if (appearance !== "streamlined-task") return;
+            event.preventDefault();
+            event.stopPropagation();
+          }}
           onClick={(event) => {
             event.stopPropagation();
             onClose();
           }}
-          className="side-panel-tab-motion absolute right-1 flex size-6 items-center justify-center rounded-lg text-muted-foreground outline-none hover:bg-background/70 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+          className={cn(
+            "side-panel-tab-close-motion absolute flex items-center justify-center text-muted-foreground outline-none hover:text-foreground",
+            appearance === "streamlined-task"
+              ? "right-0 top-1/2 z-20 size-5 -translate-y-1/2 rounded-sm opacity-0 hover:bg-accent focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/60 group-hover/side-panel-tab:opacity-100"
+              : "right-1 size-6 rounded-lg hover:bg-background/70 focus-visible:ring-2 focus-visible:ring-ring/60",
+          )}
         >
-          <X className="size-3" aria-hidden />
+          <X className={appearance === "streamlined-task" ? "size-3.5" : "size-3"} aria-hidden />
         </button>
       ) : null}
     </div>

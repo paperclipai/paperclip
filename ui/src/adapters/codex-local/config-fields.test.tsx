@@ -25,24 +25,57 @@ function renderRunner(config: Record<string, unknown>): string {
 }
 
 describe("Paperclip Runner Codex configuration", () => {
-  it("exposes only the qualified Codex provider and permission modes", () => {
-    const html = renderRunner({ provider: "opencode" });
+  it("exposes all qualified provider choices", () => {
+    const html = renderRunner({ provider: "codex" });
 
-    expect(html).toContain('disabled=""><option value="codex" selected="">Codex</option>');
-    expect(html).toContain("Full auto (never ask)");
-    expect(html).toContain("Ask when requested");
-    expect(html).toContain("Ask for untrusted operations");
-    expect(html).not.toContain("OpenCode");
-    expect(html).not.toContain("ACPX");
-    expect(html).not.toContain("Claude Agent");
-    expect(html).not.toContain("AWS AgentCore");
+    expect(html).toContain('<option value="codex" selected="">Codex</option>');
+    expect(html).toContain("OpenCode 1.18.29");
+    expect(html).toContain("ACPX");
+    expect(html).not.toContain("Permission mode");
+    expect(html).not.toContain("Ask when requested");
+    expect(html).not.toContain("Ask for untrusted operations");
+    expect(html).toContain("Claude Managed");
+    expect(html).toContain("AWS AgentCore");
     expect(html).not.toContain("Bypass sandbox");
+  });
+
+  it("renders OpenCode's bounded permission modes", () => {
+    const html = renderRunner({
+      provider: "opencode",
+      opencodePermissionMode: "allow",
+    });
+
+    expect(html).toContain(
+      '<option value="opencode" selected="">OpenCode 1.18.29</option>',
+    );
+    expect(html).toContain("Full auto (allow)");
+    expect(html).toContain('aria-label="Permission mode"');
+    expect(html).toContain("font-sans");
+    expect(html).not.toContain("Ask for untrusted operations");
+  });
+
+  it("offers ACPX Claude without a redundant agent selector", () => {
+    const html = renderRunner({
+      provider: "acpx",
+      acpxAgent: "claude",
+      acpxPermissionMode: "approve-reads",
+    });
+
+    expect(html).toContain('<option value="acpx" selected="">ACPX Claude</option>');
+    expect(html).not.toContain("ACP agent");
+    expect(html).not.toContain("Codex via ACPX");
+    expect(html).not.toContain("ACPX Codex");
+    expect(html).not.toContain("Pi via ACPX");
+    expect(html).toContain("Conservative (fail closed)");
   });
 
   it("falls back to the fail-closed Codex permission mode", () => {
     const html = renderRunner({ codexPermissionMode: "unrestricted" });
 
-    expect(html).toContain('<option value="untrusted" selected="">Ask for untrusted operations</option>');
+    expect(html).toContain("Unsupported saved mode — select a qualified mode");
+    expect(html).toContain("cannot start or recover a Paperclip Runner run");
+    expect(html).toContain("Select Automatic (isolated) to remediate it");
+    expect(html).not.toContain("Full auto (never ask)");
   });
 
   it("shows a bounded idle timeout only for warm sessions", () => {

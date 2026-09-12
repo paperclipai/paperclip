@@ -20,9 +20,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .find(|pair| pair[0] == "--mode")
         .map(|pair| pair[1].as_str())
         .unwrap_or("happy");
+    let profile_digest = args
+        .windows(2)
+        .find(|pair| pair[0] == "--profile-digest")
+        .map(|pair| pair[1].as_str())
+        .unwrap_or("sha256:1111111111111111111111111111111111111111111111111111111111111111");
     let stdin = io::stdin();
     let mut stdout = io::stdout().lock();
     let mut next_sequence = 1_u64;
+    let mut goal = Value::Null;
     for line in stdin.lock().lines() {
         let request: Value = serde_json::from_str(&line?)?;
         let id = request
@@ -33,8 +39,48 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .get("command")
             .and_then(Value::as_str)
             .ok_or("request command is missing")?;
+        if mode == "goals" && command.starts_with("session.goal.") {
+            let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+            match command {
+                "session.goal.set" => {
+                    goal = json!({
+                        "objective":params.get("objective").cloned().unwrap_or_else(|| goal["objective"].clone()),
+                        "status":params.get("status").cloned().unwrap_or_else(|| json!("active")),
+                        "tokenBudget":null,"tokensUsed":null,"elapsedSeconds":null,"iterations":null,
+                        "lastReason":null,"createdAt":null,"updatedAt":null,"completedAt":null,"workingNow":false,
+                    });
+                }
+                "session.goal.clear" => goal = Value::Null,
+                _ => {}
+            }
+            let projection = json!({
+                "schema":"paperclip.session_goal.snapshot.v1", "goal":goal,"workingNow":false,
+                "sessionGoals":{"availability":"available","actions":["set","pause","resume","clear"],
+                    "autonomousUpdates":true,"persistentAcrossResume":true,"maxObjectiveChars":4000,
+                    "tokenBudgetControl":false,"usageReporting":false},
+            });
+            if command != "session.goal.get" {
+                write_json(
+                    &mut stdout,
+                    &json!({
+                        "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,"sequence":next_sequence,
+                        "eventType":"runtime.goal","runId":"run-1","turnId":null,"payload":projection,
+                    }),
+                )?;
+                next_sequence += 1;
+            }
+            write_json(
+                &mut stdout,
+                &json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                "id":id,"ok":true,"result":projection}),
+            )?;
+            continue;
+        }
         if command == "permission.resolve" {
-            write_json(&mut stdout, &bootstrap_success(id, command, &request, mode))?;
+            write_json(
+                &mut stdout,
+                &bootstrap_success(id, command, &request, mode, profile_digest),
+            )?;
             continue;
         }
         match mode {
@@ -87,6 +133,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 std::process::exit(9);
             }
             "bootstrap"
+            | "goals"
             | "bootstrap-wrong-model"
             | "bootstrap-wrong-run"
             | "turns"
@@ -118,7 +165,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
             | "suspend-missing-identity" => {
-                write_json(&mut stdout, &bootstrap_success(id, command, &request, mode))?;
+                write_json(
+                    &mut stdout,
+                    &bootstrap_success(id, command, &request, mode, profile_digest),
+                )?;
                 let params = request.get("params").unwrap_or(&Value::Null);
                 let turn_id = params
                     .get("turnId")
@@ -527,7 +577,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn bootstrap_success(id: u64, command: &str, request: &Value, mode: &str) -> Value {
+fn bootstrap_success(
+    id: u64,
+    command: &str,
+    request: &Value,
+    mode: &str,
+    profile_digest: &str,
+) -> Value {
     if command == "permission.resolve" {
         return json!({
             "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
@@ -567,11 +623,12 @@ fn bootstrap_success(id: u64, command: &str, request: &Value, mode: &str) -> Val
                     "acpxRecordId": "record-1",
                     "backendSessionId": "backend-1",
                     "agentSessionId": "agent-1",
-                    "profileDigest": format!("sha256:{}", "1".repeat(64)),
+                    "profileDigest": profile_digest,
                     "workspaceDigest": format!("sha256:{}", "2".repeat(64)),
                     "requestedModel": model,
                     "effectiveModel": if mode == "bootstrap-wrong-model" { "wrong-model" } else { model },
                     "permissionMode": params.get("permissionMode"),
+                    "providerLifetimeFenceCandidates": [60001, 60002, 60003],
                 },
                 "status": {},
             })
@@ -592,11 +649,12 @@ fn bootstrap_success(id: u64, command: &str, request: &Value, mode: &str) -> Val
                 "acpxRecordId": "record-1",
                 "backendSessionId": "backend-1",
                 "agentSessionId": "agent-1",
-                "profileDigest": format!("sha256:{}", "1".repeat(64)),
+                "profileDigest": profile_digest,
                 "workspaceDigest": format!("sha256:{}", "2".repeat(64)),
                 "requestedModel": "gpt-5.6-sol",
                 "effectiveModel": "gpt-5.6-sol",
                 "permissionMode": "approve-reads",
+                "providerLifetimeFenceCandidates": [60001, 60002, 60003],
             })},
         }),
         "tool.resolve" => json!({
@@ -617,6 +675,11 @@ fn bootstrap_success(id: u64, command: &str, request: &Value, mode: &str) -> Val
                     == Some(PROJECTED_INPUT_PROVIDER_ID),
         }),
         "session.close" => json!({"closed":true}),
+        "session.goal.get" => json!({
+            "schema":"paperclip.session_goal.snapshot.v1", "goal":null, "workingNow":false,
+            "sessionGoals": {"availability":"unsupported", "actions":[], "autonomousUpdates":false,
+                "persistentAcrossResume":false, "maxObjectiveChars":4000, "tokenBudgetControl":false, "usageReporting":false}
+        }),
         _ => json!({"command":command,"params":params}),
     };
     json!({

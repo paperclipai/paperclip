@@ -22,6 +22,7 @@ import type {
   AgentRuntimeState,
   AgentTaskSession,
   AgentWakeupResponse,
+  ChatFailedRunRetryResponse,
   HeartbeatRun,
   Approval,
   AgentConfigRevision,
@@ -202,10 +203,11 @@ export const agentsApi = {
   adapterModels: (
     companyId: string,
     type: string,
-    options?: { refresh?: boolean; environmentId?: string | null },
+    options?: { refresh?: boolean; environmentId?: string | null; provider?: string },
   ) => {
     const params = new URLSearchParams();
     if (options?.refresh) params.set("refresh", "1");
+    if (options?.provider) params.set("provider", options.provider);
     if (options?.environmentId) params.set("environmentId", options.environmentId);
     const query = params.size > 0 ? `?${params.toString()}` : "";
     return api.get<AdapterModel[]>(
@@ -221,6 +223,8 @@ export const agentsApi = {
     type: string,
     data: {
       adapterConfig: Record<string, unknown>;
+      agentId?: string;
+      testCredentials?: Record<string, string>;
       environmentId?: string | null;
     },
   ) =>
@@ -241,6 +245,30 @@ export const agentsApi = {
     data: AgentWakeRequest,
     companyId?: string,
   ) => api.post<AgentWakeupResponse>(agentPath(id, companyId, "/wakeup"), data),
+  retryFailedRun: async (
+    id: string,
+    failedRunId: string,
+    companyId: string,
+  ) => {
+    const result = await api.post<
+      AgentWakeupResponse | ChatFailedRunRetryResponse
+    >(agentPath(id, companyId, "/wakeup"), {
+      source: "on_demand",
+      triggerDetail: "manual",
+      reason: "retry_failed_run",
+      failedRunId,
+    });
+    if ("id" in result) return { runId: result.id, issueId: null };
+    if ("actionId" in result) {
+      if (result.status === "failed" || result.status === "cancelled") {
+        throw new Error(
+          "This retry could not start. Open the task to review its current access and recovery state.",
+        );
+      }
+      return { runId: result.runId, issueId: result.issueId };
+    }
+    throw new Error(result.message ?? "Retry was skipped.");
+  },
   loginWithClaude: (id: string, companyId?: string) =>
     api.post<ClaudeLoginResult>(agentPath(id, companyId, "/claude-login"), {}),
   startAdapterAuthLogin: (
@@ -252,9 +280,21 @@ export const agentsApi = {
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions`,
       data,
     ),
+  // The owner response repeats the live prompt on every read while the
+  // session holds an active public status, so this polling call carries the
+  // same no-store request option as the active-session read below.
   getAdapterAuthLoginStatus: (companyId: string, type: string, sessionId: string) =>
     api.get<AdapterAuthSessionOwnerResponse>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/${encodeURIComponent(sessionId)}`,
+      { cache: "no-store" },
+    ),
+  // Reads the caller's active login session for one company and adapter, with
+  // no session id, so the browser rediscovers its own session after a reload
+  // with no local state. A 404 means no active session for the caller.
+  getActiveAdapterAuthLoginSession: (companyId: string, type: string) =>
+    api.get<AdapterAuthSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/login-sessions/active`,
+      { cache: "no-store" },
     ),
   cancelAdapterAuthLogin: (companyId: string, type: string, sessionId: string) =>
     api.post<AdapterAuthSessionOwnerResponse>(
@@ -286,6 +326,14 @@ export const agentsApi = {
   getClaudeSetupTokenLoginStatus: (companyId: string, sessionId: string) =>
     api.get<ClaudeSetupTokenSessionResponse>(
       `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/${encodeURIComponent(sessionId)}`,
+    ),
+  // Reads the caller's active Claude setup-token login session, with no
+  // session id, so the browser rediscovers its own session after a reload with
+  // no local state. A 404 means no active session for the caller.
+  getActiveClaudeSetupTokenLoginSession: (companyId: string) =>
+    api.get<ClaudeSetupTokenSessionOwnerResponse>(
+      `/companies/${encodeURIComponent(companyId)}/setup-token-login-sessions/active`,
+      { cache: "no-store" },
     ),
   getClaudeSetupTokenLoginPrompt: (companyId: string, sessionId: string) =>
     api.get<ClaudeSetupTokenSessionPrompt>(

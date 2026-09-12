@@ -41,14 +41,19 @@ function registerModuleMocks() {
 // Identity object the mocked db.transaction hands to writers; tests assert
 // both the marker clear and the settings update receive THIS same tx.
 const TX_SENTINEL = { __tx: true };
+// Runs the callback with a sentinel tx and propagates throws, so a failing
+// write inside rejects the whole request exactly like a real transaction
+// rollback. This is the default mockDb.transaction implementation; a test
+// that installs its own mockImplementation loses this default, so
+// beforeEach below reinstalls it before every test.
+function defaultTransactionImplementation(fn: (tx: unknown) => Promise<unknown>) {
+  return fn(TX_SENTINEL);
+}
 // Module-scoped (not rebuilt per createApp call) so a test can assert how
 // many times a request opened a transaction — the task-drain audit writes
 // for every company must share ONE transaction, not one each.
 const mockDb = {
-  // Runs the callback with a sentinel tx and propagates throws, so a
-  // failing write inside rejects the whole request exactly like a real
-  // transaction rollback.
-  transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(TX_SENTINEL)),
+  transaction: vi.fn(defaultTransactionImplementation),
 };
 
 describe("instance settings routes", () => {
@@ -75,6 +80,12 @@ describe("instance settings routes", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // vi.clearAllMocks() clears recorded calls only; it does not remove a
+    // mockImplementation a prior test installed. Reinstall the default here
+    // so a stateful implementation from one test can never leak into the
+    // next one.
+    mockDb.transaction.mockReset();
+    mockDb.transaction.mockImplementation(defaultTransactionImplementation);
     mockInstanceSettingsService.get.mockReset();
     mockInstanceSettingsService.getGeneral.mockReset();
     mockInstanceSettingsService.getExperimental.mockReset();
@@ -268,6 +279,36 @@ describe("instance settings routes", () => {
       .post("/api/instance/settings/experimental/issue-graph-liveness-auto-recovery/run")
       .send({ lookbackHours: 24 })
       .expect(404);
+  });
+
+  it.each([true, false])("allows only instance admins to change chat connector visibility (%s)", async (isInstanceAdmin) => {
+    const app = createApp({ type: "board", userId: "user-1", source: "session", isInstanceAdmin, companyIds: ["company-1"] });
+    const response = await request(app).patch("/api/instance/settings/experimental").send({ enableChatConnectors: true });
+    expect(response.status).toBe(isInstanceAdmin ? 200 : 403);
+    if (isInstanceAdmin) {
+      expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({ enableChatConnectors: true });
+      expect(mockLogActivity).toHaveBeenCalled();
+    } else {
+      expect(mockInstanceSettingsService.updateExperimental).not.toHaveBeenCalled();
+    }
+  });
+
+  it("accepts the instance-wide Streamlined UI preference", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ enableStreamlinedUi: false })
+      .expect(200);
+
+    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+      enableStreamlinedUi: false,
+    });
   });
 
   it("strips server-managed worktree run execution fields before updating experimental settings", async () => {
@@ -1133,10 +1174,19 @@ describe("instance settings routes", () => {
       const transactionCalls: string[] = [];
       let releasePostTransaction: (() => void) | undefined;
       let sawFirstCall = false;
+      // Resolves the instant the first (blocked) transaction call starts.
+      // The test then waits for this real event, not a fixed duration.
+      // Under CPU contention the event loop can take far longer than any
+      // fixed budget to reach this call, so a timer would flake here.
+      let notifyFirstTransactionStarted: (() => void) | undefined;
+      const firstTransactionStarted = new Promise<void>((resolve) => {
+        notifyFirstTransactionStarted = resolve;
+      });
       mockDb.transaction.mockImplementation((fn: (tx: unknown) => Promise<unknown>) => {
         if (!sawFirstCall) {
           sawFirstCall = true;
           transactionCalls.push("post-start");
+          notifyFirstTransactionStarted?.();
           return new Promise((resolve) => {
             releasePostTransaction = () => {
               transactionCalls.push("post-commit");
@@ -1148,19 +1198,44 @@ describe("instance settings routes", () => {
         return fn(TX_SENTINEL);
       });
 
+      // Each route handler awaits listCompanyIds as its last step before it
+      // enters the task-drain transition queue, so a second call proves the
+      // DELETE passed authorization and reached the queue — not merely that
+      // it has not arrived yet.
+      let listCompanyIdsCallCount = 0;
+      let notifySecondListCompanyIdsCall: (() => void) | undefined;
+      const secondListCompanyIdsCall = new Promise<void>((resolve) => {
+        notifySecondListCompanyIdsCall = resolve;
+      });
+      mockInstanceSettingsService.listCompanyIds.mockImplementation(async () => {
+        listCompanyIdsCallCount += 1;
+        if (listCompanyIdsCallCount === 2) notifySecondListCompanyIdsCall?.();
+        return ["company-1", "company-2"];
+      });
+
       const app = await createApp(adminActor);
 
-      // supertest only sends the request once something calls .then() on
-      // it, so kick both off eagerly instead of waiting for the final
-      // Promise.all below to do it — otherwise neither request would even
-      // reach the (still-pending) POST transaction during the wait.
+      // supertest only sends a request once something calls .then() on it,
+      // so force the POST to send now instead of waiting for the final
+      // Promise.all below to do it.
       const postPromise = request(app).post("/api/instance/task-drain").send({});
       postPromise.then(() => {}, () => {});
+      // Wait for the POST's transaction call to start before the test sends
+      // the DELETE. At that point the POST already called listCompanyIds,
+      // already entered the task-drain transition queue, and sits blocked
+      // inside the mocked db.transaction call — the POST holds the queue.
+      // Only a real event proves this; a fixed wait would not, because the
+      // event loop can take far longer than any fixed budget under CPU
+      // contention. Sending the DELETE only after this event fixes the
+      // request order by the queue, not by which socket the operating
+      // system happens to service first.
+      await firstTransactionStarted;
       const deletePromise = request(app).delete("/api/instance/task-drain");
       deletePromise.then(() => {}, () => {});
-      // Give both requests time to reach as far as they can go before the
-      // POST's transaction is released.
-      await new Promise((resolve) => setTimeout(resolve, 30));
+      // Wait for the DELETE's own listCompanyIds call. It proves the DELETE
+      // passed authorization and reached the transition queue behind the
+      // POST — not merely that it has not shown up yet.
+      await secondListCompanyIdsCall;
       expect(transactionCalls).toEqual(["post-start"]);
       expect(mockHeartbeatService.applyTaskDrain).not.toHaveBeenCalled();
       expect(mockHeartbeatService.stopTaskDrain).not.toHaveBeenCalled();

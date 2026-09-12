@@ -18,7 +18,7 @@ import { LINK_LABEL_FADE_IN, LINK_LABEL_FADE_OUT } from "./onboarding-motion";
  */
 
 const LINK_LABEL: Record<CredentialMode, string> = {
-  subscription: "Use API keys instead",
+  subscription: "Use API key instead",
   api: "Use subscription instead",
 };
 

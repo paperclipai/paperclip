@@ -1,5 +1,9 @@
-import { useState, type ReactNode } from "react";
+import { useCallback, useContext, useState, type ReactNode } from "react";
+import { useEmailComment } from "@/components/EmailMessageCard";
+import type { IssueAttachment } from "@paperclipai/shared";
+import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { cn } from "@/lib/utils";
+import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { MarkdownBody } from "@/components/MarkdownBody";
 import {
   ImageGalleryModal,
@@ -20,7 +24,12 @@ import {
 import {
   extractAttachmentRefs,
   extractImageRefs,
-  fileKindForName,
+  fileKindForAttachment,
+  formatFileSize,
+  hydrateAttachmentRefs,
+  isImageAttachment,
+  stripStandaloneImageEmbeds,
+  type AttachmentRef,
 } from "./task-chat-attachments";
 import { TaskChatSystemNotice } from "./TaskChatSystemNotice";
 import type { TaskChatMessageItem } from "./task-chat-model";
@@ -52,6 +61,7 @@ interface TaskChatBubbleProps {
    * so this bubble skips them. Human/system bubbles pass nothing.
    */
   actions?: ReactNode;
+  attachments?: IssueAttachment[];
 }
 
 function initialsForName(name: string) {
@@ -106,18 +116,36 @@ export function TaskChatAgentIdentity({
  * surface with an avatar author header (the agent's assigned icon + name);
  * system notices are centered and recede.
  */
-function galleryItemForImage(src: string, name?: string): GalleryMediaItem {
+function galleryItemForImage(
+  src: string,
+  name?: string,
+  attachment?: ReturnType<typeof hydrateAttachmentRefs>[number],
+): GalleryMediaItem {
   return {
-    id: src,
-    contentPath: src,
-    // The modal only inspects contentType/filename to spot videos; embedded
-    // markdown images are always images, so an empty type is safe here.
-    contentType: "",
+    id: attachment?.id ?? src,
+    contentPath: attachment?.openPath ?? src,
+    openPath: attachment?.openPath,
+    downloadPath: attachment?.downloadPath,
+    contentType: attachment?.contentType ?? "",
     originalFilename: name?.trim() ? name : "image",
   };
 }
 
-export function TaskChatBubble({
+function uniqueAttachmentRefs(refs: AttachmentRef[]): AttachmentRef[] {
+  return refs.filter(
+    (ref, index) =>
+      refs.findIndex(
+        (candidate) =>
+          (ref.id && candidate.id === ref.id) || candidate.url === ref.url,
+      ) === index,
+  );
+}
+
+export function TaskChatBubble(props: TaskChatBubbleProps) {
+  const email = useEmailComment(props.item.id);
+  return email ?? <TaskChatBubbleContent {...props} />;
+}
+function TaskChatBubbleContent({
   item,
   animateEntry = true,
   queuedAction,
@@ -125,12 +153,19 @@ export function TaskChatBubble({
   beforeTurn,
   hideAgentIdentity = false,
   actions,
+  attachments = [],
   onTryAgainNoLiveExecutionPath,
   tryAgainNoLiveExecutionPathPending,
 }: TaskChatBubbleProps) {
-  // Clicking an embedded image opens the full-screen lightbox (with download);
-  // arrow keys walk across the other images in the same bubble.
+  const streamlined = useStreamlinedTaskChatPresentation();
+  // Task attachments share the page gallery; standalone images retain the bubble viewer.
+  const openIssueGallery = useContext(IssueGalleryContext);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  // Keep MarkdownBody's memo boundary intact when only the live tail changes.
+  // A fresh callback here reparses every historical response on every update.
+  const openImage = useCallback((src: string) => {
+    if (!openIssueGallery?.(src)) setLightboxSrc(src);
+  }, [openIssueGallery]);
   if (item.interstitial) {
     // Interstitial updates are ephemeral (PAP-361): while streaming the text
     // lives on the live parent row's line (TaskChatStatusItem.selfTalk), and
@@ -153,25 +188,45 @@ export function TaskChatBubble({
   const isHuman = item.author === "human";
   // Non-image file references ("[name](/api/attachments/…/content)") render as
   // attachment chips under the bubble; link-only lines leave the body text.
-  const { refs: attachmentRefs, text: bodyText } = extractAttachmentRefs(
-    item.text,
+  const { refs: linkedRefs, text: bodyWithoutAttachmentLinks } =
+    extractAttachmentRefs(item.text);
+  const embeddedImageRefs = extractImageRefs(bodyWithoutAttachmentLinks);
+  const bodyText = stripStandaloneImageEmbeds(bodyWithoutAttachmentLinks);
+  const hydratedLinkedRefs = hydrateAttachmentRefs(linkedRefs, attachments);
+  const hydratedEmbeddedRefs = hydrateAttachmentRefs(
+    embeddedImageRefs,
+    attachments,
   );
-  const imageRefs = extractImageRefs(bodyText);
+  const boundAttachmentRefs: AttachmentRef[] = attachments
+    .filter((attachment) => attachment.issueCommentId === item.id)
+    .map((attachment) => ({
+      id: attachment.id,
+      name: attachment.originalFilename?.trim() || "attachment",
+      url: attachment.contentPath,
+      contentType: attachment.contentType,
+      byteSize: attachment.byteSize,
+      openPath: attachment.openPath,
+      downloadPath: attachment.downloadPath,
+    }));
+  const imageRefs = uniqueAttachmentRefs([
+    ...hydratedEmbeddedRefs,
+    ...hydratedLinkedRefs.filter(isImageAttachment),
+    ...boundAttachmentRefs.filter(isImageAttachment),
+  ]);
+  const attachmentRefs = uniqueAttachmentRefs([
+    ...hydratedLinkedRefs.filter((ref) => !isImageAttachment(ref)),
+    ...boundAttachmentRefs.filter((ref) => !isImageAttachment(ref)),
+  ]);
   const galleryItems: GalleryMediaItem[] =
     lightboxSrc !== null && !imageRefs.some((ref) => ref.url === lightboxSrc)
       ? // A clicked image the extractor missed (e.g. inline HTML) still gets a
         // single-item lightbox rather than nothing.
         [galleryItemForImage(lightboxSrc)]
-      : imageRefs.map((ref) => galleryItemForImage(ref.url, ref.name));
+      : imageRefs.map((ref) => galleryItemForImage(ref.url, ref.name, ref));
   const lightboxIndex =
     lightboxSrc === null
       ? -1
-      : Math.max(
-          0,
-          galleryItems.findIndex(
-            (galleryItem) => galleryItem.contentPath === lightboxSrc,
-          ),
-        );
+      : Math.max(0, imageRefs.findIndex((ref) => ref.url === lightboxSrc));
   return (
     <div
       className={cn(
@@ -213,41 +268,93 @@ export function TaskChatBubble({
             className={isHuman ? "paperclip-markdown-on-accent" : undefined}
             softBreaks
             linkIssueReferences
-            onImageClick={setLightboxSrc}
+            onImageClick={openImage}
           >
             {bodyText}
           </MarkdownBody>
         </div>
       ) : null}
-      {attachmentRefs.length > 0 ? (
-        <AttachmentGroup
-          className="max-w-(--pct-85)"
-          data-testid="task-chat-bubble-attachments"
+      {imageRefs.length > 0 ? (
+        <div
+          className="flex max-w-(--pct-85) flex-col gap-2"
+          data-testid="task-chat-bubble-media"
         >
-          {attachmentRefs.map((ref) => {
-            const kind = fileKindForName(ref.name);
-            const KindIcon = kind.icon;
-            return (
-              <Attachment key={ref.url} size="sm">
-                <AttachmentMedia>
-                  <KindIcon aria-hidden />
-                </AttachmentMedia>
-                <AttachmentContent>
-                  <AttachmentTitle className="max-w-48">
-                    {ref.name}
-                  </AttachmentTitle>
-                  <AttachmentDescription className="max-w-48">
-                    {kind.label}
-                  </AttachmentDescription>
-                </AttachmentContent>
-                <AttachmentTrigger
-                  aria-label={`Open ${ref.name}`}
-                  render={<a href={ref.url} target="_blank" rel="noreferrer" />}
-                />
-              </Attachment>
-            );
-          })}
-        </AttachmentGroup>
+          <span className="text-xs text-muted-foreground">
+            Images · {imageRefs.length}
+          </span>
+          <div className="grid grid-cols-4 gap-2">
+            {imageRefs
+              .slice(0, imageRefs.length > 4 ? 3 : 4)
+              .map((ref, index) => (
+                <button
+                  key={ref.url}
+                  type="button"
+                  className="group aspect-video min-w-0 overflow-hidden rounded-md bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label={`Open ${ref.name || `image ${index + 1}`}`}
+                  onClick={() => openImage(ref.url)}
+                >
+                  <img
+                    src={ref.openPath ?? ref.url}
+                    alt={ref.name}
+                    loading="lazy"
+                    className="h-full w-full object-cover transition-transform group-hover:scale-(--s-1_02)"
+                  />
+                </button>
+              ))}
+            {imageRefs.length > 4 ? (
+              <button
+                type="button"
+                className="aspect-video min-w-0 rounded-md bg-muted text-sm font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`Open ${imageRefs.length - 3} more screenshots`}
+                onClick={() => openImage(imageRefs[3].url)}
+              >
+                +{imageRefs.length - 3}
+              </button>
+            ) : null}
+          </div>
+          <span className="truncate text-xs text-muted-foreground">
+            {imageRefs.map((ref) => ref.name || "image").join(" · ")}
+          </span>
+        </div>
+      ) : null}
+      {attachmentRefs.length > 0 ? (
+        <div className="flex max-w-(--pct-85) flex-col gap-2">
+          <span className="text-xs text-muted-foreground">
+            Files · {attachmentRefs.length}
+          </span>
+          <AttachmentGroup data-testid="task-chat-bubble-attachments">
+            {attachmentRefs.map((ref) => {
+              const kind = fileKindForAttachment(ref);
+              const KindIcon = kind.icon;
+              const size = formatFileSize(ref.byteSize);
+              return (
+                <Attachment key={ref.url} size="sm">
+                  <AttachmentMedia>
+                    <KindIcon aria-hidden />
+                  </AttachmentMedia>
+                  <AttachmentContent>
+                    <AttachmentTitle className="max-w-48">
+                      {ref.name}
+                    </AttachmentTitle>
+                    <AttachmentDescription className="max-w-48">
+                      {size ? `${kind.label} · ${size}` : kind.label}
+                    </AttachmentDescription>
+                  </AttachmentContent>
+                  <AttachmentTrigger
+                    aria-label={`Open ${ref.name}`}
+                    render={
+                      <a
+                        href={ref.openPath ?? ref.url}
+                        target="_blank"
+                        rel="noreferrer"
+                      />
+                    }
+                  />
+                </Attachment>
+              );
+            })}
+          </AttachmentGroup>
+        </div>
       ) : null}
       {!isHuman && item.verificationCaveats?.length ? (
         <div
@@ -292,16 +399,25 @@ export function TaskChatBubble({
           {attachedTurn}
         </div>
       ) : actions ? (
-        // Agent reply without run activity: the actions still lead the footer,
-        // with the always-visible timestamp trailing (PAP-413).
-        <div className="flex items-center gap-1">
-          {actions}
-          {item.timestamp ? (
-            <span className="px-1 text-(length:--text-micro) text-muted-foreground">
-              {item.timestamp}
-            </span>
-          ) : null}
-        </div>
+        streamlined ? (
+          <div className="flex w-full items-center justify-between gap-2 px-1">
+            {item.timestamp ? (
+              <span className="text-(length:--text-micro) text-muted-foreground">
+                {item.timestamp}
+              </span>
+            ) : null}
+            {actions}
+          </div>
+        ) : (
+          <div className="flex items-center gap-1">
+            {actions}
+            {item.timestamp ? (
+              <span className="px-1 text-(length:--text-micro) text-muted-foreground">
+                {item.timestamp}
+              </span>
+            ) : null}
+          </div>
+        )
       ) : item.timestamp ? (
         // Timestamps are always visible (round 9) — no longer hover-revealed.
         <span className="px-1 text-(length:--text-micro) text-muted-foreground">
