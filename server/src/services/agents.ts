@@ -3,6 +3,7 @@ import { and, desc, eq, gte, inArray, lt, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  toolConnectionInstalls,
   agentConfigRevisions,
   agentApiKeys,
   agentRuntimeState,
@@ -113,6 +114,7 @@ interface UpdateAgentOptions {
 }
 
 interface CreateAgentOptions {
+  aiConnectionInstall?: { connectionId: string; createdByUserId: string | null };
   allowBuiltInAgentMetadata?: boolean;
   claudeLogin?: ClaudeLoginContext;
 }
@@ -857,6 +859,13 @@ export function agentService(db: Db) {
           })
           .returning()
           .then((rows) => rows[0]);
+        if (options?.aiConnectionInstall) {
+          await tx.insert(toolConnectionInstalls).values({
+            companyId, connectionId: options.aiConnectionInstall.connectionId,
+            targetType: "agent", targetId: created.id,
+            createdByUserId: options.aiConnectionInstall.createdByUserId,
+          }).onConflictDoNothing();
+        }
         await syncAgentSecretBindings(created, txDb);
         const normalizedCreated = await agentService(txDb).getById(created.id);
         if (!normalizedCreated) {

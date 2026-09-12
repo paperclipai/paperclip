@@ -1141,6 +1141,20 @@ function createLiveRunMessage(args: {
   return message;
 }
 
+/** The durable AI interaction owns repair and its receipt; don't also show the
+ * escalation's diagnostic card for that same failure. Keep unmatched notices. */
+export function isRedundantAiRecoveryNotice(
+  comment: IssueChatComment,
+  interactions: readonly IssueThreadInteraction[] = [],
+): boolean {
+  return comment.presentation?.kind === "system_notice"
+    && ["AI connection needs attention", "Configuration incomplete"].includes(comment.presentation.title ?? "")
+    && Boolean(comment.metadata?.sourceRunId)
+    && interactions.some((interaction) => interaction.kind === "connection_intent"
+      && interaction.payload.purpose === "ai"
+      && interaction.sourceRunId === comment.metadata?.sourceRunId);
+}
+
 export function buildIssueChatMessages(args: {
   comments: readonly IssueChatComment[];
   interactions?: readonly IssueThreadInteraction[];
@@ -1181,6 +1195,7 @@ export function buildIssueChatMessages(args: {
   const orderedMessages: MessageWithOrder[] = [];
 
   for (const comment of sortByCreated(comments)) {
+    if (isRedundantAiRecoveryNotice(comment, interactions)) continue;
     orderedMessages.push({
       createdAtMs: toTimestamp(comment.createdAt),
       order: 1,

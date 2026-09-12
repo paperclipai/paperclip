@@ -13,7 +13,7 @@ export function appSupportsToolCatalogSetup(entry: AppDefinition | null | undefi
     entry && appSupportsCatalogSetup({
       ...entry,
       methods: entry.methods.filter(
-        (method) => (method.purpose ?? "tool") === "tool" && method.transport !== "chat_sdk",
+        (method) => (method.purpose ?? "tool") !== "channel" && method.transport !== "chat_sdk",
       ),
     }),
   );
@@ -71,7 +71,7 @@ export function canEnterAppsConnect(
   if (
     !chatConnectorsEnabled &&
     entry?.methods.some((method) => method.transport === "chat_sdk") &&
-    !entry.methods.some((method) => (method.purpose ?? "tool") === "tool" && method.transport !== "chat_sdk")
+    !entry.methods.some((method) => (method.purpose ?? "tool") !== "channel" && method.transport !== "chat_sdk")
   ) return false;
   // A retained connection may belong to a provider hidden from fresh catalog
   // setup. Admit only known providers here; the setup flow then proves the

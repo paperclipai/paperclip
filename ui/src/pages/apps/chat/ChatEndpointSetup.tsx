@@ -1,3 +1,4 @@
+import { PhotonConnectStep } from "./PhotonConnectStep";
 import { EmailEndpointSetup } from "./EmailEndpointSetup";
 import {
   useEffect,
@@ -42,6 +43,7 @@ const providerNames: Record<ChatProvider, string> = {
   discord: "Discord",
   "microsoft-teams": "Microsoft Teams",
   telegram: "Telegram",
+  "imessage-photon": "iMessage Photon",
 };
 
 const knownProviders = new Set(Object.keys(providerNames));
@@ -128,7 +130,7 @@ export function ChatEndpointSetup() {
   return params.get("provider") === "agentmail" ? <EmailEndpointSetup /> : <ChatSdkEndpointSetup />;
 }
 function ChatSdkEndpointSetup() {
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
@@ -233,7 +235,14 @@ function ChatSdkEndpointSetup() {
         provider: provider!,
         assignedAgentId: agentId,
       }),
-    onSuccess: syncEndpointSnapshot,
+    onSuccess: (next) => {
+      syncEndpointSnapshot(next);
+      if (next.provider === "imessage-photon") {
+        const resumed = new URLSearchParams(params);
+        resumed.set("resume", next.id);
+        setParams(resumed, { replace: true });
+      }
+    },
     onError: (error) =>
       pushToast({
         title: "Couldn't start setup",
@@ -248,11 +257,16 @@ function ChatSdkEndpointSetup() {
     }: {
       action: ChatEndpointSetupAction;
       values?: Record<string, string>;
-    }) => chatEndpointsApi.setup(endpoint!.id, { action, credentials: values }),
+    }) => chatEndpointsApi.setup(endpoint!.id, provider === "imessage-photon" ? {
+      action,
+      ...(values?.projectSecret ? { credentials: { projectSecret: values.projectSecret } } : {}),
+      ...(values?.projectId && values.allocation === "shared" ? { photon: { allocation: "shared" as const, projectId: values.projectId } } : values?.projectId && values?.lineId ? { photon: { allocation: "dedicated" as const, projectId: values.projectId, lineId: values.lineId } } : {}),
+    } : { action, credentials: values }),
     onMutate: () => setSetupError(null),
     onSuccess: (next) => {
       setSetupError(null);
       syncEndpointSnapshot(next);
+      setCredentials({});
     },
     onError: (error, variables) =>
       setSetupError(sanitizedSetupErrorMessage(error, variables.values)),
@@ -473,6 +487,7 @@ function ChatSdkEndpointSetup() {
             agentName={selectedAgent?.name ?? endpoint.assignedAgentName}
             botLabel={endpoint.botLabel}
             botUsername={endpoint.botUsername}
+            photonAllocation={endpoint.photonAllocation}
             providerUrl={endpoint.setup?.providerUrl}
             guestIsolationState={
               experimentalSettingsQuery.isPending
@@ -740,6 +755,7 @@ settings:
     null,
     2,
   );
+  if (provider === "imessage-photon") return <PhotonConnectStep endpoint={endpoint} agentName={agentName} repairing={repairing} pending={pending} onAction={onAction} />;
   if (provider === "discord") {
     const applicationId = credentials.applicationId?.trim() ?? "";
     const guildId = credentials.guildId?.trim() ?? "";
@@ -756,7 +772,7 @@ settings:
               : "Create one dedicated Discord application and bot for this Paperclip agent."}
           </p>
         </div>
-        <ol className="list-decimal space-y-2 pl-5 text-sm">
+      <ol className="list-decimal space-y-2 pl-5 text-sm">
           <li>
             In Discord Developer Portal, create an application. Copy its
             Application ID from General Information.
@@ -1468,6 +1484,7 @@ function TryStep({
   agentName,
   botLabel,
   botUsername,
+  photonAllocation,
   providerUrl,
   guestIsolationState,
   pending,
@@ -1479,6 +1496,7 @@ function TryStep({
   agentName: string;
   botLabel?: string | null;
   botUsername?: string | null;
+  photonAllocation?: "dedicated" | "shared";
   providerUrl?: string | null;
   guestIsolationState: "loading" | "enabled" | "disabled" | "unknown";
   pending: boolean;
@@ -1490,19 +1508,23 @@ function TryStep({
     queryFn: () => chatEndpointsApi.listPrincipals(endpointId),
     refetchInterval: 1_500,
   });
+  const [numberCopied, setNumberCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const identities = principalsQuery.data ?? [];
   const unlinkedIdentities = identities.filter(
     (identity) => identity.status !== "linked",
   );
   const freshConversationInstruction =
-    provider === "telegram"
+    provider === "imessage-photon" ? "send a fresh message to your Photon number" : provider === "telegram"
       ? "start a fresh conversation with /new and send the test message again"
       : provider === "github"
         ? "start a new issue or pull request conversation and mention the agent again"
         : provider === "microsoft-teams"
           ? "start a new channel post and mention the agent again"
           : "send a new root mention to the agent";
-  const identityGuidance = principalsQuery.isError
+  const identityGuidance = provider === "imessage-photon" && principalsQuery.isSuccess && (identities.length === 0 || unlinkedIdentities.length > 0)
+    ? { tone: "info" as const, title: "Link your Messages identity", body: "Send one message to discover your phone number or Apple account address, then link that exact identity in Access. Send a fresh request after linking; earlier messages do not start work." }
+    : principalsQuery.isError
     ? {
         tone: "warning" as const,
         title: "Identity readiness could not be checked",
@@ -1550,7 +1572,12 @@ function TryStep({
     ? `@${normalizedBotUsername}`
     : (botLabel ?? agentName);
   const instructions =
-    provider === "discord"
+    provider === "imessage-photon" ? [
+      photonAllocation === "shared" ? "In your Photon project, enroll your sender in Users and find its assigned number in Get started. Send a fresh message to that number from Apple Messages." : `Open Apple Messages and send a fresh message to ${botUsername ?? botLabel ?? "the dedicated number"}.`,
+      "Link the discovered sender to a Paperclip person in Access, then send a fresh request.",
+      "Wait for the agent’s actual reply. Setup completes after that reply is delivered.",
+      ...(photonAllocation === "shared" ? ["This Pro-compatible channel supports DMs only. Group messages cannot start work."] : ["For a group: add the number in Messages, send a message, enable the discovered group in Settings, then send a fresh request."]),
+    ] : provider === "discord"
       ? [
           "Open a text channel where the bot is installed.",
           `Mention ${botMention} in a new root message.`,
@@ -1616,6 +1643,7 @@ function TryStep({
           </Button>
         </div>
       ) : null}
+      {provider === "imessage-photon" && botUsername && <div className="space-y-2"><Button variant="outline" onClick={() => { void copyTextToClipboard(botUsername).then(() => { setNumberCopied(true); setCopyError(null); }, () => setCopyError("Could not copy the number. Select it in the instructions below.")); }}>{numberCopied ? "Number copied" : `Copy ${botUsername}`}</Button>{copyError && <p role="alert" className="text-sm text-destructive">{copyError}</p>}</div>}
       <ol className="list-decimal space-y-2 pl-5 text-sm">
         {instructions.map((item) => (
           <li key={item}>{item}</li>
