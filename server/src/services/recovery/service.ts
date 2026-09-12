@@ -3669,7 +3669,7 @@ export function recoveryService(
 
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
-        eq(issues.status, "blocked"),
+        inArray(issues.status, ["blocked", "in_review", "in_progress"]),
         visibleIssueCondition(),
         // Include tasks with no assignee when createdByAgentId is available as a
         // fallback wake target. When both are null the task is fully orphaned and

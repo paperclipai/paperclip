@@ -11375,12 +11375,20 @@ export function issueRoutes(
       }
 
       const restoredBlockedReadyDependency =
-        issue.status === "blocked" &&
         issue.assigneeAgentId &&
         (
-          existing.status !== "blocked" ||
-          Array.isArray(req.body.blockedByIssueIds) ||
-          existing.assigneeAgentId !== issue.assigneeAgentId
+          (
+            issue.status === "blocked" &&
+            (
+              existing.status !== "blocked" ||
+              Array.isArray(req.body.blockedByIssueIds) ||
+              existing.assigneeAgentId !== issue.assigneeAgentId
+            )
+          ) ||
+          (
+            (issue.status === "in_review" || issue.status === "in_progress") &&
+            Array.isArray(req.body.blockedByIssueIds)
+          )
         );
       if (restoredBlockedReadyDependency && typeof dependencyReadinessSvc.getDependencyReadiness === "function") {
         const readiness = await dependencyReadinessSvc.getDependencyReadiness(issue.id);

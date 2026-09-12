@@ -316,6 +316,79 @@ describe("issue dependency wakeups in issue routes", () => {
     });
   });
 
+  it.each(["in_review", "in_progress"] as const)(
+    "wakes a %s issue when blockedByIssueIds is set against an already-done blocker",
+    async (activeStatus) => {
+      const parentIssueId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+      const childIssueId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
+      mockIssueService.getById.mockResolvedValue({
+        id: parentIssueId,
+        companyId: "company-1",
+        identifier: "PAP-300",
+        title: "Active issue with done blocker",
+        description: null,
+        status: activeStatus,
+        priority: "medium",
+        parentId: null,
+        assigneeAgentId: "agent-2",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      });
+      mockIssueService.update.mockResolvedValue({
+        id: parentIssueId,
+        companyId: "company-1",
+        identifier: "PAP-300",
+        title: "Active issue with done blocker",
+        description: null,
+        status: activeStatus,
+        priority: "medium",
+        parentId: null,
+        assigneeAgentId: "agent-2",
+        assigneeUserId: null,
+        createdByAgentId: null,
+        createdByUserId: null,
+        executionWorkspaceId: null,
+        labels: [],
+        labelIds: [],
+      });
+      mockIssueService.getDependencyReadiness.mockResolvedValue({
+        issueId: parentIssueId,
+        blockerIssueIds: [childIssueId],
+        unresolvedBlockerIssueIds: [],
+        unresolvedBlockerCount: 0,
+        pendingFinalizeBlockerIssueIds: [],
+        allBlockersDone: true,
+        isDependencyReady: true,
+      });
+
+      const res = await request(await createApp())
+        .patch(`/api/issues/${parentIssueId}`)
+        .send({ blockedByIssueIds: [childIssueId] });
+
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => {
+        expect(mockWakeup).toHaveBeenCalledWith(
+          "agent-2",
+          expect.objectContaining({
+            reason: "issue_blockers_resolved",
+            payload: expect.objectContaining({
+              issueId: parentIssueId,
+              resolvedBlockerIssueId: childIssueId,
+              mutation: "blocked_dependency_restored",
+            }),
+            contextSnapshot: expect.objectContaining({
+              source: "issue.blockers_restored",
+            }),
+          }),
+        );
+      });
+    },
+  );
+
   it("wakes the parent when all direct children become terminal", async () => {
     mockIssueService.getById.mockResolvedValue({
       id: "child-1",
