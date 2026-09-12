@@ -1686,7 +1686,7 @@ describeEmbeddedPostgres("secretService", () => {
       ROUTINE_PLAIN: "still-here",
     };
     await svc.syncEnvBindingsForTarget(companyId, { targetType: "routine", targetId: "routine-1" }, env);
-    await svc.createCurrentUserSecretValue(companyId, "user-1", {
+    const userSecret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
       definitionKey: "github_token",
       value: "user-one-secret",
     });
@@ -1709,15 +1709,10 @@ describeEmbeddedPostgres("secretService", () => {
     expect(resolved.secretKeys.has("GITHUB_TOKEN")).toBe(false);
     expect(JSON.stringify(resolved)).not.toContain("user-one-secret");
 
-    const [denialEvent] = await db
-      .select()
-      .from(secretAccessEvents)
-      .where(and(
-        eq(secretAccessEvents.companyId, companyId),
-        eq(secretAccessEvents.userSecretDefinitionId, definition.id),
-      ));
+    const [denialEvent] = await svc.listAccessEvents(companyId, userSecret.id);
     expect(denialEvent).toMatchObject({
-      secretId: null,
+      secretId: userSecret.id,
+      userSecretDefinitionId: definition.id,
       secretScope: "user",
       responsibleUserId: "user-1",
       credentialOwnerUserId: "user-1",

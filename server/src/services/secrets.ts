@@ -1157,7 +1157,7 @@ export function secretService(db: Db | DbTransaction) {
 
   async function recordAccessEvent(input: {
     companyId: string;
-    secretId: string | null;
+    secretId: string;
     userSecretDefinitionId?: string | null;
     secretScope?: string | null;
     version: number | null;
@@ -4164,34 +4164,36 @@ export function secretService(db: Db | DbTransaction) {
           );
         }
       }
-      if (
-        Array.isArray(context?.allowedBindingIds) &&
-        (!declaration || !context.allowedBindingIds.includes(declaration.id))
-      ) {
-        await recordAccessEvent({
-          companyId,
-          secretId: null,
-          userSecretDefinitionId: definition.id,
-          secretScope: "user",
-          version: null,
-          provider: definition.provider as SecretProvider,
-          context: context ? { ...context, responsibleUserId } : undefined,
-          credentialOwnerUserId: responsibleUserId,
-          credentialSubjectType: "user",
-          credentialSubjectId: responsibleUserId,
-          outcome: "failure",
-          errorCode: "binding_not_allowed",
-        }).catch(() => undefined);
-        throw unprocessable(
-          "User secret declaration is outside the active low-trust boundary",
-          { code: "binding_not_allowed" },
-        );
-      }
       const secret = await getUserSecretValue({
         companyId,
         ownerUserId: responsibleUserId,
         definitionId: definition.id,
       });
+      if (
+        Array.isArray(context?.allowedBindingIds) &&
+        (!declaration || !context.allowedBindingIds.includes(declaration.id))
+      ) {
+        if (secret) {
+          await recordAccessEvent({
+            companyId,
+            secretId: secret.id,
+            userSecretDefinitionId: definition.id,
+            secretScope: "user",
+            version: null,
+            provider: definition.provider as SecretProvider,
+            context: context ? { ...context, responsibleUserId } : undefined,
+            credentialOwnerUserId: responsibleUserId,
+            credentialSubjectType: "user",
+            credentialSubjectId: responsibleUserId,
+            outcome: "failure",
+            errorCode: "binding_not_allowed",
+          }).catch(() => undefined);
+        }
+        throw unprocessable(
+          "User secret declaration is outside the active low-trust boundary",
+          { code: "binding_not_allowed" },
+        );
+      }
       if (!secret) {
         if (optionalBinding) return null;
         throw unprocessable("User secret value is not configured", {
