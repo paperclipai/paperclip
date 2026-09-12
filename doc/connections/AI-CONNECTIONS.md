@@ -209,3 +209,16 @@ does not delete a directory referenced by a copied command. **Start sign-in agai
 explicitly cancels the old attempt; abandoned attempts expire after 30 minutes.
 Commands create their directory if necessary, and completed/expired attempts are
 cleaned up through the existing lifecycle.
+
+### Disposable live inline-repair test
+
+The normal app test configuration excludes `*.live.spec.ts`. To run the destructive
+inline-repair scenario, set `AI_REPAIR_TEST_ALLOW_DESTRUCTIVE=1` and use a separate
+loopback `local_trusted` instance. Set `AI_REPAIR_TEST_DISPOSABLE_MARKER` to a fresh
+32-character lowercase hexadecimal value. The company, single Codex agent, single
+personal OpenAI API connection, and issue must all be named `AI Repair QA <marker>`
+(the issue uses that title). Supply their IDs with `AI_CONNECTIONS_TEST_COMPANY_ID`,
+`AI_REPAIR_TEST_CONNECTION_ID`, and `AI_REPAIR_TEST_ISSUE_ID`, and the disposable
+provider key with `AI_REPAIR_TEST_KEY`. The test verifies these boundaries before
+revoking credentials or submitting work. Delete the disposable instance and revoke
+its provider key after the test; failed tests may leave a paused task for inspection.
