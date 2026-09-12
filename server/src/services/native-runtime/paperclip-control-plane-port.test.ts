@@ -1084,10 +1084,10 @@ describe("PaperclipControlPlanePort conformance", () => {
     const reviews = [];
     for (const key of ["one", "two"]) {
       reviews.push(await issueThreadInteractionService(db).create(
-        { id: issueId, companyId: identity.companyId, projectId: null, goalId: null, status: "in_review" },
+        { id: issueId, companyId: identity.companyId },
         { kind: "request_confirmation", title: `Review ${key}`, addresseeUserId: "reviewer-24",
           resolverPolicy: "human_only", continuationPolicy: "wake_assignee", sourceRunId: runId,
-          payload: { version: 1, prompt: `Approve ${key}`, acceptLabel: "Approve", rejectLabel: "Decline",
+          payload: { version: 1, prompt: `Approve ${key}`, acceptLabel: "Approve", rejectLabel: "Decline", allowDeclineReason: true,
             target: { type: "custom", key: "native_completion_review", revisionId: newRevision } } },
         { systemId: "test-multiple-reviewers", runId },
       ));
