@@ -2779,13 +2779,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       }),
     });
     expect(failed?.stderrExcerpt ?? "").not.toContain("[environment-allocation]");
-    // Legacy path enqueues an immediate retry (startNextQueuedRunForAgent may
-    // transition it to "running" before we query, so we don't pin the status).
+    // Legacy path enqueues an immediate retry. The retry row is inserted
+    // with status "scheduled_retry" (dueAt = now + 30s) and only promoted by
+    // promoteDueScheduledRetries once scheduledRetryAt has elapsed, so the
+    // observed status here is one of: scheduled_retry, queued, or running.
     expect(retry).toMatchObject({
       retryOfRunId: runId,
       processLossRetryCount: 1,
     });
-    expect(["queued", "running"]).toContain(retry?.status);
+    expect(["scheduled_retry", "queued", "running"]).toContain(retry?.status);
     // Legacy path uses the immediate process_lost_retry wake reason, not the
     // bounded environment retry wake reason.
     expect(retry?.contextSnapshot).toMatchObject({
