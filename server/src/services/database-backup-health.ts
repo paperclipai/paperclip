@@ -1,6 +1,6 @@
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
+import { closeSync, createReadStream, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { gunzipSync } from "node:zlib";
+import { createGunzip } from "node:zlib";
 
 export type DatabaseBackupHealthWarningCode =
   | "database_backup_check_failed"
@@ -86,7 +86,7 @@ function readLastFailure(alertFiles: string[]) {
 // (e.g. an aborted run) is a valid, small gzip stream whose ISIZE is 0 -
 // that case is otherwise indistinguishable from a healthy backup by
 // looking only at the compressed file size.
-function readGzipIsEmpty(filePath: string, compressedSizeBytes: number): boolean {
+async function readGzipIsEmpty(filePath: string, compressedSizeBytes: number): Promise<boolean> {
   if (compressedSizeBytes < 18) return false;
   const fd = openSync(filePath, "r");
   try {
@@ -97,18 +97,40 @@ function readGzipIsEmpty(filePath: string, compressedSizeBytes: number): boolean
     closeSync(fd);
   }
 
-  // ISIZE is stored modulo 2^32. Confirm a zero trailer by inflating at most
-  // one byte so a non-empty archive whose size wraps to zero is not reported
-  // as empty. zlib stops as soon as the output limit is exceeded.
-  try {
-    return gunzipSync(readFileSync(filePath), { maxOutputLength: 1 }).length === 0;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE") return false;
-    throw error;
-  }
+  // ISIZE is stored modulo 2^32. Confirm a zero trailer by streaming the
+  // archive and stopping after the first output byte. This keeps large,
+  // wrapped-ISIZE backups off the synchronous health-request path and avoids
+  // materializing the compressed archive in memory.
+  return await new Promise<boolean>((resolvePromise, reject) => {
+    const input = createReadStream(filePath);
+    const gunzip = createGunzip();
+    let settled = false;
+
+    const settle = (empty: boolean) => {
+      if (settled) return;
+      settled = true;
+      input.destroy();
+      gunzip.destroy();
+      resolvePromise(empty);
+    };
+
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      input.destroy();
+      gunzip.destroy();
+      reject(error);
+    };
+
+    input.on("error", fail);
+    gunzip.on("error", fail);
+    gunzip.once("data", () => settle(false));
+    gunzip.once("end", () => settle(true));
+    input.pipe(gunzip);
+  });
 }
 
-function findLatestBackup(backupDir: string, nowMs: number) {
+async function findLatestBackup(backupDir: string, nowMs: number) {
   if (!existsSync(backupDir)) return null;
 
   const candidates = readdirSync(backupDir)
@@ -129,11 +151,11 @@ function findLatestBackup(backupDir: string, nowMs: number) {
     mtime: new Date(latest.stat.mtimeMs).toISOString(),
     ageHours: roundHours((nowMs - latest.stat.mtimeMs) / 3_600_000),
     sizeBytes: latest.stat.size,
-    empty: readGzipIsEmpty(latest.fullPath, latest.stat.size),
+    empty: await readGzipIsEmpty(latest.fullPath, latest.stat.size),
   };
 }
 
-export function inspectDatabaseBackupHealth(
+export async function inspectDatabaseBackupHealth(
   opts: InspectDatabaseBackupHealthOptions,
 ): DatabaseBackupHealthStatus {
   const warnings: DatabaseBackupHealthWarning[] = [];
@@ -144,7 +166,7 @@ export function inspectDatabaseBackupHealth(
   let lastFailure: DatabaseBackupHealthStatus["lastFailure"] = null;
 
   try {
-    latestBackup = findLatestBackup(opts.backupDir, now.getTime());
+    latestBackup = await findLatestBackup(opts.backupDir, now.getTime());
     lastFailure = readLastFailure(alertFileCandidates(opts));
 
     if (!latestBackup) {
