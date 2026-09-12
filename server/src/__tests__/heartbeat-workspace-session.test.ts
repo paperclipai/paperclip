@@ -1,3 +1,8 @@
+import { createHash } from "node:crypto";
+import { applyConnectorSkills, prepareConnectorSkillDelivery, type ConnectorAssignment } from "../services/connector-runtime.js";
+import { canonicalizeEffectiveRunConfigCategory } from "../services/effective-run-config-fingerprints.js";
+import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import * as adapterServerUtils from "@paperclipai/adapter-utils/server-utils";
 import { execFile as execFileCallback } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -2226,7 +2231,108 @@ function sessionParamsWithConfigMetadata(
   };
 }
 
+// Reconstruct historical session hashes independently of the normalization under
+// test, using the canonical payload the old fingerprint version persisted.
+function historicalConnectorSession(metadata: SessionConfigMetadata, adapterConfig: Record<string, unknown>,
+  secretManifest: Parameters<typeof buildEffectiveRunSessionConfigMetadata>[0]["secretManifest"],
+  workspacePatch: Record<string, unknown> = {}) {
+  const payload = JSON.parse(metadata.fingerprints.sessionFingerprint.canonicalJson);
+  payload.value.adapterConfig = canonicalizeEffectiveRunConfigCategory({ category: "session", value: adapterConfig, secretManifest });
+  Object.assign(payload.value.workspaceConfig, workspacePatch);
+  function sorted(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(sorted);
+    if (value && typeof value === "object") return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sorted((value as Record<string, unknown>)[key])]));
+    return value;
+  }
+  const fingerprint = (value: unknown) => `v1:sha256:${createHash("sha256").update(JSON.stringify(sorted({ version: 1, category: "session", value }))).digest("hex")}`;
+  return { ...metadata, fingerprint: fingerprint(payload.value), categoryFingerprints: {
+    ...metadata.categoryFingerprints,
+    adapterConfig: fingerprint({ adapterConfig: payload.value.adapterConfig }),
+    workspaceConfig: fingerprint({ workspaceConfig: payload.value.workspaceConfig }),
+  } };
+}
+
 describe("effective run session config freshness", () => {
+  it.each(["codex_local", "claude_local", "paperclip_runner"])("preserves historical %s sessions through actual empty connector preparation", async (adapterType) => {
+    const fixture = JSON.parse(await fs.readFile(new URL("./fixtures/pre-normalization-session-fingerprints.json", import.meta.url), "utf8"));
+    const input = { ...fixture.baseInput, ...fixture.cases[0].overrides, adapterType };
+    const oldConfig = { ...input.effectiveAdapterConfig, engine: "cli", paperclipRuntimeSkills: input.runtimeSkills };
+    const initial = await buildEffectiveRunSessionConfigMetadata({ ...input, effectiveAdapterConfig: oldConfig });
+    const previous = historicalConnectorSession(initial, oldConfig, input.secretManifest, {
+      projectConfigRevisionAt: input.workspaceConfig.projectConfigRevisionAt, issueSettings: null,
+    });
+    const delivered = await prepareConnectorSkillDelivery(await applyConnectorSkills(oldConfig, input.runtimeSkills, []), adapterType);
+    const next = await buildEffectiveRunSessionConfigMetadata({ ...input, effectiveAdapterConfig: delivered.config,
+      workspaceConfig: { ...input.workspaceConfig, projectConfigRevisionAt: "2026-06-03T00:00:00Z", issueSettings: { mode: "shared_workspace" } },
+    });
+    const decision = { hasTaskSession: true, configuredModel: "gpt-5.4-mini", taskSessionParams: sessionParamsWithConfigMetadata(previous), configMetadata: next };
+    expect(resolveTaskSessionConfigFreshness(decision).reset).toBe(true);
+    expect(resolveTaskSessionConfigFreshness({ ...decision, verifiedLegacyWorkspaceUnchanged: true }))
+      .toMatchObject({ reset: false, changedCategories: [] });
+    expect((delivered.config as Record<string, unknown>).paperclipSkillSync).toBeUndefined();
+    const already08 = historicalConnectorSession(next, {
+      ...writePaperclipSkillSyncPreference(oldConfig, []), paperclipConnectorSkillDigest: null,
+    }, input.secretManifest);
+    expect(resolveTaskSessionConfigFreshness({ ...decision, taskSessionParams: sessionParamsWithConfigMetadata(already08) }).reset).toBe(false);
+    for (const change of [
+      { effectiveAdapterConfig: { ...delivered.config, model: "different-model" } },
+      { effectiveAdapterConfig: { ...delivered.config, dangerouslySkipPermissions: true } },
+      { effectiveAdapterConfig: { ...delivered.config, paperclipSkillSync: { desiredSkills: ["another-skill"] } } },
+      { secretManifest: input.secretManifest.map((entry: Record<string, unknown>) => ({ ...entry, version: 8 })) },
+      { runtimeSkills: [...input.runtimeSkills, { key: "new", runtimeName: "new", source: "/skills/new" }] },
+    ]) {
+      const changed = await buildEffectiveRunSessionConfigMetadata({ ...input, effectiveAdapterConfig: delivered.config, ...change });
+      expect(resolveTaskSessionConfigFreshness({ ...decision, configMetadata: changed, verifiedLegacyWorkspaceUnchanged: true }).reset).toBe(true);
+    }
+  });
+
+  it("keeps connector assignments, tools, resources and revocation session-invalidating", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-connector-session-"));
+    const previousHome = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = directory;
+    // A nested worktree must use its own bundled skill, not an ancestor checkout.
+    const skillRoot = vi.spyOn(adapterServerUtils, "resolvePaperclipSkillsDir")
+      .mockResolvedValue(path.resolve(import.meta.dirname, "../../../skills"));
+    const assignment: ConnectorAssignment = {
+      key: "agentmail", label: "AgentMail", skillKey: "paperclipai/paperclip/agentmail",
+      resources: [{ id: "inbox-one", label: "Inbox one", connectionId: "connection-one" }],
+      tools: [{ name: "agentmail_send", description: "Send mail", inputSchema: { type: "object" } }],
+    };
+    try {
+      for (const adapterType of ["codex_local", "claude_local", "paperclip_runner", "opencode_local"]) {
+        const base = { engine: "cli", model: "gpt-5.4-mini" };
+        const assigned = await prepareConnectorSkillDelivery(await applyConnectorSkills(base, [], [assignment]), adapterType);
+        expect(assigned.config.paperclipConnectorSkillDigest).toMatch(/^[a-f0-9]{64}$/);
+        const old = await buildSessionConfigMetadata({ adapterType, effectiveAdapterConfig: assigned.config });
+        const same = await prepareConnectorSkillDelivery(await applyConnectorSkills(base, [], [assignment]), adapterType);
+        const unchanged = await buildSessionConfigMetadata({ adapterType, effectiveAdapterConfig: same.config });
+        expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: "gpt-5.4-mini",
+          taskSessionParams: sessionParamsWithConfigMetadata(old), configMetadata: unchanged }).reset).toBe(false);
+        for (const assignments of [[], [{ ...assignment, resources: [{ ...assignment.resources[0]!, id: "inbox-two" }] }],
+          [{ ...assignment, tools: [{ ...assignment.tools[0]!, name: "agentmail_delete" }] }]]) {
+          const next = await prepareConnectorSkillDelivery(await applyConnectorSkills(base, [], assignments), adapterType);
+          const metadata = await buildSessionConfigMetadata({ adapterType, effectiveAdapterConfig: next.config });
+          expect(resolveTaskSessionConfigFreshness({ hasTaskSession: true, configuredModel: "gpt-5.4-mini",
+            taskSessionParams: sessionParamsWithConfigMetadata(old), configMetadata: metadata,
+            verifiedLegacyWorkspaceUnchanged: true }).reset).toBe(true);
+        }
+        const revoked = await applyConnectorSkills({ ...base, paperclipSkillSync: { desiredSkills: [assignment.skillKey] } },
+          [{ key: assignment.skillKey, runtimeName: "agentmail", source: "/untrusted/agentmail" }], []);
+        expect(revoked.paperclipRuntimeSkills).toEqual([]);
+        expect((revoked as Record<string, unknown>).paperclipSkillSync).toEqual({ desiredSkills: [] });
+      }
+    } finally {
+      skillRoot.mockRestore();
+      if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
+      async function writableDirectories(root: string): Promise<void> {
+        await fs.chmod(root, 0o700);
+        for (const entry of await fs.readdir(root, { withFileTypes: true })) if (entry.isDirectory()) await writableDirectories(path.join(root, entry.name));
+      }
+      await writableDirectories(directory);
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("upgrades actual pre-normalization native and legacy session fingerprints without resetting", async () => {
     const fixture = JSON.parse(await fs.readFile(
       new URL("./fixtures/pre-normalization-session-fingerprints.json", import.meta.url), "utf8",

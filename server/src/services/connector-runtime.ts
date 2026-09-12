@@ -148,9 +148,8 @@ export async function applyConnectorSkills(
       connector.skillName,
     ]),
   );
-  const desired = readPaperclipSkillSyncPreference(
-    config,
-  ).desiredSkillEntries.filter((entry) => !reserved.has(entry.key));
+  const preference = readPaperclipSkillSyncPreference(config);
+  const desired = preference.desiredSkillEntries.filter((entry) => !reserved.has(entry.key));
   const skills = entries.filter(
     (entry) => !reserved.has(entry.key) && !reserved.has(entry.runtimeName),
   );
@@ -193,7 +192,11 @@ export async function applyConnectorSkills(
         .digest("hex")
     : null;
   return {
-    ...writePaperclipSkillSyncPreference(config, desired),
+    // Empty connector preparation must not rewrite an existing agent's skill
+    // preference: its original representation is part of the saved session.
+    // Assignment changes and stripping unassigned reserved skills still apply.
+    ...(assignments.length === 0 && desired.length === preference.desiredSkillEntries.length
+      ? config : writePaperclipSkillSyncPreference(config, desired)),
     paperclipRuntimeSkills: skills,
     paperclipConnectorSkillDigest: connectorSkillDigest,
   };
