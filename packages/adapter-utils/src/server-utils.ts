@@ -97,6 +97,7 @@ interface SpawnTarget {
   cwd?: string;
   env?: Record<string, string | undefined>;
   cleanup?: () => Promise<void>;
+  stdinPrefix?: string;
 }
 
 type RemoteExecutionSpec = SshRemoteExecutionSpec;
@@ -3522,6 +3523,7 @@ async function resolveSpawnTarget(
       args: spawnTarget.args,
       cwd: process.cwd(),
       cleanup: spawnTarget.cleanup,
+      stdinPrefix: spawnTarget.stdinPrefix,
     };
   }
 
@@ -4617,7 +4619,7 @@ export async function runChildProcess(
           env: childEnv,
           detached: process.platform !== "win32",
           shell: false,
-          stdio: [opts.stdin != null ? "pipe" : "ignore", "pipe", "pipe"],
+          stdio: [opts.stdin != null || target.stdinPrefix != null ? "pipe" : "ignore", "pipe", "pipe"],
         }) as ChildProcessWithEvents;
         const startedAt = new Date().toISOString();
         const processGroupId = resolveProcessGroupId(child);
@@ -4771,10 +4773,10 @@ export async function runChildProcess(
         });
 
         const stdin = child.stdin;
-        if (opts.stdin != null && stdin) {
+        if ((opts.stdin != null || target.stdinPrefix != null) && stdin) {
           void spawnPersistPromise.finally(() => {
             if (child.killed || stdin.destroyed) return;
-            stdin.write(opts.stdin as string);
+            stdin.write(`${target.stdinPrefix ?? ""}${opts.stdin ?? ""}`);
             stdin.end();
           });
         }

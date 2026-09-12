@@ -35,3 +35,10 @@ The invariant is pinned by the `no-remote-git contract` case in
 remote-only commit propagates to the local worktree through the
 prepare → restore round-trip with no git remote configured at any point. Do
 not regress that test.
+
+## SSH host requirements
+
+Remote SSH execution requires a POSIX shell and a `base64` command. The
+environment transport supports the GNU `base64 -d` form and the BSD/macOS
+`base64 -D` form. If neither decoder is available, the transport fails closed
+before it starts the agent payload.
