@@ -618,21 +618,6 @@ function routineCurrentFieldsMatch(left: RoutineRow, right: RoutineRow) {
   );
 }
 
-async function lockActiveRoutineContinuationParent(
-  executor: Db,
-  input: { companyId: string; parentIssueId: string | null; status: string },
-) {
-  if (input.status !== "active" || !input.parentIssueId) return;
-  // Recovery uses the parent issue row as the serialization boundary for
-  // durable continuation publication. Take it before an active routine is
-  // inserted or updated so routine-first recovery revalidation sees the path.
-  await executor
-    .select({ id: issues.id })
-    .from(issues)
-    .where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.parentIssueId)))
-    .for("update");
-}
-
 function mapRoutineRevision(row: typeof routineRevisions.$inferSelect): RoutineRevision {
   return {
     ...row,
@@ -2210,11 +2195,6 @@ export function routineService(
       }
       const createdRoutine = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
-        await lockActiveRoutineContinuationParent(txDb, {
-          companyId,
-          parentIssueId: input.parentIssueId ?? null,
-          status,
-        });
         const [created] = await txDb
           .insert(routines)
           .values({
@@ -2353,12 +2333,6 @@ export function routineService(
           updatedByAgentId: actor.agentId ?? null,
           updatedByUserId: actor.userId ?? null,
         };
-
-        await lockActiveRoutineContinuationParent(txDb, {
-          companyId: candidate.companyId,
-          parentIssueId: candidate.parentIssueId,
-          status: candidate.status,
-        });
 
         const folderChanged = patch.folderId !== undefined && locked.folderId !== candidate.folderId;
         if (locked.latestRevisionId && routineCurrentFieldsMatch(locked, candidate)) {
@@ -2741,11 +2715,6 @@ export function routineService(
         }
 
         const now = new Date();
-        await lockActiveRoutineContinuationParent(txDb, {
-          companyId: locked.companyId,
-          parentIssueId: routineSnapshot.parentIssueId,
-          status: routineSnapshot.status,
-        });
         const [restoredRoutine] = await txDb
           .update(routines)
           .set({

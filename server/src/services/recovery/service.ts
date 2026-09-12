@@ -260,11 +260,10 @@ type StrandedPreviousStatus = "todo" | "in_progress" | "in_review";
 
 type SuccessfulRunHandoffRecoveryEvidence = {
   sourceRunId: string | null;
-  correctiveRunId: string | null;
+  correctiveRunId: string;
   missingDisposition: string;
   handoffAttempt: number;
   maxHandoffAttempts: number;
-  handoffDenialReason?: string | null;
 };
 
 function compactRecoveryPresentation(title: string): IssueCommentPresentation {
@@ -3759,18 +3758,7 @@ export function recoveryService(
       status: "blocked",
       blockedByIssueIds: blockerIds,
     });
-    if (!transition) {
-      await recoveryActionsSvc.resolveActiveForIssue({
-        companyId: input.issue.companyId,
-        sourceIssueId: input.issue.id,
-        actionId: recoveryAction.id,
-        status: "resolved",
-        outcome: "restored",
-        resolutionNote: "concurrent_source_path_restored",
-      });
-      return null;
-    }
-    const { updated, blockerIds } = transition;
+    if (!updated) return null;
     if (isProviderQuotaWait) return updated;
     const sourceAssigneePreserved =
       updated.assigneeAgentId === input.issue.assigneeAgentId &&

@@ -449,7 +449,6 @@ import {
   isExecutionForcedToKubernetes,
 } from "./execution-allowlist.js";
 import {
-  DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   RECOVERY_ORIGIN_KINDS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -461,7 +460,6 @@ import {
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
   findExistingRunLivenessContinuationWake,
-  isSuccessfulRunHandoffRecoveryRequiredSkip,
   isSuccessfulRunHandoffValidPathSkip,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   readContinuationAttempt,
@@ -12829,11 +12827,7 @@ export function heartbeatService(
 
   async function handleSuccessfulRunHandoff(
     run: typeof heartbeatRuns.$inferSelect,
-    _agent: typeof agents.$inferSelect,
-    options: {
-      persistRecoveryIfStillUnqueued?: boolean;
-      handoffDenialReason?: string;
-    } = {},
+    agent: typeof agents.$inferSelect,
   ) {
     if (run.status !== "succeeded") return;
     const context = parseObject(run.contextSnapshot);
@@ -12852,18 +12846,24 @@ export function heartbeatService(
       if (goalProjection?.goal?.status !== "complete") return;
     }
 
-    const [issue, currentAgent] = await Promise.all([
-      db
-        .select()
-        .from(issues)
-        .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
-        .then((rows) => rows[0] ?? null),
-      db
-        .select()
-        .from(agents)
-        .where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)))
-        .then((rows) => rows[0] ?? null),
-    ]);
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        identifier: issues.identifier,
+        title: issues.title,
+        description: issues.description,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        executionState: issues.executionState,
+        monitorNextCheckAt: issues.monitorNextCheckAt,
+        projectId: issues.projectId,
+        originKind: issues.originKind,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+      .then((rows) => rows[0] ?? null);
     const idempotencyKey = issue
       ? buildFinishSuccessfulRunHandoffIdempotencyKey({
           issueId: issue.id,
@@ -13051,7 +13051,7 @@ export function heartbeatService(
     const decision = decideSuccessfulRunHandoff({
       run,
       issue,
-      agent: currentAgent,
+      agent,
       livenessState: run.livenessState as RunLivenessState | null,
       detectedProgressSummary,
       finalReport,
@@ -13082,29 +13082,7 @@ export function heartbeatService(
       });
     }
 
-    const recoveryRequired = isSuccessfulRunHandoffRecoveryRequiredSkip(decision) ||
-      (options.persistRecoveryIfStillUnqueued && decision.kind === "enqueue");
-    if (recoveryRequired && issue) {
-      const handoffDenialReason = options.handoffDenialReason ??
-        (decision.kind === "skip" ? decision.reason : "corrective wake was not durably queued");
-      await recovery.escalateStrandedAssignedIssue({
-        issue,
-        previousStatus: "in_progress",
-        latestRun: run,
-        recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
-        successfulRunHandoffEvidence: {
-          sourceRunId: run.id,
-          correctiveRunId: null,
-          missingDisposition: "clear_next_step",
-          handoffAttempt: 0,
-          maxHandoffAttempts: DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
-          handoffDenialReason,
-        },
-      });
-      return;
-    }
-
-    if (decision.kind !== "enqueue" || !issue || !currentAgent) return;
+    if (decision.kind !== "enqueue" || !issue) return;
 
     if (hasUnmanagedBackgroundTaskEvidence(parseObject(run.resultJson))) {
       await db
@@ -13138,7 +13116,7 @@ export function heartbeatService(
     await addSuccessfulRunHandoffCommentOnce({
       issue,
       run,
-      agent: currentAgent,
+      agent,
       detectedProgressSummary:
         detectedProgressSummary ??
         "The run reported progress, but did not choose a next step.",

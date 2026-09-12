@@ -11213,6 +11213,16 @@ export function issueService(db: Db) {
       expectedStatuses: string[],
       checkoutRunId: string | null,
     ) => {
+      const terminalExpectedStatuses = expectedStatuses.filter(
+        (status) => status === "done" || status === "cancelled",
+      );
+      if (terminalExpectedStatuses.length > 0) {
+        throw unprocessable(
+          "Issue checkout cannot expect terminal issue statuses",
+          { terminalExpectedStatuses },
+        );
+      }
+
       const issueCompany = await db
         .select({ companyId: issues.companyId })
         .from(issues)
@@ -11301,7 +11311,7 @@ export function issueService(db: Db) {
             eq(issues.executionRunId, checkoutRunId),
           )
         : isNull(issues.executionRunId);
-      const updateIssue = (dbOrTx: DbOrTransaction) => dbOrTx
+      const updateIssue = (dbOrTx: Db | DbTransaction) => dbOrTx
         .update(issues)
         .set({
           assigneeAgentId: agentId,

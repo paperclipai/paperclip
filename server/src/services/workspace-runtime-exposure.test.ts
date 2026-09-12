@@ -86,7 +86,7 @@ const p = Number(process.env.PORT);
 // Even a pre-exposure checkout answered /api/health semantically; these guests
 // model bind behaviour, not health behaviour.
 const health = (rq, r) => { if (rq.url === "/api/health") { r.setHeader("content-type", "application/json"); r.end(JSON.stringify({ status: "ok" })); return true; } return false; };
-for (const q of [p, p + 10000].filter((candidate) => candidate <= 65535)) {
+for (const q of [p, p + 10000]) {
   http.createServer((rq, r) => { if (health(rq, r)) return; r.statusCode = 200; r.end("ok"); }).listen(q, host);
 }
 setInterval(() => {}, 1000);
