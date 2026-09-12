@@ -203,7 +203,7 @@ describe("project workspace host-path floor", () => {
       explanation: "Allowed by test mock.",
     });
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
-    mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: null });
+    mockProjectService.resolveByReference.mockResolvedValue({ ambiguous: false, project: buildProject() });
     mockProjectService.getById.mockResolvedValue(buildProject());
     mockProjectService.create.mockResolvedValue(buildProject());
     mockProjectService.createWorkspace.mockResolvedValue(buildWorkspace());

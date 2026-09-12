@@ -117,6 +117,7 @@ function buildApp(routerFactory: (app: express.Express) => void) {
     (req as any).actor = {
       type: "board",
       userId: "user-1",
+      companyIds: ["company-1"],
       source: "local_implicit",
     };
     next();
@@ -170,6 +171,10 @@ describe.sequential("execution environment route guards", () => {
     mockProjectService.createWorkspace.mockReset();
     mockProjectService.remove.mockReset();
     mockProjectService.resolveByReference.mockReset();
+    mockProjectService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      project: { id: "project-1" },
+    });
     mockProjectService.listWorkspaces.mockReset();
     mockIssueService.create.mockReset();
     mockIssueService.getById.mockReset();
