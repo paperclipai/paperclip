@@ -4257,20 +4257,50 @@ export async function registerWikiTools(ctx: PluginContext) {
 
   ctx.tools.register("wiki_list_pages", {
     displayName: "List Wiki Pages",
-    description: "Return the known page index from plugin metadata.",
+    description: "Return one page of the known wiki inventory. Follow nextCursor until complete is true before treating it as the full tree.",
     parametersSchema: ctx.manifest.tools?.find((tool) => tool.name === "wiki_list_pages")?.parametersSchema ?? { type: "object" },
   }, async (params: unknown): Promise<ToolResult> => {
     const input = params as ToolParams;
     const companyId = requireString(input.companyId, "companyId");
     const wikiId = normalizeWikiId(input.wikiId);
     const space = await resolveSpace(ctx, { companyId, wikiId, spaceSlug: input.spaceSlug as string | null | undefined });
+    const limit = normalizeLimit(input.limit, 200, 500);
+    const cursor = typeof input.cursor === "string" && input.cursor.length > 0
+      ? Buffer.from(input.cursor, "base64url").toString("utf8")
+      : null;
+    if (cursor != null && !cursor.startsWith("wiki/")) {
+      throw new Error("Invalid wiki page inventory cursor.");
+    }
     const rows = await ctx.db.query<{ path: string; title: string | null; page_type: string | null }>(
-      `SELECT path, title, page_type FROM ${tableName(ctx.db.namespace, "wiki_pages")} WHERE company_id = $1 AND wiki_id = $2 AND space_id = $3 ORDER BY path LIMIT 200`,
-      [companyId, wikiId, space.id],
+      `SELECT path, title, page_type
+         FROM ${tableName(ctx.db.namespace, "wiki_pages")}
+        WHERE company_id = $1
+          AND wiki_id = $2
+          AND space_id = $3
+          AND ($4::text IS NULL OR path > $4)
+        ORDER BY path
+        LIMIT $5`,
+      [companyId, wikiId, space.id, cursor, limit + 1],
     );
+    const pages = rows.slice(0, limit);
+    const hasMore = rows.length > limit;
+    const nextCursor = hasMore && pages.length > 0
+      ? Buffer.from(pages[pages.length - 1].path, "utf8").toString("base64url")
+      : null;
     return {
-      content: rows.length ? rows.map((row) => `${row.path}${row.title ? ` - ${row.title}` : ""}`).join("\n") : "No pages indexed yet.",
-      data: { companyId, wikiId, spaceSlug: space.slug, pages: rows },
+      content: pages.length ? pages.map((row) => `${row.path}${row.title ? ` - ${row.title}` : ""}`).join("\n") : "No pages indexed yet.",
+      data: {
+        companyId,
+        wikiId,
+        spaceSlug: space.slug,
+        pages,
+        pageInfo: {
+          limit,
+          returned: pages.length,
+          complete: !hasMore,
+          nextCursor,
+        },
+      },
     };
   });
 }
