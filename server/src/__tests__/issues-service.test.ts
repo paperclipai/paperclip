@@ -3612,6 +3612,189 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     });
   });
 
+  it("keeps explicit project workspace consistent across inherited create and update execution linkage", async () => {
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const agentId = randomUUID();
+    const checkoutRunId = randomUUID();
+    const parentIssueId = randomUUID();
+    const legacyParentIssueId = randomUUID();
+    const dashboardProjectWorkspaceId = randomUUID();
+    const dashboardExecutionWorkspaceId = randomUUID();
+    const wwwProjectWorkspaceId = randomUUID();
+    const wwwExecutionWorkspaceId = "00000000-0000-4000-8000-000000000090";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "FarmHub",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "API Engineer",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: checkoutRunId,
+      companyId,
+      agentId,
+      status: "running",
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Reliability",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values([
+      {
+        id: dashboardProjectWorkspaceId,
+        companyId,
+        projectId,
+        name: "dashboard",
+        repoUrl: "https://github.com/thefarmhub/dashboard.git",
+        cwd: "/workspaces/dashboard",
+      },
+      {
+        id: wwwProjectWorkspaceId,
+        companyId,
+        projectId,
+        name: "www",
+        repoUrl: "https://github.com/thefarmhub/www.git",
+        cwd: "/workspaces/www",
+        isPrimary: true,
+      },
+    ]);
+    await db.insert(executionWorkspaces).values([
+      {
+        id: dashboardExecutionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId: dashboardProjectWorkspaceId,
+        mode: "isolated_workspace",
+        strategyType: "git_worktree",
+        name: "dashboard worktree",
+        status: "active",
+        providerType: "git_worktree",
+        providerRef: "/workspaces/dashboard",
+      },
+      {
+        id: wwwExecutionWorkspaceId,
+        companyId,
+        projectId,
+        projectWorkspaceId: wwwProjectWorkspaceId,
+        mode: "shared_workspace",
+        strategyType: "project_primary",
+        name: "www checkout",
+        status: "active",
+        providerType: "local_fs",
+        providerRef: "/workspaces/www",
+        repoUrl: "https://github.com/thefarmhub/www.git",
+        cwd: "/workspaces/www",
+      },
+    ]);
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: dashboardProjectWorkspaceId,
+      title: "Reliability parent",
+      status: "in_progress",
+      priority: "high",
+      executionWorkspaceId: dashboardExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+    await db.insert(issues).values({
+      id: legacyParentIssueId,
+      companyId,
+      projectId,
+      projectWorkspaceId: null,
+      title: "Legacy reliability parent",
+      status: "in_progress",
+      priority: "high",
+      executionWorkspaceId: dashboardExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+
+    const child = await svc.create(companyId, {
+      parentId: parentIssueId,
+      projectId,
+      projectWorkspaceId: wwwProjectWorkspaceId,
+      title: "Fix www reliability",
+      assigneeAgentId: agentId,
+      status: "todo",
+    });
+
+    expect(child.projectWorkspaceId).toBe(wwwProjectWorkspaceId);
+    expect(child.executionWorkspaceId).toBeNull();
+
+    const legacyChild = await svc.create(companyId, {
+      parentId: legacyParentIssueId,
+      projectId,
+      title: "Child of legacy reliability parent",
+    });
+    expect(legacyChild.projectWorkspaceId).toBe(wwwProjectWorkspaceId);
+    expect(legacyChild.executionWorkspaceId).toBeNull();
+    expect(legacyChild.executionWorkspacePreference).toBeNull();
+    expect(legacyChild.executionWorkspaceSettings).toBeNull();
+
+    await expect(svc.create(companyId, {
+      projectId,
+      projectWorkspaceId: wwwProjectWorkspaceId,
+      executionWorkspaceId: dashboardExecutionWorkspaceId,
+      title: "Invalid explicit create pair",
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "Execution workspace must belong to the selected project workspace",
+    });
+
+    await svc.update(child.id, {
+      executionWorkspaceId: wwwExecutionWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "shared_workspace" },
+    });
+    const checkedOut = await svc.checkout(child.id, agentId, ["todo"], checkoutRunId);
+    expect(checkedOut.executionWorkspaceId).toBe(wwwExecutionWorkspaceId);
+    const [resolvedWwwWorkspace] = await db
+      .select({
+        id: executionWorkspaces.id,
+        repoUrl: executionWorkspaces.repoUrl,
+        cwd: executionWorkspaces.cwd,
+      })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, checkedOut.executionWorkspaceId!));
+    expect(resolvedWwwWorkspace).toEqual({
+      id: wwwExecutionWorkspaceId,
+      repoUrl: "https://github.com/thefarmhub/www.git",
+      cwd: "/workspaces/www",
+    });
+    const movedToDashboard = await svc.update(child.id, {
+      projectWorkspaceId: dashboardProjectWorkspaceId,
+    });
+    expect(movedToDashboard?.projectWorkspaceId).toBe(dashboardProjectWorkspaceId);
+    expect(movedToDashboard?.executionWorkspaceId).toBeNull();
+    expect(movedToDashboard?.executionWorkspacePreference).toBeNull();
+    expect(movedToDashboard?.executionWorkspaceSettings).toBeNull();
+
+    await expect(svc.update(child.id, {
+      projectWorkspaceId: wwwProjectWorkspaceId,
+      executionWorkspaceId: dashboardExecutionWorkspaceId,
+    })).rejects.toMatchObject({
+      status: 422,
+      message: "Execution workspace must belong to the selected project workspace",
+    });
+  });
+
   it("inherits workspace linkage from an explicit source issue without creating a parent-child relationship", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
