@@ -196,8 +196,11 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     },
   );
 
-  it.each([null, "stopped-target"])("sends a stopped legacy queue once with target %s", async (target) => {
+  it.each([null, "stopped-target", "system-receipt"])("sends a stopped legacy queue once with target %s", async (target) => {
     const seeded = await seedQueue();
+    if (target === "system-receipt") await db.update(agentWakeupRequests).set({
+      requestedByActorType: "system", requestedByActorId: "heartbeat",
+    }).where(eq(agentWakeupRequests.id, seeded.wakeId));
     await db.update(agents).set({ adapterType: "claude_local",
       runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
     }).where(eq(agents.id, seeded.agentId));
@@ -214,7 +217,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
     expect(queue.body.targetRunId).toBeNull();
     const body = { queueId: seeded.wakeId, revision: queue.body.revision,
-      targetRunId: target ? seeded.runId : null };
+      targetRunId: target === "stopped-target" ? seeded.runId : null };
     await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send(body).expect(200);
     const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
     expect(wake.status).toBe("coalesced");
@@ -226,8 +229,10 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send(body).expect(409);
   });
 
-  it("keeps stopped-run interruption intent across restart until the process stops, then delivers once", async () => {
+  it.each(["user", "system"])("keeps stopped-run interruption intent on a %s receipt across restart until the process stops, then delivers once", async (actorType) => {
     const seeded = await seedQueue();
+    await db.update(agentWakeupRequests).set({ requestedByActorType: actorType })
+      .where(eq(agentWakeupRequests.id, seeded.wakeId));
     await db.update(agents).set({ adapterType: "claude_local",
       runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
     }).where(eq(agents.id, seeded.agentId));
