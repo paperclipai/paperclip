@@ -1125,6 +1125,12 @@ controller must recover it through the authenticated ownership checks. This
 preserves active work and queued messages without treating a server restart as
 user cancellation.
 
+Before either shutdown path exits, idle warm sessions close through their
+normal suspend-and-checkpoint path. Remote sessions therefore leave verified
+backup authority for the next controller even though their last run is already
+complete. Busy sessions use active-run adoption instead. If checkpointing fails,
+the retained state continues to block unverified reuse.
+
 ### Warm sandbox continuity
 
 A warm sandbox's shared workspace binding persists independently of the

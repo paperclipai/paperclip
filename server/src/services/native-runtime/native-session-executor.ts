@@ -359,11 +359,26 @@ export async function closeWarmNativeSessionsForEnvironment(input: {
   environmentId: string;
   reason: string;
 }): Promise<{ closed: number; busy: number; failed: number }> {
+  return closeIdleWarmNativeSessions(input);
+}
+
+/** Suspend idle owners and persist their remote backup before a controller
+ * exits. Active turns keep their separate authenticated restart handoff. */
+export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
+  closed: number; busy: number; failed: number;
+}> {
+  return closeIdleWarmNativeSessions({ reason: "controller restart" });
+}
+
+async function closeIdleWarmNativeSessions(input: {
+  environmentId?: string;
+  reason: string;
+}): Promise<{ closed: number; busy: number; failed: number }> {
   let closed = 0;
   let busy = 0;
   let failed = 0;
   for (const [sessionId, entry] of [...warmNativeSessions]) {
-    if (entry.environmentId !== input.environmentId) {
+    if (input.environmentId !== undefined && entry.environmentId !== input.environmentId) {
       continue;
     }
     if (entry.busy) {

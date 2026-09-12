@@ -113,6 +113,7 @@ const mockTelemetryClient = vi.hoisted(() => ({
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockTerminateLocalService = vi.hoisted(() => vi.fn());
 const mockDetachNativeSessionsForRestart = vi.hoisted(() => vi.fn());
+const mockCloseIdleWarmNativeSessionsForRestart = vi.hoisted(() => vi.fn());
 const mockRetainedNativeCleanup = vi.hoisted(() =>
   vi.fn<
     typeof import("../services/native-runtime/native-session-executor.js").reconcileRetainedNativeSessionCleanup
@@ -150,11 +151,13 @@ vi.mock("../services/native-runtime/native-session-executor.js", async () => {
     actual.executePaperclipNativeSession,
   );
   mockDetachNativeSessionsForRestart.mockImplementation(actual.detachNativeSessionsForRestart);
+  mockCloseIdleWarmNativeSessionsForRestart.mockImplementation(actual.closeIdleWarmNativeSessionsForRestart);
   return {
     ...actual,
     reconcileRetainedNativeSessionCleanup: mockRetainedNativeCleanup,
     executePaperclipNativeSession: mockExecutePaperclipNativeSession,
     detachNativeSessionsForRestart: mockDetachNativeSessionsForRestart,
+    closeIdleWarmNativeSessionsForRestart: mockCloseIdleWarmNativeSessionsForRestart,
   };
 });
 
@@ -2782,6 +2785,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("checkpoints idle warm sessions even when no hot restart was requested", async () => {
+    await withTempPaperclipHome(async () => {
+      mockCloseIdleWarmNativeSessionsForRestart.mockClear();
+      const heartbeat = heartbeatService(db);
+      await expect(heartbeat.prepareHotRestartShutdown("SIGTERM")).resolves.toMatchObject({ mode: "not_requested" });
+      expect(mockCloseIdleWarmNativeSessionsForRestart).toHaveBeenCalledOnce();
+    });
+  });
+
   it("captures a hot-restart shutdown snapshot without interrupting running runs", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
@@ -2804,6 +2816,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
       const heartbeat = heartbeatService(db);
 
+      mockCloseIdleWarmNativeSessionsForRestart.mockClear();
       const result = await heartbeat.prepareHotRestartShutdown(
         "SIGTERM",
         new Date("2026-03-19T00:06:00.000Z"),
@@ -2814,6 +2827,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         skipDrain: true,
         activeRunIds: [runId],
       });
+      expect(mockCloseIdleWarmNativeSessionsForRestart).toHaveBeenCalledOnce();
       expect(isPidAlive(child.pid)).toBe(true);
       const run = await db
         .select()

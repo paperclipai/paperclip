@@ -229,6 +229,7 @@ import {
   buildNativeHarnessBackupManifest,
   cancelNativeSession,
   closeWarmNativeSessionsForEnvironment,
+  closeIdleWarmNativeSessionsForRestart,
   createGovernedWaitEventObservation,
   createRemoteRunnerProcessLauncher,
   createRunnerdBackend,
@@ -5143,7 +5144,7 @@ describe("native warm session supervision", () => {
     expect(onGoalCheckpoint).toHaveBeenCalledOnce();
   });
 
-  it("closes an idle warm session before its remote environment is destroyed", async () => {
+  it.each(["environment deletion", "controller restart"])("closes an idle warm session before %s", async (shutdownKind) => {
     const close = vi.fn(async () => undefined);
     const warmExecution = {
       ...execution,
@@ -5159,7 +5160,9 @@ describe("native warm session supervision", () => {
       },
     } as NativeExecutionInputV1;
     state.execute.mockReset().mockImplementationOnce(async (options) => {
-      options.onSession?.({ close });
+      await options.onSession?.({ close });
+      await expect(closeIdleWarmNativeSessionsForRestart()).resolves.toMatchObject({ busy: 1 });
+      expect(close).not.toHaveBeenCalled();
       return {
         result: { summary: "completed" },
         terminal: { runTerminalState: "succeeded" },
@@ -5192,14 +5195,15 @@ describe("native warm session supervision", () => {
         reason: "environment deleted",
       }),
     ).resolves.toEqual({ closed: 0, busy: 0, failed: 0 });
-    await expect(
-      closeWarmNativeSessionsForEnvironment({
+    const closeResult = shutdownKind === "controller restart"
+      ? closeIdleWarmNativeSessionsForRestart()
+      : closeWarmNativeSessionsForEnvironment({
         environmentId: "environment-warm-delete",
         reason: "environment deleted",
-      }),
-    ).resolves.toEqual({ closed: 1, busy: 0, failed: 0 });
+      });
+    await expect(closeResult).resolves.toMatchObject({ closed: 1, failed: 0 });
     expect(close).toHaveBeenCalledExactlyOnceWith({
-      reason: "environment deleted",
+      reason: shutdownKind === "controller restart" ? "controller restart" : "environment deleted",
     });
   });
 
