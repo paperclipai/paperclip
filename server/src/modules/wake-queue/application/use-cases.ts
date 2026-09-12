@@ -342,6 +342,7 @@ async function promoteDeferredWake(
   const promotedTriggerDetail = workingCandidate.triggerDetail ?? null;
   const promotedPayload = { ...workingCandidate.payload };
   delete promotedPayload["_paperclipWakeContext"];
+  delete promotedPayload["queuedCommentInterrupt"];
 
   const promotedContextSeed: Record<string, unknown> = { ...workingCandidate.deferredContextSeed };
   if (pauseHold.activePauseHold) {
