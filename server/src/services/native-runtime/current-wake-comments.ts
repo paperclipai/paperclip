@@ -32,6 +32,7 @@ const EXTERNAL_CHAT_PROVIDERS = new Set([
   "discord",
   "microsoft-teams",
   "telegram",
+  "imessage-photon",
 ]);
 const ATTACHMENT_OMISSION_REASONS = new Set([
   "attachment_limit",

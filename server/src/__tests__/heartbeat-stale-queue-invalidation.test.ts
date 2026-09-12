@@ -1638,6 +1638,11 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         originCommentIds: [wakeCommentId],
         interactionResolvedAt: new Date().toISOString(), mutation: "interaction", source: `${interactionKind}.resolved`, forceFreshSession: true } });
     await heartbeat.resumeQueuedRuns();
+    expect(await waitForCondition(async () => (await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]?.status === "succeeded")).toBe(true);
+    // Terminal status precedes completion bookkeeping. Drain those writes before
+    // afterEach truncates the fixture, otherwise PostgreSQL can deadlock.
+    await heartbeat.waitForRunExecutionDrain(runId);
+    expect(countExecuteCallsForRun(runId)).toBe(1);
     await waitForCondition(async () => claimedIssue !== null);
     expect(claimedIssue).toEqual({ status: "in_progress", executionRunId: runId });
   });

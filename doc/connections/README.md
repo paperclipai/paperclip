@@ -8,8 +8,11 @@ agent tutorial from provider research and protocol classification through
 manifest generation, branding, secrets, deterministic tests, real-account
 proof, and PR submission.
 
+Runtime authentication: [AI Connections](./AI-CONNECTIONS.md).
+
 Provider notes: [Google Workspace](./GOOGLE-WORKSPACE.md),
-[Gmail](./GMAIL.md), [PostHog](./POSTHOG.md). Optional credential custody:
+[Gmail](./GMAIL.md), [PostHog](./POSTHOG.md),
+[AgentMail](./AGENTMAIL.md), and [iMessage Photon](./IMESSAGE-PHOTON.md). Optional credential custody:
 [Vercel Connect](./VERCEL-CONNECT.md).
 
 Post-read action: classify a new integration request, pick the right Paperclip

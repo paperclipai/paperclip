@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   CheckCircle2,
@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import type { ConnectionIntentInteraction } from "@paperclipai/shared";
 import { connectionIntentsApi } from "@/api/connection-intents";
+import { AiConnectionCredentialStep } from "@/components/ai-connections/AiConnectionCredentialStep";
 import { AppLogo } from "@/pages/apps/AppLogo";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,26 +24,36 @@ import {
 import {
   ConnectionSetupFlow,
   type ConnectionSetupCompletion,
+  type ConnectionSetupFlowProps,
 } from "./ConnectionSetupFlow";
 
 export interface ConnectionIntentInteractionBodyProps {
   interaction: ConnectionIntentInteraction;
   currentUserId?: string | null;
   addresseeLabel: string;
+  renderSetup?: (props: ConnectionSetupFlowProps) => ReactNode;
 }
 
 export function ConnectionIntentInteractionBody({
   interaction,
   currentUserId,
   addresseeLabel,
+  renderSetup,
 }: ConnectionIntentInteractionBodyProps) {
   const [open, setOpen] = useState(false);
   const focusTargetRef = useRef<HTMLDivElement>(null);
+  const setupGeneration = useRef(0);
+  const generation = setupGeneration.current;
+  const closeSetup = () => {
+    setupGeneration.current += 1;
+    setOpen(false);
+  };
   const queryClient = useQueryClient();
   const isAddressee = Boolean(
     currentUserId && interaction.addresseeUserId === currentUserId,
   );
   const isPending = interaction.status === "pending";
+  const isAi = interaction.payload.purpose === "ai";
   const focusTargetId = `connection-intent-focus-target-${interaction.id}`;
 
   const invalidateTask = async (
@@ -131,6 +142,12 @@ export function ConnectionIntentInteractionBody({
   );
 
   const finishNewConnection = async (completion: ConnectionSetupCompletion) => {
+    // A completed credential save survives cancellation, but an abandoned form
+    // must not accept the task request (even if a new form has since opened).
+    if (isAi && generation !== setupGeneration.current) {
+      await setupQuery.refetch();
+      return;
+    }
     if (completion.resolvedByCallback) {
       // A browser message cannot establish authorization. Read the durable result.
       const verified = await setupQuery.refetch();
@@ -143,19 +160,34 @@ export function ConnectionIntentInteractionBody({
     completeMutation.mutate(completion.connectionId);
   };
 
+  const setupProps: ConnectionSetupFlowProps | null = setupQuery.data ? {
+    host: "dialog",
+    serviceSlug: interaction.payload.serviceSlug.startsWith("connection:") ? undefined : interaction.payload.serviceSlug,
+    configuredConnection: interaction.payload.serviceSlug.startsWith("connection:") ? setupQuery.data.existingConnections[0] : undefined,
+    requestedAgentId: setupQuery.data.requestedAgentId,
+    aiConnection: setupQuery.data.aiConnection,
+    interactionId: interaction.id,
+    existingConnections: setupQuery.data.existingConnections,
+    onUseExisting: async (connectionId) => { await completeMutation.mutateAsync(connectionId); },
+    onComplete: (completion) => { void finishNewConnection(completion); },
+    onOAuthDeclined: () => declineMutation.mutate(),
+    onPhaseChange: handlePhaseChange,
+    onCancel: () => { closeSetup(); returnFocusToCard(); },
+  } : null;
+
   const resultOutcome = interaction.result?.outcome;
   const status =
     interaction.status === "accepted"
       ? {
           icon: CheckCircle2,
           title: `${interaction.payload.serviceName} connected`,
-          body: `${interaction.payload.requestingAgentName} can use this connection on the continuation run.`,
+          body: isAi ? "The connection was restored for this request." : `${interaction.payload.requestingAgentName} can use this connection on the continuation run.`,
         }
       : interaction.status === "rejected"
         ? {
             icon: XCircle,
             title: "Connection declined",
-            body: `${interaction.payload.requestingAgentName} was notified and can continue without it.`,
+            body: isAi ? "The task still needs a working AI connection before it can run." : `${interaction.payload.requestingAgentName} was notified and can continue without it.`,
           }
         : interaction.status === "expired"
           ? {
@@ -224,6 +256,61 @@ export function ConnectionIntentInteractionBody({
   const needsRetry = interaction.payload.phase === "needs_retry";
   const authorizing = interaction.payload.phase === "authorizing";
 
+  const repair = setupQuery.data?.aiRepair;
+  const selectedReady = repair && setupQuery.data?.existingConnections.some((connection) => connection.id === repair.connection.id);
+  const setupContent = setupQuery.isLoading ? (
+                <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading
+                  connection options…
+                </div>
+              ) : setupQuery.isError ? (
+                <div className="py-8 text-center">
+                  <p className="font-medium text-foreground">
+                    Couldn’t load connection setup
+                  </p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {setupQuery.error instanceof Error
+                      ? setupQuery.error.message
+                      : "Try again."}
+                  </p>
+                  <Button
+                    className="mt-4"
+                    variant="outline"
+                    onClick={() => setupQuery.refetch()}
+                  >
+                    Try again
+                  </Button>
+                </div>
+              ) : setupProps ? (
+                renderSetup ? renderSetup(setupProps) : <ConnectionSetupFlow {...setupProps} />
+              ) : null;
+  const inlineContent = setupQuery.isLoading || setupQuery.isError ? setupContent
+    : selectedReady ? <div className="space-y-3">
+        <p className="text-sm">{repair.connection.name} is ready.</p>
+        <Button disabled={completeMutation.isPending} onClick={() => completeMutation.mutate(repair.connection.id)}>
+          {completeMutation.isPending ? "Continuing…" : "Continue task"}
+        </Button>
+      </div>
+    : repair ? repair.canReconnect ? <AiConnectionCredentialStep
+        companyId={interaction.companyId}
+        provider={repair.connection.provider}
+        initialMethod={repair.connection.method}
+        fixedMethod
+        connectionId={repair.connection.id}
+        name={repair.connection.name}
+        ownership={repair.connection.ownership}
+        agentIds={[interaction.payload.requestingAgentId]}
+        allAgents={false}
+        onComplete={(result) => { void finishNewConnection(result); }}
+        onCancel={() => { closeSetup(); returnFocusToCard(); }}
+      /> : <p role="status" className="text-sm text-muted-foreground">
+        {repair.connection.ownership === "personal" ? `${repair.connection.ownerName ?? "The account owner"} must reconnect ${repair.connection.name}.` : `The account owner must reconnect ${repair.connection.name}.`}
+        {" "}You can continue here once it is restored.
+      </p>
+    : setupQuery.data?.aiConnection && setupQuery.data.aiConnection.mode !== "responsible_user"
+      ? <p role="status" className="text-sm text-muted-foreground">The selected account is no longer available to you. Ask its owner to restore access, or choose an available AI connection in the agent’s settings.</p>
+      : setupContent;
+
   return (
     <div
       id={focusTargetId}
@@ -241,12 +328,12 @@ export function ConnectionIntentInteractionBody({
           />
           <div>
             <p className="font-medium text-foreground">
-              {interaction.payload.requestingAgentName} needs{" "}
-              {interaction.payload.serviceName}
+              {isAi ? "AI connection needs attention" : `${interaction.payload.requestingAgentName} needs ${interaction.payload.serviceName}`}
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              Connect your identity or reuse an eligible connection. Access is
-              added only for this agent.
+              {interaction.payload.purpose === "ai"
+                ? "Restore the agent’s selected AI account, then continue this task."
+                : "Connect your identity or reuse an eligible connection. Access is added only for this agent."}
             </p>
           </div>
         </div>
@@ -260,15 +347,17 @@ export function ConnectionIntentInteractionBody({
         ) : null}
 
         <div className="mt-4 flex flex-wrap justify-end gap-2">
-          <Button
+          {!isAi && <Button
             type="button"
             variant="ghost"
-            disabled={declineMutation.isPending || authorizing}
+            disabled={declineMutation.isPending || completeMutation.isPending || authorizing}
             onClick={() => declineMutation.mutate()}
           >
             Not now
-          </Button>
-          <Dialog open={open} onOpenChange={setOpen}>
+          </Button>}
+          {isAi ? <Button type="button" disabled={completeMutation.isPending} onClick={() => open ? closeSetup() : setOpen(true)}>
+            <Plug className="h-4 w-4" />{open ? "Close setup" : "Fix connection"}
+          </Button> : <Dialog open={open} onOpenChange={setOpen}>
             <DialogTrigger asChild>
               <Button type="button">
                 {authorizing ? (
@@ -298,51 +387,11 @@ export function ConnectionIntentInteractionBody({
                   Complete connection setup without leaving this task.
                 </DialogDescription>
               </DialogHeader>
-              {setupQuery.isLoading ? (
-                <div className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Loading
-                  connection options…
-                </div>
-              ) : setupQuery.isError ? (
-                <div className="py-8 text-center">
-                  <p className="font-medium text-foreground">
-                    Couldn’t load connection setup
-                  </p>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    {setupQuery.error instanceof Error
-                      ? setupQuery.error.message
-                      : "Try again."}
-                  </p>
-                  <Button
-                    className="mt-4"
-                    variant="outline"
-                    onClick={() => setupQuery.refetch()}
-                  >
-                    Try again
-                  </Button>
-                </div>
-              ) : setupQuery.data ? (
-                <ConnectionSetupFlow
-                  host="dialog"
-                  serviceSlug={interaction.payload.serviceSlug.startsWith("connection:") ? undefined : interaction.payload.serviceSlug}
-                  configuredConnection={interaction.payload.serviceSlug.startsWith("connection:") ? setupQuery.data.existingConnections[0] : undefined}
-                  requestedAgentId={setupQuery.data.requestedAgentId}
-                  interactionId={interaction.id}
-                  existingConnections={setupQuery.data.existingConnections}
-                  onUseExisting={async (connectionId) => {
-                    await completeMutation.mutateAsync(connectionId);
-                  }}
-                  onComplete={(completion) => {
-                    void finishNewConnection(completion);
-                  }}
-                  onOAuthDeclined={() => declineMutation.mutate()}
-                  onPhaseChange={handlePhaseChange}
-                  onCancel={() => setOpen(false)}
-                />
-              ) : null}
+              {setupContent}
             </DialogContent>
-          </Dialog>
+          </Dialog>}
         </div>
+        {isAi && open ? <div className="mt-4 border-t border-border pt-4" data-testid="ai-connection-inline-repair">{inlineContent}</div> : null}
 
         {completeMutation.isError ||
         declineMutation.isError ||

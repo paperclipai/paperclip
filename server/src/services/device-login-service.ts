@@ -208,6 +208,7 @@ export interface LoginSessionActivityEvent {
 export type LoginSessionActivityRecorder = (event: LoginSessionActivityEvent) => void;
 
 export interface StartDeviceLoginInput {
+  aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   companyId: string;
   environmentId: string;
   adapterType: AgentAdapterType;
@@ -262,6 +263,7 @@ export class AdapterAuthSessionConflictError extends Error {
 // ---------------------------------------------------------------------------
 
 export interface AdapterAuthSessionRow {
+  aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   id: string;
   /** The public, CSPRNG session identifier. The API returns and looks up this
    *  value. It never equals the internal primary-key `id`, so a caller cannot
@@ -286,6 +288,7 @@ export interface AdapterAuthSessionRow {
 }
 
 export interface InsertAdapterAuthSessionInput {
+  aiConnection?: import("@paperclipai/shared").AiConnectionLoginIntent;
   id: string;
   /** The public, CSPRNG session identifier. The service builds it and returns it
    *  to the client; the store persists it in `public_session_id`. */
@@ -486,6 +489,7 @@ function isUniqueViolation(error: unknown): boolean {
 function toRow(row: typeof adapterAuthSessions.$inferSelect): AdapterAuthSessionRow {
   return {
     id: row.id,
+    ...(row.aiConnection ? { aiConnection: row.aiConnection } : {}),
     publicSessionId: row.publicSessionId,
     companyId: row.companyId,
     environmentId: row.environmentId,
@@ -534,6 +538,7 @@ export function createDbAdapterAuthSessionStore(
           environmentId: input.environmentId,
           adapterType: input.adapterType,
           startedByUserId: input.startedByUserId,
+          aiConnection: input.aiConnection,
           // The unified table requires a unique public session id. The service
           // builds it from a CSPRNG and returns it to the client, so the store
           // persists that value here. It never uses the internal id, a timestamp,
@@ -934,6 +939,7 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
       environmentId: input.environmentId,
       adapterType: input.adapterType,
       startedByUserId: input.startedByUserId,
+      aiConnection: input.aiConnection,
       expiresAt,
       at: startedAt,
     });
@@ -1307,6 +1313,7 @@ export function createDeviceLoginService(deps: DeviceLoginServiceDeps) {
     const prompt = isOwner ? promptsBySession.get(row.id) ?? null : null;
     return {
       sessionId: row.publicSessionId,
+      ...(isOwner && row.aiConnection ? { aiConnection: row.aiConnection } : {}),
       environmentId: row.environmentId,
       status,
       expiresAt: row.expiresAt?.toISOString() ?? null,

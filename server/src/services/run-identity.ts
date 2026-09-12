@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import {
+  agentWakeupRequests,
   heartbeatRuns,
   heartbeatRunEvents,
   issueComments,
@@ -10,6 +11,48 @@ import {
 } from "@paperclipai/db";
 import { conflict, forbidden } from "../errors.js";
 import { isUuidLike } from "@paperclipai/shared";
+import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
+
+/** Resolve an explicit click from persisted receipts, never caller context or message authors. */
+export async function explicitOperatorRunIdentity(
+  executor: Pick<Db, "select">,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "contextSnapshot" | "wakeupRequestId">,
+) {
+  const [request] = run.wakeupRequestId ? await executor.select().from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, run.companyId),
+    eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.runId, run.id),
+  )) : [];
+  if (request?.payload?.manualUserWake === true) {
+    if (request.requestedByActorType !== "user" || !request.requestedByActorId) {
+      throw forbidden("Manual wake requires an authenticated user");
+    }
+    return { actorId: request.requestedByActorId, cause: "manual_user_wake" };
+  }
+  const prefix = "queued-comment-interrupt:";
+  if (!request?.idempotencyKey?.startsWith(prefix)) return null;
+  const queueId = request.idempotencyKey.slice(prefix.length);
+  // The key only locates a candidate. The consumed queue, actor, run, company,
+  // agent, task, and delivered messages must all independently agree.
+  if (!isUuidLike(queueId)) {
+    throw forbidden("Queued-message interrupt authority is unavailable");
+  }
+  const [receipt] = await executor.select().from(agentWakeupRequests).where(and(
+    eq(agentWakeupRequests.id, queueId), eq(agentWakeupRequests.companyId, run.companyId),
+    eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.runId, run.id),
+    eq(agentWakeupRequests.status, "coalesced"),
+  ));
+  const marker = receipt?.payload?.queuedCommentInterrupt;
+  const actorId = marker && typeof marker === "object" && "actorId" in marker ? marker.actorId : null;
+  const ids = queuedCommentIdsFromWakePayload(receipt?.payload);
+  const deliveredIds = queuedCommentIdsFromRunContext(run.contextSnapshot);
+  if (typeof actorId !== "string" || !actorId || !ids.length ||
+      receipt?.payload?.issueId !== run.contextSnapshot?.issueId ||
+      !ids.every(id => deliveredIds.includes(id)) ||
+      request.requestedByActorType !== "user" || request.requestedByActorId !== actorId) {
+    throw forbidden("Queued-message interrupt authority is unavailable");
+  }
+  return { actorId, cause: "queued_comment_interrupt" };
+}
 
 export type RunIdentityContext = typeof runIdentityContexts.$inferSelect;
 type Executor = Pick<Db, "select" | "insert" | "update">;
@@ -147,6 +190,7 @@ export async function initializeRunIdentity(
         .where(eq(runIdentityContexts.id, run.activeIdentityContextId));
       return current!;
     }
+    const operatorIdentity = await explicitOperatorRunIdentity(tx, run);
     const [parent] = input.parentRunId
       ? await tx
           .select()
@@ -171,10 +215,9 @@ export async function initializeRunIdentity(
               ),
             )
         : [];
-    const parentId =
-      interaction?.sourceIdentityContextId ??
-      input.parentContextId ??
-      parent?.activeIdentityContextId;
+    const parentId = operatorIdentity ? null : (
+      interaction?.sourceIdentityContextId ?? input.parentContextId ?? parent?.activeIdentityContextId
+    );
     const [origin] = parentId
       ? await tx
           .select()
@@ -192,12 +235,10 @@ export async function initializeRunIdentity(
     let current = await append(tx, {
       companyId: input.companyId,
       runId: input.runId,
-      responsibleUserId: origin
-        ? origin.responsibleUserId
-        : input.responsibleUserId,
+      responsibleUserId: operatorIdentity?.actorId ?? (origin ? origin.responsibleUserId : input.responsibleUserId),
       parentContextId: origin?.id ?? null,
       cause:
-        origin?.cause === "company_default" ? "company_default" : input.cause,
+        operatorIdentity ? operatorIdentity.cause : origin?.cause === "company_default" ? "company_default" : input.cause,
       correlationId: "dispatch",
     });
     const ids = [...new Set(input.messageIds ?? [])];
@@ -220,10 +261,10 @@ export async function initializeRunIdentity(
       current = await append(tx, {
         companyId: input.companyId,
         runId: input.runId,
-        responsibleUserId: comment.authorUserId,
+        responsibleUserId: operatorIdentity?.actorId ?? comment.authorUserId,
         messageId: id,
         parentContextId: current.id,
-        cause: "instruction",
+        cause: operatorIdentity?.cause ?? "instruction",
         correlationId: `message:${id}`,
       });
     }

@@ -313,12 +313,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     // Held before the remote block below, so the remote lane can stage this
     // same host home into the sandbox without re-resolving it.
-    const hostGrokHome = resolveManagedGrokHomeDir(process.env, agent.companyId);
+    const hostGrokHome = config.managedAiConnection ? asString(env.GROK_HOME, "") : resolveManagedGrokHomeDir(process.env, agent.companyId);
     // Subscription mode (no XAI_API_KEY): point the run at the company-scoped
     // Grok home a completed device login wrote. Leaves the API-key path below
     // (`resolveBillingType`) unchanged when the key exists.
     const isGrokSubscriptionMode =
-      !hasNonEmptyEnvValue(env, "XAI_API_KEY") && !hasNonEmptyEnvValue(process.env as Record<string, string>, "XAI_API_KEY");
+      !hasNonEmptyEnvValue(env, "XAI_API_KEY") && (Boolean(config.managedAiConnection) || !hasNonEmptyEnvValue(process.env as Record<string, string>, "XAI_API_KEY"));
     if (isGrokSubscriptionMode) {
       env.GROK_HOME = hostGrokHome;
     }

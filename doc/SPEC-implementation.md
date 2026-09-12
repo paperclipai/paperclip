@@ -1148,6 +1148,9 @@ The current app also exposes V1-supporting surfaces for:
 - company-scoped summary slots for projects, the workspaces overview, project workspaces, and individual execution workspaces; execution-workspace slots are keyed by execution workspace id so a new workspace never inherits another workspace's summary
 - issue thread interactions (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`) with the open-default resolver contract in §9.8.1
 - issue approvals, issue references/search, labels, read state, inbox/archive state, and work products
+- task search uses shared PostgreSQL matching/ranking for company search and task-list quick search;
+  all query terms contribute, quoted phrases stay literal, exact identifiers and direct title matches
+  lead relevance ordering, and the UI preserves server result order (see `doc/SEARCH.md`)
 - company search through `GET /companies/:companyId/search` plus agent-oriented bulk extraction through
   `GET /companies/:companyId/search/extract`; extraction accepts a server-escaped literal `contains`, optional
   server-owned URL expansion, issue/comment/document scopes, status/date filters, issue-level pagination, a
@@ -1618,6 +1621,16 @@ retry budget. Existing pause, approval, budget, ownership, and dependency gates
 remain in effect. See `doc/execution-semantics.md` for admission and stop-proof
 requirements.
 
+### Managed AI authentication
+
+AI credentials can be adopted into the existing Connections system. A typed
+`runtimeConfig.aiConnection` selects the responsible user’s personal default, an
+explicit shared grant. The existing human-audience and agent-access permissions
+apply; AI credentials have no separate agent-delegation exception. Selection preserves
+harness/model routing and fails closed without ambient credential fallback.
+Legacy agents retain their authentication until validated adoption. See
+[AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
+methods, lifecycle, runtime enforcement, and migration details.
 ### Experimental task-bound email
 
 AgentMail channel connections extend the experimental conversation/task pipeline
@@ -1630,6 +1643,30 @@ normal task conversation; rich email cards show the correspondence and delivery
 outcomes without a separate email composer. See
 [AgentMail connections](connections/AGENTMAIL.md) for setup, transports, recovery,
 authorization, and the API/CLI contract.
+
+### Experimental iMessage Photon channel
+
+A Photon Cloud project can represent one agent through the existing
+experimental channel subsystem. DMs and explicitly enabled groups create or
+continue task-bound conversations. Linked sender identity is the default;
+telephone numbers, email addresses, names, and group membership do not grant
+Paperclip authority. Photos/files and ordinary questions/confirmations use the
+existing attachment, interaction, continuation, and publication contracts.
+Pause and Disconnect govern runtime behavior independently of the UI gate.
+Local Mac access, unsolicited conversations, and SMS/RCS
+fallback are excluded. Live qualification is required before release readiness.
+Pro shared allocation supports DMs only, with sender enrollment in Photon and
+separate identity linking in Paperclip. Shared channels reserve one project, not
+a pool phone number; group admission and publication are disabled. Dedicated
+allocation retains one selected number and individually enabled groups.
+
+iMessage task completion ends a turn, not its conversation. Subsequent messages
+reopen the same task, including after restart; only explicit `/new` or `/close`
+allows the next message to start another task. The open task receives committed
+inbound comments live, with “Sent from iMessage” attribution on user bubbles.
+
+See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
+contract, setup, recovery, boundaries, and qualification status.
 
 ### Native task completion
 

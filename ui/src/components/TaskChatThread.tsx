@@ -96,7 +96,7 @@ import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
-import { latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
+import { isRedundantAiRecoveryNotice, latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
 import { isLiveIssueRun, isTerminalIssueStatus } from "@/lib/liveIssueIds";
 import {
   resolveTaskChatBlockers,
@@ -762,6 +762,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const projectedComments = useMemo(
     () =>
       comments.flatMap((comment) => {
+        if (isRedundantAiRecoveryNotice(comment, interactions)) return [];
         if (comment.body !== LEGACY_WITHHELD_RUN_COMMENT || !comment.runId)
           return [comment];
         const resultJson = linkedRunMetaById.get(comment.runId)?.resultJson;
@@ -774,7 +775,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         const summary = acceptedSemanticResultSummary(resultJson);
         return [summary ? { ...comment, body: summary } : comment];
       }),
-    [comments, linkedRunMetaById],
+    [comments, interactions, linkedRunMetaById],
   );
 
   const commentItems = useMemo(
@@ -1632,8 +1633,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           const retryDetail = meta?.scheduledRetryAt
             ? "Retry scheduled automatically."
             : "You can retry this message now.";
-          const detail =
-            source.status === "cancelled"
+          const aiRequest = interactions?.find((interaction) => interaction.kind === "connection_intent" && interaction.payload.purpose === "ai" && interaction.sourceRunId === source.id);
+          const detail = aiRequest
+            ? aiRequest.status === "pending"
+              ? "The selected AI account is unavailable. Fix it in the connection card."
+              : "This run stopped because its AI account was unavailable."
+            : source.status === "cancelled"
               ? code === "execution_reconciliation_required"
                 ? "The previous execution must be checked before this task can continue. Your message is preserved. View the stopped run for details."
                 : "Execution was stopped before returning an answer."
@@ -1970,6 +1975,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     };
   }, [
     orderedEntries,
+    interactions,
     runs,
     liveRun,
     transcriptByRun,
@@ -2858,7 +2864,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                         : (liveRun && liveRun.id === tailRunId
                                             ? liveRun.currentStatusMessage
                                             : null) ||
-                                          "Waiting for transcript..."
+                                          (tailStatus === "failed"
+                                            ? "This run stopped before a response was available. Review the task’s connection or recovery action below."
+                                            : "Waiting for transcript...")
                                     }
                                   />
                                 </>
@@ -2935,10 +2943,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         await onSteerQueuedComment(commentId, revision);
                       }}
                       onInterrupt={
-                        onInterruptQueued && queuedMessageQueue.targetRunId
+                        onInterruptQueued && queuedMessageQueue.queueId
                           ? async () => {
                               await onInterruptQueued(
-                                queuedMessageQueue.targetRunId!,
+                                queuedMessageQueue.targetRunId,
                               );
                             }
                           : undefined
