@@ -1329,11 +1329,16 @@ export async function applyNativeSessionGoalControl(
   if (control.action === "replace") {
     await session.goal({ action: "clear", requestId: control.requestId });
   }
-  let status: HarnessThreadGoal["status"] = "active";
+  let status: HarnessThreadGoal["status"] | null = "active";
   if (control.action === "edit") {
     const current = await session.goal({ action: "get" });
     if (!current) throw new Error("native_session_goal_not_found");
-    status = current.status === "complete" ? "active" : current.status;
+    // An edit is a partial update. In particular, forwarding a terminal
+    // budgetLimited/usageLimited status back to Codex prevents a larger
+    // budget from reactivating the Goal. Preserve the caller's omission and
+    // let thread/goal/set derive the lifecycle transition from the edited
+    // objective or budget.
+    status = null;
   }
   return session.goal({
     action: "set",

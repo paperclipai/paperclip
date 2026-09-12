@@ -26,6 +26,7 @@ import {
   nativeRuntimePromptDigest,
 } from "./contracts/runtime-context.js";
 import {
+  applyNativeSessionGoalControl,
   executeNativeSession,
   type ExecuteNativeSessionOptions,
 } from "./native-session-runtime.js";
@@ -200,6 +201,45 @@ function highestContiguous(events: PrpEvent[]): number {
 }
 
 describe("executeNativeSession recovery", () => {
+  it("edits a budget-limited Goal without replaying its terminal status", async () => {
+    const currentGoal = {
+      threadId: "provider-recovery",
+      objective: "Old objective",
+      status: "budgetLimited" as const,
+      tokenBudget: 12_000,
+      tokensUsed: 20_283,
+      timeUsedSeconds: 23,
+      createdAt: Date.parse("2026-08-09T00:00:00.000Z"),
+      updatedAt: Date.parse("2026-08-09T00:00:23.000Z"),
+    };
+    const editedGoal = {
+      ...currentGoal,
+      objective: "Continue the fixture",
+      status: "active" as const,
+      tokenBudget: 100_000,
+    };
+    const goal = vi.fn<NativeSession["goal"]>(async (operation) =>
+      operation.action === "get" ? currentGoal : editedGoal,
+    );
+    const session = { goal } as unknown as NativeSession;
+
+    await expect(applyNativeSessionGoalControl(session, {
+      requestId: "raise-budget",
+      action: "edit",
+      objective: "Continue the fixture",
+      tokenBudget: 100_000,
+    })).resolves.toEqual(editedGoal);
+
+    expect(goal).toHaveBeenNthCalledWith(1, { action: "get" });
+    expect(goal).toHaveBeenNthCalledWith(2, {
+      action: "set",
+      objective: "Continue the fixture",
+      status: null,
+      requestId: "raise-budget",
+      tokenBudget: 100_000,
+    });
+  });
+
   it.each([false, true])("preserves a durable session failure when its stream closes (throws=%s)", async throws => {
     const capabilities = { resume: true, typedEvents: true, steering: false, interruption: true, structuredResult: true };
     const session: NativeSession = {

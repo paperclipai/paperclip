@@ -548,7 +548,9 @@ export class CodexHarnessSession
         params = {
           ...params,
           objective: input.objective,
-          status: input.status ?? "active",
+          ...(input.status === null
+            ? {}
+            : { status: input.status ?? "active" }),
           ...(input.tokenBudget !== undefined
             ? { tokenBudget: input.tokenBudget }
             : {}),

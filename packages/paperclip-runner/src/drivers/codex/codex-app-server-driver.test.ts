@@ -1871,6 +1871,34 @@ describe("Codex app-server Codex driver", () => {
     await session.close({ reason: "fixture complete" });
   });
 
+  it("omits status from a partial goal update", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-goal-budget-edit",
+      normalizedSessionId: "normalized-goal-budget-edit",
+      workingDirectory: TEST_WORKING_DIRECTORY,
+    });
+
+    await session.goal?.({
+      action: "set",
+      objective: "Continue after raising the budget",
+      status: null,
+      tokenBudget: 100_000,
+    });
+
+    expect(
+      transport.calls.filter(({ method }) => method === "thread/goal/set"),
+    ).toContainEqual({
+      method: "thread/goal/set",
+      params: {
+        threadId: "thread-1",
+        objective: "Continue after raising the budget",
+        tokenBudget: 100_000,
+      },
+    });
+    await session.close({ reason: "fixture complete" });
+  });
+
   it("rolls back only a definitely rejected idle goal autostart", async () => {
     const definiteTransport = new FakeCodexTransport();
     const definiteSession = await makeDriver([definiteTransport]).openSession({

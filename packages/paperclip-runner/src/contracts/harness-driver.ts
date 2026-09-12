@@ -415,7 +415,8 @@ export type HarnessGoalOperation =
       action: "set";
       objective: string;
       tokenBudget?: number | null;
-      status?: HarnessThreadGoal["status"];
+      /** Null preserves the provider's current lifecycle status. */
+      status?: HarnessThreadGoal["status"] | null;
       requestId?: string;
     }
   | { action: "pause" | "resume" | "clear"; requestId?: string };
