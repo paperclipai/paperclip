@@ -149,6 +149,35 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     return { companyId, ownerUserId, agentId };
   }
 
+  it("dispatches an interrupted queue under the clicking operator through the real startup path", async () => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
+      membershipRole: "operator", status: "active" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Interrupted queue", status: "todo",
+      assigneeAgentId: agentId, responsibleUserId: ownerUserId });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, body: "Continue the task" });
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
+      source: "automation", status: "deferred_issue_execution", requestedByActorType: "system",
+      payload: { issueId, commentId, queuedCommentInterrupt: { actorId: operatorId, requestedAt: new Date().toISOString() },
+        _paperclipWakeContext: { wakeCommentIds: [commentId], responsibleUserId: ownerUserId,
+          retryOfRunId: randomUUID(), originIdentityContextId: randomUUID() } },
+    });
+    await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
+    expect(receipt.status).toBe("coalesced");
+    const completed = await waitForRun(db, receipt.runId!);
+    expect(completed).toMatchObject({ status: "succeeded", responsibleUserId: operatorId });
+    expect(completed?.activeIdentityContextId).toBeTruthy();
+    expect(completed?.contextSnapshot?.originIdentityContextId).toBeUndefined();
+    expect(completed?.contextSnapshot?.retryOfRunId).toBeUndefined();
+    expect(mockAdapterExecute).toHaveBeenCalled();
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    expect(runs.every(run => run.responsibleUserId === operatorId && run.status === "succeeded")).toBe(true);
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0].authorUserId).toBe(ownerUserId);
+  });
+
   it("uses the issue responsible user for automated dependency wakes without a message context", async () => {
     const { companyId, agentId } = await seedCompany();
     const issueResponsibleUserId = `issue-owner-${randomUUID()}`;
