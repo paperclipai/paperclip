@@ -1708,6 +1708,12 @@ export async function resolveExecutionRunAdapterConfig(input: {
                 : {}),
             }
           : undefined,
+        // Inherited bindings (environment/project/routine): low-trust containment
+        // means omitting a disallowed value, not aborting the run. Only the
+        // agent's own adapterConfig.env (below) stays hard-fail — a misconfigured
+        // agent-owned binding is the operator's mistake to fix, not something to
+        // silently drop.
+        lowTrustAllowedBindingIds !== undefined ? { omitDisallowedBindings: true } : undefined,
       )
     : { env: {}, secretKeys: new Set<string>(), manifest: [] };
   const {
@@ -1760,6 +1766,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
                 : {}),
             }
           : undefined,
+        lowTrustAllowedBindingIds !== undefined ? { omitDisallowedBindings: true } : undefined,
       )
     : { env: {}, secretKeys: new Set<string>(), manifest: [] };
   if (Object.keys(projectEnvResolution.env).length > 0) {
@@ -1789,6 +1796,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
                 : {}),
             }
           : undefined,
+        lowTrustAllowedBindingIds !== undefined ? { omitDisallowedBindings: true } : undefined,
       )
     : { env: {}, secretKeys: new Set<string>(), manifest: [] };
   if (Object.keys(routineEnvResolution.env).length > 0) {
