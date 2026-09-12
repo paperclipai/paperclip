@@ -94,7 +94,7 @@ export const createIssueWorkProductSchema = z.object({
   summary: z.string().optional().nullable(),
   metadata: issueWorkProductMetadataSchema.optional().nullable(),
   createdByRunId: z.string().guid().optional().nullable(),
-});
+}).strict();
 
 export type CreateIssueWorkProduct = z.infer<typeof createIssueWorkProductSchema>;
 
