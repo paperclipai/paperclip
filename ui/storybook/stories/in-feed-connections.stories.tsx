@@ -31,7 +31,7 @@ const connection = {
   createdByAgentId: null, createdByUserId: "user-board", createdAt: new Date("2026-09-07"), updatedAt: new Date("2026-09-07"),
 } satisfies ToolConnection;
 
-type Scenario = { checking?: boolean; count?: number; loading?: boolean; loadError?: boolean; completeError?: boolean; submitting?: boolean; denied?: boolean };
+type Scenario = { ai?: boolean; ownerOnly?: boolean; checking?: boolean; count?: number; loading?: boolean; loadError?: boolean; completeError?: boolean; submitting?: boolean; denied?: boolean };
 const meta: Meta = {
   title: "Connections/In-task connections",
   parameters: { layout: "padded" },
@@ -45,13 +45,16 @@ const meta: Meta = {
     channel.on("unhandledErrorsWhilePlaying", reportPlayError);
     const original = window.fetch;
     const scenario = (parameters.connectionScenario ?? {}) as Scenario;
-    let current = structuredClone(pending);
+    let current = structuredClone(scenario.ai ? aiPending : pending);
     window.fetch = async (input, init) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
       if (url.pathname.endsWith("/tools/gallery")) return Response.json({
         apps: CONNECTABLE_APP_DEFINITIONS.filter((app) => ["notion", "github", "posthog", "zapier"].includes(app.slug)),
         capabilities: { canCreateOrganizationGrant: true, canSetCompanyInstall: true },
       });
+      if (scenario.ai && url.pathname.endsWith("/ai-connections") && init?.method === "POST") return scenario.completeError
+        ? Response.json({ error: "This key could not be verified. Check it and try again." }, { status: 422 })
+        : Response.json({ connectionId: aiAccount.id, grantId: aiAccount.grantId });
       if (url.pathname.endsWith("/agents")) return Response.json([{ id: pending.payload.requestingAgentId, companyId: pending.companyId, name: pending.payload.requestingAgentName, status: "active", adapterType: "paperclip_runner", role: "researcher" }]);
       if (url.pathname.startsWith("/api/connection-intents/")) {
         if (url.pathname.endsWith("setup-options")) {
@@ -59,13 +62,14 @@ const meta: Meta = {
           if (scenario.loadError) return Response.json({ error: "Connection options are temporarily unavailable. Try again." }, { status: 503 });
           return Response.json({ version: 1, interaction: current, requestedAgentId: pending.payload.requestingAgentId,
             service: { service: "notion", name: "Notion", state: "available", methods: [] },
+            ...(scenario.ai ? { aiConnection: { provider: "openrouter", method: "api_key", mode: "responsible_user" }, aiRepair: { connection: aiAccount, canReconnect: !scenario.ownerOnly } } : {}),
             existingConnections: Array.from({ length: scenario.count ?? 0 }, (_, i) => ({ ...connection, id: `${connection.id.slice(0, -1)}${i}`, name: i ? "Team Notion workspace" : connection.name })),
           });
         }
         if (scenario.submitting) return new Promise<Response>(() => {});
         if (scenario.completeError || scenario.denied) return Response.json({ error: scenario.denied ? "You no longer have permission to share this connection." : "Connection has no permitted tools. Review action permissions and try again." }, { status: scenario.denied ? 403 : 409 });
         if (url.pathname.endsWith("decline")) current = { ...declined, id: pending.id };
-        else if (url.pathname.endsWith("complete")) current = { ...connected, id: pending.id };
+        else if (url.pathname.endsWith("complete")) current = { ...connected, id: pending.id, payload: current.payload };
         else if (url.pathname.endsWith("phase")) current = { ...current, payload: { ...current.payload, phase: "needs_retry" } };
         return Response.json(current);
       }
@@ -237,4 +241,50 @@ export const SetupFailureRetry: Story = { ...SetupFailure, play: async (context)
   await SetupFailure.play!(context);
   await userEvent.click(within(document.body).getByRole("button", { name: /Check link/i }));
   await expect(await within(document.body).findByText(/Fixture connection could not be verified/)).toBeVisible();
+}};
+
+
+// Storybook supplies only deterministic data/actions. The card and credential
+// form below are the production components used inside the task.
+const openrouter = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === "openrouter")!;
+const aiPending: ConnectionIntentInteraction = { ...pending, payload: { ...pending.payload, purpose: "ai", serviceName: "OpenRouter", serviceSlug: "openrouter", serviceLogoUrl: openrouter.branding.logoUrl ?? null, serviceDarkLogoUrl: openrouter.branding.darkLogoUrl ?? null } };
+const aiAccount = { id: connection.id, grantId: "storybook-grant", companyId: pending.companyId, provider: "openrouter", method: "api_key", name: "My OpenRouter account", ownership: "personal", ownerName: "Alex", isDefault: true, status: "revoked" };
+const aiRepair: Story = {
+  parameters: { connectionScenario: { ai: true } },
+  render: () => <Host><Card interaction={aiPending} /></Host>,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "Fix connection" }));
+    await expect(await canvas.findByLabelText("Connection name")).toBeDisabled();
+    await expect(within(document.body).queryByRole("dialog")).not.toBeInTheDocument();
+  },
+};
+export const AiInlineRepair = aiRepair;
+export const AiInlineRepairNarrow: Story = { ...aiRepair, globals: { viewport: { value: "mobile1", isRotated: false } } };
+export const AiRepairCancel: Story = { ...aiRepair, play: async context => {
+  await aiRepair.play!(context);
+  const canvas = within(context.canvasElement);
+  await userEvent.click(canvas.getByRole("button", { name: "Cancel" }));
+  await expect(canvas.queryByTestId("ai-connection-inline-repair")).not.toBeInTheDocument();
+  await waitFor(() => expect(canvas.getByTestId("connection-intent-focus-target")).toHaveFocus());
+}};
+export const AiRepairComplete: Story = { ...aiRepair, play: async context => {
+  await aiRepair.play!(context);
+  const canvas = within(context.canvasElement);
+  await userEvent.type(canvas.getByPlaceholderText("Enter API key here"), "storybook-placeholder");
+  await userEvent.click(canvas.getByRole("button", { name: "Connect" }));
+  await expect(await canvas.findByText("OpenRouter connected")).toBeVisible();
+}};
+export const AiRepairInvalidKey: Story = { ...aiRepair, parameters: { connectionScenario: { ai: true, completeError: true } }, play: async context => {
+  await aiRepair.play!(context);
+  const canvas = within(context.canvasElement);
+  await userEvent.type(canvas.getByPlaceholderText("Enter API key here"), "storybook-placeholder");
+  await userEvent.click(canvas.getByRole("button", { name: "Connect" }));
+  await expect(await canvas.findByRole("alert")).toHaveTextContent("This key could not be verified. Check it and try again.");
+}};
+export const AiRepairOwnerRequired: Story = { ...aiRepair, parameters: { connectionScenario: { ai: true, ownerOnly: true } }, play: async ({canvasElement}) => {
+  const canvas = within(canvasElement);
+  await userEvent.click(await canvas.findByRole("button", { name: "Fix connection" }));
+  await expect(await canvas.findByText(/Alex must reconnect/)).toBeVisible();
+  await expect(canvas.queryByPlaceholderText("Enter API key here")).not.toBeInTheDocument();
 }};

@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "./test-embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
-const migration = readFileSync(new URL("./migrations/0275_sandbox_work_folders.sql", import.meta.url), "utf8");
+const migration = readFileSync(new URL("./migrations/0277_sandbox_work_folders.sql", import.meta.url), "utf8");
 
 (support.supported ? describe : describe.skip)("work folder preview migration", () => {
   it("preserves cached content, trash, and unpushed repository checkpoints on replay", async () => {

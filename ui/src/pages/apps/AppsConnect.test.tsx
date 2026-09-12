@@ -438,6 +438,27 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   // credential is entered.
   // -------------------------------------------------------------------------
 
+  it("keeps the existing Anthropic tool method reachable alongside AI authentication", async () => {
+    mockParams.appKey = "anthropic";
+    listGalleryMock.mockResolvedValue({ apps: [getAppStoreDefinition("anthropic")] });
+    await render();
+    await passAccessStep();
+    expect(container.textContent).toContain("How do you want to connect?");
+    expect(radioContaining("Claude subscription")).toBeTruthy();
+    expect(radioContaining("Claude API key")).toBeTruthy();
+    await act(async () => radioContaining("Use an API key")!.click());
+    await flushReact();
+    const key = container.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(key).toBeTruthy();
+    await act(async () => setInputValue(key!, "fixture-anthropic-tool-key"));
+    await act(async () => buttonByText("Connect")!.click());
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "anthropic", connectionMethodKey: "api-key",
+    }));
+    expect(container.textContent).not.toContain("Connect for tool access instead");
+  });
+
   it("asks for a GitHub identity and defaults to the current user and every agent", async () => {
     mockParams.appKey = "github";
     listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });

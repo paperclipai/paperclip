@@ -1,7 +1,6 @@
-import {
-  canBrowseProjectRepositoryGrant,
-  mergeProjectRepository,
-} from "./project-repositories.js";
+import { connectionPurposeTransportSchema } from "@paperclipai/shared";
+import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
+import { canBrowseProjectRepositoryGrant, mergeProjectRepository } from "./project-repositories.js";
 import { captureRunIdentity } from "./run-identity.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -1572,9 +1571,8 @@ function assertClass3ToolCredentialRefAllowed(ref: {
   }
 }
 
-function toConnection(
-  row: typeof toolConnections.$inferSelect,
-): ToolConnection {
+function toConnection(row: typeof toolConnections.$inferSelect): ToolConnection {
+  connectionPurposeTransportSchema.parse(row);
   return {
     id: row.id,
     companyId: row.companyId,
@@ -7419,6 +7417,7 @@ export function toolAccessService(
     credentialHeaders?: Record<string, string>,
     actor?: ActorInfo,
   ): Promise<McpToolDescriptor[]> {
+    if (connection.connectionPurpose === "ai") throw unprocessable("AI connections provide runtime authentication, not tool actions");
     if (isAgentMailConnection(connection)) {
       await validateAgentMailConnection(connection);
       return [];
@@ -7431,6 +7430,22 @@ export function toolAccessService(
     }
     await resolveCredentialHeaders(connection);
     return localTools(connection);
+  }
+
+  async function annotateAiGrantHealth(connections: ToolConnection[]) {
+    const aiConnections = connections.filter(connection => connection.connectionPurpose === "ai");
+    if (!aiConnections.length) return;
+    const grants = await db.select({ connectionId: connectionGrants.connectionId, status: connectionGrants.status })
+      .from(connectionGrants).where(and(eq(connectionGrants.companyId, aiConnections[0].companyId),
+        inArray(connectionGrants.connectionId, aiConnections.map(connection => connection.id))));
+    for (const connection of aiConnections) {
+      const identities = grants.filter(grant => grant.connectionId === connection.id);
+      if (identities.length && identities.every(grant => grant.status === "revoked")) {
+        connection.healthStatus = "missing_secret";
+        connection.healthMessage = "This credential was revoked. Reconnect the account to restore access.";
+        connection.requiresReauthorization = true;
+      }
+    }
   }
 
   async function annotateGitHubAuthorization(
@@ -7510,6 +7525,7 @@ export function toolAccessService(
     actor?: ActorInfo,
   ): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId);
+    if (connection.connectionPurpose === "ai") return { connection: toConnection(connection), runtimeSlot: null };
     try {
       const config = asRecord(connection.config);
       const oauth = asRecord(config.oauth);
@@ -7639,6 +7655,7 @@ export function toolAccessService(
     } = {},
   ): Promise<ToolCatalogRefreshResult> {
     const connection = await getConnectionRow(connectionId);
+    if (connection.connectionPurpose === "ai") throw unprocessable("AI connections do not have a tool catalog");
     const refreshedAt = now();
     let descriptors: McpToolDescriptor[];
     try {
@@ -8094,6 +8111,7 @@ export function toolAccessService(
           eq(toolConnections.enabled, true),
           eq(toolConnections.status, "active"),
           ne(toolConnections.transport, "chat_sdk"),
+          ne(toolConnections.transport, "runtime_auth"),
           ne(toolApplications.type, "paperclip_plugin"),
           or(isNull(toolConnections.healthCheckedAt), lte(toolConnections.healthCheckedAt, cutoff)),
         ),
@@ -17427,6 +17445,7 @@ export function toolAccessService(
       for (const connection of connections) {
         connection.lastUsedAt = lastUsedByConnection.get(connection.id) ?? null;
       }
+      await annotateAiGrantHealth(connections);
       await annotateGitHubAuthorization(connections, viewerUserId);
       return connections;
     },
@@ -17552,6 +17571,7 @@ export function toolAccessService(
         connection.id,
         connection.companyId,
       );
+      await annotateAiGrantHealth([connection]);
       await annotateGitHubAuthorization([connection], viewerUserId);
       return connection;
     },
@@ -17817,6 +17837,9 @@ export function toolAccessService(
       ownerUserId: string,
     ) => {
       const connection = await getConnectionRow(idOrUid);
+      if (connection.connectionPurpose === "ai") {
+        throw badRequest("AI credentials use the connection's human access settings, not agent delegation");
+      }
       return db.transaction(async (tx) => {
         // Membership removal/suspension takes this same row lock before sweeping
         // personal grants. Whichever operation wins is therefore authoritative:
@@ -18304,7 +18327,7 @@ export function toolAccessService(
             })),
           );
         }
-        if (requested.size > 0) {
+        if (requested.size > 0 && connection.connectionPurpose !== "ai") {
           const profile = await appProfileForConnection(tx, connection);
           for (const install of requested.values()) {
             const [binding] = await tx
@@ -18384,6 +18407,7 @@ export function toolAccessService(
       input: UpdateToolConnection,
     ): Promise<ToolConnection> => {
       const existing = await getConnectionRow(connectionId);
+      if (existing.connectionPurpose === "ai" && (input.config || input.transportConfig || input.credentialRefs || input.credentialSecretRefs || (input.credentialPolicy && input.credentialPolicy !== existing.credentialPolicy))) throw badRequest("Use AI account reconnect to change credentials. Provider, sign-in method, and ownership cannot be changed.");
       const config = normalizeGoogleSheetsConnectionConfig(
         input.config ?? input.transportConfig ?? existing.config,
       );
@@ -19493,6 +19517,7 @@ export function toolAccessService(
         input.connectionId,
         input.companyId,
       );
+      if (connection.connectionPurpose === "ai") throw unprocessable("AI credentials are available only through the runtime resolver");
       const application = await getConnectionApplication(connection);
       const brokerEnabled = connectionTokenBrokerEnabled(connection);
       const path = brokerEnabled

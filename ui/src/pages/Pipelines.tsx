@@ -2409,10 +2409,17 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     await queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(conversationIssueId) });
   }, [conversationIssueId, queryClient]);
 
-  const handleInterruptConversationQueuedRun = useCallback(async (runId: string) => {
-    await heartbeatsApi.cancel(runId);
-    await invalidateConversation();
-  }, [invalidateConversation]);
+  const handleInterruptConversationQueuedRun = useCallback(async (runId: string | null) => {
+    if (!conversationIssueId) return;
+    try {
+      await issuesApi.interruptLatestQueuedComments(conversationIssueId, runId);
+      pushToast({ title: "Interrupt requested", body: "Queued messages will be sent when the previous run has stopped.", tone: "success" });
+    } catch (error) {
+      pushToast({ title: "Interrupt failed", body: error instanceof Error ? error.message : "Unable to send queued messages", tone: "error" });
+    } finally {
+      await invalidateConversation();
+    }
+  }, [conversationIssueId, invalidateConversation, pushToast]);
 
   const handleCancelConversationQueuedComment = useCallback(async (commentId: string) => {
     if (!conversationIssueId) return;

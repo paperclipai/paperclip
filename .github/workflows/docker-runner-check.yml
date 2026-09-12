@@ -32,7 +32,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
       # Compile the real target, then change source in a disposable context.
-      # Require dependency-layer reuse and changed metadata from the real binary.
+      # A fresh builder must import dependencies and produce changed binary metadata.
       # No registry credentials, external cache, or image publication.
       - name: Verify native build and dependency cache reuse
         run: bash scripts/check-docker-runner-cache.sh

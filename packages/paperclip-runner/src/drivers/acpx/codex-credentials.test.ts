@@ -168,12 +168,10 @@ describe("managed Codex credentials", () => {
   ] as const)(
     "tolerates one unrelated silent %s quorum listener",
     async (_label, occupiedIndex) => {
-      const prepared =
-        occupiedIndex === 0 ? await silentPrimaryQuorumFixture() : null;
-      const fixture = prepared?.fixture ?? (await credentialFixture());
-      const ports = credentialLeasePorts(await realpath(fixture.home));
-      const occupied =
-        prepared?.occupied ?? (await listenSilently(ports[occupiedIndex]));
+      const { fixture, occupied } = await silentPrimaryQuorumFixture(
+        credentialFixture,
+        occupiedIndex,
+      );
       try {
         const lease = await stageManagedCodexCredential({
           agentHomeDirectory: fixture.home,
