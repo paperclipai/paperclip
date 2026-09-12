@@ -366,6 +366,13 @@ directory as before. Cache misses only cost compilation time.
 
 Pull requests that change the Dockerfile, Docker ignore rules, or Runner native
 inputs also build the isolated `runner-build` target in `Docker Runner check`.
-This compiles against the actual reduced context and catches missing embedded
-inputs before the post-merge image build. It uses a GitHub-hosted runner with
-read-only repository access and does not publish images or cache artifacts.
+The check runs `bash scripts/check-docker-runner-cache.sh` against a disposable
+copy of tracked source and the actual Docker ignore rules. It compiles a baseline,
+changes a Rust metadata constant, and rebuilds. It requires a cached dependency
+build, an unchanged dependency recipe, and changed metadata from the real binary.
+It also verifies that a dependency declaration change alters the recipe. The
+probe exports only small metadata files, avoiding a large image import into the
+Docker daemon. It catches missing embedded inputs before the post-merge build.
+It uses a GitHub-hosted runner with read-only repository access and does not
+publish images or cache artifacts. Allow up to 20 minutes for its cold build and
+source rebuild.
