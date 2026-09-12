@@ -1968,17 +1968,6 @@ async function buildRuntime(input: {
     // are absent from tempKeysApplied and keep their compatibility protection.
     if (!scratchKeys.has(key) || value !== scratch.dir) resolvedAdapterEnv[key] = value;
   }
-  // codex-acp supports both key names, but ACP clients must select its
-  // api-key authentication method during session creation. Without this
-  // request, the server advertises authentication and rejects session/new even
-  // though the credential is present in the launched process environment.
-  if (
-    acpxAgent === "codex" &&
-    (env.OPENAI_API_KEY || env.CODEX_API_KEY) &&
-    !env.DEFAULT_AUTH_REQUEST
-  ) {
-    env.DEFAULT_AUTH_REQUEST = JSON.stringify({ methodId: "api-key" });
-  }
   if (authToken) env.PAPERCLIP_API_KEY = authToken;
   // For the claude agent, set model via ANTHROPIC_MODEL at startup rather than
   // via session/set_config_option — the ACP server's set_config_option handler
@@ -2635,11 +2624,25 @@ function resolveRuntimeEnv(
     env,
     (options.platform ?? process.platform) === "win32",
   );
-  return Object.fromEntries(
+  const finalEnv = Object.fromEntries(
     Object.entries(mergedEnv).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
+  // codex-acp supports both key names, but ACP clients must select its
+  // api-key authentication method during session creation. Without this
+  // request, the server advertises authentication and rejects session/new even
+  // though the credential is present in the launched process environment. Check
+  // the final merged environment, not just the explicit run config, so a host
+  // key the local launch inherits still selects this default.
+  if (
+    acpxAgent === "codex" &&
+    (finalEnv.OPENAI_API_KEY || finalEnv.CODEX_API_KEY) &&
+    !finalEnv.DEFAULT_AUTH_REQUEST
+  ) {
+    finalEnv.DEFAULT_AUTH_REQUEST = JSON.stringify({ methodId: "api-key" });
+  }
+  return finalEnv;
 }
 
 function mergeRuntimeEnvironment(

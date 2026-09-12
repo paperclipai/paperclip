@@ -95,7 +95,7 @@ import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-loc
 import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingClaim } from "@paperclipai/shared";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
-import { secretService } from "../services/secrets.js";
+import { isFixedClaudeOAuthBinding, secretService } from "../services/secrets.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
 import {
@@ -2454,6 +2454,80 @@ export function agentRoutes(
     };
   }
 
+  // The provider credential environment keys a hired agent can inherit from the
+  // hiring agent, by adapter type. Each key holds a credential. A configuration
+  // key such as CODEX_HOME or GROK_HOME is a path, not a credential, and stays
+  // out of this list.
+  const INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS: Record<string, readonly string[]> = {
+    claude_local: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
+    codex_local: ["OPENAI_API_KEY", "CODEX_API_KEY"],
+    grok_local: ["XAI_API_KEY"],
+  };
+
+  function isInheritableCredentialReference(value: unknown): value is Record<string, unknown> {
+    const record = asRecord(value);
+    return record !== null && (record.type === "secret_ref" || record.type === "user_secret_ref");
+  }
+
+  // A hired agent inherits the provider credential references the hiring
+  // agent already holds for the same adapter type, so a freshly hired agent
+  // can run without a separate credential setup step. The merge copies each
+  // reference object whole, so the child keeps the parent's pinned version
+  // and its other fields. A key the hire request already supplies always
+  // wins, and the merge never inherits a plain environment value.
+  //
+  // A claude_local hire request that already supplies any Claude credential
+  // key inherits no Claude credential key at all. That keeps child-wins
+  // precedence and rules out the forbidden pairing of the fixed OAuth binding
+  // with an ANTHROPIC_API_KEY.
+  //
+  // The hiring agent must belong to the target company. Without that check, an
+  // agent that can create agents in another company could copy its own
+  // company's credential reference into that other company.
+  async function applyHiringAgentAuthInheritance(
+    req: Request,
+    companyId: string,
+    adapterType: string | null | undefined,
+    adapterConfig: Record<string, unknown>,
+  ): Promise<{ adapterConfig: Record<string, unknown>; inheritedFixedClaudeOAuthBinding: boolean }> {
+    const noInheritance = { adapterConfig, inheritedFixedClaudeOAuthBinding: false };
+    if (req.actor.type !== "agent" || !req.actor.agentId) return noInheritance;
+    const credentialKeys = adapterType ? INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS[adapterType] : undefined;
+    if (!credentialKeys) return noInheritance;
+
+    const parent = await svc.getById(req.actor.agentId);
+    if (!parent || parent.companyId !== companyId || parent.adapterType !== adapterType) return noInheritance;
+    const parentEnv = asRecord(asRecord(parent.adapterConfig)?.env);
+    if (!parentEnv) return noInheritance;
+
+    const existingEnv = asRecord(adapterConfig.env);
+    const claudeCredentialKeys = INHERITABLE_AGENT_CREDENTIAL_ENV_KEYS.claude_local;
+    const childHasClaudeCredential =
+      adapterType === "claude_local" &&
+      existingEnv !== null &&
+      claudeCredentialKeys.some((key) => existingEnv[key] !== undefined);
+    if (childHasClaudeCredential) return noInheritance;
+
+    const nextEnv: Record<string, unknown> = { ...(existingEnv ?? {}) };
+    let inheritedFixedClaudeOAuthBinding = false;
+    let changed = false;
+    for (const key of credentialKeys) {
+      if (existingEnv && existingEnv[key] !== undefined) continue;
+      const parentValue = parentEnv[key];
+      if (!isInheritableCredentialReference(parentValue)) continue;
+      nextEnv[key] = { ...parentValue };
+      changed = true;
+      if (key === "CLAUDE_CODE_OAUTH_TOKEN" && isFixedClaudeOAuthBinding(parentValue)) {
+        inheritedFixedClaudeOAuthBinding = true;
+      }
+    }
+    if (!changed) return noInheritance;
+    return {
+      adapterConfig: { ...adapterConfig, env: nextEnv },
+      inheritedFixedClaudeOAuthBinding,
+    };
+  }
+
   function applyCreateDefaultsByAdapterType(
     adapterType: string | null | undefined,
     adapterConfig: Record<string, unknown>,
@@ -4200,14 +4274,20 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     const hiredAgentId = randomUUID();
-    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
+    const authInheritance = await applyHiringAgentAuthInheritance(
+      req,
       companyId,
-      hiredAgentId,
       hireInput.adapterType,
       applyCreateDefaultsByAdapterType(
         hireInput.adapterType,
         rawHireAdapterConfig,
       ),
+    );
+    const requestedAdapterConfig = applyCodexLocalKeyIsolation(
+      companyId,
+      hiredAgentId,
+      hireInput.adapterType,
+      authInheritance.adapterConfig,
     );
     assertExternalInstructionsAdmin(req, {
       id: hiredAgentId,
@@ -4301,6 +4381,15 @@ export function agentRoutes(
             // from the actor, so an agent actor never reaches the no-claim bind.
             applyExistingWithoutClaim:
               req.actor.type !== "agent" && hireApplyStoredClaudeLogin === true,
+            // Set only when an agent actor hired this child and the merge above
+            // inherited the parent's fixed Claude OAuth reference. The service
+            // re-reads this named parent inside the write transaction before it
+            // permits the bind, so this identifier is a claim to verify, not a
+            // trusted value.
+            inheritedFromAgentId:
+              req.actor.type === "agent" && authInheritance.inheritedFixedClaudeOAuthBinding
+                ? req.actor.agentId
+                : null,
           },
         },
       );
