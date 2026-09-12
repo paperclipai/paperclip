@@ -6965,6 +6965,7 @@ async function executePaperclipNativeSessionWithinScope(
               nativeIssueId: heartbeatRuns.nativeIssueId,
               resultJson: heartbeatRuns.resultJson,
               runtimeMode: heartbeatRuns.runtimeMode,
+              status: heartbeatRuns.status,
             })
             .from(heartbeatRuns)
             .where(eq(heartbeatRuns.id, input.execution.binding.runId))
@@ -6979,6 +6980,12 @@ async function executePaperclipNativeSessionWithinScope(
             boundRun.nativeIssueId !== input.execution.binding.issueId
           ) {
             throw new Error("native_execution_binding_changed");
+          }
+          // A cancellation can win after heartbeat dispatch admission but
+          // before this claim. Never revive a terminal run or a settled startup.
+          if (boundRun.status !== "running" || boundRun.resultJson?.startupCancellation ||
+              coordinator.phase === "terminal_failure") {
+            throw new NativeCancellationPendingRecoveryError();
           }
           const cancellationIntent = record(
             record(boundRun.resultJson).nativeCancellation,

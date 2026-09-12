@@ -1,3 +1,4 @@
+import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
@@ -74,11 +75,12 @@ export async function admitExplicitNativeContinuation(input: {
   if (pendingInteraction || pendingApproval) return blocked("decision_pending", "A pending approval or question must be resolved before this message can start.");
 
   const sources: Run[] = [];
+  const cancelledStartupIds = new Set<string>();
   for (const action of actions) {
     const runId = action.evidence.runId ?? action.evidence.sourceRunId;
     if (typeof runId !== "string") return blocked("source_missing", "The stopped run could not be identified. Your message is saved.");
     // Text comparison keeps malformed historical evidence a hold, not a UUID cast error.
-    const [run] = await db.select().from(heartbeatRuns).where(and(
+    let [run] = await db.select().from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.id}::text = ${runId}`,
     ));
     if (!run || run.agentId !== agentId || !terminal.includes(run.status) ||
@@ -101,12 +103,25 @@ export async function admitExplicitNativeContinuation(input: {
     // For pre-upgrade rows without adapter evidence, only a new explicit user
     // turn is allowed, after the termination proofs below. This does not infer
     // an old adapter type, certify old outcomes, or authorize automatic replay.
-    if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn) return null;
     const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, run.id),
     )).for("update");
-    if (coordinator && (coordinator.phase !== "terminal_failure" || coordinator.leaseOwner ||
-        coordinator.resultId || coordinator.failureDetail?.successorRunId)) return blocked("controller_settling", "Waiting for the previous run to finish recovery. Your message will start automatically.");
+    // Same lock order as the native claim. Re-read the run while holding both
+    // locks before accepting the never-claimed startup proof.
+    const [lockedRun] = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, run.id),
+    )).for("update");
+    if (!lockedRun || lockedRun.status !== run.status || lockedRun.agentId !== run.agentId ||
+        lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return null;
+    run = lockedRun;
+    const cancelledStartup = await isCancelledNativeStartup(db, run, coordinator);
+    if (cancelledStartup) cancelledStartupIds.add(run.id);
+    if (run.runtimeMode !== "native" && !unusedAdmission && !legacyUserTurn && !cancelledStartup) return null;
+    if (!cancelledStartup && coordinator && (coordinator.phase !== "terminal_failure" || coordinator.leaseOwner ||
+        coordinator.resultId || coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
+          run.status === "cancelled" && !coordinator.leaseOwner
+            ? "The cancelled run still needs verified cleanup. Your message is saved. Inspect the run and its environment for details."
+            : "Waiting for the previous run to finish recovery. Your message will start automatically.");
     const leases = await db.select()
       .from(environmentLeases).where(and(
         eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, run.id),
@@ -120,7 +135,7 @@ export async function admitExplicitNativeContinuation(input: {
       }))) return null;
     } else {
       if (leases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed")) return blocked("local_cleanup", "Waiting for the previous environment to finish cleanup. Your message will start automatically.");
-      if (!unusedAdmission) {
+      if (!unusedAdmission && !cancelledStartup) {
         // A missing process identity is not evidence that a provider exited.
         if (!run.processPid && !run.processGroupId &&
             !await hasNativeLocalProcessStop(db, companyId, run.id)) return blocked("process_identity_missing", "The previous run has no verified stop record. Paperclip cannot start this message yet.");
@@ -148,6 +163,16 @@ export async function admitExplicitNativeContinuation(input: {
   if (input.dryRun) return { previousRunId: previous.id, commentId, ...(retry ? { failedRunId: input.failedRunId! } : {}) };
   const authorization = { actorId, commentId, ...(retry ? { failedRunId: input.failedRunId } : {}), runId: input.successorRunId,
     previousRunId: previous.id, recordedAt: new Date().toISOString() };
+  for (const runId of cancelledStartupIds) {
+    await db.update(nativeRunFinalizations).set({
+      phase: "terminal_failure", failureCode: "native_startup_cancelled", nextAttemptAt: null,
+      controlDeadlineAt: null, updatedAt: new Date(),
+    }).where(and(eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, runId)));
+    await db.update(heartbeatRuns).set({
+      ...(nativeSources.some(run => run.id === runId) ? { nativePhase: "terminal_failure", nativePhaseUpdatedAt: new Date() } : {}),
+      executionControlDeadlineAt: null,
+    }).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
+  }
   if (nativeSources.length) await db.update(nativeRunFinalizations).set({
     failureDetail: sql`coalesce(${nativeRunFinalizations.failureDetail}, '{}'::jsonb) || ${JSON.stringify({ replacementDenied: "explicit_user_continuation" })}::jsonb`,
     updatedAt: new Date(),
