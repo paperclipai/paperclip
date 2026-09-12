@@ -1425,6 +1425,8 @@ describe("Capability live runnerd and Codex session", () => {
     expect((await store.load(replacement.id))?.status).toBe("suspended");
   });
 
+  // Budget for the deliberate 500 ms fault, the 5 s resumed turn, and
+  // the durable store fsyncs around both attempts.
   it("durably resumes a distinct attempt, preserves partial usage, and deduplicates the semantic effect", async () => {
     const state = providerState();
     const directory = await mkdtemp(join(tmpdir(), "capability-live-durable-"));
@@ -1528,7 +1530,7 @@ describe("Capability live runnerd and Codex session", () => {
       reasoningTokens: 5,
       costNanodollars: 2_500,
     });
-  });
+  }, 15_000);
 
   it("does not raise an unhandled rejection when interrupt() outlasts the turn timeout during reconcileActiveTurn", async () => {
     const state = providerState();
