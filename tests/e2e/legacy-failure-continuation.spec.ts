@@ -54,7 +54,7 @@ for (const action of ["task_retry", "inbox_retry", "message", "queued_interrupt"
         // Reproduce a real user comment saved while the failed run was active,
         // including queues originally created by a system wake.
         await db.insert(issueComments).values({ id: commentId, companyId: company.id, issueId: issue.id,
-          authorType: "user", authorUserId: "local-board", body: "Approved",
+          authorType: "user", authorUserId: action === "queued_interrupt" ? "original-board" : "local-board", body: "Approved",
           createdAt: new Date(Date.now() - 8_000),
         });
         await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id,

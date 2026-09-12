@@ -11,6 +11,7 @@ import {
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
+import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v)
@@ -116,7 +117,10 @@ export async function buildExecutionContinuation(input: {
   const triggerInteraction = interactions.find(
     (row) => row.id === input.context.interactionId,
   );
+  const explicitContinuation = object(input.context.explicitUserContinuation);
+  const explicitUserSource = string(explicitContinuation.previousRunId);
   const sourceRunId =
+    explicitUserSource ??
     triggerInteraction?.sourceRunId ??
     string(input.context.retryOfRunId) ??
     string(input.context.previousRunId);
@@ -257,8 +261,6 @@ export async function buildExecutionContinuation(input: {
     ["succeeded", "failed", "timed_out", "interrupted", "cancelled"].includes(run.status) &&
     !(run.status === "cancelled" && run.errorCode === "execution_reconciliation_required"),
   );
-  const explicitContinuation = object(input.context.explicitUserContinuation);
-  const explicitUserSource = string(explicitContinuation.previousRunId);
   if (explicitUserSource) {
     const predecessor = priorRuns.find(run => run.id === explicitUserSource &&
       ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status));
@@ -268,6 +270,15 @@ export async function buildExecutionContinuation(input: {
       eq(agentWakeupRequests.reason, "retry_failed_run"), eq(agentWakeupRequests.requestedByActorType, "user"),
       sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
     )) : [];
+    // A board operator can send a queue authored by someone else. Bind that
+    // authority to the server-recorded queue and successor, not caller context.
+    const interruptWakes = await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, input.agentId),
+      eq(agentWakeupRequests.status, "coalesced"),
+      sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+      sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null`,
+      input.runId ? eq(agentWakeupRequests.runId, input.runId) : undefined,
+    ));
     const authorization = reconciliations.map(row => object(row.evidence.explicitUserContinuation))
       .find(value => value.previousRunId === explicitUserSource &&
         (!input.runId || value.runId === input.runId) &&
@@ -278,8 +289,11 @@ export async function buildExecutionContinuation(input: {
               wake.runId === value.runId && wake.requestedByActorId === value.actorId &&
               priorRuns.some(run => run.id === wake.runId && run.retryOfRunId === failedRunId))
           : rows.some(comment => comment.id === value.commentId &&
-              comment.authorType === "user" && comment.authorUserId === value.actorId &&
-              !comment.createdByRunId && !comment.deletedAt)));
+              comment.authorType === "user" && !comment.createdByRunId && !comment.deletedAt &&
+              (comment.authorUserId === value.actorId || interruptWakes.some(wake =>
+                wake.id === value.queuedCommentInterruptId && wake.runId === value.runId &&
+                object(object(wake.payload).queuedCommentInterrupt).actorId === value.actorId &&
+                queuedCommentIdsFromWakePayload(wake.payload).includes(comment.id))))));
     if (!predecessor || !authorization || explicitUserSource !== sourceRunId)
       throw new Error("continuation_user_authorization_missing");
   }
