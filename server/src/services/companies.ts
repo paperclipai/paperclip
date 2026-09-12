@@ -33,6 +33,24 @@ import {
   routineTriggers,
   routineRevisions,
   routines,
+  decisions,
+  decisionBundles,
+  decisionQueues,
+  decisionQueueItems,
+  decisionTriage,
+  decisionTriageEvents,
+  decisionRetention,
+  decisionArchiveNotificationOutbox,
+  budgetIncidents,
+  budgetPolicies,
+  completionContracts,
+  inboxDismissals,
+  nativeRunFinalizations,
+  nativeRunResults,
+  statusDecisionEffects,
+  statusDecisions,
+  workAssessments,
+  workspaceRuntimeServices,
 } from "@paperclipai/db";
 import { notFound, unprocessable } from "../errors.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
@@ -238,7 +256,7 @@ export function companyService(db: Db) {
     if (companyPatch.issuePrefix !== undefined) return null;
     const nextName = companyPatch.name;
     if (typeof nextName !== "string" || nextName.trim().length === 0) return null;
-    if (!isCloudManagedInstance()) return null;
+    // if (!isCloudManagedInstance()) return null;
 
     // Lock the company row before comparing anything against it. Two concurrent
     // updates would otherwise each decide from the row they read before either
@@ -275,7 +293,8 @@ export function companyService(db: Db) {
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
-    const base = deriveIssuePrefixBase(data.name);
+    // TEMPORARY: forced prefix for the next company. Revert to deriveIssuePrefixBase.
+    const base = "PF";
     let suffix = 1;
     while (suffix <= MAX_ISSUE_PREFIX_ATTEMPTS) {
       const candidate = `${base}${issuePrefixSuffixForAttempt(suffix)}`;
@@ -529,6 +548,16 @@ export function companyService(db: Db) {
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.companyId, id));
 
+        await tx.delete(budgetIncidents).where(eq(budgetIncidents.companyId, id));
+        await tx.delete(budgetPolicies).where(eq(budgetPolicies.companyId, id));
+        await tx.delete(completionContracts).where(eq(completionContracts.companyId, id));
+        await tx.delete(inboxDismissals).where(eq(inboxDismissals.companyId, id));
+        await tx.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, id));
+        await tx.delete(nativeRunResults).where(eq(nativeRunResults.companyId, id));
+        await tx.delete(statusDecisionEffects).where(eq(statusDecisionEffects.companyId, id));
+        await tx.delete(statusDecisions).where(eq(statusDecisions.companyId, id));
+        await tx.delete(workAssessments).where(eq(workAssessments.companyId, id));
+        await tx.delete(workspaceRuntimeServices).where(eq(workspaceRuntimeServices.companyId, id));
         await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
         if (companyRunIds.length > 0) {
           await tx
@@ -538,13 +567,23 @@ export function companyService(db: Db) {
         await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
         await tx.delete(activityLog).where(eq(activityLog.companyId, id));
         await tx.delete(runIdentityContexts).where(eq(runIdentityContexts.companyId, id));
+        await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
+        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
+        await tx.delete(decisionTriageEvents).where(eq(decisionTriageEvents.companyId, id));
+        await tx.delete(decisionTriage).where(eq(decisionTriage.companyId, id));
+        await tx.delete(decisionRetention).where(eq(decisionRetention.companyId, id));
+        await tx
+          .delete(decisionArchiveNotificationOutbox)
+          .where(eq(decisionArchiveNotificationOutbox.companyId, id));
+        await tx.delete(decisionQueueItems).where(eq(decisionQueueItems.companyId, id));
+        await tx.delete(decisionQueues).where(eq(decisionQueues.companyId, id));
+        await tx.delete(decisions).where(eq(decisions.companyId, id));
+        await tx.delete(decisionBundles).where(eq(decisionBundles.companyId, id));
         await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
         await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
         await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
         await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.companyId, id));
         await tx.delete(issueComments).where(eq(issueComments.companyId, id));
-        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
-        await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
         await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
         await tx.delete(approvals).where(eq(approvals.companyId, id));
         await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
@@ -562,8 +601,8 @@ export function companyService(db: Db) {
         await tx.delete(issues).where(eq(issues.companyId, id));
         await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
         await tx.delete(assets).where(eq(assets.companyId, id));
-        await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(projects).where(eq(projects.companyId, id));
+        await tx.delete(goals).where(eq(goals.companyId, id));
         await tx.delete(agents).where(eq(agents.companyId, id));
         const rows = await tx
           .delete(companies)
