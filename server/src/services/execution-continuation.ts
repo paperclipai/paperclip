@@ -1,4 +1,5 @@
-import { and, asc, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, sql } from "drizzle-orm";
+import { z } from "zod";
 import {
   agentWakeupRequests,
   heartbeatRuns,
@@ -272,20 +273,24 @@ export async function buildExecutionContinuation(input: {
     // Admission records the board operator's authority separately from the
     // message author. At dispatch, prove that exact queue was adopted by this
     // run; caller-supplied continuation context cannot grant this authority.
-    const interruptQueues = reconciliations.some(row =>
-      string(object(row.evidence.explicitUserContinuation).queuedCommentInterruptId))
+    const continuationAuthorizations = reconciliations.map(row => object(row.evidence.explicitUserContinuation))
+      .filter(value => value.previousRunId === explicitUserSource &&
+        (!input.runId || value.runId === input.runId) &&
+        value.commentId === explicitContinuation.commentId &&
+        priorRuns.some(run => run.id === value.runId));
+    const interruptQueueIds = [...new Set(continuationAuthorizations.flatMap(value => {
+      const parsed = z.string().guid().safeParse(value.queuedCommentInterruptId);
+      return parsed.success ? [parsed.data] : [];
+    }))];
+    const interruptQueues = interruptQueueIds.length
       ? await db.select().from(agentWakeupRequests).where(and(
+        inArray(agentWakeupRequests.id, interruptQueueIds),
         eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, input.agentId),
         eq(agentWakeupRequests.status, "coalesced"),
         sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null`,
       )) : [];
-    const authorization = reconciliations.map(row => object(row.evidence.explicitUserContinuation))
-      .find(value => value.previousRunId === explicitUserSource &&
-        (!input.runId || value.runId === input.runId) &&
-        value.commentId === explicitContinuation.commentId &&
-        priorRuns.some(run => run.id === value.runId) &&
-        (failedRunId
+    const authorization = continuationAuthorizations.find(value => failedRunId
           ? value.failedRunId === failedRunId && retryWakes.some(wake =>
               wake.runId === value.runId && wake.requestedByActorId === value.actorId &&
               priorRuns.some(run => run.id === wake.runId && run.retryOfRunId === failedRunId))
@@ -297,7 +302,7 @@ export async function buildExecutionContinuation(input: {
                     object(object(queue.payload).queuedCommentInterrupt).actorId === value.actorId &&
                     queuedCommentIdsFromWakePayload(queue.payload).includes(comment.id))
                 : comment.authorUserId === value.actorId) &&
-              !comment.createdByRunId && !comment.deletedAt)));
+              !comment.createdByRunId && !comment.deletedAt));
     if (!predecessor || !authorization || explicitUserSource !== sourceRunId)
       throw new Error("continuation_user_authorization_missing");
   }
