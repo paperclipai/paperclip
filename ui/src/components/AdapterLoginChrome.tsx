@@ -49,6 +49,7 @@ export type AdapterLoginChrome = "panel" | "onboarding";
 export const CONNECT_SOURCE_NAMES: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "OpenAI",
+  pi_local: "Pi",
 };
 
 /** The provider name for a source, falling back to the type when unlisted. */

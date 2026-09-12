@@ -213,6 +213,7 @@ import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
+import { isValidPiModelId } from "@paperclipai/adapter-pi-local";
 import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
@@ -2498,12 +2499,27 @@ export function agentRoutes(
       await assertFreshPaperclipRunnerProvider(companyId, adapterType, adapterConfig);
       return;
     }
-    if (adapterType !== "opencode_local") return;
-    try {
-      requireOpenCodeModelId(adapterConfig.model);
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err);
-      throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+    if (adapterType === "opencode_local") {
+      try {
+        requireOpenCodeModelId(adapterConfig.model);
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw unprocessable(`Invalid opencode_local adapterConfig: ${reason}`);
+      }
+      return;
+    }
+    if (adapterType === "pi_local") {
+      // pi_local has no viable default model (routing is gateway/provider-specific
+      // per company), so we cannot silently default it like gemini/kimi/opencode.
+      // Instead, fail fast at creation time with the same shape check the pi_local
+      // adapter itself enforces at heartbeat bootstrap, so a broken hire never
+      // reaches `status: error` silently (STU-27 root cause).
+      if (!isValidPiModelId(adapterConfig.model)) {
+        throw unprocessable(
+          "Invalid pi_local adapterConfig: `adapterConfig.model` is required in provider/model format (e.g. \"anthropic/claude-sonnet-5\").",
+        );
+      }
+      return;
     }
   }
 

@@ -121,6 +121,7 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Pi",
     description: "Pi harness",
     icon: Terminal,
+    recommended: true,
   },
   cursor: {
     label: "Cursor",

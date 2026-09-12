@@ -1598,6 +1598,90 @@ describe.sequential("agent permission routes", () => {
     });
   }
 
+  it("rejects creating a pi_local agent with an empty adapterConfig (STU-27 regression)", async () => {
+    mockAccessService.canUser.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Broken Pi Hire",
+        role: "engineer",
+        adapterType: "pi_local",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("pi_local");
+    expect(res.body.error).toContain("adapterConfig.model");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects creating a pi_local agent with a malformed (non provider/model) model string", async () => {
+    mockAccessService.canUser.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Broken Pi Hire 2",
+        role: "engineer",
+        adapterType: "pi_local",
+        adapterConfig: { model: "claude-sonnet-5" },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toContain("pi_local");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("allows creating a pi_local agent with a valid provider/model string", async () => {
+    mockAccessService.canUser.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "board",
+      userId: "agent-admin-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+    });
+    mockAgentService.create.mockResolvedValue({
+      ...baseAgent,
+      name: "Working Pi Hire",
+      adapterType: "pi_local",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "Working Pi Hire",
+        role: "engineer",
+        adapterType: "pi_local",
+        adapterConfig: { model: "ai-gw-anthropic-200k/anthropic/claude-sonnet-5" },
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith(
+      companyId,
+      expect.objectContaining({ adapterType: "pi_local" }),
+      { claudeLogin: { storedSessionId: null, ownerUserId: "agent-admin-user", applyExistingWithoutClaim: false } },
+    );
+  });
+
   it("rejects updating an agent with an unsupported default environment driver", async () => {
     const environmentId = "33333333-3333-4333-8333-333333333333";
     mockEnvironmentService.getById.mockResolvedValue({

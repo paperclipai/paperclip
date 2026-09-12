@@ -591,4 +591,138 @@ test.describe("Onboarding wizard", () => {
 
     expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
   });
+
+  test("pi_local collects an explicit model before the hire, and blocks client-side until it is valid", async ({
+    page,
+  }) => {
+    // pi_local has no safe default model: routing is provider/gateway-specific
+    // per company, so the server rejects a pi hire whose adapterConfig.model is
+    // empty or malformed (assertAdapterConfigConstraints). This test is the
+    // wizard's half of that contract: the connect step shows a model field for
+    // the Pi source, blocks the hire client-side while the typed value fails
+    // the adapter's own shape check, and carries a valid id verbatim into the
+    // hire — never reaching the server's 422.
+    const pageErrors: string[] = [];
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+
+    const flagRes = await page.request.patch("/api/instance/settings/experimental", {
+      data: { enableConferenceRoomChat: true },
+    });
+    expect(flagRes.ok()).toBe(true);
+
+    // The connect step probes before hiring; pi declares no login flow, so a
+    // passing probe is the only gate between the tile and the hire.
+    await page.route("**/test-environment", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          adapterType: "pi_local",
+          status: "pass",
+          checks: [],
+          testedAt: new Date().toISOString(),
+        }),
+      }),
+    );
+
+    // The hire itself goes to the real server, so the created agent and its
+    // configuration can be verified after the wizard advances. The body is
+    // captured on the way through.
+    let hireRequestBody: {
+      adapterType?: string;
+      adapterConfig?: { model?: string };
+    } | null = null;
+    await page.route("**/agent-hires", async (route) => {
+      hireRequestBody = JSON.parse(route.request().postData() || "{}");
+      return route.continue();
+    });
+
+    await page.goto("/onboarding");
+
+    const startBtn = page.getByRole("button", {
+      name: /Start Onboarding|New Organization|Add Agent/,
+    });
+    if (await startBtn.count()) {
+      await startBtn.first().click();
+    }
+    const createCard = page.getByRole("button", { name: /Build a new organization/ });
+    if (await createCard.count()) {
+      await createCard.first().click();
+    }
+
+    await expect(
+      page.getByRole("heading", { name: "What is the name of your organization?" }),
+    ).toBeVisible({ timeout: 15_000 });
+    await page.getByPlaceholder("e.g. Northwind Labs").fill(`${COMPANY_NAME}-pi-model`);
+    await page.getByRole("button", { name: /^Continue/ }).click();
+
+    await page.waitForSelector("#onboarding-agent-name", { timeout: 30_000 });
+    await page.locator("#onboarding-agent-name").fill("Ada");
+    await page.getByRole("button", { name: "Next" }).click();
+
+    // Pick the Pi tile. The wizard labels it "Pi" (CONNECT_SOURCE_NAMES),
+    // with the credential tag trailing in the same accessible name.
+    const piTile = page.getByRole("radio", { name: /^Pi/ });
+    await piTile.waitFor({ timeout: 30_000 });
+    await piTile.click();
+
+    // The model field is the point of this source: it must be there, and it
+    // must arrive empty — a seeded suggestion would be exactly the bogus
+    // default the server's constraint exists to reject.
+    const modelField = page.locator("#onboarding-model");
+    await expect(modelField).toBeVisible({ timeout: 15_000 });
+    await expect(modelField).toHaveValue("");
+
+    const connect = page.getByRole("button", { name: "Connect", exact: true });
+    await expect(connect).toBeEnabled({ timeout: 30_000 });
+
+    // Empty model: blocked with a clear client-side message, and no hire
+    // request may leave the page.
+    await connect.click();
+    await expect(
+      page.getByText("Pi requires an explicit model in provider/model format."),
+    ).toBeVisible({ timeout: 15_000 });
+    expect(hireRequestBody).toBeNull();
+
+    // Malformed id (no provider half): same block, still no hire.
+    await modelField.fill("grok-4");
+    await connect.click();
+    await expect(
+      page.getByText("Pi requires an explicit model in provider/model format."),
+    ).toBeVisible({ timeout: 15_000 });
+    expect(hireRequestBody).toBeNull();
+
+    // Valid id: the hire goes through carrying the typed model verbatim.
+    await modelField.fill("xai/grok-4");
+    await connect.click();
+
+    // The wizard reaches Review once the hire lands. (Not clicking "Get
+    // started": that would create the first task and wake the agent, which
+    // this test has no runtime for — the hire itself is the surface here.)
+    await page
+      .getByRole("button", { name: /Get started/ })
+      .waitFor({ timeout: 30_000 });
+
+    expect(hireRequestBody?.adapterType).toBe("pi_local");
+    expect(hireRequestBody?.adapterConfig?.model).toBe("xai/grok-4");
+
+    // And the created agent really carries it: the server accepted the pi
+    // hire with the explicit model, which is the whole contract.
+    const companiesRes = await page.request.get("/api/companies");
+    expect(companiesRes.ok()).toBe(true);
+    const companies = await companiesRes.json();
+    const company = companies.find(
+      (c: { name: string }) => c.name === `${COMPANY_NAME}-pi-model`,
+    );
+    expect(company, "the created company should exist").toBeTruthy();
+    const agentsRes = await page.request.get(`/api/companies/${company.id}/agents`);
+    expect(agentsRes.ok()).toBe(true);
+    const agents = await agentsRes.json();
+    const hired = agents.find(
+      (a: { adapterType?: string }) => a.adapterType === "pi_local",
+    );
+    expect(hired, "the pi_local agent should exist").toBeTruthy();
+    expect(hired.adapterConfig?.model).toBe("xai/grok-4");
+
+    expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
+  });
 });
