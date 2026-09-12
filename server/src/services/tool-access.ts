@@ -6707,33 +6707,37 @@ export function toolAccessService(
     const composioSession = composioChild
       ? await composioSessions.ensureSession(connection.id)
       : null;
-    let headers = composioSession?.headers ??
+    let headers =
+      composioSession?.headers ??
       credentialHeaders ?? {
         ...projectedConnectionHeaders(connection),
         ...(await resolveCredentialHeaders(connection, actor)),
       };
-    const endpoint =
+    let endpoint =
       composioSession?.url ?? (await resolvedRemoteEndpoint(connection, actor));
     // Pinned to the address the guard approved: `config.url` is operator-supplied,
     // so a second DNS resolution here would reopen the rebinding window that
     // PAP-17098 closed for the OAuth endpoints.
-    const listRequestBody = JSON.stringify({
-      jsonrpc: "2.0",
-      id: "paperclip-catalog-refresh",
-      method: "tools/list",
-      params: {},
-    });
     const sendRemote = (init: RequestInit) =>
       requestRemoteHttpEndpoint(new URL(endpoint), init);
-    const sendToolsList = (requestHeaders: Record<string, string>) =>
+    const sendToolsList = (
+      requestHeaders: Record<string, string>,
+      cursor?: string | null,
+    ) =>
       sendRemote({
         method: "POST",
         // MCP Streamable HTTP requires advertising that we accept both a JSON body
         // and an SSE stream; spec-compliant servers 406 without it (see mcp-http.ts).
         headers: mcpHttpRequestHeaders(requestHeaders),
-        body: listRequestBody,
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          method: "tools/list",
+          params: cursor ? { cursor } : {},
+        }),
       });
     let usedInitializedSession = connection.config.mcpSessionRequired === true;
+    let activeHeaders = headers;
     let response: Response;
     if (usedInitializedSession) {
       const sessionHeaders = await initializeMcpHttpSession({
@@ -6741,6 +6745,7 @@ export function toolAccessService(
         headers,
         requestId: "paperclip-catalog-refresh",
       });
+      activeHeaders = sessionHeaders;
       response = await sendToolsList(sessionHeaders);
     } else {
       response = await sendToolsList(headers);
@@ -6756,6 +6761,9 @@ export function toolAccessService(
           });
           response = await sendToolsList(sessionHeaders);
           usedInitializedSession = response.ok;
+          if (response.ok) {
+            activeHeaders = sessionHeaders;
+          }
         } catch {
           // Preserve the original HTTP failure below when this was not an MCP
           // session requirement after all.
@@ -6785,9 +6793,12 @@ export function toolAccessService(
       const refreshed = await composioSessions.ensureSession(connection.id, {
         force: true,
       });
-      response = await requestRemoteHttpEndpoint(new URL(refreshed.url), {
+      endpoint = refreshed.url;
+      headers = refreshed.headers;
+      activeHeaders = refreshed.headers;
+      response = await sendRemote({
         method: "POST",
-        headers: mcpHttpRequestHeaders(refreshed.headers),
+        headers: mcpHttpRequestHeaders(activeHeaders),
         body: JSON.stringify({
           jsonrpc: "2.0",
           id: "paperclip-catalog-refresh-retry",
@@ -6816,6 +6827,7 @@ export function toolAccessService(
           forceRefresh: true,
         })),
       };
+      activeHeaders = headers;
       response = await sendToolsList(headers);
     }
     if (
@@ -6829,6 +6841,7 @@ export function toolAccessService(
           forceRefresh: true,
         })),
       };
+      activeHeaders = headers;
       response = await sendToolsList(headers);
       if (
         response.status === 401 &&
@@ -6910,13 +6923,87 @@ export function toolAccessService(
       await response.text(),
       response.headers.get("content-type"),
     );
-    const result = asRecord(asRecord(payload).result);
-    const payloadTools = asRecord(payload).tools;
+    let result = asRecord(asRecord(payload).result);
+    let payloadTools = asRecord(payload).tools;
     const tools: unknown[] = Array.isArray(result.tools)
-      ? result.tools
+      ? [...result.tools]
       : Array.isArray(payloadTools)
-        ? payloadTools
+        ? [...payloadTools]
         : [];
+    let nextCursor =
+      typeof result.nextCursor === "string" && result.nextCursor.trim()
+        ? result.nextCursor.trim()
+        : null;
+    let pageCount = 1;
+    const maxPages = 50;
+    const seenCursors = new Set<string>();
+
+    while (nextCursor && pageCount < maxPages) {
+      seenCursors.add(nextCursor);
+      pageCount++;
+      const pageResponse = await sendToolsList(activeHeaders, nextCursor);
+      if (!pageResponse.ok) {
+        throw new HttpError(
+          502,
+          `Remote app returned HTTP ${pageResponse.status} during tools/list pagination`,
+          {
+            status: pageResponse.status,
+          },
+        );
+      }
+      const pagePayload = parseMcpHttpResponseBody(
+        await pageResponse.text(),
+        pageResponse.headers.get("content-type"),
+      );
+      const pageRecord = asRecord(pagePayload);
+      if (pageRecord.error !== undefined) {
+        const errorDetails = asRecord(pageRecord.error);
+        const errorMessage =
+          typeof errorDetails.message === "string"
+            ? errorDetails.message
+            : `code ${errorDetails.code ?? "unknown"}`;
+        throw new HttpError(
+          502,
+          `Remote app returned an error during tools/list pagination: ${errorMessage}`,
+          {
+            code: "mcp_pagination_failed",
+          },
+        );
+      }
+      result = asRecord(pageRecord.result);
+      payloadTools = pageRecord.tools;
+      const pageTools: unknown[] = Array.isArray(result.tools)
+        ? result.tools
+        : Array.isArray(payloadTools)
+          ? payloadTools
+          : [];
+      tools.push(...pageTools);
+      const candidateCursor =
+        typeof result.nextCursor === "string" && result.nextCursor.trim()
+          ? result.nextCursor.trim()
+          : null;
+      if (candidateCursor && seenCursors.has(candidateCursor)) {
+        throw new HttpError(
+          502,
+          "Remote app returned cyclic pagination cursor during tools/list",
+          {
+            code: "pagination_cycle_detected",
+          },
+        );
+      }
+      nextCursor = candidateCursor;
+    }
+
+    if (nextCursor) {
+      throw new HttpError(
+        502,
+        `Remote app tools/list pagination stopped before all tools were discovered (exceeded limit of ${maxPages} pages)`,
+        {
+          code: "pagination_limit_exceeded",
+        },
+      );
+    }
+
     return tools
       .map((tool) => normalizeToolDescriptor(tool))
       .filter((tool): tool is McpToolDescriptor => Boolean(tool));

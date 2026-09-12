@@ -5529,6 +5529,214 @@ describeEmbeddedPostgres("tool access service", () => {
     ).toBe(requests.filter(({ method }) => method === "initialize").length);
   });
 
+  it("paginates remote MCP tools/list using nextCursor until all pages are retrieved", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const requests: Array<{ method: string; params: Record<string, unknown> }> = [];
+
+    vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      requests.push({ method: payload.method, params: payload.params ?? {} });
+
+      if (payload.method === "tools/list") {
+        if (!payload.params?.cursor) {
+          return mcpHttpResponse({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [{ name: "tool_page_1", annotations: { readOnlyHint: true } }],
+              nextCursor: "cursor-token-page-2",
+            },
+          });
+        }
+        if (payload.params.cursor === "cursor-token-page-2") {
+          return mcpHttpResponse({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [{ name: "tool_page_2", annotations: { readOnlyHint: true } }],
+            },
+          });
+        }
+      }
+      return mcpHttpResponse({
+        jsonrpc: "2.0",
+        id: payload.id,
+        result: { tools: [] },
+      });
+    });
+
+    const result = await service.connectGalleryApp(company.id, {
+      link: "https://paginated.example/mcp",
+      name: "Paginated MCP",
+    }, { actorType: "user", actorId: "board" });
+
+    expect(requests).toEqual([
+      { method: "tools/list", params: {} },
+      { method: "tools/list", params: { cursor: "cursor-token-page-2" } },
+      { method: "tools/list", params: {} },
+      { method: "tools/list", params: { cursor: "cursor-token-page-2" } },
+    ]);
+    expect(result.actions.readOnly).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolName: "tool_page_1", riskLevel: "read" }),
+      expect.objectContaining({ toolName: "tool_page_2", riskLevel: "read" }),
+    ]));
+  });
+
+  it("fails catalog refresh if remote MCP tools/list pagination encounters an HTTP error on later pages", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+
+    vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      if (payload.method === "tools/list") {
+        if (!payload.params?.cursor) {
+          return mcpHttpResponse({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [{ name: "tool_page_1", annotations: { readOnlyHint: true } }],
+              nextCursor: "cursor-token-page-2",
+            },
+          });
+        }
+        return new Response("Internal Server Error", { status: 500, statusText: "Internal Server Error" });
+      }
+      return mcpHttpResponse({ jsonrpc: "2.0", id: payload.id, result: { tools: [] } });
+    });
+
+    await expect(service.connectGalleryApp(company.id, {
+      link: "https://error-paginated.example/mcp",
+      name: "Error Paginated MCP",
+    }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({
+      status: 502,
+    });
+  });
+
+  it("fails catalog refresh if remote MCP tools/list pagination exceeds the maximum page limit while nextCursor remains", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    let page = 0;
+
+    vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      if (payload.method === "tools/list") {
+        page++;
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: {
+            tools: [{ name: `tool_page_${page}`, annotations: { readOnlyHint: true } }],
+            nextCursor: `cursor-token-page-${page + 1}`,
+          },
+        });
+      }
+      return mcpHttpResponse({ jsonrpc: "2.0", id: payload.id, result: { tools: [] } });
+    });
+
+    await expect(service.connectGalleryApp(company.id, {
+      link: "https://infinite-paginated.example/mcp",
+      name: "Infinite Paginated MCP",
+    }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({
+      status: 502,
+    });
+  });
+
+  it("fails catalog refresh if remote MCP tools/list returns cyclic pagination cursor", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+
+    vi.stubGlobal("fetch", async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      if (payload.method === "tools/list") {
+        return mcpHttpResponse({
+          jsonrpc: "2.0",
+          id: payload.id,
+          result: {
+            tools: [{ name: "tool_loop", annotations: { readOnlyHint: true } }],
+            nextCursor: "same-cursor-cycle",
+          },
+        });
+      }
+      return mcpHttpResponse({ jsonrpc: "2.0", id: payload.id, result: { tools: [] } });
+    });
+
+    await expect(service.connectGalleryApp(company.id, {
+      link: "https://cyclic-paginated.example/mcp",
+      name: "Cyclic Paginated MCP",
+    }, { actorType: "user", actorId: "board" })).rejects.toMatchObject({
+      status: 502,
+    });
+  });
+
+  it("uses refreshed Composio endpoint and headers on subsequent paginated pages after initial 401", async () => {
+    const company = await createCompany(db);
+    const { child } = await createComposioParentAndChild(db, company.id);
+    let sessionCount = 0;
+    const client = fakeComposioClient(() => "ACTIVE");
+    client.createSession = vi.fn(async () => {
+      sessionCount++;
+      return {
+        session_id: `session-${sessionCount}`,
+        mcp: {
+          url: `https://composio.test/mcp-${sessionCount}`,
+          headers: { "x-composio-token": `token-${sessionCount}` },
+        },
+      };
+    });
+    const service = createTestToolAccessService(db, {
+      composioClientFactory: () => client,
+    });
+
+    const requests: Array<{ url: string; token: string | null; cursor: unknown }> = [];
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = new Headers(init?.headers);
+      const payload = JSON.parse(String(init?.body ?? "{}"));
+      requests.push({
+        url,
+        token: headers.get("x-composio-token"),
+        cursor: payload.params?.cursor,
+      });
+
+      if (url === "https://composio.test/mcp-1") {
+        return new Response("Unauthorized", { status: 401, statusText: "Unauthorized" });
+      }
+      if (url === "https://composio.test/mcp-2") {
+        if (!payload.params?.cursor) {
+          return mcpHttpResponse({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [{ name: "composio_tool_1", annotations: { readOnlyHint: true } }],
+              nextCursor: "cursor-page-2",
+            },
+          });
+        }
+        if (payload.params.cursor === "cursor-page-2") {
+          return mcpHttpResponse({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: {
+              tools: [{ name: "composio_tool_2", annotations: { readOnlyHint: true } }],
+            },
+          });
+        }
+      }
+      return mcpHttpResponse({ jsonrpc: "2.0", id: payload.id, result: { tools: [] } });
+    });
+
+    const refresh = await service.refreshCatalog(child.id);
+    expect(requests).toEqual([
+      { url: "https://composio.test/mcp-1", token: "token-1", cursor: undefined },
+      { url: "https://composio.test/mcp-2", token: "token-2", cursor: undefined },
+      { url: "https://composio.test/mcp-2", token: "token-2", cursor: "cursor-page-2" },
+    ]);
+    expect(refresh.catalog.map((entry) => entry.toolName)).toEqual(
+      expect.arrayContaining(["composio_tool_1", "composio_tool_2"]),
+    );
+  });
+
   it("serves persisted MCP actions until the cache expires and then refreshes them", async () => {
     const company = await createCompany(db);
     let currentTime = new Date("2026-08-20T12:00:00.000Z");
