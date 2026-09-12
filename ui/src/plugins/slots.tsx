@@ -30,6 +30,8 @@ import {
   type ComponentType,
 } from "react";
 import * as ReactModule from "react";
+import * as ReactDOMModule from "react-dom";
+import * as ReactDOMClientModule from "react-dom/client";
 import { useQuery } from "@tanstack/react-query";
 import type {
   PluginLauncherDeclaration,
@@ -302,6 +304,27 @@ ${namedExports}
       `;
 }
 
+function createReactDomShimSource(
+  reactDomModule: object,
+  bridgeKey: "reactDom" | "reactDomClient" = "reactDom",
+): string {
+  const exportNames = Object.keys(reactDomModule)
+    .filter((name) => name !== "default" && /^[A-Za-z_$][\w$]*$/.test(name))
+    .sort();
+  const namedExports = exportNames
+    .map((name) => `        export const ${name} = RD.${name};`)
+    .join("\n");
+
+  return `
+        const RD = globalThis.__paperclipPluginBridge__?.${bridgeKey};
+        if (!RD) {
+          throw new Error("Paperclip plugin ReactDOM runtime is not initialized.");
+        }
+        export default RD;
+${namedExports}
+      `;
+}
+
 function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | "react/jsx-runtime" | "sdk-ui"): string {
   if (shimBlobUrls[specifier]) return shimBlobUrls[specifier];
 
@@ -327,13 +350,10 @@ function getShimBlobUrl(specifier: "react" | "react-dom" | "react-dom/client" | 
       `;
       break;
     case "react-dom":
+      source = createReactDomShimSource(ReactDOMModule);
+      break;
     case "react-dom/client":
-      source = `
-        const RD = globalThis.__paperclipPluginBridge__?.reactDom;
-        export default RD;
-        const { createRoot, hydrateRoot, createPortal, flushSync } = RD ?? {};
-        export { createRoot, hydrateRoot, createPortal, flushSync };
-      `;
+      source = createReactDomShimSource(ReactDOMClientModule, "reactDomClient");
       break;
     case "sdk-ui":
       source = `
@@ -957,5 +977,6 @@ export function _resetPluginModuleLoader(): void {
 
 export const _applyJsxRuntimeKeyForTests = applyJsxRuntimeKey;
 export const _createReactShimSourceForTests = createReactShimSource;
+export const _createReactDomShimSourceForTests = createReactDomShimSource;
 export const _rewriteBareSpecifiersForTests = rewriteBareSpecifiers;
 export const _collectRegisterableExportNamesForTests = collectRegisterableExportNames;
