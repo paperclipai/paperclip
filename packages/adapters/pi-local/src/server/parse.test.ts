@@ -260,6 +260,97 @@ describe("parsePiJsonl", () => {
     const parsed = parsePiJsonl(stdout);
     expect(parsed.errors).toEqual([]);
   });
+
+  it("surfaces model-level stopReason=error (402) as an error", () => {
+    const err402 =
+      '402: {"message":"Insufficient Balance","type":"unknown_error","param":null,"code":"invalid_request_error"}';
+    const stdout = [
+      JSON.stringify({ type: "agent_start" }),
+      JSON.stringify({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorMessage: err402,
+        },
+        toolResults: [],
+      }),
+      JSON.stringify({ type: "agent_end", messages: [] }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.errors).toContain(err402);
+  });
+
+  it("dedupes stopReason=error across turn_end and agent_end", () => {
+    const err402 =
+      '402: {"message":"Insufficient Balance","type":"unknown_error","param":null,"code":"invalid_request_error"}';
+    const stdout = [
+      JSON.stringify({ type: "agent_start" }),
+      JSON.stringify({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorMessage: err402,
+        },
+        toolResults: [],
+      }),
+      JSON.stringify({
+        type: "agent_end",
+        messages: [
+          {
+            role: "assistant",
+            content: [],
+            stopReason: "error",
+            errorMessage: err402,
+          },
+        ],
+      }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.errors).toEqual([err402]);
+  });
+
+  it("does not surface error for a normal end_turn", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "All good" }],
+          stopReason: "end_turn",
+        },
+        toolResults: [],
+      }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.finalMessage).toBe("All good");
+  });
+
+  it("uses a generic fallback when stopReason=error has an empty errorMessage", () => {
+    const stdout = [
+      JSON.stringify({
+        type: "turn_end",
+        message: {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorMessage: "",
+        },
+        toolResults: [],
+      }),
+    ].join("\n");
+
+    const parsed = parsePiJsonl(stdout);
+    expect(parsed.errors).toHaveLength(1);
+    expect(parsed.errors[0]).toContain("stopReason=error");
+  });
 });
 
 describe("isPiUnknownSessionError", () => {
