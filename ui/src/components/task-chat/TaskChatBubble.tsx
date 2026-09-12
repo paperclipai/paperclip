@@ -11,7 +11,6 @@ import {
 } from "@/components/ImageGalleryModal";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AgentIcon } from "@/components/AgentIconPicker";
-import { CommentAttributionChip } from "@/components/CommentAttributionChip";
 import {
   Attachment,
   AttachmentContent,
@@ -75,11 +74,9 @@ function initialsForName(name: string) {
 export function TaskChatAgentIdentity({
   agentName,
   agentIcon,
-  onBehalfOfUserName,
 }: {
   agentName: string;
   agentIcon?: string | null;
-  onBehalfOfUserName?: string;
 }) {
   return (
     <span
@@ -100,12 +97,6 @@ export function TaskChatAgentIdentity({
         )}
       </Avatar>
       <span className="text-sm font-semibold text-foreground">{agentName}</span>
-      {onBehalfOfUserName ? (
-        <CommentAttributionChip
-          agentName={agentName}
-          userName={onBehalfOfUserName}
-        />
-      ) : null}
     </span>
   );
 }
@@ -240,7 +231,6 @@ function TaskChatBubbleContent({
         <TaskChatAgentIdentity
           agentName={item.authorName}
           agentIcon={item.agentIcon}
-          onBehalfOfUserName={item.onBehalfOfUserName}
         />
       ) : null}
       {bodyText.length > 0 ? (

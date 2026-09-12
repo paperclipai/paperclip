@@ -272,6 +272,29 @@ describe("TaskChatBubble accent-bubble text color", () => {
 });
 
 describe("TaskChatBubble agent page-surface treatment", () => {
+  it("does not show an on-behalf-of badge in the new task view", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    flushSync(() =>
+      root.render(
+        <ThemeProvider>
+          <TaskChatBubble
+            item={{ id: "attributed", kind: "message", author: "agent", authorName: "Fable", onBehalfOfUserName: "Dotta", text: "Done." }}
+          />
+        </ThemeProvider>,
+      ),
+    );
+
+    expect(container.textContent).toContain("Fable");
+    expect(container.textContent).not.toContain("for Dotta");
+    expect(container.querySelector('[data-testid="comment-attribution-chip"]')).toBeNull();
+
+    flushSync(() => root.unmount());
+    container.remove();
+  });
+
   it("renders agent prose without a card background or constrained width", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
