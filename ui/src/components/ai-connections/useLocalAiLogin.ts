@@ -3,8 +3,8 @@ import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus }
 import { aiConnectionsApi } from "@/api/ai-connections";
 
 /** Every authentication host uses the same local credential check and login lifecycle. */
-export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLoginIntent, enabled: boolean) {
-  const isolated = intent.provider === "openai" || intent.provider === "xai";
+export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLoginIntent, enabled: boolean, options: { allowHostClaude?: boolean } = {}) {
+  const isolated = intent.provider !== "anthropic" || !options.allowHostClaude;
   const active = Boolean(companyId && enabled);
   const [attempt, setAttempt] = useState<LocalAiLoginAttempt | null>(null);
   const [status, setStatus] = useState<LocalAiLoginStatus["status"] | null>(null);
@@ -77,6 +77,7 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
     };
   }, [companyId, active, isolated, target, generation]);
   return {
+    isolated,
     command: attempt?.command,
     status,
     preparing: active && !status && !error,

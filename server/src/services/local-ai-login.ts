@@ -21,8 +21,10 @@ function presentAttempt(id: string, expiresAt: Date, provider: string): LocalAiL
   return {
     sessionId: id, expiresAt: expiresAt.toISOString(),
     command: provider === "openai"
-      ? `(export CODEX_HOME=${shellQuote(directory)} && mkdir -p "$CODEX_HOME" && codex -c 'cli_auth_credentials_store="file"' login)`
-      : `(export GROK_HOME=${shellQuote(directory)} && mkdir -p "$GROK_HOME" && grok login --device-auth)`,
+      ? `(export CODEX_HOME=${shellQuote(directory)} && mkdir -p "$CODEX_HOME" && codex -c 'cli_auth_credentials_store="file"' login --device-auth)`
+      : provider === "anthropic"
+        ? `(export CLAUDE_CONFIG_DIR=${shellQuote(directory)} && mkdir -p "$CLAUDE_CONFIG_DIR" && claude auth login)`
+        : `(export GROK_HOME=${shellQuote(directory)} && mkdir -p "$GROK_HOME" && grok login --device-auth)`,
   };
 }
 async function prepareHome(id: string, provider: string) {
@@ -63,12 +65,12 @@ export function localAiLoginService(db: Db) {
   }
 
   async function start(companyId: string, userId: string, intent: AiConnectionLoginIntent, restart = false): Promise<LocalAiLoginAttempt> {
-    if (intent.provider !== "openai" && intent.provider !== "xai")
+    if (intent.provider !== "openai" && intent.provider !== "xai" && intent.provider !== "anthropic")
       throw unprocessable("This provider does not use a separate local login home.");
     await reapExpired();
     return db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ai-local-login:${companyId}:${userId}:${intent.provider}`}, 0))`);
-      const adapterType = intent.provider === "openai" ? "codex_local" : "grok_local";
+      const adapterType = intent.provider === "openai" ? "codex_local" : intent.provider === "anthropic" ? "claude_local" : "grok_local";
       const [existing] = await tx.select().from(adapterAuthSessions).where(and(
         eq(adapterAuthSessions.companyId, companyId), eq(adapterAuthSessions.startedByUserId, userId),
         eq(adapterAuthSessions.adapterType, adapterType),
@@ -101,7 +103,7 @@ export function localAiLoginService(db: Db) {
       try {
         await tx.insert(adapterAuthSessions).values({
           id, publicSessionId: id, companyId, environmentId: environment.id,
-          adapterType: intent.provider === "openai" ? "codex_local" : "grok_local",
+          adapterType,
           startedByUserId: userId, aiConnection: intent,
           connectionMethod: LOCAL_LOGIN_METHOD, status: "waiting_for_user", expiresAt,
         });
@@ -124,7 +126,7 @@ export function localAiLoginService(db: Db) {
   // login. Scope and intent are checked before touching an attempt's directory.
   async function check(companyId: string, userId: string, intent: AiConnectionLoginIntent, id?: string): Promise<LocalAiLoginStatus> {
     let directory: string | undefined;
-    if (intent.provider !== "anthropic") {
+    if (id || intent.provider !== "anthropic") {
       if (!id) throw unprocessable("Start local sign-in before checking this account.");
       const [session] = await db.select().from(adapterAuthSessions).where(and(
         eq(adapterAuthSessions.id, id), eq(adapterAuthSessions.companyId, companyId),

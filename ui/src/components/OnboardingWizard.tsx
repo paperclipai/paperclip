@@ -992,13 +992,14 @@ function OnboardingWizardInner({
   // input here, so this gate alone only decides whether the login mechanism
   // could ever apply to the current adapter and environment.
   const localLoginHealth = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get });
-  const canUseLocalLogin = resolvedLoginEnvironment?.driver === "local" && localLoginHealth.data?.deploymentMode === "local_trusted";
+  const canUseLocalLogin = resolvedLoginEnvironment?.driver === "local" && Boolean(localLoginHealth.data);
   const localLogin = useLocalAiLogin(createdCompanyId, {
     provider: managedProvider ?? "anthropic", method: "subscription",
     name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
     ownership: "personal", agentIds: [], allAgents: true,
   }, effectiveOnboardingOpen && step === 4 && canUseLocalLogin && credentialMode !== "api" &&
-    Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep());
+    Boolean(managedProvider) && !savedSubscription && !savedKeys.storedLogin.data && !managedBindingForStep(),
+  { allowHostClaude: localLoginHealth.data?.deploymentMode === "local_trusted" });
   const canShowAdapterLogin = Boolean(
     adapterCaps.login != null &&
       resolvedLoginEnvironment?.driver === "sandbox" &&

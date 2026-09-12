@@ -6,6 +6,22 @@ vi.mock("@paperclipai/adapter-codex-local/server", () => ({ readCodexAuthInfo: m
 vi.mock("node:fs/promises", () => ({ default: { readFile: mocks.readFile } }));
 afterEach(() => { vi.resetAllMocks(); vi.unstubAllGlobals(); });
 describe("explicit local subscription import", () => {
+  it("verifies Claude only from the selected isolated home, never the host account", async () => {
+    mocks.readFile.mockResolvedValue(JSON.stringify({ claudeAiOauth: { accessToken: "isolated-claude" } }));
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).resolves.toBe("isolated-claude");
+    expect(mocks.readFile).toHaveBeenCalledWith("/isolated/claude/.credentials.json", "utf8");
+    expect(mocks.claudeQuota).toHaveBeenCalledWith("isolated-claude");
+    expect(mocks.claude).not.toHaveBeenCalled();
+  });
+  it("does not fall back to ambient Claude auth when an isolated login is absent or invalid", async () => {
+    mocks.claude.mockResolvedValue("server-operator-token");
+    mocks.readFile.mockRejectedValue(new Error("No file"));
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow("sign-in command shown");
+    mocks.readFile.mockResolvedValue("malformed");
+    await expect(readVerifiedLocalAiCredential("anthropic", "/isolated/claude")).rejects.toThrow("sign-in command shown");
+    expect(mocks.claude).not.toHaveBeenCalled();
+    expect(mocks.claudeQuota).not.toHaveBeenCalled();
+  });
   it("verifies Claude's local credential, including explicit Keychain access", async () => {
     mocks.claude.mockResolvedValue("fixture-claude");
     await expect(readVerifiedLocalAiCredential("anthropic")).resolves.toBe("fixture-claude");

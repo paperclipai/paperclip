@@ -63,7 +63,7 @@ export function AgentProviderConnection({
   };
 }) {
   const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: localEnvironment });
-  const canUseLocalLogin = localEnvironment && health.data?.deploymentMode === "local_trusted";
+  const canUseLocalLogin = localEnvironment && Boolean(health.data);
   const epoch = useRef(0);
   useEffect(
     () => () => {
@@ -121,7 +121,8 @@ export function AgentProviderConnection({
   const localLogin = useLocalAiLogin(companyId, managedAccount?.intent ?? {
     provider: aiProvider, method: "subscription", name: `My ${provider} subscription`,
     ownership: "personal", agentIds: [], allAgents: true,
-  }, canUseLocalLogin && method === "subscription" && !savedSubscription && !storedLogin.data);
+  }, canUseLocalLogin && method === "subscription" && !savedSubscription && !storedLogin.data,
+  { allowHostClaude: health.data?.deploymentMode === "local_trusted" });
   const auth = useQuery({
     queryKey: queryKeys.agents.authSignal(
       companyId,
@@ -375,6 +376,9 @@ export function AgentProviderConnection({
         <p role="alert" className="mt-4 text-sm text-destructive">
           {testError ?? error}
         </p>
+      )}
+      {localEnvironment && health.isError && (
+        <p role="alert" className="mt-4 text-sm text-destructive">Could not prepare sign-in. Reload this page to try again.</p>
       )}
       <FooterNav
         onBack={() => {
