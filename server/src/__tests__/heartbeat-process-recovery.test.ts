@@ -655,6 +655,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     processPid?: number | null;
     processGroupId?: number | null;
     processLossRetryCount?: number;
+    runtimeMode?: "legacy" | "native";
     scheduledRetryAttempt?: number | null;
     scheduledRetryReason?: string | null;
     scheduledRetryAt?: Date | null;
@@ -719,6 +720,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processPid: input?.processPid ?? null,
       processGroupId: input?.processGroupId ?? null,
       processLossRetryCount: input?.processLossRetryCount ?? 0,
+      ...(input?.runtimeMode ? { runtimeMode: input.runtimeMode } : {}),
       scheduledRetryAttempt: input?.scheduledRetryAttempt ?? 0,
       scheduledRetryReason: input?.scheduledRetryReason ?? null,
       scheduledRetryAt: input?.scheduledRetryAt ?? null,
