@@ -162,9 +162,12 @@ class ResizeObserverStub {
 (globalThis as any).ResizeObserver =
   (globalThis as any).ResizeObserver ?? ResizeObserverStub;
 
-vi.mock("../api/issues", () => ({
-  issuesApi: mockIssuesApi,
-}));
+vi.mock("../api/issues", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/issues")>();
+  // Keep composed API operations real while replacing their request methods.
+  // This also exercises the current-revision check used by both queue surfaces.
+  return { ...actual, issuesApi: Object.assign(actual.issuesApi, mockIssuesApi) };
+});
 
 vi.mock("../api/activity", () => ({
   activityApi: mockActivityApi,
