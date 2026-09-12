@@ -39,7 +39,8 @@ import {
 import { getRecentProjectIds, trackRecentProject } from "../../lib/recent-projects";
 import { orderItemsBySelectedAndRecent } from "../../lib/recent-selections";
 import { formatAssigneeUserLabel, formatUserLabel } from "../../lib/assignees";
-import { buildExecutionPolicy, stageParticipantValues } from "../../lib/issue-execution-policy";
+import { buildExecutionPolicy, pendingStageDecisionFor, stageParticipantValues } from "../../lib/issue-execution-policy";
+import { StageDecisionActions } from "../StageDecisionActions";
 import {
   formatMonitorAbsolute,
   formatMonitorAbsoluteFull,
@@ -1064,6 +1065,10 @@ export function IssueProperties({
     }
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
+  const pendingStageDecision = useMemo(
+    () => pendingStageDecisionFor(issue, currentUserId ?? null),
+    [issue, currentUserId],
+  );
   useEffect(() => {
     setMonitorAtInput(toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
     setMonitorNotesInput(issue.executionPolicy?.monitor?.notes ?? "");
@@ -2639,6 +2644,19 @@ export function IssueProperties({
         {currentExecutionLabel && (
           <PropertyRow label="Execution">
             <span className="text-sm truncate min-w-0" title={currentExecutionLabel}>{currentExecutionLabel}</span>
+          </PropertyRow>
+        )}
+
+        {pendingStageDecision && companyId && (
+          <PropertyRow label={`Stage decision: ${pendingStageDecision.stageType === "review" ? "Review" : "Approval"}`}>
+            <StageDecisionActions
+              key={`${issue.id}:${pendingStageDecision.stageType}:${issue.executionState?.currentStageId ?? "pending"}`}
+              issueId={issue.id}
+              companyId={companyId}
+              stageType={pendingStageDecision.stageType}
+              commentRequired={pendingStageDecision.commentRequired}
+              className="w-full"
+            />
           </PropertyRow>
         )}
 

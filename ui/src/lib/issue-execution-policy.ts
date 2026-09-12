@@ -1,4 +1,4 @@
-import type { IssueExecutionPolicy, IssueExecutionStageParticipant, IssueExecutionStagePrincipal } from "@paperclipai/shared";
+import type { Issue, IssueExecutionPolicy, IssueExecutionStageParticipant, IssueExecutionStagePrincipal } from "@paperclipai/shared";
 import { parseAssigneeValue } from "./assignees";
 
 type StageType = "review" | "approval";
@@ -53,6 +53,27 @@ export function selectionValueFromPrincipal(principal: IssueExecutionStagePrinci
 export function stageParticipantValues(policy: IssueExecutionPolicy | null | undefined, stageType: StageType): string[] {
   const stage = policy?.stages.find((candidate) => candidate.type === stageType);
   return stage?.participants.map((participant) => selectionValueFromPrincipal(participant)) ?? [];
+}
+
+/**
+ * Return decision context only when the signed-in board user owns the active
+ * execution-stage decision. The server requires the decision comment in the
+ * same issue update as the status transition, including for legacy policies
+ * whose stored commentRequired flag is false.
+ */
+export function pendingStageDecisionFor(
+  issue: Pick<Issue, "executionState" | "executionPolicy">,
+  currentUserId: string | null | undefined,
+): { stageType: StageType; commentRequired: boolean } | null {
+  const state = issue.executionState;
+  if (!state || state.status !== "pending" || !state.currentStageType) return null;
+  const participant = state.currentParticipant;
+  if (!participant || participant.type !== "user" || !participant.userId) return null;
+  if (!currentUserId || participant.userId !== currentUserId) return null;
+  return {
+    stageType: state.currentStageType,
+    commentRequired: true,
+  };
 }
 
 function mergeParticipants(
