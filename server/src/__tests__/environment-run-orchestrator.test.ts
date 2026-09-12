@@ -416,6 +416,107 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     expect(result.persistedExecutionWorkspace).toEqual(updatedEw);
   });
 
+  it("merges realization-owned metadata into the lease used by subsequent syncs", async () => {
+    const providerWorkspaceRealization = {
+      version: 1,
+      mode: "copy",
+      authoritativeRoot: "/workspace",
+      pathAliases: [],
+      outboundRestorePaths: [],
+    };
+    const lease = makeLease({
+      metadata: {
+        remoteCwd: "/stale-workspace",
+        namespace: "preserved-namespace",
+        driver: "sandbox",
+        backend: "sandbox-cr",
+        reuse: "existing",
+        capabilities: ["sync"],
+        lifecycleId: "lifecycle-1",
+        phase: "Pending",
+        provider: "acquired-provider",
+        workspaceRealization: { version: 0 },
+      },
+    });
+    const updatedLease = {
+      ...lease,
+      metadata: {
+        ...lease.metadata,
+        remoteCwd: "/workspace",
+        workspaceRealization: providerWorkspaceRealization,
+      },
+    };
+    const syncIn = vi.fn();
+    const syncOut = vi.fn();
+
+    mockUpdateLeaseMetadata.mockResolvedValue(updatedLease);
+    mockResolveEnvironmentExecutionTarget.mockImplementation(async ({ lease: resolvedLease }) => ({
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/workspace",
+      runner: {
+        syncIn: async () => syncIn(resolvedLease.metadata),
+        syncOut: async () => syncOut(resolvedLease.metadata),
+      },
+    }));
+    const runtime = makeMockRuntime({
+      realizeWorkspace: vi.fn().mockResolvedValue({
+        cwd: "/workspace",
+        metadata: {
+          remoteCwd: "/workspace",
+          driver: "malicious-driver",
+          backend: "malicious-backend",
+          reuse: "malicious-reuse",
+          capabilities: ["malicious-capability"],
+          lifecycleId: "malicious-lifecycle",
+          namespace: "malicious-namespace",
+          phase: "malicious-phase",
+          provider: "malicious-provider",
+          workspaceRealization: providerWorkspaceRealization,
+        },
+      }),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    const result = await orchestrator.realizeForRun(makeRealizeInput({
+      environment: makeEnvironment("sandbox"),
+      lease,
+    }));
+    const runner = result.executionTarget?.runner;
+    if (!runner?.syncIn || !runner.syncOut) {
+      throw new Error("Expected a sync-capable execution target");
+    }
+    await runner.syncIn([]);
+    await runner.syncOut([]);
+
+    expect(mockUpdateLeaseMetadata).toHaveBeenCalledWith("lease-1", {
+      namespace: "preserved-namespace",
+      remoteCwd: "/workspace",
+      driver: "sandbox",
+      backend: "sandbox-cr",
+      reuse: "existing",
+      capabilities: ["sync"],
+      lifecycleId: "lifecycle-1",
+      phase: "Pending",
+      provider: "acquired-provider",
+      workspaceRealization: providerWorkspaceRealization,
+    });
+    expect(result.lease.metadata).toEqual({
+      namespace: "preserved-namespace",
+      remoteCwd: "/workspace",
+      driver: "sandbox",
+      backend: "sandbox-cr",
+      reuse: "existing",
+      capabilities: ["sync"],
+      lifecycleId: "lifecycle-1",
+      phase: "Pending",
+      provider: "acquired-provider",
+      workspaceRealization: providerWorkspaceRealization,
+    });
+    expect(syncIn).toHaveBeenCalledWith(result.lease.metadata);
+    expect(syncOut).toHaveBeenCalledWith(result.lease.metadata);
+  });
+
   it("runs a remote provision command after workspace realization when configured", async () => {
     mockBuildWorkspaceRealizationRequest.mockReturnValue({
       version: 1,
