@@ -9,6 +9,31 @@ WHERE grants."company_id" = memberships."company_id"
 	AND memberships."status" = 'active'
 	AND grants."scope" IS NULL
 	AND grants."granted_by_user_id" IS NULL
+	AND NOT EXISTS (
+		SELECT 1
+		FROM "activity_log" explicit_activity
+		WHERE explicit_activity."company_id" = grants."company_id"
+			AND (
+				(
+					explicit_activity."action" = 'authorization.grants_updated_by_plugin'
+					AND explicit_activity."entity_type" = 'principal_permission_grants'
+					AND explicit_activity."entity_id" = grants."principal_type" || ':' || grants."principal_id"
+				)
+				OR (
+					explicit_activity."action" = 'company_member.permissions_updated'
+					AND explicit_activity."entity_type" = 'company_membership'
+					AND explicit_activity."entity_id" = memberships."id"::text
+				)
+			)
+	)
+	AND NOT EXISTS (
+		SELECT 1
+		FROM "join_requests" approved_human_join
+		WHERE approved_human_join."company_id" = grants."company_id"
+			AND approved_human_join."request_type" = 'human'
+			AND approved_human_join."requesting_user_id" = grants."principal_id"
+			AND approved_human_join."status" = 'approved'
+	)
 	AND (
 		(memberships."membership_role" = 'owner' AND grants."permission_key" IN (
 			'agents:create',
