@@ -34,24 +34,28 @@ const CLAUDE_EXTRA_USAGE_RESET_RE =
  * event's top-level `usage` reflects only the main-loop message chain, so it
  * undercounts output tokens whenever subagents or sidechains ran; `modelUsage`
  * is the CLI's authoritative per-model accounting (it is what backs /cost).
- * Cache-creation tokens are billed prompt tokens, so they count as input.
+ * Cache-creation tokens are billed prompt tokens, but they carry a write
+ * premium over plain input, so they are reported separately as
+ * `cacheWriteTokens` instead of being folded into `inputTokens`.
  */
 export function claudeModelUsageTotals(modelUsage: unknown): UsageSummary | null {
   const byModel = parseObject(modelUsage);
   let inputTokens = 0;
   let outputTokens = 0;
   let cachedInputTokens = 0;
+  let cacheWriteTokens = 0;
   let sawEntry = false;
   for (const value of Object.values(byModel)) {
     const entry = parseObject(value);
     if (Object.keys(entry).length === 0) continue;
     sawEntry = true;
-    inputTokens += asNumber(entry.inputTokens, 0) + asNumber(entry.cacheCreationInputTokens, 0);
+    inputTokens += asNumber(entry.inputTokens, 0);
     outputTokens += asNumber(entry.outputTokens, 0);
     cachedInputTokens += asNumber(entry.cacheReadInputTokens, 0);
+    cacheWriteTokens += asNumber(entry.cacheCreationInputTokens, 0);
   }
   if (!sawEntry) return null;
-  return { inputTokens, outputTokens, cachedInputTokens };
+  return { inputTokens, outputTokens, cachedInputTokens, cacheWriteTokens };
 }
 
 export function parseClaudeStreamJson(stdout: string) {
@@ -112,6 +116,7 @@ export function parseClaudeStreamJson(stdout: string) {
     inputTokens: asNumber(usageObj.input_tokens, 0),
     cachedInputTokens: asNumber(usageObj.cache_read_input_tokens, 0),
     outputTokens: asNumber(usageObj.output_tokens, 0),
+    cacheWriteTokens: asNumber(usageObj.cache_creation_input_tokens, 0),
   };
   const costRaw = finalResult.total_cost_usd;
   const costUsd = typeof costRaw === "number" && Number.isFinite(costRaw) ? costRaw : null;
