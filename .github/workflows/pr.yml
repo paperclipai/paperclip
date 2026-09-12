@@ -10,5 +10,5 @@ permissions:
 
 jobs:
   ci:
-    # Pin: #12858 merge — docker context integrity gate + traceability context fix.
+    # Pin: #13300 merge — restore-only dependency caches and parallel native verification.
     uses: paperclipai/paperclip/.github/workflows/pr-trusted.yml@44dde2dec42a22746a2f36b595acacc9ccfa1df6
