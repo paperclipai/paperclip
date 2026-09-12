@@ -35,6 +35,7 @@ const create = (userId: string, name: string, ownership: "personal" | "shared" =
 beforeAll(async () => {
   home = await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-tests-"));
   vi.stubEnv("PAPERCLIP_HOME", home);
+  vi.stubEnv("PAPERCLIP_INSTANCE_ID", "ai-connection-fixture");
   database = await startEmbeddedPostgresTestDatabase("paperclip-ai-db-");
   db = createDb(database.connectionString);
   service = aiConnectionService(db);
@@ -364,7 +365,7 @@ describe("managed AI connections", () => {
       expect(reader).not.toHaveBeenCalled();
       const checked = await request(app).post(`${base}/check`).send(input);
       expect(checked.body).toEqual({ status: "ready" });
-      expect(reader).toHaveBeenLastCalledWith(provider, path.join(home, "instances/default/ai-local-logins", started.body.sessionId));
+      expect(reader).toHaveBeenLastCalledWith(provider, path.join(home, "instances/ai-connection-fixture/ai-local-logins", started.body.sessionId));
       const saved = await request(app).post(base).send(input);
       expect(saved.status).toBe(201);
       expect((await request(app).post(base).send(input)).body).toEqual(saved.body);
