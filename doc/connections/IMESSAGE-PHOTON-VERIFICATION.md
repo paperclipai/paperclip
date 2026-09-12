@@ -170,6 +170,17 @@ plus the shared-DM changes in this PR:
   created no task. The same Photon project remained eligible in new setup.
   A replacement endpoint was linked normally and completed a fresh native
   task/reply test at 13:58 UTC. The test channel was left active.
+- At 18:13–18:14 UTC, an operator-supplied iPhone camera HEIC passed the same
+  authorized Apple Messages conversation on code commit `fc4e4f0a3` (documentation
+  head `a2a9319f3`). Messages transformed the 1,432,391-byte source into a
+  1,132,602-byte HEIC before ingestion. Paperclip retained those received bytes
+  and generated a 783,443-byte, 3024×4032 JPEG preview. The native agent correctly
+  described the photo, then staged the HEIC with the same SHA-256 as the received
+  original. Text and file publications each succeeded on their first attempt with
+  provider receipts, and the returned photo appeared in Apple Messages. The native
+  run succeeded and the task completed. The personal photo is not included in the
+  repository or this report. This closes the real camera HEIC round-trip gap;
+  Live Photo reassembly remains outside scope.
 - An identical published test send was repeated with its original key, exact
   payload digest, and reply target. Photon suppressed it but returned gRPC 6 with
   SDK `internalError` and an empty context, saying the operation was already
@@ -195,6 +206,14 @@ when the host's shared-memory limit prevented the live isolated PostgreSQL from
 restarting. Only this task's exited test database resources were removed. This
 interrupted run is not a full-suite pass; current CI must qualify the final commit.
 
+All 30 applicable CI checks passed on `a2a9319f3`, with two skipped checks. One
+unchanged Cursor sandbox command-selection case initially exceeded its 10-second
+timeout. The exact case passed locally in 735 ms, and the failed CI server shard
+passed on its single rerun. Greptile rated that head 5/5 with no unresolved review
+threads. The 22 Photon unit cases also passed in Linux CI, including native HEIC
+conversion. Subsequent changes to this record add qualification evidence only;
+the linked PR shows their current check status.
+
 Photon's CLI manages projects and users; its terminal provider simulates chat UI.
 Neither substitutes for actual Cloud iMessage delivery. The local Mac initially
 classified the assigned number as RCS, while the participant's iPhone sent the
@@ -213,14 +232,14 @@ participants, timestamps, and observable results when running it.
 | Linked DM creates task and receives actual agent response | Passed with Pro shared DMs and the native Codex runner. |
 | Enabled group with two linked people preserves attribution | Disabled for the approved Pro scope; dedicated-line live qualification remains unrun. |
 | Unlinked sender cannot start work | Passed for the live shared-DM probe; sender discovered, zero conversations/tasks created. |
-| Inbound/outbound photos and real iPhone HEIC | PNG, text file, and synthetic HEIC passed both directions; JPEG derivative verified. Real iPhone camera HEIC remains unrun. |
+| Inbound/outbound photos and real iPhone HEIC | Passed for PNG, text file, synthetic HEIC, and an operator-supplied iPhone camera HEIC. The real photo produced a full-resolution JPEG preview and a byte-identical return of the received HEIC. |
 | Native poll and text answer resume correct interaction | Passed, including sequential drafts, incomplete submission, explicit submission, and one poll continuation. |
 | Approval rejection reason reaches canonical interaction | Passed, including missing-reason correction and native continuation. |
 | Restart preserves DM/group replies and pending questions | Shared DM recovery and pending native poll passed; dedicated groups remain unrun. |
 | Pause/resume/reconnect/removal enforce authority | Passed for Pro DMs. Removal archived the endpoint and connection, cleared secret bindings, and stopped intake. |
 | Completed conversation stays idle until fresh input | Passed across successive tasks and status/authorization probes. |
 | Provider ambiguous-send/idempotency behavior | Real repeated key suppressed duplicates but returned no original receipt. Unknown-send recovery remains an operator action; no induced network-timeout test. |
-| HEIF conversion on Linux glibc/Windows and deployment packaging | Not run. Linux musl has no packaged converter. |
+| HEIF conversion on Linux glibc/Windows and deployment packaging | macOS arm64 and Linux CI conversion passed. Windows execution remains unrun. Linux musl has no packaged converter. |
 
 Keep this channel behind the existing experimental gate. Mocked tests, synthetic
 gRPC, and a visible catalog card do not establish these live results.
