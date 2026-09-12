@@ -484,7 +484,9 @@ export function AppDetail({ renderActions, onReconnect }: {
     );
   }
 
-  const status = statusFor(connection);
+  const aiGrantRevoked = connection.connectionPurpose === "ai"
+    && grantRows.length > 0 && grantRows.every((grant) => grant.status === "revoked");
+  const status: StatusInfo = aiGrantRevoked ? { label: "Revoked", tone: "attention" } : statusFor(connection);
   const needsReconnect = connection.requiresReauthorization
     ?? (status.tone === "attention" && connection.healthStatus !== "unknown");
   const quarantined = catalog.filter((e) => e.status === "quarantined");

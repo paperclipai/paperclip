@@ -418,7 +418,7 @@ describe("New agent setup", () => {
     expect(secrets.createMyUserSecret).not.toHaveBeenCalled();
     expect(secrets.rotateMyUserSecret).not.toHaveBeenCalled();
   });
-  it.each(["opencode_local", "pi_local"])(
+  it.each(["pi_local"])(
     "persists %s OpenRouter credentials only as a secret reference",
     async (adapter) => {
       await render(adapter);
@@ -443,6 +443,46 @@ describe("New agent setup", () => {
       expect(secrets.create).toHaveBeenCalledTimes(1);
     },
   );
+  it("connects OpenRouter before testing and hiring OpenCode without copying credentials into the agent", async () => {
+    await render("opencode_local");
+    const model = "openrouter/anthropic/claude-sonnet-4.6";
+    await fill("Model", model);
+    await click("Connect another account");
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog).toBeTruthy();
+    expect(api.hire).not.toHaveBeenCalled();
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    const input = dialog.querySelector('[aria-label="API key"]') as HTMLInputElement;
+    expect(input).toBeTruthy();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "example-test-secret");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const connectButton = [...dialog.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Connect")!;
+    expect(connectButton.disabled).toBe(false);
+    await act(async () => connectButton.click());
+    await settle();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(managedApi.create).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      provider: "openrouter", method: "api_key", apiKey: "example-test-secret",
+    }));
+    const binding = { provider: "openrouter", method: "api_key", mode: "responsible_user" };
+    await click("Run test");
+    expect(api.testEnvironment.mock.calls[0][2]).toEqual(expect.objectContaining({
+      aiConnection: binding, testCredentials: {},
+      adapterConfig: expect.objectContaining({ model }),
+    }));
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1]).toEqual(expect.objectContaining({
+      adapterType: "opencode_local",
+      runtimeConfig: expect.objectContaining({ aiConnection: binding }),
+      adapterConfig: expect.objectContaining({ model }),
+    }));
+    expect(managedApi.create).toHaveBeenCalledTimes(1);
+    expect(secrets.create).not.toHaveBeenCalled();
+    expect(JSON.stringify(api.testEnvironment.mock.calls)).not.toContain("example-test-secret");
+    expect(JSON.stringify(api.hire.mock.calls)).not.toContain("example-test-secret");
+  });
   it.each(["codex", "claude", "opencode"])(
     "uses the correct native %s runner",
     async (runner) => {

@@ -1,18 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import type { AiConnectionLoginIntent, LocalAiLoginAttempt } from "@paperclipai/shared";
+import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
 
-/** Every authentication host uses the same isolated terminal-login lifecycle. */
+/** Every authentication host uses the same local credential check and login lifecycle. */
 export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLoginIntent, enabled: boolean) {
   const isolated = intent.provider === "openai" || intent.provider === "xai";
-  const active = Boolean(companyId && enabled && isolated);
+  const active = Boolean(companyId && enabled);
   const [attempt, setAttempt] = useState<LocalAiLoginAttempt | null>(null);
+  const [status, setStatus] = useState<LocalAiLoginStatus["status"] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
   const latestIntent = useRef(intent);
+  const restartRequested = useRef(false);
   const pending = useRef<Promise<unknown>>(Promise.resolve());
   const current = useRef<{ key: string; companyId: string; request: Promise<LocalAiLoginAttempt> } | null>(null);
-  const unmountTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   function cancelCurrent() {
     const previous = current.current;
     current.current = null;
@@ -25,36 +26,62 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
   useEffect(() => {
     setAttempt(null);
     setError(null);
-    const key = JSON.stringify([companyId, target, generation]);
-    if (!active || !companyId) { cancelCurrent(); return; }
+    setStatus(null);
+    if (!active || !companyId) return;
     let cancelled = false;
-    if (current.current?.key !== key) {
+    let checking = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const key = JSON.stringify([companyId, target, generation]);
+    if (isolated && current.current?.key !== key) {
       cancelCurrent();
-      const input = latestIntent.current;
+      const input = { ...latestIntent.current, ...(restartRequested.current ? { restart: true } : {}) };
+      restartRequested.current = false;
       const request = pending.current.then(() => aiConnectionsApi.startLocalLogin(companyId, input));
       current.current = { key, companyId, request };
       pending.current = request.catch(() => {});
     }
-    const request = current.current.request;
-    void request.then((result) => {
-      if (!cancelled) setAttempt(result);
-    }).catch((cause) => {
-      if (!cancelled) setError(cause instanceof Error ? cause.message : "Could not prepare local sign-in.");
-    });
-    return () => { cancelled = true; };
-  }, [companyId, active, target, generation]);
-  useEffect(() => {
-    if (unmountTimer.current) clearTimeout(unmountTimer.current);
-    // React StrictMode replays effects on mount. Cancelling during that replay
-    // would destroy a resumed login (and any credential just written to it).
-    // Only a real unmount cancels; access changes/retries cancel synchronously above.
-    return () => { unmountTimer.current = setTimeout(cancelCurrent, 0); };
-  }, []);
+    const request = isolated ? current.current!.request : Promise.resolve(null);
+    async function check() {
+      if (checking || cancelled) return;
+      checking = true;
+      clearTimeout(timer);
+      try {
+        const result = await request;
+        if (cancelled) return;
+        setAttempt(result);
+        const next = await aiConnectionsApi.checkLocalLogin(companyId!, {
+          ...latestIntent.current, ...(result ? { localSessionId: result.sessionId } : {}),
+        });
+        if (cancelled) return;
+        setStatus(next.status);
+        setError(next.status === "expired" ? "This sign-in attempt expired. Start sign-in again." : null);
+        // Stop polling a verified account. Focus still rechecks after a terminal
+        // visit; awaiting terminal login never requires repeated Connect clicks.
+        if (next.status === "sign_in_required") timer = setTimeout(() => void check(), 5000);
+      } catch (cause) {
+        if (!cancelled) setError(cause instanceof Error ? cause.message : "Could not check local sign-in.");
+      } finally { checking = false; }
+    }
+    const onFocus = () => { if (!document.hidden) void check(); };
+    void check();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
+      // Navigation is not cancellation. The server resumes this bounded attempt
+      // when the user returns and reaps abandoned attempts after expiry. Deleting
+      // here made copied CODEX_HOME commands point at nonexistent directories.
+    };
+  }, [companyId, active, isolated, target, generation]);
   return {
     command: attempt?.command,
-    preparing: active && !attempt && !error,
+    status,
+    preparing: active && !status && !error,
     error,
-    retry: () => setGeneration((value) => value + 1),
+    retry: () => { restartRequested.current = true; cancelCurrent(); setGeneration((value) => value + 1); },
     connect: (input = intent) => {
       if (!companyId) throw new Error("Choose a company before connecting.");
       if (isolated && !attempt) throw new Error("Prepare local sign-in before connecting.");

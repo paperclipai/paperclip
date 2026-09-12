@@ -17,7 +17,7 @@ import {
 export interface AiConnectionPickerProps {
   requirement: AiConnectionRequirement;
   connections: AiConnectionSummary[];
-  value: AiConnectionBinding;
+  value?: AiConnectionBinding;
   currentUserId: string;
   agentId: string;
   agentName: string;
@@ -50,13 +50,13 @@ export function AiConnectionPicker({
     requirement,
     currentUserId,
   );
-  const problem = bindingProblem(
+  const problem = value ? bindingProblem(
     value,
     requirement,
     compatible,
     currentUserId,
     agentId,
-  );
+  ) : undefined;
   const select = (
     mode: "shared",
     connection: AiConnectionSummary,
@@ -96,7 +96,7 @@ export function AiConnectionPicker({
             {error}
           </p>
           {onRetry && (
-            <Button variant="outline" onClick={onRetry}>
+            <Button type="button" variant="outline" onClick={onRetry}>
               Retry connections
             </Button>
           )}
@@ -105,7 +105,7 @@ export function AiConnectionPicker({
         <>
           <ConnectionChoiceList
             disabled={readOnly}
-            selectedId={value.mode === "responsible_user" ? "responsible_user" : value.connectionId}
+            selectedId={value?.mode === "responsible_user" ? "responsible_user" : value?.connectionId}
             choices={[
               { id: "responsible_user", name: "Responsible user’s connection", description: <>
                 <span className="block">For you: {personalDefault?.name ?? "Not connected"}</span>
@@ -129,6 +129,7 @@ export function AiConnectionPicker({
           )}
           {!readOnly && (
             <Button
+              type="button"
               variant="outline"
               className="self-end"
               onClick={onConnect}

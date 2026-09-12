@@ -214,7 +214,7 @@ export function AgentProviderConnection({
     !storedLogin.data &&
     (Boolean(managedAccount) || auth.data?.status !== "present" || subscriptionId === "");
   return (
-    <div>
+    <div className="min-w-0 max-w-full">
       <ModelSourceTiles
         label="Connect your model provider"
         sources={[

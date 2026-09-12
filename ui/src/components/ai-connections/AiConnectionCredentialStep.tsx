@@ -73,7 +73,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
   const loading = [envs, caps, settings, experimental, general].some((query) => query.isPending);
   const error = environmentError ?? [envs, caps, settings, experimental, general].find((query) => query.error)?.error?.message;
   const intent: AiConnectionLoginIntent = { provider, method: "subscription", name, ownership, agentIds, allAgents, connectionId };
-  return <div className="mx-auto max-w-xl space-y-6">
+  return <div className="mx-auto w-full min-w-0 max-w-xl space-y-6">
     <label className="block space-y-2 text-sm">Connection name<Input value={name} onChange={(event) => setName(event.target.value)} disabled={Boolean(connectionId)} /></label>
     {!suppliedEnvironmentId && !forced.forced && loginEnvironments.length > 1 && <Select value={environmentId ?? ""} onValueChange={setChosenEnvironment}>
       <SelectTrigger aria-label="Sign-in environment"><SelectValue placeholder="Sign-in environment" /></SelectTrigger>
@@ -104,7 +104,7 @@ function ApiKeyConnectionStep({ companyId, provider, connectionId, name: initial
     onSuccess: (result) => { void client.invalidateQueries({ queryKey: ["ai-connections", companyId] }); onComplete({ ...result, method: "api_key" }); },
     onSettled: () => setApiKey(""),
   });
-  return <div className="mx-auto max-w-xl space-y-4">
+  return <div className="mx-auto w-full min-w-0 max-w-xl space-y-4">
     <label className="block space-y-2 text-sm">Connection name<Input value={name} onChange={(event) => setName(event.target.value)} disabled={Boolean(connectionId)} /></label>
     {save.error && <p role="alert" className="text-sm text-destructive">{save.error.message}</p>}
     <ProviderApiKeyCard providerName="OpenRouter" value={apiKey} onChange={setApiKey} onSubmit={() => save.mutate()} disabled={save.isPending} placeholder="Enter API key here" autoFocus />

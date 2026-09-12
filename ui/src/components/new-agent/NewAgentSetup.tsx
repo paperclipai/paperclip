@@ -143,7 +143,11 @@ function Setup({
   const [providerBinding, setProviderBinding] = useState<EnvBinding | null>(
     null,
   );
-  const [runtimeAiBinding, setRuntimeAiBinding] = useState<AiConnectionBinding>();
+  const [runtimeAiBinding, setRuntimeAiBinding] = useState<AiConnectionBinding | undefined>(() =>
+    brandType === "opencode_local"
+      ? { provider: "openrouter", method: "api_key", mode: "responsible_user" }
+      : undefined,
+  );
   const [connection, setConnection] = useState<ProviderConnection | null>(null);
   const aiBinding = runtimeAiBinding ?? connection?.aiConnection;
   const [repository, setRepository] = useState("");
@@ -207,8 +211,8 @@ function Setup({
     queryFn: () => environmentsApi.capabilities(companyId),
   });
   const models = useQuery({
-    queryKey: queryKeys.agents.adapterModels(companyId, brandType),
-    queryFn: () => agentsApi.adapterModels(companyId, brandType),
+    queryKey: queryKeys.agents.adapterModels(companyId, brandType, null, aiBinding?.provider),
+    queryFn: () => agentsApi.adapterModels(companyId, brandType, { provider: aiBinding?.provider }),
     enabled: Boolean(brandType) && showModel,
     retry: false,
   });
@@ -765,7 +769,7 @@ function Setup({
                       <p className="text-sm text-muted-foreground">
                         {created.status === "pending_approval"
                           ? "An organization administrator must approve this agent before it can work."
-                          : "Your agent has not started running."}
+                          : "Assign a task when you’re ready for this agent to work."}
                       </p>
                     </div>
                     <div className="flex flex-wrap justify-between gap-3">
@@ -804,8 +808,9 @@ function Setup({
                     <fieldset disabled={busy} className="space-y-8">
                       <section className="space-y-5">
                         <h3 className="text-sm font-semibold">Runtime</h3>
-                        {aiProviderForAdapter(brandType) && <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding} legacy={!aiBinding}
+                        {aiProviderForAdapter(brandType) && <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
                           onChange={binding => { setRuntimeAiBinding(binding); resetTest(); }} />}
+                        {models.error && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
                         {((showModel && !usingKimiApi) ||
                           efforts.length > 0) && (
                           <div className="grid items-start gap-5 sm:grid-cols-2">

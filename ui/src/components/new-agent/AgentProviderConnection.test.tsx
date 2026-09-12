@@ -17,6 +17,7 @@ const managedApi = vi.hoisted(() => ({
   loginResult: vi.fn(async () => ({ connectionId: "login-account", grantId: "login-grant" })),
   connectLocal: vi.fn(async () => ({ connectionId: "local-account", grantId: "local-grant" })),
   startLocalLogin: vi.fn(async () => ({ sessionId: "local-attempt", command: "CODEX_HOME='/fixture/isolated-login' codex login", expiresAt: "2026-09-11T20:00:00Z" })),
+  checkLocalLogin: vi.fn(async () => ({ status: "sign_in_required" as const })),
   cancelLocalLogin: vi.fn(async () => ({})),
   create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
 }));

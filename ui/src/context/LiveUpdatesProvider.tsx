@@ -1264,6 +1264,10 @@ function invalidateActivityQueries(
       !!currentActor.agentId &&
       actorId === currentActor.agentId);
 
+  if (action?.startsWith("ai_connection.") || action?.startsWith("connection_grant.")) {
+    queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
+  }
+
   if (action?.startsWith("resource_membership.")) {
     const targetUserId = readString(details?.userId);
     if (!targetUserId || targetUserId === currentActor.userId) {

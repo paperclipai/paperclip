@@ -82,14 +82,9 @@ export function AiConnectionField({
         onAdopt={() => setAdopting(true)}
       />
     );
-  const selected = value ?? {
-    provider,
-    method,
-    mode: "responsible_user" as const,
-  };
   return (
     <div className="space-y-4">
-      {value && !isAiConnectionCompatible(value, adapterType, model) && (
+      {value && (adapterType !== "opencode_local" || Boolean(model)) && !isAiConnectionCompatible(value, adapterType, model) && (
         <p role="alert" className="text-sm text-destructive">
           This connection does not support the current harness and model. Choose
           a compatible connection before saving.
@@ -98,7 +93,7 @@ export function AiConnectionField({
       <AiConnectionPicker
         requirement={{ companyId, provider, method }}
         connections={accounts.data?.connections ?? []}
-        value={selected}
+        value={value}
         currentUserId={accounts.data?.currentUserId ?? ""}
         agentId={agentId ?? ""}
         agentName={agentName}
@@ -117,7 +112,7 @@ export function AiConnectionField({
           if (!open) setPendingAdoption(undefined);
         }}
       >
-        <DialogContent onCloseAutoFocus={restoreFocus}>
+        <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={restoreFocus}>
           <DialogHeader>
             <DialogTitle>Adopt Connections for {agentName}</DialogTitle>
             <DialogDescription>
@@ -156,7 +151,7 @@ export function AiConnectionField({
         </DialogContent>
       </Dialog>
       <Dialog open={connecting} onOpenChange={setConnecting}>
-        <DialogContent onCloseAutoFocus={restoreFocus}>
+        <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={restoreFocus}>
           <DialogHeader>
             <DialogTitle>Connect account</DialogTitle>
           </DialogHeader>

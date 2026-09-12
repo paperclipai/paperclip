@@ -75,6 +75,43 @@ test("legacy adoption and inline account cancellation preserve the agent configu
 });
 
 
+test("connection setup waits for provider details before enabling Continue", async ({ page }) => {
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route(`**/api/companies/${companyId}/tools/gallery`, async route => {
+    await held;
+    await route.continue();
+  });
+  await page.goto(`/${prefix}/apps/connect?source=openrouter&method=ai-api_key`);
+  const next = page.getByRole("button", { name: /^(Save and continue|Continue)$/ });
+  await expect(next).toBeDisabled();
+  release();
+  await next.click();
+  await expect(page.getByLabel("Connection name")).toBeVisible();
+  await expect(page).toHaveURL(/stage=setup/);
+});
+
+test("new OpenRouter agents use the visible binding and provider model catalog", async ({ page }) => {
+  let tested: { aiConnection?: unknown; adapterConfig?: { model?: string } } | undefined;
+  await page.route(`**/api/companies/${companyId}/adapters/opencode_local/models*`, async route => {
+    expect(new URL(route.request().url()).searchParams.get("provider")).toBe("openrouter");
+    await route.fulfill({ json: [{ id: "openrouter/anthropic/claude-sonnet-4.5", label: "Claude Sonnet 4.5" }] });
+  });
+  await page.route(`**/api/companies/${companyId}/adapters/opencode_local/test-environment`, async route => {
+    tested = route.request().postDataJSON();
+    await route.fulfill({ json: { status: "pass", checks: [], testedAt: new Date().toISOString() } });
+  });
+  await page.goto(`/${prefix}/agents/new?name=OpenRouter+binding+regression&adapterType=opencode_local`);
+  await expect(page.getByText("Existing authentication — not managed by Connections", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Responsible user’s connection/ })).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Select model (required)", exact: true }).click();
+  await page.getByRole("button", { name: "anthropic/claude-sonnet-4.5", exact: true }).click();
+  await page.getByRole("button", { name: "Run test", exact: true }).click();
+  await expect.poll(() => tested).toBeTruthy();
+  expect(tested?.aiConnection).toEqual({ provider: "openrouter", method: "api_key", mode: "responsible_user" });
+  expect(tested?.adapterConfig?.model).toBe("openrouter/anthropic/claude-sonnet-4.5");
+});
+
 test("ordinary Anthropic setup keeps the existing tool method available", async ({ page }) => {
   await page.goto(`/${prefix}/apps/connect?source=anthropic`);
   await page.getByRole("button", { name: /^(Save and continue|Continue)$/ }).click();
