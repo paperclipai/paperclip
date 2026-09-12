@@ -13,6 +13,17 @@ the PRP `eventType`, source instance, source event ID, source sequence, protocol
 schema version, and a SHA-256 digest of the canonical source envelope. Its
 payload is `{ "prpEvent": <canonical PRP event> }`.
 
+PostgreSQL JSONB cannot represent NUL (U+0000), which can occur in command
+output such as Vite virtual-module paths. The run-event payload column uses a
+lossless storage codec for these events: the JSONB projection renders NUL as
+the literal `\u0000`, and the reserved `$paperclipRunEventJsonV1` field contains
+the original serialized JSON as a doubly escaped string. Ordinary payloads
+retain their existing representation. Drizzle reads restore the exact original
+payload before replay, hash validation, redaction, or API presentation. SQL
+queries can still inspect ordinary routing fields in the projection; raw SQL
+readers of the whole payload must apply `decodeRunEventPayload`. The column
+remains JSONB and requires no schema migration.
+
 The writer locks the native `heartbeat_runs` row and allocates the existing
 per-run `seq` cursor. A byte-equivalent retry reuses the first row; a changed
 retry or source-sequence gap is rejected. Company, issue, agent, run, session,
