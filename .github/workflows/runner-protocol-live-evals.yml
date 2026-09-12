@@ -704,7 +704,7 @@ jobs:
           path: runner-protocol-trusted-viewer
 
       - name: Exchange GitHub OIDC identity for scoped AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        uses: aws-actions/configure-aws-credentials@cbe3b392738ccf3f987d68400dafcf4b0624a56c # v6
         with:
           role-to-assume: ${{ vars.RUNNER_PROTOCOL_EVAL_HISTORY_AWS_ROLE_ARN || vars.RUNNER_E2E_HISTORY_AWS_ROLE_ARN }}
           aws-region: ${{ vars.RUNNER_PROTOCOL_EVAL_HISTORY_AWS_REGION || vars.RUNNER_E2E_HISTORY_AWS_REGION }}
