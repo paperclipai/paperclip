@@ -172,6 +172,12 @@ const support = await getEmbeddedPostgresTestSupport();
       await db.update(agentWakeupRequests).set({ status: receipt.status, runId: receipt.runId, payload: receipt.payload })
         .where(eq(agentWakeupRequests.id, queueId));
     }
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    await db.update(issueRecoveryActions).set({ evidence: { ...action.evidence,
+      explicitUserContinuation: { ...(action.evidence.explicitUserContinuation as Record<string, unknown>),
+        queuedCommentInterruptId: "malformed-historical-receipt" },
+    } }).where(eq(issueRecoveryActions.id, action.id));
+    await expect(dispatch()).rejects.toThrow("continuation_user_authorization_missing");
   });
   it.each(["valid", "stale_retry_context", "wrong_actor", "wrong_run", "wrong_company", "discarded"])("verifies another author's queued Interrupt at execution setup: %s", async kind => {
     const f = await seed();
