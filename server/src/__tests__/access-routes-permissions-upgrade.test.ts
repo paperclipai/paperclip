@@ -261,7 +261,7 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
     )).resolves.toBe(false);
   });
 
-  it("preserves ambiguous legacy grants while limiting them to the current role", async () => {
+  it("requires legacy permission review before a role-only demotion", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const member = await db.insert(companyMemberships).values({
       companyId: company.id,
@@ -288,7 +288,10 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
     const res = await request(await createApp(db, company.id, owner.principalId))
       .patch(`/api/companies/${company.id}/members/${member.id}`)
       .send({ membershipRole: "operator" });
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      error: "Review this member's legacy permissions before changing their role",
+    });
 
     const preserved = await db
       .select()
@@ -297,12 +300,28 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
     expect(preserved).toEqual(expect.arrayContaining([
       expect.objectContaining({ permissionKey: "tools:admin", grantOrigin: "legacy_unknown" }),
     ]));
+
+    const reviewed = await request(await createApp(db, company.id, owner.principalId))
+      .patch(`/api/companies/${company.id}/members/${member.id}/role-and-grants`)
+      .send({
+        membershipRole: "operator",
+        grants: [{ permissionKey: "tools:admin", scope: null }],
+      });
+    expect(reviewed.status, JSON.stringify(reviewed.body)).toBe(200);
+    expect(reviewed.body.membershipRole).toBe("operator");
+    const reviewedGrants = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, member.principalId));
+    expect(reviewedGrants).toEqual([
+      expect.objectContaining({ permissionKey: "tools:admin", grantOrigin: "explicit" }),
+    ]);
     await expect(ownerHasRequiredGrant(
       db,
       member.principalId,
       [company.id],
       "tools:manage",
-    )).resolves.toBe(false);
+    )).resolves.toBe(true);
   });
 
   it("sweeps personal connection access when the member route suspends a user", async () => {

@@ -227,7 +227,7 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("Allowed by explicit grant tasks:assign");
   });
 
-  it("limits ambiguous legacy user grants to the active membership role", async () => {
+  it("preserves ambiguous historical explicit grants across a direct role change", async () => {
     const company = await createCompany(db, "LegacyGrantRoleCeiling");
     const userId = `user-${randomUUID()}`;
     await db.insert(companyMemberships).values({
@@ -252,7 +252,7 @@ describeEmbeddedPostgres("authorization service", () => {
       principalId: userId,
       action: "tools:admin",
       permissionKey: "tools:admin",
-    })).resolves.toMatchObject({ allowed: true, reason: "allow_role_default" });
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_explicit_grant" });
 
     await db
       .update(companyMemberships)
@@ -269,7 +269,7 @@ describeEmbeddedPostgres("authorization service", () => {
       principalId: userId,
       action: "tools:admin",
       permissionKey: "tools:admin",
-    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_explicit_grant" });
     await expect(db.select().from(principalPermissionGrants).where(and(
       eq(principalPermissionGrants.companyId, company.id),
       eq(principalPermissionGrants.principalId, userId),

@@ -1131,6 +1131,22 @@ export function accessService(db: Db) {
           .filter((permissionKey) => !nextDefaultKeys.has(permissionKey));
 
         if (retiredDefaultKeys.length > 0) {
+          const ambiguousLegacyGrants = await tx
+            .select({ id: principalPermissionGrants.id })
+            .from(principalPermissionGrants)
+            .where(and(
+              eq(principalPermissionGrants.companyId, companyId),
+              eq(principalPermissionGrants.principalType, "user"),
+              eq(principalPermissionGrants.principalId, existing.principalId),
+              inArray(principalPermissionGrants.permissionKey, retiredDefaultKeys),
+              eq(principalPermissionGrants.grantOrigin, "legacy_unknown"),
+            ));
+          if (ambiguousLegacyGrants.length > 0) {
+            throw conflict(
+              "Review this member's legacy permissions before changing their role",
+            );
+          }
+
           await tx
             .delete(principalPermissionGrants)
             .where(and(
