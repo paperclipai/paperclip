@@ -1,3 +1,4 @@
+import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { readClaudeToken, fetchClaudeQuota } from "@paperclipai/adapter-claude-local/server";
@@ -18,9 +19,10 @@ export async function readVerifiedLocalAiCredential(provider: AiProvider, loginH
       let token: string | null = null;
       if (loginHome) {
         for (const name of [".credentials.json", "credentials.json"]) {
-          const raw = await fs.readFile(path.join(loginHome, name), "utf8").catch(() => null);
+          const raw = await readLocalAiCredentialFile(path.join(loginHome, name)).catch(() => null);
           if (!raw) continue;
-          const parsed = JSON.parse(raw);
+          let parsed;
+          try { parsed = JSON.parse(raw); } catch { continue; }
           const value = parsed?.claudeAiOauth?.accessToken;
           if (typeof value === "string" && value.length) { token = value; break; }
         }

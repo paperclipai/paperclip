@@ -63,7 +63,7 @@ export function AgentProviderConnection({
   };
 }) {
   const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: localEnvironment });
-  const canUseLocalLogin = localEnvironment && Boolean(health.data);
+  const canUseLocalLogin = localEnvironment && (health.data?.localAiLoginSupported ?? health.data?.deploymentMode === "local_trusted");
   const epoch = useRef(0);
   useEffect(
     () => () => {
@@ -353,7 +353,7 @@ export function AgentProviderConnection({
                   onConnected(connection);
                 }}
               />
-            ) : savedSubscription ? null : localEnvironment && !storedLogin.data ? (
+            ) : savedSubscription ? null : canUseLocalLogin && !storedLogin.data ? (
               <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }} />
             ) : (
               <p className="text-sm text-muted-foreground">

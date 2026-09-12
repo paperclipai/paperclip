@@ -1,3 +1,4 @@
+import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
 import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
 import { z } from "zod";
@@ -165,7 +166,10 @@ export async function validateAiApiKey(
     );
 }
 
-export function aiConnectionRoutes(db: Db) {
+export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLocalAiLogin>[0] = {}) {
+  function assertLocalLoginAvailable() {
+    if (!supportsLocalAiLogin(options)) throw unprocessable("Server-host subscription sign-in is unavailable on this hosted instance. Choose a supported sign-in environment or use an API key.");
+  }
   const router = Router();
   const service = aiConnectionService(db);
   const localLogin = localAiLoginService(db);
@@ -178,6 +182,7 @@ export function aiConnectionRoutes(db: Db) {
   router.post("/companies/:companyId/ai-connections/local/attempts", validate(localAiLoginStartSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const { restart, ...intent } = localAiLoginStartSchema.parse(req.body);
+    assertLocalLoginAvailable();
     const userId = await assertAiConnectionCreateAccess(db, req, companyId, intent);
     res.setHeader("Cache-Control", "no-store");
     res.status(201).json(await localLogin.start(companyId, userId, intent, restart));
@@ -185,6 +190,7 @@ export function aiConnectionRoutes(db: Db) {
   router.post("/companies/:companyId/ai-connections/local/check", validate(localAiConnectionSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const { localSessionId, ...intent } = localAiConnectionSchema.parse(req.body);
+    assertLocalLoginAvailable();
     // Only implicit local operators may inspect ambient Claude credentials.
     // Authenticated users sign in to their own company/user-scoped attempt.
     if (intent.provider === "anthropic" && !localSessionId) assertLocalOperator(req);
@@ -293,6 +299,7 @@ export function aiConnectionRoutes(db: Db) {
     async (req, res) => {
       const companyId = req.params.companyId as string;
       const { localSessionId, ...input } = localAiConnectionSchema.parse(req.body);
+      assertLocalLoginAvailable();
       if (input.provider === "anthropic" && !localSessionId) assertLocalOperator(req);
       const userId = await assertAiConnectionCreateAccess(db, req, companyId, input);
       if (localSessionId || input.provider === "openai" || input.provider === "xai") {

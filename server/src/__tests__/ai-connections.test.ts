@@ -314,6 +314,27 @@ describe("managed AI connections", () => {
       expect((await request(app).post(url).set("x-local", "yes").send({ ...codex, localSessionId: prepared.body.sessionId })).status).toBe(422);
     } finally { reader.mockRestore(); }
   });
+  it.each(["anthropic", "openai"] as const)("blocks server-host %s login on a public deployment without a trusted host", async provider => {
+    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredential");
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId: "alice", companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member" }] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db, { deploymentMode: "authenticated", deploymentExposure: "public", trustedLocalStdioRuntimeHost: "" }));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const base = `/api/companies/${companyId}/ai-connections/local`;
+    const intent = { provider, method: "subscription", ownership: "personal", name: "Hosted account", allAgents: false, agentIds: [] };
+    try {
+      for (const endpoint of [base, `${base}/attempts`, `${base}/check`]) {
+        const result = await request(app).post(endpoint).send(intent);
+        expect(result.status).toBe(422);
+        expect(result.body.error).toContain("unavailable on this hosted instance");
+      }
+      expect(reader).not.toHaveBeenCalled();
+    } finally { reader.mockRestore(); }
+  });
   it.each(["anthropic", "openai"] as const)("lets authenticated users connect only their own isolated %s login", async provider => {
     const owner = `self-hosted-${provider}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
