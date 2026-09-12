@@ -144,6 +144,15 @@ export interface QueuedCommentQueueTransaction {
     state: "deferred" | "queued" | null;
     queueRun: QueuedCommentRunRow | null;
     activeRun: QueuedCommentRunRow | null;
+    /**
+     * A queue mutation does not itself deliver same-turn steering, so it must
+     * leave `false` (the default) and report the static
+     * "temporarily_unavailable" answer instead of a live probe. Only the
+     * steer mutation sets this `true`, and only for a snapshot it returns to
+     * the caller, because a steer that just ran knows the live disposition
+     * the read path would otherwise have to probe for.
+     */
+    probeLiveSteering?: boolean;
   }): Promise<QueuedCommentQueueSnapshot>;
   syncCommentReferences(commentId: string): Promise<void>;
   deleteCommentReferenceSource(commentId: string): Promise<void>;
@@ -156,6 +165,24 @@ export interface QueuedCommentQueueTransaction {
    */
   logActivity(input: QueuedCommentActivityLogInput): Promise<QueuedCommentActivityPublication>;
 }
+
+export type SteerQueuedWakeCommentInput = {
+  /** Also carries the company id. Every locked read and write binds its `companyId` predicate to `issue.companyId`. */
+  issue: QueuedCommentIssueContext;
+  actor: QueuedCommentActor;
+  commentId: string;
+  queueId: string;
+  targetRunId: string;
+  revision: string;
+};
+
+export type SteerQueuedWakeCommentResult = {
+  queue: QueuedCommentQueueSnapshot;
+  /** Null when the provider acknowledgement carried no turn id. */
+  turnId: string | null;
+  /** True when the caller retried a steer whose acknowledgement was already recorded. */
+  duplicate: boolean;
+};
 
 export interface QueuedCommentIssueLockWriter {
   /**
@@ -176,4 +203,18 @@ export interface QueuedCommentIssueLockWriter {
     },
     fn: (locked: LockedQueuedCommentState, transaction: QueuedCommentQueueTransaction) => Promise<T>,
   ): Promise<T>;
+
+  /**
+   * Runs the fourth queue mutation: same-turn steering. First it reserves
+   * the run's pending steering identity on the root database handle. This
+   * reservation survives a rollback of the transaction that follows it.
+   * Then it opens the one transaction the steer itself runs in. It replays
+   * a durably recorded acknowledgement when the caller retries a lost
+   * response. Otherwise it delivers the message and writes the queue, the
+   * wake, and the run rows. On a failed delivery with an uncertain outcome,
+   * it leaves the identity reservation pending for later reconciliation. On
+   * every other failure, it rejects the reservation and rethrows the
+   * original error unchanged.
+   */
+  steerQueuedWakeComment(input: SteerQueuedWakeCommentInput): Promise<SteerQueuedWakeCommentResult>;
 }

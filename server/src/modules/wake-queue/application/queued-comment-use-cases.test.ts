@@ -128,6 +128,7 @@ function createFakeTransaction(overrides: Partial<QueuedCommentQueueTransaction>
 function createFakeIssueLock(locked: LockedQueuedCommentState, transaction: QueuedCommentQueueTransaction): QueuedCommentIssueLockWriter {
   return {
     withLockedQueue: vi.fn(async (_input, fn) => fn(locked, transaction)),
+    steerQueuedWakeComment: vi.fn(async () => ({ queue: queueSnapshot(), turnId: null, duplicate: false })),
   };
 }
 

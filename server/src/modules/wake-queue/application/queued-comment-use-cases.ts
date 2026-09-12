@@ -11,6 +11,8 @@ import type {
   QueuedCommentQueueSnapshot,
   QueuedCommentQueueTransaction,
   QueuedCommentRunRow,
+  SteerQueuedWakeCommentInput,
+  SteerQueuedWakeCommentResult,
 } from "./queued-comment-ports.js";
 
 export type QueuedCommentMutationErrorCode =
@@ -18,7 +20,9 @@ export type QueuedCommentMutationErrorCode =
   | "queued_comment_already_dispatching"
   | "queued_comment_stale_queue"
   | "queued_comment_revision_conflict"
-  | "queued_comment_order_mismatch";
+  | "queued_comment_order_mismatch"
+  | "queued_comment_stale_target"
+  | "steering_unsupported";
 
 /** The route maps this 1:1 onto the `conflict(...)` HTTP error it threw before this move, using `code` and `message` unchanged. */
 export class QueuedCommentMutationError extends Error {
@@ -39,7 +43,8 @@ export class QueuedCommentMutationForbiddenError extends Error {
   }
 }
 
-function requireMutationTarget(queue: QueuedCommentQueueSnapshot, queueId: string, revision: string): void {
+/** The steering adapter reuses this check below. It applies the same rule. */
+export function requireMutationTarget(queue: QueuedCommentQueueSnapshot, queueId: string, revision: string): void {
   if (queue.queueId !== queueId) {
     throw new QueuedCommentMutationError("queued_comment_stale_queue", "The queued message targets a stale queue");
   }
@@ -353,5 +358,19 @@ export function createDiscardQueuedComment(deps: { issueLock: QueuedCommentIssue
         return { deleted, queue, cancelledRun, activityPublication };
       },
     );
+  };
+}
+
+/**
+ * Wires the fourth queue mutation, same-turn steering, onto the port. The
+ * adapter owns the whole flow: the identity reservation on the root handle,
+ * the one transaction, and the rejection on failure. None of it decomposes
+ * into a pure decision that this layer could hold instead. This factory
+ * only keeps the composition symmetric with the other three mutations
+ * above.
+ */
+export function createSteerQueuedWakeComment(deps: { issueLock: QueuedCommentIssueLockWriter }) {
+  return function steerQueuedWakeComment(input: SteerQueuedWakeCommentInput): Promise<SteerQueuedWakeCommentResult> {
+    return deps.issueLock.steerQueuedWakeComment(input);
   };
 }

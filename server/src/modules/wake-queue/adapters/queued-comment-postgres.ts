@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import type { IssueComment, IssueQueuedCommentQueue } from "@paperclipai/shared";
@@ -10,9 +10,21 @@ import {
   withQueuedCommentIdsInWakePayload,
 } from "../../../services/issue-queued-comment-queue.js";
 import { logActivity as persistActivityLogRow, type ActivityPublication } from "../../../services/activity-log.js";
+import {
+  getNativeSessionSteeringState,
+  NativeSessionSteeringError,
+  steerNativeSession,
+} from "../../../services/native-runtime/native-session-executor.js";
+import {
+  acceptSteeredIdentity,
+  reconcileSteeredIdentity,
+  rejectSteeredIdentity,
+  reserveSteeredIdentity,
+  storedSteeringAcknowledgement,
+} from "../../../services/run-identity.js";
 import { decideQueuedCommentWakeLookup } from "../domain/policy.js";
 import { parseObject, readNonEmptyString } from "../domain/values.js";
-import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
+import { QueuedCommentMutationError, requireMutationTarget } from "../application/queued-comment-use-cases.js";
 import type {
   LockedQueuedCommentState,
   QueuedCommentActivityLogInput,
@@ -21,10 +33,36 @@ import type {
   QueuedCommentQueueTransaction,
   QueuedCommentRunRow,
   QueuedCommentWakeRow,
+  SteerQueuedWakeCommentInput,
+  SteerQueuedWakeCommentResult,
 } from "../application/queued-comment-ports.js";
 
 type WakeRow = typeof agentWakeupRequests.$inferSelect;
 type RunRow = typeof heartbeatRuns.$inferSelect;
+
+// `buildQueueSnapshot` awaits the live steering probe below while it runs
+// inside a lock-holding transaction (`for("update")` on the issue, wake, and
+// run rows). The native runtime call has no timeout of its own, so an
+// unbounded wait would hold those row locks for as long as the provider
+// takes to answer. This bound keeps the wait, and so the lock hold, short.
+const LIVE_STEERING_PROBE_TIMEOUT_MS = 2_000;
+
+/** Rejects after `timeoutMs` if `promise` has not settled yet, so a caller can bound how long it waits. */
+function rejectAfterTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("live steering probe timed out")), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 function toWakeRow(row: WakeRow): QueuedCommentWakeRow {
   return { id: row.id, agentId: row.agentId, status: row.status, runId: row.runId, payload: parseObject(row.payload) };
@@ -112,7 +150,7 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
         .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId), eq(issues.executionRunId, executionRunId)));
     },
 
-    async buildQueueSnapshot({ issue, actor, wake, state, queueRun, activeRun }): Promise<IssueQueuedCommentQueue> {
+    async buildQueueSnapshot({ issue, actor, wake, state, queueRun, activeRun, probeLiveSteering }): Promise<IssueQueuedCommentQueue> {
       const commentIds = queuedCommentIdsFromWakePayload(wake?.payload ?? null);
       const rows =
         commentIds.length > 0
@@ -142,10 +180,13 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
             .then((agentRows) => agentRows[0] ?? null)
         : null;
 
-      // A queue mutation never delivers same-turn steering itself, so this
-      // adapter never probes the live runner: it answers
+      // A queue mutation never delivers same-turn steering itself, so by
+      // default this adapter never probes the live runner: it answers
       // "temporarily_unavailable" wherever the shared rule says a caller
-      // may probe. Only the read path probes the live provider.
+      // may probe. The steer mutation is the one exception: right after it
+      // delivers a message, it already knows the live provider is reachable,
+      // so it asks `probeLiveSteering: true` for the snapshot it returns to
+      // its own caller, matching what a fresh read would report.
       const steering = decideQueuedCommentQueueSteering({
         state,
         queueRunRuntimeMode: queueRun?.runtimeMode ?? null,
@@ -154,7 +195,13 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
         queuedCommentCount: comments.length,
       });
       const steeringDisposition: IssueQueuedCommentQueue["steeringDisposition"] =
-        steering.kind === "probe" ? "temporarily_unavailable" : steering.kind;
+        steering.kind !== "probe"
+          ? steering.kind
+          : probeLiveSteering
+            ? await rejectAfterTimeout(getNativeSessionSteeringState(steering.steeringRunId), LIVE_STEERING_PROBE_TIMEOUT_MS)
+                .then((liveState) => liveState.disposition)
+                .catch(() => "temporarily_unavailable" as const)
+            : "temporarily_unavailable";
 
       return buildQueuedCommentQueueSnapshot({
         issueId: issue.id,
@@ -200,6 +247,58 @@ function buildTransaction(tx: Db, companyId: string, deps: QueuedCommentQueuePos
       return publications[0];
     },
   };
+}
+
+/**
+ * Finds the issue's current live queue. It scans the assigned agent's own
+ * pending wakes, the same lookup the read-only queued-comments route runs.
+ * The steering replay branch needs this fresh read for one reason: by the
+ * time a retry arrives, the wake it named can already be cancelled. The
+ * response must then show whatever queue is live now, not the old one.
+ */
+async function findCurrentQueuedCommentWake(
+  tx: Db,
+  companyId: string,
+  issue: { id: string; assigneeAgentId: string | null },
+): Promise<{ wake: WakeRow; state: "deferred" | "queued"; queueRun: RunRow | null } | null> {
+  if (!issue.assigneeAgentId) return null;
+  const rows = await tx
+    .select()
+    .from(agentWakeupRequests)
+    .where(
+      and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, issue.assigneeAgentId),
+        inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued"]),
+      ),
+    )
+    .orderBy(asc(agentWakeupRequests.requestedAt));
+
+  for (const wake of rows) {
+    if (parseObject(wake.payload).issueId !== issue.id || queuedCommentIdsFromWakePayload(wake.payload).length === 0) {
+      continue;
+    }
+    if (wake.status === "deferred_issue_execution") {
+      return { wake, state: "deferred", queueRun: null };
+    }
+    if (!wake.runId) continue;
+    const queueRun = await tx
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.id, wake.runId),
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, issue.assigneeAgentId),
+          eq(heartbeatRuns.wakeupRequestId, wake.id),
+          eq(heartbeatRuns.status, "queued"),
+        ),
+      )
+      .limit(1)
+      .then((queueRunRows) => queueRunRows[0] ?? null);
+    if (queueRun) return { wake, state: "queued", queueRun };
+  }
+  return null;
 }
 
 export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQueuePostgresAdapterDeps): QueuedCommentIssueLockWriter {
@@ -306,6 +405,275 @@ export function createQueuedCommentIssueLockWriter(db: Db, deps: QueuedCommentQu
         const locked: LockedQueuedCommentState = { wake, state, queueRun, activeRun, queue };
         return fn(locked, transaction);
       });
+    },
+
+    async steerQueuedWakeComment(input: SteerQueuedWakeCommentInput): Promise<SteerQueuedWakeCommentResult> {
+      const { issue, actor, commentId, queueId, targetRunId, revision } = input;
+      const companyId = issue.companyId;
+
+      // Reserve the run's pending steering identity on the root handle.
+      // This call opens its own transaction and runs before this method's
+      // own transaction opens. So the reservation survives a rollback of
+      // the steer that follows it.
+      const steeringIdentity = await reserveSteeredIdentity(db, {
+        companyId,
+        runId: targetRunId,
+        issueId: issue.id,
+        messageId: commentId,
+      });
+
+      let steeringDeliveryAttempted = false;
+      let turnId: string | null = null;
+      let duplicate = false;
+
+      try {
+        const queue = await db.transaction(async (rawTx) => {
+          const tx = rawTx as unknown as Db;
+          const transaction = buildTransaction(tx, companyId, deps);
+          const now = new Date();
+
+          // A client can lose the successful response after the final
+          // queued message cancels its wake. Lock the issue row first. This
+          // keeps the persisted acknowledgement a durable idempotency
+          // record, even when no pending queue remains by the time a retry
+          // arrives.
+          await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(and(eq(issues.id, issue.id), eq(issues.companyId, companyId)))
+            .for("update");
+
+          const wakeRow = await tx
+            .select()
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.id, queueId),
+                eq(agentWakeupRequests.companyId, companyId),
+                issue.assigneeAgentId ? eq(agentWakeupRequests.agentId, issue.assigneeAgentId) : undefined,
+              ),
+            )
+            .for("update")
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+
+          const retryRunRow =
+            wakeRow && parseObject(wakeRow.payload).issueId === issue.id
+              ? await tx
+                  .select()
+                  .from(heartbeatRuns)
+                  .where(
+                    and(
+                      eq(heartbeatRuns.id, targetRunId),
+                      eq(heartbeatRuns.companyId, companyId),
+                      eq(heartbeatRuns.agentId, wakeRow.agentId),
+                    ),
+                  )
+                  .for("update")
+                  .limit(1)
+                  .then((rows) => rows[0] ?? null)
+              : null;
+
+          const retryRunContext = parseObject(retryRunRow?.contextSnapshot);
+          const retryRunResult = parseObject(retryRunRow?.resultJson);
+          const retryAcknowledgements = parseObject(retryRunResult.queuedSteeringAcknowledgements);
+          const retryAcknowledgement = parseObject(retryAcknowledgements[commentId]);
+
+          if (
+            retryRunRow &&
+            (retryRunContext.issueId === issue.id || retryRunContext.taskId === issue.id) &&
+            retryAcknowledgement.status === "acknowledged" &&
+            retryAcknowledgement.queueId === queueId
+          ) {
+            duplicate = true;
+            turnId = typeof retryAcknowledgement.turnId === "string" ? retryAcknowledgement.turnId : null;
+            const current = await findCurrentQueuedCommentWake(tx, companyId, issue);
+            return transaction.buildQueueSnapshot({
+              issue,
+              actor,
+              wake: current ? toWakeRow(current.wake) : null,
+              state: current?.state ?? null,
+              queueRun: current?.queueRun ? toRunRow(current.queueRun) : null,
+              activeRun: retryRunRow.status === "running" ? toRunRow(retryRunRow) : null,
+              probeLiveSteering: true,
+            });
+          }
+
+          if (
+            !wakeRow ||
+            parseObject(wakeRow.payload).issueId !== issue.id ||
+            queuedCommentIdsFromWakePayload(wakeRow.payload).length === 0
+          ) {
+            throw new QueuedCommentMutationError("queued_comment_not_pending", "The queued message is no longer pending");
+          }
+
+          let state: "deferred" | "queued";
+          let queueRunRow: RunRow | null = null;
+          if (wakeRow.status === "deferred_issue_execution") {
+            state = "deferred";
+          } else if (wakeRow.status === "queued" && wakeRow.runId) {
+            queueRunRow = await tx
+              .select()
+              .from(heartbeatRuns)
+              .where(
+                and(
+                  eq(heartbeatRuns.id, wakeRow.runId),
+                  eq(heartbeatRuns.companyId, companyId),
+                  eq(heartbeatRuns.agentId, wakeRow.agentId),
+                  eq(heartbeatRuns.wakeupRequestId, wakeRow.id),
+                ),
+              )
+              .for("update")
+              .limit(1)
+              .then((rows) => rows[0] ?? null);
+            if (!queueRunRow || queueRunRow.status !== "queued") {
+              throw new QueuedCommentMutationError(
+                "queued_comment_already_dispatching",
+                "The queued message is already being dispatched",
+              );
+            }
+            state = "queued";
+          } else if (
+            wakeRow.status === "claimed" ||
+            wakeRow.status === "running" ||
+            (wakeRow.runId && (wakeRow.status === "succeeded" || wakeRow.status === "failed"))
+          ) {
+            throw new QueuedCommentMutationError(
+              "queued_comment_already_dispatching",
+              "The queued message is already being dispatched",
+            );
+          } else {
+            throw new QueuedCommentMutationError("queued_comment_not_pending", "The queued message is no longer pending");
+          }
+
+          const activeRunId = state === "deferred" ? targetRunId : null;
+          const activeRunRow = activeRunId
+            ? await tx
+                .select()
+                .from(heartbeatRuns)
+                .where(
+                  and(
+                    eq(heartbeatRuns.id, activeRunId),
+                    eq(heartbeatRuns.companyId, companyId),
+                    eq(heartbeatRuns.status, "running"),
+                  ),
+                )
+                .for("update")
+                .limit(1)
+                .then((rows) => rows[0] ?? null)
+            : null;
+          const activeRunContext = parseObject(activeRunRow?.contextSnapshot);
+          if (!activeRunRow || (activeRunContext.issueId !== issue.id && activeRunContext.taskId !== issue.id)) {
+            throw new QueuedCommentMutationError("queued_comment_stale_target", "The queued message targets a stale run");
+          }
+
+          const lockedQueue = await transaction.buildQueueSnapshot({
+            issue,
+            actor,
+            wake: toWakeRow(wakeRow),
+            state,
+            queueRun: queueRunRow ? toRunRow(queueRunRow) : null,
+            activeRun: toRunRow(activeRunRow),
+          });
+
+          const runResult = parseObject(activeRunRow.resultJson);
+          const acknowledgements = parseObject(runResult.queuedSteeringAcknowledgements);
+          const priorAcknowledgement = parseObject(acknowledgements[commentId]);
+          if (priorAcknowledgement.status === "acknowledged" && priorAcknowledgement.queueId === queueId) {
+            duplicate = true;
+            turnId = typeof priorAcknowledgement.turnId === "string" ? priorAcknowledgement.turnId : null;
+            return transaction.buildQueueSnapshot({
+              issue,
+              actor,
+              wake: toWakeRow(wakeRow),
+              state,
+              queueRun: queueRunRow ? toRunRow(queueRunRow) : null,
+              activeRun: toRunRow(activeRunRow),
+              probeLiveSteering: true,
+            });
+          }
+
+          requireMutationTarget(lockedQueue, queueId, revision);
+          if (lockedQueue.protocol !== "paperclip_runner_v1") {
+            throw new QueuedCommentMutationError("steering_unsupported", "This runner does not support same-turn steering");
+          }
+          const entry = lockedQueue.entries.find((candidate) => candidate.comment.id === commentId);
+          if (!entry) {
+            throw new QueuedCommentMutationError("queued_comment_not_pending", "The queued message is no longer pending");
+          }
+
+          steeringDeliveryAttempted = true;
+          const acknowledgement =
+            (steeringIdentity ? await storedSteeringAcknowledgement(tx, steeringIdentity) : null) ??
+            (await steerNativeSession({
+              runId: activeRunRow.id,
+              message: entry.comment.body,
+              correlationId: commentId,
+              onAcknowledged: steeringIdentity ? () => reconcileSteeredIdentity(db, steeringIdentity) : undefined,
+            }));
+          if (steeringIdentity) await acceptSteeredIdentity(tx, steeringIdentity);
+          turnId = acknowledgement.turnId;
+
+          const remainingIds = lockedQueue.entries.map((candidate) => candidate.comment.id).filter((candidateId) => candidateId !== commentId);
+          let nextWakeRow: WakeRow | null;
+          if (remainingIds.length === 0) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({ status: "cancelled", finishedAt: now, updatedAt: now })
+              .where(and(eq(agentWakeupRequests.id, wakeRow.id), eq(agentWakeupRequests.companyId, companyId)));
+            nextWakeRow = null;
+          } else {
+            nextWakeRow = await tx
+              .update(agentWakeupRequests)
+              .set({ payload: withQueuedCommentIdsInWakePayload(wakeRow.payload, remainingIds), updatedAt: now })
+              .where(and(eq(agentWakeupRequests.id, wakeRow.id), eq(agentWakeupRequests.companyId, companyId)))
+              .returning()
+              .then((rows) => rows[0] ?? wakeRow);
+          }
+
+          await tx
+            .update(heartbeatRuns)
+            .set({
+              resultJson: {
+                ...runResult,
+                queuedSteeringAcknowledgements: {
+                  ...acknowledgements,
+                  [commentId]: {
+                    status: "acknowledged",
+                    queueId,
+                    turnId: acknowledgement.turnId,
+                    acknowledgedAt: now.toISOString(),
+                  },
+                },
+              },
+              updatedAt: now,
+            })
+            .where(and(eq(heartbeatRuns.id, activeRunRow.id), eq(heartbeatRuns.companyId, companyId)));
+
+          return transaction.buildQueueSnapshot({
+            issue,
+            actor,
+            wake: nextWakeRow ? toWakeRow(nextWakeRow) : null,
+            state: nextWakeRow ? "deferred" : null,
+            queueRun: null,
+            activeRun: toRunRow(activeRunRow),
+            probeLiveSteering: true,
+          });
+        });
+        return { queue, turnId, duplicate };
+      } catch (error) {
+        // A late native acknowledgement can arrive after this transaction
+        // rolls back. Only a delivery attempt with a still-unknown outcome
+        // keeps the identity reservation pending for later reconciliation.
+        // A definite provider answer never keeps it pending.
+        const uncertain =
+          steeringDeliveryAttempted &&
+          (!(error instanceof NativeSessionSteeringError) || error.code === "steering_timeout");
+        if (steeringIdentity && !uncertain) {
+          await rejectSteeredIdentity(db, steeringIdentity);
+        }
+        throw error;
+      }
     },
   };
 }
