@@ -270,15 +270,18 @@ export async function buildExecutionContinuation(input: {
       eq(agentWakeupRequests.reason, "retry_failed_run"), eq(agentWakeupRequests.requestedByActorType, "user"),
       sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
     )) : [];
-    // A board operator can send a queue authored by someone else. Bind that
-    // authority to the server-recorded queue and successor, not caller context.
-    const interruptWakes = await db.select().from(agentWakeupRequests).where(and(
-      eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, input.agentId),
-      eq(agentWakeupRequests.status, "coalesced"),
-      sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
-      sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null`,
-      input.runId ? eq(agentWakeupRequests.runId, input.runId) : undefined,
-    ));
+    // Admission records the board operator's authority separately from the
+    // message author. At dispatch, prove that exact queue was adopted by this
+    // run; caller-supplied continuation context cannot grant this authority.
+    const interruptQueues = reconciliations.some(row =>
+      string(object(row.evidence.explicitUserContinuation).queuedCommentInterruptId))
+      ? await db.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, input.agentId),
+        eq(agentWakeupRequests.status, "coalesced"),
+        sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+        sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null`,
+        input.runId ? eq(agentWakeupRequests.runId, input.runId) : undefined,
+      )) : [];
     const authorization = reconciliations.map(row => object(row.evidence.explicitUserContinuation))
       .find(value => value.previousRunId === explicitUserSource &&
         (!input.runId || value.runId === input.runId) &&
@@ -289,11 +292,14 @@ export async function buildExecutionContinuation(input: {
               wake.runId === value.runId && wake.requestedByActorId === value.actorId &&
               priorRuns.some(run => run.id === wake.runId && run.retryOfRunId === failedRunId))
           : rows.some(comment => comment.id === value.commentId &&
-              comment.authorType === "user" && !comment.createdByRunId && !comment.deletedAt &&
-              (comment.authorUserId === value.actorId || interruptWakes.some(wake =>
-                wake.id === value.queuedCommentInterruptId && wake.runId === value.runId &&
-                object(object(wake.payload).queuedCommentInterrupt).actorId === value.actorId &&
-                queuedCommentIdsFromWakePayload(wake.payload).includes(comment.id))))));
+              comment.authorType === "user" &&
+              (value.queuedCommentInterruptId
+                ? interruptQueues.some(queue => queue.id === value.queuedCommentInterruptId &&
+                    queue.runId === value.runId &&
+                    object(object(queue.payload).queuedCommentInterrupt).actorId === value.actorId &&
+                    queuedCommentIdsFromWakePayload(queue.payload).includes(comment.id))
+                : comment.authorUserId === value.actorId) &&
+              !comment.createdByRunId && !comment.deletedAt)));
     if (!predecessor || !authorization || explicitUserSource !== sourceRunId)
       throw new Error("continuation_user_authorization_missing");
   }

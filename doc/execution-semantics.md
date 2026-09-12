@@ -1024,6 +1024,8 @@ This click can authorize a fresh conversation for messages written before
 the prior run stopped. It preserves the original message content and authors,
 and retains process/lease stop proofs, task ownership, pauses, approvals, and
 budget checks. Queue edits and discards remain authoritative until dispatch.
+Dispatch revalidates the consumed queue receipt against the operator, task,
+agent, message, and successor run; the operator need not be the message author.
 Repeated delivery attempts cannot create another successor after the queue
 is consumed. Native same-turn steering retains its active-target contract.
 
