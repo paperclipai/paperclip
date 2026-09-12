@@ -14,7 +14,9 @@ for (const match of source.matchAll(/^(GET|POST|PATCH|PUT|DELETE) (\/api\/[^\s]+
   try {
     const body = JSON.parse(match[3]);
     const id = key(match[1], match[2]);
-    entries[id] ??= { section: "Worked example" };
+    // Runtime consumers look up endpoint templates from OpenAPI. Narrative
+    // URLs with literal resource IDs must not create unreachable entries.
+    if (!entries[id]) continue;
     // Keep examples for each interaction kind / issue disposition, so new
     // question or waiting examples do not displace existing confirmation flows.
     const variant = body.kind ?? body.status ?? "";
