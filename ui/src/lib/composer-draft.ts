@@ -121,8 +121,11 @@ export function settleDraftSubmission(draftKey: string, attemptId: string, nextD
   if (submission?.attemptId !== attemptId) return false;
   nextDraft ??= submission.nextDraftOffset === undefined
     ? "" : loadDraft(draftKey).slice(submission.nextDraftOffset);
+  const nextAttachments = submission.submittedAttachmentIds === undefined ? []
+    : loadDraftAttachments(draftKey).filter(item => !submission.submittedAttachmentIds!.includes(item.attachmentId));
   clearDraft(draftKey, attemptId);
   if (nextDraft) saveDraft(draftKey, nextDraft);
+  if (nextAttachments.length) saveDraftAttachments(draftKey, nextAttachments);
   return true;
 }
 
@@ -197,11 +200,11 @@ export function loadDraftAttachments(
   }
 }
 
-export function saveDraftAttachments(draftKey: string, attachments: unknown) {
+export function saveDraftAttachments(draftKey: string, attachments: unknown, attemptId?: string) {
   try {
-    // In-flight/unknown receipts were saved before the intent. Generic effects
-    // (including a stale composer's cleanup) must not rewrite that snapshot.
-    if (!mayWriteDraft(draftKey)) return;
+    // Only the owning pending request may persist newly uploaded receipts.
+    // Generic effects and stale composer cleanups must not rewrite its snapshot.
+    if (!mayWriteDraft(draftKey, attemptId)) return;
     const selected = draftAttachments(attachments);
     if (selected.length)
       draftStorage(draftKey).setItem(

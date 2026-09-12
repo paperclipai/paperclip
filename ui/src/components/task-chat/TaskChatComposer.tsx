@@ -462,6 +462,12 @@ export function TaskChatComposer({
       typeof update === "function" ? update(attachmentsRef.current) : update;
     attachmentsRef.current = next;
     setAttachmentState(next);
+    const pending = pendingDraftRef.current;
+    if (pending && pending.draftKey === draftKey) {
+      saveDraftAttachments(pending.draftKey, next
+        .filter(item => item.status === "attached" && item.attachmentId)
+        .map(item => ({ ...item, inline: item.inline === true })), pending.attemptId);
+    }
   }
   const submittingRef = useRef(submitting);
   submittingRef.current = submitting;
