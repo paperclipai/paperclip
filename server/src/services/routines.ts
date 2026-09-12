@@ -530,6 +530,52 @@ function createRoutineDispatchFingerprint(input: {
   return crypto.createHash("sha256").update(canonical).digest("hex");
 }
 
+// always_enqueue needs a distinct open-issue identity per dispatch occurrence
+// (otherwise consecutive firings collide on issues_open_routine_execution_uq
+// while the prior execution issue is still open), but replays of the SAME
+// occurrence must share one identity so the index dedupes them safely.
+function createRoutineDispatchOccurrenceFingerprint(
+  contentFingerprint: string,
+  input: {
+    source: "schedule" | "manual" | "api" | "webhook";
+    triggerId: string | null;
+    idempotencyKey: string | null;
+    scheduledFor: Date | null;
+  },
+) {
+  const occurrenceKey = input.idempotencyKey
+    ? `idempotency:${input.source}:${input.triggerId ?? "none"}:${input.idempotencyKey}`
+    : input.source === "schedule" && input.scheduledFor
+      ? `schedule:${input.triggerId ?? "none"}:${input.scheduledFor.toISOString()}`
+      : `invocation:${crypto.randomUUID()}`;
+  return crypto.createHash("sha256").update(`${contentFingerprint}\n${occurrenceKey}`).digest("hex");
+}
+
+// Drizzle wraps postgres errors (DrizzleQueryError with the PostgresError on
+// .cause), so walk the cause chain instead of reading code/constraint directly.
+function isOpenRoutineExecutionConflictError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current && typeof current === "object"; depth += 1) {
+    const candidate = current as {
+      code?: unknown;
+      constraint?: unknown;
+      constraint_name?: unknown;
+      message?: unknown;
+      cause?: unknown;
+    };
+    const constraint = candidate.constraint ?? candidate.constraint_name;
+    if (candidate.code === "23505" && constraint === "issues_open_routine_execution_uq") return true;
+    if (
+      typeof candidate.message === "string" &&
+      candidate.message.includes('unique constraint "issues_open_routine_execution_uq"')
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
+}
+
 function createRoutineEnvFingerprint(env: unknown) {
   const canonical = JSON.stringify(normalizeRoutineDispatchFingerprintValue(env ?? null));
   return crypto.createHash("sha256").update(canonical).digest("hex");
@@ -1559,6 +1605,31 @@ export function routineService(
       .then((rows) => rows[0]?.issues ?? null);
   }
 
+  // Mirrors the issues_open_routine_execution_uq predicate so a 23505 raised by
+  // that index always resolves to the row it conflicted with.
+  async function findOpenExecutionIssueByExactFingerprint(
+    executor: Db,
+    input: { companyId: string; originKind: string; originId: string; fingerprint: string },
+  ) {
+    return executor
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, input.companyId),
+          eq(issues.originKind, input.originKind),
+          eq(issues.originId, input.originId),
+          eq(issues.originFingerprint, input.fingerprint),
+          inArray(issues.status, OPEN_ISSUE_STATUSES),
+          isNull(issues.hiddenAt),
+          isNotNull(issues.executionRunId),
+        ),
+      )
+      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
     return executor
       .update(routineRuns)
@@ -1713,6 +1784,7 @@ export function routineService(
     executionWorkspaceSettings?: Record<string, unknown> | null;
     descriptionAppendix?: string | null;
     nextRunAtOverride?: Date | null;
+    scheduledFor?: Date | null;
     actor?: Actor;
   }) {
     const projectId = input.projectId ?? input.routine.projectId ?? null;
@@ -1760,7 +1832,7 @@ export function routineService(
       : "routine_execution";
     const issueOriginId = managedIssueTemplate?.originId ?? input.routine.id;
     const issueBillingCode = managedIssueTemplate?.billingCode ?? null;
-    const dispatchFingerprint = createRoutineDispatchFingerprint({
+    const contentFingerprint = createRoutineDispatchFingerprint({
       payload: triggerPayload,
       projectId,
       projectWorkspaceId,
@@ -1773,6 +1845,14 @@ export function routineService(
       title,
       description,
     });
+    const dispatchFingerprint = input.routine.concurrencyPolicy === "always_enqueue"
+      ? createRoutineDispatchOccurrenceFingerprint(contentFingerprint, {
+          source: input.source,
+          triggerId: input.trigger?.id ?? null,
+          idempotencyKey: input.idempotencyKey ?? null,
+          scheduledFor: input.scheduledFor ?? null,
+        })
+      : contentFingerprint;
     const run = await db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
       await tx.execute(
@@ -1850,24 +1930,20 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
-          kind: issueOriginKind,
-          id: issueOriginId,
-        });
-        if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
+        const resolveRunToExistingIssue = async (existingIssue: { id: string; originRunId: string | null }) => {
           const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
           if (manualRunnerUserId) {
             await touchIssueForUserInbox(txDb, {
               companyId: input.routine.companyId,
-              issueId: activeIssue.id,
+              issueId: existingIssue.id,
               userId: manualRunnerUserId,
               touchedAt: triggeredAt,
             });
           }
           const updated = await finalizeRun(createdRun.id, {
             status,
-            linkedIssueId: activeIssue.id,
-            coalescedIntoRunId: activeIssue.originRunId,
+            linkedIssueId: existingIssue.id,
+            coalescedIntoRunId: existingIssue.originRunId,
             completedAt: triggeredAt,
           }, txDb);
           await updateRoutineTouchedState({
@@ -1875,10 +1951,18 @@ export function routineService(
             triggerId: input.trigger?.id ?? null,
             triggeredAt,
             status,
-            issueId: activeIssue.id,
+            issueId: existingIssue.id,
             nextRunAt,
           }, txDb);
           return updated ?? createdRun;
+        };
+
+        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+          kind: issueOriginKind,
+          id: issueOriginId,
+        });
+        if (activeIssue && input.routine.concurrencyPolicy !== "always_enqueue") {
+          return resolveRunToExistingIssue(activeIssue);
         }
 
         try {
@@ -1906,58 +1990,60 @@ export function routineService(
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
           });
         } catch (error) {
-          const isOpenExecutionConflict =
-            !!error &&
-            typeof error === "object" &&
-            "code" in error &&
-            (error as { code?: string }).code === "23505" &&
-            "constraint" in error &&
-            (error as { constraint?: string }).constraint === "issues_open_routine_execution_uq";
-          if (!isOpenExecutionConflict || input.routine.concurrencyPolicy === "always_enqueue") {
+          if (!isOpenRoutineExecutionConflictError(error)) {
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
-            kind: issueOriginKind,
-            id: issueOriginId,
-          });
+          // Under always_enqueue the fingerprint embeds the dispatch occurrence,
+          // so this conflict is a replay of one occurrence: resolve it to the
+          // already-created issue instead of surfacing a database failure.
+          const existingIssue = input.routine.concurrencyPolicy === "always_enqueue"
+            ? await findOpenExecutionIssueByExactFingerprint(txDb, {
+                companyId: input.routine.companyId,
+                originKind: issueOriginKind,
+                originId: issueOriginId,
+                fingerprint: dispatchFingerprint,
+              })
+            : await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+                kind: issueOriginKind,
+                id: issueOriginId,
+              });
           if (!existingIssue) throw error;
-          const status = input.routine.concurrencyPolicy === "skip_if_active" ? "skipped" : "coalesced";
-          if (manualRunnerUserId) {
-            await touchIssueForUserInbox(txDb, {
-              companyId: input.routine.companyId,
-              issueId: existingIssue.id,
-              userId: manualRunnerUserId,
-              touchedAt: triggeredAt,
-            });
-          }
-          const updated = await finalizeRun(createdRun.id, {
-            status,
-            linkedIssueId: existingIssue.id,
-            coalescedIntoRunId: existingIssue.originRunId,
-            completedAt: triggeredAt,
-          }, txDb);
-          await updateRoutineTouchedState({
-            routineId: input.routine.id,
-            triggerId: input.trigger?.id ?? null,
-            triggeredAt,
-            status,
-            issueId: existingIssue.id,
-            nextRunAt,
-          }, txDb);
-          return updated ?? createdRun;
+          return resolveRunToExistingIssue(existingIssue);
         }
 
         // Keep the dispatch lock until the issue is linked to a queued heartbeat run.
-        await queueIssueAssignmentWakeup({
-          heartbeat,
-          issue: createdIssue,
-          reason: "issue_assigned",
-          mutation: "create",
-          contextSource: "routine.dispatch",
-          requestedByActorType: input.source === "schedule" ? "system" : undefined,
-          rethrowOnError: true,
-        });
+        try {
+          await queueIssueAssignmentWakeup({
+            heartbeat,
+            issue: createdIssue,
+            reason: "issue_assigned",
+            mutation: "create",
+            contextSource: "routine.dispatch",
+            requestedByActorType: input.source === "schedule" ? "system" : undefined,
+            rethrowOnError: true,
+          });
+        } catch (error) {
+          if (!isOpenRoutineExecutionConflictError(error)) {
+            throw error;
+          }
+
+          // A new issue row only enters issues_open_routine_execution_uq once the
+          // wakeup execution-locks it, so this is where a same-occurrence replay
+          // actually collides. Drop the duplicate row and resolve the run to the
+          // already execution-locked issue instead of failing the dispatch.
+          const duplicateIssueId = createdIssue.id;
+          createdIssue = null;
+          await txDb.delete(issues).where(eq(issues.id, duplicateIssueId));
+          const existingIssue = await findOpenExecutionIssueByExactFingerprint(txDb, {
+            companyId: input.routine.companyId,
+            originKind: issueOriginKind,
+            originId: issueOriginId,
+            fingerprint: dispatchFingerprint,
+          });
+          if (!existingIssue) throw error;
+          return resolveRunToExistingIssue(existingIssue);
+        }
         const updated = await finalizeRun(createdRun.id, {
           status: "issue_created",
           linkedIssueId: createdIssue.id,
@@ -3093,6 +3179,7 @@ export function routineService(
         const worktreeSuppressed = !automaticEligibility.eligible;
 
         let runCount = 1;
+        let scheduledOccurrences: Date[] = [row.trigger.nextRunAt];
         let claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, now);
 
         if (!projectPaused && !worktreeSuppressed && row.routine.catchUpPolicy === "enqueue_missed_with_cap") {
@@ -3101,8 +3188,10 @@ export function routineService(
           } else {
             let cursor: Date | null = row.trigger.nextRunAt;
             runCount = 0;
+            scheduledOccurrences = [];
             while (cursor && cursor <= now && runCount < MAX_CATCH_UP_RUNS) {
               runCount += 1;
+              scheduledOccurrences.push(cursor);
               claimedNextRunAt = nextCronTickInTimeZone(row.trigger.cronExpression, row.trigger.timezone, cursor);
               cursor = claimedNextRunAt;
             }
@@ -3164,6 +3253,7 @@ export function routineService(
             trigger: row.trigger,
             source: "schedule",
             nextRunAtOverride: claimedNextRunAt,
+            scheduledFor: scheduledOccurrences[i] ?? row.trigger.nextRunAt,
           });
           triggered += 1;
         }
