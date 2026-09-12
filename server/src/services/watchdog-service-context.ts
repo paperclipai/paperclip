@@ -98,13 +98,14 @@ export async function assertWatchdogCommentTarget(db: Db, context: WatchdogServi
 }
 
 export async function assertWatchdogSecret(db: Db, context: WatchdogServiceContext, key: string) {
-  const [binding] = await db.select({ id: companySecretBindings.id }).from(companySecretBindings)
+  const [binding] = await db.select({ bindingId: companySecretBindings.id, secretId: companySecretBindings.secretId, configPath: companySecretBindings.configPath, versionSelector: companySecretBindings.versionSelector, key: companySecrets.key }).from(companySecretBindings)
     .innerJoin(companySecrets, eq(companySecrets.id, companySecretBindings.secretId))
     .where(and(eq(companySecretBindings.companyId, context.companyId),
       eq(companySecrets.companyId, context.companyId), eq(companySecrets.key, key),
       eq(companySecretBindings.targetType, "agent"), eq(companySecretBindings.targetId, context.agentId),
       eq(companySecretBindings.configPath, "env.DOKPLOY_KEY")));
   if (!binding) throw forbidden("Secret is not the administratively bound watchdog credential.");
+  return { ...binding, versionSelector: binding.versionSelector === "latest" ? "latest" as const : Number(binding.versionSelector) };
 }
 
 export async function listWatchdogSignals(db: Db, context: WatchdogServiceContext) {

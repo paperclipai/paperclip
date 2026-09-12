@@ -12,7 +12,7 @@ export const trustedWatchdogOrigin = (req: Request) => origins.get(req) ?? {};
 export async function assertWatchdogServiceRequest(db: Db, req: Request): Promise<void> {
   if (req.actor.type !== "agent") return;
   const context = await loadWatchdogServiceContext(db, req.actor);
-  if (!context) return;
+  if (!context) throw forbidden("Watchdog request requires a verified active service context.");
   contexts.set(req, context);
   try {
     const path = req.path;

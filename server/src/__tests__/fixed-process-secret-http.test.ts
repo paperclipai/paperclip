@@ -143,6 +143,14 @@ suite("fixed process key and run-secret HTTP boundary", () => {
       await db.update(agents).set({ adapterConfig: { fixedCommand: true, command: process.execPath, cwd: directory, args: fixedArgs, watchdogService: {
         assigneeAgentId: receiverId, signals: [{ type: "blind", marker: "[watchdog-blind]" }],
       } } }).where(eq(agents.id, agentId));
+      await svc.createBinding({ companyId, secretId: secret.id, targetType: "agent", targetId: agentId,
+        configPath: "access.WATCHDOG_TEST", versionSelector: "1" });
+      const pinnedCredential = await request(server).post("/api/agents/me/secrets/watchdog_test/value")
+        .set("Authorization", `Bearer ${jwt}`).send({});
+      expect(pinnedCredential.status).toBe(200);
+      expect(pinnedCredential.body.version).toBe(2);
+      const missingRunJwt = createLocalAgentJwt(agentId, companyId, "process", randomUUID(), userId);
+      expect((await request(server).get(`/api/agents/${agentId}`).set("Authorization", `Bearer ${missingRunJwt}`)).status).toBe(403);
       const triggerStatus = await request(server).get(`/api/agents/${agentId}`).set("Authorization", `Bearer ${permanentKey}`);
       expect(triggerStatus.status).toBe(200);
       expect(triggerStatus.body).not.toHaveProperty("permissions");
@@ -227,6 +235,7 @@ suite("fixed process key and run-secret HTTP boundary", () => {
       await db.update(agents).set({
         adapterConfig: {
           fixedCommand: true, command: process.execPath, cwd: directory, timeoutSec: 20,
+          watchdogService: { assigneeAgentId: receiverId, signals: [{ type: "blind", marker: "[watchdog-blind]" }] },
           env: { DOKPLOY_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" } },
           args: ["-e", `fetch(${JSON.stringify(url)}, {method:'POST',headers:{authorization:'Bearer '+process.env.PAPERCLIP_API_KEY}}).then(async r => {const b=await r.json(); if(r.status!==200 || b.version!==2 || b.value!==process.env.DOKPLOY_KEY) process.exitCode=1; else console.log('scheduled-secret-ok');}).catch(()=>{process.exitCode=1;});`],
         },
