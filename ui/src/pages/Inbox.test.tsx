@@ -806,25 +806,31 @@ describe("Inbox toolbar", () => {
     });
     const root = createRoot(container);
 
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Inbox />
-        </QueryClientProvider>,
-      );
-    });
-    await vi.waitFor(() => expect(container.textContent).toContain("Workspace-aware task"));
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+      await vi.waitFor(() => expect(container.textContent).toContain("Workspace-aware task"));
+      await vi.waitFor(() => {
+        expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Workspace Aurora");
+      });
 
-    const taskRow = container.querySelector('[data-slot="task-row"]');
-    const identifier = taskRow?.querySelector('[data-slot="task-row-identifier"]');
-    const timestamp = taskRow?.querySelector('[data-slot="task-row-timestamp"]');
-    expect(taskRow?.textContent).toContain("Workspace Aurora");
-    expect(identifier?.textContent).toBe("PAP-904");
-    expect(timestamp).not.toBeNull();
-    if (!identifier || !timestamp) throw new Error("Expected canonical identifier and timestamp columns");
-    expect(identifier.compareDocumentPosition(timestamp) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-
-    act(() => root.unmount());
+      const taskRow = container.querySelector('[data-slot="task-row"]');
+      const identifier = taskRow?.querySelector('[data-slot="task-row-identifier"]');
+      const timestamp = taskRow?.querySelector('[data-slot="task-row-timestamp"]');
+      expect(taskRow?.textContent).toContain("Workspace Aurora");
+      expect(identifier?.textContent).toBe("PAP-904");
+      expect(timestamp).not.toBeNull();
+      if (!identifier || !timestamp) throw new Error("Expected canonical identifier and timestamp columns");
+      expect(identifier.compareDocumentPosition(timestamp) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    } finally {
+      await act(() => root.unmount());
+      queryClient.clear();
+    }
   });
 
   it("hides workspace grouping when isolated workspaces are disabled", async () => {
