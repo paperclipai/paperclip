@@ -2,11 +2,13 @@ import type { AdapterModel } from "./types.js";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { readConfigFile } from "../config-file.js";
 
-const OPENAI_MODELS_ENDPOINT = "https://api.openai.com/v1/models";
+const OPENAI_MODELS_PATH = "/models";
+const DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_MODELS_TIMEOUT_MS = 5000;
 const OPENAI_MODELS_CACHE_TTL_MS = 60_000;
 
-let cached: { keyFingerprint: string; expiresAt: number; models: AdapterModel[] } | null = null;
+let cached: { keyFingerprint: string; baseUrl: string; expiresAt: number; models: AdapterModel[] } | null =
+  null;
 
 function fingerprint(apiKey: string): string {
   return `${apiKey.length}:${apiKey.slice(-6)}`;
@@ -41,11 +43,48 @@ function resolveOpenAiApiKey(): string | null {
   return configKey && configKey.length > 0 ? configKey : null;
 }
 
-async function fetchOpenAiModels(apiKey: string): Promise<AdapterModel[]> {
+/** Prefer OPENAI_BASE_URL; else active PAPERCLIP_CODEX_PROVIDERS base_url; else OpenAI. */
+function resolveOpenAiBaseUrl(): string {
+  const envUrl = process.env.OPENAI_BASE_URL?.trim();
+  if (envUrl) return envUrl.replace(/\/+$/, "");
+
+  const fromProviders = resolveBaseUrlFromCodexProviders();
+  if (fromProviders) return fromProviders;
+
+  return DEFAULT_OPENAI_BASE_URL;
+}
+
+function resolveBaseUrlFromCodexProviders(): string | null {
+  const raw = process.env.PAPERCLIP_CODEX_PROVIDERS?.trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    const record = parsed as { providers?: unknown; model_provider?: unknown };
+    if (!record.providers || typeof record.providers !== "object" || Array.isArray(record.providers)) {
+      return null;
+    }
+    const providers = record.providers as Record<string, unknown>;
+    const selected =
+      typeof record.model_provider === "string" && record.model_provider.trim().length > 0
+        ? record.model_provider.trim()
+        : null;
+    if (!selected) return null;
+    const entry = providers[selected];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const baseUrl = (entry as { base_url?: unknown }).base_url;
+    if (typeof baseUrl !== "string" || baseUrl.trim().length === 0) return null;
+    return baseUrl.trim().replace(/\/+$/, "");
+  } catch {
+    return null;
+  }
+}
+
+async function fetchOpenAiModels(apiKey: string, baseUrl: string): Promise<AdapterModel[]> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OPENAI_MODELS_TIMEOUT_MS);
   try {
-    const response = await fetch(OPENAI_MODELS_ENDPOINT, {
+    const response = await fetch(`${baseUrl}${OPENAI_MODELS_PATH}`, {
       headers: {
         Authorization: `Bearer ${apiKey}`,
       },
@@ -77,23 +116,36 @@ async function loadCodexModels(options?: { forceRefresh?: boolean }): Promise<Ad
   if (!apiKey) return fallback;
 
   const now = Date.now();
+  const baseUrl = resolveOpenAiBaseUrl();
   const keyFingerprint = fingerprint(apiKey);
-  if (!forceRefresh && cached && cached.keyFingerprint === keyFingerprint && cached.expiresAt > now) {
+  if (
+    !forceRefresh &&
+    cached &&
+    cached.keyFingerprint === keyFingerprint &&
+    cached.baseUrl === baseUrl &&
+    cached.expiresAt > now
+  ) {
     return cached.models;
   }
 
-  const fetched = await fetchOpenAiModels(apiKey);
+  const fetched = await fetchOpenAiModels(apiKey, baseUrl);
   if (fetched.length > 0) {
     const merged = mergedWithFallback(fetched);
     cached = {
       keyFingerprint,
+      baseUrl,
       expiresAt: now + OPENAI_MODELS_CACHE_TTL_MS,
       models: merged,
     };
     return merged;
   }
 
-  if (cached && cached.keyFingerprint === keyFingerprint && cached.models.length > 0) {
+  if (
+    cached &&
+    cached.keyFingerprint === keyFingerprint &&
+    cached.baseUrl === baseUrl &&
+    cached.models.length > 0
+  ) {
     return cached.models;
   }
 
