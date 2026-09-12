@@ -76,3 +76,32 @@ describe("docker build-stamp wiring", () => {
     ).toBeGreaterThanOrEqual(2);
   });
 });
+
+
+describe("Docker Rust dependency cache", () => {
+  it("caches the locked dependency recipe separately from source and per-build metadata", () => {
+    const chef = stageBody(dockerfile, "rust-chef");
+    const planner = stageBody(dockerfile, "runner-plan");
+    const dependencies = stageBody(dockerfile, "runner-deps");
+    expect(chef).toContain("FROM rust-toolchain AS rust-chef");
+    expect(chef).toMatch(/cargo install cargo-chef --version \d+\.\d+\.\d+ --locked/);
+    expect(planner).toContain("COPY packages/paperclip-runner/runner ./runner");
+    expect(planner).toContain("cargo chef prepare --recipe-path /tmp/runner-recipe.json");
+    expect(dependencies).toContain("FROM rust-chef AS runner-deps");
+    expect(dependencies).toContain("COPY --from=runner-plan /tmp/runner-recipe.json /tmp/runner-recipe.json");
+    expect(dependencies).toContain("cargo chef cook --release --locked --package paperclip-runner-core --bin paperclip-runnerd");
+    expect(dependencies).not.toMatch(/COPY .*\.\/runner|COPY .*\.\/protocol|COPY \. \.|PAPERCLIP_BUILD_COMMIT/);
+  });
+
+  it("rebuilds real workspace code and embedded protocol inputs after cooking dependencies", () => {
+    const native = stageBody(dockerfile, "runner-build");
+    expect(native).toContain("FROM runner-deps AS runner-build");
+    for (const source of ["runner", "protocol"]) {
+      expect(native.indexOf(`COPY packages/paperclip-runner/${source} ./${source}`))
+        .toBeLessThan(native.indexOf("cargo build --release"));
+      expect(native).toContain(`COPY packages/paperclip-runner/${source} ./${source}`);
+    }
+    expect(native).toContain("cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd");
+    expect(stageBody(dockerfile, "build")).toContain("FROM runner-build AS build");
+  });
+});
