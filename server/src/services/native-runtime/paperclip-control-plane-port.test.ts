@@ -1079,6 +1079,32 @@ describe("PaperclipControlPlanePort conformance", () => {
     await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toEqual([
       expect.objectContaining({ status: "done" }),
     ]);
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    const newRevision = "review-round-two";
+    const reviews = [];
+    for (const key of ["one", "two"]) {
+      reviews.push(await issueThreadInteractionService(db).create(
+        { id: issueId, companyId: identity.companyId, projectId: null, goalId: null, status: "in_review" },
+        { kind: "request_confirmation", title: `Review ${key}`, addresseeUserId: "reviewer-24",
+          resolverPolicy: "human_only", continuationPolicy: "wake_assignee", sourceRunId: runId,
+          payload: { version: 1, prompt: `Approve ${key}`, acceptLabel: "Approve", rejectLabel: "Decline",
+            target: { type: "custom", key: "native_completion_review", revisionId: newRevision } } },
+        { systemId: "test-multiple-reviewers", runId },
+      ));
+    }
+    await issueThreadInteractionService(db).rejectInteraction(
+      { id: issueId, companyId: identity.companyId }, reviews[0]!.id,
+      { reason: "Needs another change" }, { userId: "reviewer-24" },
+    );
+    // Even if another actor puts the task back in review, a declined decision
+    // in the same review round must not be erased by another reviewer's approval.
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    await issueThreadInteractionService(db).acceptInteraction(
+      { id: issueId, companyId: identity.companyId, projectId: null, goalId: null, status: "in_review" },
+      reviews[1]!.id, {}, { userId: "reviewer-24" },
+    );
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("in_review");
+
   });
 
   it("completes DOT-29-style low-risk work with an environment caveat and no corrective run", async () => {
