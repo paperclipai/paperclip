@@ -4,7 +4,6 @@ import { agents, companies, connectionGrants, issueThreadInteractions, toolConne
 import { and, eq, or } from "drizzle-orm";
 import {
   APP_STORE_DEFINITIONS,
-  DEFAULT_OWNERSHIP_AVAILABILITY,
   GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
   isGitHubConnectorProfileId,
@@ -58,6 +57,7 @@ import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-
 import type { ComposioClient } from "../services/composio.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
 import {
+  appWithPaperclipCloudConnectorAvailability,
   isPaperclipCloudConnectorStrategy,
   invalidatePaperclipCloudConnectorCapabilities,
   type PaperclipCloudConnector,
@@ -802,7 +802,6 @@ function connectorEnrollmentPrincipal(req: Request): string {
       : options.paperclipCloudConnector
         ? await options.paperclipCloudConnector.getCapabilities()
         : [];
-    const connectorProfiles = new Set<string>(advertisedProfiles);
     const vercelConnect = vercelConnectIntegrationStatus();
     res.json({
       capabilities: await describeConnectionCreateCapabilities(req, companyId),
@@ -819,20 +818,9 @@ function connectorEnrollmentPrincipal(req: Request): string {
             : "Vercel Connect setup is disabled on this Paperclip instance.",
         },
       },
-      apps: APP_STORE_DEFINITIONS.map((app) => {
-        const methods = app.methods.filter((method) =>
-          !isPaperclipCloudConnectorStrategy(method.oauthStrategy)
-          || Boolean(method.connectorProfile && connectorProfiles.has(method.connectorProfile))
-        );
-        return {
-          ...app,
-          methods,
-          ownershipAvailability: {
-            ...DEFAULT_OWNERSHIP_AVAILABILITY,
-            platform_shared: methods.some((method) => isPaperclipCloudConnectorStrategy(method.oauthStrategy)),
-          },
-        };
-      }),
+      apps: APP_STORE_DEFINITIONS.map((app) =>
+        appWithPaperclipCloudConnectorAvailability(app, advertisedProfiles)
+      ),
     });
   });
 

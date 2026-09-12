@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -311,8 +311,14 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     expect(status.activeRuns).toBe(0);
     expect(status.quiescent).toBe(true);
 
-    // The run's row is still "running", so the orphan reaper finds it,
-    // finalizes it, and releases the issue lock on its own cycle.
+    // Missing local tracking cannot override the durable controller lease.
+    // Once that unrenewed lease expires, the reaper finalizes the orphan and
+    // releases the issue lock on its own cycle.
+    const beforeExpiry = await heartbeat.reapOrphanedRuns();
+    expect(beforeExpiry.runIds).not.toContain(runId);
+    await db.update(heartbeatRuns).set({
+      controllerLeaseExpiresAt: sql`clock_timestamp() - interval '1 second'`,
+    }).where(eq(heartbeatRuns.id, runId));
     const reapResult = await heartbeat.reapOrphanedRuns();
     expect(reapResult.runIds).toContain(runId);
 

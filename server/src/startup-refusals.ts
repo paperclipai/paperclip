@@ -22,6 +22,7 @@
 
 export type StartupRefusalKind =
   | "schema-not-yet-migrated"
+  | "schema-migration-pending"
   | "database-contract-unmet";
 
 /**
@@ -53,9 +54,23 @@ export function migrationRefusalError(
   message: string,
 ): Error {
   const neverMigrated = state.appliedMigrations.length === 0 && state.tableCount === 0;
-  return neverMigrated
-    ? new StartupRefusalError("schema-not-yet-migrated", message)
-    : new Error(message);
+  if (neverMigrated) return new StartupRefusalError("schema-not-yet-migrated", message);
+  // A database with applied HISTORY and newer pending files is normal
+  // mid-upgrade under a supervisor: managed fleet rolls deliver the new
+  // app image before the migration runner, so every upgraded stack
+  // briefly boots ahead of its schema and crash-loops until the
+  // supervisor migrates and restarts it (observed: ~11 events per
+  // container, hundreds per fleet roll). It still refuses, logs, and
+  // exits nonzero; only the Sentry capture is skipped — and only when
+  // `PAPERCLIP_CLOUD_API_ORIGIN` marks the deployment as supervised
+  // (`shouldReportStartupFailure`). Self-hosted deployments keep
+  // reporting.
+  if (state.appliedMigrations.length > 0) {
+    return new StartupRefusalError("schema-migration-pending", message);
+  }
+  // An empty or wiped migration journal beside real tables is genuine
+  // drift with no supervisor remedy on the way; it must keep reporting.
+  return new Error(message);
 }
 
 /**

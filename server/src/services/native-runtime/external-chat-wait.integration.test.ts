@@ -2640,7 +2640,7 @@ describe("native external-chat response wait", () => {
       reportedWorkDisposition: "needs_review" as const,
     };
     delete result.continuation;
-    result.attentionRequests = [];
+    result.attentionRequests = [{ kind: "review", ownerClass: "human", summary: "Approve the prepared response before continuing." }];
     const terminal = {
       ...(accepted!.resultJson.terminal as PrpTerminalState),
       reportedWorkDisposition: "needs_review" as const,

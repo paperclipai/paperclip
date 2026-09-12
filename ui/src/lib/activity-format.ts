@@ -25,6 +25,8 @@ interface ActivityFormatOptions {
 const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.created": "created",
   "issue.updated": "updated",
+  "issue.read_marked": "read",
+  "issue.read_unmarked": "marked unread",
   "issue.checked_out": "checked out",
   "issue.released": "released",
   "issue.comment_added": "commented on",

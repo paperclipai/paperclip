@@ -250,7 +250,7 @@ export function TaskSidePanel({
   const autoPlanHandledRef = useRef(restoredRef.current?.autoPlanHandled ?? false);
   const initialState = useMemo(() => {
     const restored = restoredRef.current?.state;
-    let tabs = restored?.tabs ?? [taskPanelPropertiesTab()];
+    let tabs = restored?.tabs ?? (issue.conversationAgentId ? [taskPanelArtifactsTab()] : [taskPanelPropertiesTab()]);
     if (!initialSubtasksAvailableRef.current) {
       tabs = tabs.filter((tab) => tab.payload.kind !== "subtasks");
     } else if (!subtasksDismissedRef.current) {

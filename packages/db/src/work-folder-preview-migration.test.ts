@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "./test-embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
-const migration = readFileSync(new URL("./migrations/0273_sandbox_work_folders.sql", import.meta.url), "utf8");
+const migration = readFileSync(new URL("./migrations/0275_sandbox_work_folders.sql", import.meta.url), "utf8");
 
 (support.supported ? describe : describe.skip)("work folder preview migration", () => {
   it("preserves cached content, trash, and unpushed repository checkpoints on replay", async () => {
@@ -47,7 +47,7 @@ const migration = readFileSync(new URL("./migrations/0273_sandbox_work_folders.s
       await database.cleanup();
     }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
-  it("applies an earlier mainline migration after a renamed preview without losing files", async () => {
+  it("applies missing mainline migrations after a renamed preview without losing files", async () => {
     const database = await startEmbeddedPostgresTestDatabase("work-folder-renumber-");
     const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
     try {
@@ -59,14 +59,17 @@ const migration = readFileSync(new URL("./migrations/0273_sandbox_work_folders.s
         VALUES (${company}, ${folder}, 'saved.sh', 'preview/saved', true)`;
       await sql`INSERT INTO task_repository_bindings (company_id, task_id, workspace_id, name, checkpoint_key)
         VALUES (${company}, ${task}, ${randomUUID()}, 'repo', 'preview/unpushed')`;
-      const mainline = readFileSync(new URL("./migrations/0272_light_kate_bishop.sql", import.meta.url), "utf8");
-      const mainlineHash = createHash("sha256").update(mainline).digest("hex");
+      const mainlineHashes = ["0272_light_kate_bishop", "0273_aromatic_moondragon", "0274_agent_chat"].map((name) =>
+        createHash("sha256").update(readFileSync(new URL(`./migrations/${name}.sql`, import.meta.url), "utf8")).digest("hex"),
+      );
       const previewHash = createHash("sha256").update(migration).digest("hex");
       // Model a preview that already recorded its work-folder migration with a
       // timestamp newer than the subsequently merged mainline migration.
       await sql`DROP TABLE email_sends, email_messages, email_endpoints`;
-      await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${mainlineHash}`;
-      await sql`UPDATE drizzle.__drizzle_migrations SET created_at = 1789153813732 WHERE hash = ${previewHash}`;
+      await sql`ALTER TABLE heartbeat_runs DROP COLUMN controller_boot_id, DROP COLUMN controller_lease_expires_at, DROP COLUMN execution_stage`;
+      await sql`ALTER TABLE issue_comments DROP COLUMN client_request_id`;
+      for (const hash of mainlineHashes) await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${hash}`;
+      await sql`UPDATE drizzle.__drizzle_migrations SET created_at = 1799999999999 WHERE hash = ${previewHash}`;
       const before = await inspectMigrations(database.connectionString);
       expect(before.status).toBe("needsMigrations");
       await applyPendingMigrations(database.connectionString);
@@ -78,7 +81,13 @@ const migration = readFileSync(new URL("./migrations/0273_sandbox_work_folders.s
         .toMatchObject([{ path: "saved.sh", object_key: "preview/saved", executable: true }]);
       expect(await sql`SELECT checkpoint_key FROM task_repository_bindings WHERE task_id = ${task}`)
         .toMatchObject([{ checkpoint_key: "preview/unpushed" }]);
-      expect(await sql`SELECT hash FROM drizzle.__drizzle_migrations WHERE hash = ${mainlineHash}`).toHaveLength(1);
+      expect(await sql`SELECT column_name FROM information_schema.columns WHERE table_name = 'heartbeat_runs'
+        AND column_name IN ('controller_boot_id', 'controller_lease_expires_at', 'execution_stage')`).toHaveLength(3);
+      expect(await sql`SELECT column_name FROM information_schema.columns WHERE table_name = 'issue_comments'
+        AND column_name = 'client_request_id'`).toHaveLength(1);
+      for (const hash of mainlineHashes) {
+        expect(await sql`SELECT hash FROM drizzle.__drizzle_migrations WHERE hash = ${hash}`).toHaveLength(1);
+      }
       expect(await sql`SELECT hash FROM drizzle.__drizzle_migrations WHERE hash = ${previewHash}`).toHaveLength(1);
     } finally {
       await sql.end();

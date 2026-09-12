@@ -381,9 +381,15 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       }
 
       const [identityRun] = await db.select({ activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
-        responsibleUserId: heartbeatRuns.responsibleUserId, status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
+        responsibleUserId: heartbeatRuns.responsibleUserId, status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.id, claims.run_id), eq(heartbeatRuns.companyId, claims.company_id), eq(heartbeatRuns.agentId, claims.sub),
         ));
+      if (identityRun?.status === "cancelled" && identityRun.contextSnapshot?.conversationMode === true
+        && !["GET", "HEAD", "OPTIONS"].includes(req.method)) {
+        _res.status(403).json({ error: "This conversation turn was cancelled", code: "conversation_turn_cancelled" });
+        return;
+      }
       if (identityRun?.activeIdentityContextId && identityRun.status === "running") {
         const captured = await captureRunIdentity(db, { companyId: claims.company_id, agentId: claims.sub, runId: claims.run_id });
         identityRun.activeIdentityContextId = captured.context?.id ?? null;
@@ -551,16 +557,22 @@ export function isTransientDbConnectionError(error: unknown): boolean {
 }
 
 /**
- * Runs `run` and retries it exactly once when it fails on a transient
- * closed-connection error. Callers must pass an idempotent operation.
- * Exported for tests.
+ * Runs `run` and retries it up to twice when it fails on a transient
+ * closed-connection error. Two replays, not one: when a pooled endpoint
+ * suspends or recycles, EVERY pooled socket is dead at once, so the first
+ * replay can draw another stale socket from the pool and fail identically
+ * (observed 2026-09-12: retried actor resolution still surfacing
+ * CONNECTION_CLOSED). The short pause gives the driver time to notice and
+ * re-dial. Callers must pass an idempotent operation. Exported for tests.
  */
 export async function retryOnTransientDbConnectionError<T>(run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (error) {
-    if (!isTransientDbConnectionError(error)) throw error;
-    return run();
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      if (attempt >= 2 || !isTransientDbConnectionError(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }
   }
 }
 

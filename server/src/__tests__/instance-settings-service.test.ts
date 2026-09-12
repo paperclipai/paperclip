@@ -47,6 +47,7 @@ describe("instance settings service", () => {
       enableStreamlinedLeftNavigation: true,
       enableStreamlinedUi: true,
       enableApps: true,
+      enableAgentChat: false,
       enableChatConnectors: false,
       enableConferenceRoomChat: false,
       enableClassicTaskInterface: false,
