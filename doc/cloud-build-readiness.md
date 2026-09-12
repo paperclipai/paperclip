@@ -198,7 +198,37 @@ all typechecks still execute. A missing or invalidated cache triggers compilatio
 
 The Refresh Lockfile workflow does not cache the pnpm store. Its resolution-only
 command does not download packages and can save an empty default-branch cache
-before full install jobs finish. Jobs that install dependencies retain caching.
+before full install jobs finish. The PR policy job also leaves store caching off.
+
+PR install jobs restore the pnpm store without saving it. They hash the checked-in
+lockfile before downloading the policy job's regenerated lockfile, matching the
+key format used by master install jobs. A same-OS, same-architecture pnpm fallback
+can reuse older package downloads when the exact key is absent. Each job still
+installs with `--frozen-lockfile` against the policy artifact when one exists;
+cache contents do not select dependency versions. A cache miss downloads packages
+normally. New PR-only dependencies may be downloaded again on each PR run until
+master populates a cache that contains them.
+
+This avoids storing a full dependency archive under every PR merge ref. Those
+copies competed with the Rust caches for the repository's storage limit. Keep
+master cache writes enabled so trusted post-merge installs refresh shared stores.
+After activating the new trusted workflow pin, verify cache restores and package
+reuse in an allowlisted PR, and verify that no new `node-cache-` entries appear
+under its `refs/pull/<number>/merge` ref. Existing copies can expire normally.
+
+The repository cache storage ceiling is managed in GitHub Settings, separately
+from this workflow. Check it with:
+
+```sh
+gh api repos/paperclipai/paperclip/actions/cache/storage-limit
+```
+
+Increasing the repository limit above 10 GB can require an organization owner to
+raise the maximum in organization Settings → Actions → General first. Repository
+administration access alone cannot override that maximum. Paid cache storage also
+requires a payment method and sufficient Actions Cache Storage budget; see the
+[GitHub cache storage documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#increasing-cache-size).
+Preserve populated master pnpm and Rust caches when inspecting pressure.
 
 After deploying this correction, remove any existing empty default-branch entry
 for the current lockfile key. List cache IDs, branches, and archive sizes first:

@@ -316,10 +316,11 @@ test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
     /policy:\n    needs: \[gate\][\s\S]{0,160}timeout-minutes: 10/,
     "the unconditional resolution step needs the same timeout headroom as the lockfile refresh workflow",
   );
-  assert.match(
-    workflow,
-    /- name: Setup Node\.js\n        uses: actions\/setup-node@[0-9a-f]+[^\n]*\n        with:\n          node-version: 24\n          cache: pnpm/,
-    "the policy job must restore the pnpm cache before dependency resolution",
+  const policy = workflow.split("  policy:\n")[1].split("  typecheck_release_registry:\n")[0];
+  assert.doesNotMatch(
+    policy,
+    /cache: pnpm|uses: actions\/cache/,
+    "resolution-only policy must not restore or save a dependency store",
   );
   assert.match(
     workflow,
