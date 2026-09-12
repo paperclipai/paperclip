@@ -196,6 +196,27 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     },
   );
 
+  it("does not accept interruption authority from an agent wake payload", async () => {
+    const seeded = await seedQueue();
+    await db.update(agents).set({ adapterType: "claude_local",
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, seeded.runId));
+    await heartbeatService(db).wakeup(seeded.agentId, {
+      source: "on_demand", reason: "issue_commented",
+      requestedByActorType: "agent", requestedByActorId: seeded.agentId,
+      payload: { issueId: seeded.issueId, commentId: seeded.commentIds[1],
+        queuedCommentInterrupt: { actorId: "other-operator", requestedAt: new Date().toISOString() } },
+      contextSnapshot: { issueId: seeded.issueId, wakeCommentId: seeded.commentIds[1] },
+    });
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, seeded.companyId));
+    expect(wakes.length).toBeGreaterThan(0);
+    expect(wakes.every(wake => !wake.payload?.queuedCommentInterrupt)).toBe(true);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId));
+    expect(runs.find(run => run.id === seeded.runId)?.status).toBe("running");
+    expect(runs.every(run => !run.contextSnapshot?.explicitUserContinuation)).toBe(true);
+  });
+
   it.each([null, "stopped-target", "system-receipt"])("sends a stopped legacy queue once with target %s", async (target) => {
     const seeded = await seedQueue();
     if (target === "system-receipt") await db.update(agentWakeupRequests).set({
