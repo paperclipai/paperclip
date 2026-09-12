@@ -4506,7 +4506,18 @@ export function issueRoutes(
     // Conversations wait for the next message; successful run finalization owns
     // the waiting state. They do not need an execution-task review assignment.
     if (isConversation(input.existing) && !input.reviewInteractionId) return null;
-    if (input.existing.status === "in_review" || nextStatus !== "in_review") return null;
+    const stayingOrEnteringReview =
+      nextStatus === "in_review" || input.existing.status === "in_review";
+    if (!stayingOrEnteringReview) return null;
+    // An explicit confirmation binding must persist even when the issue is
+    // already in_review (execution-policy repair, follow-up PATCH). The
+    // auto-detected review path still only applies when entering in_review.
+    if (
+      !input.reviewInteractionId &&
+      (input.existing.status === "in_review" || nextStatus !== "in_review")
+    ) {
+      return null;
+    }
     if (input.actorType !== "agent" && !input.reviewInteractionId) return null;
 
     const interactions = await issueThreadInteractionService(db).listForIssue(
@@ -8775,8 +8786,13 @@ export function issueRoutes(
       "Server-Timing",
       `paperclip_issue;dur=${(performance.now() - requestStartedAt).toFixed(1)}`,
     );
+    const reviewRequester =
+      issue.status === "in_review"
+        ? await resolveIssueReviewRequester(db, issue)
+        : null;
     res.json({
       ...issue,
+      reviewInteractionId: reviewRequester?.reviewInteractionId ?? null,
       ...inboxArchiveFields,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
@@ -13186,6 +13202,30 @@ export function issueRoutes(
         actorRunId: actor.runId,
         reviewInteractionId: requestedReviewInteractionId,
       });
+      if (transition.decision) {
+        const boundReviewInteractionId =
+          reviewInteractionId ??
+          (await resolveIssueReviewRequester(db, existing))?.reviewInteractionId ??
+          null;
+        if (boundReviewInteractionId) {
+          const pendingBoundConfirmation = (
+            await issueThreadInteractionService(db).listForIssue(existing.id)
+          ).find(
+            (interaction) =>
+              interaction.id === boundReviewInteractionId &&
+              interaction.status === "pending",
+          );
+          if (pendingBoundConfirmation) {
+            throw unprocessable(
+              "Cannot complete execution review while the designated confirmation is still pending",
+              {
+                code: "pending_review_confirmation",
+                reviewInteractionId: boundReviewInteractionId,
+              },
+            );
+          }
+        }
+      }
       const enteringReviewRequested =
         existing.status !== "in_review" && updateFields.status === "in_review";
       const persistReviewActivityTransactionally =
@@ -13685,7 +13725,16 @@ export function issueRoutes(
           ReturnType<typeof issueReferencesSvc.listIssueReferenceSummary>
         >;
         referencedIssueIdentifiers?: string[];
-      } = issue;
+        reviewInteractionId?: string | null;
+      } = {
+        ...issue,
+        reviewInteractionId:
+          reviewInteractionId ??
+          (issue.status === "in_review"
+            ? (await resolveIssueReviewRequester(db, issue))?.reviewInteractionId ??
+              null
+            : null),
+      };
       let updatedRelations: Awaited<
         ReturnType<typeof svc.getRelationSummaries>
       > | null = null;
