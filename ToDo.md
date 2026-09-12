@@ -78,6 +78,16 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
       `claude-sonnet-4-6`/`claude-sonnet-5`. Laeuft durchgehend, auch nachdem
       die LLM-Versorgung wieder stand. Die Frage, ob dem nachgegangen werden
       soll, blieb offen. *(2026-09-02, Chat: Paperclip Issue-Bereinigung)*
+      **Groessenordnung 11.09.: 882 Treffer in 14 Tagen**, nicht 49 an einem
+      Tag — damit der drittgroesste Fehlerposten der Flotte. Fast alle tragen
+      denselben Grund: `blocked_by_pii_proxy:classifier_unavailable`, also
+      **nicht** ein erkannter PII-Fund, sondern ein Classifier, der nicht
+      antwortet (nur 27 Treffer lauten `art_9_data_detected`, das waere der
+      echte Fund). Der Proxy blockt damit ueberwiegend aus Nichterreichbarkeit
+      heraus. Ansatzpunkt ist `io.piiproxy.server` auf :4711, nicht die
+      Agenten-Konfiguration. Nachweis:
+      `select count(*) from heartbeat_runs where error like '%classifier_unavailable%' and started_at > now() - interval '14 days';`
+      *(2026-09-11, Chat: Routinen-Lastverteilung)*
 
 ## Recovery-Mechanismus
 
@@ -380,6 +390,32 @@ Chatuebergreifende Aufgabenliste. Was hier steht, ist noch offen.
       den Agenten, der daraufhin brav bestaetigte und den Status selbst auf
       `blocked` setzte. Das Parken war damit sofort wieder aufgehoben. Ohne
       `comment` haelt es. *(2026-09-06, Chat: Kontaktrecherche-Agent Clara)*
+
+## Zeitplan und Lastverteilung
+
+- [ ] **Wirkung der Entzerrung gegenmessen — fruehestens 25.09.** — am 11.09.
+      wurden 11 Jobs verschoben, damit nachts nie zwei I/O-Schwergewichte
+      gleichzeitig laufen (`ssd-backup` 18 min und `vault-nas-sync` 34 min ueber
+      SMB haben jetzt eigene Fenster) und der Acht-Job-Pulk auf 08:00 auf
+      95 Minuten gestreckt ist. **Ob das wirkt, ist noch nicht belegt** —
+      gemessen wurde nur der Zustand davor. Gegenprobe nach zwei vollen Wochen:
+      dieselbe Parallelitaets-Abfrage fahren und die SMB-/`fetch failed`-Fehler
+      im Nachtfenster (02–06 Uhr) davor/danach vergleichen. Vergleichswerte vom
+      11.09.: Ø parallel 02h=1,5 · 04h=1,1 · 05h=0,6 · 08h=1,6 · 10h=2,8.
+      Der Fahrplan aller drei Systeme steht als Uebersicht unter
+      `https://claude.ai/code/artifact/e1181fb5-4990-4e19-a6c3-0f20efdabd93`.
+      *(2026-09-11, Chat: Routinen-Lastverteilung)*
+
+- [ ] **★Die Abendspitze 17–21 Uhr ist ungeklaert** — die hoechste gemessene
+      Gleichzeitigkeit der ganzen Flotte liegt **nicht** morgens oder nachts,
+      sondern abends: max **29** parallele Runs um 17:00, danach 22 / 21 / 18 in
+      den Folgestunden, gegen einen Tagesschnitt von 1–3. In diesem Fenster ist
+      **keine einzige Routine** geplant (nach 16:00 feuert regulaer nur der
+      n8n-Digest um 18:00). Die Spitze entsteht also vollstaendig aus Folgelast
+      oder aus einem Ereignis, das nicht im Fahrplan steht. Solange die Ursache
+      unbekannt ist, kann man abends nichts gefahrlos dazulegen. Einstieg:
+      `select date_trunc('hour', started_at at time zone 'Europe/Berlin'), invocation_source, agent_id, count(*) from heartbeat_runs where started_at > now() - interval '14 days' and extract(hour from started_at at time zone 'Europe/Berlin') between 17 and 21 group by 1,2,3 order by 4 desc limit 20;`
+      *(2026-09-11, Chat: Routinen-Lastverteilung)*
 
 ## Repo-Stand und Deploy
 
