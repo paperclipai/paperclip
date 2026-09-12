@@ -14,6 +14,9 @@ ALTER TABLE heartbeat_runs
 ALTER TABLE heartbeat_runs
   ADD COLUMN IF NOT EXISTS auto_retry_reason text;
 
+ALTER TABLE heartbeat_runs
+  ADD COLUMN IF NOT EXISTS next_auto_retry_at timestamptz;
+
 CREATE INDEX IF NOT EXISTS heartbeat_runs_company_auto_retry_idx
   ON heartbeat_runs (company_id, status, created_at)
   WHERE auto_retry_count > 0;
