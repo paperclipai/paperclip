@@ -10,7 +10,7 @@ import { describe, expect, it } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "./test-embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
-const migration = readFileSync(new URL("./migrations/0275_sandbox_work_folders.sql", import.meta.url), "utf8");
+const migration = readFileSync(new URL("./migrations/0277_sandbox_work_folders.sql", import.meta.url), "utf8");
 
 (support.supported ? describe : describe.skip)("work folder preview migration", () => {
   it("preserves cached content, trash, and unpushed repository checkpoints on replay", async () => {
@@ -214,7 +214,7 @@ const migration = readFileSync(new URL("./migrations/0275_sandbox_work_folders.s
       const pending = await inspectMigrations(historicalUrl.toString());
       expect(pending.status).toBe("needsMigrations");
       if (pending.status !== "needsMigrations") throw new Error("Historical preview unexpectedly has current migrations");
-      expect(pending.pendingMigrations).toContain("0275_sandbox_work_folders.sql");
+      expect(pending.pendingMigrations).toContain("0277_sandbox_work_folders.sql");
       await applyPendingMigrations(historicalUrl.toString());
       expect((await inspectMigrations(historicalUrl.toString())).status).toBe("upToDate");
       for (const table of preservedTables) {

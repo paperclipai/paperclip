@@ -307,6 +307,11 @@ function installStorybookApiFixtures() {
         ? Response.json({ secretId: "saved-claude-subscription", latestVersion: 1 })
         : new Response(null, { status: 404 });
     }
+    if (/^\/api\/companies\/[^/]+\/ai-connections$/.test(url.pathname)) {
+      return init?.method === "POST"
+        ? Response.json({ connectionId: "managed-storybook", grantId: "grant-storybook" })
+        : Response.json({ currentUserId: "user-storybook", connections: [] });
+    }
     if (/^\/api\/companies\/[^/]+\/me\/user-secrets$/.test(url.pathname)) {
       return Response.json(onboardingFixtureState.savedApiKeys ? ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"].map((key) => ({
         definition: { id: key, companyId: "company-storybook", key: `${key}.setup.storybook`, name: key === "ANTHROPIC_API_KEY" ? "My Claude key" : "My OpenAI key", status: "active" },

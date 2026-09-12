@@ -1009,3 +1009,67 @@ Admission atomically settles an unclaimed coordinator and admits one fresh turn,
 preserving history, unknown action outcomes, and attempt counts. Pauses, approvals,
 budgets, task ownership, and terminal task status still gate admission. No
 automatic provider replay is authorized by a cancelled startup.
+
+### Delivering queued messages after a legacy run stops
+
+The legacy queued-message Interrupt action accepts a null `targetRunId` when
+there is no active turn. It validates the queue identity and revision under
+the task lock and records durable board intent to send the saved queue. A
+run that stops between the queue read and the click is also accepted. The
+server never redirects interruption to an unrelated active run.
+Intentional interruption does not show the global cancelled/failed run toast;
+the queue control supplies its own delivery feedback.
+
+This click can authorize a fresh conversation for messages written before
+the prior run stopped. It preserves the original message content and authors,
+and retains process/lease stop proofs, task ownership, pauses, approvals, and
+budget checks. Queue edits and discards remain authoritative until dispatch.
+Dispatch revalidates the consumed queue receipt against the operator, task,
+agent, message, and successor run; the operator need not be the message author.
+Repeated delivery attempts cannot create another successor after the queue
+is consumed. Native same-turn steering retains its active-target contract.
+
+Legacy finalization retries deferred input after adapter and lease cleanup.
+The scheduler also revisits bounded batches of stranded queues after restart
+or a late enqueue. Both use normal admission; an existing queued successor
+owns the next turn even before it acquires the task execution lock. A recovery
+hold or a plain operator Stop does not by itself authorize old input. The
+successor guard is scoped to the same agent so another agent's review
+participation keeps its independent recovery path.
+
+An explicit queued-message Interrupt also grants one scoped cleanup retry for
+the stopped run. Old ephemeral leases whose cleanup predates provider stop
+receipts are rechecked through the recorded provider teardown path. Retained
+resources and sandboxes owned by another lease are not rechecked this way.
+Delivery still requires the provider's verified stop receipt. Periodic queue
+retries do not gain extra cleanup attempts, and the queue displays the server's
+waiting reason while cleanup remains unresolved.
+
+### Operator identity and permission for manual dispatch
+
+A legacy queued-message Interrupt is a new instruction from the user who clicks
+it. The new run uses that user's execution identity, including when someone else
+wrote the queued messages. Message bodies and historical authors stay unchanged.
+The task page and pipeline conversations both permit Interrupt after the target
+run stops and submit the queue's current revision.
+Startup validates the consumed queue receipt against the new run, company,
+agent, task, clicking user, and delivered message IDs. Automatic retries inherit
+the resulting execution identity through the ordinary run identity history.
+
+Starting an existing agent requires `agent:wake`, which active non-viewer board
+members have within their company. Both wake endpoints use this action instead
+of `agents:create`. An exact task retry also checks `issue:comment` on the task
+from the stored failed run and verifies that its assigned agent has not changed.
+External chat retries retain their additional conversation authorization.
+Ordinary board wake requests also persist the clicking user's identity, so
+adopting another author's queued message cannot change their execution authority.
+If that wake merges into an older deferred request, the same transaction updates
+the request's execution requester to the clicking user.
+Manual wake requests wait for their own run and execution identity. They do not
+merge into an agent's active run, with or without a task.
+Private agent conversations retain their owner-only wake and retry checks.
+
+These actions do not grant permission to hire agents or change their settings.
+Each action during execution still checks the agent's authority and the
+responsible user's authority. A denied retry returns before dispatch; it does
+not create a new failed run or change the task's state.

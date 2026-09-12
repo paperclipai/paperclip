@@ -13,6 +13,7 @@ const providerNames: Record<ChatProvider, string> = {
   discord: "Discord",
   "microsoft-teams": "Microsoft Teams",
   telegram: "Telegram",
+  "imessage-photon": "iMessage Photon",
   agentmail: "AgentMail",
 };
 

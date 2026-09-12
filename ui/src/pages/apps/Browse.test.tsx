@@ -257,6 +257,7 @@ describe("Connectors landing page", () => {
       "discord",
       "github",
       "gmail",
+      "imessage-photon",
       "jira",
       "microsoft-teams",
       "notion",

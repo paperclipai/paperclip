@@ -36,3 +36,10 @@ overrides:
   rollup: ">=4.59.0"
   react: "^19.2.8"
   react-dom: "^19.2.8"
+  # CodeMirror validates extensions with instanceof, so exactly one copy of
+  # these two packages may resolve. Different CodeMirror packages pin
+  # different transitive minors, which resolves two copies and crashes the
+  # editor with "Unrecognized extension value in extension set". A shared
+  # range forces every consumer onto one resolution.
+  "@codemirror/state": "^6.7.2"
+  "@codemirror/view": "^6.43.11"

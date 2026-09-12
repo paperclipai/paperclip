@@ -357,6 +357,14 @@ own native build; no cross-architecture binary is reused. No additional GitHub
 Actions cache is created. A cold build also installs the recipe generator and
 compiles dependencies, so the savings apply after those layers are available.
 
+Cloud builds import one registry cache: the first available full-SHA cache in
+the current commit's ten-entry first-parent ancestry, with the legacy cache
+as a final fallback. Each build still exports its own SHA cache with
+`mode=max`. In fresh-builder checks, importing several historical manifests
+missed native layers that a single matching manifest reused. The selector
+inspects metadata after Docker login, stops at the first available cache, and
+permits a cold build if no cache can be read.
+
 The application build inherits that stage and still runs the normal server
 build, including Cargo, binary staging, and generated-contract checks. Rust
 input file times are normalized in both stages so fresh checkouts do not force
@@ -367,12 +375,14 @@ directory as before. Cache misses only cost compilation time.
 Pull requests that change the Dockerfile, Docker ignore rules, or Runner native
 inputs also build the isolated `runner-build` target in `Docker Runner check`.
 The check runs `bash scripts/check-docker-runner-cache.sh` against a disposable
-copy of tracked source and the actual Docker ignore rules. It compiles a baseline,
-changes a Rust metadata constant, and rebuilds. It requires a cached dependency
-build, an unchanged dependency recipe, and changed metadata from the real binary.
-It also verifies that a dependency declaration change alters the recipe. The
-probe exports only small metadata files, avoiding a large image import into the
-Docker daemon. It catches missing embedded inputs before the post-merge build.
-It uses a GitHub-hosted runner with read-only repository access and does not
-publish images or cache artifacts. Allow up to 20 minutes for its cold build and
+copy of tracked source and the actual Docker ignore rules. It compiles a baseline
+and exports a local cache, removes that builder, changes a Rust metadata constant,
+and rebuilds on a fresh builder using only the exported cache. It requires a
+cached dependency build, an unchanged dependency recipe, and changed metadata
+from the real binary. It also verifies that a dependency declaration change
+alters the recipe. The probe exports small metadata results instead of importing
+a large test image into the Docker daemon. Temporary builders and cache files
+are removed afterward. It catches missing embedded inputs before the post-merge
+build. It uses a GitHub-hosted runner with read-only repository access and never
+publishes images or registry caches. Allow up to 20 minutes for its cold build and
 source rebuild.

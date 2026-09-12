@@ -14,6 +14,7 @@ const providerNames: Record<ChatProvider, string> = {
   "microsoft-teams": "Microsoft Teams",
   telegram: "Telegram",
   agentmail: "AgentMail",
+  "imessage-photon": "iMessage Photon",
 };
 
 export function ChatIdentityConfirm() {

@@ -103,7 +103,7 @@ interface CommentThreadProps {
   currentAssigneeValue?: string;
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
-  onInterruptQueued?: (runId: string) => Promise<void>;
+  onInterruptQueued?: (runId: string | null) => Promise<void>;
   interruptingQueuedRunId?: string | null;
   composerDisabledReason?: string | null;
   externalReferences?: MarkdownExternalReferenceMap;

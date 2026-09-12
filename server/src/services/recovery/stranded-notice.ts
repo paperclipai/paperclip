@@ -15,6 +15,7 @@ export type StrandedRecoveryNoticeSeed = {
   body: string;
   title: string;
   tone: IssueCommentPresentation["tone"];
+  nextAction?: string;
 };
 
 export type StrandedRecoveryEscalationNotice = {
@@ -104,6 +105,14 @@ export function sandboxProviderPluginRemedy(pluginStatus: string): string {
 export function buildConfigurationIncompleteRecoveryNoticeSeed(
   configurationIncomplete?: Record<string, unknown> | null,
 ): StrandedRecoveryNoticeSeed {
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "ai_connection_unavailable") {
+    return {
+      title: "AI connection needs attention",
+      body: "This task paused because its selected AI account is unavailable. Reconnect the account or choose an available connection to continue.",
+      nextAction: "Reconnect the selected AI account or choose an available connection, then continue the task.",
+      tone: "danger",
+    };
+  }
   if (readNonEmptyStringField(configurationIncomplete, "reason") === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON) {
     const pluginKey = readNonEmptyStringField(configurationIncomplete, "pluginKey") ?? "the sandbox provider plugin";
     const pluginStatus = readNonEmptyStringField(configurationIncomplete, "pluginStatus") ?? "not ready";
@@ -184,9 +193,9 @@ export function buildStrandedRecoveryEscalationNotice(input: {
         ),
     keyValueRow(
       "Next action",
-      input.recoveryOwner
+      input.seed?.nextAction ?? (input.recoveryOwner
         ? "The recovery owner should either restore a live execution path or record the manual resolution on the source issue"
-        : "Inspect the evidence, then retry the original owner, explicitly reassign, repair the execution path, or record an intentional resolution",
+        : "Inspect the evidence, then retry the original owner, explicitly reassign, repair the execution path, or record an intentional resolution"),
     ),
   ];
 

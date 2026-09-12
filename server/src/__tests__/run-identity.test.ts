@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { acceptSteeredIdentity, captureRunIdentity, initializeRunIdentity, listRunIdentityContexts, rejectSteeredIdentity, reserveSteeredIdentity } from "../services/run-identity.js";
 
@@ -41,6 +41,71 @@ const support = await getEmbeddedPostgresTestSupport();
     await initializeRunIdentity(db, { ...input, responsibleUserId: "B", cause: "restart" });
     expect(await listRunIdentityContexts(db, input.companyId, input.runId)).toHaveLength(4);
   });
+  async function seedInterrupt() {
+    const input = await seed();
+    const queueId = randomUUID(), wakeupRequestId = randomUUID();
+    const contextSnapshot = { issueId: input.issueId, wakeCommentIds: input.messageIds };
+    await db.insert(agentWakeupRequests).values([
+      { id: queueId, companyId: input.companyId, agentId: input.agentId, source: "automation",
+        status: "coalesced", runId: input.runId, requestedByActorType: "system",
+        payload: { issueId: input.issueId, _paperclipWakeContext: { wakeCommentIds: input.messageIds },
+          queuedCommentInterrupt: { actorId: "operator", requestedAt: new Date().toISOString() } } },
+      { id: wakeupRequestId, companyId: input.companyId, agentId: input.agentId, source: "on_demand",
+        status: "queued", runId: input.runId, requestedByActorType: "user", requestedByActorId: "operator",
+        idempotencyKey: `queued-comment-interrupt:${queueId}` },
+    ]);
+    await db.update(heartbeatRuns).set({ wakeupRequestId, contextSnapshot }).where(eq(heartbeatRuns.id, input.runId));
+    return { ...input, queueId, wakeupRequestId, contextSnapshot };
+  }
+
+  it("uses the clicking operator through startup and restart without changing message authors", async () => {
+    const input = await seedInterrupt();
+    // A stale originating context cannot replace the explicit click's identity.
+    const identity = await initializeRunIdentity(db, {
+      ...input, responsibleUserId: "A", parentContextId: randomUUID(), cause: "dispatch",
+    });
+    expect(identity).toMatchObject({ responsibleUserId: "operator", cause: "queued_comment_interrupt" });
+    const history = await listRunIdentityContexts(db, input.companyId, input.runId);
+    expect(history.map(row => row.responsibleUserId)).toEqual(["operator", "operator", "operator", "operator"]);
+    expect(await initializeRunIdentity(db, { ...input, responsibleUserId: "B", cause: "restart" })).toEqual(identity);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, input.issueId));
+    expect(input.messageIds.map(id => comments.find(c => c.id === id)?.authorUserId)).toEqual(["A", "B", "A"]);
+    expect((await captureRunIdentity(db, input)).context?.responsibleUserId).toBe("operator");
+    const retryRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: retryRunId, companyId: input.companyId,
+      agentId: input.agentId, contextSnapshot: input.contextSnapshot, status: "queued", retryOfRunId: input.runId });
+    const retried = await initializeRunIdentity(db, { companyId: input.companyId, runId: retryRunId,
+      issueId: input.issueId, parentRunId: input.runId, responsibleUserId: "A", cause: "retry" });
+    expect(retried.responsibleUserId).toBe("operator");
+  });
+
+  it.each(["malformed", "missing", "unconsumed", "other-run", "other-task", "other-agent", "other-actor", "other-message"])(
+    "rejects %s interrupt authority before creating any execution identity", async (fault) => {
+      const input = await seedInterrupt();
+      if (fault === "malformed" || fault === "missing") {
+        await db.update(agentWakeupRequests).set({
+          idempotencyKey: `queued-comment-interrupt:${fault === "malformed" ? "not-an-id" : randomUUID()}`,
+        }).where(eq(agentWakeupRequests.id, input.wakeupRequestId));
+      } else if (fault === "other-actor") {
+        await db.update(agentWakeupRequests).set({ requestedByActorId: "someone-else" }).where(eq(agentWakeupRequests.id, input.wakeupRequestId));
+      } else {
+        const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, input.queueId));
+        if (fault === "other-agent") {
+          const agentId = randomUUID();
+          await db.insert(agents).values({ id: agentId, companyId: input.companyId, name: "Other", role: "engineer" });
+          await db.update(agentWakeupRequests).set({ agentId }).where(eq(agentWakeupRequests.id, input.queueId));
+        } else await db.update(agentWakeupRequests).set(
+          fault === "unconsumed" ? { status: "deferred_issue_execution" } :
+          fault === "other-run" ? { runId: null } :
+          { payload: { ...receipt.payload, ...(fault === "other-task" ? { issueId: randomUUID() } :
+            { _paperclipWakeContext: { wakeCommentIds: [randomUUID()] } }) } },
+        ).where(eq(agentWakeupRequests.id, input.queueId));
+      }
+      await expect(initializeRunIdentity(db, { ...input, responsibleUserId: "A", cause: "dispatch" })).rejects.toThrow("interrupt authority");
+      expect(await listRunIdentityContexts(db, input.companyId, input.runId)).toHaveLength(0);
+    },
+  );
+
   it("holds acquisition during uncertain steering, preserves snapshots, and never rewinds on replay", async () => {
     const input = await seed();
     await initializeRunIdentity(db, { ...input, messageIds: [input.messageIds[0]], responsibleUserId: "A", cause: "instruction" });

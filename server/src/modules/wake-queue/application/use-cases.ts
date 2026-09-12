@@ -342,6 +342,7 @@ async function promoteDeferredWake(
   const promotedTriggerDetail = workingCandidate.triggerDetail ?? null;
   const promotedPayload = { ...workingCandidate.payload };
   delete promotedPayload["_paperclipWakeContext"];
+  delete promotedPayload["queuedCommentInterrupt"];
 
   const promotedContextSeed: Record<string, unknown> = { ...workingCandidate.deferredContextSeed };
   if (pauseHold.activePauseHold) {
@@ -716,6 +717,12 @@ export function createAdmitWakeBehindIssueExecution(deps: {
     scope: TransactionScope,
     input: AdmitWakeBehindIssueExecutionInput,
   ): Promise<AdmitWakeBehindIssueExecutionResult> {
+    const manualUserWakeActorId = input.payload?.manualUserWake === true
+      ? readNonEmptyString(input.requestedByActorId) : null;
+    if (input.payload?.manualUserWake === true &&
+        (input.requestedByActorType !== "user" || !manualUserWakeActorId)) {
+      throw new Error("wake-queue: manual wake requires an authenticated user");
+    }
     const isSameExecutionAgent = await deps.reader.isSameExecutionAgent(scope, {
       companyId: input.companyId,
       activeExecutionRunAgentId: input.activeExecutionRun.agentId,
@@ -723,8 +730,10 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       agentNameKey: input.agentNameKey,
     });
 
+    // A manual click establishes a fresh execution identity. Even a matching
+    // requester can have a different originating identity on an exact retry.
     const shouldDeferFollowupWake =
-      deps.helpers.shouldDeferFollowupWakeForSameIssue({
+      Boolean(manualUserWakeActorId) || deps.helpers.shouldDeferFollowupWakeForSameIssue({
         activeRunStatus: input.activeExecutionRun.status,
         isSameExecutionAgent,
         wakeCommentId: input.wakeCommentId,
@@ -830,6 +839,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         existingDeferredWakeId: existingDeferred.id,
         mergedPayload,
         nextCoalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
+        ...(manualUserWakeActorId ? { manualUserWakeActorId } : {}),
         ...(input.durableReceipt
           ? {
               coalescedReceipt: {
