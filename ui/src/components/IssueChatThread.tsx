@@ -2116,7 +2116,7 @@ function IssueChatUserMessage({
             >
               {queueBadgeLabel}
             </Badge>
-            {queueTargetRunId && onInterruptQueued ? (
+            {onInterruptQueued ? (
               <Button
                 size="sm"
                 variant="outline"

@@ -3150,6 +3150,24 @@ describe("IssueChatThread", () => {
     act(() => root.unmount());
   });
 
+  it("dispatches queued messages with Interrupt after the target run has stopped", () => {
+    const root = createRoot(container);
+    const onInterruptQueued = vi.fn(async () => {});
+    act(() => root.render(<MemoryRouter><IssueChatThread
+      comments={[{ id: "comment-queue", companyId: "company-1", issueId: "issue-1",
+        authorAgentId: null, authorUserId: "user-1", authorType: "user", body: "Pending input",
+        presentation: null, metadata: null, queueState: "queued", queueTargetRunId: null,
+        createdAt: new Date(), updatedAt: new Date() }]}
+      onAdd={async () => {}} onInterruptQueued={onInterruptQueued} showComposer={false}
+      enableLiveTranscriptPolling={false}
+    /></MemoryRouter>));
+    const interrupt = [...container.querySelectorAll("button")].find(button => button.textContent === "Interrupt");
+    expect(interrupt).toBeDefined();
+    act(() => interrupt!.click());
+    expect(onInterruptQueued).toHaveBeenCalledWith(null);
+    act(() => root.unmount());
+  });
+
   it("shows deferred wake badge only for hold-deferred queued comments", () => {
     const root = createRoot(container);
 

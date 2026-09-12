@@ -4951,15 +4951,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const interruptQueuedComment = useMutation({
-    mutationFn: async (runId: string | null) => {
-      const queue = await issuesApi.getQueuedComments(issueId!);
-      if (!queue.queueId || (queue.targetRunId && queue.targetRunId !== runId)) {
-        throw new Error("The queued messages changed. Refresh and try again.");
-      }
-      return issuesApi.interruptQueuedComments(issueId!, {
-        queueId: queue.queueId, revision: queue.revision, targetRunId: queue.targetRunId,
-      });
-    },
+    mutationFn: (runId: string | null) => issuesApi.interruptLatestQueuedComments(issueId!, runId),
     onSuccess: () => {
       invalidateIssueDetail();
       invalidateIssueRunState();

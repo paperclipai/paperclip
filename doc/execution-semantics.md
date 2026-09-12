@@ -1050,6 +1050,8 @@ waiting reason while cleanup remains unresolved.
 A legacy queued-message Interrupt is a new instruction from the user who clicks
 it. The new run uses that user's execution identity, including when someone else
 wrote the queued messages. Message bodies and historical authors stay unchanged.
+The task page and pipeline conversations both permit Interrupt after the target
+run stops and submit the queue's current revision.
 Startup validates the consumed queue receipt against the new run, company,
 agent, task, clicking user, and delivered message IDs. Automatic retries inherit
 the resulting execution identity through the ordinary run identity history.
@@ -1061,6 +1063,8 @@ from the stored failed run and verifies that its assigned agent has not changed.
 External chat retries retain their additional conversation authorization.
 Ordinary board wake requests also persist the clicking user's identity, so
 adopting another author's queued message cannot change their execution authority.
+If that wake merges into an older deferred request, the same transaction updates
+the request's execution requester to the clicking user.
 Private agent conversations retain their owner-only wake and retry checks.
 
 These actions do not grant permission to hire agents or change their settings.
