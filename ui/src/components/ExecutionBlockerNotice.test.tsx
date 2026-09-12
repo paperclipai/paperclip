@@ -36,6 +36,16 @@ describe("stopped task recovery notice", () => {
     expect(notice.classList.contains("bg-muted")).toBe(true);
     expect(notice.querySelector("a")).toBeNull();
   });
+  it("keeps the required next action for other reconciliation causes", async () => {
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <ExecutionBlockerNotice companyId="company" issueId="task" onRetried={onRetried} blocker={{
+        recoveryActionId: "recovery", runId: "failed-run", agentId: "agent", cause: "action_outcome_unknown",
+        nextAction: "Verify the external action outcome before continuing.",
+      }} />
+    </QueryClientProvider>));
+    expect(container.textContent).toContain("Verify the external action outcome before continuing.");
+    expect(container.textContent).not.toContain("Automatic recovery of this task stopped.");
+  });
   it("retries the exact failed run and refreshes the task", async () => {
     vi.mocked(agentsApi.retryFailedRun).mockResolvedValue({} as never);
     await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());

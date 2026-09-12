@@ -2999,3 +2999,12 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   .runner-activity-roll-in { animation: none; }
   .runner-activity-roll-out { display: none; }
 }
+
+/* Task recovery panel uses the shared spacing, radius, and type scales. */
+.execution-blocker-notice {
+  gap: calc(var(--spacing) * 2);
+  padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
