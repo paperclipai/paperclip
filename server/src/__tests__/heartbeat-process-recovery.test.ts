@@ -2347,6 +2347,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(runs).toHaveLength(0);
   });
 
+  it("recovers legacy startup before adapter.invoke using the claimed adapter identity", async () => {
+    const f = await seedRunFixture({ agentStatus: "idle", adapterType: "claude_local" });
+    await db.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+    await db.update(heartbeatRuns).set({ runnerProfileJson: {
+      adapterDispatch: { adapterType: "claude_local" },
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    await heartbeatService(db).reapOrphanedRuns();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(source.resultJson).toMatchObject({ conversationContinuation: "continue_conversation_v1" });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, f.agentId));
+    expect(runs.filter(run => run.retryOfRunId === f.runId)).toHaveLength(1);
+  });
+
   it("schedules one conversation continuation after losing the provider", async () => {
     const { agentId, runId, issueId } = await seedRunFixture({
       agentStatus: "idle",
@@ -6686,6 +6700,126 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(repairWakeups).toHaveLength(0);
   });
 
+  it("dispatches interrupted CLI input after the executor releases its lease", async () => {
+    const actualProcess = await vi.importActual<typeof import("../adapters/process/execute.js")>("../adapters/process/execute.js");
+    const { companyId, agentId, issueId, runId } = await seedRunFixture({
+      runtimeMode: "legacy", adapterType: "codex_local", agentStatus: "idle", runStatus: "queued",
+    });
+    await db.update(agents).set({ adapterConfig: {
+      command: process.execPath, args: ["-e", "console.log('ready');setInterval(() => {}, 1000)"], graceSec: 1,
+    } }).where(eq(agents.id, agentId));
+    mockAdapterExecute.mockImplementationOnce((async (input: unknown) =>
+      actualProcess.execute(input as Parameters<typeof actualProcess.execute>[0])) as typeof mockAdapterExecute);
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    expect(await waitForValue(async () => runningProcesses.get(runId))).toBeTruthy();
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "responsible-user", body: "continue" }).returning();
+    const [wake] = await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "responsible-user",
+      payload: { issueId, commentId: comment!.id, _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment!.id] } },
+    }).returning();
+    await heartbeat.cancelRun(runId, "Interrupt queued input", {
+      errorCode: "operator_interrupted", suppressImmediateRecovery: true,
+      resultJson: { operatorInterrupted: true, queuedCommentInterruptQueueId: wake!.id },
+    });
+    await heartbeat.drainActiveRunExecutions();
+    const [updated] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake!.id));
+    expect(updated!.runId).toBeTruthy();
+    expect(updated!.runId).not.toBe(runId);
+    expect((await heartbeat.getRun(updated!.runId!))!.contextSnapshot?.wakeCommentIds).toEqual([comment!.id]);
+  });
+
+  it("retries durable queue interruption after a promotion failure on a fresh service", async () => {
+    const { companyId, agentId, issueId, runId } = await seedRunFixture({
+      runtimeMode: "legacy", adapterType: "codex_local", agentStatus: "idle", runStatus: "cancelled",
+    });
+    const [comment] = await db.insert(issueComments).values({ companyId, issueId, authorUserId: "responsible-user", body: "retry this input" }).returning();
+    const [wake] = await db.insert(agentWakeupRequests).values({
+      companyId, agentId, source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "responsible-user",
+      payload: { issueId, commentId: comment!.id, _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment!.id] } },
+    }).returning();
+    await db.update(heartbeatRuns).set({ resultJson: {
+      queuedCommentInterruptQueueId: wake!.id,
+      executionCancellation: { state: "acknowledged" },
+      conversationContinuation: "continue_conversation_v1",
+    } }).where(eq(heartbeatRuns.id, runId));
+    const failedPromotion = vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("temporary queue promotion outage"));
+    try {
+      await heartbeatService(db).resumeQueuedRuns();
+      expect(failedPromotion).toHaveBeenCalled();
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake!.id)))[0]!.status).toBe("deferred_issue_execution");
+    } finally {
+      failedPromotion.mockRestore();
+    }
+    const restarted = heartbeatService(db);
+    await restarted.resumeQueuedRuns();
+    await restarted.drainActiveRunExecutions();
+    const [updated] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake!.id));
+    expect(updated!.runId).toBeTruthy();
+    expect((await restarted.getRun(updated!.runId!))!.contextSnapshot?.wakeCommentIds).toEqual([comment!.id]);
+    await restarted.resumeQueuedRuns();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(2);
+  });
+
+  it.each(["pending", "discarded", "wrong queue"] as const)(
+    "resumes only the authorized %s queue after an acknowledged legacy interrupt",
+    async (state) => {
+      const { companyId, agentId, issueId, runId } = await seedRunFixture({
+        runtimeMode: "legacy", adapterType: "codex_local", agentStatus: "running",
+      });
+      const heartbeat = heartbeatService(db);
+      const comments = await db.insert(issueComments).values([
+        { companyId, issueId, authorUserId: "responsible-user", body: "First, edited" },
+        { companyId, issueId, authorUserId: "responsible-user", body: "Deleted" },
+        { companyId, issueId, authorUserId: "responsible-user", body: "Third, moved first" },
+      ]).returning();
+      const commentIds = [comments[2]!.id, comments[0]!.id];
+      const [deferred] = await db.insert(agentWakeupRequests).values({
+        companyId, agentId, source: "automation", reason: "issue_commented",
+        status: state === "discarded" ? "cancelled" : "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: "responsible-user",
+        payload: { issueId, commentId: commentIds[0], _paperclipWakeContext: {
+          issueId, wakeReason: "issue_commented", wakeCommentIds: commentIds,
+        } },
+      }).returning();
+      // A different actor's older queue must not consume this interrupt.
+      const [otherComment] = await db.insert(issueComments).values({
+        companyId, issueId, authorUserId: "other-user", body: "Other actor's input",
+      }).returning();
+      await db.insert(agentWakeupRequests).values({
+        companyId, agentId, source: "automation", reason: "issue_commented",
+        status: "deferred_issue_execution", requestedAt: new Date(0),
+        requestedByActorType: "user", requestedByActorId: "other-user",
+        payload: { issueId, commentId: otherComment!.id, _paperclipWakeContext: {
+          issueId, wakeReason: "issue_commented", wakeCommentIds: [otherComment!.id],
+        } },
+      });
+      await heartbeat.cancelRun(runId, "Interrupt queued messages", {
+        suppressImmediateRecovery: true, errorCode: "operator_interrupted",
+        resultJson: {
+          operatorInterrupted: true,
+          queuedCommentInterruptQueueId: state === "wrong queue" ? randomUUID() : deferred!.id,
+          executionCancellation: { state: "acknowledged" },
+          executionRecovery: { kind: "interrupted", providerStopped: true, sessionPreserved: true, actionOutcomes: "settled" },
+        },
+      });
+      await heartbeat.drainActiveRunExecutions();
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      const successors = runs.filter((run) => run.id !== runId)
+        .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
+      expect(successors).toHaveLength(state === "pending" ? 2 : 0);
+      if (state === "pending") {
+        expect(successors[0]!.contextSnapshot?.wakeCommentIds).toEqual(commentIds);
+        // Only the requested turn's normal completion can drain the other queue.
+        expect(successors[1]!.contextSnapshot?.wakeCommentIds).toEqual([otherComment!.id]);
+        await heartbeat.cancelRun(runId, "Duplicate interrupt");
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId))).toHaveLength(3);
+      }
+    },
+  );
+
   it("preserves deferred input on a clean Stop and adopts it once on the next explicit comment", async () => {
     const { companyId, agentId, issueId, runId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "running" });
     const heartbeat = heartbeatService(db);
@@ -7085,7 +7219,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
   });
 
-  it.each([
+  it.each(([
     { mode: "signal", graceful: false, failure: null },
     { mode: "graceful exit", graceful: true, failure: null },
     { mode: "adapter exception", graceful: false, failure: null },
@@ -7106,9 +7240,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       graceful: true,
       failure: "write",
     },
-  ] as const)(
-    "settles an owned process Stop before classifying its $mode",
-    async ({ mode, graceful, failure }) => {
+  ] as const).flatMap((scenario) =>
+    (["process", "codex_local"] as const).map((adapterType) => ({ ...scenario, adapterType })),
+  ))(
+    "settles an owned $adapterType Stop before classifying its $mode",
+    async ({ mode, graceful, failure, adapterType }) => {
+      const stopSignal = adapterType === "codex_local" ? "SIGINT" : "SIGTERM";
       const actualProcess = await vi.importActual<
         typeof import("../adapters/process/execute.js")
       >("../adapters/process/execute.js");
@@ -7158,7 +7295,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           throw new Error("owned termination unconfirmed");
       });
       const { runId, agentId } = await seedRunFixture({
-        adapterType: "process",
+        adapterType,
         agentStatus: "idle",
         runStatus: "queued",
         includeIssue: false,
@@ -7170,7 +7307,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             command: process.execPath,
             args: [
               "-e",
-              `${graceful ? "process.on('SIGTERM', () => process.exit(0));" : ""} console.log('stop ready'); setInterval(() => {}, 1000)`,
+              `${graceful ? `process.on('${stopSignal}', () => process.exit(0));` : ""} console.log('stop ready'); setInterval(() => {}, 1000)`,
             ],
             graceSec: 1,
           },
@@ -7199,7 +7336,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         expect(await waitForValue(async () => observedResult)).toMatchObject(
           graceful
             ? { exitCode: 0, signal: null }
-            : { exitCode: null, signal: "SIGTERM" },
+            : { exitCode: null, signal: stopSignal },
         );
         // The process utility already removed its child record on close. A new
         // service instance must still join the original cancellation owner.
@@ -7222,11 +7359,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         expect((await heartbeat.getRun(runId))?.status).toBe("running");
         expect(duplicateSettled).toBe(false);
         if (failure === "write") {
-          writeSpy = vi
-            .spyOn(db, "transaction")
-            .mockRejectedValueOnce(
-              new Error("owned cancellation write unavailable"),
-            );
+          const error = new Error("owned cancellation write unavailable");
+          writeSpy = adapterType === "codex_local"
+            ? vi.spyOn(db, "update").mockImplementationOnce(() => { throw error; })
+            : vi.spyOn(db, "transaction").mockRejectedValueOnce(error);
         }
       } finally {
         releaseTermination();
@@ -7441,7 +7577,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       );
       expect(mockTerminateLocalService).toHaveBeenCalledWith(
         expect.objectContaining({ pid: 12345, processGroupId: null }),
-        { forceAfterMs: 1000 },
+        { forceAfterMs: 1000, signal: "SIGINT" },
       );
       expect(runningProcesses.has(runId)).toBe(false);
     } finally {
@@ -7474,7 +7610,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     expect(mockTerminateLocalService).toHaveBeenCalledWith(
       expect.objectContaining({ pid: 12_346, processGroupId: null }),
-      { forceAfterMs: 2_000 },
+      { forceAfterMs: 2_000, signal: "SIGINT" },
     );
     expect(runningProcesses.has(runId)).toBe(false);
   });
@@ -7510,7 +7646,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(outcome).toMatchObject({ status: "succeeded", errorCode: null });
     expect(mockTerminateLocalService).toHaveBeenCalledWith(
       expect.objectContaining({ pid: 12_347, processGroupId: null }),
-      { forceAfterMs: 2_000 },
+      { forceAfterMs: 2_000, signal: "SIGINT" },
     );
     await expect(heartbeat.getRun(runId)).resolves.toMatchObject({
       status: "succeeded",
@@ -11359,6 +11495,96 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           await db.select().from(issues).where(eq(issues.id, source.issueId))
         )[0],
       ).toMatchObject({ status: "in_progress", executionRunId: null });
+    },
+  );
+
+  it.each(["issue", "wake", "run", "native", "close", "cancel"] as const)(
+    "rechecks admission after transient database contention: %s",
+    async (mode) => {
+      const source = await seedCommittedChatControlStop();
+      await db.update(chatPublications).set({ state: "pending" })
+        .where(eq(chatPublications.id, source.publicationId));
+      const child = await seedChatAutomaticChild(source);
+      // Board comments use the automation transport but are fresh user work.
+      if (!["close", "cancel"].includes(mode)) {
+        await db.update(agentWakeupRequests).set({
+          requestedByActorType: "user", requestedByActorId: "responsible-user",
+          reason: "issue_commented",
+        }).where(eq(agentWakeupRequests.id, child.wakeupRequestId));
+        await db.update(heartbeatRuns).set({ retryOfRunId: null })
+          .where(eq(heartbeatRuns.id, child.runId));
+      }
+      if (mode === "native") {
+        await db.update(agents).set({
+          adapterType: "paperclip_runner",
+          adapterConfig: { provider: "codex", model: "gpt-5.6-luna" },
+        }).where(eq(agents.id, source.agentId));
+      }
+      const factory = vi.fn(() => { throw new NativeRunnerOwnershipUnverifiedError(); });
+      let release!: () => void;
+      let locked: Promise<unknown> | undefined;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const heartbeat = heartbeatService(db, {
+        nativeSessionBackendFactory: factory,
+        beforeChatControlRecoveryCheck: async ({ stage }) => {
+          if (stage !== "dispatch") return;
+          let ready!: () => void;
+          const acquired = new Promise<void>((resolve) => { ready = resolve; });
+          const held = new Promise<void>((resolve) => { release = resolve; });
+          locked = db.transaction(async (tx) => {
+            if (mode === "wake") {
+              await tx.select().from(agentWakeupRequests)
+                .where(eq(agentWakeupRequests.id, child.wakeupRequestId)).for("update");
+            } else if (mode === "run" || mode === "cancel") {
+              await tx.select().from(heartbeatRuns)
+                .where(eq(heartbeatRuns.id, child.runId)).for("update");
+            } else if (mode === "close") {
+              await tx.select().from(chatConversations)
+                .where(eq(chatConversations.id, source.conversationId)).for("update");
+            } else {
+              await tx.select().from(issues)
+                .where(eq(issues.id, source.issueId)).for("update");
+            }
+            ready();
+            await held;
+            expect(mockAdapterExecute).not.toHaveBeenCalled();
+            expect(factory).not.toHaveBeenCalled();
+            if (mode === "close") {
+              await tx.update(chatPublications).set({ state: "published" })
+                .where(eq(chatPublications.id, source.publicationId));
+            } else if (mode === "cancel") {
+              await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() })
+                .where(eq(heartbeatRuns.id, child.runId));
+            }
+          });
+          await acquired;
+          timer = setTimeout(release, 250);
+        },
+      });
+      try {
+        await heartbeat.resumeQueuedRuns();
+        await heartbeat.drainActiveRunExecutions();
+      } finally {
+        if (timer) clearTimeout(timer);
+        release?.();
+        await locked;
+        await heartbeat.drainActiveRunExecutions();
+      }
+      expect(locked).toBeDefined();
+      const settled = await heartbeat.getRun(child.runId);
+      expect(settled?.errorCode).not.toBe(CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE);
+      if (mode === "native") {
+        expect(factory).toHaveBeenCalledTimes(1);
+        expect(readChatControlRecoveryAdmission(settled!)).toBe("admitted");
+      } else if (mode === "close" || mode === "cancel") {
+        expect(mockAdapterExecute).not.toHaveBeenCalled();
+        expect(settled?.status).toBe("cancelled");
+        if (mode === "close") expect(settled?.errorCode).toBe(CHAT_CONTROL_RECOVERY_STOP_CODE);
+      } else {
+        expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+        expect(settled?.status).toBe("succeeded");
+        expect(readChatControlRecoveryAdmission(settled!)).toBe("admitted");
+      }
     },
   );
 

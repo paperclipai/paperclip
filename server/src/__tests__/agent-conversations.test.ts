@@ -237,6 +237,9 @@ const support = await getEmbeddedPostgresTestSupport();
         ).status,
       ).toBe(422);
       const chatId = resolved[0].body.id;
+      const queuedInterrupt = { queueId: randomUUID(), revision: "queue-revision", targetRunId: randomUUID() };
+      expect((await request(appFor(colleague)).post(`/api/issues/${chatId}/queued-comments/interrupt`)
+        .send(queuedInterrupt)).status).toBe(403);
       for (const body of ["Hello", "/new"]) {
         expect((await request(appFor(colleague)).post(`/api/issues/${chatId}/comments`)
           .send({ body, clientRequestId: randomUUID() })).status).toBe(403);
@@ -279,6 +282,8 @@ const support = await getEmbeddedPostgresTestSupport();
         enableAgentChat: false,
       });
       expect((await request(app).get(path)).status).toBe(404);
+      expect((await request(app).post(`/api/issues/${chatId}/queued-comments/interrupt`)
+        .send(queuedInterrupt)).status).toBe(404);
       expect(
         (await request(app).get(`/api/issues/${resolved[0].body.id}`)).status,
       ).toBe(200);

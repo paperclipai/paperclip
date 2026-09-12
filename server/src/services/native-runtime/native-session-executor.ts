@@ -1,3 +1,4 @@
+import { PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import { resolveConnectorAssignments, isConnectorSkill } from "../connector-runtime.js";
 import {
@@ -6657,6 +6658,8 @@ export async function executePaperclipNativeSession(input: {
   runnerInstanceId: string;
   /** Trusted task identity from the heartbeat orchestration. */
   conversationMode?: boolean;
+  /** Configured total turn bound; zero/unset is unlimited. */
+  turnTimeoutMs?: number;
   leaseOwner?: string;
   restartRecovery?: NativeRestartRecoveryClaim;
   onSpawn?: (meta: {
@@ -6677,8 +6680,6 @@ export async function executePaperclipNativeSession(input: {
   onGoalCheckpoint?: (snapshot: PersistedNativeSession) => Promise<void>;
   sessionGoalControl?: NativeSessionGoalControl | null;
   resumeSessionGoalHeartbeat?: boolean;
-  /** Internal test seam; production rolls over five minutes before runnerd's one-hour lease. */
-  goalRolloverAtMs?: number;
   preparationSpans?: NativeRunHistoricalSpan[];
   /** Resolved adapter env; the runner transport applies a provider allowlist before spawn. */
   runnerEnvironment?: NodeJS.ProcessEnv;
@@ -7646,6 +7647,17 @@ async function executePaperclipNativeSessionWithinScope(
       input.db,
       input.execution.binding,
     );
+    // Invalidate prior stop evidence before a backend can spawn. A crash between
+    // spawn and the PID callback must not make an old receipt authorize a turn.
+    await appendHeartbeatRunEvent(input.db, {
+      companyId: input.execution.binding.companyId,
+      runId: input.execution.binding.runId,
+      agentId: input.execution.binding.agentId,
+      eventType: PROCESS_START_REQUESTED,
+      stream: "system",
+      level: "info",
+      message: "Native execution requested; prior local stop evidence no longer applies.",
+    });
     const runnerdBackend =
       input.useRunnerd && input.backend === undefined
         ? await createRunnerdBackend({
@@ -7680,6 +7692,7 @@ async function executePaperclipNativeSessionWithinScope(
           executeNativeSession({
             input: runnerExecution,
             remoteCleanupScope: remoteCleanupLease ? remoteLeaseCleanupScope(remoteCleanupLease) : undefined,
+            turnTimeoutMs: input.turnTimeoutMs,
             backend:
               input.backend ??
               runnerdBackend ??

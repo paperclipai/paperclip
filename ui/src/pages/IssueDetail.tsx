@@ -3,6 +3,7 @@ import { agentChatDraft } from "@/lib/agent-chat-draft";
 import { Settings as ChatSettings } from "lucide-react";
 import { agentDetailHref } from "./agent-detail-navigation";
 import { deriveInitials } from "@/components/Identity";
+import { ExecutionBlockerNotice } from "../components/ExecutionBlockerNotice";
 import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { EmailThreadProvider } from "../components/EmailMessageCard";
@@ -1494,7 +1495,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const queuedCommentQueueEnabled =
     !classicTaskInterfaceEnabled &&
     runtimeSelectionKnown &&
-    Boolean(liveRuntimeRun || assigneeUsesPaperclipRunner);
+    Boolean(liveRuntimeRun || issueAssigneeAgentId);
   const { data: authoritativeQueuedCommentQueue } = useQuery({
     queryKey: queryKeys.issues.queuedComments(issueId),
     queryFn: async () =>
@@ -1503,7 +1504,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         issueId,
       ),
     enabled: queuedCommentQueueEnabled,
-    refetchInterval: queuedCommentQueueEnabled ? 1000 : false,
+    refetchInterval: (query) => queuedCommentQueueEnabled &&
+      (liveRuntimeRun || query.state.data?.entries.length) ? 1000 : false,
   });
   const [consumedQueuedCommentIds, setConsumedQueuedCommentIds] = useState<
     ReadonlySet<string>
@@ -3673,7 +3675,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       breadcrumbStatus ? (
         <StatusIcon
           status={breadcrumbStatus}
-          size="lg"
+          className="size-3"
           blockerAttention={breadcrumbBlockerAttention}
         />
       ) : undefined,
@@ -4949,93 +4951,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const interruptQueuedComment = useMutation({
-    mutationFn: (runId: string) => heartbeatsApi.cancel(runId),
-    onMutate: async (runId) => {
-      await Promise.all(
-        issueCacheRefs.flatMap((ref) => [
-          queryClient.cancelQueries({ queryKey: queryKeys.issues.runs(ref) }),
-          queryClient.cancelQueries({
-            queryKey: queryKeys.issues.liveRuns(ref),
-          }),
-          queryClient.cancelQueries({
-            queryKey: queryKeys.issues.activeRun(ref),
-          }),
-          queryClient.cancelQueries({ queryKey: queryKeys.issues.detail(ref) }),
-        ]),
-      );
-
-      const previousRunState = issueCacheRefs.map((ref) => ({
-        ref,
-        runs: queryClient.getQueryData<RunForIssue[]>(
-          queryKeys.issues.runs(ref),
-        ),
-        liveRuns: queryClient.getQueryData<LiveRunForIssue[]>(
-          queryKeys.issues.liveRuns(ref),
-        ),
-        activeRun: queryClient.getQueryData<ActiveRunForIssue | null>(
-          queryKeys.issues.activeRun(ref),
-        ),
-        issue: queryClient.getQueryData<Issue>(queryKeys.issues.detail(ref)),
-      }));
-      const previousLocalQueuedCommentRunIds = locallyQueuedCommentRunIds;
-      const cachedActiveRun =
-        previousRunState.find((state) => state.activeRun?.id === runId)
-          ?.activeRun ??
-        previousRunState.find((state) => state.activeRun)?.activeRun ??
-        null;
-      const liveRunList = dedupeLiveRunsById(
-        previousRunState.flatMap((state) => state.liveRuns ?? []),
-      );
-      const interruptibleIssueRun = resolveInterruptibleIssueRun(
-        cachedActiveRun,
-        liveRunList,
-      );
-      const targetRun =
-        cachedActiveRun?.id === runId
-          ? cachedActiveRun
-          : (liveRunList?.find((run) => run.id === runId) ??
-            interruptibleIssueRun ??
-            null);
-
-      if (targetRun) {
-        const interruptedAt = new Date().toISOString();
-        for (const ref of issueCacheRefs) {
-          queryClient.setQueryData<RunForIssue[] | undefined>(
-            queryKeys.issues.runs(ref),
-            (current) =>
-              upsertInterruptedRun(current, targetRun, interruptedAt),
-          );
-        }
+    mutationFn: async (runId: string) => {
+      const queue = await issuesApi.getQueuedComments(issueId!);
+      if (!queue.queueId || queue.targetRunId !== runId) {
+        throw new Error("The queued messages changed. Refresh and try again.");
       }
-
-      for (const ref of issueCacheRefs) {
-        queryClient.setQueryData(
-          queryKeys.issues.liveRuns(ref),
-          (current: LiveRunForIssue[] | undefined) =>
-            removeLiveRunById(current, runId),
-        );
-        queryClient.setQueryData(
-          queryKeys.issues.activeRun(ref),
-          (current: ActiveRunForIssue | null | undefined) =>
-            current?.id === runId ? null : current,
-        );
-        queryClient.setQueryData(
-          queryKeys.issues.detail(ref),
-          (current: Issue | undefined) =>
-            clearIssueExecutionRun(current, runId),
-        );
-      }
-      setLocallyQueuedCommentRunIds((current) => {
-        const next = new Map(
-          [...current].filter(([, targetRunId]) => targetRunId !== runId),
-        );
-        return next.size === current.size ? current : next;
+      return issuesApi.interruptQueuedComments(issueId!, {
+        queueId: queue.queueId, revision: queue.revision, targetRunId: runId,
       });
-
-      return {
-        previousRunState,
-        previousLocalQueuedCommentRunIds,
-      };
     },
     onSuccess: () => {
       invalidateIssueDetail();
@@ -5046,25 +4969,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         tone: "success",
       });
     },
-    onError: (err, _runId, context) => {
-      for (const state of context?.previousRunState ?? []) {
-        queryClient.setQueryData(queryKeys.issues.runs(state.ref), state.runs);
-        queryClient.setQueryData(
-          queryKeys.issues.liveRuns(state.ref),
-          state.liveRuns,
-        );
-        queryClient.setQueryData(
-          queryKeys.issues.activeRun(state.ref),
-          state.activeRun,
-        );
-        queryClient.setQueryData(
-          queryKeys.issues.detail(state.ref),
-          state.issue,
-        );
-      }
-      if (context?.previousLocalQueuedCommentRunIds) {
-        setLocallyQueuedCommentRunIds(context.previousLocalQueuedCommentRunIds);
-      }
+    onError: (err) => {
+      invalidateIssueDetail();
+      invalidateIssueRunState();
       pushToast({
         title: "Interrupt failed",
         body:
@@ -7703,23 +7610,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               }
             >
               {issue.executionBlocker && (
-                <div
-                  role="status"
-                  className="px-(--sz-execution-blocker-inline) py-(--sz-execution-blocker-block) text-sm text-muted-foreground"
-                >
-                  <span>
-                    Work cannot start. {issue.executionBlocker.nextAction}
-                  </span>{" "}
-                  {issue.executionBlocker.runId &&
-                    issue.executionBlocker.agentId && (
-                      <Link
-                        className="underline"
-                        to={`/agents/${issue.executionBlocker.agentId}/runs/${issue.executionBlocker.runId}`}
-                      >
-                        View stopped run
-                      </Link>
-                    )}
-                </div>
+                <ExecutionBlockerNotice companyId={issue.companyId} issueId={issue.id} blocker={issue.executionBlocker} onRetried={invalidateIssueDetail} />
               )}
               {resolvedDetailTab === "chat" ? (
                 <IssueDetailChatTab

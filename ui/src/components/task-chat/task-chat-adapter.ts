@@ -54,28 +54,12 @@ export function formatTaskChatTimestamp(value: unknown): string | undefined {
   return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
-/**
- * Follow-up inputs render at the causal slot where a runner consumed them.
- * Keep their original submission time visible as well so the reordered bubble
- * cannot look like it travelled backwards in the conversation.
- */
+/** Keep every comment footer on the same compact, user-visible timestamp. */
 export function formatTaskChatCommentTimestamp(
   comment: IssueChatComment,
-  kind: TaskChatAuthorKind,
+  _kind: TaskChatAuthorKind,
 ): string | undefined {
-  const queuedAt = formatTaskChatTimestamp(comment.createdAt);
-  const deliveredAt = formatTaskChatTimestamp(comment.conversationAnchorAt);
-  const isDeliveredFollowUp = Boolean(
-    kind === "human" &&
-    comment.conversationAnchorAt &&
-    comment.consumedByRunId &&
-    (comment.followUpRequested || comment.steeredIntoRunId),
-  );
-  if (!isDeliveredFollowUp) return queuedAt;
-
-  if (!queuedAt || !deliveredAt) return queuedAt ?? deliveredAt;
-  const action = comment.steeredIntoRunId ? "Steered" : "Delivered";
-  return `Queued ${queuedAt} · ${action} ${deliveredAt}`;
+  return formatTaskChatTimestamp(comment.createdAt);
 }
 
 export function commentsToTaskChatItems(

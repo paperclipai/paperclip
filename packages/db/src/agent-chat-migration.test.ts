@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { applyPendingMigrations, inspectMigrations } from "./client.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
-const migrationFile = "0273_agent_chat.sql";
+const migrationFile = "0274_agent_chat.sql";
 const migrationSql = await readFile(new URL(`./migrations/${migrationFile}`, import.meta.url), "utf8");
 const migrationHash = createHash("sha256").update(migrationSql).digest("hex");
 const cleanups: Array<() => Promise<void>> = [];
