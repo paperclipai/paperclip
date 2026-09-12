@@ -227,6 +227,57 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("Allowed by explicit grant tasks:assign");
   });
 
+  it("limits ambiguous legacy user grants to the active membership role", async () => {
+    const company = await createCompany(db, "LegacyGrantRoleCeiling");
+    const userId = `user-${randomUUID()}`;
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "admin",
+    });
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      permissionKey: "tools:admin",
+      grantOrigin: "legacy_unknown",
+    });
+
+    const service = authorizationService(db);
+    await expect(service.decidePrincipalGrant({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      action: "tools:admin",
+      permissionKey: "tools:admin",
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_role_default" });
+
+    await db
+      .update(companyMemberships)
+      .set({ membershipRole: "operator" })
+      .where(and(
+        eq(companyMemberships.companyId, company.id),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+      ));
+
+    await expect(service.decidePrincipalGrant({
+      companyId: company.id,
+      principalType: "user",
+      principalId: userId,
+      action: "tools:admin",
+      permissionKey: "tools:admin",
+    })).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+    await expect(db.select().from(principalPermissionGrants).where(and(
+      eq(principalPermissionGrants.companyId, company.id),
+      eq(principalPermissionGrants.principalId, userId),
+    ))).resolves.toEqual([
+      expect.objectContaining({ permissionKey: "tools:admin", grantOrigin: "legacy_unknown" }),
+    ]);
+  });
+
   it("allows suggest grants to read peer agent configuration", async () => {
     const company = await createCompany(db, "AgentReadGrant");
     const actorAgent = await createAgent(db, company.id);

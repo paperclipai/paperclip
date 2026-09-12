@@ -697,6 +697,18 @@ export function authorizationService(db: Db | DbTransaction) {
       });
     }
 
+    const legacyGrantMatchesCurrentRole = grant.grantOrigin !== "legacy_unknown"
+      || input.principalType !== "user"
+      || grantsForHumanRole(normalizeHumanRole(membership.membershipRole, "operator"))
+        .some((defaultGrant) => defaultGrant.permissionKey === input.permissionKey);
+    if (!legacyGrantMatchesCurrentRole) {
+      return deny({
+        action: input.action,
+        reason: "deny_missing_grant",
+        explanation: `Missing permission: ${input.permissionKey}.`,
+      });
+    }
+
     if (
       !(await scopeAllows(db, input.companyId, grant.scope, input.scope, {
         requireStructuredScope: input.permissionKey === "tasks:assign_scope",
@@ -717,8 +729,10 @@ export function authorizationService(db: Db | DbTransaction) {
 
     return allow({
       action: input.action,
-      reason: "allow_explicit_grant",
-      explanation: `Allowed by explicit grant ${input.permissionKey}.`,
+      reason: grant.grantOrigin === "legacy_unknown" ? "allow_role_default" : "allow_explicit_grant",
+      explanation: grant.grantOrigin === "legacy_unknown"
+        ? `Allowed by the ${membership.membershipRole ?? "operator"} membership role.`
+        : `Allowed by explicit grant ${input.permissionKey}.`,
       grant: {
         principalType: input.principalType,
         principalId: input.principalId,
