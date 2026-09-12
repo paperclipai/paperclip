@@ -1463,7 +1463,22 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 chooseLabel="Choose manager…"
               />
             </Field>
-            {isLocal && !props.hidePromptTemplate && (
+            <Field label="Capabilities" hint={help.capabilities}>
+              <MarkdownEditor
+                value={eff("identity", "capabilities", props.agent.capabilities ?? "") ?? ""}
+                onChange={(v) => mark("identity", "capabilities", v || null)}
+                placeholder="Describe what this agent can do..."
+                contentClassName="min-h-(--sz-44px) text-sm font-mono"
+                imageUploadHandler={async (file) => {
+                  const asset = await uploadMarkdownImage.mutateAsync({
+                    file,
+                    namespace: `agents/${props.agent.id}/capabilities`,
+                  });
+                  return asset.contentPath;
+                }}
+              />
+            </Field>
+            {!props.hidePromptTemplate && (
               <>
                 <Field label="Prompt Template" hint={help.promptTemplate}>
                   <MarkdownEditor
@@ -1482,8 +1497,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     }}
                   />
                 </Field>
-                <div className="rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-100">
-                  Prompt template is replayed on every heartbeat. Keep it compact and dynamic to avoid recurring token cost and cache churn.
+                <div className="rounded-md border border-border bg-muted/25 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                  Optional. Managed instructions live in the Instructions tab. The prompt template controls the run framing sent to the adapter and can use Paperclip template variables.
                 </div>
               </>
             )}
