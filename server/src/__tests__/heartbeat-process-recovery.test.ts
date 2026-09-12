@@ -1,3 +1,4 @@
+import * as controllerLeases from "../services/legacy-controller-lease.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
@@ -6698,6 +6699,45 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       resolutionNote: "owner_not_invokable",
     });
     expect(repairWakeups).toHaveLength(0);
+  });
+
+  it("stops controller renewal and releases execution controls when teardown deadline cleanup throws", async () => {
+    const { runId, issueId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued" });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, issueId));
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null, summary: "Completed the turn.", provider: "test", model: "test-model" };
+    });
+    const originalWatch = controllerLeases.watchLegacyControllerLease;
+    const stopped = vi.fn();
+    const watcher = vi.spyOn(controllerLeases, "watchLegacyControllerLease").mockImplementation((...args) => {
+      const lease = originalWatch(...args);
+      return { ...lease, stop() { stopped(); lease.stop(); } };
+    });
+    const originalUpdate = db.update.bind(db);
+    const cleanupFailure = vi.fn(() => { throw new Error("fixture_deadline_cleanup_failure"); });
+    const update = vi.spyOn(db, "update").mockImplementation(((table: typeof heartbeatRuns) => {
+      const builder = originalUpdate(table);
+      const originalSet = builder.set.bind(builder);
+      builder.set = ((values: Record<string, unknown>) => {
+        if (table === heartbeatRuns && Object.keys(values).length === 1 && values.executionControlDeadlineAt === null) {
+          return { where: async () => cleanupFailure() };
+        }
+        return originalSet(values);
+      }) as typeof builder.set;
+      return builder;
+    }) as typeof db.update);
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions().catch(() => undefined);
+      expect(cleanupFailure).toHaveBeenCalledTimes(1);
+      expect(stopped).toHaveBeenCalledTimes(1);
+      expect(adapterExecutionControls.has(runId)).toBe(false);
+      expect((await heartbeat.getRun(runId))?.status).not.toBe("running");
+    } finally {
+      update.mockRestore();
+      watcher.mockRestore();
+    }
   });
 
   it("dispatches interrupted CLI input after the executor releases its lease", async () => {

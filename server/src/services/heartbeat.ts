@@ -24910,179 +24910,182 @@ export function heartbeatService(
       }
     } finally {
       let latestRun = await getRun(run.id).catch(() => null);
-      if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
-        await db
-          .update(heartbeatRuns)
-          .set({ executionControlDeadlineAt: null })
-          .where(eq(heartbeatRuns.id, run.id));
-      }
-      nativeOwnershipHeld =
-        nativeOwnershipHeld ||
-        Boolean(latestRun && isNativeRunnerOwnershipHeld(latestRun));
-      // Trace capture is debug-only and must settle independently of every
-      // provider outcome. Adapter/setup failures used to skip the success-path
-      // finalizer, leaving metadata permanently stuck at `capturing` even when
-      // runnerd had already closed (or never managed to write) its sidecar.
-      // Same-run native resumes retain the open capture until the resumed
-      // execution reaches a true terminal boundary.
-      if (
-        providerTraceCapture &&
-        !providerTraceFinalized &&
-        !nativeSessionResumeScheduled
-      ) {
-        try {
-          await traceStore.finalize(run.id, run.companyId);
-          providerTraceFinalized = true;
-        } catch (traceFinalizeError) {
-          logger.warn(
-            { err: traceFinalizeError, runId: run.id },
-            "provider trace finalization failed during heartbeat teardown",
+      try {
+        if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
+          await db
+            .update(heartbeatRuns)
+            .set({ executionControlDeadlineAt: null })
+            .where(eq(heartbeatRuns.id, run.id));
+        }
+        nativeOwnershipHeld =
+          nativeOwnershipHeld ||
+          Boolean(latestRun && isNativeRunnerOwnershipHeld(latestRun));
+        // Trace capture is debug-only and must settle independently of every
+        // provider outcome. Adapter/setup failures used to skip the success-path
+        // finalizer, leaving metadata permanently stuck at `capturing` even when
+        // runnerd had already closed (or never managed to write) its sidecar.
+        // Same-run native resumes retain the open capture until the resumed
+        // execution reaches a true terminal boundary.
+        if (
+          providerTraceCapture &&
+          !providerTraceFinalized &&
+          !nativeSessionResumeScheduled
+        ) {
+          try {
+            await traceStore.finalize(run.id, run.companyId);
+            providerTraceFinalized = true;
+          } catch (traceFinalizeError) {
+            logger.warn(
+              { err: traceFinalizeError, runId: run.id },
+              "provider trace finalization failed during heartbeat teardown",
+            );
+          }
+        }
+        // Close the invariant "environment lease released implies the run is
+        // terminal". When the teardown reaches this point with the run still
+        // running or queued, force a terminal status before the lease is
+        // released, so the UI never shows a finished task as "Live".
+        if (
+          latestRun &&
+          !nativeSessionResumeScheduled &&
+          !nativeWorkspaceFinalizeScheduled &&
+          !nativeOwnershipHeld
+        ) {
+          latestRun = await terminalizeRunOnLeaseRelease(latestRun).catch(
+            (terminalizeErr) => {
+              logger.error(
+                { err: terminalizeErr, runId: run.id },
+                "failed to terminalize run before environment lease release",
+              );
+              return latestRun;
+            },
           );
         }
-      }
-      // Close the invariant "environment lease released implies the run is
-      // terminal". When the teardown reaches this point with the run still
-      // running or queued, force a terminal status before the lease is
-      // released, so the UI never shows a finished task as "Live".
-      if (
-        latestRun &&
-        !nativeSessionResumeScheduled &&
-        !nativeWorkspaceFinalizeScheduled &&
-        !nativeOwnershipHeld
-      ) {
-        latestRun = await terminalizeRunOnLeaseRelease(latestRun).catch(
-          (terminalizeErr) => {
-            logger.error(
-              { err: terminalizeErr, runId: run.id },
-              "failed to terminalize run before environment lease release",
-            );
-            return latestRun;
-          },
-        );
-      }
-      // Warm retention is earned only by a fully successful turn. A failed,
-      // cancelled, or timed-out run stops the reusable sandbox so the next
-      // acquisition must revalidate and explicitly resume it.
-      nativeOwnershipHeld =
-        nativeOwnershipHeld ||
-        Boolean(latestRun && isNativeRunnerOwnershipHeld(latestRun));
-      providerResourceDispositionForRun =
-        providerResourceDispositionForTerminalRun(
-          providerResourceDispositionForRun,
-          latestRun?.status,
-        );
-      if (
-        !nativeSessionResumeScheduled &&
-        !nativeWorkspaceFinalizeScheduled &&
-        !nativeOwnershipHeld
-      ) {
-        // Keep launchers during same-run recovery. At a terminal boundary all
-        // operations have settled; clean before the remote lease can be stopped.
+        // Warm retention is earned only by a fully successful turn. A failed,
+        // cancelled, or timed-out run stops the reusable sandbox so the next
+        // acquisition must revalidate and explicitly resume it.
+        nativeOwnershipHeld =
+          nativeOwnershipHeld ||
+          Boolean(latestRun && isNativeRunnerOwnershipHeld(latestRun));
+        providerResourceDispositionForRun =
+          providerResourceDispositionForTerminalRun(
+            providerResourceDispositionForRun,
+            latestRun?.status,
+          );
         if (
-          githubLauncherLocation &&
+          !nativeSessionResumeScheduled &&
+          !nativeWorkspaceFinalizeScheduled &&
+          !nativeOwnershipHeld
+        ) {
+          // Keep launchers during same-run recovery. At a terminal boundary all
+          // operations have settled; clean before the remote lease can be stopped.
+          if (
+            githubLauncherLocation &&
+            latestRun &&
+            isHeartbeatRunTerminalStatus(latestRun.status)
+          ) {
+            await cleanupGitHubOperationLaunchers(githubLauncherLocation).catch(
+              (err) => {
+                logger.warn(
+                  { err, runId: run.id },
+                  "failed to clean managed GitHub launchers",
+                );
+              },
+            );
+          }
+          await releaseEnvironmentLeasesForRun({
+            runId: run.id,
+            companyId: run.companyId,
+            agentId: run.agentId,
+            status: latestRun?.status,
+            failureReason: latestRun?.error ?? undefined,
+            providerResourceDisposition: providerResourceDispositionForRun,
+            nativeLifecycleTelemetry: nativeLifecycleTelemetryForRun,
+          });
+          await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
+        }
+        if (
+          runScratch &&
           latestRun &&
           isHeartbeatRunTerminalStatus(latestRun.status)
         ) {
-          await cleanupGitHubOperationLaunchers(githubLauncherLocation).catch(
-            (err) => {
-              logger.warn(
-                { err, runId: run.id },
-                "failed to clean managed GitHub launchers",
-              );
-            },
-          );
-        }
-        await releaseEnvironmentLeasesForRun({
-          runId: run.id,
-          companyId: run.companyId,
-          agentId: run.agentId,
-          status: latestRun?.status,
-          failureReason: latestRun?.error ?? undefined,
-          providerResourceDisposition: providerResourceDispositionForRun,
-          nativeLifecycleTelemetry: nativeLifecycleTelemetryForRun,
-        });
-        await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
-      }
-      if (
-        runScratch &&
-        latestRun &&
-        isHeartbeatRunTerminalStatus(latestRun.status)
-      ) {
-        const scratchForCleanup = runScratch;
-        let scratchCleanup: Awaited<
-          ReturnType<typeof cleanupHeartbeatRunScratch>
-        > | null = null;
-        try {
-          scratchCleanup = await cleanupHeartbeatRunScratch({
-            scratch: scratchForCleanup,
-            processGroupId: latestRun.processGroupId,
-            isProcessGroupAlive,
-          });
-        } catch (scratchCleanupError) {
-          logger.warn(
-            {
-              err: scratchCleanupError,
-              runId: run.id,
-              scratchDir: scratchForCleanup.dir,
-            },
-            "failed to clean heartbeat run scratch directory",
-          );
-          await appendRunEvent(latestRun, {
-            eventType: "error",
-            stream: "system",
-            level: "warn",
-            message: "run scratch cleanup failed",
-            payload: {
-              dir: scratchForCleanup.dir,
-              error:
-                scratchCleanupError instanceof Error
-                  ? scratchCleanupError.message
-                  : String(scratchCleanupError),
-            },
-          }).catch(() => undefined);
-        }
-        if (scratchCleanup) {
-          await appendRunEvent(latestRun, {
-            eventType: "lifecycle",
-            stream: "system",
-            level: scratchCleanup.removed ? "info" : "warn",
-            message: scratchCleanup.removed
-              ? "run scratch cleaned"
-              : `run scratch cleanup skipped: ${scratchCleanup.reason}`,
-            payload: scratchCleanup,
-          }).catch((scratchCleanupEventError) => {
+          const scratchForCleanup = runScratch;
+          let scratchCleanup: Awaited<
+            ReturnType<typeof cleanupHeartbeatRunScratch>
+          > | null = null;
+          try {
+            scratchCleanup = await cleanupHeartbeatRunScratch({
+              scratch: scratchForCleanup,
+              processGroupId: latestRun.processGroupId,
+              isProcessGroupAlive,
+            });
+          } catch (scratchCleanupError) {
             logger.warn(
               {
-                err: scratchCleanupEventError,
+                err: scratchCleanupError,
                 runId: run.id,
                 scratchDir: scratchForCleanup.dir,
               },
-              "failed to record heartbeat run scratch cleanup event",
+              "failed to clean heartbeat run scratch directory",
             );
+            await appendRunEvent(latestRun, {
+              eventType: "error",
+              stream: "system",
+              level: "warn",
+              message: "run scratch cleanup failed",
+              payload: {
+                dir: scratchForCleanup.dir,
+                error:
+                  scratchCleanupError instanceof Error
+                    ? scratchCleanupError.message
+                    : String(scratchCleanupError),
+              },
+            }).catch(() => undefined);
+          }
+          if (scratchCleanup) {
+            await appendRunEvent(latestRun, {
+              eventType: "lifecycle",
+              stream: "system",
+              level: scratchCleanup.removed ? "info" : "warn",
+              message: scratchCleanup.removed
+                ? "run scratch cleaned"
+                : `run scratch cleanup skipped: ${scratchCleanup.reason}`,
+              payload: scratchCleanup,
+            }).catch((scratchCleanupEventError) => {
+              logger.warn(
+                {
+                  err: scratchCleanupEventError,
+                  runId: run.id,
+                  scratchDir: scratchForCleanup.dir,
+                },
+                "failed to record heartbeat run scratch cleanup event",
+              );
+            });
+          }
+        }
+        // Interrupting a queued message explicitly authorizes the pending queue.
+        // Retry its normal promotion after leases and adapter cleanup have settled;
+        // the earlier terminal write can still have an execution blocker here.
+        if (
+          latestRun?.status === "cancelled" &&
+          latestRun.runtimeMode !== "native" &&
+          readNonEmptyString(latestRun.resultJson?.queuedCommentInterruptQueueId)
+        ) {
+          await releaseIssueExecutionAndPromote(latestRun, { suppressImmediateRecovery: true }).catch((err) => {
+            logger.error({ err, runId: run.id }, "failed to promote interrupted comment queue after cleanup");
           });
         }
-      }
-      // Interrupting a queued message explicitly authorizes the pending queue.
-      // Retry its normal promotion after leases and adapter cleanup have settled;
-      // the earlier terminal write can still have an execution blocker here.
-      if (
-        latestRun?.status === "cancelled" &&
-        latestRun.runtimeMode !== "native" &&
-        readNonEmptyString(latestRun.resultJson?.queuedCommentInterruptQueueId)
-      ) {
-        await releaseIssueExecutionAndPromote(latestRun, { suppressImmediateRecovery: true }).catch((err) => {
-          logger.error({ err, runId: run.id }, "failed to promote interrupted comment queue after cleanup");
-        });
-      }
-      controllerLease.stop();
-      activeRunExecutions.delete(run.id);
-      // A failed owned Stop remains visible until this exact executor settles,
-      // including a graceful exit result arriving after the cancellation error.
-      // It is never retained beyond the active execution's cleanup.
-      failedProcessRunCancellations.delete(run.id);
-      executionControl.finish();
-      if (adapterExecutionControls.get(run.id) === executionControl) {
-        adapterExecutionControls.delete(run.id);
+      } finally {
+        controllerLease.stop();
+        activeRunExecutions.delete(run.id);
+        // A failed owned Stop remains visible until this exact executor settles,
+        // including a graceful exit result arriving after the cancellation error.
+        // It is never retained beyond the active execution's cleanup.
+        failedProcessRunCancellations.delete(run.id);
+        executionControl.finish();
+        if (adapterExecutionControls.get(run.id) === executionControl) {
+          adapterExecutionControls.delete(run.id);
+        }
       }
       if (
         !nativeSessionResumeScheduled &&
