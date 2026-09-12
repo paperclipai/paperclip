@@ -46,8 +46,10 @@ import type {
   IssueThreadInteractionKind,
   IssueThreadInteractionResolverPolicy,
   IssueThreadInteractionResolverPolicyProvenance,
+  IssueThreadInteractionResult,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
+  RequestConfirmationSecretProposalResult,
   RequestConfirmationTarget,
   RequestItemVerdictsInteraction,
   RequestItemVerdictsResult,
@@ -951,7 +953,7 @@ function buildAdministrativeOutcomeResult(
   row: IssueThreadInteractionRow,
   outcome: "withdrawn" | "issue_closed" | "addressee_deleted",
   reason: string | null = null,
-) {
+): IssueThreadInteractionResult {
   if (row.kind === "connection_intent") {
     return { version: 1, outcome: "expired", reason } as const;
   }
@@ -976,19 +978,19 @@ function buildAdministrativeOutcomeResult(
       items: interaction.result?.items ?? [],
     } satisfies RequestItemVerdictsResult;
   }
+  // Spelling the secret-proposal branch out, rather than spreading an inline
+  // object literal, holds `status` and `version` to their literal types. The
+  // spread widened them structurally, so the declared return type above could
+  // not catch a wrong value here.
+  const secretProposalStatus: "withdrawn" | "expired" = outcome === "withdrawn" ? "withdrawn" : "expired";
+  const secretProposal: RequestConfirmationSecretProposalResult | undefined = linkedSecretProposalId(row)
+    ? { version: 1, status: secretProposalStatus, updatedAt: new Date().toISOString() }
+    : undefined;
   return {
     version: 1,
     outcome,
     reason,
-    ...(linkedSecretProposalId(row)
-      ? {
-          secretProposal: {
-            version: 1,
-            status: outcome === "withdrawn" ? "withdrawn" : "expired",
-            updatedAt: new Date().toISOString(),
-          },
-        }
-      : {}),
+    ...(secretProposal ? { secretProposal } : {}),
   } as const;
 }
 
