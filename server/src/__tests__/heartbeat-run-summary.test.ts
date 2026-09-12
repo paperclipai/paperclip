@@ -448,6 +448,19 @@ describe("resolveHeartbeatRunResponse", () => {
     });
   });
 
+  it("persists a final assistant reply when the server completed a conversation turn", () => {
+    expect(resolveHeartbeatRunResponse({
+      conversationTurnFinished: true,
+      resultJson: { nativeResult: { schema: "paperclip.run_result.v1",
+        reportedWorkDisposition: "yielded", summary: "Waiting for the next message." } },
+      finalAgentMessage: { text: "Which project should own this?",
+        sourceEventId: "chat-final-1", channel: "final" },
+    })).toMatchObject({
+      text: "Which project should own this?",
+      decision: { commentAction: "create", sourceEventId: "chat-final-1" },
+    });
+  });
+
   it("does not render a serialized semantic result as the final prose", () => {
     expect(
       resolveHeartbeatRunResponse({

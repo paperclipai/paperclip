@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 
 const {
@@ -71,8 +74,17 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 import { testEnvironment } from "./test.js";
 
 describe("opencode remote environment diagnostics", () => {
-  afterEach(() => {
+  let configHome: string;
+
+  beforeEach(async () => {
+    configHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-config-"));
+    vi.stubEnv("XDG_CONFIG_HOME", configHome);
+  });
+
+  afterEach(async () => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
+    await rm(configHome, { recursive: true, force: true });
   });
 
   it("stages remote runtime config assets for sandbox hello probes", async () => {

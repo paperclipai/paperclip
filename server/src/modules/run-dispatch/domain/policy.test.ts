@@ -389,6 +389,16 @@ describe("decideQueuedRunStaleness", () => {
     });
   });
 
+  it("allows a resolved non-connection interaction to claim its review task", () => {
+    expect(decideQueuedRunStaleness({
+      ...baseStalenessFacts(),
+      isResolvedInteractionContinuation: true,
+      isConnectionContinuation: false,
+      issueStatus: "in_review",
+      reviewParticipant: { ...NO_PARTICIPANT, isInReview: true },
+    }, NOW)).toEqual({ stale: false });
+  });
+
   it("does not cancel a parked continuation summary when the classifier says it does not park the executor", () => {
     const facts: QueuedRunFacts = {
       ...baseStalenessFacts(),

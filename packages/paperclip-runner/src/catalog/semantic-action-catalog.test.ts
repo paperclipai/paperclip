@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 import Ajv2020 from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
+import { createTaskAction } from "../protocol-actions/create-task.js";
+import { createProjectAction } from "../protocol-actions/create-project.js";
 
 import {
   PAPERCLIP_SEMANTIC_ACTION_CATALOG,
@@ -18,12 +20,44 @@ const packageRoot = resolve(
 );
 
 describe("semantic action catalog", () => {
+  it("limits project repository URLs to HTTPS GitHub repository paths on both tool surfaces", () => {
+    const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
+    for (const schema of [createProjectAction.live.descriptor.inputSchema, paperclipSemanticAction("create_project")!.inputSchema]) {
+      const validate = ajv.compile(schema);
+      const input = { name: "Project", idempotencyKey: "create-project-1" };
+      expect(validate({ ...input, repositoryUrls: ["https://github.com/org/repo", "https://github.com/org/other.git/"] })).toBe(true);
+      for (const url of [
+        "http://github.com/org/repo", "file:///etc/passwd", "data:text/plain,repo",
+        "https://localhost/org/repo", "https://127.0.0.1/org/repo", "https://10.0.0.1/org/repo",
+        "https://github.com.evil.test/org/repo", "https://token@github.com/org/repo",
+        "https://github.com:8443/org/repo", "https://github.com/org/repo?token=secret",
+        "https://github.com/org/repo#fragment", "https://github.com/org/repo/tree/main",
+        "https://github.com/../repo", "https://github.com/org/..",
+      ]) expect(validate({ ...input, repositoryUrls: [url] }), url).toBe(false);
+    }
+  });
+
+  it("accepts project handoff receipts and preserves ordinary child task receipts", () => {
+    const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: true });
+    const validate = ajv.compile(createTaskAction.live.descriptor.outputSchema);
+    const receipt = {
+      commandId: "create-task-1", disposition: "applied", stateRevision: 1,
+      entityRefs: ["task-1"], scheduledWakeIds: ["wake-1"],
+      task: { id: "task-1", identifier: "CHAT-1", parentId: null, projectId: "project-1", status: "todo", assigneeActorId: "agent-1" },
+    };
+    expect(validate(receipt), JSON.stringify(validate.errors)).toBe(true);
+    const { projectId: _projectId, ...childTask } = receipt.task;
+    expect(validate({ ...receipt, task: { ...childTask, parentId: "parent-1" } })).toBe(true);
+    expect(validate({ ...receipt, task: { ...receipt.task, projectId: 42 } })).toBe(false);
+    expect(validate({ ...receipt, task: { ...receipt.task, parentId: "" } })).toBe(false);
+  });
+
   it("defines one immutable v1 declaration for each Codex-spine action", () => {
     const operationIds = PAPERCLIP_SEMANTIC_ACTION_CATALOG.map(
       (action) => action.operationId,
     );
 
-    expect(operationIds).toHaveLength(29);
+    expect(operationIds).toHaveLength(32);
     expect(new Set(operationIds).size).toBe(operationIds.length);
     expect(operationIds).not.toContain("generic_api_request");
     expect(Object.isFrozen(PAPERCLIP_SEMANTIC_ACTION_CATALOG)).toBe(true);

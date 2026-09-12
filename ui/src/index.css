@@ -3,7 +3,7 @@
 
 @font-face {
   font-family: "InterVariable";
-  src: url("../fonts/InterVariable.woff2") format("woff2");
+  src: url("/fonts/InterVariable.woff2") format("woff2");
   font-display: swap;
   font-style: normal;
   font-weight: 100 900;
@@ -11,7 +11,7 @@
 
 @font-face {
   font-family: "InterVariable";
-  src: url("../fonts/InterVariable-Italic.woff2") format("woff2");
+  src: url("/fonts/InterVariable-Italic.woff2") format("woff2");
   font-display: swap;
   font-style: italic;
   font-weight: 100 900;
@@ -174,6 +174,15 @@
   --status-agent-running: #2563eb;
   --status-agent-paused: #f59e0b;
   --status-agent-error: #dc2626;
+  /* Dashboard agent card: translucent running treatment from the Paper design. */
+  --dashboard-run-accent: oklch(62.3% 0.214 259.815);
+  --dashboard-run-background: color-mix(in oklab, var(--dashboard-run-accent) 4%, transparent);
+  --dashboard-run-border: color-mix(in oklab, var(--dashboard-run-accent) 25%, transparent);
+  --dashboard-list-leading-width: calc(var(--spacing) * 6);
+  --dashboard-list-id-width: calc(var(--spacing) * 20);
+  --dashboard-list-time-width: calc(var(--spacing) * 16);
+  --dashboard-task-list-columns: var(--dashboard-list-leading-width) minmax(0, 1fr) calc(var(--spacing) * 36) var(--dashboard-list-id-width) var(--dashboard-list-time-width);
+  --dashboard-activity-list-columns: var(--dashboard-list-leading-width) minmax(0, 1fr) var(--dashboard-list-id-width) var(--dashboard-list-time-width);
   --status-task-backlog: #a8aeb2;
   --status-task-todo: #f59e0b;
   --status-task-in_progress: #2563eb;
@@ -191,15 +200,15 @@
      gray / amber / green statuses are pinned to the board-approved AA hexes.
      `in_queue` is the BLOCKED shape recoloured to the in_progress blue
      (replaces the bespoke teal "covered" state). Light values here; the
-     `.dark` block below overrides the four that need a mode-specific hue. */
+     `.dark` block below overrides the hues that need a mode-specific value. */
   --status-task-icon-backlog: #52585d;   /* gray darkened — 7.21:1 on paper */
   --status-task-icon-todo: #cc7a00;       /* amber darkened — clears 3:1 */
-  --status-task-icon-in_progress: var(--status-task-in_progress); /* #2563eb both modes */
+  --status-task-icon-in_progress: var(--color-blue-600); /* matches nav dots and live labels */
   --status-task-icon-in_review: var(--status-task-in_review);     /* #7c3aed (light) */
   --status-task-icon-done: #16a34a;       /* green darkened — clears 3:1 */
   --status-task-icon-blocked: var(--status-task-blocked);         /* #dc2626 both modes */
   --status-task-icon-cancelled: #52585d;
-  --status-task-icon-in_queue: var(--status-task-in_progress);    /* blocked shape, blue */
+  --status-task-icon-in_queue: var(--status-task-icon-in_progress); /* blocked shape, same mode-aware blue */
 
   --folder-color-indigo: #6366f1;
   --folder-color-violet: #8b5cf6;
@@ -286,6 +295,7 @@
   --side-panel-tab-label-max-width: var(--sz-100px);
   --side-panel-tab-label-expanded-max-width: calc(var(--side-panel-tab-label-max-width) + var(--sz-18px));
   --side-panel-tab-label-fade-width: var(--sz-32px);
+  --sidebar-nav-action-fade-width: calc(var(--spacing) * 4);
   --side-panel-tab-radius: var(--radius-xl);
   --side-panel-control-radius: var(--radius-xl);
   --side-panel-launcher-width: var(--sz-320px);
@@ -405,11 +415,12 @@
   --chip-match-identifier-bg: var(--muted);
   --chip-match-identifier-fg: var(--muted-foreground);
   --chip-match-identifier-border: var(--border);
-  /* Dark-mode AA overrides for the status-icon hues that need a mode-specific
-     value (PAP-238). in_progress / blocked stay identical (same blue / red both
-     modes) and in_queue tracks in_progress, so they need no override. */
+  /* Dark-mode status-icon hues. The lighter progress blue gives bare glyphs
+     contrast comparable to the neighboring gray, purple, and green icons.
+     Blocked retains its base red; in_queue follows the progress icon blue. */
   --status-task-icon-backlog: #9a958a;
   --status-task-icon-todo: #fbbf24;
+  --status-task-icon-in_progress: var(--color-blue-400); /* matches nav dots and live labels */
   --status-task-icon-in_review: #9474f0;  /* deeper than violet-400, reads purple */
   --status-task-icon-done: #34d06f;
   --status-task-icon-cancelled: #9a958a;
@@ -985,6 +996,48 @@
   transition-duration: var(--motion-side-panel-tab);
   transition-timing-function: var(--motion-ease-standard);
 }
+/* Sidebar actions cover the trailing live label without moving row content,
+   fading into the row surface like the task-detail tab close control. */
+.primary-sidebar-surface {
+  --sidebar-action-rest-surface: color-mix(in srgb, var(--border) 50%, var(--background));
+  background-color: var(--sidebar-action-rest-surface);
+}
+.dark .primary-sidebar-surface {
+  --sidebar-action-rest-surface: var(--muted);
+}
+.sidebar-action-row {
+  --sidebar-action-surface: var(--sidebar-action-rest-surface, var(--background));
+}
+.sidebar-action-row:is(:hover, :focus-within),
+.sidebar-action-row:has(.sidebar-action-link[aria-current="page"]),
+.sidebar-action-row:has(.sidebar-action-menu[data-state="open"]) {
+  --sidebar-action-surface: var(--sidebar-accent);
+}
+.sidebar-action-link {
+  background-color: var(--sidebar-action-surface);
+}
+.sidebar-action-row:is(:hover, :focus-within) .sidebar-action-link,
+.sidebar-action-row:has(.sidebar-action-menu[data-state="open"]) .sidebar-action-link {
+  color: var(--sidebar-accent-foreground);
+}
+.sidebar-action-menu {
+  isolation: isolate;
+}
+.sidebar-action-menu::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  left: calc(-1 * var(--sidebar-nav-action-fade-width));
+  z-index: -1;
+  border-radius: inherit;
+  /* Animate a solid surface in sync with the link; gradient color stops switch
+     immediately and flash the resting sidebar color during the opacity fade. */
+  background-color: var(--sidebar-action-surface);
+  mask-image: linear-gradient(to right, transparent, black var(--sidebar-nav-action-fade-width));
+  transition: background-color var(--default-transition-duration) var(--default-transition-timing-function);
+  pointer-events: none;
+}
+
 .side-panel-tab-label-fade,
 .side-panel-tab-label-close-fade[data-truncated="true"],
 [data-appearance="streamlined-task"]:is(:hover, :focus-within) .side-panel-tab-label-close-fade {
@@ -1143,6 +1196,12 @@
   [data-slot="popover-content"][data-quicklook][data-state="closed"] {
     animation: none;
   }
+}
+
+/* Shared rhythm for dashboard activity and recent-task rows. */
+.dashboard-list-row {
+  min-height: calc(var(--spacing) * 12);
+  padding: calc(var(--spacing) * 3) calc(var(--spacing) * 4);
 }
 
 /* Dashboard activity row entry motion */

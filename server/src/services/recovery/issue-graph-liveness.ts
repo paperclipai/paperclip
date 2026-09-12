@@ -12,6 +12,9 @@ export type IssueLivenessState =
   | "in_review_without_action_path";
 
 export interface IssueLivenessIssueInput {
+  conversationAgentId?: string | null;
+  conversationUserId?: string | null;
+  conversationState?: string | null;
   id: string;
   companyId: string;
   identifier: string | null;
@@ -216,6 +219,9 @@ export function classifyIssueReviewPaths(
   const nowMs = readDateMs(input.now ?? new Date()) ?? Date.now();
   const agentsById = new Map(input.agents.map((agent) => [agent.id, agent]));
   const paths: IssueReviewPathFact[] = [];
+  if (issue.conversationAgentId && issue.conversationUserId && issue.conversationState === "waiting") {
+    return [{ kind: "human_reviewer", ref: issue.conversationUserId, userId: issue.conversationUserId, agentId: null, since: null }];
+  }
 
   if (issue.assigneeUserId) {
     paths.push({

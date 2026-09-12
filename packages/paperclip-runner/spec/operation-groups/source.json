@@ -51,6 +51,11 @@
       "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals"]
     },
     {
+      "id": "projects",
+      "description": "Project creation and authorized repository discovery through the live company/run authority.",
+      "operationIds": ["create_project", "list_project_repositories"]
+    },
+    {
       "id": "delegation_dependencies",
       "description": "Create delegated work and maintain dependency edges.",
       "operationIds": ["create_task", "set_dependencies"]
@@ -163,12 +168,12 @@
       "legacyGroup": 5,
       "name": "Search",
       "owner": "optional discovery tools",
-      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals"],
+      "operationIds": ["search_tasks", "list_agents", "get_agent", "list_projects", "list_goals", "list_project_repositories"],
       "controlPlaneOperationIds": [],
       "realSurface": "company issue search and agent/project/goal list/get routes",
       "mockStateDomains": ["company", "task", "actor", "project", "goal"],
       "prpEvidence": "bounded redacted read projections through tool-result item events",
-      "gap": "Project and goal operations are scenario-only; every real service binding is unbound."
+      "gap": "Goal operations remain scenario-only. Project and repository discovery contracts are delivered by the live server authority; they are not implemented by the mock command dispatcher."
     },
     {
       "id": "su",
@@ -259,12 +264,12 @@
       "legacyGroup": 13,
       "name": "Reference files",
       "owner": "optional domain tools + test-only escape hatch",
-      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request", "search_api", "call_api"],
+      "operationIds": ["list_cases", "upsert_case", "list_routines", "manage_routine", "list_company_skills", "sync_company_skills", "list_secret_metadata", "read_secret_value", "export_company", "administer_company", "generic_api_request", "search_api", "call_api", "create_project"],
       "controlPlaneOperationIds": ["append_audit_record"],
-      "realSurface": "case, routine, company-skill, secret, portability, and administration services",
+      "realSurface": "project, case, routine, company-skill, secret, portability, and administration services",
       "mockStateDomains": ["company", "cases", "routines", "skills", "secrets", "audit", "fault"],
       "prpEvidence": "bounded domain projections, redacted broker receipts, company diffs, and audit references",
-      "gap": "These operations are scenario-only except generic_api_request, which is test-only; broad administer_company is deferred and cannot claim product coverage. Production escape-hatch and paired dedicated-tool regressions are recorded separately in paperclip-evals/evals/runner-api-tools; the legacy scenario count is not evidence of that coverage."
+      "gap": "Project creation and API tools require the live server authority; generic_api_request is test-only and the remaining domain operations are scenario-only. Broad administer_company is deferred and cannot claim product coverage. Production API and paired dedicated-tool regressions are recorded separately in paperclip-evals/evals/runner-api-tools; the legacy scenario count is not evidence of that coverage."
     },
     {
       "id": "mh",

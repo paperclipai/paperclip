@@ -136,7 +136,8 @@ conditions before model disposition:
 | Run failed | Preserve | Schedule recovery |
 | Approval, interaction, or execution stage is pending | `in_review` | Materialize/bind the governance gate and notify its owner |
 | Completion satisfies its authority policy | `done` | Release checkout |
-| Runner reports `needs_review` | `in_review` | Bind a reviewer and notify the owner |
+| Runner reports a concrete attention request with a reviewer and decision | `in_review` | Bind the requested reviewer |
+| Runner reports `needs_review` without a decision, or an incomplete completion claim | Keep work with the agent | No automatic human approval; at most one corrective continuation, then a visible recovery action |
 | Runner reports a task-wide blocker | `blocked` | Persist blocker owner and unblock action |
 | Runner reports a current-track blocker | `in_progress` | Enqueue another productive track |
 | Runner reports `yielded` with a valid continuation | `in_progress` | Enqueue the declared continuation |
@@ -280,3 +281,33 @@ Common patterns:
 See also
 [`durable-continuation-scheduler.md`](./durable-continuation-scheduler.md) for
 the scheduler and recovery behavior that follows an `in_progress` decision.
+
+## Explicit completion reviews
+
+Ordinary task completion uses the agent's structured `done` claim under the
+contract's low-risk claim policy. Unknown evidence references remain diagnostic
+information; they do not create human approval requirements. Cancellation,
+newer task state, unresolved dependencies, and explicit governance still win.
+
+Paperclip no longer creates a generic "Native completion review" because a
+report is incomplete, verification failed, or the agent says `needs_review`.
+A new review interaction requires an explicit attention request naming the
+reviewer's responsibility and the decision. The card displays that request.
+Waiting for CI remains agent work, not a human completion approval.
+
+The native runner returns current approval/dependency constraints to the agent
+when it calls `paperclip_finish`. An empty `needs_review` report without an
+existing gate is rejected with instructions to correct it. The final reply must
+explain any required user action and link to the relevant task or approval.
+The tool acknowledges receipt, not a premature status commit: final status is
+committed only after the provider turn and workspace finalization settle.
+
+On upgrade, bounded cleanup withdraws only unanswered, system-created fallback
+cards proven by their decision/effect ledger, original prompt/target, empty
+attention request list, and low-risk claim policy. Explicit or answered reviews
+and stronger completion policies are preserved. Withdrawal has audit history
+and retires chat actions. Reconciliation reassesses only the current successful
+run's result, with the same task status/version and completion contract and no
+newer execution owner. It applies normal governance and dependency checks and
+appends a decision; it never marks every affected task done blindly. A persisted
+withdrawal marker makes restart between cleanup and reassessment retryable.
