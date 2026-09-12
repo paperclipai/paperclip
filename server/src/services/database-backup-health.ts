@@ -1,8 +1,10 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 export type DatabaseBackupHealthWarningCode =
   | "database_backup_check_failed"
+  | "database_backup_empty"
   | "database_backup_last_failure"
   | "database_backup_missing"
   | "database_backup_stale";
@@ -23,6 +25,7 @@ export type DatabaseBackupHealthStatus = {
     mtime: string;
     ageHours: number;
     sizeBytes: number;
+    empty: boolean;
   } | null;
   lastFailure: {
     path: string;
@@ -78,6 +81,33 @@ function readLastFailure(alertFiles: string[]) {
   };
 }
 
+// gzip stores the uncompressed size mod 2^32 in the last 4 bytes of the
+// stream (RFC 1952 ISIZE). A backup that never received real content
+// (e.g. an aborted run) is a valid, small gzip stream whose ISIZE is 0 -
+// that case is otherwise indistinguishable from a healthy backup by
+// looking only at the compressed file size.
+function readGzipIsEmpty(filePath: string, compressedSizeBytes: number): boolean {
+  if (compressedSizeBytes < 18) return false;
+  const fd = openSync(filePath, "r");
+  try {
+    const trailer = Buffer.alloc(4);
+    readSync(fd, trailer, 0, 4, compressedSizeBytes - 4);
+    if (trailer.readUInt32LE(0) !== 0) return false;
+  } finally {
+    closeSync(fd);
+  }
+
+  // ISIZE is stored modulo 2^32. Confirm a zero trailer by inflating at most
+  // one byte so a non-empty archive whose size wraps to zero is not reported
+  // as empty. zlib stops as soon as the output limit is exceeded.
+  try {
+    return gunzipSync(readFileSync(filePath), { maxOutputLength: 1 }).length === 0;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ERR_BUFFER_TOO_LARGE") return false;
+    throw error;
+  }
+}
+
 function findLatestBackup(backupDir: string, nowMs: number) {
   if (!existsSync(backupDir)) return null;
 
@@ -99,6 +129,7 @@ function findLatestBackup(backupDir: string, nowMs: number) {
     mtime: new Date(latest.stat.mtimeMs).toISOString(),
     ageHours: roundHours((nowMs - latest.stat.mtimeMs) / 3_600_000),
     sizeBytes: latest.stat.size,
+    empty: readGzipIsEmpty(latest.fullPath, latest.stat.size),
   };
 }
 
@@ -121,11 +152,19 @@ export function inspectDatabaseBackupHealth(
         code: "database_backup_missing",
         message: `No .sql.gz database backups found in ${opts.backupDir}.`,
       });
-    } else if (latestBackup.ageHours > maxAgeHours) {
-      warnings.push({
-        code: "database_backup_stale",
-        message: `Latest database backup is ${latestBackup.ageHours}h old, exceeding ${maxAgeHours}h.`,
-      });
+    } else {
+      if (latestBackup.empty) {
+        warnings.push({
+          code: "database_backup_empty",
+          message: `Latest database backup ${latestBackup.name} contains no uncompressed data.`,
+        });
+      }
+      if (latestBackup.ageHours > maxAgeHours) {
+        warnings.push({
+          code: "database_backup_stale",
+          message: `Latest database backup is ${latestBackup.ageHours}h old, exceeding ${maxAgeHours}h.`,
+        });
+      }
     }
 
     if (lastFailure) {
