@@ -1727,11 +1727,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           revision: 1,
           schemaVersion: "paperclip.completion-contract.v1",
           policyVersion: "phase6-v1",
-          risk: "standard",
-          completionAuthority: "server_arbiter",
+          risk: "low",
+          completionAuthority: "agent_claim_policy",
           incompleteCriteriaPolicy: "preserve_non_terminal",
           contractJson: {
-            revision: "phase6-v1",
+            revision: CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim.contractRevision,
             objective: "Retained cleanup lifecycle",
             criteria: [{ id: "objective", requirement: "Keep cleanup joined" }],
           },
@@ -1787,6 +1787,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             projectRunStatus: true,
           }),
         ).resolves.toMatchObject({ phase: "committed" });
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("done");
         // The visible successful result was already repaired. This private
         // diagnostic is what permits the separate control-only maintenance lane.
         await db
