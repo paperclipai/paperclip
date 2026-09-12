@@ -1,0 +1,1 @@
+ALTER TABLE "work_folder_runs" ADD COLUMN "baselines" jsonb DEFAULT '{}'::jsonb NOT NULL;
