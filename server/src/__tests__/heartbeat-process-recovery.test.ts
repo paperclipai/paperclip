@@ -112,6 +112,7 @@ const mockTelemetryClient = vi.hoisted(() => ({
 }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockTerminateLocalService = vi.hoisted(() => vi.fn());
+const mockDetachNativeSessionsForRestart = vi.hoisted(() => vi.fn());
 const mockRetainedNativeCleanup = vi.hoisted(() =>
   vi.fn<
     typeof import("../services/native-runtime/native-session-executor.js").reconcileRetainedNativeSessionCleanup
@@ -148,10 +149,12 @@ vi.mock("../services/native-runtime/native-session-executor.js", async () => {
   mockExecutePaperclipNativeSession.mockImplementation(
     actual.executePaperclipNativeSession,
   );
+  mockDetachNativeSessionsForRestart.mockImplementation(actual.detachNativeSessionsForRestart);
   return {
     ...actual,
     reconcileRetainedNativeSessionCleanup: mockRetainedNativeCleanup,
     executePaperclipNativeSession: mockExecutePaperclipNativeSession,
+    detachNativeSessionsForRestart: mockDetachNativeSessionsForRestart,
   };
 });
 
@@ -3595,6 +3598,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryRunIds: [],
       restartSuspendedRunIds: [runId],
     });
+    expect(mockDetachNativeSessionsForRestart).toHaveBeenCalledWith([runId]);
     await expect(
       db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId)),
     ).resolves.toEqual([

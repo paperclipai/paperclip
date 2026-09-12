@@ -208,6 +208,7 @@ import {
   materializeNativeInteractionResponses,
   nativeCompletionRequestsForComments,
   NativeCancellationPendingRecoveryError,
+  NativeControllerDetachedForRestartError,
   nativeToolContractFingerprintForTarget,
   prepareNativeSessionBootstrapPersistence,
   prepareNativeWorkspaceSync,
@@ -14784,6 +14785,11 @@ export function heartbeatService(
         run.runtimeMode === "native" &&
         agent.adapterType === "paperclip_runner"
       ) {
+        // A graceful shutdown relinquishes controller authority just like a
+        // hot restart. Leaving the old event consumer attached lets its
+        // finalizer interrupt/suspend Claude while the next server is adopting
+        // the same turn.
+        await detachNativeSessionsForRestart([run.id]);
         const recoveryHistoryEntry = JSON.stringify({
           at: now.toISOString(),
           restartKind: "graceful",
@@ -21215,7 +21221,14 @@ export function heartbeatService(
           };
         }
         if (Object.keys(nextIssuePatch).length > 0) {
-          await issuesSvc.update(issueId, nextIssuePatch);
+          await issuesSvc.update(
+            issueId,
+            { ...nextIssuePatch, companyGuard: agent.companyId },
+            db,
+            undefined,
+            undefined,
+            { bindRuntimeSharedWorkspace: warmReusableExecutionWorkspace && workspace.mode === "shared_workspace" },
+          );
           issueExecutionWorkspaceIdForRun = workspace.id;
           issueProjectWorkspaceIdForRun =
             resolvedProjectWorkspaceId ?? issueProjectWorkspaceIdForRun;
@@ -23741,6 +23754,12 @@ export function heartbeatService(
             }
           }
         } catch (adapterErr) {
+          if (adapterErr instanceof NativeControllerDetachedForRestartError) {
+            // Preserve the provider and its run for the new controller. This
+            // also keeps generic teardown from terminalizing/releasing its lease.
+            nativeSessionResumeScheduled = true;
+            throw adapterErr;
+          }
           if (adapterErr instanceof NativeRunnerOwnershipUnverifiedError) {
             nativeOwnershipHeld = true;
             throw adapterErr;
@@ -24597,6 +24616,10 @@ export function heartbeatService(
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         });
       } catch (err) {
+        if (err instanceof NativeControllerDetachedForRestartError) {
+          nativeSessionResumeScheduled = true;
+          return;
+        }
         if (err instanceof NativeRunnerOwnershipUnverifiedError) {
           nativeOwnershipHeld = true;
           const heldRun = await getRun(run.id);

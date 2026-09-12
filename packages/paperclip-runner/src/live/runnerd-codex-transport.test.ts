@@ -8280,6 +8280,7 @@ async function verifyLiveRunnerAdoption(
   mismatchedCheckpoint: boolean,
   mismatchedArtifact = false,
   goalMidTurn = false,
+  detachBeforeCleanup = false,
 ) {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-live-adopt-"));
   const server = createServer();
@@ -8501,6 +8502,16 @@ async function verifyLiveRunnerAdoption(
     expect(adopted.evidence().diagnostics).toContain(
       "confirmed adopted provider identity against authenticated recovery session.snapshot",
     );
+    if (detachBeforeCleanup) {
+      await adopted.detachControllerForRestart();
+      await adopted.transport.close("old controller finalizer");
+      expect(signal).not.toHaveBeenCalled();
+      expect(() => process.kill(runnerPid!, 0)).not.toThrow();
+      const retained = JSON.parse(await readFile(controlPlaneStatePath, "utf8"));
+      const commandTypes = retained.commands.map((command: { type: string }) => command.type);
+      expect(commandTypes).not.toContain("turn.stop");
+      expect(commandTypes).not.toContain("runner.suspend");
+    }
   } finally {
     await adopted?.transport.close().catch(() => undefined);
     if (runnerPid) {
@@ -8539,6 +8550,8 @@ it(
 );
 
 it("binds buffered mid-goal items only after the authenticated recovery snapshot", () => verifyLiveRunnerAdoption(false, false, true), 30_000);
+
+it("keeps an adopted runner alive when the detached controller finalizer closes", () => verifyLiveRunnerAdoption(false, false, true, true), 30_000);
 
 it("surfaces a runner exit while provider-ingress readiness is still pending", async () => {
   const neverReady = new Promise<void>(() => undefined);

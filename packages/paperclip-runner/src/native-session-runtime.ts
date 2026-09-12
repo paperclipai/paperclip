@@ -2125,7 +2125,7 @@ export async function executeNativeSession(
     // Ownership publication is part of the execution-owned lifetime. If the
     // callback fails, the finally block below still quarantines and closes the
     // provider session.
-    options.onSession?.(session);
+    await options.onSession?.(session);
     const checkpointTimeoutMs =
       options.checkpointTimeoutMs ?? DEFAULT_NATIVE_CHECKPOINT_TIMEOUT_MS;
     const persistCheckpoint = (

@@ -2188,6 +2188,34 @@ describe("executeNativeSession recovery", () => {
     }
   });
 
+  it("waits for controller ownership publication before dispatching a turn", async () => {
+    let release!: () => void;
+    const published = new Promise<void>((resolve) => { release = resolve; });
+    const snapshotFailure = new Error("stop after ownership publication");
+    const snapshot = vi.fn(async () => { throw snapshotFailure; });
+    const session: NativeSession = {
+      identity: () => identity,
+      async capabilities() { return { resume: false, typedEvents: true, steering: false, interruption: true }; },
+      async *events() {},
+      async startTurn() { throw new Error("unexpected turn"); },
+      async result() { return null; },
+      snapshot,
+      close: vi.fn(async () => undefined),
+    };
+    const onSession = vi.fn(async (current: NativeSession | null) => { if (current) await published; });
+    const running = executeNativeSession({
+      input,
+      backend: { async descriptor() { return { kind: "mock", name: "owner-barrier", version: "1", capabilities: await session.capabilities() }; }, async openSession() { return session; } },
+      controlPlane: { async openRun() {}, async checkpointSession() {}, async appendEvent() { throw new Error("unexpected event"); }, async replayEvents() { return { events: [], highestContiguousSourceSeq: 0 }; }, async completeRun() {} },
+      runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery", onSession,
+    });
+    const rejected = expect(running).rejects.toBe(snapshotFailure);
+    await vi.waitFor(() => expect(onSession).toHaveBeenCalledWith(session));
+    expect(snapshot).not.toHaveBeenCalled();
+    release();
+    await rejected;
+  });
+
   it("closes the provider when owner quarantine notification throws", async () => {
     const snapshotFailure = new Error("snapshot failed");
     const close = vi.fn(async () => undefined);

@@ -2,6 +2,7 @@ import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
+import { prepareVerifiedRemoteProviderPack } from "./remote-provider-pack.js";
 import { readNativeLocalProcessStop, PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import { resolveConnectorAssignments, isConnectorSkill } from "../connector-runtime.js";
@@ -183,7 +184,18 @@ export class NativeCancellationPendingRecoveryError extends Error {
   }
 }
 
+export class NativeControllerDetachedForRestartError extends Error {
+  constructor() {
+    super("native_controller_detached_for_restart");
+    this.name = "NativeControllerDetachedForRestartError";
+  }
+}
+
 const activeNativeSessions = new Map<string, ActiveNativeSession>();
+// Shutdown can race provider startup before onSession publishes its handle.
+// Retain the request for the remainder of this controller's lifetime so that
+// the late publication detaches before it can dispatch another turn.
+const nativeRunsDetachingForRestart = new Set<string>();
 
 export async function detachNativeSessionsForRestart(
   runIds: readonly string[],
@@ -196,6 +208,7 @@ export async function detachNativeSessionsForRestart(
   const inactiveRunIds: string[] = [];
   const unsupportedRunIds: string[] = [];
   for (const runId of new Set(runIds)) {
+    nativeRunsDetachingForRestart.add(runId);
     const active = activeNativeSessions.get(runId);
     if (!active) {
       inactiveRunIds.push(runId);
@@ -7942,7 +7955,7 @@ async function executePaperclipNativeSessionWithinScope(
                 `[paperclip-runner] provider session continuity break: exact resume failed (${continuity.reason}); old driver session=${continuity.previousDriverSessionId}, old provider session=${continuity.previousProviderSessionId ?? "unavailable"}, replacement driver session=${continuity.replacementDriverSessionId}, replacement provider session=${continuity.replacementProviderSessionId ?? "unavailable"}\n`,
               );
             },
-            onSession: (session) => {
+            onSession: async (session) => {
               releaseRegisteredGoalController();
               if (session?.goal) {
                 releaseGoalController = registerLiveRunnerGoalController(
@@ -8003,12 +8016,15 @@ async function executePaperclipNativeSessionWithinScope(
                   warmNativeSessions.delete(warmSessionId);
                 }
               }
-              if (session)
+              if (session) {
                 activeNativeSessions.set(input.execution.binding.runId, {
                   session,
                   cancelRequested: false,
                 });
-              else {
+                if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
+                  await session.detachControllerForRestart?.();
+                }
+              } else {
                 activeNativeSessions.delete(input.execution.binding.runId);
                 clearSteeringDeliveries(input.execution.binding.runId);
                 clearNativeRuntimeRequestResolutions(
@@ -8048,6 +8064,14 @@ async function executePaperclipNativeSessionWithinScope(
     clearSteeringDeliveries(input.execution.binding.runId);
     clearNativeRuntimeRequestResolutions(input.execution.binding.runId);
   } catch (error) {
+    if (nativeRunsDetachingForRestart.has(input.execution.binding.runId)) {
+      await leaseRenewal.stop().catch(() => undefined);
+      activeNativeSessions.delete(input.execution.binding.runId);
+      // Disconnecting deliberately ends the old event consumer. It is not a
+      // provider failure and must not overwrite the shutdown adoption record
+      // with a retry or release the still-live runner's lease.
+      throw new NativeControllerDetachedForRestartError();
+    }
     const protocolIntegrityFailure =
       error instanceof NativeSessionProtocolIntegrityError ? error : null;
     const ownershipUnverified =
@@ -10434,82 +10458,99 @@ async function createRunnerdBackendWithinSessionClaim(
       configuredProviderPackRoot &&
       stagedRemoteProviderPackRoot
     ) {
-      let preinstalledProviderPack = await discoverPreinstalledProviderPack();
-      if (preinstalledProviderPack) {
-        try {
-          await measureNativeRunnerSpan(
-            input.trace,
-            "provider_pack.verify_preinstalled",
-            () => verifyRemoteProviderPack(preinstalledProviderPack!),
-          );
-          const escapedSource = preinstalledProviderPack.replaceAll(
+      const packSource = await prepareVerifiedRemoteProviderPack({
+        verifyStaged: () => measureNativeRunnerSpan(
+          input.trace,
+          "provider_pack.verify",
+          () => verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
+        ),
+        usePreinstalled: async () => {
+          let preinstalledProviderPack = await discoverPreinstalledProviderPack();
+          if (preinstalledProviderPack) {
+            try {
+              await measureNativeRunnerSpan(
+                input.trace,
+                "provider_pack.verify_preinstalled",
+                () => verifyRemoteProviderPack(preinstalledProviderPack!),
+              );
+              const escapedSource = preinstalledProviderPack.replaceAll(
+                "'",
+                "'\\''",
+              );
+              const escapedTarget = stagedRemoteProviderPackRoot.replaceAll(
+                "'",
+                "'\\''",
+              );
+              const escapedParent = posix
+                .dirname(stagedRemoteProviderPackRoot)
+                .replaceAll("'", "'\\''");
+              const linked = await remoteCommandRunner.execute({
+                command: "sh",
+                args: [
+                  "-c",
+                  `umask 077; mkdir -p '${escapedParent}' && rm -rf '${escapedTarget}' && ln -s '${escapedSource}' '${escapedTarget}'`,
+                ],
+                cwd: remoteTarget.remoteCwd,
+                bypassSession: true,
+                timeoutMs: 10_000,
+              });
+              if (linked.exitCode !== 0 || linked.timedOut) {
+                throw new Error(
+                  "runner_remote_provider_artifact_incompatible: preinstalled provider pack could not be linked",
+                );
+              }
+              activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+              await input.onLog?.(
+                "stderr",
+                "[paperclip-runner] using manifest-matched provider pack from the sandbox image\n",
+              );
+            } catch {
+              preinstalledProviderPack = null;
+            }
+          }
+          return preinstalledProviderPack !== null;
+        },
+        stageAndVerify: async () => {
+          if (!remoteCommandRunner.syncIn) {
+            throw new Error(
+              "runner_remote_provider_artifact_incompatible: this remote transport cannot stage a provider pack; preinstall the exact manifest-matched pack",
+            );
+          }
+          const escapedPackRoot = stagedRemoteProviderPackRoot.replaceAll(
             "'",
             "'\\''",
           );
-          const escapedTarget = stagedRemoteProviderPackRoot.replaceAll(
-            "'",
-            "'\\''",
-          );
-          const escapedParent = posix
-            .dirname(stagedRemoteProviderPackRoot)
-            .replaceAll("'", "'\\''");
-          const linked = await remoteCommandRunner.execute({
+          const cleared = await remoteCommandRunner.execute({
             command: "sh",
-            args: [
-              "-c",
-              `umask 077; mkdir -p '${escapedParent}' && rm -rf '${escapedTarget}' && ln -s '${escapedSource}' '${escapedTarget}'`,
-            ],
+            args: ["-c", `rm -rf '${escapedPackRoot}'`],
             cwd: remoteTarget.remoteCwd,
             bypassSession: true,
             timeoutMs: 10_000,
           });
-          if (linked.exitCode !== 0 || linked.timedOut) {
+          if (cleared.exitCode !== 0 || cleared.timedOut) {
             throw new Error(
-              "runner_remote_provider_artifact_incompatible: preinstalled provider pack could not be linked",
+              "runner_remote_provider_artifact_incompatible: stale provider pack could not be replaced",
             );
           }
+          await stageRemoteRunnerDirectory({
+            target: remoteTarget,
+            runner: remoteCommandRunner,
+            sourcePath: configuredProviderPackRoot,
+            targetPath: stagedRemoteProviderPackRoot,
+            mode: 0o700,
+          });
+          await measureNativeRunnerSpan(input.trace, "provider_pack.verify", () =>
+            verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
+          );
           activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
-          await input.onLog?.(
-            "stderr",
-            "[paperclip-runner] using manifest-matched provider pack from the sandbox image\n",
-          );
-        } catch {
-          preinstalledProviderPack = null;
-        }
-      }
-      if (!preinstalledProviderPack) {
-        if (!remoteCommandRunner.syncIn) {
-          throw new Error(
-            "runner_remote_provider_artifact_incompatible: this remote transport cannot stage a provider pack; preinstall the exact manifest-matched pack",
-          );
-        }
-        const escapedPackRoot = stagedRemoteProviderPackRoot.replaceAll(
-          "'",
-          "'\\''",
+        },
+      });
+      activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+      if (packSource === "staged") {
+        await input.onLog?.(
+          "stderr",
+          "[paperclip-runner] reusing manifest-matched provider pack from the workspace\n",
         );
-        const cleared = await remoteCommandRunner.execute({
-          command: "sh",
-          args: ["-c", `rm -rf '${escapedPackRoot}'`],
-          cwd: remoteTarget.remoteCwd,
-          bypassSession: true,
-          timeoutMs: 10_000,
-        });
-        if (cleared.exitCode !== 0 || cleared.timedOut) {
-          throw new Error(
-            "runner_remote_provider_artifact_incompatible: stale provider pack could not be replaced",
-          );
-        }
-        await stageRemoteRunnerDirectory({
-          target: remoteTarget,
-          runner: remoteCommandRunner,
-          sourcePath: configuredProviderPackRoot,
-          targetPath: stagedRemoteProviderPackRoot,
-          mode: 0o700,
-        });
-        await measureNativeRunnerSpan(input.trace, "provider_pack.verify", () =>
-          verifyRemoteProviderPack(stagedRemoteProviderPackRoot),
-        );
-        activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
       }
     }
     remotePrepared = true;

@@ -3319,6 +3319,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #runAttachTemplate: Record<string, unknown> | null = null;
   #closed = false;
   #closePromise: Promise<void> | null = null;
+  #controllerDetachedForRestart = false;
   #failure: Error | null = null;
   readonly #failureSignal: Promise<never>;
   #rejectFailureSignal!: (error: Error) => void;
@@ -4049,6 +4050,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   close(reason?: string): Promise<void> {
+    // Detachment relinquishes process ownership. A late execution finalizer
+    // must not suspend or signal the runner now owned by the next controller.
+    if (this.#controllerDetachedForRestart) return Promise.resolve();
     if (reason) {
       this.#diagnostic(
         `runner transport close requested: ${reason.replaceAll(/[\r\n]/g, " ").slice(0, 1_000)}`,
@@ -4060,6 +4064,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   async detachControllerForRestart(): Promise<void> {
     if (this.#closed) return;
+    this.#controllerDetachedForRestart = true;
     this.#closed = true;
     this.#turnStartAdmission?.resolve(false);
     if (this.#pump !== null) clearInterval(this.#pump);

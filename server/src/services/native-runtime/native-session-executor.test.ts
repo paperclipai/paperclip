@@ -233,6 +233,8 @@ import {
   createRemoteRunnerProcessLauncher,
   createRunnerdBackend,
   executePaperclipNativeSession,
+  detachNativeSessionsForRestart,
+  NativeControllerDetachedForRestartError,
   getNativeSessionSteeringState,
   NativeSessionSteeringError,
   assertRemoteRunnerBuildMetadata,
@@ -4344,6 +4346,22 @@ function cancellationDb(options?: {
     tx,
   };
 }
+
+describe("native startup restart detachment", () => {
+  it("remembers shutdown while the session is still opening and detaches its late publication", async () => {
+    const restarting = structuredClone(execution);
+    restarting.binding.runId = "restart-during-session-open";
+    const detach = vi.fn(async () => undefined);
+    await expect(detachNativeSessionsForRestart([restarting.binding.runId])).resolves.toMatchObject({ inactiveRunIds: [restarting.binding.runId] });
+    state.execute.mockReset().mockImplementationOnce(async (options) => {
+      await options.onSession({ detachControllerForRestart: detach });
+      expect(detach).toHaveBeenCalledOnce();
+      await options.onSession(null);
+      throw new Error("detachment closed the old event stream");
+    });
+    await expect(executePaperclipNativeSession({ db: leaseDb(restarting), execution: restarting, runnerInstanceId: "runner" })).rejects.toBeInstanceOf(NativeControllerDetachedForRestartError);
+  });
+});
 
 describe("native resumed preparation timing", () => {
   it("keeps answered-question ingress at the run root rather than charging it to preparation", async () => {

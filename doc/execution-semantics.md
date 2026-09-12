@@ -1114,3 +1114,23 @@ These actions do not grant permission to hire agents or change their settings.
 Each action during execution still checks the agent's authority and the
 responsible user's authority. A denied retry returns before dispatch; it does
 not create a new failed run or change the task's state.
+
+### Native controller restart ownership
+
+Both graceful and hot restarts detach the old controller from native sessions.
+If shutdown begins while a provider session is opening, its eventual publication
+honors the pending detachment before dispatching a turn. Once detached, an old
+execution finalizer cannot suspend or signal the durable runner: the next
+controller must recover it through the authenticated ownership checks. This
+preserves active work and queued messages without treating a server restart as
+user cancellation.
+
+### Warm sandbox continuity
+
+A warm sandbox's shared workspace binding persists independently of the
+experimental isolated-workspaces UI. Ordinary workspace updates remain gated;
+the runtime can bind only a validated shared workspace in the issue's company
+and project. Follow-ups can therefore reuse the same sandbox and provider
+session. A staged provider package is reused only after the complete expected
+manifest and artifact hashes verify. A missing, changed, or incompatible package
+must be replaced and verified before launch.

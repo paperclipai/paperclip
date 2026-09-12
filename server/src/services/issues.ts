@@ -10473,6 +10473,7 @@ export function issueService(db: Db) {
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
       postCommitActions?: IssuePostCommitAction[],
+      options: { bindRuntimeSharedWorkspace?: boolean } = {},
     ) => {
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications =
@@ -10543,7 +10544,30 @@ export function issueService(db: Db) {
       const isolatedWorkspacesEnabled = (
         await instanceSettings.getExperimental()
       ).enableIsolatedWorkspaces;
-      if (!isolatedWorkspacesEnabled) {
+      if (options.bindRuntimeSharedWorkspace) {
+        const workspaceId = issueData.executionWorkspaceId ?? existing.executionWorkspaceId;
+        if (!workspaceId) {
+          throw unprocessable("Runtime workspace binding requires an existing shared workspace");
+        }
+        const [workspace] = await dbOrTx
+          .select({ mode: executionWorkspaces.mode })
+          .from(executionWorkspaces)
+          .where(and(
+            eq(executionWorkspaces.id, workspaceId),
+            eq(executionWorkspaces.companyId, existing.companyId),
+          ));
+        if (
+          workspace?.mode !== "shared_workspace" ||
+          (issueData.executionWorkspacePreference ?? existing.executionWorkspacePreference) !== "reuse_existing" ||
+          (issueData.executionWorkspaceSettings ?? existing.executionWorkspaceSettings)?.mode !== "shared_workspace"
+        ) {
+          throw unprocessable("Runtime workspace binding requires an existing shared workspace");
+        }
+      }
+      // Warm sandbox continuity is runtime bookkeeping, independent of the
+      // opt-in UI for creating isolated worktrees. Public updates still obey
+      // the feature gate; only the internal shared-workspace binding bypasses it.
+      if (!isolatedWorkspacesEnabled && !options.bindRuntimeSharedWorkspace) {
         delete issueData.executionWorkspaceId;
         delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
