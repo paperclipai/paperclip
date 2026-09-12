@@ -3140,6 +3140,246 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(rows[0]?.status).toBe("pending");
   });
 
+  it("does not supersede request confirmations for board-token automation comments", async () => {
+    // Automation that authenticates with a board/user token has no run context, so
+    // createdByRunId is null and the comment is indistinguishable from a human's unless
+    // the caller marks it. Both markers must be honoured: the system-notice framing says
+    // the comment is not an answer, and authorType says the author is not a human.
+    const { companyId, issueId } = await seedConfirmationIssue("Board-token automation supersede exclusion");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Proceed with the current draft?",
+      },
+    }, {
+      userId: "local-board",
+    });
+    const afterCreated = new Date(new Date(created.createdAt).getTime() + 1_000);
+
+    await expect(interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: afterCreated,
+      authorUserId: "local-board",
+      createdByRunId: null,
+      presentation: {
+        kind: "system_notice",
+        tone: "info",
+        detailsDefaultOpen: false,
+      },
+    }, {
+      userId: "local-board",
+    })).resolves.toHaveLength(0);
+
+    await expect(interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: afterCreated,
+      authorUserId: "local-board",
+      authorType: "system",
+      createdByRunId: null,
+    }, {
+      userId: "local-board",
+    })).resolves.toHaveLength(0);
+
+    const rows = await db.select().from(issueThreadInteractions);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("pending");
+  });
+
+  it("does not let a genuine user suppress expiry with a system-notice marker", async () => {
+    // `presentation` is caller-supplied, so it is only honoured from a non-human sentinel
+    // author. A real signup that marks its comment as a system notice must not be able to
+    // hold its own pending card open indefinitely — that comment still supersedes.
+    const { companyId, issueId } = await seedConfirmationIssue("Genuine user cannot suppress expiry");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Proceed with the current draft?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const markedCommentId = randomUUID();
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: markedCommentId,
+      createdAt: new Date(new Date(created.createdAt).getTime() + 1_000),
+      authorUserId: "genuine-signup-user",
+      authorType: "user",
+      createdByRunId: null,
+      presentation: {
+        kind: "system_notice",
+        tone: "info",
+        detailsDefaultOpen: false,
+      },
+    }, {
+      userId: "genuine-signup-user",
+    });
+
+    expect(expired).toHaveLength(1);
+    expect(expired[0]).toMatchObject({
+      id: created.id,
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "superseded_by_comment",
+        commentId: markedCommentId,
+      },
+    });
+  });
+
+  it("does not supersede on a server-derived agent attribution, and still supersedes on the next plain board comment", async () => {
+    // `derivedAuthorAgentId` is written by the server from run logs, not by the caller. It
+    // exists because agents post under the `local-board` sentinel, which is exactly the
+    // case this guard has to catch.
+    const { companyId, issueId } = await seedConfirmationIssue("Derived agent attribution is machine-authored");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Proceed with the current draft?",
+      },
+    }, {
+      userId: "local-board",
+    });
+    const afterCreated = new Date(new Date(created.createdAt).getTime() + 1_000);
+
+    await expect(interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: randomUUID(),
+      createdAt: afterCreated,
+      authorUserId: "local-board",
+      authorType: "user",
+      createdByRunId: null,
+      derivedAuthorAgentId: randomUUID(),
+    }, {
+      userId: "local-board",
+    })).resolves.toHaveLength(0);
+
+    const stillPending = await db.select().from(issueThreadInteractions);
+    expect(stillPending).toHaveLength(1);
+    expect(stillPending[0]?.status).toBe("pending");
+
+    const plainCommentId = randomUUID();
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment({
+      id: issueId,
+      companyId,
+    }, {
+      id: plainCommentId,
+      createdAt: new Date(afterCreated.getTime() + 1_000),
+      authorUserId: "local-board",
+      authorType: "user",
+      createdByRunId: null,
+    }, {
+      userId: "local-board",
+    });
+    expect(expired).toHaveLength(1);
+    expect(expired[0]).toMatchObject({
+      id: created.id,
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "superseded_by_comment",
+        commentId: plainCommentId,
+      },
+    });
+  });
+
+  it("does not repair historical confirmations from system-notice comments, but still repairs from human ones", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Historical system-notice exclusion");
+    const humanCommentId = randomUUID();
+    const createdAt = new Date("2026-05-18T12:00:00.000Z");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Proceed with the current draft?",
+      },
+    }, {
+      userId: "local-board",
+    });
+    await db
+      .update(issueThreadInteractions)
+      .set({ createdAt, updatedAt: createdAt })
+      .where(eq(issueThreadInteractions.id, created.id));
+
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorUserId: "local-board",
+      authorType: "user",
+      presentation: {
+        kind: "system_notice",
+        tone: "info",
+        detailsDefaultOpen: false,
+      },
+      body: "Automated pipeline check: no open PR for this card yet.",
+      createdAt: new Date("2026-05-18T12:01:00.000Z"),
+      updatedAt: new Date("2026-05-18T12:01:00.000Z"),
+    });
+
+    await expect(interactionsSvc.expireRequestConfirmationsSupersededByHistoricalComments({
+      id: issueId,
+      companyId,
+    })).resolves.toEqual([]);
+
+    // The sweep is filtered, not disabled: a real human comment still supersedes.
+    await db.insert(issueComments).values({
+      id: humanCommentId,
+      companyId,
+      issueId,
+      authorUserId: "local-board",
+      authorType: "user",
+      body: "Please revise this first.",
+      createdAt: new Date("2026-05-18T12:02:00.000Z"),
+      updatedAt: new Date("2026-05-18T12:02:00.000Z"),
+    });
+
+    const expired = await interactionsSvc.expireRequestConfirmationsSupersededByHistoricalComments({
+      id: issueId,
+      companyId,
+    });
+    expect(expired).toHaveLength(1);
+    expect(expired[0]).toMatchObject({
+      id: created.id,
+      status: "expired",
+      result: {
+        version: 1,
+        outcome: "superseded_by_comment",
+        commentId: humanCommentId,
+      },
+    });
+  });
+
   it("repairs historical request confirmations superseded by later user comments idempotently", async () => {
     const { companyId, issueId } = await seedConfirmationIssue("Historical comment supersede");
     const commentId = randomUUID();

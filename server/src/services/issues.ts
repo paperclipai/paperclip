@@ -94,6 +94,7 @@ import {
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
   isUuidLike,
+  NON_HUMAN_SENTINEL_AUTHOR_USER_IDS,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
@@ -216,11 +217,6 @@ const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
 const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
-// Non-human author sentinels that agents post under. These ARE eligible for
-// agent-attribution derivation even though `local-board` is also materialized
-// as a row in the `user` table (it is the implicit board admin). Genuine human
-// users — real signups with their own ids — are never reattributed.
-const NON_HUMAN_SENTINEL_AUTHOR_USER_IDS = new Set<string>(["local-board"]);
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;

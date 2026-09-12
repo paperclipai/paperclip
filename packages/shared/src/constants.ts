@@ -232,6 +232,13 @@ export type SummarySlotStatus = (typeof SUMMARY_SLOT_STATUSES)[number];
 export const ISSUE_COMMENT_AUTHOR_TYPES = ["user", "agent", "system"] as const;
 export type IssueCommentAuthorType = (typeof ISSUE_COMMENT_AUTHOR_TYPES)[number];
 
+// Author sentinels that agents and local automation post under. `local-board` is also
+// materialized as a row in the `user` table (it is the implicit board admin), so a plain
+// "exists in the user table" check does not identify it. The id is assigned by
+// authentication and never read from a request body, which makes it safe to treat as
+// provenance. Genuine human users — real signups with their own ids — are never in here.
+export const NON_HUMAN_SENTINEL_AUTHOR_USER_IDS = new Set<string>(["local-board"]);
+
 export const ISSUE_COMMENT_PRESENTATION_KINDS = ["message", "system_notice"] as const;
 export type IssueCommentPresentationKind = (typeof ISSUE_COMMENT_PRESENTATION_KINDS)[number];
 
