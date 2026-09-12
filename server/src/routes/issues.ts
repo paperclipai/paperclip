@@ -7452,18 +7452,34 @@ export function issueRoutes(
   // a request, resolves them via {@link resolveIssueIdQueryParam}, and writes
   // the validation error to `res` itself when one fails. Returns `null` after
   // writing the error so the handler can simply `return`.
+  //
+  // Repeated query params (e.g. `?parentId=a&parentId=b`) arrive as arrays
+  // from Express' default query parser; opting into the `extended` (qs)
+  // parser would also produce objects for bracketed keys. The TypeScript
+  // cast is a compile-time no-op, so we validate the runtime type here and
+  // 400 explicitly instead of letting `raw.trim()` throw a 500 downstream.
   async function resolveIssueIdListFilters(
     req: Request,
     res: Response,
   ): Promise<{ parentId?: string; descendantOf?: string } | null> {
     const out: { parentId?: string; descendantOf?: string } = {};
     for (const paramName of ["parentId", "descendantOf"] as const) {
-      const raw =
+      const rawUnknown: unknown =
         paramName === "parentId"
-          ? ((req.query.parentId ?? req.query.parentIssueId) as string | undefined)
-          : (req.query[paramName] as string | undefined);
-      if (raw === undefined || raw === "") continue;
-      const resolved = await resolveIssueIdQueryParam(raw, paramName);
+          ? req.query.parentId ?? req.query.parentIssueId
+          : req.query[paramName];
+      if (rawUnknown === undefined) continue;
+      if (typeof rawUnknown !== "string") {
+        const errorKey =
+          paramName === "parentId" ? "invalid_parent_id" : "invalid_descendant_of";
+        res.status(400).json({
+          error: errorKey,
+          reason: "expected a single string value, received a repeated or structured query parameter",
+        });
+        return null;
+      }
+      if (rawUnknown === "") continue;
+      const resolved = await resolveIssueIdQueryParam(rawUnknown, paramName);
       if (!resolved.ok) {
         res.status(resolved.status).json(resolved.body);
         return null;

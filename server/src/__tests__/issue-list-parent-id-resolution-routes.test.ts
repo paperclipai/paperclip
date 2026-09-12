@@ -232,4 +232,86 @@ describe("GET /api/companies/:companyId/issues — parentId / descendantOf resol
       expect.objectContaining({ parentId: parentUuid }),
     );
   });
+
+  // Regression: with Express' default query parser, repeated query params
+  // (e.g. `?parentId=a&parentId=b`) arrive as arrays at runtime. The pre-fix
+  // code cast them to `string` and then called `.trim()`, which threw a 500.
+  // These tests lock in the explicit 400 for both filters, on both endpoints.
+  //
+  // Note on object shapes: `?parentId[eq]=x` would produce an object under
+  // `req.query.parentId` only if the app opts into Express' "extended" query
+  // parser (qs). The current server keeps the default "simple" parser, so
+  // that bracket form arrives as a literal `parentId[eq]` key and never hits
+  // this validator; the runtime-type guard remains as a defence-in-depth for
+  // a possible future parser switch.
+  it("returns 400 (not 500) when parentId is repeated in the query", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/issues")
+      .query(`parentId=${parentUuid}&parentId=other-value`);
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: "invalid_parent_id",
+      reason: "expected a single string value, received a repeated or structured query parameter",
+    });
+    expect(mockIssueService.list).not.toHaveBeenCalled();
+    expect(mockIssueService.getByIdentifier).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 (not 500) when descendantOf is repeated in the query", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/issues")
+      .query(`descendantOf=${parentUuid}&descendantOf=${parentIdentifier}`);
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: "invalid_descendant_of",
+      reason: "expected a single string value, received a repeated or structured query parameter",
+    });
+    expect(mockIssueService.list).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 (not 500) when parentId is repeated on GET /issues/count", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/issues/count")
+      .query(`attention=blocked&parentId=${parentUuid}&parentId=other`);
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: "invalid_parent_id",
+      reason: "expected a single string value, received a repeated or structured query parameter",
+    });
+    expect(mockIssueService.count).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 (not 500) when descendantOf is repeated on GET /issues/count", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/issues/count")
+      .query(`attention=blocked&descendantOf=${parentUuid}&descendantOf=x`);
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: "invalid_descendant_of",
+      reason: "expected a single string value, received a repeated or structured query parameter",
+    });
+    expect(mockIssueService.count).not.toHaveBeenCalled();
+  });
+
+  it("falls back to parentIssueId only when parentId is absent, and still validates its type", async () => {
+    const app = await createApp();
+    const res = await request(app)
+      .get("/api/companies/company-1/issues")
+      .query(`parentIssueId=${parentUuid}&parentIssueId=other`);
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      error: "invalid_parent_id",
+      reason: "expected a single string value, received a repeated or structured query parameter",
+    });
+    expect(mockIssueService.list).not.toHaveBeenCalled();
+  });
 });
