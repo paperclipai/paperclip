@@ -293,8 +293,7 @@ export function companyService(db: Db) {
   }
 
   async function createCompanyWithUniquePrefix(data: typeof companies.$inferInsert) {
-    // TEMPORARY: forced prefix for the next company. Revert to deriveIssuePrefixBase.
-    const base = "PF";
+    const base = deriveIssuePrefixBase(data.name);
     let suffix = 1;
     while (suffix <= MAX_ISSUE_PREFIX_ATTEMPTS) {
       const candidate = `${base}${issuePrefixSuffixForAttempt(suffix)}`;
