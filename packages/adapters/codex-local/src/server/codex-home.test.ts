@@ -1143,16 +1143,16 @@ describe("stageCodexHomeForSync", () => {
     }
   });
 
-  // config.toml carries only the managed MCP bearer-token environment variable name and is
-  // secret-bearing; the staged copy must be 0600, not the world-readable default.
-  it("writes the staged config.toml (managed MCP bearer header) with mode 0600", async () => {
+  // Preserve the source config's restrictive mode when staging it, even though managed MCP
+  // bearer tokens are now referenced by environment-variable name instead of stored here.
+  it("writes the staged config.toml with mode 0600", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-stage-toml-mode-"));
     let staged: string | null = null;
     try {
       const home = path.join(root, "codex-home");
       await fs.mkdir(home, { recursive: true });
-      // Mirror the source writer: config.toml holds an MCP gateway bearer token
-      // and is persisted 0600 on disk.
+      // Mirror the source writer: config.toml names the environment variable that supplies
+      // the MCP gateway bearer token and is persisted 0600 on disk.
       await fs.writeFile(
         path.join(home, "config.toml"),
         "[mcp_servers.paperclip]\nbearer_token_env_var = \"PAPERCLIP_MANAGED_MCP_BEARER_TOKEN_1\"\n",
