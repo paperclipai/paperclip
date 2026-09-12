@@ -1017,6 +1017,8 @@ there is no active turn. It validates the queue identity and revision under
 the task lock and records durable board intent to send the saved queue. A
 run that stops between the queue read and the click is also accepted. The
 server never redirects interruption to an unrelated active run.
+Intentional interruption does not show the global cancelled/failed run toast;
+the queue control supplies its own delivery feedback.
 
 This click can authorize a fresh conversation for messages written before
 the prior run stopped. It preserves the original message content and authors,

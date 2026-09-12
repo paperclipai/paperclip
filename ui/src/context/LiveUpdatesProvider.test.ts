@@ -1180,6 +1180,13 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
     ).toBeNull();
   });
 
+  it.each(["cancelled", "failed"])("does not toast an intentional legacy interruption reported as %s", (status) => {
+    expect(__liveUpdatesTestUtils.buildRunStatusToast({
+      runId: "interrupted-run", agentId: "agent-1", status,
+      errorCode: "operator_interrupted", error: "Interrupted to send queued messages",
+    }, () => "Assistant")).toBeNull();
+  });
+
   it("still builds failure toasts for agent errors and failed runs", () => {
     const queryClient = {
       getQueryData: () => [
