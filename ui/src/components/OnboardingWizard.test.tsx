@@ -2017,6 +2017,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       ["codex_local", "openai", /OpenAI/, "codex-session-1", "adapter-login-status"],
     ] as const)("finishes %s sign-in when its connection becomes visible before the completion poll", async (adapterType, provider, label, sessionId, statusKey) => {
       mockAgentsApi.getAdapterAuthSignal.mockResolvedValue({ status: "absent" });
+      mockAgentsApi.hire.mockRejectedValueOnce(new Error("Temporary hire failure"));
       const { root, queryClient } = await openStep4({ adapterType });
       await pickSource(label);
       for (let i = 0; i < 6; i++) await flushReact();
@@ -2043,6 +2044,15 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         }
         expect(mockAgentsApi.hire).toHaveBeenCalledTimes(1);
         expect(mockAgentsApi.hire).toHaveBeenCalledWith("company-new", expect.objectContaining({ runtimeConfig: expect.objectContaining({ aiConnection: { provider, method: "subscription", mode: "responsible_user" } }) }));
+        for (let i = 0; i < 4; i++) await flushReact();
+        expect(document.body.textContent).toContain("Temporary hire failure");
+        const retry = [...document.body.querySelectorAll("button")].find(button => button.textContent?.trim() === "Connect");
+        expect(retry).toBeTruthy();
+        expect(retry!.disabled).toBe(false);
+        await act(async () => { retry!.click(); });
+        for (let i = 0; i < 6; i++) await flushReact();
+        expect(mockAgentsApi.hire).toHaveBeenCalledTimes(2);
+        expect(mockAgentsApi.startClaudeSetupTokenLogin.mock.calls.length + mockAgentsApi.startAdapterAuthLogin.mock.calls.length).toBe(1);
       } finally {
         await act(async () => root.unmount());
       }

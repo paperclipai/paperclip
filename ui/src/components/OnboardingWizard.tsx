@@ -2159,6 +2159,13 @@ function OnboardingWizardInner({
     } finally {
       hiringAgentRef.current = false;
       setLoading(false);
+      // Authentication is already saved. A failed probe or hire must offer a
+      // retry with that account, rather than keep the completed login busy.
+      if (connectCredentialStored && stillTheSameCompany(createdCompanyId)) {
+        connectingSinceRef.current = null;
+        setConnectAuthUrl(null);
+        setConnectPhase((phase) => phase === "connecting" ? "ready" : phase);
+      }
     }
   }
 
@@ -2745,6 +2752,7 @@ function OnboardingWizardInner({
                         }}
                         onConnected={() => {
                           if (managedProvider) managedSubscriptionRef.current = { companyId: createdCompanyId, binding: { provider: managedProvider, method: "subscription", mode: "responsible_user" } };
+                          setConnectAuthUrl(null);
                           // Not into a card the customer has left. The panel is
                           // still mounted through Back's exit, and a login that
                           // finished there pulled the step back into "Connecting"
