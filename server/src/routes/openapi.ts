@@ -6666,6 +6666,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/heartbeat-runs/{runId}/export.zip",
+  tags: ["runs"],
+  summary: "Download a heartbeat run session log as a ZIP archive",
+  request: { params: z.object({ runId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/heartbeat-runs/{runId}/workspace-operations",
   tags: ["runs"],
   summary: "List workspace operations for a run",
