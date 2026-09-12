@@ -1,8 +1,9 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 
 export type DatabaseBackupHealthWarningCode =
   | "database_backup_check_failed"
+  | "database_backup_empty"
   | "database_backup_last_failure"
   | "database_backup_missing"
   | "database_backup_stale";
@@ -23,6 +24,7 @@ export type DatabaseBackupHealthStatus = {
     mtime: string;
     ageHours: number;
     sizeBytes: number;
+    uncompressedSizeBytes: number;
   } | null;
   lastFailure: {
     path: string;
@@ -78,6 +80,23 @@ function readLastFailure(alertFiles: string[]) {
   };
 }
 
+// gzip stores the uncompressed size mod 2^32 in the last 4 bytes of the
+// stream (RFC 1952 ISIZE). A backup that never received real content
+// (e.g. an aborted run) is a valid, small gzip stream whose ISIZE is 0 -
+// that case is otherwise indistinguishable from a healthy backup by
+// looking only at the compressed file size.
+function readGzipUncompressedSize(filePath: string, compressedSizeBytes: number): number {
+  if (compressedSizeBytes < 18) return -1;
+  const fd = openSync(filePath, "r");
+  try {
+    const trailer = Buffer.alloc(4);
+    readSync(fd, trailer, 0, 4, compressedSizeBytes - 4);
+    return trailer.readUInt32LE(0);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function findLatestBackup(backupDir: string, nowMs: number) {
   if (!existsSync(backupDir)) return null;
 
@@ -99,6 +118,7 @@ function findLatestBackup(backupDir: string, nowMs: number) {
     mtime: new Date(latest.stat.mtimeMs).toISOString(),
     ageHours: roundHours((nowMs - latest.stat.mtimeMs) / 3_600_000),
     sizeBytes: latest.stat.size,
+    uncompressedSizeBytes: readGzipUncompressedSize(latest.fullPath, latest.stat.size),
   };
 }
 
@@ -121,11 +141,21 @@ export function inspectDatabaseBackupHealth(
         code: "database_backup_missing",
         message: `No .sql.gz database backups found in ${opts.backupDir}.`,
       });
-    } else if (latestBackup.ageHours > maxAgeHours) {
-      warnings.push({
-        code: "database_backup_stale",
-        message: `Latest database backup is ${latestBackup.ageHours}h old, exceeding ${maxAgeHours}h.`,
-      });
+    } else {
+      if (latestBackup.uncompressedSizeBytes <= 0) {
+        warnings.push({
+          code: "database_backup_empty",
+          message:
+            `Latest database backup ${latestBackup.name} decompresses to ` +
+            `${latestBackup.uncompressedSizeBytes} bytes; expected a non-empty SQL dump.`,
+        });
+      }
+      if (latestBackup.ageHours > maxAgeHours) {
+        warnings.push({
+          code: "database_backup_stale",
+          message: `Latest database backup is ${latestBackup.ageHours}h old, exceeding ${maxAgeHours}h.`,
+        });
+      }
     }
 
     if (lastFailure) {
