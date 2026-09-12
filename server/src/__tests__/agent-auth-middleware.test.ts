@@ -372,6 +372,38 @@ describe("agent auth middleware", () => {
     });
   });
 
+  it("audits a run header mismatch even when the claimed run does not exist", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const claimedRunId = randomUUID();
+    const spoofedRunId = randomUUID();
+    const { db, activity } = createDbState({
+      agent: { id: agentId, companyId },
+    });
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", claimedRunId, "user-claim");
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", spoofedRunId);
+
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe("agent_jwt_run_id_mismatch");
+    expect(activity).toHaveLength(1);
+    expect(activity[0]).toMatchObject({
+      companyId,
+      actorType: "agent",
+      actorId: agentId,
+      action: "auth.agent_jwt_run_header_mismatch",
+      entityType: "heartbeat_run",
+      entityId: claimedRunId,
+      details: { claimRunId: claimedRunId, headerRunId: spoofedRunId },
+    });
+    // run_id carries a real FK to heartbeat_runs; a nonexistent claim must not
+    // be written into it or the whole audit row is lost to the FK violation.
+    expect(activity[0].runId).toBeUndefined();
+  });
+
   it("falls back to the run row responsible user for legacy claim-less agent JWTs", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
