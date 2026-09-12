@@ -2776,8 +2776,16 @@ function healthFailureHttpStatus(failure: {
 }): number {
   if (failure.status === "missing_secret") return 422;
   if (failure.code === "composio_api_key_rejected") return 422;
+  if (failure.code === "tool_connection_transport_unsupported") return 422;
   if (failure.code.endsWith("_endpoint_rejected")) return 422;
   return 502;
+}
+
+function unsupportedToolConnectionTransport() {
+  return unprocessable(
+    "This connection has no supported tool integration. Add a supported account or MCP connection from Connectors.",
+    { code: "tool_connection_transport_unsupported" },
+  );
 }
 
 function sanitizeHttpFailure(error: unknown): {
@@ -2797,6 +2805,9 @@ function sanitizeHttpFailure(error: unknown): {
   }
   if (error instanceof HttpError) {
     const code = asRecord(error.details).code;
+    if (code === "tool_connection_transport_unsupported") {
+      return { status: "error", message: error.message, code };
+    }
     if (code === "composio_connected_account_inactive") {
       return { status: "degraded", message: error.message, code };
     }
@@ -7428,6 +7439,9 @@ export function toolAccessService(
       await validateComposioConnection(connection);
       return [];
     }
+    if (connection.transport !== "local_stdio") {
+      throw unsupportedToolConnectionTransport();
+    }
     await resolveCredentialHeaders(connection);
     return localTools(connection);
   }
@@ -7579,9 +7593,11 @@ export function toolAccessService(
         await remoteTools(connection, credentialHeaders, actor);
       } else if (isComposioConnection(connection)) {
         await validateComposioConnection(connection);
-      } else {
+      } else if (connection.transport === "local_stdio") {
         await resolveCredentialHeaders(connection);
         await stdioTemplateId(connection.companyId, connection.config);
+      } else {
+        throw unsupportedToolConnectionTransport();
       }
       const updated = await updateConnectionHealth(
         connection,
