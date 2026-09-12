@@ -417,6 +417,19 @@ configs with `database.mode: postgres`, suppresses the invocation directory's
 guard. The selected instance's own environment file still loads. The command
 selects the first available loopback port at or above `3100`.
 
+Source-checkout startup builds the shared and plugin SDK packages when needed.
+It prints build progress and any wait for another build. Interrupted builds
+release their lock after the compiler stops; later startups recover locks whose
+owner and compiler have exited. Empty locks from older versions are recovered
+once they are at least two minutes old. The command remains in the foreground
+after printing its ready URL to serve the instance; use Ctrl-C to stop it.
+Each package gets a completion marker only after a successful build. A hard
+kill leaves that marker absent, so the next startup rebuilds partial output.
+The marker records source and output content fingerprints, so recovery does
+not depend on filesystem timestamp precision. Direct `tsc` builds that produce
+identical output reuse the marker. Changed or partial output is rebuilt once
+before later startups reuse the completed build.
+
 Claude uses `ANTHROPIC_API_KEY`; Codex uses `OPENAI_API_KEY`; OpenCode uses
 `OPENROUTER_API_KEY` and requires an `openrouter/...` model. `--api-key-env`
 can name a different source variable while the agent still receives the

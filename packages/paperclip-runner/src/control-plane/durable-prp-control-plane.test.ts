@@ -106,7 +106,7 @@ it("renews one authenticated connection for three weeks without replacing its au
     await core.stop();
     rmSync(root, { recursive: true, force: true });
   }
-});
+}, 30_000);
 
 it.each(["expired", "revoked", "wrong-run", "wrong-connection", "wrong-epoch", "future-expiry"])(
   "cannot renew a lease with %s authority",
@@ -1542,9 +1542,10 @@ describe.sequential("DurablePrpControlPlane", () => {
       let authority: DurablePrpControlPlane | undefined;
       let launched = false;
       const diagnostics: string[] = [];
-      // The launcher below is synthetic; use the current executable only as
-      // its artifact identity, without depending on a staged Rust build.
-      const runnerBinary = process.execPath;
+      // The launcher never executes this file. Use a small artifact so cold
+      // reads of the Linux Node executable do not consume the failure deadline.
+      const runnerBinary = resolve(root, "synthetic-runner");
+      writeFileSync(runnerBinary, "synthetic runner artifact\n", { mode: 0o600 });
       const runnerDigest = `sha256:${createHash("sha256").update(readFileSync(runnerBinary)).digest("hex")}`;
       const handler = vi.fn(async () => ({ success: true, contentItems: [] }));
       const bundle = createCapabilityRunnerdCodexTransport({

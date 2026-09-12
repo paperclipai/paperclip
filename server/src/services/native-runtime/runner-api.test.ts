@@ -45,22 +45,21 @@ describe("runner API catalog", () => {
       catalog.length,
     );
     expect(JSON.stringify(catalog)).not.toContain('"$ref"');
-    expect(
-      runnerApiOperation("GET /api/companies/{companyId}/decisions")
-        .authorization.actor,
-    ).toBe("board");
-    expect(
-      runnerApiOperation("DELETE /api/issues/{id}/documents/{key}")
-        .authorization.actor,
-    ).toBe("board");
-    expect(
-      runnerApiOperation("DELETE /api/issues/{id}/documents/{key}")
-        .dedicatedTools,
-    ).toEqual([]);
-    expect(
-      runnerApiOperation(createProject).requestBody?.content["application/json"]
-        .schema.required,
-    ).toContain("name");
+    expect(runnerApiOperation("GET /api/companies/{companyId}/decisions").authorization.actor).toBe("board");
+    expect(runnerApiOperation("DELETE /api/issues/{id}/documents/{key}").authorization.actor).toBe("board");
+    expect(runnerApiOperation("DELETE /api/issues/{id}/documents/{key}").dedicatedTools).toEqual([]);
+    expect(runnerApiOperation(createProject).requestBody?.content["application/json"].schema.required).toContain("name");
+    expect(runnerApiOperation(createProject).dedicatedTools).toEqual(["create_project"]);
+    expect(runnerApiOperation(projects).dedicatedTools).toEqual(["list_projects"]);
+    expect(runnerApiOperation("GET /api/companies/{companyId}/project-repositories").dedicatedTools).toEqual(["list_project_repositories"]);
+  });
+  it.each(runnerApiCatalog().filter(operation => operation.transport === "rest"))("resolves the catalog route $operationId inside the bound origin", operation => {
+    const pathParams = Object.fromEntries(operation.parameters.filter(parameter => parameter.in === "path").map(parameter => [parameter.name, parameter.name === "companyId" ? context.companyId : "fixture-id"]));
+    const url = runnerApiUrl(operation, { operationId: operation.operationId, pathParams }, context, "https://paperclip.test");
+    expect(url.origin).toBe("https://paperclip.test");
+    expect(url.pathname).not.toContain("{");
+    expect(operation.responses).toBeDefined();
+    expect(operation.authorization.actor).toBeTruthy();
   });
   it.each(
     runnerApiCatalog().filter((operation) => operation.transport === "rest"),
@@ -135,6 +134,7 @@ describe("runner API request boundary", () => {
     },
   );
   it.each([
+    "POST /api/mcp/project-tools",
     "POST /api/agents/{id}/claude-login",
     "POST /api/companies/{companyId}/adapters/{type}/login-sessions",
     "POST /api/agents/me/connections/{connectionId}/start-authorization",

@@ -26,6 +26,9 @@ export type RunSnapshot = {
 };
 
 export type IssueSnapshot = {
+  conversationAgentId?: string | null;
+  conversationUserId?: string | null;
+  conversationState?: string | null;
   id: string;
   companyId: string;
   identifier: string;

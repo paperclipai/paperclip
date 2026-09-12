@@ -9,6 +9,7 @@ import {
   claudeSessionCwdMatchesExecutionTarget,
   execute,
   resetClaudeCliCapabilitiesCacheForTests,
+  sessionCodec,
 } from "@paperclipai/adapter-claude-local/server";
 
 async function writeFailingClaudeCommand(
@@ -1156,6 +1157,14 @@ describe("claude execute", () => {
           },
         },
         context: {},
+        runtimeMcp: {
+          getServers: () => [{
+            name: "Paperclip projects",
+            url: "http://localhost:3100/api/mcp/project-tools",
+            connectionId: "paperclip-project-tools",
+            token: "run-jwt-token",
+          }],
+        },
         authToken: "run-jwt-token",
         onLog: async () => {},
       });
@@ -1179,7 +1188,7 @@ describe("claude execute", () => {
         },
         runtime: {
           sessionId: null,
-          sessionParams: first.sessionParams ?? null,
+          sessionParams: sessionCodec.deserialize(sessionCodec.serialize(first.sessionParams ?? null)),
           sessionDisplayId: null,
           taskKey: null,
         },
@@ -1230,6 +1239,14 @@ describe("claude execute", () => {
             truncated: false,
             fallbackFetchNeeded: false,
           },
+        },
+        runtimeMcp: {
+          getServers: () => [{
+            name: "Paperclip projects",
+            url: "http://localhost:3100/api/mcp/project-tools",
+            connectionId: "paperclip-project-tools",
+            token: "next-run-jwt-token",
+          }],
         },
         authToken: "run-jwt-token",
         onLog: async () => {},

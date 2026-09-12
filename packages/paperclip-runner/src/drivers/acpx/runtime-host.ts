@@ -20,6 +20,7 @@ import {
   type VerifiedAcpxCommandLease,
   type VerifiedAcpxInstallation,
 } from "./installation-integrity.js";
+import { createAcpxCommandLeaseOwner } from "./command-lease-owner.js";
 import {
   requireVerifiedAcpxModel,
   type AcpxModelStatus,
@@ -117,6 +118,8 @@ export interface AcpxRuntimePort {
 
 export interface AcpxRuntimePortOpenOptions {
   command: VerifiedAcpxCommandLease;
+  /** Replace a consumed launch snapshot after an ephemeral control session. */
+  refreshConsumedCommand?: () => Promise<void>;
   profile: QualifiedAcpxProfile;
   cwd: string;
   stateDirectory: string;
@@ -401,6 +404,11 @@ export class AcpxRuntimeHost {
         reportFailure: (failure) =>
           dependencies.reportRetainedCleanupFailure(failure),
       });
+      const commandOwner = createAcpxCommandLeaseOwner(
+        command,
+        () => installation.openCommand(),
+      );
+      command = commandOwner.command;
       toolBridge = options.semanticTools
         ? await acquireAbortableAdmissionResource({
             signal: options.signal,
@@ -421,6 +429,7 @@ export class AcpxRuntimeHost {
           options.assertWorkspaceHeld?.();
           return dependencies.openRuntime({
             command: command!,
+            refreshConsumedCommand: commandOwner.refreshConsumedCommand,
             profile,
             cwd: binding.workspacePath,
             stateDirectory: sandbox.stateDirectory,

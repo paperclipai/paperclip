@@ -33,7 +33,7 @@ describe("isTransientDbConnectionError", () => {
 });
 
 describe("retryOnTransientDbConnectionError", () => {
-  it("retries exactly once after a transient closed connection", async () => {
+  it("retries after a transient closed connection", async () => {
     let calls = 0;
     const result = await retryOnTransientDbConnectionError(async () => {
       calls += 1;
@@ -42,6 +42,19 @@ describe("retryOnTransientDbConnectionError", () => {
     });
     expect(result).toBe("ok");
     expect(calls).toBe(2);
+  });
+
+  it("survives a pool-wide recycle where the first replay draws another dead socket", async () => {
+    // A suspending pooled endpoint kills every pooled socket at once, so
+    // the first replay can fail identically to the original attempt.
+    let calls = 0;
+    const result = await retryOnTransientDbConnectionError(async () => {
+      calls += 1;
+      if (calls <= 2) throw driverClosedError("CONNECTION_CLOSED");
+      return "ok";
+    });
+    expect(result).toBe("ok");
+    expect(calls).toBe(3);
   });
 
   it("propagates a non-transient failure without retrying", async () => {
@@ -55,7 +68,7 @@ describe("retryOnTransientDbConnectionError", () => {
     expect(calls).toBe(1);
   });
 
-  it("propagates the second failure when the retry also dies", async () => {
+  it("propagates the failure once the replay budget is spent", async () => {
     let calls = 0;
     await expect(
       retryOnTransientDbConnectionError(async () => {
@@ -63,6 +76,6 @@ describe("retryOnTransientDbConnectionError", () => {
         throw driverClosedError("CONNECTION_CLOSED");
       }),
     ).rejects.toThrow("Failed query");
-    expect(calls).toBe(2);
+    expect(calls).toBe(3);
   });
 });

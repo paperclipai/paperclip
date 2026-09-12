@@ -1,3 +1,4 @@
+import { instanceSettingsService } from "../../../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -163,6 +164,51 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     });
     return id;
   }
+
+  it.each([false, true])("rechecks disabled chat mode before interrupted queue promotion (conversation=%s)", async (conversation) => {
+    const settings = instanceSettingsService(db);
+    const original = (await settings.getExperimental()).enableAgentChat;
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "cancelled", contextSnapshot: { issueId } });
+    const [comment] = await db.insert(issueComments).values({
+      companyId, issueId, authorUserId: "responsible-user", body: "Pending input",
+    }).returning();
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId, requestedByActorId: "responsible-user",
+      payload: { commentId: comment.id, _paperclipWakeContext: { issueId, wakeReason: "issue_commented", wakeCommentIds: [comment.id] } },
+    });
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", resultJson: {
+      queuedCommentInterruptQueueId: wakeId, executionCancellation: { state: "acknowledged" },
+      conversationContinuation: "continue_conversation_v1",
+    } }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId, checkoutRunId: runId,
+      ...(conversation ? { conversationAgentId: agentId, conversationUserId: "responsible-user", conversationState: "active" } : {}),
+    }).where(eq(issues.id, issueId));
+    const release = createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: { escalateStrandedAssignedIssue: async () => {}, escalateStrandedRecoveryIssueInPlace: async () => {} },
+    });
+    try {
+      await settings.updateExperimental({ enableAgentChat: false });
+      const result = await release({ companyId, runId, now: new Date() });
+      if (conversation) {
+        expect(result.outcome.kind).toBe("released");
+        expect(result.postCommitEffects).toEqual([]);
+        const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+        expect(issue).toMatchObject({ executionRunId: null, checkoutRunId: null });
+        const [pending] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
+        expect(pending).toMatchObject({ status: "deferred_issue_execution", runId: null });
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+        await settings.updateExperimental({ enableAgentChat: true });
+        expect((await release({ companyId, runId, now: new Date() })).outcome.kind).toBe("promoted");
+      } else {
+        expect(result.outcome.kind).toBe("promoted");
+      }
+    } finally {
+      await settings.updateExperimental({ enableAgentChat: original });
+    }
+  });
 
   for (const hasDeferredMessage of [false, true]) {
     it(`plans conversation recovery during owner cleanup without draining messages (queued=${hasDeferredMessage})`, async () => {
