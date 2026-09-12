@@ -567,3 +567,12 @@ A paused task takes over the composer with an amber notice and a Resume action.
 Operators must release the effective task or ancestor pause before sending a new
 message. The draft stays intact. This applies to both task interfaces and to
 board comment API requests; an agent may still report interrupted work.
+
+## Task search relevance
+
+Task discovery uses PostgreSQL and the existing search indexes, with no external
+search service or background indexing job. The task-list quick search and full
+company search share lexical matching and ranking. Known identifiers and direct
+title matches lead; current conversation and document content supplies supporting
+evidence. See [Task search relevance](SEARCH.md) for the evaluation rubric,
+matching contract and reproducible quality tests.
