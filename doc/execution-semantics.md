@@ -1009,3 +1009,24 @@ Admission atomically settles an unclaimed coordinator and admits one fresh turn,
 preserving history, unknown action outcomes, and attempt counts. Pauses, approvals,
 budgets, task ownership, and terminal task status still gate admission. No
 automatic provider replay is authorized by a cancelled startup.
+
+### Delivering queued messages after a legacy run stops
+
+The legacy queued-message Interrupt action accepts a null `targetRunId` when
+there is no active turn. It validates the queue identity and revision under
+the task lock and records durable board intent to send the saved queue. A
+run that stops between the queue read and the click is also accepted. The
+server never redirects interruption to an unrelated active run.
+
+This click can authorize a fresh conversation for messages written before
+the prior run stopped. It preserves the original message content and authors,
+and retains process/lease stop proofs, task ownership, pauses, approvals, and
+budget checks. Queue edits and discards remain authoritative until dispatch.
+Repeated delivery attempts cannot create another successor after the queue
+is consumed. Native same-turn steering retains its active-target contract.
+
+Legacy finalization retries deferred input after adapter and lease cleanup.
+The scheduler also revisits bounded batches of stranded queues after restart
+or a late enqueue. Both use normal admission; an existing queued successor
+owns the next turn even before it acquires the task execution lock. A recovery
+hold or a plain operator Stop does not by itself authorize old input.

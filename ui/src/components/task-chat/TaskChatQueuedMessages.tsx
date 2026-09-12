@@ -146,8 +146,8 @@ function SortableQueuedMessage({
         <button
           type="button"
           onClick={onInterrupt}
-          disabled={busy || !queue.targetRunId || !onInterrupt}
-          title="Interrupt the active turn and send queued messages"
+          disabled={busy || !queue.queueId || !onInterrupt}
+          title={queue.targetRunId ? "Interrupt the active turn and send queued messages" : "Send queued messages now"}
           className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
           data-testid={`task-chat-queued-interrupt-${entry.comment.id}`}
         >
@@ -313,7 +313,7 @@ export function TaskChatQueuedMessages({
       action === "steer"
         ? "Steering queued message."
         : action === "interrupt"
-          ? "Interrupting the active turn."
+          ? "Sending queued messages."
           : "Discarding queued message.",
     );
     if (action === "steer") {
@@ -334,7 +334,7 @@ export function TaskChatQueuedMessages({
         action === "steer"
           ? "Message steered into the active turn."
           : action === "interrupt"
-            ? "Interruption requested. Queued messages will continue after the active turn stops."
+            ? "Queued messages will be sent when the previous run has stopped."
             : "Queued message discarded.",
       );
     } catch (error) {
