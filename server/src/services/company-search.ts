@@ -416,7 +416,11 @@ function selectPrimarySnippets(row: IssueSearchRow, normalizedQuery: string, tok
   ].filter((source) => matchedFields.has(source.field));
   const coverage = (text: string | null) => tokens.filter((term) => (text ?? "").toLowerCase().includes(term)).length;
   context.sort((left, right) => coverage(right.text) - coverage(left.text));
-  for (const source of context) candidates.push(createSnippet(source.field, source.label, source.text, terms));
+  const contextSnippets = context.map((source) => createSnippet(source.field, source.label, source.text, terms));
+  // The title and identifier are already visible in the row. For thread-only
+  // coverage, preserve the evidence before applying the two-snippet limit.
+  if (directMatch) candidates.push(...contextSnippets);
+  else candidates.unshift(...contextSnippets);
   if (!directMatch) candidates.push(description);
   return candidates.filter((snippet): snippet is CompanySearchSnippet => Boolean(snippet)).slice(0, 2);
 }
@@ -429,7 +433,8 @@ function issueResult(row: IssueSearchRow, prefix: string, normalizedQuery: strin
   // Direct task matches open the task; context matches open the evidence shown.
   const directMatch = Number(row.score) >= 3000 || Number(row.score) < 2000;
   const evidence = snippets.find((snippet) => snippet.field === "comment" || snippet.field === "document");
-  const suffix = directMatch ? "" : evidence?.field === "comment" ? commentSuffix : documentSuffix;
+  const suffix = directMatch ? "" : evidence?.field === "comment" ? commentSuffix
+    : evidence?.field === "document" ? documentSuffix : "";
   const issue: CompanySearchIssueSummary = {
     id: row.id,
     identifier: row.identifier,

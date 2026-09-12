@@ -729,6 +729,30 @@ describeEmbeddedPostgres("companySearchService", () => {
     expect(result.results[0]?.snippet).toContain("state");
   });
 
+  it.each(["comment", "document"] as const)("preserves %s evidence when title and identifier both match", async (source) => {
+    const companyId = await createCompany();
+    const task = await createIssue(companyId, {
+      identifier: "CTX-123", title: "CTX callback investigation", description: "CTX callback details",
+    });
+    const sourceId = randomUUID();
+    if (source === "comment") {
+      await db.insert(issueComments).values({ id: sourceId, companyId, issueId: task, body: "The missing signal is quasar." });
+    } else {
+      await db.insert(documents).values({ id: sourceId, companyId, title: "Investigation plan", latestBody: "The missing signal is quasar.", format: "markdown" });
+      await db.insert(issueDocuments).values({ companyId, issueId: task, documentId: sourceId, key: "plan" });
+    }
+
+    const result = await svc.search(companyId, companySearchQuerySchema.parse({ q: "CTX quasar" }));
+    const match = result.results.find((row) => row.id === task)!;
+    expect(match.matchedFields).toEqual(expect.arrayContaining(["identifier", "title", source]));
+    expect(match.score).toBeGreaterThanOrEqual(2000);
+    expect(match.score).toBeLessThan(3000);
+    expect(match.snippets).toHaveLength(2);
+    expect(match.snippets[0]).toMatchObject({ field: source, text: expect.stringContaining("quasar") });
+    expect(match.snippet).toContain("quasar");
+    expect(match.href).toContain(source === "comment" ? `#comment-${sourceId}` : "#document-plan");
+  });
+
   it("reflects edits, deleted comments and document updates immediately", async () => {
     const companyId = await createCompany();
     const task = await createIssue(companyId, { title: "Old uniquequartz title" });
