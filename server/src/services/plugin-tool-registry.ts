@@ -24,6 +24,7 @@ import type {
   PluginToolDeclaration,
 } from "@paperclipai/shared";
 import type { ToolRunContext, ToolResult, ExecuteToolParams } from "@paperclipai/plugin-sdk";
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { logger } from "../middleware/logger.js";
 
@@ -37,6 +38,26 @@ import { logger } from "../middleware/logger.js";
  * Example: `"acme.linear:search-issues"`
  */
 export const TOOL_NAMESPACE_SEPARATOR = ":";
+
+/**
+ * Transport default applied when a tool declares no timeoutMs. Mirrors the
+ * worker RPC default; the registry never invents its own budget.
+ */
+export const DEFAULT_TOOL_CALL_TIMEOUT_MS = 30_000;
+
+/**
+ * True only for transport timeout failures. Matched by error code, never by
+ * message text, with a name-based fallback for dual-package hazards.
+ */
+function isRpcTimeoutError(err: unknown): err is { code: number } {
+  if (err instanceof JsonRpcCallError) {
+    return err.code === PLUGIN_RPC_ERROR_CODES.TIMEOUT;
+  }
+  if (typeof err === "object" && err !== null && (err as { name?: unknown }).name === "JsonRpcCallError") {
+    return (err as { code?: unknown }).code === PLUGIN_RPC_ERROR_CODES.TIMEOUT;
+  }
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -67,6 +88,11 @@ export interface RegisteredTool {
   description: string;
   /** JSON Schema describing the tool's input parameters. */
   parametersSchema: Record<string, unknown>;
+  /**
+   * Per-tool call timeout in milliseconds from the plugin manifest.
+   * Undefined when the tool declares none; the transport default applies.
+   */
+  timeoutMs?: number;
 }
 
 /**
@@ -268,6 +294,7 @@ export function createPluginToolRegistry(
       displayName: decl.displayName,
       description: decl.description,
       parametersSchema: decl.parametersSchema,
+      ...(decl.timeoutMs !== undefined ? { timeoutMs: decl.timeoutMs } : {}),
     };
 
     byNamespace.set(namespacedName, entry);
@@ -434,21 +461,48 @@ export function createPluginToolRegistry(
         runContext,
       };
 
-      const result = await workerManager.call(dbId, "executeTool", rpcParams);
+      // Per-tool timeouts (DeepSeek Harness timeout-policy port): a declared
+      // budget travels to the transport, and its expiry returns a structured
+      // timeout result the agent can route on instead of a thrown RPC error.
+      // The worker keeps running; only the wait is bounded.
+      const timeoutMs = tool.timeoutMs;
+      try {
+        const result = await workerManager.call(dbId, "executeTool", rpcParams, timeoutMs);
 
-      log.debug(
-        {
-          pluginId,
-          toolName,
-          namespacedName,
-          hasContent: !!result.content,
-          hasData: result.data !== undefined,
-          hasError: !!result.error,
-        },
-        "tool execution completed",
-      );
+        log.debug(
+          {
+            pluginId,
+            toolName,
+            namespacedName,
+            hasContent: !!result.content,
+            hasData: result.data !== undefined,
+            hasError: !!result.error,
+          },
+          "tool execution completed",
+        );
 
-      return { pluginId, toolName, result };
+        return { pluginId, toolName, result };
+      } catch (err) {
+        if (isRpcTimeoutError(err)) {
+          const effectiveTimeoutMs = timeoutMs ?? DEFAULT_TOOL_CALL_TIMEOUT_MS;
+          const message = `Tool "${namespacedName}" timed out after ${effectiveTimeoutMs}ms`;
+          log.warn(
+            { pluginId, toolName, namespacedName, timeoutMs: effectiveTimeoutMs },
+            "tool execution timed out; returning a structured timeout result",
+          );
+          return {
+            pluginId,
+            toolName,
+            result: {
+              content: message,
+              error: message,
+              timedOut: true,
+              timeoutMs: effectiveTimeoutMs,
+            },
+          };
+        }
+        throw err;
+      }
     },
 
     toolCount(pluginId?: string): number {

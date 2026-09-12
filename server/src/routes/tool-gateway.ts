@@ -55,6 +55,37 @@ function callerHeaders(req: { headers: Record<string, string | string[] | undefi
   return headers;
 }
 
+export interface McpToolCallResult {
+  content: Array<{ type: string; text: string }>;
+  structuredContent: unknown;
+  isError: boolean;
+}
+
+/**
+ * Project a gateway tool result into an MCP `tools/call` result.
+ * Timeouts stay visible as structured data with an error flag so MCP
+ * agents can route on them instead of reading plain timed-out text as
+ * success. Non-timeout results keep the existing contract untouched.
+ */
+export function buildMcpToolCallResult(
+  resultRecord: Record<string, unknown> | null,
+  fallbackResult: unknown,
+): McpToolCallResult {
+  const contentText = typeof resultRecord?.content === "string"
+    ? resultRecord.content
+    : JSON.stringify(resultRecord?.data ?? fallbackResult ?? null);
+  const timedOut = resultRecord?.timedOut === true;
+  const timeoutMs = typeof resultRecord?.timeoutMs === "number" ? resultRecord.timeoutMs : null;
+  const dataValue = resultRecord?.data ?? null;
+  return {
+    content: [{ type: "text", text: contentText }],
+    structuredContent: timedOut
+      ? { data: dataValue, timedOut: true, ...(timeoutMs === null ? {} : { timeoutMs }) }
+      : dataValue,
+    isError: timedOut,
+  };
+}
+
 async function handleMcpGatewayProtocol(
   req: Request,
   res: Response,
@@ -175,17 +206,10 @@ async function handleMcpGatewayProtocol(
       const resultRecord = result.result && typeof result.result === "object" && !Array.isArray(result.result)
         ? result.result as Record<string, unknown>
         : null;
-      const contentText = typeof resultRecord?.content === "string"
-        ? resultRecord.content
-        : JSON.stringify(resultRecord?.data ?? result.result ?? null);
       res.json({
         jsonrpc: "2.0",
         id,
-        result: {
-          content: [{ type: "text", text: contentText }],
-          structuredContent: resultRecord?.data ?? null,
-          isError: false,
-        },
+        result: buildMcpToolCallResult(resultRecord, result.result),
       });
       return;
     }

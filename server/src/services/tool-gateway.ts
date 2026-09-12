@@ -10638,6 +10638,61 @@ export function createToolGatewayService(
           sensitiveMode: "redact",
           promptInjectionMode: "block",
         });
+        const validated = resultValidation.value as typeof result;
+        // In-band timeouts (structured `timedOut` results) take the timeout
+        // path, not the success path: invocation status, call events, and
+        // audit must record expiry instead of success. The result itself is
+        // still returned so the agent can route on it.
+        const timeoutInfo =
+          validated.result && typeof validated.result === "object" && validated.result.timedOut === true
+            ? validated.result
+            : null;
+        if (timeoutInfo) {
+          const timeoutMessage = typeof timeoutInfo.error === "string" && timeoutInfo.error.length > 0
+            ? timeoutInfo.error
+            : `Tool ${input.tool} timed out`;
+          await db
+            .update(toolInvocations)
+            .set({
+              status: "timed_out",
+              errorCode: "tool_timeout",
+              errorMessage: timeoutMessage,
+              completedAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(toolInvocations.id, invocationId));
+          await writeToolCallEvent({
+            invocationId,
+            session: sessionLike,
+            eventType: "call_failed",
+            outcome: "timeout",
+            toolName: tool.name,
+            policyDecision: "defer_runtime",
+            reasonCode: "tool_timeout",
+            argumentsSummary: argumentValidation.summary,
+            metadata: null,
+            tool,
+          });
+          await writeAudit({
+            session: sessionLike,
+            companyId: input.runContext.companyId,
+            agentId: input.runContext.agentId,
+            runId: input.runContext.runId,
+            issueId: context.issueId,
+            action: "tool_gateway.call_failed",
+            details: {
+              invocationId,
+              decision: "deny",
+              reasonCode: "tool_timeout",
+              tool: input.tool,
+              ...toolAuditMetadata(tool),
+              argumentsSummary: argumentValidation.summary,
+              durationMs: Date.now() - startedAt,
+              error: timeoutMessage,
+            },
+          });
+          return validated;
+        }
         await db
           .update(toolInvocations)
           .set({

@@ -284,6 +284,13 @@ export interface ToolResult {
   data?: unknown;
   /** If present, indicates the tool call failed. */
   error?: string;
+  /**
+   * Set by the host when the tool call exceeds its timeout. Agents can
+   * route on this flag instead of parsing error text. Workers never set it.
+   */
+  timedOut?: boolean;
+  /** The timeout budget in milliseconds that expired, when timedOut is set. */
+  timeoutMs?: number;
 }
 
 // ---------------------------------------------------------------------------
