@@ -293,7 +293,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(3);
   });
 
-  it.each(["user", "system", "rejected_admission", "consumed_first", "consumed_last", "deleted_first", "agent_first"])("delivers saved user messages on a %s queue after automatic recovery stopped, without another click", async (actorType) => {
+  it.each(["user", "system", "rejected_admission", "consumed_first", "consumed_last", "deleted_first", "agent_first", "cancelled_queued"])("delivers saved user messages on a %s queue after automatic recovery stopped, without another click", async (actorType) => {
     const seeded = await seedQueue();
     await db.update(agentWakeupRequests).set({ requestedByActorType: actorType === "user" ? "user" : "system" })
       .where(eq(agentWakeupRequests.id, seeded.wakeId));
@@ -328,6 +328,11 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       authorType: "agent", authorUserId: null, authorAgentId: seeded.agentId,
     }).where(eq(issueComments.id, seeded.commentIds[0]));
     const expectedIds = seeded.commentIds.filter((_, index) => !filtersInput || index !== excludedIndex);
+    if (actorType === "cancelled_queued") await db.insert(heartbeatRuns).values({
+      companyId: seeded.companyId, agentId: seeded.agentId, status: "cancelled", runtimeMode: "legacy",
+      errorCode: "agent_paused", createdAt: new Date(0), finishedAt: new Date(1),
+      contextSnapshot: { issueId: seeded.issueId, wakeCommentIds: [seeded.commentIds[0]] },
+    });
     if (actorType === "rejected_admission") {
       await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
         status: "cancelled", runtimeMode: "legacy", errorCode: "execution_reconciliation_required",
@@ -340,7 +345,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, delivered.runId!));
     expect(successor.contextSnapshot).toMatchObject({ wakeCommentIds: expectedIds,
       previousRunId: seeded.runId, forceFreshSession: true });
-    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(actorType === "rejected_admission" ? 4 : 3);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(["rejected_admission", "cancelled_queued"].includes(actorType) ? 4 : 3);
     const [recovery] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, seeded.issueId));
     expect(recovery.evidence.automaticRecovery).toMatchObject({ actionOutcome: "unknown" });
   });

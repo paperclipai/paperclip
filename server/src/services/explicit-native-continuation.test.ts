@@ -129,7 +129,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.id, queueId));
     expect(await attempt()).toBeNull();
   });
-  it.each(["valid", "wrong_actor", "consumed", "discarded", "operator_stop", "already_delivered", "earlier_delivered", "foreign_queue"])("validates automatic saved-message delivery: %s", async kind => {
+  it.each(["valid", "wrong_actor", "consumed", "discarded", "operator_stop", "already_delivered", "earlier_delivered", "unstarted_cancelled", "foreign_queue"])("validates automatic saved-message delivery: %s", async kind => {
     const f = await seed();
     await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));
     await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
@@ -148,6 +148,12 @@ const support = await getEmbeddedPostgresTestSupport();
       requestedByActorType: "system", payload: { issueId: kind === "foreign_queue" ? randomUUID() : f.issueId,
         _paperclipWakeContext: { wakeCommentIds: [f.commentId] } },
     });
+    if (kind === "unstarted_cancelled") {
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+        status: "cancelled", runtimeMode: "legacy", errorCode: "agent_paused", finishedAt: new Date(),
+        contextSnapshot: { issueId: f.issueId, wakeCommentIds: [f.commentId] },
+      });
+    }
     if (kind === "earlier_delivered") {
       const earlierId = randomUUID();
       await db.insert(issueComments).values({ id: earlierId, companyId: f.companyId, issueId: f.issueId,
@@ -163,7 +169,7 @@ const support = await getEmbeddedPostgresTestSupport();
       return admitExplicitNativeContinuation({ ...f, actorId: kind === "wrong_actor" ? "someone-else" : f.actorId,
         db: tx as unknown as typeof db, queuedCommentRequestId: queueId, dryRun: true });
     });
-    if (kind === "valid") expect(result).toMatchObject({ previousRunId: f.sourceRunId, commentId: f.commentId });
+    if (kind === "valid" || kind === "unstarted_cancelled") expect(result).toMatchObject({ previousRunId: f.sourceRunId, commentId: f.commentId });
     else expect(result).toBeNull();
   });
 

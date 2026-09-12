@@ -43,9 +43,12 @@ export async function undeliveredLegacyUserCommentIds(
   const previous = await db.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId),
     sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
-    // A rejected, never-started admission has not consumed any user input.
+    // A queued turn cancelled before dispatch has not consumed input, whatever
+    // cancelled it (pause, stale assignment, or rejected admission). Preserve
+    // conservative treatment when process or native execution evidence exists.
     sql`not (${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.startedAt} is null
-      and coalesce(${heartbeatRuns.errorCode}, '') = 'execution_reconciliation_required')`,
+      and ${heartbeatRuns.processPid} is null and ${heartbeatRuns.processGroupId} is null
+      and ${heartbeatRuns.nativeIssueId} is null)`,
     or(...commentIds.map(id => or(
       sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${id}`,
       sql`${heartbeatRuns.contextSnapshot}->'wakeCommentIds' @> ${JSON.stringify([id])}::jsonb`,
