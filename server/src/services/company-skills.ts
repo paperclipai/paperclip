@@ -2560,7 +2560,11 @@ async function auditInstalledSkillBytes(skill: CompanySkill): Promise<CompanySki
   if (skillFile) {
     const markdown = skillFile.bytes.toString("utf8");
     const parsed = parseFrontmatterMarkdown(markdown);
-    if (!markdown.startsWith("---\n") || !asString(parsed.frontmatter.name)) {
+    // Ask the parser whether it found frontmatter rather than re-testing the
+    // raw bytes for "---\n": the parser normalizes line endings first, and the
+    // raw test failed every skill on a CRLF checkout, which reads as a
+    // hard-stop audit finding with nothing wrong in the file.
+    if (!parsed.hasFrontmatter || !asString(parsed.frontmatter.name)) {
       pushFinding(findings, "invalid_frontmatter", "error", "SKILL.md must contain valid frontmatter with a name.", "SKILL.md");
     }
   }
