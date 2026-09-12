@@ -1247,6 +1247,17 @@ describe("TaskChatThread runtime transcript selection", () => {
     },
   );
 
+  it("keeps workspace contention out of the conversation's cancellation markers", () => {
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
+      runId: "workspace-wait", runtimeMode: "native", status: "cancelled", errorCode: "workspace_busy",
+      agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner", startedAt: null,
+      createdAt: "2026-09-12T18:00:00.000Z", finishedAt: "2026-09-12T18:00:01.000Z",
+    }]} />);
+    expect(container.textContent).not.toContain("Run cancelled");
+    expect(container.textContent).not.toContain("Run failed");
+    expect(container.textContent).not.toContain("before returning an answer");
+  });
+
   it("does not render an empty response notice for a conversation reset", () => {
     render(<TaskChatThread comments={[]} onAdd={async () => {}} linkedRuns={[{
       runId: "chat-reset", status: "succeeded", startedAt: null, resultJson: { conversationReset: true },
@@ -3581,7 +3592,7 @@ describe("TaskChatThread composer execution controls", () => {
     };
     render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" activeRun={run} onCancelRun={onStop} stopScope="subtree" />);
     const button = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]')!;
-    expect(button.title).toBe("Stop and pause subtree");
+    expect(button.title).toBe("Stop response");
     await act(async () => { button.click(); });
     expect(onStop).toHaveBeenCalledOnce();
     render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" activeRun={run} onCancelRun={onStop} stopPending />);

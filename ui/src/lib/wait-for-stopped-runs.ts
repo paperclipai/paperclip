@@ -29,7 +29,7 @@ export async function waitForStoppedRuns(
       ]);
     } catch {
       throw new Error(
-        "The pause was saved, but stopping could not be verified. Refresh and try Stop again if work is still running.",
+        "The stop was requested, but stopping could not be verified. Refresh and try Stop again if work is still running.",
       );
     } finally {
       clearTimeout(timeout);
@@ -54,7 +54,7 @@ export async function waitForStoppedRuns(
     if (remaining.length === 0) return;
     if (Date.now() >= deadline) {
       throw new Error(
-        "The pause was saved, but work is still stopping. Try Stop again if it continues.",
+        "The stop was requested, but work is still stopping. Try Stop again if it continues.",
       );
     }
     await new Promise((resolve) =>

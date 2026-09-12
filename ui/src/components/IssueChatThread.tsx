@@ -64,6 +64,7 @@ import {
   loadDraftSubmission,
   saveDraftSubmission,
   clearDraftSubmission,
+  settleDraftSubmission,
   type ComposerDraftSubmission,
 } from "../lib/composer-draft";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
@@ -502,6 +503,7 @@ export interface IssueChatComposerHandle {
 
 interface IssueChatComposerProps {
   onSend: IssueChatThreadProps["onAdd"];
+  confirmedSubmissionIds: ReadonlySet<string>;
   onReviewConversation?: () => Promise<void>;
   onStop?: () => Promise<void>;
   stopPending?: boolean;
@@ -4668,6 +4670,7 @@ const IssueChatComposer = forwardRef<
 >(function IssueChatComposer(
   {
     onSend,
+    confirmedSubmissionIds,
     onReviewConversation,
     onStop,
     stopPending,
@@ -4809,6 +4812,17 @@ const IssueChatComposer = forwardRef<
       })),
     );
   }, [draftKey]);
+
+  // A server receipt for this exact request settles a restored submission.
+  // Text equality is not delivery proof: users may intentionally repeat text.
+  useEffect(() => {
+    if (!uncertainSubmission || !confirmedSubmissionIds.has(uncertainSubmission.attemptId)) return;
+    if (draftKey) settleDraftSubmission(draftKey, uncertainSubmission.attemptId);
+    setUncertainSubmission(null);
+    setBody("");
+    bodyRef.current = "";
+    setComposerAttachments([]);
+  }, [confirmedSubmissionIds, draftKey, uncertainSubmission]);
 
   useEffect(() => {
     if (
@@ -4979,14 +4993,16 @@ const IssueChatComposer = forwardRef<
       }
       // assistant-ui thread.append is fire-and-forget. Await the actual Board
       // mutation; it already owns optimistic echo and durable error handling.
-      const sendPromise = attachmentIds.length
-        ? onSend(submittedBody, reopen, reassignment, attachmentIds)
-        : onSend(submittedBody, reopen, reassignment);
+      const sendPromise = onSend(
+        submittedBody, reopen, reassignment,
+        attachmentIds.length ? attachmentIds : undefined, attemptId,
+      );
       queueViewportRestore(viewportSnapshot);
       await sendPromise;
+      // Settle the captured task even if the user navigated away. The exact
+      // attempt guard preserves any newer submission in this or another tab.
+      if (draftKey) settleDraftSubmission(draftKey, attemptId);
       if (mountedTaskKey.current !== draftKey) return;
-      if (draftKey) clearDraftSubmission(draftKey, attemptId);
-      if (draftKey) clearDraft(draftKey);
       setComposerAttachments((current) =>
         current.filter((item) => !submittedAttachmentKeys.has(item.id)),
       );
@@ -5641,11 +5657,7 @@ const IssueChatComposer = forwardRef<
             disabled={stopControl.stopping}
             onClick={() => void stopControl.stop()}
             aria-label={stopControl.stopping ? "Stopping…" : "Stop"}
-            title={
-              stopScope === "subtree"
-                ? "Stop and pause subtree"
-                : "Stop and pause task"
-            }
+            title="Stop response"
           >
             {stopControl.stopping ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
@@ -6053,11 +6065,9 @@ export function IssueChatThread({
   }
 
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
-    (body, reopen, reassignment, attachmentIds) => {
+    (body, reopen, reassignment, attachmentIds, clientRequestId) => {
       pendingSubmitScrollRef.current = true;
-      return attachmentIds?.length
-        ? onAdd(body, reopen, reassignment, attachmentIds)
-        : onAdd(body, reopen, reassignment);
+      return onAdd(body, reopen, reassignment, attachmentIds, clientRequestId);
     },
     [onAdd],
   );
@@ -6723,6 +6733,10 @@ export function IssueChatThread({
                 onImageUpload={imageUploadHandler}
                 onAttachImage={onAttachImage}
                 draftKey={draftKey}
+                confirmedSubmissionIds={new Set(comments.filter((comment) =>
+                  comment.authorUserId === currentUserId && comment.clientRequestId &&
+                  !("clientStatus" in comment && comment.clientStatus)
+                ).map((comment) => comment.clientRequestId!))}
                 enableReassign={enableReassign}
                 reassignOptions={reassignOptions}
                 currentAssigneeValue={currentAssigneeValue}

@@ -1397,6 +1397,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       if (liveRun && source.id === liveRun.id) continue;
       const entries = transcriptByRun.get(source.id) ?? [];
       const meta = linkedRunMetaById.get(source.id);
+      // A workspace admission attempt never started provider work. Its live
+      // successor owns the waiting indicator; retain this attempt in the run log.
+      if (source.status === "cancelled" && meta?.errorCode === "workspace_busy") {
+        settledRunIds.add(source.id);
+        continue;
+      }
       // /new is represented by its durable comment boundary, not an empty
       // model response or a completed-run notice.
       if (meta?.resultJson?.conversationReset === true) { settledRunIds.add(source.id); continue; }
@@ -2969,6 +2975,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   <div className="relative z-10">
                     <TaskChatComposer
                       onAdd={handleThreadAdd}
+                      confirmedSubmissionIds={new Set(comments.filter((comment) =>
+                        comment.authorUserId === currentUserId && comment.clientRequestId &&
+                        !("clientStatus" in comment && comment.clientStatus)
+                      ).map((comment) => comment.clientRequestId!))}
                       onReviewConversation={onReviewConversation}
                       onStop={liveRun ? onCancelRun : undefined}
                       stopPending={stopPending}

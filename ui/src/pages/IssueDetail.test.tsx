@@ -84,6 +84,7 @@ const mockActivityApi = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatsApi = vi.hoisted(() => ({
+  get: vi.fn(),
   liveRunsForIssue: vi.fn(),
   activeRunForIssue: vi.fn(),
   cancel: vi.fn(),
@@ -4570,8 +4571,11 @@ describe("IssueDetail", () => {
   });
 
   it.each(["active-run", "composer"])(
-    "routes %s Stop and the menu through the same pause operation",
+    "keeps %s run controls distinct from pausing future work",
     async (control) => {
+      mockIssuesApi.createTreeHold.mockClear();
+      mockHeartbeatsApi.cancel.mockClear();
+      mockHeartbeatsApi.get.mockReset();
       const pausePreview = createPausePreview();
       pausePreview.totals = {
         ...pausePreview.totals,
@@ -4613,6 +4617,7 @@ describe("IssueDetail", () => {
           adapterType: "process",
         },
       ]);
+      mockHeartbeatsApi.get.mockResolvedValue({ id: "run-active-1", status: "cancelled", runtimeMode: "legacy" });
       mockAuthApi.getSession.mockResolvedValue({
         session: { userId: "user-1" },
         user: { id: "user-1" },
@@ -4649,7 +4654,11 @@ describe("IssueDetail", () => {
       });
       await flushReact();
 
-      expect(mockIssuesApi.createTreeHold).toHaveBeenCalledWith("PAP-1", {
+      if (control === "composer") {
+        expect(mockHeartbeatsApi.cancel).toHaveBeenCalledWith("run-active-1");
+        expect(mockHeartbeatsApi.get).toHaveBeenCalledWith("run-active-1");
+        expect(mockIssuesApi.createTreeHold).not.toHaveBeenCalled();
+      } else expect(mockIssuesApi.createTreeHold).toHaveBeenCalledWith("PAP-1", {
         mode: "pause",
         reason: null,
         releasePolicy: { strategy: "manual", note: "leaf_pause" },
@@ -4698,6 +4707,7 @@ describe("IssueDetail", () => {
   );
 
   it("routes live-run finalization actions through run cancellation before issue status update", async () => {
+    mockHeartbeatsApi.cancel.mockClear();
     mockIssuesApi.get.mockResolvedValue(
       createIssue({
         status: "in_progress",
