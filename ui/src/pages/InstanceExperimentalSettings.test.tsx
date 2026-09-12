@@ -80,6 +80,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enableChatConnectors: false,
     enablePipelines: false,
     enableCases: false,
+    enableAgentChat: false,
     enableConferenceRoomChat: false,
     enableClassicTaskInterface: false,
     enableIssuePlanDecompositions: false,
@@ -233,6 +234,28 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
       await act(async () => { await i18n.changeLanguage("en"); });
       expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledTimes(1);
       expect(container.querySelector('button[aria-label="Toggle chat connectors experimental setting"]')?.getAttribute("aria-checked")).toBe("true");
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
+
+  it("switches agent chat labels without changing its raw setting or replaying the toggle", async () => {
+    await renderPage();
+    const initialFetches = mockInstanceSettingsApi.getExperimental.mock.calls.length;
+    try {
+      expect(container.textContent).toContain("Talk to each agent in one ongoing conversation.");
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Включить или выключить экспериментальный чат с агентом"]')!;
+      expect(toggle).not.toBeNull();
+      expect(container.textContent).toContain("Общайтесь с каждым агентом в отдельной беседе, к которой можно возвращаться.");
+      expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalledTimes(initialFetches);
+      expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+      await act(() => toggle.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledExactlyOnceWith({ enableAgentChat: true });
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(container.querySelector('button[aria-label="Toggle agent chat experimental setting"]')?.getAttribute("aria-checked")).toBe("true");
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledTimes(1);
     } finally {
       await act(async () => { await i18n.changeLanguage("en"); });
     }

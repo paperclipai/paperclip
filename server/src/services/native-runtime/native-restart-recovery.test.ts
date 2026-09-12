@@ -207,6 +207,7 @@ describe("native controller takeover fencing", () => {
         }),
         now,
         isProcessAlive,
+        readProcessStartedAt: async () => recordedStart,
       }),
     ).resolves.toEqual({ allowed: false, reason: "controller_still_alive" });
     expect(isProcessAlive).toHaveBeenCalledWith(123);

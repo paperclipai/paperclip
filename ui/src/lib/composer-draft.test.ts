@@ -22,6 +22,18 @@ describe("task draft upload receipts", () => {
     contentPath: `/api/attachments/${id}/content`,
   };
   beforeEach(() => localStorage.clear());
+  it("keeps chat drafts and pending submission fences within the current tab", () => {
+    sessionStorage.clear();
+    const chatKey = "paperclip:agent-chat-draft:company:user:agent";
+    saveDraft(chatKey, "My chat draft");
+    saveDraftSubmission(chatKey, { attemptId: id, reviewed: false });
+    expect(loadDraft(chatKey)).toBe("My chat draft");
+    expect(loadDraftSubmission(chatKey)?.attemptId).toBe(id);
+    expect(localStorage.getItem(chatKey)).toBeNull();
+    expect(localStorage.getItem(`${chatKey}:submission:v1`)).toBeNull();
+    sessionStorage.clear();
+    expect(loadDraftSubmission(chatKey)).toBeNull();
+  });
   it("retains a closed task-specific uncertainty marker and only settles the same attempt", () => {
     saveDraftSubmission(key, { attemptId: id, reviewed: false });
     expect(loadDraftSubmission(key)).toEqual({

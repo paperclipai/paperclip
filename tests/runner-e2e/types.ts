@@ -10,6 +10,7 @@ export type RunnerGeneration = "legacy" | "native";
 export type RunnerEnvironmentId = "local" | "daytona";
 export type RunnerTaskWorkMode = "standard" | "planning" | "ask";
 export type RunnerTaskFlow =
+  | "agent_chat"
   | "governed_tool_review"
   | "single_turn"
   | "plan_revision_acceptance"
@@ -122,7 +123,7 @@ export interface RunnerTaskFixture {
   expectedRunCount: number;
   attemptTimeoutMs: Readonly<Record<RunnerEnvironmentId, number>>;
   expectedTerminalState: {
-    issue: "done";
+    issue: "done" | "in_review";
     run: "succeeded";
   };
   buildTitle(nonce: string): string;

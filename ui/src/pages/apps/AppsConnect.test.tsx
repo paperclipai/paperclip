@@ -3,7 +3,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CONNECTABLE_APP_DEFINITIONS, getAppStoreDefinition } from "@paperclipai/shared";
+import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { i18n } from "@/i18n";
@@ -298,6 +298,21 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     return root;
   }
+
+  it("retranslates a rejected MCP URL without resetting its draft or attempting a connection", async () => {
+    await render();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]')!;
+    await act(async () => setInputValue(input, "raw-invalid-link"));
+    await act(async () => buttonByText("Continue")!.click());
+    for (const locale of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(container.textContent).toContain(i18n.t("localizationConnections.pasteAFullHttpOrHttpsLink86"));
+      expect(input.value).toBe("raw-invalid-link");
+      expect(container.contains(input)).toBe(true);
+      expect(connectAppMock).not.toHaveBeenCalled();
+      expect(startOAuthMock).not.toHaveBeenCalled();
+    }
+  });
 
   it.each([
     ["generic", "Pick app   ·   Access   ·   Add your key", "Выбор приложения   ·   Доступ   ·   Добавление ключа", "Step 2 of 3", "Шаг 2 из 3"],
@@ -1406,6 +1421,92 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       grantKind: "agent",
       subjectAgentId: "agent-1",
     }));
+  });
+
+  it.each([...new Set(Object.values(GOOGLE_WORKSPACE_CONNECTOR_PROFILES).map((profile) => profile.appSlug))]
+    .flatMap((slug) => [false, true].map((enrollmentReturn) => ({ slug, enrollmentReturn }))))(
+    "preserves personal Workspace access for $slug when changing method (enrollment return: $enrollmentReturn)",
+    async ({ slug, enrollmentReturn }) => {
+      const definition = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === slug)!;
+      const readMethod = definition.methods.find((method) => method.key === "paperclip-read")!;
+      mockSearch.value = enrollmentReturn
+        ? `source=${slug}&stage=setup&cloud_connector=enrolled`
+        : `source=${slug}`;
+      if (enrollmentReturn) {
+        window.sessionStorage.setItem(`paperclip.connector-enrollment-access:${slug}`, JSON.stringify({
+          companyId: "company-1", grantKind: "user", installChoice: "all", agentIds: [],
+        }));
+      }
+      listGalleryMock.mockResolvedValue({ apps: [{
+        ...definition, ownershipAvailability: { ...definition.ownershipAvailability, platform_shared: true },
+      }] });
+      await render();
+      if (!enrollmentReturn) {
+        await act(async () => {
+          radioContaining("Just me")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await passAccessStep();
+      }
+
+      if (definition.methods.some((method) => method.capabilityProfile?.key !== "read")) {
+        const readChoice = radioContaining(readMethod.capabilityProfile!.label);
+        expect(readChoice).not.toBeNull();
+        await act(async () => {
+          readChoice!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+      }
+      await flushReact();
+      // Change auth methods too, including apps with only one capability.
+      expect(container.textContent).not.toContain("How do you want to connect?");
+      expect(container.textContent).not.toContain("Connect with Paperclip");
+      expect(container.textContent).not.toContain("Your OAuth app");
+      expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+      const customerAuth = buttonByText("Use your own Google OAuth app");
+      expect(customerAuth).toBeDefined();
+      expect(customerAuth?.getAttribute("aria-expanded")).toBe("false");
+      await act(async () => {
+        customerAuth!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      expect(container.textContent).toContain("Your OAuth app");
+      expect(container.textContent).toContain("Client ID");
+      expect(buttonByText("Continue to sign in")?.disabled).toBe(true);
+      const managedAuth = buttonByText("Use Paperclip instead");
+      expect(managedAuth).toBeDefined();
+      expect(managedAuth?.getAttribute("aria-expanded")).toBe("true");
+      const fieldsRegion = document.getElementById(managedAuth!.getAttribute("aria-controls")!);
+      expect(fieldsRegion?.getAttribute("role")).toBe("region");
+      expect(fieldsRegion?.textContent).toContain("Client ID");
+      const clientId = container.querySelector<HTMLInputElement>("#curated-oauth-client-id")!;
+      const clientSecret = container.querySelector<HTMLInputElement>("#curated-oauth-client-secret")!;
+      await act(async () => {
+        setInputValue(clientId, "raw-google-client-id");
+        setInputValue(clientSecret, "raw-google-client-secret");
+      });
+      for (const locale of ["ru", "en"] as const) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        expect(managedAuth?.textContent?.trim()).toBe(locale === "ru" ? "Использовать Paperclip" : "Use Paperclip instead");
+        expect(fieldsRegion?.getAttribute("aria-label")).toBe(locale === "ru" ? "Ваше приложение OAuth" : "Your OAuth app");
+        expect(managedAuth?.getAttribute("aria-expanded")).toBe("true");
+        expect(document.getElementById(managedAuth!.getAttribute("aria-controls")!)).toBe(fieldsRegion);
+        expect(container.querySelector<HTMLInputElement>("#curated-oauth-client-id")).toBe(clientId);
+        expect(clientId.value).toBe("raw-google-client-id");
+        expect(clientSecret.value).toBe("raw-google-client-secret");
+        expect(connectAppMock).not.toHaveBeenCalled();
+        expect(startOAuthMock).not.toHaveBeenCalled();
+      }
+      await act(async () => {
+        managedAuth!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      expect(container.textContent).not.toContain("Your OAuth app");
+      await act(async () => {
+        buttonByText("Continue to sign in")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        galleryKey: slug, connectionMethodKey: "paperclip-read", grantKind: "user",
+      }));
   });
 
   it("never renders self-host enrollment when the connector identity is already active", async () => {

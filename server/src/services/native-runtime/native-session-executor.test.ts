@@ -245,6 +245,7 @@ import {
   nativeSessionFailureSourceCode,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
+  nativeConversationReplyResult,
   nativeToolsRefreshWaitResult,
   parseRemoteExecutableCandidate,
   buildRemoteCodexLauncherCommand,
@@ -3929,6 +3930,55 @@ describe("provider plan synchronization", () => {
   });
 });
 
+describe("native conversation replies", () => {
+  const reply: PrpEvent = {
+    schema: "paperclip.prp.event.v1", sourceInstanceId: "runner-1",
+    sourceEventId: "runner-1:run-1:8", sourceSeq: 8, sourceKind: "runner",
+    runId: "run-1", normalizedSessionId: "session-1", turnId: "turn-1",
+    eventType: "item.completed", schemaVersion: 1, priority: 1,
+    emittedAt: "2026-09-11T18:00:00.000Z",
+    payload: { kind: "agentMessage", channel: "final", text: "Which project should own this?" },
+  };
+  const terminal = { ...reply, sourceEventId: "runner-1:run-1:9", sourceSeq: 9,
+    eventType: "turn.completed", payload: { status: "completed" } } as PrpEvent;
+  const input = { conversation: true, replyEvent: reply, terminalEvent: terminal,
+    completionContract: { revision: "1", objective: "Ongoing conversation",
+      criteria: [{ id: "objective", requirement: "Help the user" }] } };
+
+  it("yields an evidenced completed reply without claiming execution completion", () => {
+    expect(nativeConversationReplyResult(input)).toMatchObject({
+      reportedWorkDisposition: "yielded", summary: "Which project should own this?",
+      completionClaim: { objectiveSatisfied: false, criteria: [{ status: "unknown" }] },
+      evidence: [{ ref: "run-event:runner-1:run-1:8" }],
+      continuation: { kind: "response_wake" }, attentionRequests: [],
+    });
+  });
+
+  it.each(["turn.failed", "turn.cancelled", "turn.interrupted"])(
+    "does not reinterpret a %s provider turn as a chat reply", (eventType) => {
+      expect(nativeConversationReplyResult({ ...input,
+        terminalEvent: { ...terminal, eventType } as PrpEvent })).toBeNull();
+    },
+  );
+
+  it("keeps ordinary execution tasks and absent or unfinished replies fail-closed", () => {
+    expect(nativeConversationReplyResult({ ...input, conversation: false })).toBeNull();
+    expect(nativeConversationReplyResult({ ...input, replyEvent: null })).toBeNull();
+    for (const payload of [
+      { kind: "agentMessage", channel: "progress", text: "Still working" },
+      { kind: "agentMessage", channel: "final", text: " " },
+      { kind: "toolCall", channel: "final", text: "Tool result" },
+    ]) expect(nativeConversationReplyResult({ ...input, replyEvent: { ...reply, payload } })).toBeNull();
+  });
+
+  it.each(["runId", "turnId", "normalizedSessionId"] as const)(
+    "rejects a final message from another %s", (key) => {
+      expect(nativeConversationReplyResult({ ...input,
+        replyEvent: { ...reply, [key]: "old-authority" } })).toBeNull();
+    },
+  );
+});
+
 describe("native governed waits", () => {
   it("yields to an existing tools-refresh wake without claiming completion or a human interaction", () => {
     const result = nativeToolsRefreshWaitResult({
@@ -4096,6 +4146,7 @@ function leaseDb(
   runResultJson: Record<string, unknown> = {},
   updates: Array<{ table: unknown; values: Record<string, unknown> }> = [],
   runnerProfileJson: Record<string, unknown> = {},
+  runStatus = "running",
 ): Db {
   const coordinator: LeaseCoordinator = {
     runId: boundExecution.binding.runId,
@@ -4119,7 +4170,7 @@ function leaseDb(
             returning: () => Promise<Array<{ runId: string }>>;
           };
           result.returning = () =>
-            Promise.resolve([{ runId: coordinator.runId }]);
+            Promise.resolve([{ runId: coordinator.runId, nextEventSeq: 2 }]);
           return result;
         },
       };
@@ -4139,6 +4190,7 @@ function leaseDb(
                   resultJson: runResultJson,
                   runnerProfileJson,
                   runtimeMode: "native",
+                  status: runStatus,
                 },
               ]
             : table === issues
@@ -4162,12 +4214,20 @@ function leaseDb(
       return query;
     },
   });
+  const insert = (table: unknown) => ({
+    values: (values: Record<string, unknown>) => {
+      updates.push({ table, values });
+      return { returning: async () => [values] };
+    },
+  });
   const tx = {
+    insert,
     execute: async () => [],
     select,
     update,
   };
   return {
+    insert,
     select,
     transaction: async (operation: (transaction: Db) => Promise<unknown>) =>
       operation(tx as unknown as Db),
@@ -5002,6 +5062,34 @@ describe("native session same-turn steering", () => {
 });
 
 describe("native warm session supervision", () => {
+  it.each([true, false])(
+    "uses provider turn completion without a semantic-result cutoff: chat=%s",
+    async (conversationMode) => {
+      state.execute.mockReset().mockImplementationOnce(async (options) => {
+        // The provider must finish streaming its reply after task tools return.
+        // A semantic-result grace timer would truncate that output.
+        expect(options).not.toHaveProperty("semanticResultTerminalGraceMs");
+        return {
+          result: { summary: "Reply completed" },
+          terminal: { runTerminalState: "succeeded" },
+          turnId: "turn-grace",
+          normalizedSessionId: execution.session.normalizedSessionId,
+          providerSessionId: "provider-grace",
+          driverKind: "test",
+          driverVersion: "1",
+          nativeEventCount: 1,
+          highestContiguousSourceSeq: 1,
+        };
+      });
+      await executePaperclipNativeSession({
+        db: leaseDb(),
+        execution,
+        runnerInstanceId: "runner",
+        conversationMode,
+      });
+    },
+  );
+
   it("persists agent-created goal continuity before a per-turn runner settles", async () => {
     const goalCheckpoint = {
       identity: { runId: execution.binding.runId, sessionId: "session" },
@@ -5798,26 +5886,31 @@ describe("native warm session supervision", () => {
         return result;
       });
 
-    await executePaperclipNativeSession({
-      db: leaseDb(base),
-      execution: base,
-      runnerInstanceId: "runner",
-    });
-    await executePaperclipNativeSession({
-      db: leaseDb(lowered),
-      execution: lowered,
-      runnerInstanceId: "runner",
-    });
-    expect(firstClose).toHaveBeenCalledWith({
-      reason: "warm native session configuration changed",
-    });
-    await vi.waitFor(
-      () =>
-        expect(secondClose).toHaveBeenCalledWith({
-          reason: "warm native session idle timeout",
-        }),
-      { timeout: 500 },
-    );
+    // Filesystem work between calls can exceed the idle window on a busy host.
+    // Advance that window only after proving the permission change closed it.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await executePaperclipNativeSession({
+        db: leaseDb(base),
+        execution: base,
+        runnerInstanceId: "runner",
+      });
+      await executePaperclipNativeSession({
+        db: leaseDb(lowered),
+        execution: lowered,
+        runnerInstanceId: "runner",
+      });
+      expect(firstClose).toHaveBeenCalledWith({
+        reason: "warm native session configuration changed",
+      });
+      expect(secondClose).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(20);
+      expect(secondClose).toHaveBeenCalledWith({
+        reason: "warm native session idle timeout",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -6436,6 +6529,28 @@ describe("native process ownership", () => {
     );
   });
 
+  it.each(["cancelled", "succeeded", "interrupted", "timed_out", "failed"])(
+    "refuses native provider claims after the run became %s", async status => {
+      const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+      state.createBackend.mockClear();
+      await expect(executePaperclipNativeSession({
+        db: leaseDb(execution, {}, {}, updates, {}, status), execution, runnerInstanceId: "late-startup",
+      })).rejects.toThrow();
+      expect(state.createBackend).not.toHaveBeenCalled();
+      expect(updates.some(update => update.table === nativeRunFinalizations)).toBe(false);
+      expect(updates.some(update => update.values.eventType === "native.process_start_requested")).toBe(false);
+    },
+  );
+
+  it("fences a cancellation request before its terminal status commits", async () => {
+    state.createBackend.mockClear();
+    await expect(executePaperclipNativeSession({
+      db: leaseDb(execution, {}, { startupCancellation: { requestedAt: new Date().toISOString() } }),
+      execution, runnerInstanceId: "cancel-requested",
+    })).rejects.toThrow();
+    expect(state.createBackend).not.toHaveBeenCalled();
+  });
+
   it("forwards the app-server PID and process group through the production backend seam", async () => {
     const processMetadata = {
       pid: 42_001,
@@ -6458,13 +6573,16 @@ describe("native process ownership", () => {
         highestContiguousSourceSeq: 1,
       };
     });
-    state.createBackend.mockImplementationOnce((_input, options) => ({
-      kind: "test",
-      onSpawn: options.onSpawn,
-    }));
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    state.createBackend.mockImplementationOnce((_input, options) => {
+      expect(updates).toContainEqual({ table: heartbeatRunEvents, values: expect.objectContaining({
+        eventType: "native.process_start_requested", runId: execution.binding.runId,
+      }) });
+      return { kind: "test", onSpawn: options.onSpawn };
+    });
 
     await executePaperclipNativeSession({
-      db: leaseDb(),
+      db: leaseDb(execution, {}, {}, updates),
       execution,
       runnerInstanceId: "runner",
       onSpawn,

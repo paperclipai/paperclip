@@ -38,6 +38,8 @@ const ALLOWED_ROOT_FILES = new Set([
   "result.json",
   "final-state.png",
   "failure.png",
+  "chat-plan-draft.png",
+  "chat-plan-revised.png",
   "server.log",
   "playwright.log",
   "junit.xml",

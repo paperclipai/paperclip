@@ -1,3 +1,5 @@
+import type { ActivityEvent } from "@paperclipai/shared";
+import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
 import { TaskChatScrollReady } from "@/components/task-chat/scroll-navigation";
@@ -397,6 +399,8 @@ function resolvedWithoutUserFacingResponse(value: unknown): boolean {
 }
 
 export type TaskChatThreadProps = ComponentProps<typeof IssueChatThread> & {
+  conversationMode?: boolean;
+  creationActivity?: ActivityEvent[];
   initialHistoryPending?: boolean;
   initialHistoryError?: boolean;
   onRetryInitialHistory?: () => void;
@@ -536,6 +540,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     composerAccessory,
     footer,
     showComposer = true,
+    composerPause,
     composerDisabledReason,
     emptyMessage = t("localizationTaskThread.empty"),
     companyId,
@@ -546,6 +551,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     imageUploadHandler,
     mentions,
     enableReassign,
+    conversationMode,
     reassignOptions,
     currentAssigneeValue,
     issueStatus,
@@ -583,6 +589,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     resumeAssigneePending = false,
   } = props;
   const queryClient = useQueryClient();
+  const createdProjectItems = useProjectCreatedItems(props.creationActivity ?? [], companyId);
   const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
     string | null
   >(null);
@@ -1313,10 +1320,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         },
       });
     }
+    for (const item of createdProjectItems) {
+      entries.push({ id: item.id, item, ms: toMs(item.timestamp), order: 2 });
+    }
     return entries.sort(
       (a, b) => a.ms - b.ms || a.order - b.order || a.id.localeCompare(b.id),
     );
   }, [
+    createdProjectItems,
     comments,
     projectedComments,
     commentItems,
@@ -1427,11 +1438,59 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     // Raw summary inputs per turn id, so back-to-back same-agent runs can
     // coalesce into one "Worked" row in the final pass (PAP-362).
     const turnMergeMetaById = new Map<string, SettledTurnMergeMeta>();
+    let previousExecutionWaitKey: string | null = null;
     for (const source of runs) {
       if (!isTerminalRunStatus(source.status)) continue;
       if (liveRun && source.id === liveRun.id) continue;
       const entries = transcriptByRun.get(source.id) ?? [];
       const meta = linkedRunMetaById.get(source.id);
+      // /new is represented by its durable comment boundary, not an empty
+      // model response or a completed-run notice.
+      if (meta?.resultJson?.conversationReset === true) { settledRunIds.add(source.id); continue; }
+      // A queued continuation can become unnecessary while another turn finishes
+      // the task. Keep that cancellation in the run log, not the conversation.
+      // Apply this before native stop markers are assembled as well.
+      if (
+        source.status === "cancelled" &&
+        entries.length === 0 &&
+        (meta?.errorCode === "issue_not_in_progress" ||
+          (meta?.errorCode === "issue_terminal_status" && !meta.startedAt))
+      ) {
+        settledRunIds.add(source.id);
+        continue;
+      }
+      // Historical pre-admission cancellations describe a wait, not failed
+      // work. Collapse repeated observations of that hold, retaining real
+      // execution and any transcript/comment content between wait episodes.
+      const executionWait =
+        source.status === "cancelled" &&
+        !meta?.startedAt &&
+        meta?.errorCode === "execution_reconciliation_required" &&
+        entries.length === 0 &&
+        !lastCommentIdByRun.has(source.id);
+      if (executionWait) {
+        const wait = meta?.resultJson?.executionWait;
+        const waitKey = wait && typeof wait === "object" && "recoveryActionId" in wait
+          ? String(wait.recoveryActionId)
+          : "execution_reconciliation_required";
+        settledRunIds.add(source.id);
+        if (previousExecutionWaitKey !== waitKey) {
+          const id = `${source.id}:execution-wait`;
+          entriesWithFailures.push({
+            ms: toMs(meta?.finishedAt ?? meta?.createdAt),
+            order: 3,
+            id,
+            item: {
+              id, kind: "marker", variant: "interrupted", tone: "neutral",
+              label: "Waiting to resume",
+              detail: "The previous execution needs to be checked before work can continue. See the task’s execution hold for the next action. Individual checks remain in the run history.",
+            },
+          });
+        }
+        previousExecutionWaitKey = waitKey;
+        continue;
+      }
+      previousExecutionWaitKey = null;
       const acceptedSummary = acceptedSemanticResultSummary(meta?.resultJson);
       const parsedSource = transcriptToTaskChatItems(entries, {
         runId: source.id,
@@ -1564,16 +1623,6 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         });
       }
       if (entries.length === 0) {
-        // A queued continuation cancelled after the task was completed or parked
-        // never produced a provider turn. Keep its record in the run log without
-        // presenting it as a completed chat response.
-        if (
-          source.status === "cancelled" &&
-          meta?.errorCode === "issue_not_in_progress"
-        ) {
-          settledRunIds.add(source.id);
-          continue;
-        }
         if (sourceIsPaperclipRunner && sourceYielded) {
           settledRunIds.add(source.id);
           continue;
@@ -1664,8 +1713,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               id,
               kind: "marker",
               variant: "turn_boundary",
-              label: "Run completed",
-              detail: "The runner returned no user-facing response.",
+              label: source.status === "cancelled" ? "Stopped" : "Run completed",
+              detail: source.status === "cancelled" ? "This turn was cancelled before it returned a response." : "The runner returned no user-facing response.",
             },
           });
         }
@@ -2428,7 +2477,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const renderQueuedAction = useCallback(
     (item: TaskChatMessageItem) => {
       const runId = item.queueTargetRunId;
-      if (item.optimistic !== "queued" || !runId || !onInterruptQueued)
+      if (composerPause || item.optimistic !== "queued" || !runId || !onInterruptQueued)
         return null;
 
       const isInterrupting = interruptingQueuedRunId === runId;
@@ -2436,7 +2485,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         <QueuedInterruptButton isInterrupting={isInterrupting} runId={runId} onInterrupt={onInterruptQueued} />
       );
     },
-    [interruptingQueuedRunId, onInterruptQueued],
+    [composerPause, interruptingQueuedRunId, onInterruptQueued],
   );
 
   const reopenToolReview = useCallback((interactionId: string) => {
@@ -2490,6 +2539,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       tailRunId,
       reopenToolReview,
     ],
+  );
+
+  const renderBrief = useCallback(
+    () => issueBrief ? <TaskChatDescriptionBubble brief={issueBrief} /> : null,
+    [issueBrief],
   );
 
   const assignedAgentForNotice = useMemo(() => {
@@ -2743,11 +2797,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                     attachments={attachments}
                     header={threadHeaderWithBlockers}
                     renderInteraction={renderInteraction}
-                    renderBrief={
-                      issueBrief
-                        ? () => <TaskChatDescriptionBubble brief={issueBrief} />
-                        : undefined
-                    }
+                    renderBrief={renderBrief}
                     renderMessageActions={renderMessageActions}
                     renderQueuedAction={renderQueuedAction}
                     onTryAgainNoLiveExecutionPath={
@@ -2889,7 +2939,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   isMobile
                     ? "bottom-(--tc-composer-bottom) z-20 transition-[bottom] duration-200 ease-out"
                     : "bottom-0 z-10",
-                  "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 px-2 pb-2 md:px-4",
+                  "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-2 px-1 pb-1 md:px-4 md:pb-2",
                   streamlinedUiEnabled && "md:px-0 md:pb-0",
                   (!streamlinedUiEnabled || isMobile) &&
                     "bg-background/80 pt-1 backdrop-blur supports-[backdrop-filter]:bg-background/60 dark:bg-transparent dark:backdrop-blur-none dark:supports-[backdrop-filter]:bg-transparent",
@@ -2904,7 +2954,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   className="relative isolate flex flex-col"
                   data-testid="task-chat-composer-stack"
                 >
-                  {queuedMessageQueue ? (
+                  {queuedMessageQueue && !composerPause ? (
                     <TaskChatQueuedMessages
                       queue={queuedMessageQueue}
                       onEdit={beginQueuedEdit}
@@ -2960,6 +3010,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       onImageUpload={imageUploadHandler}
                       mentions={mentions}
                       enableReassign={enableReassign}
+                      conversationMode={conversationMode}
                       reassignOptions={reassignOptions}
                       agentMap={agentMap}
                       userProfileMap={userProfileMap}
@@ -2971,6 +3022,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                       queuedEdit={queuedEdit}
                       onSaveQueuedEdit={saveQueuedEdit}
                       onCancelQueuedEdit={() => setQueuedEdit(null)}
+                      pause={composerPause}
                       takeover={composerTakeover}
                       runnerGoalCapability={runnerGoal.data?.capability ?? null}
                       onRunnerGoalCommand={runnerGoal.executeComposerCommand}

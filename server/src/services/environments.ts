@@ -1615,6 +1615,7 @@ export function environmentService(db: Db) {
       options?: {
         failureReason?: string;
         cleanupStatus?: EnvironmentLeaseCleanupStatus;
+        remoteExecutionTermination?: Record<string, unknown>;
       },
     ) => {
       const now = new Date();
@@ -1627,6 +1628,11 @@ export function environmentService(db: Db) {
           updatedAt: now,
           ...(options?.failureReason !== undefined ? { failureReason: options.failureReason } : {}),
           ...(options?.cleanupStatus !== undefined ? { cleanupStatus: options.cleanupStatus } : {}),
+          // A later release without a receipt cannot reuse an earlier stop's
+          // authority (for example after a same-run lease resume).
+          metadata: options?.remoteExecutionTermination
+            ? sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ remoteExecutionTermination: options.remoteExecutionTermination })}::jsonb`
+            : sql`${environmentLeases.metadata} - 'remoteExecutionTermination'`,
         })
         .where(eq(environmentLeases.id, id))
         .returning()

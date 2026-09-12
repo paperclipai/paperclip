@@ -9,6 +9,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import { formatTaskChatTimestamp } from "./task-chat-adapter";
+import { taskChatTimestampDisplay } from "./task-chat-display";
 
 /**
  * Host binding for the description-as-first-bubble (PAP-375): the LIVE issue
@@ -103,7 +104,7 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
     );
   }
 
-  const timestamp = formatTaskChatTimestamp(brief.createdAt);
+  const timestamp = taskChatTimestampDisplay(brief.createdAt, formatTaskChatTimestamp(brief.createdAt));
   return (
     <div
       className={cn(

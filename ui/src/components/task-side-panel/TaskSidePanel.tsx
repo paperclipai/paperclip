@@ -97,6 +97,8 @@ export interface TaskSidePanelProps {
   onRequestClose?: () => void;
   streamlinedTabs?: boolean;
   showSubtasksTab?: boolean;
+  /** Optional related-work projection; the host still owns tab layout and state. */
+  tasksTab?: { count: number; content: ReactNode; hasError?: boolean };
 }
 
 const EMPTY_ISSUE_DOCUMENTS: IssueDocument[] = [];
@@ -226,6 +228,7 @@ export function TaskSidePanel({
   onRequestClose,
   streamlinedTabs = false,
   showSubtasksTab = false,
+  tasksTab,
 }: TaskSidePanelProps) {
   const { t } = useTranslation();
   const handleScroll = useScrollbarWhileScrolling();
@@ -236,7 +239,9 @@ export function TaskSidePanel({
   const restoredRef = useRef(
     readTaskSidePanelState(accountScope, issue.companyId, issue.id, fileTabsEnabled),
   );
-  const initialSubtasksAvailableRef = useRef(showSubtasksTab && childIssues.length > 0);
+  const taskCount = tasksTab?.count ?? childIssues.length;
+  const taskLabel = tasksTab ? t("sep12Screens.tasks") : t("localizationIssuePanels.ui_Subtasks_hx67r1");
+  const initialSubtasksAvailableRef = useRef(showSubtasksTab && (taskCount > 0 || tasksTab?.hasError === true));
   const subtasksDismissedRef = useRef(
     restoredRef.current?.userInteracted === true
       && restoredRef.current.state.tabs.length === 0,
@@ -249,7 +254,7 @@ export function TaskSidePanel({
   const autoPlanHandledRef = useRef(restoredRef.current?.autoPlanHandled ?? false);
   const initialState = useMemo(() => {
     const restored = restoredRef.current?.state;
-    let tabs = restored?.tabs ?? [taskPanelPropertiesTab()];
+    let tabs = restored?.tabs ?? (issue.conversationAgentId ? [taskPanelArtifactsTab()] : [taskPanelPropertiesTab()]);
     if (!initialSubtasksAvailableRef.current) {
       tabs = tabs.filter((tab) => tab.payload.kind !== "subtasks");
     } else if (!subtasksDismissedRef.current) {
@@ -275,7 +280,7 @@ export function TaskSidePanel({
   }, [accountScope, issue.companyId, issue.id, launcherOpen]);
   const controller = useSidePanelTabs<TaskSidePanelTabPayload>({ initialState, onStateChange: persist });
   const activeTab = controller.tabs.find((tab) => tab.id === controller.activeTabId) ?? null;
-  const subtasksAvailable = showSubtasksTab && childIssues.length > 0;
+  const subtasksAvailable = showSubtasksTab && (taskCount > 0 || tasksTab?.hasError === true);
   const hasSubtasksTab = controller.tabs.some((tab) => tab.id === "subtasks");
 
   useEffect(() => {
@@ -456,18 +461,18 @@ export function TaskSidePanel({
     return {
       id: tab.id,
       type: tab.type,
-      label: document ? taskDocumentTitleDisplay(document) : taskPanelTabLabelDisplay(tab),
-      ariaLabel: tab.payload.kind === "subtasks" ? t("localizationIssuePanels.ui_Subtasks_hx67r1") : tab.ariaLabel,
+      label: tab.payload.kind === "subtasks" && tasksTab ? taskLabel : document ? taskDocumentTitleDisplay(document) : taskPanelTabLabelDisplay(tab),
+      ariaLabel: tab.payload.kind === "subtasks" ? taskLabel : tab.ariaLabel,
       closable: true,
       contentMode: tab.contentMode,
       icon: tabIcon(tab),
     };
-  }), [controller.tabs, documentByKey, t]);
+  }), [controller.tabs, documentByKey, taskCount, taskLabel, tasksTab, t]);
 
   const launcherSections = useMemo<SidePanelLauncherSection[]>(() => {
     const primary: SidePanelLauncherItem[] = [
       { id: "properties", label: t("localizationIssuePanels.ui_Properties_100clx8"), icon: <SlidersHorizontal />, alreadyOpen: controller.tabs.some((tab) => tab.id === "properties") },
-      ...(subtasksAvailable ? [{ id: "subtasks", label: t("localizationIssuePanels.ui_Subtasks_hx67r1"), description: t("localizationIssuePanels.subtasksTotal", { count: childIssues.length }), icon: <ListTree />, alreadyOpen: controller.tabs.some((tab) => tab.id === "subtasks") }] : []),
+      ...(subtasksAvailable ? [{ id: "subtasks", label: taskLabel, description: tasksTab?.hasError ? t("sep12Screens.couldNotLoadAllTasks") : t("localizationIssuePanels.subtasksTotal", { count: taskCount }), icon: <ListTree />, alreadyOpen: controller.tabs.some((tab) => tab.id === "subtasks") }] : []),
       { id: "artifacts", label: t("localizationIssuePanels.ui_Artifacts_dvv9u8"), icon: <Box />, alreadyOpen: controller.tabs.some((tab) => tab.id === "artifacts") },
     ];
     if (fileTabsEnabled) {
@@ -517,7 +522,7 @@ export function TaskSidePanel({
       });
     }
     return sections;
-  }, [childIssues.length, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable, t]);
+  }, [taskCount, taskLabel, tasksTab?.hasError, controller.tabs, documents, fileTabsEnabled, planDocument, recentFilesQuery.data, recentFilesQuery.isError, recentFilesQuery.isLoading, subtasksAvailable, t]);
 
   function selectLauncherItem(item: SidePanelLauncherItem) {
     markInteracted();
@@ -616,7 +621,7 @@ export function TaskSidePanel({
       />
     );
   } else if (activeTab.payload.kind === "subtasks") {
-    content = (
+    content = tasksTab?.content ?? (
       <TaskDetailSubtasksPanel
         items={childIssues}
         onAddSubtask={onAddSubIssue}

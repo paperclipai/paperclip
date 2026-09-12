@@ -1,6 +1,7 @@
 import { Trans } from "react-i18next";
 import { t, useTranslation } from "@/i18n";
 import { chatUiErrorMessage, type ChatUiError } from "./chat-copy";
+import { EmailEndpointSetup } from "./EmailEndpointSetup";
 import {
   useEffect,
   useMemo,
@@ -39,6 +40,7 @@ import {
 } from "./github-private-key-file";
 
 const providerNames: Record<ChatProvider, string> = {
+  agentmail: "AgentMail",
   slack: "Slack",
   github: "GitHub",
   discord: "Discord",
@@ -127,6 +129,10 @@ function SetupRail({ step }: { step: number }) {
 }
 
 export function ChatEndpointSetup() {
+  const [params] = useSearchParams();
+  return params.get("provider") === "agentmail" ? <EmailEndpointSetup /> : <ChatSdkEndpointSetup />;
+}
+function ChatSdkEndpointSetup() {
   const { i18n } = useTranslation();
   const [params] = useSearchParams();
   const navigate = useNavigate();

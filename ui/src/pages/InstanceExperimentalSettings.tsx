@@ -307,6 +307,17 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title={t("sep12Screens.agentChatTitle")}
+          description={t("sep12Screens.agentChatDescription")}
+          footnote={t("sep12Screens.agentChatFootnote")}
+          checked={experimentalQuery.data?.enableAgentChat ?? false}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableAgentChat: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableAgentChat"
+          managed={managedKeys.enableAgentChat}
+          ariaLabel={t("sep12Screens.agentChatToggle")}
+        />
+        <ExperimentalToggleCard
           title={t("localizationExperimental.features.enableChatConnectors.title")}
           description={t("localizationExperimental.features.enableChatConnectors.description")}
           footnote={t("localizationExperimental.features.enableChatConnectors.footnote")}

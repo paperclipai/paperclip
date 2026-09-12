@@ -537,22 +537,6 @@ export interface IssueUnblockDescriptor {
   action: string;
 }
 
-export type IssueProductivityReviewTrigger =
-  | "no_comment_streak"
-  | "long_active_duration"
-  | "high_churn";
-
-export interface IssueProductivityReview {
-  reviewIssueId: string;
-  reviewIdentifier: string | null;
-  status: IssueStatus;
-  priority: IssuePriority;
-  trigger: IssueProductivityReviewTrigger | null;
-  noCommentStreak: number | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
 export interface IssueRecoveryAction {
   id: string;
   companyId: string;
@@ -784,6 +768,11 @@ export interface IssueChangeReceiptEntry {
 export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
 export interface Issue {
+  conversationAgentId?: string | null;
+  conversationUserId?: string | null;
+  conversationState?: "active" | "waiting" | null;
+  conversationSessionGeneration?: number;
+  conversationBoundaryCommentId?: string | null;
   activeRun?: { id: string; status: string; agentId: string; invocationSource: string;
     triggerDetail: string | null; startedAt: Date | string | null; finishedAt: Date | string | null;
     createdAt: Date | string; execution?: ExecutionProjection } | null;
@@ -846,7 +835,6 @@ export interface Issue {
   unblockDescriptor?: IssueUnblockDescriptor | null;
   blockedTransitionAt?: Date | null;
   blockedOwnerNotifiedAt?: Date | null;
-  productivityReview?: IssueProductivityReview | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   executionBlocker?: ExecutionBlocker | null;
@@ -919,7 +907,6 @@ export type CompactIssue = Pick<
   blockerAttention?: IssueBlockerAttention;
   reviewAttention?: IssueReviewAttention;
   blockedInboxAttention?: IssueBlockedInboxAttention | null;
-  productivityReview?: IssueProductivityReview | null;
   scheduledRetry?: IssueScheduledRetry | null;
   liveDescendantCount?: number;
   myLastTouchAt?: Date | null;
@@ -951,6 +938,8 @@ export type IssueCommentDerivedAuthorSource =
   | "run_log_comment_post";
 
 export interface IssueComment {
+  clientRequestId?: string | null;
+  conversationSessionGeneration?: number | null;
   id: string;
   companyId: string;
   issueId: string;
@@ -1007,6 +996,8 @@ export interface IssueQueuedCommentQueue {
   protocol: IssueQueuedCommentProtocol;
   steeringDisposition: IssueQueuedCommentSteeringDisposition;
   entries: IssueQueuedCommentEntry[];
+  /** Current admission condition for a saved user continuation. */
+  executionWait?: { reason: string; message: string } | null;
 }
 
 interface IssueCommentMetadataRowBase {

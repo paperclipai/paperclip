@@ -1,5 +1,5 @@
 import { t, useTranslation } from "@/i18n";
-import { taskChatDurationLabel, taskChatTokenLabel } from "./task-chat-display";
+import { taskChatDurationLabel, taskChatTokenLabel, taskChatTimestampDisplay } from "./task-chat-display";
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
@@ -21,6 +21,8 @@ interface TaskChatTurnProps {
    * always visible, in the slot the hover-only timestamp used to occupy.
    */
   timestampPrefix?: string;
+  /** Raw source for display only; keeps a memoized attached footer responsive to locale. */
+  timestampValue?: string | number;
   /**
    * Content rendered on the header row (PAP-413: the copy/👍/👎 action
    * cluster). The inspection caret and timestamp stay left; actions sit at the
@@ -75,9 +77,11 @@ export function TaskChatTurn({
   item,
   renderChild,
   timestampPrefix,
+  timestampValue,
   leading,
 }: TaskChatTurnProps) {
   useTranslation();
+  const timestamp = taskChatTimestampDisplay(timestampValue, timestampPrefix);
   const streamlined = useStreamlinedTaskChatPresentation();
   const parentRow = !item.settled && item.liveStatus != null;
   // The new Paperclip Runner task surface owns one durable chronological
@@ -160,6 +164,10 @@ export function TaskChatTurn({
   const [open, setOpen] = useState(
     () => !item.settled && item.liveStatus == null,
   );
+  // Historical folds can contain thousands of tool/reasoning rows. Mount them
+  // on first inspection, then retain them for closing motion and child state.
+  const [historyMounted, setHistoryMounted] = useState(open);
+  if (open && !historyMounted) setHistoryMounted(true);
   const [prevSettled, setPrevSettled] = useState(item.settled);
   const [wasParentRow, setWasParentRow] = useState(parentRow);
 
@@ -192,9 +200,9 @@ export function TaskChatTurn({
       )}
       data-testid="task-chat-turn-summary"
     >
-      {timestampPrefix ? (
+      {timestamp ? (
         <>
-          <span className="text-(length:--text-micro)">{timestampPrefix}</span>
+          <span className="text-(length:--text-micro)">{timestamp}</span>
           <span aria-hidden className="text-(length:--text-micro)">
             ·
           </span>
@@ -272,7 +280,7 @@ export function TaskChatTurn({
       >
         <div>
           <div className="flex flex-col gap-2 pt-1">
-            {foldedItems.map((child) => (
+            {historyMounted && foldedItems.map((child) => (
               <div key={child.id}>{renderChild(child)}</div>
             ))}
           </div>

@@ -140,6 +140,33 @@ describe("BreadcrumbBar", () => {
     expect(onToggle).toHaveBeenCalledOnce();
   });
 
+  it("keeps a single task breadcrumb compact with adjacent identity and settings action", async () => {
+    const configure = vi.fn();
+    function AgentBreadcrumb() {
+      const { setBreadcrumbs } = useBreadcrumbs();
+      useEffect(() => {
+        setBreadcrumbs([{
+          label: "CodexCoder",
+          leading: <span aria-label="Agent avatar">CC</span>,
+          leadingKey: "codex-avatar",
+          trailing: <button aria-label="Configure CodexCoder" onClick={configure}>Settings</button>,
+          trailingKey: "codex-settings",
+        }]);
+      }, [setBreadcrumbs]);
+      return <BreadcrumbBar taskDetailLayout />;
+    }
+    await act(async () => root.render(<BreadcrumbProvider><AgentBreadcrumb /></BreadcrumbProvider>));
+    const label = container.querySelector('[data-slot="breadcrumb-page"]');
+    expect(label?.textContent).toBe("CCCodexCoder");
+    expect(container.querySelector("h1")).toBeNull();
+    const settings = container.querySelector<HTMLButtonElement>('button[aria-label="Configure CodexCoder"]');
+    expect(settings?.closest('[data-slot="breadcrumb-item"]')).toBe(label?.closest('[data-slot="breadcrumb-item"]'));
+    expect(settings?.closest('[aria-disabled="true"]')).toBeNull();
+    act(() => settings?.click());
+    expect(configure).toHaveBeenCalledOnce();
+    expect(container.querySelector('button[aria-label="Hide properties"]')).not.toBeNull();
+  });
+
   it.each(["Tasks", "Задачи"])("shows a company-scoped mobile task header independently of its section label (%s)", async (sourceLabel) => {
     viewport.isMobile = true;
     await act(async () => {

@@ -243,6 +243,7 @@ function makeInstanceSettings({
       enableEnvironments,
       enableIsolatedWorkspaces: true,
       enableStreamlinedLeftNavigation: false,
+      enableAgentChat: false,
       enableConferenceRoomChat: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: false,

@@ -286,6 +286,44 @@ describe("sandbox callback bridge", () => {
 
   });
 
+  it("serves schema discovery over the queue and denies schema mutations and lookalikes", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-schema-"));
+    cleanupDirs.push(rootDir);
+    const queueDir = path.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const schema = { openapi: "3.1.0", paths: {} };
+    const forwarded: string[] = [];
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: createFileSystemSandboxCallbackBridgeQueueClient(), queueDir,
+      handleRequest: async (request) => {
+        forwarded.push(`${request.method} ${request.path}`);
+        return { status: 200, body: JSON.stringify(schema) };
+      },
+    });
+    cleanupFns.push(() => worker.stop());
+    const requests = [
+      { method: "GET", path: "/api/openapi.json" },
+      { method: "POST", path: "/api/openapi.json" },
+      { method: "PATCH", path: "/api/openapi.json" },
+      { method: "DELETE", path: "/api/openapi.json" },
+      { method: "GET", path: "/api/openapi.json/extra" },
+      { method: "GET", path: "/api/openapiXjson" },
+      { method: "GET", path: "/api/secrets" },
+    ];
+    for (const [index, request] of requests.entries()) {
+      await writeFile(path.join(directories.requestsDir, `schema-${index}.json`), JSON.stringify({
+        id: `schema-${index}`, ...request, query: "", headers: {}, body: "", createdAt: new Date().toISOString(),
+      }));
+    }
+    await worker.stop({ drainTimeoutMs: 5_000 });
+    for (const [index] of requests.entries()) {
+      const response = JSON.parse(await readFile(path.join(directories.responsesDir, `schema-${index}.json`), "utf8"));
+      expect(response.status).toBe(index === 0 ? 200 : 403);
+      if (index === 0) expect(JSON.parse(response.body)).toEqual(schema);
+    }
+    expect(forwarded).toEqual(["GET /api/openapi.json"]);
+  });
+
   it("denies non-allowlisted requests by default", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-default-policy-"));
     cleanupDirs.push(rootDir);
@@ -1356,6 +1394,10 @@ describe("sandbox callback bridge", () => {
       { method: "GET", path: "/api/companies/co-1/approvals" },
       { method: "GET", path: "/api/companies/co-1/routines" },
       { method: "GET", path: "/api/companies/co-1/skills" },
+      { method: "GET", path: "/api/companies/co-1/email/inboxes" },
+      { method: "GET", path: "/api/companies/co-1/email/tasks/issue-1" },
+      { method: "GET", path: "/api/companies/co-1/email/deliveries/send-1" },
+      { method: "POST", path: "/api/companies/co-1/email/send" },
       // Hire skill (paperclip-create-agent): discovery + submit + issue linking
       { method: "GET", path: "/llms/agent-configuration.txt" },
       { method: "GET", path: "/llms/agent-configuration/claude_local.txt" },
@@ -1413,6 +1455,13 @@ describe("sandbox callback bridge", () => {
     }
 
     const denied: Array<{ method: string; path: string }> = [
+      { method: "POST", path: "/api/companies/co-1/email/inboxes" },
+      { method: "POST", path: "/api/companies/co-1/email/connections" },
+      { method: "POST", path: "/api/companies/co-1/email/inspect" },
+      { method: "POST", path: "/api/companies/co-1/email/deliveries/send-1/resolve" },
+      { method: "POST", path: "/api/email/inboxes/inbox-1/reconnect" },
+      { method: "POST", path: "/api/email/inboxes/inbox-1/control" },
+      { method: "DELETE", path: "/api/companies/co-1/email/tasks/issue-1" },
       { method: "DELETE", path: "/api/secrets" },
       // Pin the runtime-services regex to start/stop/restart only — anything
       // else (delete, reset, wipe, etc.) must stay denied even if the API

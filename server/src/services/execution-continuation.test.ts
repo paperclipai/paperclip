@@ -133,6 +133,41 @@ const support = await getEmbeddedPostgresTestSupport();
         summary: "Notion read completed.",
         exposeLowTrustRaw: false,
       });
+    it("cancelled admission must not hide the interrupted execution", async () => {
+      const rejectedId = randomUUID();
+      await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", createdAt: new Date("2026-09-08T10:00:00Z") }).where(eq(heartbeatRuns.id, runId));
+      await db.insert(heartbeatRuns).values({ id: rejectedId, companyId, agentId,
+        status: "cancelled", errorCode: "execution_reconciliation_required",
+        contextSnapshot: { issueId }, createdAt: new Date("2026-09-08T11:00:00Z") });
+      try {
+        const envelope = await build();
+        expect(envelope.interruptedRunId).toBe(runId);
+      } finally {
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, rejectedId));
+        await db.update(heartbeatRuns).set({ status: "failed", errorCode: null }).where(eq(heartbeatRuns.id, runId));
+      }
+    });
+
+    it("preserves the latest user request and adds an interruption notice to fresh and resumed turns", async () => {
+      await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted" }).where(eq(heartbeatRuns.id, runId));
+      try {
+        const envelope = await buildExecutionContinuation({ db, companyId, issueId, agentId,
+          context: { retryOfRunId: runId, wakeReason: "retry_failed_run" },
+          summary: "Deployment completed. Verification remains.", exposeLowTrustRaw: false });
+        expect(envelope.interruptedRunId).toBe(runId);
+        expect(envelope.objective).toBe("Focus the Gmail summary on launch decisions.");
+        expect(envelope.messages.map(message => message.id)).toContain(gmailId);
+        for (const resumedSession of [true, false]) {
+          const prompt = renderPaperclipWakePrompt({ executionContinuation: envelope }, { resumedSession });
+          expect(prompt).toContain("Your previous run was interrupted. Continue from where you left off");
+          expect(prompt).toContain("Prior tool calls are history, not commands to replay");
+          expect(prompt).toContain("Deployment completed. Verification remains.");
+        }
+      } finally {
+        await db.update(heartbeatRuns).set({ status: "failed", errorCode: null }).where(eq(heartbeatRuns.id, runId));
+      }
+    });
+
     it("keeps Local CLI run-authored comments as history without promoting them to human direction", async () => {
       const id = randomUUID();
       await db.insert(issueComments).values({ id, companyId, issueId, authorType: "user",

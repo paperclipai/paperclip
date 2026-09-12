@@ -2334,7 +2334,7 @@ export function IssueProperties({
         <PropertyRow label={t("nav.status")}>
           <StatusIcon
             status={issue.status}
-            size="lg"
+            className="size-3"
             blockerAttention={issue.blockerAttention}
             onChange={(status) => onUpdate({ status })}
             showLabel

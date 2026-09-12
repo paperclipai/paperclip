@@ -1,0 +1,169 @@
+name: Storybook Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Repository branch to publish (empty uses the selected workflow branch)"
+        type: string
+        default: ""
+  # Also exposed by Storybook Visual, which is already available on master.
+  workflow_call:
+    inputs:
+      branch:
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  authorize:
+    name: Authorize Storybook publisher
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.source.outputs.sha }}
+      branch: ${{ steps.source.outputs.branch }}
+      branch_key: ${{ steps.source.outputs.branch_key }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Require CODEOWNER initiator and rerunner
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const authorize = require('./.github/scripts/authorize-storybook-deploy.cjs');
+            await authorize({ github, context });
+
+      - name: Pin requested repository branch
+        id: source
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          SOURCE_BRANCH: ${{ inputs.branch }}
+          STORYBOOK_S3_BUCKET: ${{ vars.STORYBOOK_S3_BUCKET }}
+          STORYBOOK_PUBLIC_BASE_URL: ${{ vars.STORYBOOK_PUBLIC_BASE_URL }}
+        with:
+          script: |
+            const branch = process.env.SOURCE_BRANCH || context.ref.slice('refs/heads/'.length);
+            const { data } = await github.rest.git.getRef({ ...context.repo, ref: `heads/${branch}` });
+            if (data.ref !== `refs/heads/${branch}` || data.object.type !== 'commit') {
+              throw new Error('Select an existing branch in this repository.');
+            }
+            // With no source override, preserve the exact dispatched commit.
+            const sha = process.env.SOURCE_BRANCH ? data.object.sha : context.sha;
+            const { storybookDestination } = require('./.github/scripts/storybook-destination.cjs');
+            const destination = storybookDestination({ branch, sha,
+              runId: context.runId, runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+              bucket: process.env.STORYBOOK_S3_BUCKET, baseUrl: process.env.STORYBOOK_PUBLIC_BASE_URL });
+            core.setOutput('sha', sha);
+            core.setOutput('branch_key', destination.branchKey);
+            core.setOutput('branch', branch);
+
+  build:
+    name: Build selected branch Storybook
+    permissions: {}
+    needs: authorize
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      artifact_name: ${{ steps.artifact.outputs.name }}
+    env:
+      STORYBOOK_DISABLE_TELEMETRY: "1"
+    steps:
+      - name: Download public source without repository credentials
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]]
+          curl --fail --silent --show-error --location --retry 3 \
+            "https://codeload.github.com/paperclipai/paperclip/tar.gz/$SOURCE_SHA" \
+            --output "$RUNNER_TEMP/source.tar.gz"
+          tar -xzf "$RUNNER_TEMP/source.tar.gz" --strip-components=1
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm build-storybook
+      - name: Record source and validate output
+        id: artifact
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
+          SOURCE_BRANCH: ${{ needs.authorize.outputs.branch }}
+        run: |
+          test -s ui/storybook-static/index.html
+          test -s ui/storybook-static/iframe.html
+          test -s ui/storybook-static/index.json
+          jq -n --arg sha "$SOURCE_SHA" --arg branch "$SOURCE_BRANCH" \
+            '{sha: $sha, branch: $branch}' > ui/storybook-static/deployment.json
+          echo "name=storybook-deploy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: ui/storybook-static
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    name: Publish branch Storybook to S3
+    needs: [authorize, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: storybook-deploy-${{ needs.authorize.outputs.branch_key }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: storybook-deploy
+      url: ${{ steps.deployment.outputs.url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+      - name: Recheck CODEOWNER access before publishing
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const authorize = require('./.github/scripts/authorize-storybook-deploy.cjs');
+            await authorize({ github, context });
+      - name: Download the successful build artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: storybook-static
+      - name: Assume the Storybook-only uploader role
+        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6
+        with:
+          role-to-assume: ${{ vars.STORYBOOK_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.STORYBOOK_AWS_REGION }}
+          role-duration-seconds: 900
+      - name: Publish this branch preview
+        id: deployment
+        env:
+          SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
+          SOURCE_BRANCH: ${{ needs.authorize.outputs.branch }}
+          STORYBOOK_S3_BUCKET: ${{ vars.STORYBOOK_S3_BUCKET }}
+          STORYBOOK_PUBLIC_BASE_URL: ${{ vars.STORYBOOK_PUBLIC_BASE_URL }}
+        run: node .github/scripts/publish-storybook.cjs
+      - name: Verify public build and stable branch URL
+        env:
+          BUILD_URL: ${{ steps.deployment.outputs.build_url }}
+          BRANCH_URL: ${{ steps.deployment.outputs.url }}
+          SOURCE_SHA: ${{ needs.authorize.outputs.sha }}
+        run: node .github/scripts/verify-storybook.cjs
+      - name: Upload deployment links
+        if: ${{ !cancelled() && steps.deployment.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: storybook-deployment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.deployment.outputs.report_path }}
+          if-no-files-found: error
+          retention-days: 30

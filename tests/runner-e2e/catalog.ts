@@ -1,3 +1,4 @@
+import { chatTasks } from "./chat-cases.js";
 import { createHash } from "node:crypto";
 import { createAgentSchema } from "../../packages/shared/src/validators/agent.js";
 import { createEnvironmentSchema } from "../../packages/shared/src/validators/environment.js";
@@ -30,6 +31,7 @@ const SELECTABLE_GROUPS = [
   "warm",
   "core",
   "breadth",
+  "chat",
 ] as const;
 const SAMPLE_UUID = "11111111-1111-4111-8111-111111111111";
 
@@ -68,8 +70,9 @@ function commonAgent(
         "AGENTS.md": [
           "You are running a paid Paperclip end-to-end acceptance fixture.",
           "Follow the assigned task and its Paperclip work mode literally.",
-          "For standard and ask tasks, publish the requested visible answer and mark the task done.",
-          "For planning tasks, publish or revise the canonical Plan document and its revision-bound request_confirmation, then wait. Only implement after that exact plan is accepted.",
+          "In ongoing agent chats, follow the injected production chat directive; keep the conversation available after replying. The completion and implementation instructions below apply only to ordinary execution tasks.",
+          "For ordinary standard and ask tasks, publish the requested visible answer and mark the task done.",
+          "For ordinary planning tasks, publish or revise the canonical Plan document and its revision-bound request_confirmation, then wait. Only implement after that exact plan is accepted.",
           "Invoke assigned tools only through the runtime's real tool-call channel. Never print XML, DSML, JSON, or other tool-call markup as assistant text.",
           "Legacy adapters must use the public Paperclip API and the injected PAPERCLIP_API_URL, PAPERCLIP_API_KEY, PAPERCLIP_TASK_ID, and PAPERCLIP_RUN_ID values for comments, documents, interactions, and status changes.",
           ...(adapterType === "paperclip_runner"
@@ -205,7 +208,13 @@ export const runnerProfiles: readonly RunnerProfileFixture[] = [
     credential: "OPENAI_API_KEY",
     // Keep this fixture on the classic adapter/CLI lane. ACP execution is
     // covered independently by the native runner ACPX profiles below.
-    extraConfig: { engine: "cli" },
+    extraConfig: {
+      engine: "cli",
+      // Shell snapshots serialize inherited environment values into CODEX_HOME.
+      // These disposable runs carry short-lived API credentials; keep that
+      // optional optimization off rather than exempting leaked files from scans.
+      extraArgs: ["-c", "features.shell_snapshot=false"],
+    },
   }),
   legacyProfile({
     id: "legacy-claude",
@@ -874,6 +883,14 @@ export const connectionReviewSuite: RunnerSuiteFixture = {
 };
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
+  {
+    id: "agent-chat", label: "Persistent Agent Chat",
+    description: "Task-backed conversations, session resets, and project plan handoff.",
+    groups: ["chat"],
+    profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
+    environments: [localEnvironment], tasks: chatTasks, expectedMatrixSize: 24,
+    definitionMetadata: { version: 1, resetRunsCountedSeparately: true },
+  },
   ...(process.env.PAPERCLIP_RUNNER_E2E_CONNECTION_REVIEWS === "1" ? [connectionReviewSuite] : []),
   {
     id: "core-compatibility",

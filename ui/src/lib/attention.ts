@@ -79,6 +79,7 @@ const ATTENTION_DISPLAY_KEYS: Readonly<Record<string, string>> = {
   "Join request": "localizationAttention.ui_Join_request_1wxkjdw",
   "Recovery": "localizationAttention.ui_Recovery_bx9hye",
   "Productivity review": "localizationAttention.ui_Productivity_review_1r8mfpb",
+  "Task": "localizationActivity.taskLabel",
   "Blocked dependency": "localizationAttention.ui_Blocked_dependency_1w9irog",
   "Review": "localizationAttention.ui_Review_tnr3lt",
   "Failed run": "localizationAttention.ui_Failed_run_1tnwnyx",
@@ -212,7 +213,8 @@ const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
   issue_thread_interaction: { label: "Decision requested" },
   join_request: { label: "Join request" },
   recovery_action: { label: "Recovery" },
-  productivity_review: { label: "Productivity review" },
+  // Read compatibility for persisted decisions from the retired feature.
+  productivity_review: { label: "Task" },
   blocker_attention: { label: "Blocked dependency" },
   review: { label: "Review" },
   failed_run: { label: "Failed run" },

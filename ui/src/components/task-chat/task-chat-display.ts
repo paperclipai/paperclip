@@ -4,6 +4,8 @@ import type { TaskChatMaterializedResourceItem } from "./task-chat-model";
 // Only call these helpers for built-in presentation metadata. Protocol models,
 // provider payloads, user messages, source code, and persisted content stay raw.
 const DISPLAY_KEYS: Readonly<Record<string, string>> = {
+  "New session": "sep12Chat.composer.newSession",
+  "Waiting to resume": "sep12Chat.marker.waitingToResume",
   "Run interrupted": "localizationTaskThread.runInterrupted",
   "Run completed": "localizationTaskThread.runCompleted",
   "Usage limit reached": "localizationTaskThread.providerUsageLimitReached",
@@ -343,6 +345,19 @@ export function taskChatDisplayLabel(value: string): string {
   return key ? t(key) : value;
 }
 
+/** Format raw source time at render time; canonical/model timestamps stay unchanged. */
+export function taskChatTimestampDisplay(
+  value: string | Date | number | undefined,
+  fallback: string | undefined,
+): string | undefined {
+  // English retains the exact upstream string, including host locale conventions.
+  // Opaque/provider-authored timestamps without a raw source are never parsed.
+  if (!fallback || !i18n.resolvedLanguage?.startsWith("ru") || value == null) return fallback;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+  return date.toLocaleTimeString(i18n.resolvedLanguage, { hour: "numeric", minute: "2-digit" });
+}
+
 /** The transcript keeps its compact English counter for exports and parsing. */
 export function taskChatTokenLabel(value: string): string {
   if (!i18n.resolvedLanguage?.startsWith("ru")) return value;
@@ -422,6 +437,12 @@ export function taskThreadErrorDisplay(value: string): string {
 
 /** Never alter marker.label in the model: retry eligibility compares "Run failed". */
 export function taskThreadMarkerDetailDisplay(value: string): string {
+  const addedKeys: Readonly<Record<string, string>> = {
+    "Earlier messages and files are still available.": "sep12Chat.marker.earlierMessagesAvailable",
+    "This turn was cancelled before it returned a response.": "sep12Chat.marker.cancelledBeforeResponse",
+    "The previous execution needs to be checked before work can continue. See the task’s execution hold for the next action. Individual checks remain in the run history.": "sep12Chat.marker.executionCheckRequired",
+  };
+  if (addedKeys[value]) return t(addedKeys[value]);
   const exact: Readonly<Record<string, string>> = {
     "The run was cancelled before returning an answer.": "cancelledBefore",
     "The run was cancelled after returning a final response.": "cancelledAfter",

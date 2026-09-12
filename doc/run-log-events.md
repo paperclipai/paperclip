@@ -13,6 +13,17 @@ the PRP `eventType`, source instance, source event ID, source sequence, protocol
 schema version, and a SHA-256 digest of the canonical source envelope. Its
 payload is `{ "prpEvent": <canonical PRP event> }`.
 
+PostgreSQL JSONB cannot represent NUL (U+0000), which can occur in command
+output such as Vite virtual-module paths. The run-event payload column uses a
+lossless storage codec for these events: the JSONB projection renders NUL as
+the literal `\u0000`, and the reserved `$paperclipRunEventJsonV1` field contains
+the original serialized JSON as a doubly escaped string. Ordinary payloads
+retain their existing representation. Drizzle reads restore the exact original
+payload before replay, hash validation, redaction, or API presentation. SQL
+queries can still inspect ordinary routing fields in the projection; raw SQL
+readers of the whole payload must apply `decodeRunEventPayload`. The column
+remains JSONB and requires no schema migration.
+
 The writer locks the native `heartbeat_runs` row and allocates the existing
 per-run `seq` cursor. A byte-equivalent retry reuses the first row; a changed
 retry or source-sequence gap is rejected. Company, issue, agent, run, session,
@@ -41,6 +52,21 @@ The event never includes bootstrap tickets, reconnect leases, authentication
 proofs, encryption keys, environment variables, provider credentials, command
 arguments, or an unsanitized stderr stream. Detailed failed-attempt diagnostics
 remain in the bounded `native_run_finalizations.recovery_history` ledger.
+
+## Native Local Process Stop Evidence
+
+The server writes `native.local_process_stopped` in the same transaction that
+clears a local run's process identity, after it verifies that its PID and process
+group are absent. The payload contains only those process IDs. Remote process
+IDs are never checked against the control-plane host.
+
+The server writes `native.process_start_requested` before a backend can spawn,
+and `native.process_identity_recorded` when it stores a new native process
+identity. Either invalidates an earlier local stop receipt, including a crash
+before the new PID callback. Continuation admission accepts only the latest
+server-authored event among these three types; provider
+source events cannot supply stop authority. These records stay in the local run
+log and do not add Telemetry or OpenTelemetry data.
 
 ## Sandbox Startup Run-Log Event
 

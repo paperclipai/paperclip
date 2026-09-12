@@ -4,6 +4,7 @@ import { act, StrictMode, useState, type ReactElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import {
   buildAgentMentionHref,
   buildSkillMentionHref,
@@ -1713,6 +1714,117 @@ describe("TaskChatComposer", () => {
     });
   });
 
+  it("gives separate identical chat submissions separate receipt identities", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(<TaskChatComposer onAdd={onAdd} conversationMode workMode="standard" />);
+    typeText("Same message");
+    await act(async () => sendButton().click());
+    typeText("Same message");
+    await act(async () => sendButton().click());
+    expect(onAdd.mock.calls).toHaveLength(2);
+    expect(onAdd.mock.calls[0][4]).toEqual(expect.any(String));
+    expect(onAdd.mock.calls[1][4]).not.toBe(onAdd.mock.calls[0][4]);
+  });
+
+  describe("paused task takeover", () => {
+    afterEach(async () => { await i18n.changeLanguage("en"); });
+
+    it("preserves a paused draft through EN–RU–EN without resuming or submitting", async () => {
+      const onAdd = vi.fn();
+      const onResume = vi.fn();
+      const props = { onAdd, workMode: "standard" as const, draftKey: "pause-locale-draft" };
+      render(<TaskChatComposer {...props} />);
+      typeText("Draft stays **exactly** as written.");
+      render(<TaskChatComposer {...props} pause={{ scope: "leaf", onResume }} />);
+      const button = container.querySelector("button");
+      for (const language of ["en", "ru", "en"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(container.querySelector("button")).toBe(button);
+        expect(container.textContent).toContain(language === "ru" ? "Черновик сохранён." : "Your draft is saved.");
+        expect(container.querySelector('[data-testid="mdx-editor"]')).toBeNull();
+        expect(onAdd).not.toHaveBeenCalled();
+        expect(onResume).not.toHaveBeenCalled();
+      }
+      render(<TaskChatComposer {...props} />);
+      expect(editable().textContent).toBe("Draft stays **exactly** as written.");
+      await act(async () => sendButton().click());
+      expect(onAdd).toHaveBeenCalledExactlyOnceWith("Draft stays **exactly** as written.", undefined, undefined);
+    });
+
+    it("retranslates a retained conversation goal error and preserves raw slash command submission", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onRunnerGoalCommand = vi.fn();
+      render(<TaskChatComposer onAdd={onAdd} conversationMode workMode="standard" onRunnerGoalCommand={onRunnerGoalCommand} />);
+      typeText("/goal Keep the original goal text");
+      await act(async () => sendButton().click());
+      const editor = editable();
+      const alert = container.querySelector('[data-testid="task-chat-goal-error"]');
+      for (const language of ["en", "ru", "en"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(editable()).toBe(editor);
+        expect(editor.textContent).toBe("/goal Keep the original goal text");
+        expect(container.querySelector('[data-testid="task-chat-goal-error"]')).toBe(alert);
+        expect(alert?.textContent).toBe(language === "ru"
+          ? "Если агент должен продолжать работу над целью, создайте отдельную задачу."
+          : "Create a separate task for work that needs an ongoing execution goal.");
+        expect(onAdd).not.toHaveBeenCalled();
+        expect(onRunnerGoalCommand).not.toHaveBeenCalled();
+      }
+      typeText("/new");
+      await act(async () => sendButton().click());
+      expect(onAdd).toHaveBeenCalledExactlyOnceWith("/new", undefined, undefined, undefined, expect.any(String));
+    });
+
+    it("allows only standalone /new to resume a paused conversation through the normal composer", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      render(<TaskChatComposer onAdd={onAdd} conversationMode workMode="standard" pause={{ scope: "leaf" }} />);
+      typeText("Keep working");
+      expect(sendButton().disabled).toBe(true);
+      await act(async () => sendButton().click());
+      expect(onAdd).not.toHaveBeenCalled();
+      typeText("/new");
+      expect(sendButton().disabled).toBe(false);
+      await act(async () => sendButton().click());
+      expect(onAdd).toHaveBeenCalledWith("/new", undefined, undefined, undefined, expect.any(String));
+    });
+
+    it("preserves a typed draft and blocks sending until resume completes", async () => {
+      const onAdd = vi.fn();
+      const onResume = vi.fn();
+      const props = { onAdd, workMode: "standard" as const, draftKey: "paused-draft" };
+      act(() => root!.render(<TaskChatComposer {...props} />));
+      typeText("Please check mobile too.");
+      act(() => root!.render(<TaskChatComposer {...props} pause={{ scope: "leaf", onResume }} />));
+      expect(container.querySelector('[contenteditable="true"]')).toBeNull();
+      expect(container.querySelector('button[aria-label="Send"]')).toBeNull();
+      expect(container.textContent).toContain("Your draft is saved.");
+      act(() => container.querySelector("button")!.click());
+      expect(onResume).toHaveBeenCalledOnce();
+      expect(onAdd).not.toHaveBeenCalled();
+      act(() => root!.render(<TaskChatComposer {...props} pause={{ scope: "leaf", pending: true, onResume }} />));
+      expect(container.querySelector("button")!.disabled).toBe(true);
+      act(() => root!.render(<TaskChatComposer {...props} />));
+      expect(editable().textContent).toBe("Please check mobile too.");
+      await act(async () => sendButton().click());
+      expect(onAdd).toHaveBeenCalledWith("Please check mobile too.", undefined, undefined);
+    });
+
+    it("takes precedence over pending questions and queued-message edits", () => {
+      const onSkip = vi.fn();
+      act(() => root!.render(<TaskChatComposer
+        onAdd={vi.fn()} workMode="standard"
+        pause={{ scope: "subtree" }}
+        queuedEdit={{ commentId: "queued", body: "Queued draft" }}
+        takeover={{ id: "question", label: "Pending input", pendingCount: 1, content: <button>Answer question</button>, onDismiss: vi.fn(), onSkip }}
+      />));
+      expect(container.textContent).toContain("Subtree is paused.");
+      expect(container.textContent).not.toContain("Answer question");
+      expect(container.textContent).not.toContain("Skip");
+      expect(container.querySelector('[contenteditable="true"]')).toBeNull();
+      expect(container.querySelector("button")!.disabled).toBe(true);
+    });
+  });
+
   describe("queued message editing", () => {
     const draftKey = "task-chat-draft:queued-edit";
 
@@ -2020,7 +2132,7 @@ describe("TaskChatComposer", () => {
       });
     });
 
-    it("moves through questions with Next, Skip leaves one unanswered, Submit answers sends", async () => {
+    it("advances single selections, preserves answers when going back, and skips optional answers", async () => {
       const onSubmit = vi.fn();
       render(
         <TaskChatComposer
@@ -2080,14 +2192,16 @@ describe("TaskChatComposer", () => {
       flushSync(() => byLabel("Staging")?.click());
       await flushAsync();
       expect(onSubmit).not.toHaveBeenCalled();
-      expect(byLabel("Next")?.disabled).toBe(false);
-      flushSync(() => byLabel("Next")?.click());
-      await flushAsync();
       expect(container.textContent).toContain("When?");
+      expect(document.activeElement?.textContent).toBe("When?");
 
-      // Page 2: optional. Pick, then Skip anyway — the pick is dropped.
+      // Page 2: pick advances. Go back to confirm it is saved, then skip.
       flushSync(() => byLabel("Today")?.click());
       await flushAsync();
+      expect(container.textContent).toContain("Who?");
+      flushSync(() => container.querySelector<HTMLButtonElement>('button[aria-label="Previous question"]')?.click());
+      await flushAsync();
+      expect(byLabel("Today")?.getAttribute("aria-checked")).toBe("true");
       flushSync(() => byLabel("Skip")?.click());
       await flushAsync();
       expect(container.textContent).toContain("Who?");
@@ -2104,6 +2218,144 @@ describe("TaskChatComposer", () => {
       expect(response.answers.env).toEqual({ selectedOptionIds: ["staging"] });
       expect(response.answers.when).toBeUndefined();
       expect(response.answers.who).toEqual({ selectedOptionIds: ["me"] });
+    });
+
+    it.each(["click", "keyboard"])("advances a single choice by %s, while Other and multi-select stay put", async (input) => {
+      const onSubmit = vi.fn();
+      render(<QuestionForm
+        id="selection-modes"
+        questionSet={{
+          schema: "paperclip.question_set.v1",
+          questions: [
+            { id: "storage", prompt: "Storage?", required: true, answerMode: "single_select",
+              options: [{ id: "sqlite", label: "SQLite" }], customAnswer: { enabled: true } },
+            { id: "features", prompt: "Features?", required: true, answerMode: "multi_select",
+              options: [{ id: "auth", label: "Sign in" }, { id: "search", label: "Search" }] },
+            { id: "notes", prompt: "Notes?", required: false, answerMode: "text" },
+          ],
+        }}
+        initialResponse={{ schema: "paperclip.question_response.v1", answers: { storage: { selectedOptionIds: ["sqlite"] } } }}
+        onSubmit={onSubmit}
+      />);
+      const byLabel = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>("button"))
+        .find((button) => button.textContent?.trim() === label)!;
+      // Restoring a selection does not advance. Other needs text first.
+      expect(container.textContent).toContain("1 of 3");
+      flushSync(() => byLabel("Other").click());
+      await flushAsync();
+      expect(container.textContent).toContain("1 of 3");
+      expect(container.querySelector('[data-testid="question-other-answer-composer"]')).not.toBeNull();
+      expect(byLabel("Next").disabled).toBe(true);
+      flushSync(() => {
+        if (input === "click") byLabel("SQLite").click();
+        else byLabel("SQLite").dispatchEvent(new KeyboardEvent("keydown", { key: "1", bubbles: true }));
+      });
+      await flushAsync();
+      expect(container.textContent).toContain("2 of 3");
+      expect(document.activeElement?.textContent).toBe("Features?");
+      flushSync(() => document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "1", repeat: true, bubbles: true })));
+      expect(byLabel("Sign in").getAttribute("aria-checked")).toBe("false");
+      flushSync(() => byLabel("Sign in").click());
+      flushSync(() => byLabel("Search").click());
+      expect(container.textContent).toContain("2 of 3");
+      expect(byLabel("Sign in").getAttribute("aria-checked")).toBe("true");
+      expect(byLabel("Search").getAttribute("aria-checked")).toBe("true");
+      expect(onSubmit).not.toHaveBeenCalled();
+      flushSync(() => byLabel("Next").click());
+      await flushAsync();
+      expect(container.textContent).toContain("3 of 3");
+      flushSync(() => byLabel("Submit answers").click());
+      await flushAsync();
+      expect(onSubmit).toHaveBeenCalledExactlyOnceWith({
+        schema: "paperclip.question_response.v1",
+        answers: { storage: { selectedOptionIds: ["sqlite"] }, features: { selectedOptionIds: ["auth", "search"] } },
+      });
+    });
+
+    describe("single-choice confirmation animation", () => {
+      const questionSet = {
+        schema: "paperclip.question_set.v1" as const,
+        questions: ["First", "Second", "Third"].map((prompt) => ({
+          id: prompt, prompt, required: true, answerMode: "single_select" as const,
+          options: [{ id: "yes", label: "Yes" }], customAnswer: { enabled: true as const },
+        })),
+      };
+      const form = (disabled = false) => (
+        <QuestionForm id="animated" questionSet={questionSet} disabled={disabled} onSubmit={vi.fn()} />
+      );
+      const click = (selector: string) => act(() => {
+        flushSync(() => container.querySelector<HTMLButtonElement>(selector)!.click());
+      });
+      beforeEach(() => {
+        vi.useFakeTimers();
+        document.documentElement.style.setProperty("--motion-question-confirm", "160ms");
+      });
+      afterEach(() => {
+        render(<div />);
+        vi.useRealTimers();
+        document.documentElement.style.removeProperty("--motion-question-confirm");
+      });
+
+      it("shows the selected radio before advancing exactly one page", () => {
+        render(form());
+        click('[role="radio"]');
+        expect(container.querySelector('[role="radio"]')?.getAttribute("aria-checked")).toBe("true");
+        expect(container.querySelector(".tc-question-choice-confirm")).not.toBeNull();
+        expect(container.textContent).toContain("1 of 3");
+        act(() => vi.advanceTimersByTime(159));
+        expect(container.textContent).toContain("1 of 3");
+        act(() => vi.advanceTimersByTime(1));
+        expect(container.textContent).toContain("2 of 3");
+        expect(document.activeElement?.textContent).toBe("Second");
+        act(() => vi.advanceTimersByTime(160));
+        expect(container.textContent).toContain("2 of 3");
+      });
+
+      it("does not restart a pending advance or change the selected ID on language switches", async () => {
+        render(form());
+        click('[role="radio"]');
+        const selected = container.querySelector('[role="radio"]');
+        act(() => vi.advanceTimersByTime(80));
+        for (const language of ["ru", "en"]) {
+          await act(async () => { await i18n.changeLanguage(language); });
+          expect(container.querySelector('[role="radio"]')).toBe(selected);
+          expect(selected?.getAttribute("aria-checked")).toBe("true");
+          expect(container.querySelector(".tc-question-choice-confirm")).not.toBeNull();
+        }
+        act(() => vi.advanceTimersByTime(80));
+        expect(container.textContent).toContain("2 of 3");
+        expect(document.activeElement?.textContent).toBe("Second");
+        click('[aria-label="Previous question"]');
+        expect(container.querySelector('[role="radio"]')?.getAttribute("aria-checked")).toBe("true");
+      });
+
+      it.each(["navigation", "custom answer", "disabled", "unmount"])("cancels the pending advance on %s", (reason) => {
+        render(form());
+        click('[role="radio"]');
+        if (reason === "navigation") {
+          click('[aria-label="Next question"]');
+          click('[aria-label="Next question"]');
+        } else if (reason === "custom answer") {
+          click('#animated-First-custom');
+        } else if (reason === "disabled") {
+          render(form(true));
+          render(form(false));
+        } else {
+          render(<div>Closed</div>);
+        }
+        act(() => vi.advanceTimersByTime(160));
+        expect(container.textContent).toContain(
+          reason === "navigation" ? "3 of 3" : reason === "unmount" ? "Closed" : "1 of 3",
+        );
+      });
+
+      it("advances immediately when the motion token is zero", () => {
+        document.documentElement.style.setProperty("--motion-question-confirm", "0ms");
+        render(form());
+        click('[role="radio"]');
+        expect(container.textContent).toContain("2 of 3");
+        expect(container.querySelector(".tc-question-choice-confirm")).toBeNull();
+      });
     });
 
     it("Skip on the last question submits the other answers", async () => {
@@ -2152,7 +2404,6 @@ describe("TaskChatComposer", () => {
           container.querySelectorAll<HTMLButtonElement>("button"),
         ).find((button) => button.textContent?.trim() === label);
       flushSync(() => byLabel("Staging")?.click());
-      flushSync(() => byLabel("Next")?.click());
       await flushAsync();
       expect(container.textContent).toContain("Anything else?");
       flushSync(() => byLabel("Skip")?.click());
@@ -2351,7 +2602,7 @@ describe("TaskChatComposer", () => {
 
       flushSync(() => staging?.click());
       expect(staging?.getAttribute("data-selected")).toBe("true");
-      expect(staging?.className.split(" ")).toContain("bg-muted/80");
+      expect(staging?.className.split(" ")).toContain("bg-foreground/5");
     });
 
     it("hides Skip when the takeover already provides a request-changes path", () => {

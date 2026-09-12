@@ -1,5 +1,6 @@
 export interface ExecutionBlocker {
-  recoveryActionId: string;
+  /** Null when live execution authority itself blocks continuation. */
+  recoveryActionId: string | null;
   runId: string | null;
   agentId: string | null;
   cause: string;

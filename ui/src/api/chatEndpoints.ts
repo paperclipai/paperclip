@@ -12,7 +12,7 @@ export type {
 } from "@paperclipai/shared";
 
 export type ChatProvider =
-  "slack" | "github" | "discord" | "microsoft-teams" | "telegram";
+  "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "agentmail";
 export type ChatEndpointStatus =
   | "draft"
   | "verifying"
@@ -83,6 +83,8 @@ export interface ChatIdentityLinkPreview {
 }
 
 export interface ChatEndpoint {
+  publicationMode?: "automatic" | "explicit";
+  externalExecutionPolicy?: "restricted" | "agent";
   id: string;
   companyId: string;
   provider: ChatProvider;

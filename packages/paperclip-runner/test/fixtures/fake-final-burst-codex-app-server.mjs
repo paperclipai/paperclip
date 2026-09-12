@@ -87,6 +87,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         modelProvider: "fixture-no-provider",
         thread: {
           id: state.threadId,
+          status: { type: Object.values(state.turns).some(turn => turn.status === "inProgress") ? "active" : "idle" },
           sessionId: "final-burst-fixture",
           turns: Object.entries(state.turns).map(([turnId, turn]) => ({
             id: turnId,

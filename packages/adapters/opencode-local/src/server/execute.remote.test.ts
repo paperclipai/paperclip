@@ -104,12 +104,16 @@ describe("opencode remote execution", () => {
   const cleanupDirs: string[] = [];
   const originalOpenCodeAllowAllModels = process.env.OPENCODE_ALLOW_ALL_MODELS;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    const configHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-opencode-test-config-"));
+    cleanupDirs.push(configHome);
+    vi.stubEnv("XDG_CONFIG_HOME", configHome);
     delete process.env.OPENCODE_ALLOW_ALL_MODELS;
   });
 
   afterEach(async () => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     if (originalOpenCodeAllowAllModels === undefined) {
       delete process.env.OPENCODE_ALLOW_ALL_MODELS;
     } else {

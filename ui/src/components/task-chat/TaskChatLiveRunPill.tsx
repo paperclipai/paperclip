@@ -47,7 +47,6 @@ export function toolCountSummaryFromEntries(entries: readonly TranscriptEntry[])
  */
 export function TaskChatLiveRunPill({
   status,
-  execution,
   startedAtMs,
   finishedAtMs,
   toolSummary,
@@ -61,7 +60,7 @@ export function TaskChatLiveRunPill({
   toolSummary: string | null;
 }) {
   useTranslation();
-  const active = !isTerminalRunStatus(status) && (!execution || execution.phase === "working");
+  const active = !isTerminalRunStatus(status);
   // One shared page-wide ticker drives the live elapsed readout, matching the
   // default view's `useLiveElapsed`.
   useSecondTick(active && startedAtMs != null);
@@ -71,9 +70,8 @@ export function TaskChatLiveRunPill({
   const elapsed = elapsedMs != null
     ? taskChatDurationLabel(formatDurationWords(elapsedMs) ?? "")
     : null;
-  const reconnecting = execution?.phase === "reconnecting" || execution?.phase === "retry_scheduled";
   const failed = ["failed", "timed_out", "cancelled", "interrupted"].includes(status);
-  const verb = reconnecting ? t("localizationTaskExecution.reconnecting") : (!isTerminalRunStatus(status) ? t("localizationTaskRuntime.ui_Working_1pyssg8") : failed ? t("localizationTaskRuntime.ui_Stopped_118y86m") : t("localizationTaskRuntime.worked"));
+  const verb = active ? t("localizationTaskRuntime.ui_Working_1pyssg8") : failed ? t("localizationTaskRuntime.ui_Stopped_118y86m") : t("localizationTaskRuntime.worked");
   const suffix = elapsed ? t("localizationTaskRuntime.forDuration", { duration: elapsed }) : null;
 
   return (
@@ -86,7 +84,7 @@ export function TaskChatLiveRunPill({
           <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
         ) : (
           <span className="flex h-4 w-4 shrink-0 items-center justify-center">
-            <span className={cn("h-1.5 w-1.5 rounded-full", (reconnecting || failed || !isTerminalRunStatus(status)) ? "bg-muted-foreground/40" : "bg-emerald-500/70")} />
+            <span className={cn("h-1.5 w-1.5 rounded-full", (failed || active) ? "bg-muted-foreground/40" : "bg-emerald-500/70")} />
           </span>
         )}
         {active ? <span className={cn("shimmer-text")}>{verb}</span> : verb}

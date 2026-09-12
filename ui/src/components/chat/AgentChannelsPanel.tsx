@@ -15,6 +15,7 @@ const providerNames: Record<ChatProvider, string> = {
   discord: "Discord",
   "microsoft-teams": "Microsoft Teams",
   telegram: "Telegram",
+  agentmail: "AgentMail",
 };
 
 export function AgentChannelsPanel({
@@ -41,7 +42,9 @@ export function AgentChannelsPanel({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">{t("chatUi.agentChannelsPanel.channels")}</h2>
-          <p className="mt-1 text-sm text-muted-foreground">{t("chatUi.agentChannelsPanel.providerIdentitiesThatLetPeopleChatWithThisAgent")}</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t("sep12Connections.channelsDescription")}
+          </p>
         </div>
         <Button asChild size="sm">
           <Link to={`/apps?chatAgentId=${encodeURIComponent(agentId)}`}>
@@ -52,8 +55,10 @@ export function AgentChannelsPanel({
         <p className="text-sm text-muted-foreground">{t("chatUi.agentChannelsPanel.loadingChannels")}</p>
       ) : endpoints.length === 0 ? (
         <div className="rounded-lg border border-dashed border-border p-5">
-          <p className="text-sm font-medium">{t("chatUi.agentChannelsPanel.noChatChannelsConnected")}</p>
-          <p className="mt-1 text-sm text-muted-foreground">{t("chatUi.agentChannelsPanel.connectSlackGitHubDiscordMicrosoftTeamsOrTelegramFromConnectors")}</p>
+          <p className="text-sm font-medium">{t("sep12Connections.noChannels")}</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            {t("sep12Connections.connectChannels")}
+          </p>
           <Button asChild className="mt-3" variant="outline" size="sm">
             <Link to="/apps">{t("chatUi.agentChannelsPanel.openConnectors")}</Link>
           </Button>

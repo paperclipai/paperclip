@@ -1,5 +1,12 @@
 /** Built-in UI copy only. Both the app slug and exact upstream text must match. */
 export const APP_DEFINITION_COPY: Record<string, Record<string, string>> = {
+  "agentmail": {
+    "Give agents email inboxes and handle each conversation as a task.": "sep12Metadata.agentmailDescription",
+    "Email with an agent": "sep12Metadata.agentmailMethod",
+    "Assign an inbox to an agent and manage email conversations in tasks.": "sep12Metadata.agentmailWhenToUse",
+    "AgentMail API key": "sep12Metadata.agentmailApiKey",
+    "Connect an AgentMail API key, then create or select an inbox for your agent. WebSocket receiving works without a public URL.": "sep12Metadata.agentmailGuidance"
+  },
   "airtable": {
     "Connect Airtable's provider-hosted MCP server.": "localizationApps.metadata0",
     "Sign in with Airtable": "localizationApps.metadata3"

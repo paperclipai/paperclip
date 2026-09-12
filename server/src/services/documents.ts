@@ -351,7 +351,7 @@ export function documentService(db: Db) {
             }
 
             if (!input.baseRevisionId) {
-              throw conflict("Document update requires baseRevisionId", {
+              throw conflict("Document update requires baseRevisionId. GET the current document, read its body and latestRevisionId, then set baseRevisionId to that latestRevisionId when updating.", {
                 currentRevisionId: existing.latestRevisionId,
               });
             }

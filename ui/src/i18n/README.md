@@ -16,6 +16,21 @@ Do not expose a locale that still contains English placeholder content.
    added or changed English message, including edits under existing keys.
 6. Run `node scripts/sync-locales.mjs` and the locale tests.
 
+Also scan source changes with:
+
+```sh
+pnpm --filter @paperclipai/ui exec node src/i18n/ui-source-changes.ts --base <reviewed-commit-or-tag>
+```
+
+This read-only command finds new literal JSX, display attributes, and display
+object fields in changed UI files, including new files not yet staged. Use
+`--json` to include the changed-file list in a review handoff. Moving existing
+lines does not create new candidates; adding another occurrence does. Syntax
+errors stop the audit. Neither an empty queue nor a matching catalog certifies
+full coverage: review dynamic helper output, bundled server metadata, and live
+screens separately. Brands, protocol values, and examples can be valid findings.
+Classify each candidate before translating it; never rewrite source automatically.
+
 `node scripts/sync-locales.mjs --write` can scaffold missing Russian keys with
 their English source text. It prints every key that still needs human review.
 Do not commit an English scaffold as a completed Russian translation.

@@ -1,4 +1,4 @@
-import { t, useTranslation, i18n } from "@/i18n";
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import {
   DndContext,
@@ -149,7 +149,7 @@ function SortableQueuedMessage({
           type="button"
           onClick={onInterrupt}
           disabled={busy || !queue.targetRunId || !onInterrupt}
-          title={t("localizationTaskRuntime.ui_Interrupt_the_active_turn_this_message_stays_queued_o1fby9")}
+          title={t("sep12Chat.queue.interruptTitle")}
           className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
           data-testid={`task-chat-queued-interrupt-${entry.comment.id}`}
         >
@@ -221,6 +221,8 @@ function SortableQueuedMessage({
   );
 }
 
+type QueueDisplayMessage = { key: string; values?: { position: number; total: number } };
+
 /** Compact production queue shown immediately above the default task composer. */
 export function TaskChatQueuedMessages({
   queue,
@@ -237,8 +239,8 @@ export function TaskChatQueuedMessages({
     action: Exclude<QueueAction, null>;
   } | null>(null);
   const [reordering, setReordering] = useState(false);
-  const [announcement, setAnnouncement] = useState("");
-  const [visibleError, setVisibleError] = useState<string | null>(null);
+  const [announcement, setAnnouncement] = useState<QueueDisplayMessage | null>(null);
+  const [visibleError, setVisibleError] = useState<QueueDisplayMessage | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
     useSensor(KeyboardSensor, {
@@ -252,7 +254,7 @@ export function TaskChatQueuedMessages({
 
   const ids = useMemo(
     () => entries.map((entry) => entry.comment.id),
-    [i18n.resolvedLanguage, entries],
+    [entries],
   );
 
   async function handleDragEnd(event: DragEndEvent) {
@@ -278,19 +280,17 @@ export function TaskChatQueuedMessages({
     setEntries(next);
     setReordering(true);
     setVisibleError(null);
-    setAnnouncement(
-      t("localizationTaskRuntime.messageMoved", { position: to + 1, total: next.length }),
-    );
+    setAnnouncement({ key: "localizationTaskRuntime.messageMoved", values: { position: to + 1, total: next.length } });
     try {
       await onReorder(orderedIds, queue.revision);
     } catch (error) {
       setEntries(previous);
-      setAnnouncement("");
-      setVisibleError(
+      setAnnouncement(null);
+      setVisibleError({ key:
         queueActionErrorCode(error) === "queued_comment_revision_conflict"
-          ? t("localizationTaskRuntime.ui_The_queue_changed_in_another_session_Its_latest_order_has_been_re_14gdp20")
-          : t("localizationTaskRuntime.ui_Couldn_t_reorder_Previous_order_restored_1aifil5"),
-      );
+          ? "localizationTaskRuntime.ui_The_queue_changed_in_another_session_Its_latest_order_has_been_re_14gdp20"
+          : "localizationTaskRuntime.ui_Couldn_t_reorder_Previous_order_restored_1aifil5",
+      });
     } finally {
       setReordering(false);
     }
@@ -312,13 +312,13 @@ export function TaskChatQueuedMessages({
     const previous = entries;
     setPending({ commentId, action });
     setVisibleError(null);
-    setAnnouncement(
+    setAnnouncement({ key:
       action === "steer"
-        ? t("localizationTaskRuntime.ui_Steering_queued_message_14queke")
+        ? "localizationTaskRuntime.ui_Steering_queued_message_14queke"
         : action === "interrupt"
-          ? t("localizationTaskRuntime.ui_Interrupting_the_active_turn_n0zo1s")
-          : t("localizationTaskRuntime.ui_Discarding_queued_message_wbq7ev"),
-    );
+          ? "localizationTaskRuntime.ui_Interrupting_the_active_turn_n0zo1s"
+          : "localizationTaskRuntime.ui_Discarding_queued_message_wbq7ev",
+    });
     if (action === "steer") {
       setEntries((current) =>
         current.filter((entry) => entry.comment.id !== commentId),
@@ -333,28 +333,28 @@ export function TaskChatQueuedMessages({
           current.filter((entry) => entry.comment.id !== commentId),
         );
       }
-      setAnnouncement(
+      setAnnouncement({ key:
         action === "steer"
-          ? t("localizationTaskRuntime.ui_Message_steered_into_the_active_turn_1a5u1dy")
+          ? "localizationTaskRuntime.ui_Message_steered_into_the_active_turn_1a5u1dy"
           : action === "interrupt"
-            ? t("localizationTaskRuntime.ui_Active_turn_interrupted_Message_remains_queued_vrk821")
-            : t("localizationTaskRuntime.ui_Queued_message_discarded_cx3l12"),
-      );
+            ? "sep12Chat.queue.interruptionRequested"
+            : "localizationTaskRuntime.ui_Queued_message_discarded_cx3l12",
+      });
     } catch (error) {
       if (action === "steer") setEntries(previous);
-      setAnnouncement("");
+      setAnnouncement(null);
       const code = queueActionErrorCode(error);
-      setVisibleError(
+      setVisibleError({ key:
         code === "queued_comment_already_dispatching"
-          ? t("localizationTaskRuntime.ui_Too_late_to_discard_this_message_is_already_being_sent_ji0xc2")
+          ? "localizationTaskRuntime.ui_Too_late_to_discard_this_message_is_already_being_sent_ji0xc2"
           : action === "steer"
-            ? t("localizationTaskRuntime.ui_Couldn_t_steer_Message_is_still_queued_kglcgc")
+            ? "localizationTaskRuntime.ui_Couldn_t_steer_Message_is_still_queued_kglcgc"
             : action === "interrupt"
-              ? t("localizationTaskRuntime.ui_Couldn_t_interrupt_Message_is_still_queued_ttxid2")
+              ? "localizationTaskRuntime.ui_Couldn_t_interrupt_Message_is_still_queued_ttxid2"
               : code === "queued_comment_revision_conflict"
-                ? t("localizationTaskRuntime.ui_The_queue_changed_in_another_session_Review_it_and_try_again_1rm1y02")
-                : t("localizationTaskRuntime.ui_Couldn_t_discard_Message_is_still_queued_qbg3bz"),
-      );
+                ? "localizationTaskRuntime.ui_The_queue_changed_in_another_session_Review_it_and_try_again_1rm1y02"
+                : "localizationTaskRuntime.ui_Couldn_t_discard_Message_is_still_queued_qbg3bz",
+      });
     } finally {
       setPending(null);
     }
@@ -368,6 +368,11 @@ export function TaskChatQueuedMessages({
       data-testid="task-chat-queued-messages"
       aria-label={t("localizationTaskRuntime.ui_Queued_messages_3244mw")}
     >
+      {queue.executionWait && (
+        <div role="status" aria-live="polite" className="px-3 py-1.5 text-xs text-muted-foreground">
+          {queue.executionWait.message}
+        </div>
+      )}
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
@@ -408,11 +413,11 @@ export function TaskChatQueuedMessages({
           aria-live="polite"
           className="border-t border-destructive/20 bg-destructive/5 px-3 py-1.5 text-xs text-destructive"
         >
-          {visibleError}
+          {t(visibleError.key, visibleError.values)}
         </div>
       ) : null}
       <div className="sr-only" aria-live="polite" aria-atomic="true">
-        {announcement}
+        {announcement ? t(announcement.key, announcement.values) : null}
       </div>
     </div>
   );

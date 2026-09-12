@@ -15,8 +15,10 @@ import {
   isNotNull,
   isNull,
   lt,
+  lte,
   max,
   ne,
+  or,
   sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -203,6 +205,7 @@ import {
   splitRemoteUrlCredential,
 } from "./remote-url-credentials.js";
 import { secretService } from "./secrets.js";
+import { agentmailApi } from "./agentmail-api.js";
 import { toolAccessPolicyService } from "./tool-access-policy.js";
 import {
   readSignedToolArgumentsPayload,
@@ -232,6 +235,8 @@ import {
   createComposioSessionManager,
 } from "./composio-session-manager.js";
 import {
+  appWithPaperclipCloudConnectorAvailability,
+  paperclipCloudConnectorCapabilitiesFromEnv,
   createPaperclipCloudConnector,
   isPaperclipCloudConnectorStrategy,
   paperclipCloudConnectorConfigFromEnv,
@@ -996,9 +1001,15 @@ function connectionMethodFor(app: AppDefinition, methodKey?: string | null) {
     app.slug === "gmail" && methodKey === "paperclip-id-oauth"
       ? "paperclip-draft"
       : methodKey;
-  const toolMethods = getAvailableConnectionMethods(app).filter(
+  // Stored managed connections must remain recognizable for callback, refresh,
+  // and revoke even though static definitions omit instance availability. New
+  // setup passes a definition filtered by signed profiles before reaching here;
+  // the broker independently enforces availability on authorization and refresh.
+  const availableMethods = new Set(getAvailableConnectionMethods(app));
+  const toolMethods = app.methods.filter(
     (candidate) =>
-      candidate.purpose !== "channel" && candidate.transport !== "chat_sdk",
+      candidate.purpose !== "channel" && candidate.transport !== "chat_sdk"
+      && (availableMethods.has(candidate) || isPaperclipCloudConnectorStrategy(candidate.oauthStrategy)),
   );
   const method = normalizedMethodKey
     ? (toolMethods.find((candidate) => candidate.key === normalizedMethodKey) ??
@@ -2979,6 +2990,15 @@ export function toolAccessService(
       : null;
     return cachedCloudConnector;
   };
+  async function appForConnectionSetup(app: AppDefinition): Promise<AppDefinition> {
+    if (!app.methods.some((method) => isPaperclipCloudConnectorStrategy(method.oauthStrategy))) {
+      return app;
+    }
+    const profiles = connectorWasProvided
+      ? (await currentCloudConnector()?.getCapabilities() ?? [])
+      : await paperclipCloudConnectorCapabilitiesFromEnv();
+    return appWithPaperclipCloudConnectorAvailability(app, profiles);
+  }
   let nextGitHubContinuitySweepAt = 0;
   const vercelConnect =
     options.vercelConnectClient === undefined
@@ -7361,11 +7381,48 @@ export function toolAccessService(
     };
   }
 
+  function isAgentMailConnection(connection: typeof toolConnections.$inferSelect) {
+    return connection.transport === "rest_api" && connection.config.provider === "agentmail";
+  }
+
+  async function validateAgentMailConnection(
+    connection: typeof toolConnections.$inferSelect,
+  ) {
+    const configPath = connection.config.emailCredential
+      ? "credentials.controlKey"
+      : "credentials.apiKey";
+    const ref = connection.credentialSecretRefs.find(
+      (candidate) => candidate.configPath === configPath,
+    );
+    if (!ref) {
+      throw unprocessable("Reconnect AgentMail to restore its API key", {
+        code: "missing_secret",
+      });
+    }
+    const key = await secrets.resolveSecretValue(
+      connection.companyId,
+      ref.secretId,
+      ref.versionSelector ?? "latest",
+      {
+        consumerType: "tool_connection",
+        consumerId: connection.id,
+        configPath,
+        actorType: "system",
+        actorId: null,
+      },
+    );
+    await agentmailApi(key).whoami();
+  }
+
   async function discoverTools(
     connection: typeof toolConnections.$inferSelect,
     credentialHeaders?: Record<string, string>,
     actor?: ActorInfo,
   ): Promise<McpToolDescriptor[]> {
+    if (isAgentMailConnection(connection)) {
+      await validateAgentMailConnection(connection);
+      return [];
+    }
     if (connection.transport === "mcp_remote")
       return remoteTools(connection, credentialHeaders, actor);
     if (isComposioConnection(connection)) {
@@ -7493,6 +7550,8 @@ export function toolAccessService(
           });
         for (const grant of grantsToCheck)
           await refreshManagedGitHubGrantAccess(connection, grant, actor);
+      } else if (isAgentMailConnection(connection)) {
+        await validateAgentMailConnection(connection);
       } else if (connection.transport === "mcp_remote") {
         await assertComposioConnectedAccountActive(connection);
         const credentialHeaders =
@@ -7514,11 +7573,13 @@ export function toolAccessService(
         config.sourceTemplateKey === "github" &&
           oauth.connectorProfile === "github.code"
           ? "GitHub account, installation, and repository access are available."
-          : isComposioConnection(connection)
-            ? "Composio accepted the API key and returned its toolkits."
-            : connection.transport === "local_stdio"
-              ? "Approved stdio template is ready."
-              : "Remote MCP server responded to tools/list.",
+          : isAgentMailConnection(connection)
+            ? "AgentMail API key is connected."
+            : isComposioConnection(connection)
+              ? "Composio accepted the API key and returned its toolkits."
+              : connection.transport === "local_stdio"
+                ? "Approved stdio template is ready."
+                : "Remote MCP server responded to tools/list.",
       );
       const runtimeSlot = await ensureRuntimeSlot(updated);
       await audit({
@@ -7757,7 +7818,9 @@ export function toolAccessService(
         config: normalizedConfig,
         transportConfig: normalizedTransportConfig,
         healthStatus: "ok",
-        healthMessage: "Tool catalog refreshed.",
+        healthMessage: isAgentMailConnection(connection)
+          ? "AgentMail API key is connected."
+          : "Tool catalog refreshed.",
         healthCheckedAt: refreshedAt,
         lastHealthAt: refreshedAt,
         lastCatalogRefreshAt: refreshedAt,
@@ -8015,26 +8078,32 @@ export function toolAccessService(
     const staleAfterMs = input.staleAfterMs ?? 15 * 60 * 1000;
     const limit = input.limit ?? 25;
     const cutoff = new Date(generatedAt.getTime() - staleAfterMs);
-    const connections = await db
-      .select()
+    // Legacy plugin backfills use a remote transport as a placeholder, but
+    // their tools run in the plugin worker and have no remote MCP endpoint.
+    // Select only due IDs in SQL so each scheduler tick does not decode every
+    // active connection's config and credential metadata.
+    const due = await db
+      .select({ id: toolConnections.id })
       .from(toolConnections)
+      .innerJoin(toolApplications, and(
+        eq(toolApplications.id, toolConnections.applicationId),
+        eq(toolApplications.companyId, toolConnections.companyId),
+      ))
       .where(
         and(
           eq(toolConnections.enabled, true),
           eq(toolConnections.status, "active"),
           ne(toolConnections.transport, "chat_sdk"),
+          ne(toolApplications.type, "paperclip_plugin"),
+          or(isNull(toolConnections.healthCheckedAt), lte(toolConnections.healthCheckedAt, cutoff)),
         ),
       )
       .orderBy(
-        asc(toolConnections.healthCheckedAt),
+        sql`${toolConnections.healthCheckedAt} asc nulls first`,
         asc(toolConnections.createdAt),
-      );
-    const due = connections
-      .filter(
-        (connection) =>
-          !connection.healthCheckedAt || connection.healthCheckedAt <= cutoff,
+        asc(toolConnections.id),
       )
-      .slice(0, limit);
+      .limit(limit);
     let healthy = 0;
     let failed = 0;
     const failedConnectionIds: string[] = [];
@@ -12062,11 +12131,13 @@ export function toolAccessService(
     input: ConnectToolApp,
     actor?: ActorInfo,
   ): Promise<ConnectToolAppResult> {
-    const galleryEntry = input.galleryKey
+    const definition = input.galleryKey
       ? getConnectableAppDefinition(input.galleryKey)
       : null;
-    if (input.galleryKey && !galleryEntry)
+    if (input.galleryKey && !definition)
       throw notFound("Tool app gallery entry not found");
+
+    const galleryEntry = definition ? await appForConnectionSetup(definition) : null;
 
     let existingApplication: typeof toolApplications.$inferSelect | null = null;
     let requestedResumeConnection: typeof toolConnections.$inferSelect | null =

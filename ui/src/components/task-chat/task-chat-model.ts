@@ -146,14 +146,16 @@ export interface TaskChatMessageItem {
   attachedTurn?: TaskChatTurnItem;
   /**
    * Structured system-notice fields (PAP-443), carried only for
-   * author === "system": the comment's server-authored presentation hints and
-   * metadata sections drive the collapsed one-line row + expandable detail.
+   * author === "system": either system attribution or an explicit
+   * system_notice presentation routes the comment here. The comment's
+   * server-authored presentation hints and metadata sections drive the
+   * collapsed one-line row + expandable detail.
    */
   presentation?: IssueCommentPresentation | null;
   metadata?: IssueCommentMetadata | null;
   /** Agent that owns the source run, used to build run-detail links in metadata rows. */
   runAgentId?: string | null;
-  /** Raw comment timestamp (ISO) — the collapsed system row shows relative time. */
+  /** Raw comment timestamp (ISO) for locale-aware display; never a chronology override. */
   createdAtIso?: string;
 }
 
@@ -528,7 +530,18 @@ export interface TaskChatTurnItem {
   };
 }
 
+export interface TaskChatProjectCreatedItem {
+  id: string;
+  kind: "project_created";
+  projectId: string;
+  name: string;
+  description?: string | null;
+  repositories: { id: string; name: string; url: string }[];
+  timestamp: string;
+}
+
 export type TaskChatItem =
+  | TaskChatProjectCreatedItem
   | TaskChatMessageItem
   | TaskChatThinkingItem
   | TaskChatToolItem

@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import {
+  agentWakeupRequests,
   heartbeatRuns,
   issueComments,
   issueRecoveryActions,
@@ -9,6 +10,7 @@ import {
 } from "@paperclipai/db";
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
+import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === "object" && !Array.isArray(v)
@@ -72,6 +74,8 @@ export async function buildExecutionContinuation(input: {
   agentId: string;
   context: Record<string, unknown>;
   previousContextRunId?: string | null;
+  /** Server-owned current run identity when validating dispatch authority. */
+  runId?: string;
   summary: string | null;
   exposeLowTrustRaw: boolean;
 }): Promise<ExecutionContinuationEnvelope> {
@@ -208,7 +212,7 @@ export async function buildExecutionContinuation(input: {
       row.authorType === "user" && !row.createdByRunId && !row.deleted && row.body.trim().length > 0,
   );
   const priorRuns = await db
-    .select({ id: heartbeatRuns.id, result: heartbeatRuns.resultJson })
+    .select({ id: heartbeatRuns.id, result: heartbeatRuns.resultJson, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, runtimeMode: heartbeatRuns.runtimeMode, retryOfRunId: heartbeatRuns.retryOfRunId })
     .from(heartbeatRuns)
     .where(
       and(
@@ -249,7 +253,42 @@ export async function buildExecutionContinuation(input: {
         eq(issueRecoveryActions.status, "resolved"),
       ),
     );
+  const lastTerminal = priorRuns.findLast((run) =>
+    ["succeeded", "failed", "timed_out", "interrupted", "cancelled"].includes(run.status) &&
+    !(run.status === "cancelled" && run.errorCode === "execution_reconciliation_required"),
+  );
+  const explicitContinuation = object(input.context.explicitUserContinuation);
+  const explicitUserSource = string(explicitContinuation.previousRunId);
+  if (explicitUserSource) {
+    const predecessor = priorRuns.find(run => run.id === explicitUserSource &&
+      ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status));
+    const failedRunId = string(explicitContinuation.failedRunId);
+    const retryWakes = failedRunId ? await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, input.agentId),
+      eq(agentWakeupRequests.reason, "retry_failed_run"), eq(agentWakeupRequests.requestedByActorType, "user"),
+      sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
+    )) : [];
+    const authorization = reconciliations.map(row => object(row.evidence.explicitUserContinuation))
+      .find(value => value.previousRunId === explicitUserSource &&
+        (!input.runId || value.runId === input.runId) &&
+        value.commentId === explicitContinuation.commentId &&
+        priorRuns.some(run => run.id === value.runId) &&
+        (failedRunId
+          ? value.failedRunId === failedRunId && retryWakes.some(wake =>
+              wake.runId === value.runId && wake.requestedByActorId === value.actorId &&
+              priorRuns.some(run => run.id === wake.runId && run.retryOfRunId === failedRunId))
+          : rows.some(comment => comment.id === value.commentId &&
+              comment.authorType === "user" && comment.authorUserId === value.actorId &&
+              !comment.createdByRunId && !comment.deletedAt)));
+    if (!predecessor || !authorization || explicitUserSource !== sourceRunId)
+      throw new Error("continuation_user_authorization_missing");
+  }
+  const interruptedRunId = explicitUserSource ?? (lastTerminal && lastTerminal.status !== "succeeded" &&
+    (hasConversationContinuationPolicy(lastTerminal.result) ||
+      lastTerminal.status === "interrupted" || lastTerminal.errorCode === "process_lost")
+    ? lastTerminal.id : undefined);
   return {
+    ...(interruptedRunId ? { interruptedRunId } : {}),
     ...(resumeDelta ? { resumeDelta } : {}),
     recoveryOutcomes: reconciliations
       .filter((row) => row.evidence.executionReconciliation)

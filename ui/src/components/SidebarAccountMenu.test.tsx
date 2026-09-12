@@ -227,6 +227,7 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
     await flushReact();
 
+    expect(container.querySelector('a[aria-label="Share feedback"]')).not.toBeNull();
     expect(container.textContent).toContain("Jane Example");
     expect(container.textContent).not.toContain("jane@example.com");
 
@@ -288,7 +289,7 @@ describe("SidebarAccountMenu", () => {
     });
   });
 
-  it("navigates cloud-managed sign-out through the harness without calling local auth", async () => {
+  it.each([SidebarAccountMenu, ProductionSidebarAccountMenu])("hides cloud feedback and signs out through the harness (%#)", async (AccountMenu) => {
     const root = createRoot(container);
     const onOpenChange = vi.fn();
     const queryClient = new QueryClient({
@@ -309,7 +310,7 @@ describe("SidebarAccountMenu", () => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
-            <SidebarAccountMenu
+            <AccountMenu
               deploymentMode="authenticated"
               open
               onOpenChange={onOpenChange}
@@ -319,6 +320,8 @@ describe("SidebarAccountMenu", () => {
       );
     });
     await flushReact();
+
+    expect(container.querySelector('a[aria-label="Share feedback"]')).toBeNull();
 
     const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("Sign out"),

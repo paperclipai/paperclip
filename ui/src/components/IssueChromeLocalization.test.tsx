@@ -3,11 +3,10 @@ import { act, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ISSUE_WRITE_DENIAL_CODES, describeIssueWriteDenial, type HeartbeatRun, type Issue, type IssueDocument, type IssueProductivityReview } from "@paperclipai/shared";
+import { ISSUE_WRITE_DENIAL_CODES, describeIssueWriteDenial, type HeartbeatRun, type Issue, type IssueDocument } from "@paperclipai/shared";
 import { i18n } from "@/i18n";
 import { ToastProvider } from "@/context/ToastContext";
 import { IssueContinuationHandoff } from "./IssueContinuationHandoff";
-import { ProductivityReviewBadge } from "./ProductivityReviewBadge";
 import { StalledReviewActions } from "./StalledReviewActions";
 import { IssueMonitorBanner, IssueMonitorComposerStrip, buildMonitorSurfaceCopy, buildMonitorSurfaceCopyDisplay } from "./IssueMonitorBanner";
 import { deriveMonitorState } from "@/lib/issue-monitor";
@@ -86,23 +85,6 @@ describe("issue chrome runtime localization", () => {
     expect(host.contains(body)).toBe(true);
     expect(body.textContent).toBe(document.body);
     expect(host.textContent).toContain("Скопировано");
-  });
-
-  it("translates productivity triggers and counts without changing review links or unknown statuses", async () => {
-    const review = { trigger: "no_comment_streak", reviewIssueId: "issue-raw", reviewIdentifier: "RAW-21", status: "custom_status", noCommentStreak: 21 } as unknown as IssueProductivityReview;
-    await render(<ProductivityReviewBadge review={review} />);
-    const link = host.querySelector("a")!;
-    expect(link.getAttribute("aria-label")).toContain("Серия запусков без комментариев");
-    expect(host.textContent).toContain("21 запуск");
-    expect(host.textContent).toContain("custom status");
-    await locale("en");
-    expect(link.getAttribute("aria-label")).toContain("No-comment streak");
-    await locale("ru");
-    expect(host.querySelector("a")).toBe(link);
-    expect(link.getAttribute("href")).toBe("/issues/RAW-21");
-    for (const [count, label] of [[1, "1 запуск"], [2, "2 запуска"], [5, "5 запусков"], [21, "21 запуск"]] as const) {
-      expect(i18n.t("localizationIssueChrome.runs", { count })).toBe(label);
-    }
   });
 
   it("retains review note, required-note constraint and raw decision payload during pending work", async () => {

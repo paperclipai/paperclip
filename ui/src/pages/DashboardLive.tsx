@@ -55,8 +55,6 @@ export function DashboardLive() {
         minRunCount={DASHBOARD_LIVE_RUN_LIMIT}
         fetchLimit={DASHBOARD_LIVE_RUN_LIMIT}
         cardLimit={DASHBOARD_LIVE_RUN_LIMIT}
-        gridClassName="gap-3 md:grid-cols-2 2xl:grid-cols-3"
-        cardClassName="h-(--sz-420px)"
         emptyMessage={t("localizationActivityChrome.noLiveRuns")}
         queryScope="dashboard-live"
         showMoreLink={false}

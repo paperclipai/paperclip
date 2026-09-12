@@ -604,14 +604,13 @@ describe("TaskChatProtocolCard", () => {
       (button) => button.textContent?.includes("Production"),
     );
     await act(async () => production?.click());
-    // Picking only selects; the primary button reads Next until the last
-    // question, where it takes the set's submit label.
+    // Single selection advances; multi-selection waits for Next.
     const nextButton = () =>
       Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
         (button) => button.textContent?.trim() === "Next",
       );
-    expect(container.textContent).toContain("Where should we deploy?");
-    await act(async () => nextButton()?.click());
+    expect(container.textContent).toContain("2 of 3");
+    expect(onDecision).not.toHaveBeenCalled();
     expect(container.textContent).toContain(
       "Which regions should receive the release?",
     );

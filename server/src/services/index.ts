@@ -114,10 +114,6 @@ export {
   RunnerGoalActionError,
   RunnerGoalConflictError,
 } from "./runner-goals.js";
-export {
-  productivityReviewService,
-  PRODUCTIVITY_REVIEW_ORIGIN_KIND,
-} from "./productivity-review.js";
 export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/index.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";

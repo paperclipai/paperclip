@@ -6,6 +6,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
 import {
+  readPaperclipRuntimeSkillEntries,
   applyPaperclipWorkspaceEnv,
   appendWithByteCap,
   buildPersistentSkillSnapshot,
@@ -14,6 +15,7 @@ import {
   buildPaperclipEnv,
   buildRuntimeToolsEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   isPaperclipExternalChatContractTurn,
   isPaperclipExternalChatQuestionResponseTurn,
   isPaperclipExternalChatTurn,
@@ -85,6 +87,9 @@ describe("runtime connection tool delivery", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
       CONNECTION_INTENT_AGENT_GUIDANCE,
     );
+    expect(DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE).toContain(CONNECTION_INTENT_AGENT_GUIDANCE);
+    expect(DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE).not.toContain("Execution contract:");
+    expect(DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE).not.toContain("child issues");
   });
 });
 
@@ -907,6 +912,30 @@ describe("runChildProcess", () => {
 });
 
 describe("renderPaperclipWakePrompt", () => {
+  it("leaves conversation disposition and accepted-plan handoff to the injected chat policy", () => {
+    const payload = {
+      reason: "issue_commented",
+      issue: { id: "chat", workMode: "planning", status: "in_progress" },
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      comments: [],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      fallbackFetchNeeded: false,
+    };
+    const ordinary = renderPaperclipWakePrompt(payload, { resumedSession: true });
+    expect(ordinary).toContain("Execution contract:");
+    expect(ordinary).toContain("Create child issues from the approved plan");
+    for (const resumedSession of [false, true]) {
+      const chat = renderPaperclipWakePrompt(payload, {
+        resumedSession, conversationMode: true, includeExecutionContract: true,
+      });
+      expect(chat).not.toContain("Execution contract:");
+      expect(chat).not.toContain("clear final disposition");
+      expect(chat).not.toContain("Create child issues");
+      expect(chat).not.toContain("you may create child implementation issues");
+    }
+  });
+
   const ordinaryExternalChatWake = {
     reason: "External chat message received",
     externalChatProvider: " GitHub ",
@@ -3751,5 +3780,21 @@ describe("buildPaperclipEnv", () => {
         expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3200");
       },
     );
+  });
+});
+
+
+describe("runtime skill assignment boundaries", () => {
+  it("preserves an explicitly empty assignment instead of discovering bundled connector skills", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-skills-empty-"));
+    try {
+      await fs.mkdir(path.join(root, "agentmail"));
+      await fs.writeFile(path.join(root, "agentmail", "SKILL.md"), "---\nname: agentmail\ndescription: Email connector\n---\n");
+      const discovered = await readPaperclipRuntimeSkillEntries({}, root, [root]);
+      expect(discovered.some((entry) => entry.runtimeName === "agentmail")).toBe(true);
+      expect(await readPaperclipRuntimeSkillEntries({ paperclipRuntimeSkills: [] }, root, [root])).toEqual([]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

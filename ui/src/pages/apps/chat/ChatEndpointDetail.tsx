@@ -1,5 +1,6 @@
 import { Trans } from "react-i18next";
 import { t, useTranslation } from "@/i18n";
+import { EmailEndpointSettings } from "./EmailEndpointSetup";
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -48,6 +49,7 @@ import { chatActivityDetail } from "./chat-activity-guidance";
 const tabs = ["settings", "access", "conversations", "activity"] as const;
 type ChatTab = (typeof tabs)[number];
 const providerNames: Record<ChatProvider, string> = {
+  agentmail: "AgentMail",
   slack: "Slack",
   github: "GitHub",
   discord: "Discord",
@@ -59,6 +61,10 @@ const providerLifecycleGuidance: Record<
   ChatProvider,
   { reconnect: string; remove: string }
 > = {
+  agentmail: {
+    get reconnect() { return t("sep12Connections.reconnectSameInbox"); },
+    get remove() { return t("sep12Connections.disconnectKeepHistory"); },
+  },
   slack: {
     get reconnect() { return t("chatUi.chatEndpointDetail.reconnectVerifiesOrReplacesCredentialsForThisSameSlackApp"); },
     get remove() { return t("chatUi.chatEndpointDetail.paperclipArchivesTheEndpointStopsNewIngressAndRetiresIts"); },
@@ -245,6 +251,7 @@ export function ChatEndpointDetail() {
         <Button variant="outline" onClick={() => endpointQuery.refetch()}>{t("localizationIssuePanels.ui_Try_again_982hh6")}</Button>
       </div>
     );
+  if (endpoint.provider === "agentmail") return <EmailEndpointSettings endpointId={endpoint.id} companyId={endpoint.companyId} />;
   const setupIncomplete =
     endpoint.setup?.step !== "complete" &&
     ["draft", "verifying", "attention", "revoked"].includes(endpoint.status);

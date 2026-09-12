@@ -27,6 +27,21 @@ interface ActivityFormatOptions {
 // collide with a built-in code (for example issue.read_marked / issue_read.marked).
 // These labels supplement the existing detail-aware formatters below.
 const LOCALIZED_FALLBACK_ACTIVITY_ACTIONS = new Set<string>([
+  "issue.queued_comments_interrupted",
+  "issue.conversation_opened",
+  "issue.conversation_session_started",
+  "email_endpoint.connected",
+  "email_endpoint.pause",
+  "email_endpoint.resume",
+  "email_endpoint.remove",
+  "email.received",
+  "email.queued",
+  "email.sent",
+  "email.resolved",
+  "email.connection.created",
+  "email.connection.agent_added",
+  "environment_lease.cleanup_retried",
+  "issue.interaction_cancelled",
   "issue.tree_resume_wake_failed",
   "project.repositories_updated",
   "chat.discord_command_recorded",
@@ -541,6 +556,8 @@ function formatFallbackActivityAction(action: string): string {
 const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "issue.created": "localizationActivity.activity_row_verbs_issue_created",
   "issue.updated": "localizationActivity.activity_row_verbs_issue_updated",
+  "issue.read_marked": "sep12Shell.activityRead",
+  "issue.read_unmarked": "sep12Shell.activityMarkedUnread",
   "issue.checked_out": "localizationActivity.activity_row_verbs_issue_checked_out",
   "issue.released": "localizationActivity.activity_row_verbs_issue_released",
   "issue.comment_added": "localizationActivity.activity_row_verbs_issue_comment_added",

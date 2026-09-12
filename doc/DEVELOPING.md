@@ -82,6 +82,12 @@ pnpm build-storybook
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
 
+Use **Chat & Comments → Issue Thread Interactions → Composer Questions Auto Advance**
+to try the paged composer form. A single selection shows a brief checked-state animation before advancing to the
+next question. Reduced-motion mode advances without animation.
+Multi-select and custom answers wait for Next, and the final page waits for
+Submit answers. The adjacent **Verified** story exercises the full flow.
+
 The Storybook visual regression suite uses external PNG baselines instead of
 committed screenshots:
 
@@ -109,6 +115,70 @@ PR visual checks are opt-in while the suite stabilizes. Add the
 workflow manually, to produce downloadable Playwright report/test-result
 artifacts. Normal PR visual runs use read-only repository permissions and do not
 upload or mutate baseline objects.
+
+### Publish a branch Storybook
+
+CODEOWNERS can publish a repository branch through **Actions → Storybook Deploy →
+Run workflow**. Keep the workflow branch on `master` and enter the source branch
+in `branch`. The source branch does not need to contain the workflow. Leaving
+`branch` empty publishes the selected workflow branch's dispatched commit.
+
+```sh
+gh workflow run storybook-deploy.yml --ref master -f branch=your-branch
+```
+
+The existing **Storybook Visual** workflow also offers a `deploy_preview` checkbox,
+which publishes through the same workflow instead of running visual tests:
+
+```sh
+gh workflow run storybook-visual.yml --ref master -f deploy_preview=true -f branch=your-branch
+```
+
+Approve the `storybook-deploy` environment as a CODEOWNER. The workflow summary
+links the **stable branch URL** and **this build**. The run also uploads a
+`storybook-deployment-<run-id>-<attempt>` artifact containing
+`storybook-deployment.md` with both links and the source commit. Different branches have
+different URLs; publishing one never replaces another. Redeploying the same
+branch updates its stable URL only after all files for the new build are uploaded.
+Previous build links keep working. The branch entry preserves Storybook query
+parameters and fragments when redirecting to the completed build.
+
+Bookmark URLs use `storybook/branches/<branch>/`, for example
+`https://d1p6rlowie26tp.cloudfront.net/storybook/branches/master/`.
+Copy the **stable branch URL** from the run summary when saving a bookmark;
+opening it redirects to the latest published build. Branch names preserve case.
+Characters other than letters, digits, `_`, and `-` use `~HH` UTF-8 escapes, so
+`feature/foo` becomes `feature~2Ffoo` and stays distinct from `feature-foo`.
+Names ending in a hyphen and 16 lowercase hex digits escape that hyphen to
+reserve the existing build directories. Very long names use a hash suffix.
+Existing hashed branch URLs keep updating and remain valid. Build files remain
+under `storybook/branches/<readable-branch>-<hash>/builds/<run-id>-<attempt>/`.
+`deployment.json` in each build records its branch, source commit and URLs.
+Builds run independently; publication is serialized per branch. Retained builds
+are not automatically deleted and will accumulate until an operator prunes them.
+
+Publishing requires both the original actor and the current rerunner to be
+individual GitHub accounts named in `.github/CODEOWNERS` on the current default
+branch. Comments, teams and email entries do not grant access. Authorization runs
+before the build and again before deployment, including deployment-only reruns.
+GitHub also requires a CODEOWNER environment approval, so editing authorization
+code on a branch cannot grant AWS access without an authorized reviewer.
+
+The build downloads the public source archive with no GitHub token permissions,
+AWS credentials or repository secrets. Dependency caching and install lifecycle
+scripts are disabled. The separate publisher uses GitHub OIDC to assume a role limited to
+`storybook/branches/*`. It treats the build artifact as static files and runs only
+the publisher from the workflow checkout. It cannot delete objects, change AWS
+settings, or overwrite the runner dashboard. The Storybook site itself is public.
+Pushes and PR events never publish it.
+
+The existing S3 bucket and CloudFront distribution also serve runner reports in
+separate prefixes. GitHub Pages and its dashboard workflow are independent.
+See [Storybook deployment setup](STORYBOOK-DEPLOYMENT.md) for the environment,
+repository variables, AWS policies and one-time operator setup.
+
+GitHub requires a new dispatch workflow to exist on the default branch before
+it becomes a manual entry point.
 
 ## UI Fonts And Screenshots
 
@@ -160,7 +230,7 @@ at least one identity source. Supported-platform process probes fail explicitly
 instead of silently treating a live PID as either the original owner or a
 recycled process when identity cannot be established.
 
-Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, stops new scheduler work, waits for any queue-claim callback already in flight, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. ACP-backed local runs use server-owned stdio and cannot survive their parent server, so the old server instead persists their complete snapshot, changes the marker to `drainRequired` with `drainReason: "active_acp_run"`, and drains only those runs to queued retries. Detached CLI runs remain eligible for adoption during the same mixed restart. If an ACP process terminates but its terminal run update does not persist, startup classifies it as lost with reason `selective_drain_not_finalized` rather than treating the drain as successful. On startup the new server writes `$PAPERCLIP_HOME/instances/${PAPERCLIP_INSTANCE_ID:-default}/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `drainReason`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
+Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, stops new scheduler work, waits for any queue-claim callback already in flight, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. ACP-backed local runs use server-owned stdio and cannot survive their parent server, so the old server instead persists their complete snapshot, changes the marker to `drainRequired` with `drainReason: "active_acp_run"`, and drains only those runs to bounded conversation retries. These retries resume the prior session when compatible, otherwise carry the full task conversation into a fresh session. They do not automatically replay tool calls or require receipts for every prior action. Detached CLI runs remain eligible for adoption during the same mixed restart. If an ACP process terminates but its terminal run update does not persist, startup classifies it as lost with reason `selective_drain_not_finalized` rather than treating the drain as successful. On startup the new server writes `$PAPERCLIP_HOME/instances/${PAPERCLIP_INSTANCE_ID:-default}/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `drainReason`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
 
 When Paperclip manages embedded PostgreSQL, it suppresses that dependency's eager
 `SIGINT`/`SIGTERM` cleanup hooks. Paperclip owns signal ordering so the heartbeat
@@ -346,6 +416,19 @@ configs with `database.mode: postgres`, suppresses the invocation directory's
 `.env` when the server starts, and keeps the normal managed-service collision
 guard. The selected instance's own environment file still loads. The command
 selects the first available loopback port at or above `3100`.
+
+Source-checkout startup builds the shared and plugin SDK packages when needed.
+It prints build progress and any wait for another build. Interrupted builds
+release their lock after the compiler stops; later startups recover locks whose
+owner and compiler have exited. Empty locks from older versions are recovered
+once they are at least two minutes old. The command remains in the foreground
+after printing its ready URL to serve the instance; use Ctrl-C to stop it.
+Each package gets a completion marker only after a successful build. A hard
+kill leaves that marker absent, so the next startup rebuilds partial output.
+The marker records source and output content fingerprints, so recovery does
+not depend on filesystem timestamp precision. Direct `tsc` builds that produce
+identical output reuse the marker. Changed or partial output is rebuilt once
+before later startups reuse the completed build.
 
 Claude uses `ANTHROPIC_API_KEY`; Codex uses `OPENAI_API_KEY`; OpenCode uses
 `OPENROUTER_API_KEY` and requires an `openrouter/...` model. `--api-key-env`
@@ -1308,3 +1391,35 @@ Networking behavior for this smoke script:
 ### GitHub identity for shared agents
 
 See [execution GitHub identity](execution-github-identity.md) for the operation-time credential contract, continuation rules, runtime rollout, and acceptance-test requirements.
+
+
+### Investigating polling load
+
+The company heartbeat-run and live-run lists load secret registries in one
+company-scoped query per response. Registry reads project only
+`paperclipSecretRedactions` from the run context. They do not load the full
+prompt/context JSON. Decrypted values live only for that request and each run
+uses its own registry.
+
+Hidden browser tabs suspend the company live-events connection and transcript
+log reads. Returning to a visible tab refreshes active queries once and resumes
+transcript reads from their retained offsets. A queued live-event invalidation
+that flushes after the tab hides marks data stale without starting a refetch.
+The developer-server health poll also stops in hidden tabs.
+
+Workspace detail responses share concurrent Git inspections and reuse their
+results for up to five seconds after completion. The cache holds at most 256
+entries. Close-readiness checks, the terminal-workspace reaper, and the final
+cleanup validation still inspect Git afresh. A display result never authorizes
+worktree removal.
+
+The connection-health sweep selects only due IDs in SQL before applying its
+limit. Legacy `paperclip_plugin` placeholder connections are excluded: their
+tools run in plugin workers and do not have remote MCP endpoints. These rows
+remain available; the sweep does not disable or delete plugin connections.
+
+When investigating an overloaded instance, distinguish request amplification
+from stored configuration problems. Verify connection transport and endpoint
+fields before disabling a connection. Verify workspace ownership, active runs,
+Git state, and runtime-service readiness before closing a workspace. A missing
+URL or old workspace timestamp alone does not prove that a row is disposable.

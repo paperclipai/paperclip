@@ -70,8 +70,14 @@ describe("activity event fallback localization", () => {
 
   it("renders the dashboard read receipt naturally in Russian", async () => {
     await i18n.changeLanguage("ru");
-    expect(formatActivityVerb("issue.read_marked")).toBe("задача отмечена как прочитанная");
+    expect(formatActivityVerb("issue.read_marked")).toBe("отметка «Прочитано»");
     expect(formatIssueActivityAction("issue.read_unmarked")).toBe("задача отмечена как непрочитанная");
+  });
+
+  it("describes interruption of the current run to send queued comments, not interruption of the queue", async () => {
+    await i18n.changeLanguage("ru");
+    expect(formatActivityVerb("issue.queued_comments_interrupted"))
+      .toBe("текущий запуск прерван для отправки комментариев из очереди");
   });
 
   it.each(["future_plugin.custom_event", "issue_read.marked", "issue.read.marked", "Custom user event", "OpenAI.custom_event", "issue.monitor_future_event"])(
@@ -91,7 +97,7 @@ describe("activity event fallback localization", () => {
   });
 
   it("uses the original readable fallback when both catalogs lack a known event", async () => {
-    const key = "issue_read_marked";
+    const key = "email_received";
     const bundles = ["en", "ru"].map((locale) => ({
       locale,
       events: i18n.getResource(locale, "translation", "localizationActivityEvents") as Record<string, string>,
@@ -101,8 +107,8 @@ describe("activity event fallback localization", () => {
       for (const { events } of bundles) delete events[key];
       for (const locale of ["en", "ru"]) {
         await i18n.changeLanguage(locale);
-        expect(formatActivityVerb("issue.read_marked")).toBe("issue read marked");
-        expect(formatIssueActivityAction("issue.read_marked")).toBe("issue read marked");
+        expect(formatActivityVerb("email.received")).toBe("email received");
+        expect(formatIssueActivityAction("email.received")).toBe("email received");
       }
     } finally {
       bundles.forEach(({ events }, index) => { events[key] = saved[index]; });
@@ -170,6 +176,8 @@ describe("activity event coverage", () => {
       ...["approved", "rejected", "withdrawn", "expired"].map((type) => `secret.proposal.${type}`),
       ...["start", "stop", "restart", "run"].map((type) => `project.workspace_runtime_${type}`),
       ...["start", "stop", "restart", "run", "repair"].map((type) => `execution_workspace.runtime_${type}`),
+      ...["connected", "pause", "resume", "remove"].map((type) => `email_endpoint.${type}`),
+      ...["received", "queued", "sent", "resolved"].map((type) => `email.${type}`),
       "workspace_login_handoff_issued",
     ];
     expect(generated.filter((action) => !known.has(action))).toEqual([]);

@@ -35,6 +35,8 @@ export interface ExecutionContinuationEnvelope {
   };
   recoveryOutcomes?: Array<{ recoveryActionId: string; decision: unknown }>;
   completedWork: string | null;
+  /** Start a new turn from history; never replay prior tool calls automatically. */
+  interruptedRunId?: string;
   /** Completed mutations are context, never instructions to replay them. */
   completedActions?: Array<{
     runId: string;

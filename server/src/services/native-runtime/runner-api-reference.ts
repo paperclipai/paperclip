@@ -125,6 +125,24 @@ export const runnerApiReference: Record<string, { section: string; description?:
             ]
           }
         }
+      },
+      {
+        "body": {
+          "status": "in_review",
+          "comment": "Waiting for your answer in the saved responsibility question card."
+        }
+      },
+      {
+        "body": {
+          "status": "blocked",
+          "unblockDescriptor": {
+            "owner": {
+              "agentId": "{your-agent-id}"
+            },
+            "action": "Restore the failed workspace service, verify health, then resume."
+          },
+          "comment": "The workspace service is unavailable; I own restoring it."
+        }
       }
     ]
   },
@@ -146,7 +164,14 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/issues/{}/comments": {
     "section": "Issues (Tasks)",
-    "description": "Add comment (@-mentions trigger wakeups)"
+    "description": "Add comment (@-mentions trigger wakeups)",
+    "examples": [
+      {
+        "body": {
+          "body": "[@QA Reviewer](agent://qa-agent-id) please review this implementation."
+        }
+      }
+    ]
   },
   "POST /api/issues/{}/inbox-archive": {
     "section": "Issues (Tasks)",
@@ -164,6 +189,92 @@ export const runnerApiReference: Record<string, { section: string; description?:
     "section": "Issues (Tasks)",
     "description": "Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`)",
     "examples": [
+      {
+        "body": {
+          "kind": "ask_user_questions",
+          "idempotencyKey": "questions:{issueId}:responsibility:v1",
+          "title": "Hire responsibility",
+          "resolverPolicy": "human_only",
+          "continuationPolicy": "wake_assignee",
+          "payload": {
+            "version": 1,
+            "questions": [
+              {
+                "id": "responsibility",
+                "prompt": "What should the new agent be responsible for?",
+                "selectionMode": "single",
+                "required": true,
+                "allowOther": true,
+                "options": [
+                  {
+                    "id": "research",
+                    "label": "Research",
+                    "description": "Find and summarize information."
+                  },
+                  {
+                    "id": "writing",
+                    "label": "Writing",
+                    "description": "Draft and edit content."
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      {
+        "body": {
+          "kind": "ask_user_questions",
+          "idempotencyKey": "questions:{issueId}:responsibility-text:v1",
+          "title": "Hire responsibility",
+          "resolverPolicy": "human_only",
+          "continuationPolicy": "wake_assignee",
+          "payload": {
+            "version": 1,
+            "questions": [
+              {
+                "id": "responsibility",
+                "prompt": "What should the new agent be responsible for?",
+                "selectionMode": "single",
+                "required": true,
+                "options": [
+                  {
+                    "id": "describe",
+                    "label": "I'll describe it",
+                    "freeText": true
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      {
+        "body": {
+          "kind": "request_confirmation",
+          "idempotencyKey": "confirmation:{issueId}:{targetKey}:{targetVersion}",
+          "title": "Plan approval",
+          "continuationPolicy": "wake_assignee",
+          "payload": {
+            "version": 1,
+            "prompt": "Accept this plan?",
+            "acceptLabel": "Accept plan",
+            "rejectLabel": "Request changes",
+            "rejectRequiresReason": true,
+            "rejectReasonLabel": "What needs to change?",
+            "detailsMarkdown": "Review the latest plan document before accepting.",
+            "supersedeOnUserComment": true,
+            "target": {
+              "type": "issue_document",
+              "issueId": "{issueId}",
+              "documentId": "{documentId}",
+              "key": "plan",
+              "revisionId": "{latestRevisionId}",
+              "revisionNumber": 3
+            }
+          }
+        }
+      },
       {
         "body": {
           "kind": "request_checkbox_confirmation",
@@ -253,11 +364,28 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/issues/{}/interactions/{}/accept": {
     "section": "Issues (Tasks)",
-    "description": "Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`)"
+    "description": "Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`)",
+    "examples": [
+      {
+        "body": {
+          "selectedOptionIds": [
+            "draft-report-march",
+            "tmp-export-2025"
+          ]
+        }
+      }
+    ]
   },
   "POST /api/issues/{}/interactions/{}/reject": {
     "section": "Issues (Tasks)",
-    "description": "Reject suggested tasks or confirmation"
+    "description": "Reject suggested tasks or confirmation",
+    "examples": [
+      {
+        "body": {
+          "reason": "Keep the March draft; only delete tmp/export-2025.csv."
+        }
+      }
+    ]
   },
   "POST /api/issues/{}/interactions/{}/respond": {
     "section": "Issues (Tasks)",
@@ -370,8 +498,18 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/companies/{}/projects": {
     "section": "Companies, Projects, Goals",
-    "description": "Create project (optional inline `workspace`)",
+    "description": "Create project (`repositoryIds`/`repositoryUrls` arrays or inline `workspace`; optional `idempotencyKey`)",
     "examples": [
+      {
+        "body": {
+          "name": "Web and API",
+          "repositoryUrls": [
+            "https://github.com/acme/web",
+            "https://github.com/acme/api"
+          ],
+          "idempotencyKey": "web-api-project"
+        }
+      },
       {
         "body": {
           "name": "Paperclip Mobile App",
@@ -446,7 +584,14 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/companies/{}/openclaw/invite-prompt": {
     "section": "Companies, Projects, Goals",
-    "description": "Generate OpenClaw invite prompt (CEO/board only)"
+    "description": "Generate OpenClaw invite prompt (CEO/board only)",
+    "examples": [
+      {
+        "body": {
+          "agentMessage": "optional note for the joining OpenClaw agent"
+        }
+      }
+    ]
   },
   "GET /api/companies/{}/routines": {
     "section": "Routines",
@@ -498,7 +643,18 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/companies/{}/approvals": {
     "section": "Approvals, Costs, Activity, Dashboard",
-    "description": "Create approval request"
+    "description": "Create approval request",
+    "examples": [
+      {
+        "body": {
+          "type": "approve_ceo_strategy",
+          "requestedByAgentId": "{your-agent-id}",
+          "payload": {
+            "plan": "..."
+          }
+        }
+      }
+    ]
   },
   "POST /api/companies/{}/agent-hires": {
     "section": "Approvals, Costs, Activity, Dashboard",
@@ -510,7 +666,20 @@ export const runnerApiReference: Record<string, { section: string; description?:
           "role": "researcher",
           "reportsTo": "{manager-agent-id}",
           "capabilities": "Market research, competitor analysis",
-          "budgetMonthlyCents": 5000
+          "budgetMonthlyCents": 5000,
+          "adapterType": "codex_local",
+          "instructionsBundle": {
+            "entryFile": "AGENTS.md",
+            "files": {
+              "AGENTS.md": "# Marketing Analyst\nResearch markets and competitors. Report findings with sources to your manager. Follow the Paperclip operational skill.\n"
+            }
+          },
+          "runtimeConfig": {
+            "heartbeat": {
+              "enabled": false,
+              "wakeOnDemand": true
+            }
+          }
         }
       }
     ]
@@ -602,88 +771,5 @@ export const runnerApiReference: Record<string, { section: string; description?:
   "POST /api/agents/me/secrets/{}/value": {
     "section": "Secrets",
     "description": "Fetch one granted secret value; request body is empty"
-  },
-  "POST /api/companies/company-1/imports/preview": {
-    "section": "Worked example",
-    "examples": [
-      {
-        "body": {
-          "source": {
-            "type": "github",
-            "url": "https://github.com/acme/agent-company"
-          },
-          "include": {
-            "company": true,
-            "agents": true,
-            "projects": true,
-            "issues": true
-          },
-          "target": {
-            "mode": "existing_company",
-            "companyId": "company-1"
-          },
-          "collisionStrategy": "rename"
-        }
-      }
-    ]
-  },
-  "POST /api/companies/company-1/imports/apply": {
-    "section": "Worked example",
-    "examples": [
-      {
-        "body": {
-          "source": {
-            "type": "github",
-            "url": "https://github.com/acme/agent-company"
-          },
-          "include": {
-            "company": true,
-            "agents": true,
-            "projects": true,
-            "issues": false
-          },
-          "target": {
-            "mode": "new_company",
-            "newCompanyName": "Imported Acme"
-          },
-          "collisionStrategy": "rename"
-        }
-      }
-    ]
-  },
-  "POST /api/companies/company-1/exports/preview": {
-    "section": "Worked example",
-    "examples": [
-      {
-        "body": {
-          "include": {
-            "company": true,
-            "agents": true,
-            "projects": true
-          }
-        }
-      }
-    ]
-  },
-  "POST /api/companies/company-1/exports": {
-    "section": "Worked example",
-    "examples": [
-      {
-        "body": {
-          "include": {
-            "company": true,
-            "agents": true,
-            "projects": true,
-            "issues": true
-          },
-          "selectedFiles": [
-            "COMPANY.md",
-            "agents/ceo/AGENTS.md",
-            "skills/paperclip/SKILL.md",
-            "tasks/pap-42/TASK.md"
-          ]
-        }
-      }
-    ]
   }
 };

@@ -1636,10 +1636,13 @@ describe("plugin worker manager login pseudo-terminal missing hostRouteId diagno
       const route = await handle.openLoginPtySession(
         ptyOpenInput({
           workerSessionId: "ws-A",
+          emitOnInput: true,
           outputs: [{ chunk: "legacy-output", omitHostRouteId: true }],
         }),
       );
       route.onData((chunk) => chunks.push(chunk));
+      // Legacy notifications require the open reply to bind the worker ID.
+      route.write("emit-scripted-output");
       await vi.waitFor(() => expect(chunks).toContain("legacy-output"));
 
       const warnCalls = vi.mocked(logger.warn).mock.calls.flat().map((arg) => JSON.stringify(arg));
@@ -1661,8 +1664,9 @@ describe("plugin worker manager login pseudo-terminal missing hostRouteId diagno
     try {
       await handle.start();
       const route = await handle.openLoginPtySession(
-        ptyOpenInput({ workerSessionId: "ws-A", exitCode: 0, omitHostRouteIdOnExit: true }),
+        ptyOpenInput({ workerSessionId: "ws-A", exitCode: 0, omitHostRouteIdOnExit: true, emitOnInput: true }),
       );
+      route.write("emit-scripted-exit");
       await expect(route.wait()).resolves.toEqual({ exitCode: 0 });
     } finally {
       await handle.stop().catch(() => undefined);

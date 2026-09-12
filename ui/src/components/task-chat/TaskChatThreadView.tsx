@@ -1,5 +1,6 @@
 import { useTranslation } from "@/i18n";
-import type { ReactNode } from "react";
+import { TaskChatProjectCreatedCard } from "./TaskChatProjectCreatedCard";
+import { useMemo, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
@@ -16,12 +17,15 @@ import { TaskChatMarker } from "./TaskChatMarker";
 import { TaskChatStatusPill } from "./TaskChatStatusPill";
 import { TaskChatToolCard } from "./TaskChatToolCard";
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
+import { TaskChatRunnerActivityGroup } from "./TaskChatRunnerActivityGroup";
 import { TaskChatActivityPhase } from "./TaskChatActivityPhase";
 import { TaskChatThinking } from "./TaskChatThinking";
 import { TaskMessageScroller } from "./TaskMessageScroller";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
+
+const EMPTY_ATTACHMENTS: IssueAttachment[] = [];
 
 interface TaskChatThreadViewProps {
   items: TaskChatItem[];
@@ -91,6 +95,7 @@ function renderItem(
   attachments: IssueAttachment[] = [],
 ) {
   switch (item.kind) {
+    case "project_created": return <TaskChatProjectCreatedCard item={item} />;
     case "message": {
       // Compute the actions once: the bubble renders them for a runless reply
       // (footer = actions + timestamp), while an attached turn hands them to
@@ -110,6 +115,9 @@ function renderItem(
           item={attachedTurnItem}
           timestampPrefix={
             attachedTurnItem.standaloneHeader ? undefined : item.timestamp
+          }
+          timestampValue={
+            attachedTurnItem.standaloneHeader ? undefined : item.createdAtIso ?? item.atMs
           }
           leading={attachedTurnItem.standaloneHeader ? undefined : actions}
           renderChild={(child) =>
@@ -191,6 +199,7 @@ function renderItem(
     case "usage":
       return <TaskChatUsageReadout item={item} />;
     case "activity_phase":
+      if (activityAppearance === "runner") return <TaskChatRunnerActivityGroup item={item} />;
       return (
         <TaskChatActivityPhase
           item={item}
@@ -318,7 +327,7 @@ export function TaskChatThreadView({
   contentKey,
   className,
   scroll = true,
-  attachments = [],
+  attachments = EMPTY_ATTACHMENTS,
 }: TaskChatThreadViewProps) {
   useTranslation();
   const streamlined = useStreamlinedTaskChatPresentation();
@@ -334,33 +343,100 @@ export function TaskChatThreadView({
                 item.label === "Usage limit reached"),
           )?.id
       : undefined;
-  const renderedItems = streamlined
-    ? items
-        .map((item) => ({
-          item,
-          content: renderItem(
+  // Streaming tail and header updates must not rebuild settled markdown/tool trees.
+  const history = useMemo(() => {
+    const renderedItems = streamlined
+      ? items
+          .map((item) => ({
             item,
-            onApprovalDecision,
-            renderInteraction,
-            renderBrief,
-            renderMessageActions,
-            renderQueuedAction,
-            onRuntimeRequestDecision,
-            "classic",
-            onTryAgainNoLiveExecutionPath,
-            tryAgainNoLiveExecutionPathPending,
-            retryableMarkerId,
-            onRetryFailedRun,
-            retryFailedRunId,
-            attachments,
-          ),
-        }))
-        .filter((entry) => entry.content !== null)
-    : [];
+            content: renderItem(
+              item,
+              onApprovalDecision,
+              renderInteraction,
+              renderBrief,
+              renderMessageActions,
+              renderQueuedAction,
+              onRuntimeRequestDecision,
+              "classic",
+              onTryAgainNoLiveExecutionPath,
+              tryAgainNoLiveExecutionPathPending,
+              retryableMarkerId,
+              onRetryFailedRun,
+              retryFailedRunId,
+              attachments,
+            ),
+          }))
+          .filter((entry) => entry.content !== null)
+      : [];
+    return (
+      <>
+        {streamlined
+          ? renderedItems.map(({ item, content }, index) => (
+              <div
+                key={
+                  item.kind === "message" ? (item.renderKey ?? item.id) : item.id
+                }
+                data-thread-anchor={
+                  item.kind === "message" ? (item.renderKey ?? item.id) : item.id
+                }
+                id={item.kind === "message" ? `comment-${item.id}` : undefined}
+                className={taskChatItemSpacingClass(
+                  item,
+                  renderedItems[index - 1]?.item ?? null,
+                )}
+                data-thread-item-kind={
+                  item.kind === "message" ? item.author : item.kind
+                }
+              >
+                {content}
+              </div>
+            ))
+          : items.map((item, index) => (
+              <div
+                key={
+                  item.kind === "message" ? (item.renderKey ?? item.id) : item.id
+                }
+                data-thread-anchor={
+                  item.kind === "message" ? (item.renderKey ?? item.id) : item.id
+                }
+                id={item.kind === "message" ? `comment-${item.id}` : undefined}
+                className={cn(
+                  index > 0 &&
+                    item.kind === "interaction" &&
+                    item.interaction.status !== "pending" &&
+                    "-mt-3",
+                )}
+              >
+                {renderItem(
+                  item,
+                  onApprovalDecision,
+                  renderInteraction,
+                  renderBrief,
+                  renderMessageActions,
+                  renderQueuedAction,
+                  onRuntimeRequestDecision,
+                  "classic",
+                  onTryAgainNoLiveExecutionPath,
+                  tryAgainNoLiveExecutionPathPending,
+                  retryableMarkerId,
+                  onRetryFailedRun,
+                  retryFailedRunId,
+                  attachments,
+                )}
+              </div>
+            ))}
+      </>
+    );
+  }, [
+    items, streamlined, onApprovalDecision, onRuntimeRequestDecision,
+    renderInteraction, renderBrief, renderMessageActions, renderQueuedAction,
+    onTryAgainNoLiveExecutionPath, tryAgainNoLiveExecutionPathPending,
+    retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments,
+  ]);
   const body = (
     <div
       className={cn(
-        "paperclip-mobile-thread mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col px-2 py-4 md:px-4",
+        "paperclip-mobile-thread mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col px-1 py-3 md:px-4 md:py-4",
         streamlined ? "md:px-0" : "gap-5",
         className,
       )}
@@ -373,61 +449,7 @@ export function TaskChatThreadView({
           {header}
         </div>
       ) : null}
-      {streamlined
-        ? renderedItems.map(({ item, content }, index) => (
-            <div
-              key={
-                item.kind === "message" ? (item.renderKey ?? item.id) : item.id
-              }
-              data-thread-anchor={
-                item.kind === "message" ? (item.renderKey ?? item.id) : item.id
-              }
-              id={item.kind === "message" ? `comment-${item.id}` : undefined}
-              className={taskChatItemSpacingClass(
-                item,
-                renderedItems[index - 1]?.item ?? null,
-              )}
-              data-thread-item-kind={
-                item.kind === "message" ? item.author : item.kind
-              }
-            >
-              {content}
-            </div>
-          ))
-        : items.map((item, index) => (
-            <div
-              key={
-                item.kind === "message" ? (item.renderKey ?? item.id) : item.id
-              }
-              data-thread-anchor={
-                item.kind === "message" ? (item.renderKey ?? item.id) : item.id
-              }
-              id={item.kind === "message" ? `comment-${item.id}` : undefined}
-              className={cn(
-                index > 0 &&
-                  item.kind === "interaction" &&
-                  item.interaction.status !== "pending" &&
-                  "-mt-3",
-              )}
-            >
-              {renderItem(
-                item,
-                onApprovalDecision,
-                renderInteraction,
-                renderBrief,
-                renderMessageActions,
-                renderQueuedAction,
-                onRuntimeRequestDecision,
-                "classic",
-                onTryAgainNoLiveExecutionPath,
-                tryAgainNoLiveExecutionPathPending,
-                retryableMarkerId,
-                onRetryFailedRun,
-                retryFailedRunId,
-                attachments,
-              )}
-            </div>
-          ))}
+      {history}
       {tail ? streamlined ? <div className="mt-4">{tail}</div> : tail : null}
     </div>
   );

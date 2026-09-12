@@ -1,12 +1,11 @@
 import { Router } from "express";
 import type { Request } from "express";
 import {
-  issueRecoveryActions,
   issues as issueRows,
   type Db,
 } from "@paperclipai/db";
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
-import { executionBlockerPredicate } from "../services/execution-blocker.js";
+import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { conflict } from "../errors.js";
 import {
   createIssueTreeHoldSchema,
@@ -387,30 +386,15 @@ export function issueTreeControlRoutes(db: Db) {
                 .map((member) => member.issueId)
             : [];
         if (issueIds.length > 0) {
-          const [blocked] = await db
-            .select({ identifier: issueRows.identifier })
-            .from(issueRecoveryActions)
-            .innerJoin(
-              issueRows,
-              and(
-                eq(issueRows.id, issueRecoveryActions.sourceIssueId),
-                eq(issueRows.companyId, root.companyId),
-              ),
-            )
-            .where(
-              and(
-                eq(issueRecoveryActions.companyId, root.companyId),
-                inArray(issueRecoveryActions.sourceIssueId, issueIds),
-                inArray(issueRows.status, RESUME_EXECUTABLE_STATUSES),
-                isNotNull(issueRows.assigneeAgentId),
-                executionBlockerPredicate(),
-              ),
-            )
-            .limit(1);
-          if (blocked)
-            throw conflict(
-              `Cannot wake ${blocked.identifier ?? "this task"} until its stopped execution is reconciled. Resume without waking agents, or review the stopped run first.`,
-            );
+          const candidates = await db.select({ id: issueRows.id, identifier: issueRows.identifier })
+            .from(issueRows).where(and(
+              eq(issueRows.companyId, root.companyId), inArray(issueRows.id, issueIds),
+              inArray(issueRows.status, RESUME_EXECUTABLE_STATUSES), isNotNull(issueRows.assigneeAgentId),
+            ));
+          for (const task of candidates) {
+            const blocked = await getExecutionBlocker(db, root.companyId, task.id);
+            if (blocked) throw conflict(`Cannot wake ${task.identifier ?? "this task"}: ${blocked.nextAction}`);
+          }
         }
       }
       const actor = getActorInfo(req);

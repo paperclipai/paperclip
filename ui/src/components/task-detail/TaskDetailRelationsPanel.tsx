@@ -87,7 +87,7 @@ export function resolveTaskDetailSubtaskState(items: Issue[]) {
   };
 }
 
-function SharedSubtaskList({
+export function TaskDetailTaskList({
   items,
   ariaLabel,
   issueLinkState,
@@ -168,7 +168,7 @@ export function TaskDetailSubtasksPanel({
           <h3 id="task-next-action-heading" className="text-xs font-medium text-muted-foreground">
             {nextAction.status === "blocked" ? t("localizationIssueAux.ui_Blocked_subtask_1pbj4mw") : t("localizationIssueAux.ui_Next_action_107tu5e")}
           </h3>
-          <SharedSubtaskList
+          <TaskDetailTaskList
             items={[nextAction]}
             ariaLabel={t("localizationIssueAux.ui_Next_subtask_action_6nq53z")}
             issueLinkState={issueLinkState}
@@ -187,7 +187,7 @@ export function TaskDetailSubtasksPanel({
           <h3 id="task-other-subtasks-heading" className="text-xs font-medium text-muted-foreground">
             {nextAction ? t("localizationIssueAux.ui_Other_subtasks_ccoccj") : t("localizationIssueAux.ui_Subtasks_hx67r1")}
           </h3>
-          <SharedSubtaskList
+          <TaskDetailTaskList
             items={remainingItems}
             ariaLabel={nextAction ? t("localizationIssueAux.ui_Other_subtasks_ccoccj") : t("localizationIssueAux.ui_Subtasks_hx67r1")}
             issueLinkState={issueLinkState}

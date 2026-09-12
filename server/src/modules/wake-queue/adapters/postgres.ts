@@ -1,3 +1,6 @@
+import { instanceSettingsService } from "../../../services/instance-settings.js";
+import { currentConversationCommentCondition } from "../../../services/agent-conversations.js";
+import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { and, asc, eq, inArray, isNull, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -11,6 +14,7 @@ import {
   issues,
   nativeRunFinalizations,
 } from "@paperclipai/db";
+import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { legacyExecutionNeedsReconciliation } from "../../../services/legacy-execution-recovery.js";
 import {
   authorizeFailedChatRunRetryWake,
@@ -84,6 +88,7 @@ function toRunSnapshot(row: HeartbeatRunRow): RunSnapshot {
     agentId: row.agentId,
     status: row.status,
     runtimeMode: row.runtimeMode,
+    conversationContinuation: row.runtimeMode === "legacy" && hasConversationContinuationPolicy(row.resultJson),
     errorCode: row.errorCode,
     responsibleUserId: row.responsibleUserId,
     contextSnapshot: parseObject(row.contextSnapshot),
@@ -93,6 +98,9 @@ function toRunSnapshot(row: HeartbeatRunRow): RunSnapshot {
 
 function toIssueSnapshot(row: IssueRow): IssueSnapshot {
   return {
+    conversationAgentId: row.conversationAgentId,
+    conversationUserId: row.conversationUserId,
+    conversationState: row.conversationState,
     id: row.id,
     companyId: row.companyId,
     identifier: row.identifier ?? "",
@@ -173,6 +181,9 @@ function buildHost(_tx: Db, deps: WakeQueuePostgresAdapterDeps): WakeQueueHost {
 function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, run: HeartbeatRunRow): WakeQueueTransaction {
   const treeControlSvc = issueTreeControlService(tx);
   const issuesSvc = issueService(tx);
+  const interruptQueueId = run.runtimeMode !== "native" && run.status === "cancelled"
+    ? readNonEmptyString(run.resultJson?.queuedCommentInterruptQueueId)
+    : null;
 
   return {
     async findInvokableAgent({ companyId, agentId }): Promise<InvokableAgentSnapshot | null> {
@@ -196,6 +207,8 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
               eq(agentWakeupRequests.companyId, companyId),
               eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
               sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+              interruptQueueId ? eq(agentWakeupRequests.id, interruptQueueId) : undefined,
+              interruptQueueId ? eq(agentWakeupRequests.agentId, run.agentId) : undefined,
             ),
           )
           .orderBy(asc(agentWakeupRequests.requestedAt))
@@ -255,7 +268,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
       const rows = await tx
         .select({ id: issueComments.id, deletedAt: issueComments.deletedAt, createdByRunId: issueComments.createdByRunId })
         .from(issueComments)
-        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, queuedCommentIds)));
+        .where(and(eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId), inArray(issueComments.id, queuedCommentIds), currentConversationCommentCondition()));
       const targetsFinishingRunAgent = wakeAgentId === finishingRunAgentId;
       const liveNonSelfCommentIds = queuedCommentIds.filter((commentId) => {
         const row = rows.find((candidate) => candidate.id === commentId);
@@ -997,6 +1010,20 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
         const issueRow =
           (contextIssueId ? candidateIssues.find((candidate) => candidate.id === contextIssueId) : candidateIssues[0]) ?? null;
 
+        // A queue interrupt authorizes only its original pending queue. Replays
+        // after dispatch or deleting the final message cannot launch other work.
+        const interruptQueueId = run.runtimeMode !== "native"
+          ? readNonEmptyString(run.resultJson?.queuedCommentInterruptQueueId)
+          : null;
+        const [interruptedQueue] = interruptQueueId && issueRow
+          ? await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+              eq(agentWakeupRequests.id, interruptQueueId),
+              eq(agentWakeupRequests.companyId, run.companyId),
+              eq(agentWakeupRequests.agentId, run.agentId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`${agentWakeupRequests.payload}->>'issueId' = ${issueRow.id}`,
+            )).limit(1)
+          : [];
         const preDrainFacts: PreDrainFacts = {
           issueRowPresent: issueRow !== null,
           executionRunIdMatchesRun: !issueRow || !issueRow.executionRunId || issueRow.executionRunId === run.id,
@@ -1010,7 +1037,9 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           // next explicit wake adopts those messages atomically when it
           // queues a run.
           executionCancellationAcknowledged:
-            run.status === "cancelled" && parseObject(run.resultJson?.executionCancellation).state === "acknowledged",
+            run.status === "cancelled" &&
+            parseObject(run.resultJson?.executionCancellation).state === "acknowledged" &&
+            !interruptedQueue,
         };
         const preDrain = decidePreDrain(preDrainFacts);
 
@@ -1060,7 +1089,25 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
         }
 
-        const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot };
+        // A release must leave deferred messages intact while execution is held.
+        // The finishing conversation may still own its lease until finally cleanup.
+        // Allow only bounded retry planning in that case; admission stays gated.
+        const executionBlocker = await getExecutionBlocker(tx, issueRow.companyId, issueRow.id);
+        const recoveryOnly = Boolean(executionBlocker &&
+          executionBlocker.cause === "execution_owner_active" && executionBlocker.runId === run.id &&
+          runSnapshot.conversationContinuation && ["failed", "timed_out", "interrupted"].includes(run.status));
+        if (executionBlocker && !recoveryOnly) {
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
+
+        // Releases still settle while Agent Chat is disabled, but no deferred
+        // turn or recovery successor may be created. Check here in the shared
+        // transaction so cleanup retries and restart sweeps use the same gate.
+        if (issueRow.conversationAgentId && !(await instanceSettingsService(tx).getExperimental()).enableAgentChat) {
+          return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+        }
+
+        const locked: LockedIssueExecution = { primaryIssue: toIssueSnapshot(issueRow), run: runSnapshot, recoveryOnly };
         const result = await fn(locked, { host: buildHost(tx, deps), transaction: buildTransaction(tx, deps, db, run) });
         return { ...result, run: runSnapshot };
       });

@@ -139,6 +139,10 @@ async function runReleaseDrain(
   const issue = locked.primaryIssue;
   const postCommitEffects: PostCommitEffect[] = [];
 
+  if (locked.recoveryOnly) {
+    return runReleaseRecoveryTail(issue, run, ports.host, ports.transaction, input, postCommitEffects);
+  }
+
   // Each `continue` path below leaves the wake row off the
   // `deferred_issue_execution` status, so the next queue read cannot
   // return that same row again. That invariant is what ends this loop.
@@ -267,21 +271,8 @@ async function promoteDeferredWake(
   postCommitEffects: PostCommitEffect[],
   input: ReleaseIssueExecutionInput,
 ): Promise<ReleaseTransactionResult | null> {
-  // Claim the wake for promotion before any other write in this branch
-  // (design choice: claim first, then reopen). A reopen write, or its
-  // `issue_reopened` post-commit effect, must never survive a lost race on
-  // this compare-and-set. When the claim fails, a concurrent writer already
-  // changed the wake's status, so this candidate is gone; the caller moves
-  // on to the next one instead of ending the drain.
-  const claimedForPromotion = await ports.transaction.claimDeferredWakeForPromotion({
-    companyId: run.companyId,
-    wakeId: workingCandidate.id,
-    now: input.now,
-  });
-  if (!claimedForPromotion) return null;
-
   let currentIssue = issue;
-
+  let shouldReopen = false;
   if (
     !workingCandidate.authorizedFailedChatRetry &&
     workingCandidate.deferredCommentIds.length > 0 &&
@@ -293,28 +284,56 @@ async function promoteDeferredWake(
       finishingRunId: run.id,
       commentIds: workingCandidate.deferredCommentIds,
     });
-    const shouldReopen =
+    shouldReopen =
       !selfAuthorship.allSelfAuthored &&
       (workingCandidate.requestedByActorType === "user" ||
         workingCandidate.wakeReason === "issue_reopened_via_comment");
-    if (shouldReopen) {
-      const reopened = await ports.transaction.reopenIssue({
-        companyId: run.companyId,
-        issueId: currentIssue.id,
+  }
+
+  // Agent continuations can outlive the work they addressed. Only a human
+  // reopen can revive assignee execution; other agents may still receive
+  // notifications about the closed task. Cancel before claiming promotion so
+  // the compare-and-set still sees the deferred wake.
+  if (
+    !shouldReopen &&
+    (currentIssue.status === "done" || currentIssue.status === "cancelled") &&
+    workingCandidate.agentId === currentIssue.assigneeAgentId
+  ) {
+    await ports.transaction.cancelDeferredWake({
+      companyId: run.companyId,
+      wakeId: workingCandidate.id,
+      reason: "Deferred execution wake no longer applies to a terminal task",
+      now: input.now,
+    });
+    return null;
+  }
+
+  // Claim before reopening. A reopen write and its post-commit effect must
+  // never survive a lost race on this compare-and-set.
+  const claimedForPromotion = await ports.transaction.claimDeferredWakeForPromotion({
+    companyId: run.companyId,
+    wakeId: workingCandidate.id,
+    now: input.now,
+  });
+  if (!claimedForPromotion) return null;
+
+  if (shouldReopen) {
+    const reopened = await ports.transaction.reopenIssue({
+      companyId: run.companyId,
+      issueId: currentIssue.id,
+      runId: run.id,
+    });
+    if (reopened) {
+      postCommitEffects.push({
+        kind: "issue_reopened",
+        companyId: reopened.companyId,
+        agentId: invokableAgent.id,
         runId: run.id,
+        issueId: reopened.id,
+        identifier: reopened.identifier,
+        reopenedFrom: currentIssue.status,
       });
-      if (reopened) {
-        postCommitEffects.push({
-          kind: "issue_reopened",
-          companyId: reopened.companyId,
-          agentId: invokableAgent.id,
-          runId: run.id,
-          issueId: reopened.id,
-          identifier: reopened.identifier,
-          reopenedFrom: currentIssue.status,
-        });
-        currentIssue = reopened;
-      }
+      currentIssue = reopened;
     }
   }
 
@@ -406,7 +425,10 @@ async function runReleaseRecoveryTail(
   input: ReleaseIssueExecutionInput,
   postCommitEffects: PostCommitEffect[],
 ): Promise<ReleaseTransactionResult> {
-  const suppressImmediateRecovery = input.suppressImmediateRecovery ?? false;
+  const suppressImmediateRecovery = input.suppressImmediateRecovery === true || Boolean(
+    issue.conversationAgentId && issue.conversationUserId &&
+    issue.conversationState === "waiting" && issue.status === "in_review"
+  );
   const isStrandedRecoveryOrigin =
     issue.originKind === STRANDED_ISSUE_RECOVERY_ORIGIN_KIND;
   const recoveryAgent = await transaction.findInvokableAgent({
@@ -553,6 +575,19 @@ async function runReleaseRecoveryTail(
     throw new Error(
       "wake-queue: queued a recovery run with no invokable recovery agent",
     );
+
+  if (run.conversationContinuation && ["failed", "timed_out", "interrupted"].includes(run.status)) {
+    // Do not create an uncounted immediate successor inside the issue lock.
+    // The host's idempotent scheduler claims it after commit with the same
+    // retry counter used by restart and process-loss recovery.
+    postCommitEffects.push({
+      kind: "conversation_retry_requested",
+      companyId: run.companyId,
+      runId: run.id,
+      reviewParticipant: decision.kind === "queue_review_participant_recovery",
+    });
+    return { outcome: { kind: "released" }, postCommitEffects };
+  }
 
   const sessionBefore = await host.resolveSessionBeforeForWakeup({
     companyId: issue.companyId,

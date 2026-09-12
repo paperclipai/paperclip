@@ -50,7 +50,7 @@ describe("ActivityRow author-name provenance", () => {
       expect(link.getAttribute("href")).toBe("/issues/PAP-123");
       // Trans may rebuild its inline nodes when sentence punctuation changes;
       // the enclosing row/link must remain stable.
-      expect(link.querySelector("p > span")?.textContent, link.innerHTML).toBe(name ?? (locale === "ru" ? "Руководство" : "Board"));
+      expect(link.querySelector("p > span > span")?.textContent, link.innerHTML).toBe(name ?? (locale === "ru" ? "Руководство" : "Board"));
       expect(JSON.stringify({ event, profiles: [...profiles] })).toBe(original);
       expect(profiles.get("local-board")?.label).toBe(name ?? "Board");
     }
