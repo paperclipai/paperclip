@@ -137,7 +137,9 @@ export function createLocalAgentJwt(
     adapter_type: adapterType,
     run_id: runId,
     responsible_user_id: responsibleUserId?.trim() || null,
-    ...(keyScope.kind === "standard" ? {} : { key_scope: keyScope }),
+    ...(keyScope.kind === "standard" && !keyScope.capabilities?.length
+      ? {}
+      : { key_scope: keyScope }),
     iat: now,
     exp: now + config.ttlSeconds,
     iss: config.issuer,

@@ -9,9 +9,11 @@ import {
   createDb,
   documentRevisions,
   documents,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueRecoveryActions,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -97,6 +99,7 @@ async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createD
           "documents",
           "issue_relations",
           "issue_tree_holds",
+          "issue_recovery_actions",
           "issues",
           "heartbeat_run_events",
           "cost_events",
@@ -310,6 +313,78 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
     });
   }
+
+  it("cancels three heartbeat wakes against a root hold without opening new recovery or invoking the adapter", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ maxConcurrentRuns: 3 });
+    const issueId = randomUUID();
+    const rootRunId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Root execution hold",
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "active_run_watchdog",
+      ownerType: "board",
+      cause: "uncertain_external_action",
+      status: "resolved",
+      evidence: { runId: rootRunId, automaticRecovery: { replay: "blocked" } },
+      fingerprint: rootRunId,
+      nextAction: "Verify whether the action ran.",
+    });
+
+    const queued = [];
+    for (let i = 0; i < 3; i += 1) {
+      queued.push(await seedQueuedRun({
+        companyId,
+        agentId,
+        issueId,
+        wakeReason: "issue_commented",
+        invocationSource: "automation",
+      }));
+    }
+
+    await heartbeat.resumeQueuedRuns();
+    expect(await waitForCondition(async () => {
+      const runs = await db.select({
+        status: heartbeatRuns.status,
+        startedAt: heartbeatRuns.startedAt,
+        errorCode: heartbeatRuns.errorCode,
+      }).from(heartbeatRuns);
+      return runs.length === 3 && runs.every((run) =>
+        run.status === "cancelled" && run.startedAt == null && run.errorCode === "execution_reconciliation_required"
+      );
+    }, 10_000)).toBe(true);
+
+    const liveWakes = [];
+    for (let i = 0; i < 3; i += 1) {
+      liveWakes.push(await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId },
+        contextSnapshot: { issueId, wakeReason: "issue_commented" },
+      }));
+    }
+    expect(liveWakes.every((run) => run == null || run.status === "cancelled")).toBe(true);
+
+    const cancelled = await db.select().from(heartbeatRuns);
+    const queuedIds = new Set(queued.map((wake) => wake.runId));
+    const cancelledQueued = cancelled.filter((run) => queuedIds.has(run.id));
+    expect(cancelledQueued).toHaveLength(3);
+    expect(cancelledQueued.every((run) =>
+      run.status === "cancelled" && run.startedAt == null && run.errorCode === "execution_reconciliation_required",
+    )).toBe(true);
+    expect(cancelled.every((run) => run.status !== "running" && run.startedAt == null)).toBe(true);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.eventType, "adapter.invoke"))).toHaveLength(0);
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(1);
+  });
 
   it("skips generic timer wakes with no actionable assigned work before adapter execution", async () => {
     const { agentId } = await seedCompanyAndAgent({

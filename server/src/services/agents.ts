@@ -1174,7 +1174,8 @@ export function agentService(db: Db) {
           name,
           keyHash,
           responsibleUserId: options?.responsibleUserId?.trim() || null,
-          scopeConfig: scope.kind === "standard" ? null : scope,
+          scopeConfig:
+            scope.kind === "standard" && !scope.capabilities?.length ? null : scope,
         })
         .returning()
         .then((rows) => rows[0]);

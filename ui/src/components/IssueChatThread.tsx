@@ -557,6 +557,10 @@ interface IssueChatThreadProps {
   scheduledRetry?: IssueScheduledRetry | null;
   recoveryAction?: IssueRecoveryAction | null;
   onResolveRecoveryAction?: (outcome: RecoveryResolveOutcome) => void;
+  onReconcileExecutionRecoveryAction?: (
+    decision: import("@paperclipai/shared").ExecutionReconciliation,
+  ) => void;
+  reconcileExecutionRecoveryActionPending?: boolean;
   onReissueIsolatedRecoveryAction?: (request: RecoveryReissueRequest) => void;
   reissueIsolatedRecoveryActionPending?: boolean;
   onReconcileForwardRecoveryAction?: () => void;
@@ -5727,6 +5731,8 @@ export function IssueChatThread({
   scheduledRetry = null,
   recoveryAction = null,
   onResolveRecoveryAction,
+  onReconcileExecutionRecoveryAction,
+  reconcileExecutionRecoveryActionPending = false,
   onReissueIsolatedRecoveryAction,
   reissueIsolatedRecoveryActionPending = false,
   onReconcileForwardRecoveryAction,
@@ -6599,6 +6605,10 @@ export function IssueChatThread({
                         agentMap={agentMap}
                         scheduledRetry={scheduledRetry}
                         onResolve={onResolveRecoveryAction}
+                        onReconcileExecution={onReconcileExecutionRecoveryAction}
+                        reconcileExecutionPending={
+                          reconcileExecutionRecoveryActionPending
+                        }
                         onReissueIsolated={onReissueIsolatedRecoveryAction}
                         reissuePending={reissueIsolatedRecoveryActionPending}
                         onReconcileForward={onReconcileForwardRecoveryAction}

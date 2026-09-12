@@ -79,6 +79,19 @@ describe("agent local JWT", () => {
     expect(claims?.key_scope).toEqual({ kind: "skill_test", issueId });
   });
 
+  it("round-trips an execution recovery operator capability on a standard key", () => {
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1", "user-1", {
+      kind: "standard",
+      capabilities: ["execution_recovery_operator"],
+    });
+    const claims = verifyLocalAgentJwt(token!);
+    expect(claims?.key_scope).toEqual({
+      kind: "standard",
+      capabilities: ["execution_recovery_operator"],
+    });
+  });
+
   it("returns null when secret is missing", () => {
     process.env[secretEnv] = "";
     const token = createLocalAgentJwt("agent-1", "company-1", "claude_local", "run-1");

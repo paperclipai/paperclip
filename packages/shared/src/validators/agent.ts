@@ -16,6 +16,7 @@ export const agentPermissionsSchema = z.object({
   // permissions record marks the agent low-trust) when the field is omitted.
   canCreateAgents: z.boolean().optional(),
   canCreateSkills: z.boolean().optional().default(true),
+  execution_recovery_operator: z.boolean().optional(),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
 }).catchall(z.unknown());
@@ -174,6 +175,7 @@ export const taskBridgeAgentKeyScopeSchema = z.object({
 
 export const standardAgentKeyScopeSchema = z.object({
   kind: z.literal("standard"),
+  capabilities: z.array(z.literal("execution_recovery_operator")).max(8).optional(),
 }).strict();
 
 export const skillTestAgentKeyScopeSchema = z.object({

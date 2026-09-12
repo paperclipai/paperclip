@@ -36,12 +36,9 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
 
   const ownership = await getConversationOwnershipBlocker(db, companyId, issueId);
   if (ownership) return { ...ownership, recoveryActionId: null };
-  const [action] = await db.select().from(issueRecoveryActions).where(and(
-    eq(issueRecoveryActions.companyId, companyId),
-    eq(issueRecoveryActions.sourceIssueId, issueId),
-    executionBlockerPredicate(),
-    boundary ? gt(issueRecoveryActions.createdAt, boundary.createdAt) : undefined,
-  )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
+  const action = await findExecutionBlockerAction(db, companyId, issueId, {
+    createdAfter: boundary?.createdAt ?? null,
+  });
   if (!action) return null;
   const parsedRunId = z.string().guid().safeParse(action.evidence.runId ?? action.evidence.sourceRunId);
   const runId = parsedRunId.success ? parsedRunId.data : null;
@@ -57,4 +54,19 @@ export async function getExecutionBlocker(db: Db, companyId: string, issueId: st
     cause: action.cause,
     nextAction: action.nextAction,
   };
+}
+
+export async function findExecutionBlockerAction(
+  db: Db,
+  companyId: string,
+  issueId: string,
+  options?: { createdAfter?: Date | null },
+) {
+  const [action] = await db.select().from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, companyId),
+    eq(issueRecoveryActions.sourceIssueId, issueId),
+    executionBlockerPredicate(),
+    options?.createdAfter ? gt(issueRecoveryActions.createdAt, options.createdAfter) : undefined,
+  )).orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id)).limit(1);
+  return action ?? null;
 }

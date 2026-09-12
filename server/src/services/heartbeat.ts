@@ -251,6 +251,7 @@ import type {
   UsageSummary,
 } from "../adapters/index.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { localAgentJwtScopeForExecutionRecovery } from "./execution-recovery-operator.js";
 import { createRuntimeToolsToken } from "../runtime-tools-token.js";
 import {
   parseObject,
@@ -22838,10 +22839,11 @@ export function heartbeatService(
             })
             .where(eq(heartbeatRuns.id, run.id));
         }
-        const localAgentJwtScope =
-          issueRef?.workMode === "skill_test"
-            ? { kind: "skill_test" as const, issueId: issueRef.id }
-            : { kind: "standard" as const };
+        const localAgentJwtScope = localAgentJwtScopeForExecutionRecovery({
+          workMode: issueRef?.workMode,
+          issueId: issueRef?.id,
+          permissions: agent.permissions,
+        });
         const authToken =
           nativeRuntimeResolution.kind === "legacy" &&
           adapter.supportsLocalAgentJwt

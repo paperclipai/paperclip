@@ -168,12 +168,16 @@ describe("IssueRecoveryActionCard", () => {
     );
   });
 
-  it.each(["active", "escalated", "resolved"] as const)("keeps %s runner recovery in the run log without a card", status => {
+  it.each(["active", "escalated"] as const)("exposes %s execution-reconciliation holds on the operator card", status => {
     const node = render(<IssueRecoveryActionCard action={buildAction({
       kind: "active_run_watchdog", cause: "uncertain_external_action", status, ownerType: "board",
     })} />);
-    expect(node.textContent).toBe("");
-    expect(node.querySelector("section")).toBeNull();
+    expect(node.querySelector("section")?.getAttribute("data-recovery-state")).toBe(
+      status === "escalated" ? "escalated" : "needed",
+    );
+    expect(node.querySelector("[data-testid='recovery-action-id']")?.textContent).toBe(
+      "00000000-0000-0000-0000-0000000000aa",
+    );
   });
 
   it.each(["active", "escalated"] as const)(
@@ -311,6 +315,60 @@ describe("IssueRecoveryActionCard", () => {
     );
     expect(code).toBeTruthy();
     expect(code?.className).toContain("font-mono");
+  });
+
+  it("renders execution reconciliation form for a settled no-replay hold", () => {
+    const onReconcileExecution = vi.fn();
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({
+          kind: "active_run_watchdog",
+          status: "resolved",
+          outcome: "blocked",
+          cause: "uncertain_external_action",
+          evidence: {
+            runId: "7accd7a4-c9ca-4db2-9233-3228a037cc09",
+            automaticRecovery: { replay: "blocked" },
+          },
+        })}
+        onReconcileExecution={onReconcileExecution}
+      />,
+    );
+    expect(node.querySelector("[data-testid='execution-reconciliation-form']")).toBeTruthy();
+    expect(node.querySelector("[data-testid='execution-reconciliation-run-id']")?.textContent).toContain(
+      "7accd7a4-c9ca-4db2-9233-3228a037cc09",
+    );
+    expect(node.querySelector("[data-testid='recovery-action-id']")?.textContent).toBe(
+      "00000000-0000-0000-0000-0000000000aa",
+    );
+    expect(
+      (node.querySelector("[data-testid='execution-reconciliation-submit']") as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(onReconcileExecution).not.toHaveBeenCalled();
+
+    const evidence = node.querySelector("[data-testid='execution-reconciliation-evidence']") as HTMLTextAreaElement;
+    act(() => {
+      const assign = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      assign?.call(
+        evidence,
+        "The provider never started; queued successor runs were cancelled before start.",
+      );
+      evidence.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(
+      (node.querySelector("[data-testid='execution-reconciliation-submit']") as HTMLButtonElement).disabled,
+    ).toBe(false);
+    act(() => {
+      node.querySelector("[data-testid='execution-reconciliation-form']")!.dispatchEvent(
+        new Event("submit", { bubbles: true, cancelable: true }),
+      );
+    });
+    expect(onReconcileExecution).toHaveBeenCalledWith({
+      runId: "7accd7a4-c9ca-4db2-9233-3228a037cc09",
+      providerStopped: true,
+      actionOutcome: "not_performed",
+      outcomeEvidence: "The provider never started; queued successor runs were cancelled before start.",
+    });
   });
 
   it("renders the resolved state and outcome when resolved", () => {

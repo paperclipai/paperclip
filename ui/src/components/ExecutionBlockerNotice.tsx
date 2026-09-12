@@ -32,6 +32,16 @@ export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried 
   return (
     <div role="status" className="px-(--sz-execution-blocker-inline) py-(--sz-execution-blocker-block) text-sm text-muted-foreground">
       <span>Work cannot start. {blocker.nextAction}</span>{" "}
+      {blocker.recoveryActionId && (
+        <code data-testid="execution-blocker-action-id" className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-(length:--text-micro)">
+          action {blocker.recoveryActionId.slice(0, 8)}
+        </code>
+      )}{" "}
+      {blocker.runId && (
+        <code data-testid="execution-blocker-run-id" className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-(length:--text-micro)">
+          run {blocker.runId.slice(0, 8)}
+        </code>
+      )}{" "}
       {failedRun && (
         <Button variant="outline" size="sm" disabled={retry.isPending} onClick={() => retry.mutate()}>
           {retry.isPending ? "Retrying…" : "Retry"}

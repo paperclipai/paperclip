@@ -59,6 +59,11 @@ export function requiresExecutionReconciliation(
   return EXECUTION_RECONCILIATION_CAUSES.some((value) => value === cause);
 }
 
+/** Narrow agent-token capability that may reconcile an assigned execution hold. */
+export const EXECUTION_RECOVERY_OPERATOR_CAPABILITY = "execution_recovery_operator" as const;
+export type ExecutionRecoveryOperatorCapability =
+  typeof EXECUTION_RECOVERY_OPERATOR_CAPABILITY;
+
 export interface ExecutionReconciliation {
   runId: string;
   providerStopped: true;

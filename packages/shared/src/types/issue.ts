@@ -836,6 +836,8 @@ export interface Issue {
   blockedTransitionAt?: Date | null;
   blockedOwnerNotifiedAt?: Date | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
+  /** Settled no-replay hold that still blocks dispatch, when it is not `active`. */
+  effectiveRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
   executionBlocker?: ExecutionBlocker | null;
   watchdog?: IssueWatchdogSummary | null;

@@ -825,7 +825,17 @@ export function createPostgresRunDispatchAdapter(
             ...parseObject(run.resultJson),
             stopReason: decision.errorCode,
             ...(decision.errorCode === "execution_reconciliation_required"
-              ? { executionWait: decision.details }
+              ? {
+                  executionWait: decision.details,
+                  ...(!run.startedAt
+                    ? {
+                        executionRecovery: {
+                          kind: "bootstrap",
+                          providerWorkStarted: false,
+                        },
+                      }
+                    : {}),
+                }
               : {}),
             effectiveTimeoutSec: 0,
             timeoutConfigured: false,

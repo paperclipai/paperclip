@@ -62,6 +62,15 @@ describe("deriveRecoveryDisplayState", () => {
     outcome: null,
   };
 
+  it("keeps a settled no-replay hold visible as recovery needed", () => {
+    expect(deriveRecoveryDisplayState({
+      status: "resolved",
+      kind: "active_run_watchdog",
+      outcome: "blocked",
+      evidence: { automaticRecovery: { replay: "blocked" } },
+    })).toBe("needed");
+  });
+
   it("classifies workspace_validation active as needed", () => {
     expect(deriveRecoveryDisplayState({ ...base, kind: "workspace_validation" })).toBe(
       "needed",

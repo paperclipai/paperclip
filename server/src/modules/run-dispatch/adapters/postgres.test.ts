@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -24,6 +24,10 @@ import {
 import { createPostgresRunDispatchAdapter } from "./postgres.js";
 import { settleUnrecoverableExecutions } from "../../../services/execution-recovery-resolution.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
+import {
+  legacyExecutionNeedsReconciliation,
+  terminalizeLegacyExecution,
+} from "../../../services/legacy-execution-recovery.js";
 
 // Proves the DB-to-facts mapping this adapter owns for each state the two
 // run-dispatch gates decide on. `application/use-cases.test.ts` and
@@ -57,6 +61,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     await db.delete(documents);
     await db.delete(issueTreeHolds);
     await db.delete(issueRelations);
+    await db.delete(issueRecoveryActions);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
@@ -763,6 +768,46 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       15_000,
     );
   });
+  it("cancels three pre-start wakes against a root hold without opening new recovery", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    const rootRunId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Root hold", status: "blocked", assigneeAgentId: agentId,
+    });
+    await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board",
+      cause: "uncertain_external_action", status: "resolved",
+      evidence: { runId: rootRunId, automaticRecovery: { replay: "blocked" } },
+      fingerprint: rootRunId, nextAction: "Verify whether the action ran.",
+    });
+    const adapter = createPostgresRunDispatchAdapter(db);
+    const wakeIds = [randomUUID(), randomUUID(), randomUUID()];
+    for (const runId of wakeIds) {
+      await db.insert(heartbeatRuns).values({
+        id: runId, companyId, agentId, status: "queued",
+        contextSnapshot: { issueId, wakeReason: "issue_commented" },
+      });
+      await expect(adapter.cancelStaleQueuedRun({
+        companyId, runId, expectedStatus: "queued", now: new Date(),
+      })).resolves.toMatchObject({ outcome: "cancelled", errorCode: "execution_reconciliation_required" });
+    }
+    const cancelled = await db.select().from(heartbeatRuns).where(inArray(heartbeatRuns.id, wakeIds));
+    expect(cancelled).toHaveLength(3);
+    expect(cancelled.every((run) => run.status === "cancelled" && run.startedAt == null)).toBe(true);
+    expect(cancelled.every((run) =>
+      (run.resultJson as { executionRecovery?: { kind?: string; providerWorkStarted?: boolean } } | null)
+        ?.executionRecovery?.kind === "bootstrap" &&
+      (run.resultJson as { executionRecovery?: { providerWorkStarted?: boolean } }).executionRecovery?.providerWorkStarted === false,
+    )).toBe(true);
+    expect(cancelled.every((run) => !legacyExecutionNeedsReconciliation(run))).toBe(true);
+    for (const run of cancelled) {
+      await terminalizeLegacyExecution({ db, run, status: "cancelled" });
+    }
+    expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(1);
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.eventType, "adapter.invoke"))).toHaveLength(0);
+  });
+
   it.each(["active", "resolved"])("blocks a generic retry after %s no-replay disposition", async status => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID(), runId = randomUUID();

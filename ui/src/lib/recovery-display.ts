@@ -68,6 +68,13 @@ export function deriveRecoveryDisplayState(
   action: RecoveryDisplayInput,
   context?: RecoveryLivenessContext,
 ): RecoveryDisplayState {
+  const automaticReplay =
+    action.evidence &&
+    typeof action.evidence === "object" &&
+    !Array.isArray(action.evidence)
+      ? (action.evidence.automaticRecovery as { replay?: string } | undefined)?.replay
+      : undefined;
+  if (action.status === "resolved" && automaticReplay === "blocked") return "needed";
   if (action.status === "resolved") return "resolved";
   if (action.status === "escalated") return "escalated";
   if (action.status === "cancelled") return "resolved";

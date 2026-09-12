@@ -30,6 +30,16 @@ it("retains the hold until the provider actually acknowledges cancellation", () 
   } })).toBe(true);
 });
 
+it("does not open recovery for a pre-start cancel caused by an existing execution hold", () => {
+  expect(legacyExecutionNeedsReconciliation({
+    runtimeMode: "legacy",
+    status: "cancelled",
+    errorCode: "execution_reconciliation_required",
+    startedAt: null,
+    resultJson: { timeoutSource: "stale_queued_run_gate" },
+  })).toBe(false);
+});
+
  it("continues a conversation without requiring receipts, even after automatic attempts are exhausted", () => {
   for (const status of ["failed", "timed_out", "interrupted", "cancelled"]) {
     expect(legacyExecutionNeedsReconciliation({

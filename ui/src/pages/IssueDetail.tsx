@@ -1197,6 +1197,10 @@ type IssueDetailChatTabProps = {
   onResolveRecoveryAction?: (
     outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome,
   ) => void;
+  onReconcileExecutionRecoveryAction?: (
+    decision: import("@paperclipai/shared").ExecutionReconciliation,
+  ) => void;
+  reconcileExecutionRecoveryActionPending?: boolean;
   onReissueIsolatedRecoveryAction?: (
     request: import("../components/IssueRecoveryActionCard").RecoveryReissueRequest,
   ) => void;
@@ -1340,6 +1344,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   scheduledRetry,
   recoveryAction,
   onResolveRecoveryAction,
+  onReconcileExecutionRecoveryAction,
+  reconcileExecutionRecoveryActionPending = false,
   onReissueIsolatedRecoveryAction,
   reissueIsolatedRecoveryActionPending,
   onReconcileForwardRecoveryAction,
@@ -2368,6 +2374,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             scheduledRetry={scheduledRetry}
             recoveryAction={recoveryAction ?? null}
             onResolveRecoveryAction={onResolveRecoveryAction}
+            onReconcileExecutionRecoveryAction={onReconcileExecutionRecoveryAction}
+            reconcileExecutionRecoveryActionPending={
+              reconcileExecutionRecoveryActionPending
+            }
             onReissueIsolatedRecoveryAction={onReissueIsolatedRecoveryAction}
             reissueIsolatedRecoveryActionPending={
               reissueIsolatedRecoveryActionPending
@@ -4019,6 +4029,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       outcome: ResolveRecoveryActionOutcome;
       sourceIssueStatus: "todo" | "done" | "in_review" | "blocked";
       resolutionNote?: string | null;
+      executionReconciliation?: import("@paperclipai/shared").ExecutionReconciliation;
     }) => issuesApi.resolveRecoveryAction(issueId!, data),
     onSuccess: ({ issue: nextIssue }) => {
       const issueRefs = new Set<string>([issueId!, nextIssue.id]);
@@ -6312,7 +6323,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const handleResumeAssignee = useCallback(async () => {
     await resumeAssigneeAgent.mutateAsync();
   }, [resumeAssigneeAgent.mutateAsync]);
-  const activeRecoveryActionId = issue?.activeRecoveryAction?.id;
+  const activeRecoveryActionId =
+    issue?.activeRecoveryAction?.id ?? issue?.effectiveRecoveryAction?.id;
   const handleResolveRecoveryAction = useCallback(
     (
       outcome: import("../components/IssueRecoveryActionCard").RecoveryResolveOutcome,
@@ -6356,6 +6368,19 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           });
           return;
       }
+    },
+    [activeRecoveryActionId, resolveRecoveryAction.mutateAsync],
+  );
+  const handleReconcileExecutionRecoveryAction = useCallback(
+    (decision: import("@paperclipai/shared").ExecutionReconciliation) => {
+      const actionId = activeRecoveryActionId;
+      if (!actionId) return;
+      void resolveRecoveryAction.mutateAsync({
+        actionId,
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        executionReconciliation: decision,
+      });
     },
     [activeRecoveryActionId, resolveRecoveryAction.mutateAsync],
   );
@@ -7669,8 +7694,18 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   blockerAttention={issue.blockerAttention ?? null}
                   successfulRunHandoff={issue.successfulRunHandoff ?? null}
                   scheduledRetry={issue.scheduledRetry ?? null}
-                  recoveryAction={issue.activeRecoveryAction ?? null}
+                  recoveryAction={
+                    issue.activeRecoveryAction ??
+                    issue.effectiveRecoveryAction ??
+                    null
+                  }
                   onResolveRecoveryAction={handleResolveRecoveryAction}
+                  onReconcileExecutionRecoveryAction={
+                    handleReconcileExecutionRecoveryAction
+                  }
+                  reconcileExecutionRecoveryActionPending={
+                    resolveRecoveryAction.isPending
+                  }
                   onReissueIsolatedRecoveryAction={
                     handleReissueIsolatedRecoveryAction
                   }

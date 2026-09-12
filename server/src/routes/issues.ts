@@ -1,11 +1,16 @@
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
-import { getExecutionBlocker } from "../services/execution-blocker.js";
+import { findExecutionBlockerAction, getExecutionBlocker } from "../services/execution-blocker.js";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import {
   validateExecutionReconciliation,
   markExecutionReconciliation,
+  deliverReconciledExecutions,
 } from "../services/execution-recovery-resolution.js";
+import {
+  assertExecutionReconciliationAuthorized,
+  requireExecutionReconciliationProof,
+} from "../services/execution-recovery-operator.js";
 import {
   storedSteeringAcknowledgement,
   reconcileSteeredIdentity,
@@ -8765,6 +8770,13 @@ export function issueRoutes(
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
+    const executionBlocker = await getExecutionBlocker(db, issue.companyId, issue.id);
+    const blockerAction = executionBlocker?.recoveryActionId
+      ? await findExecutionBlockerAction(db, issue.companyId, issue.id)
+      : null;
+    const effectiveRecoveryAction = blockerAction
+      ? issueRecoveryActionReadModel(blockerAction)
+      : revalidatedActiveRecoveryAction;
     res.setHeader(
       "Server-Timing",
       `paperclip_issue;dur=${(performance.now() - requestStartedAt).toFixed(1)}`,
@@ -8777,9 +8789,10 @@ export function issueRoutes(
       ...(blockerAttention ? { blockerAttention } : {}),
       ...(reviewAttention ? { reviewAttention } : {}),
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
-      executionBlocker: await getExecutionBlocker(db, issue.companyId, issue.id),
+      executionBlocker,
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
+      effectiveRecoveryAction: effectiveRecoveryAction ?? null,
       blockedBy: relationsWithRecoveryActions.blockedBy,
       blocks: relationsWithRecoveryActions.blocks,
       relatedWork: referenceSummary,
@@ -8940,9 +8953,17 @@ export function issueRoutes(
       trigger: "read_projection",
       actor: getActorInfo(req),
     });
+    const blockerAction = await findExecutionBlockerAction(db, issue.companyId, issue.id);
+    const effective = blockerAction
+      ? issueRecoveryActionReadModel(blockerAction)
+      : active;
+    const actions = [active, effective].filter((action, index, list) =>
+      Boolean(action) && list.findIndex((candidate) => candidate?.id === action?.id) === index,
+    );
     res.json({
       active,
-      actions: active ? [active] : [],
+      effective: effective ?? null,
+      actions,
     });
   });
 
@@ -9053,10 +9074,9 @@ export function issueRoutes(
             );
             const automatic = settled.evidence.automaticRecovery as
               { replay?: string } | undefined;
-            if (automatic?.replay === "blocked" && executionReconciliation) {
-              // An automatic no-replay disposition is final until new evidence
-              // arrives. Keep the supported evidence API usable without a dialog.
-              assertBoard(req);
+            if (automatic?.replay === "blocked") {
+              requireExecutionReconciliationProof(executionReconciliation);
+              assertExecutionReconciliationAuthorized(req, lockedIssue);
               if (
                 activeRecoveryAction ||
                 sourceIssueStatus !== "todo" ||
@@ -9098,7 +9118,8 @@ export function issueRoutes(
           sourceIssueStatus === "todo" &&
           requiresExecutionReconciliation(activeRecoveryAction.cause)
         ) {
-          assertBoard(req);
+          requireExecutionReconciliationProof(executionReconciliation);
+          assertExecutionReconciliationAuthorized(req, lockedIssue);
           await validateExecutionReconciliation({
             db: tx as unknown as Db,
             companyId: lockedIssue.companyId,
@@ -9403,6 +9424,8 @@ export function issueRoutes(
             "chat recovery retry dispatch deferred to durable worker",
           );
         }
+      } else if (executionReconciliation) {
+        await deliverReconciledExecutions(db, enqueueRecoveryActionWakeup);
       } else if (
         !executionReconciliation &&
         sourceIssueStatus === "todo" &&
@@ -9446,6 +9469,8 @@ export function issueRoutes(
         issue: {
           ...result.issue,
           activeRecoveryAction: null,
+          effectiveRecoveryAction: null,
+          executionBlocker: null,
         },
         recoveryAction: result.recoveryAction,
       });

@@ -3,7 +3,7 @@ import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } 
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
-import { and, eq, inArray, isNull, not, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, not, or, sql } from "drizzle-orm";
 import {
   chatActions,
   environmentLeases,
@@ -14,6 +14,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { conflict } from "../errors.js";
+import { executionBlockerPredicate } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import {
   EXECUTION_RECONCILIATION_CAUSES,
@@ -190,6 +191,126 @@ export async function markExecutionReconciliation(
       and(
         eq(issueRecoveryActions.companyId, action.companyId),
         eq(issueRecoveryActions.id, action.id),
+      ),
+    );
+  await supersedeDescendantExecutionHolds(db, {
+    companyId: action.companyId,
+    rootActionId: action.id,
+    rootRunId: decision.runId,
+    now: new Date(),
+  });
+}
+
+function isPreStartCancelledHoldRun(run: {
+  startedAt: Date | null;
+  resultJson: Record<string, unknown> | null;
+}): boolean {
+  if (run.startedAt) return false;
+  const recovery = run.resultJson?.executionRecovery as
+    | { providerWorkStarted?: unknown }
+    | undefined;
+  return recovery?.providerWorkStarted !== true;
+}
+
+/** Holds whose source run descends from the reconciled run and never started provider work. */
+async function findPreStartDescendantRunIds(
+  db: Db,
+  input: { companyId: string; rootRunId: string; rootActionId: string },
+): Promise<string[]> {
+  const eligible = new Set<string>();
+  const seen = new Set<string>([input.rootRunId]);
+  let frontier = [input.rootRunId];
+  for (let depth = 0; depth < 64 && frontier.length > 0; depth += 1) {
+    const children = await db
+      .select({
+        id: heartbeatRuns.id,
+        startedAt: heartbeatRuns.startedAt,
+        resultJson: heartbeatRuns.resultJson,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          or(
+            inArray(heartbeatRuns.retryOfRunId, frontier),
+            sql`${heartbeatRuns.contextSnapshot}->>'previousRunId' in (${sql.join(
+              frontier.map((id) => sql`${id}`),
+              sql`, `,
+            )})`,
+            sql`${heartbeatRuns.contextSnapshot}->>'retryOfRunId' in (${sql.join(
+              frontier.map((id) => sql`${id}`),
+              sql`, `,
+            )})`,
+          ),
+        ),
+      );
+    const next: string[] = [];
+    for (const child of children) {
+      if (seen.has(child.id)) continue;
+      seen.add(child.id);
+      next.push(child.id);
+      if (isPreStartCancelledHoldRun(child)) eligible.add(child.id);
+    }
+    frontier = next;
+  }
+  const cancelledByHold = await db
+    .select({
+      id: heartbeatRuns.id,
+      startedAt: heartbeatRuns.startedAt,
+      resultJson: heartbeatRuns.resultJson,
+    })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.errorCode, "execution_reconciliation_required"),
+        isNull(heartbeatRuns.startedAt),
+        sql`${heartbeatRuns.resultJson}->'executionWait'->>'recoveryActionId' = ${input.rootActionId}`,
+      ),
+    );
+  for (const run of cancelledByHold) {
+    if (run.id === input.rootRunId) continue;
+    if (isPreStartCancelledHoldRun(run)) eligible.add(run.id);
+  }
+  return [...eligible];
+}
+
+/** Cancel leftover pre-start execution holds that descend from the reconciled run. */
+export async function supersedeDescendantExecutionHolds(
+  db: Db,
+  input: {
+    companyId: string;
+    rootActionId: string;
+    rootRunId: string;
+    now: Date;
+  },
+) {
+  const descendantRunIds = await findPreStartDescendantRunIds(db, input);
+  if (descendantRunIds.length === 0) return;
+  const supersededNote = "Superseded by root execution reconciliation.";
+  await db
+    .update(issueRecoveryActions)
+    .set({
+      status: "cancelled",
+      outcome: "cancelled",
+      resolvedAt: input.now,
+      updatedAt: input.now,
+      resolutionNote: supersededNote,
+      nextAction: supersededNote,
+      evidence: sql`(${issueRecoveryActions.evidence} - 'automaticRecovery') || ${JSON.stringify({
+        supersededByRecoveryActionId: input.rootActionId,
+        supersededAt: input.now.toISOString(),
+      })}::jsonb`,
+    })
+    .where(
+      and(
+        eq(issueRecoveryActions.companyId, input.companyId),
+        ne(issueRecoveryActions.id, input.rootActionId),
+        executionBlockerPredicate(),
+        sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId') in (${sql.join(
+          descendantRunIds.map((id) => sql`${id}`),
+          sql`, `,
+        )})`,
       ),
     );
 }

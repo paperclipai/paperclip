@@ -13,11 +13,19 @@ export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
 
 /** Error families describe availability, not whether earlier actions happened. */
 export function legacyExecutionNeedsReconciliation(
-  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot">>,
+  run: Pick<Run, "runtimeMode" | "status" | "errorCode" | "resultJson"> & Partial<Pick<Run, "scheduledRetryAttempt" | "scheduledRetryReason" | "contextSnapshot" | "startedAt">>,
 ): boolean {
   if (
     run.runtimeMode === "native" ||
     !["failed", "timed_out", "interrupted", "cancelled"].includes(run.status)
+  )
+    return false;
+  // A queued run cancelled by an existing hold never started provider work.
+  // Keep the source blocker; do not open a second recovery incident.
+  if (
+    run.status === "cancelled" &&
+    run.errorCode === "execution_reconciliation_required" &&
+    !run.startedAt
   )
     return false;
   // A fresh conversation turn lets the agent decide what remains. The retry
@@ -106,7 +114,8 @@ export async function terminalizeLegacyExecution(input: {
       task &&
       !isSupersededConversationRun(task, updated) &&
       (task.assigneeAgentId === run.agentId || isCurrentReviewer) &&
-      !["done", "cancelled"].includes(task.status)
+      !["done", "cancelled"].includes(task.status) &&
+      legacyExecutionNeedsReconciliation(updated)
     ) {
       // Periodic stranded-work checks may revisit this terminal run before its
       // reconciled continuation is dispatched. Preserve the recorded decision.

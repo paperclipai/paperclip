@@ -77,6 +77,13 @@ describe("agent permissions service", () => {
     expect(defaultAgentPermissions({ lowTrust: true, context: "create" }).canCreateSkills).toBe(true);
   });
 
+  it("withholds execution recovery operator authority unless explicitly granted", () => {
+    expect(defaultAgentPermissions().execution_recovery_operator).toBe(false);
+    expect(normalizeAgentPermissions({}).execution_recovery_operator).toBe(false);
+    expect(normalizeAgentPermissions({ execution_recovery_operator: true }).execution_recovery_operator).toBe(true);
+    expect(normalizeAgentPermissions({ execution_recovery_operator: "true" }).execution_recovery_operator).toBe(false);
+  });
+
   it("preserves explicit canCreateAgents overrides in both contexts", () => {
     expect(normalizeAgentPermissions({ canCreateAgents: false }, { context: "create" }).canCreateAgents).toBe(false);
     expect(normalizeAgentPermissions({ canCreateAgents: true }).canCreateAgents).toBe(true);

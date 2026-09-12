@@ -2,6 +2,7 @@ import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { useMemo, useState } from "react";
 import type {
   Agent,
+  ExecutionReconciliation,
   GitWorktreeBranchAncestryVerdict,
   IssueRecoveryAction,
   IssueRecoveryActionKind,
@@ -79,6 +80,9 @@ export interface IssueRecoveryActionCardProps {
   forcedState?: RecoveryCardCardState;
   /** Optional click handler for resolve menu actions. If omitted, the buttons are not rendered. */
   onResolve?: (outcome: RecoveryResolveOutcome) => void;
+  /** Record observed execution outcomes and continue the assigned task. */
+  onReconcileExecution?: (decision: ExecutionReconciliation) => void;
+  reconcileExecutionPending?: boolean;
   /**
    * Optional handler for the workspace_validation "Re-issue on isolated workspace" action.
    * Rendered only for a git-worktree branch-incoherence divergence with a resolvable live ref.
@@ -975,12 +979,84 @@ const RESOLVE_OPTIONS: Array<{
   },
 ];
 
+function ExecutionReconciliationForm({
+  action,
+  pending,
+  onSubmit,
+}: {
+  action: IssueRecoveryAction;
+  pending: boolean;
+  onSubmit: (decision: ExecutionReconciliation) => void;
+}) {
+  const runId =
+    asNonEmptyString(action.evidence?.runId) ??
+    asNonEmptyString(action.evidence?.sourceRunId) ??
+    "";
+  const [outcomeEvidence, setOutcomeEvidence] = useState("");
+  const [actionOutcome, setActionOutcome] =
+    useState<ExecutionReconciliation["actionOutcome"]>("not_performed");
+  const canSubmit = runId.length > 0 && outcomeEvidence.trim().length > 0 && !pending;
+  return (
+    <form
+      className="flex w-full flex-col gap-2"
+      data-testid="execution-reconciliation-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!canSubmit) return;
+        onSubmit({
+          runId,
+          providerStopped: true,
+          actionOutcome,
+          outcomeEvidence: outcomeEvidence.trim(),
+        });
+      }}
+    >
+      <p className="text-(length:--text-micro) text-muted-foreground">
+        Record the stopped run outcome before continuing. Generic retry is not allowed.
+      </p>
+      <div className="flex flex-wrap items-center gap-2 text-(length:--text-micro)">
+        <span>
+          Run <code data-testid="execution-reconciliation-run-id">{runId || "unknown"}</code>
+        </span>
+        <label className="inline-flex items-center gap-1">
+          Outcome
+          <select
+            className="rounded-md border border-border bg-background px-1.5 py-1"
+            value={actionOutcome}
+            onChange={(event) =>
+              setActionOutcome(event.target.value as ExecutionReconciliation["actionOutcome"])
+            }
+          >
+            <option value="not_performed">not performed</option>
+            <option value="completed">completed</option>
+            <option value="mixed">mixed</option>
+          </select>
+        </label>
+      </div>
+      <Label htmlFor={`execution-reconciliation-evidence-${action.id}`}>Outcome evidence</Label>
+      <Textarea
+        id={`execution-reconciliation-evidence-${action.id}`}
+        data-testid="execution-reconciliation-evidence"
+        value={outcomeEvidence}
+        onChange={(event) => setOutcomeEvidence(event.target.value)}
+        placeholder="What proves the provider action did not run, completed, or mixed?"
+        rows={3}
+      />
+      <Button type="submit" size="sm" disabled={!canSubmit} data-testid="execution-reconciliation-submit">
+        {pending ? "Reconciling…" : "Reconcile and continue"}
+      </Button>
+    </form>
+  );
+}
+
 export function IssueRecoveryActionCard({
   action,
   agentMap,
   scheduledRetry = null,
   forcedState,
   onResolve,
+  onReconcileExecution,
+  reconcileExecutionPending = false,
   onReissueIsolated,
   reissuePending = false,
   onReconcileForward,
@@ -1057,7 +1133,12 @@ export function IssueRecoveryActionCard({
     resolved: "resolved",
   } satisfies Record<RecoveryCardCardState, string>)[cardState];
 
-  const showResolveActions = onResolve !== undefined && cardState !== "resolved";
+  const showResolveActions = onResolve !== undefined && cardState !== "resolved"
+    && !requiresExecutionReconciliation(action.cause);
+  const showExecutionReconciliation =
+    onReconcileExecution !== undefined &&
+    requiresExecutionReconciliation(action.cause) &&
+    cardState !== "resolved";
   const visibleResolveOptions = RESOLVE_OPTIONS.filter((option) => {
     if (option.outcome === "todo" && requiresExecutionReconciliation(action.cause)) return false;
     if (option.boardOnly && !canFalsePositive) return false;
@@ -1103,12 +1184,11 @@ export function IssueRecoveryActionCard({
   const reissueRecommended = showRepairAction && repairContention !== null;
   const showFooter =
     showResolveActions ||
+    showExecutionReconciliation ||
     showReissueAction ||
     showReconcileForward ||
     showBreakGlass ||
     showRepairAction;
-
-  if (requiresExecutionReconciliation(action.cause)) return null;
 
   return (
     <section
@@ -1280,6 +1360,11 @@ export function IssueRecoveryActionCard({
             <RunChip runId={correctiveRunId} agentId={action.previousOwnerAgentId} />
           </MetadataRow>
         ) : null}
+        <MetadataRow label="Action">
+          <code data-testid="recovery-action-id" className="rounded bg-background/80 px-1.5 py-0.5 font-mono text-(length:--text-micro)">
+            {action.id}
+          </code>
+        </MetadataRow>
         <MetadataRow label="Evidence">
           {evidenceSummary ? (
             evidenceSummary.isCode ? (
@@ -1324,6 +1409,13 @@ export function IssueRecoveryActionCard({
       {divergence ? <DivergenceDiagnosis divergence={divergence} dividerClass={tone.divider} /> : null}
       {showFooter ? (
         <div className={cn("flex flex-wrap items-center gap-2 border-t px-3 py-2.5 sm:px-4", tone.divider)}>
+          {showExecutionReconciliation ? (
+            <ExecutionReconciliationForm
+              action={action}
+              pending={reconcileExecutionPending}
+              onSubmit={onReconcileExecution!}
+            />
+          ) : null}
           {showResolveActions ? (
             <Popover>
               <PopoverTrigger asChild>
