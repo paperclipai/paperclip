@@ -15830,7 +15830,21 @@ export function heartbeatService(
       return null;
     }
 
-    return scheduleBoundedRetryForRun(run, agent, {
+    // The reaper promoted this run to a process_lost CAS failure before any
+    // provider work produced output; the retry is an explicit
+    // infrastructure-loss replay, not an ambiguous bootstrap that the legacy
+    // reconciliation gate is meant to block. Mark the failed run as safe
+    // bootstrap evidence on the in-memory copy we hand to
+    // scheduleBoundedRetryForRun so the shared gate does not refuse the retry.
+    const runForRetry: typeof run = {
+      ...run,
+      resultJson: {
+        ...(parseObject(run.resultJson) ?? {}),
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+    };
+
+    return scheduleBoundedRetryForRun(runForRetry, agent, {
       retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
       wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
       maxAttempts: INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS,
