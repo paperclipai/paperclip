@@ -209,7 +209,7 @@ export interface ResolvedTelegramChatConfig extends ProviderConfigBase {
 export interface ResolvedPhotonChatConfig extends ProviderConfigBase {
   provider: "imessage-photon";
   intakeAfter: number;
-  credentials: { projectId: string; projectSecret: string; lineId: string; phoneNumber: string };
+  credentials: { allocation?: "dedicated" | "shared"; projectId: string; projectSecret: string; lineId: string; phoneNumber: string };
 }
 export type ResolvedChatSdkProviderConfig =
   | ResolvedPhotonChatConfig
@@ -2287,7 +2287,7 @@ export class ChatSdkEndpointRuntime {
       if (!options.callbacks.onPhotonCheckpoint || !options.callbacks.onPhotonAssertOwned || !options.callbacks.onPhotonEvent || !options.callbacks.onPhotonFailure) throw new Error("Photon receiver requires durable admission callbacks");
       this.adapter.typingGuard = async (activeThreadId) => { this.assertNotRetired(); await options.callbacks.onPhotonAssertOwned!(activeThreadId); };
       this.photonReceiver = new PhotonReceiver({ client: this.adapter.client, state: this.adapter.state,
-        lineId: config.credentials.lineId, intakeAfter: config.intakeAfter,
+        lineId: config.credentials.lineId, intakeAfter: config.intakeAfter, allocation: config.credentials.allocation,
         catchUp: (sequence) => (this.adapter as PhotonChatAdapter).recoveryStream(sequence),
         assertOwned: async () => { this.assertNotRetired(); await (this.adapter as PhotonChatAdapter).authentication.token(); await options.callbacks.onPhotonAssertOwned!(); },
         commitCheckpoint: options.callbacks.onPhotonCheckpoint, admit: options.callbacks.onPhotonEvent, failure: options.callbacks.onPhotonFailure });
@@ -2924,7 +2924,7 @@ export class ChatSdkEndpointRuntime {
       const metadata = isRecord(descriptor.attachment) ? durableAttachmentMetadata(descriptor.attachment as unknown as Attachment) : null;
       if (!parsed.success || !metadata || parsed.data.lineId !== thread.lineId || parsed.data.chatGuid !== thread.chatGuid || parsed.data.messageGuid !== source.messageId) return null;
       const adapter = this.adapter;
-      return { ...metadata, fetchData: () => downloadPhotonAttachment(adapter.client, thread.lineId, parsed.data) };
+      return { ...metadata, fetchData: () => downloadPhotonAttachment(adapter.client, thread.lineId, parsed.data, adapter.authentication.identity.allocation) };
     }
     if (
       this.provider === "microsoft-teams" &&

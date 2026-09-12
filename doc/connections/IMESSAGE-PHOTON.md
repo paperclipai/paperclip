@@ -2,7 +2,8 @@
 
 **Status: experimental. Live-provider qualification is pending.**
 
-This channel gives one agent a dedicated Photon Cloud iMessage number. A linked
+This channel connects one agent to Photon Cloud. Pro shared allocation supports
+DMs; dedicated lines also support explicitly enabled groups. A linked
 Paperclip person can send a DM, exchange files, answer questions, and respond to
 ordinary confirmations. Each conversation remains attached to a Paperclip task.
 The connection is a channel with `chat_sdk` transport, not an MCP tool connection.
@@ -11,24 +12,30 @@ The connection is a channel with `chat_sdk` transport, not an MCP tool connectio
 
 1. Enable the existing experimental chat-connectors setting. Open **Apps →
    iMessage Photon**, or the agent's **Channels** panel.
-2. In the [Photon dashboard](https://app.photon.codes/), obtain a project ID,
-   project secret, and dedicated iMessage line. Paperclip checks the project's
-   actual allocation. Shared-pool allocation is not eligible. See Photon's
+2. In the [Photon dashboard](https://app.photon.codes/), obtain a project ID
+   and project secret. Paperclip checks the project's actual allocation. Pro
+   shared allocation is eligible for DMs only. Enroll each sender in the Photon
+   project's **Users** page and find their assigned number in **Get started**.
+   This enrollment does not authorize them in Paperclip. See Photon's
    [line model](https://photon.codes/docs/spectrum-ts/providers/imessage/connection-and-routing).
 3. Choose one invokable agent. Enter the project ID and secret, inspect the
-   available numbers, and select a line. A single eligible line is selected
+   allocation. Connect shared DMs, or select a dedicated line. A single eligible dedicated line is selected
    automatically. A number already reserved by any non-archived endpoint in
    this instance cannot be selected, including a paused or revoked endpoint.
-4. Send a fresh message to the displayed number. Link the discovered Messages
+   Shared projects have the same exclusive reservation by project ID. Their
+   assigned numbers may differ by sender and are not represented as owned numbers.
+4. Send a fresh message to the displayed dedicated number, or to the sender's
+   assigned number from Photon for shared DMs. Link the discovered Messages
    identity through Paperclip's identity confirmation flow. Send another fresh
    message from that linked person. Setup completes only after a task is created
    and an actual agent response is published successfully.
-5. To use a group, add the number in Apple Messages and send a message to discover
+5. With a dedicated line, to use a group, add the number in Apple Messages and send a message to discover
    it. Enable the group in Paperclip's Settings page, then send a fresh request.
    Discovery does not enable a group or replay the discovery message as work.
 
 The server needs outbound HTTPS to `spectrum.photon.codes` and TLS gRPC to the
-selected `<line-id>.imsg.photon.codes:443` endpoint. No public webhook, Mac Messages
+selected `<line-id>.imsg.photon.codes:443` endpoint, or
+`imessage.spectrum.photon.codes:443` for a shared project. No public webhook, Mac Messages
 permissions, Spectrum application runtime, or additional agent loop is needed.
 
 Project secrets are write-only and vaulted. Inspection is restricted to connection
@@ -46,7 +53,8 @@ reconnect leaves the existing credential binding intact.
 
 ## Conversation and access rules
 
-DMs are enabled by default. Each group starts disabled. Unlinked people cannot
+DMs are enabled by default. Dedicated groups start disabled; shared channels
+reject groups at admission, publication, and settings changes. Unlinked people cannot
 start work unless an operator explicitly enables that setting. Identity links
 use the provider-authenticated sender address and service. A phone number and an
 Apple-account email are separate identities; names and group membership do not
@@ -70,7 +78,7 @@ cannot close a newer task. Outgoing echoes, reactions, read receipts, typing,
 and nonhuman system messages do not start agent work.
 
 Messages, tasks, assets, publications, identities, and state remain company-scoped.
-The number reservation is deliberately instance-wide. Task assignment, budget
+Number and shared-project reservations are deliberately instance-wide. Task assignment, budget
 limits, pauses, approvals, and native/legacy execution continue through the
 existing Paperclip services.
 
@@ -142,11 +150,17 @@ Do not retry by creating another publication or changing its key. Explicit retri
 reuse the original key and payload. Similar text is not evidence of delivery. An
 ambiguous upload without a recorded receipt also needs operator review.
 
-One elected receiver holds the endpoint lease. Four live streams notify a serial
+One elected receiver holds the endpoint lease. Live streams notify a serial
 catch-up reader. The reader advances its checkpoint only after preceding events
 are durably admitted or classified, including irrelevant events. It deduplicates
 provider sequence and message identity independently and reconstructs chats,
 attachments, and poll mappings from persisted state after restart.
+
+Dedicated recovery requires adjacent sequence numbers. The shared gateway's
+project-filtered feed has increasing, non-adjacent sequences. Shared recovery
+commits its checkpoint only after the complete replay barrier and every preceding
+admission succeed. Interrupted or out-of-order replay retains the previous cursor.
+Shared channels do not subscribe to the unsupported group stream.
 
 The pinned SDK's public catch-up iterator discards sequence-only/unknown-variant
 frames. Paperclip's small authenticated gRPC recovery transport retains their
@@ -168,10 +182,11 @@ UI alone does not disconnect existing channels.
 | State or symptom | Action |
 | --- | --- |
 | Invalid project credentials | Replace the vaulted secret for the same project/number and reconnect. |
-| Shared allocation or no dedicated lines | Allocate a dedicated line in Photon, then inspect again. |
+| Shared allocation | Connect shared DMs, enroll the sender in Photon, and use their assigned number. Groups require a dedicated line. |
+| No eligible dedicated lines | Review the project's line allocation in Photon, then inspect again. |
 | Number already owned | Use its existing endpoint or remove that endpoint before reconnecting the number. Pause retains the reservation. |
 | Number changes/disappears | Review the Photon allocation. Restore the original identity or create a new endpoint. |
-| No task from a group message | Enable the discovered group, link the sender, and send a fresh request. |
+| No task from a group message | Groups are disabled for shared channels. For a dedicated channel, enable the discovered group, link the sender, and send a fresh request. |
 | Setup remains Verifying | Complete the linked fresh-message → task → actual agent reply loop; a credential check is insufficient. |
 | Quota/network interruption | Review Activity. Transient errors retry with bounded backoff; quotas are distinct from authentication failures. |
 | Attachment preparing | Let the durable delivery retry; do not resend the message to force another task. |
@@ -203,3 +218,14 @@ First-party references inspected on 2026-09-11:
 [attachments](https://photon.codes/docs/advanced-kits/imessage/attachments),
 [idempotency](https://photon.codes/docs/advanced-kits/imessage/error-handling), and
 [HEIF converter](https://photon.codes/docs/utilities/heif2jpeg).
+
+### Shared-gateway duplicate receipts
+
+The Pro shared gateway has been observed returning gRPC `ALREADY_EXISTS` as SDK
+`internalError`, without a receipt, when an identical `clientMessageId` is repeated.
+Paperclip retains delivery-unknown state if no stored receipt exists. Inspect the
+original conversation and use the existing operator resolution action. Do not
+create another idempotency key or infer delivery from matching text. Photon’s
+[documented idempotency behavior](https://photon.codes/docs/advanced-kits/imessage/error-handling)
+says repeated writes return the original result; the live shared-gateway result
+is recorded separately in the verification report.

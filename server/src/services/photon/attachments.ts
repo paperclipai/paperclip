@@ -71,6 +71,7 @@ export async function downloadPhotonAttachment(
   client: GrpcAdvancedIMessage,
   lineId: string,
   locator: PhotonAttachmentLocator,
+  allocation: "dedicated" | "shared" = "dedicated",
 ): Promise<Buffer> {
   photonAttachmentLocatorSchema.parse(locator);
   if (locator.lineId !== lineId)
@@ -117,9 +118,22 @@ export async function downloadPhotonAttachment(
   try {
     for await (const part of stream) {
       if (part.type === "header") {
+        // The shared gateway rewrites message/metadata attachment IDs to opaque
+        // project aliases, but streams the native UUID in download headers.
+        // Ownership comes from the authenticated source-message lookup above
+        // and this exact alias-addressed RPC, never from matching filenames.
+        const sharedAlias = allocation === "shared" &&
+          /^spc-att-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(locator.attachmentGuid);
+        const matchingSharedHeader = sharedAlias &&
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(part.info.guid) &&
+          part.info.totalBytes === attachment.totalBytes &&
+          part.info.mimeType === attachment.mimeType &&
+          part.info.fileName === attachment.fileName;
         if (
           header ||
-          part.info.guid !== locator.attachmentGuid ||
+          (part.info.guid !== locator.attachmentGuid && !matchingSharedHeader) ||
+          part.info.isHidden || part.info.isSticker ||
+          !Number.isSafeInteger(part.info.totalBytes) || part.info.totalBytes < 0 ||
           part.info.totalBytes > MAX_ATTACHMENT_BYTES
         )
           throw new Error("Photon attachment metadata changed");

@@ -100,6 +100,7 @@ export interface ChatEndpoint {
   botLabel?: string | null;
   botUsername?: string | null;
   botExternalId?: string | null;
+  photonAllocation?: "dedicated" | "shared";
   allowDirectMessages?: boolean;
   allowGroupChats?: boolean;
   allowUnlinkedPeople: boolean;

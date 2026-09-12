@@ -227,6 +227,7 @@ export interface ChatEndpoint {
   botUsername?: string | null;
   botLabel?: string | null;
   botAvatarUrl?: string | null;
+  photonAllocation?: "dedicated" | "shared";
   allowDirectMessages: boolean;
   allowGroupChats: boolean;
   allowUnlinkedPeople: boolean;
@@ -515,7 +516,6 @@ export interface PhotonProjectInspection {
   eligible: boolean;
   lines: Array<{ lineId: string; phoneNumber: string; eligible: boolean; unavailableReason?: string }>;
 }
-export interface PhotonChannelConfiguration {
-  projectId: string;
-  lineId: string;
-}
+export type PhotonChannelConfiguration =
+  | { allocation?: "dedicated"; projectId: string; lineId: string }
+  | { allocation: "shared"; projectId: string };

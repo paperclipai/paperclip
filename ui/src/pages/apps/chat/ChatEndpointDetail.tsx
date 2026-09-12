@@ -87,7 +87,7 @@ const providerLifecycleGuidance: Record<
       "Paperclip archives the endpoint, stops new ingress, and retires its saved client secret. It does not uninstall the Teams app: the Entra app registration, Azure Bot, custom Teams app, and Teams installations remain until you remove them in Microsoft.",
   },
   "imessage-photon": {
-    reconnect: "Reconnect verifies the same Photon project and dedicated number, then recovers eligible missed messages.",
+    reconnect: "Reconnect verifies the same Photon project and line allocation, then recovers eligible missed messages.",
     remove: "Disconnect archives this channel and removes its saved secret. Your Photon project, number, subscription, and Messages history remain in Photon.",
   },
   telegram: {
@@ -282,7 +282,7 @@ export function ChatEndpointDetail() {
           <p className="mt-1 text-sm text-muted-foreground">
             {endpoint.providerAccountLabel ?? "Chat connection"}
           </p>
-          {endpoint.provider === "imessage-photon" && endpoint.botExternalId && (
+          {endpoint.provider === "imessage-photon" && endpoint.botExternalId && endpoint.photonAllocation !== "shared" && (
             <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
               <span>{endpoint.botExternalId}</span>
               <Button variant="ghost" size="sm" aria-label="Copy dedicated number" onClick={async () => {
@@ -392,7 +392,7 @@ function Settings({
     saveResources.mutate({ id: resource.id, enabled });
   return (
     <section className="max-w-3xl space-y-7">
-      {endpoint.provider === "imessage-photon" && <p className="text-sm text-muted-foreground">Enable each group individually. Agent replies are visible to everyone in that group; only authorized senders can start work.</p>}
+      {endpoint.provider === "imessage-photon" && <p className="text-sm text-muted-foreground">{endpoint.photonAllocation === "shared" ? "Shared Photon project · direct messages only. Enroll senders in Photon and link their Messages identities in Access. Groups cannot be enabled." : "Enable each group individually. Agent replies are visible to everyone in that group; only authorized senders can start work."}</p>}
       {endpoint.provider === "slack" && endpoint.setup?.command && (
         <div className="space-y-2">
           <h2 className="text-lg font-semibold">Slack command</h2>
@@ -460,6 +460,7 @@ function Settings({
                   aria-label={`Enable ${resource.label}`}
                   checked={resource.enabled}
                   disabled={
+                    endpoint.photonAllocation === "shared" ||
                     resource.availability !== "available" ||
                     saveResources.isPending
                   }

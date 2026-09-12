@@ -7,7 +7,7 @@ import { projectSafeChatPublicationText } from "./chat-publication-projection.js
 import { PhotonAnswerValidationError, nativePhotonInteraction, publishPhotonPrompt, photonResponseCommand, parsePhotonQuestionAnswer, type PhotonPromptReceipt, type PhotonInteractionBinding, type PhotonDraft } from "./photon/interactions.js";
 import { validateNativeQuestionResponseInput } from "./native-runtime/native-question-bridge.js";
 import type { AskUserQuestionsAnswer, AskUserQuestionsInteraction, IssueThreadInteraction } from "@paperclipai/shared";
-import { PhotonCloudClient, PhotonError, photonFailure } from "./photon/cloud.js";
+import { PhotonCloudClient, PhotonError, photonFailure, photonSharedIdentity, photonSharedScope } from "./photon/cloud.js";
 import { PhotonChatAdapter, photonThreadId, photonReplyReference } from "./photon/adapter.js";
 import { photonChannelConfigurationSchema, type PhotonChannelConfiguration } from "@paperclipai/shared";
 import type { LiveEvent as PhotonEvent } from "@photon-ai/advanced-imessage";
@@ -5800,6 +5800,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       botUsername: endpoint.botUsername,
       botLabel: endpoint.botDisplayName ?? row.assignedAgentName,
       botAvatarUrl: endpoint.botAvatarUrl,
+      ...(endpoint.provider === "imessage-photon" && endpoint.botExternalId ? { photonAllocation: endpoint.botExternalId.startsWith("photon-project:") ? "shared" as const : "dedicated" as const } : {}),
       allowDirectMessages: endpoint.allowDirectMessages,
       allowGroupChats: endpoint.allowGroupChats,
       allowUnlinkedPeople: endpoint.allowUnlinkedPeople,
@@ -6024,6 +6025,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         };
         if (input.allowDirectMessages !== undefined)
           values.allowDirectMessages = input.allowDirectMessages;
+        if (input.allowGroupChats && existing.endpoint.provider === "imessage-photon" && (!existing.endpoint.botExternalId || existing.endpoint.botExternalId.startsWith("photon-project:")))
+          throw unprocessable("Photon shared channels support direct messages only; groups require a dedicated channel");
         if (input.allowGroupChats !== undefined)
           values.allowGroupChats = input.allowGroupChats;
         if (input.allowUnlinkedPeople !== undefined)
@@ -6085,6 +6088,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   ): Promise<VerifiedProviderIdentity> {
     if (provider === "imessage-photon") {
       const inspection = await inspectPhotonCredentials(credentials.projectId, credentials.projectSecret);
+      if (inspection.allocation !== (credentials.allocation ?? "dedicated")) throw unprocessable("Photon allocation changed; inspect the project again");
+      if (inspection.allocation === "shared") {
+        if (!inspection.eligible) throw unprocessable("Photon shared project is unavailable");
+        return { providerAccountId: inspection.projectId, providerAccountLabel: inspection.projectName, botExternalId: photonSharedIdentity(inspection.projectId), botUsername: null, botLabel: `${inspection.projectName} (DM only)` };
+      }
       const line = inspection.lines.find((candidate) => candidate.lineId === credentials.lineId && candidate.eligible);
       if (!line || !inspection.eligible) throw unprocessable("Select an eligible dedicated Photon line");
       return { providerAccountId: inspection.projectId, providerAccountLabel: inspection.projectName, botExternalId: line.phoneNumber, botUsername: line.phoneNumber, botLabel: line.phoneNumber };
@@ -6656,7 +6664,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const values = await resolveCredentialRefs(endpoint, connection.refs);
     if (endpoint.provider === "imessage-photon") {
       const configuration = photonChannelConfigurationSchema.parse(connection.config.photon);
-      return { ...values, ...configuration };
+      return { ...values, ...configuration, lineId: configuration.allocation === "shared" ? photonSharedScope(configuration.projectId) : configuration.lineId };
     }
     return values;
   }
@@ -7494,7 +7502,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (endpoint.provider === "imessage-photon") return {
       provider: "imessage-photon", userName,
       intakeAfter: Date.parse(String((endpoint.setup as InternalSetupState).photonIntakeAfter ?? endpoint.setup.testStartedAt ?? endpoint.createdAt.toISOString())),
-      credentials: { projectId: credentials.projectId, lineId: credentials.lineId, projectSecret: credentials.projectSecret, phoneNumber: endpoint.botExternalId! },
+      credentials: { allocation: credentials.allocation === "shared" ? "shared" : "dedicated", projectId: credentials.projectId, lineId: credentials.lineId, projectSecret: credentials.projectSecret, phoneNumber: endpoint.botExternalId! },
     };
     if (endpoint.provider === "slack")
       return {
@@ -8154,10 +8162,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const record = await endpointRecord(endpointId);
     if (!record || record.endpoint.provider !== "imessage-photon")
       throw notFound("iMessage Photon endpoint not found");
-    const inspection = await inspectPhotonCredentials(
+    const inspection = structuredClone(await inspectPhotonCredentials(
       input.projectId,
       input.projectSecret,
-    );
+    ));
     const reserved = await db
       .select({ number: chatEndpoints.botExternalId })
       .from(chatEndpoints)
@@ -8175,7 +8183,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
           "This number already belongs to another channel";
       }
     }
-    inspection.eligible = inspection.lines.some((line) => line.eligible);
+    inspection.eligible = inspection.allocation === "shared" ? inspection.eligible && !reserved.some((row) => row.number === photonSharedIdentity(inspection.projectId)) : inspection.lines.some((line) => line.eligible);
     return inspection;
   }
 
@@ -8796,8 +8804,12 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         (error instanceof HttpError && error.status === 422) ||
         error instanceof PhotonAnswerValidationError
       ) {
+        const missingIndex = interaction.kind === "ask_user_questions" && command?.command === "submit"
+          ? interaction.payload.questions.findIndex((question) =>
+              question.required !== false && !draft.answers.some((answer) => answer.questionId === question.id))
+          : -1;
         await notice(
-          `${redactError(error)} Send /answer ${reference}.${questionIndex + 1} <answer> to correct it.`,
+          `${redactError(error)} Send /answer ${reference}.${(missingIndex >= 0 ? missingIndex : questionIndex) + 1} <answer> to correct it.`,
         );
         return true;
       }
@@ -8821,6 +8833,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const adapter = context.endpointRuntime!.getProviderAdapter();
     if (!(adapter instanceof PhotonChatAdapter))
       throw new Error("Photon adapter unavailable");
+    if (adapter.authentication.identity.allocation === "shared" && event.type === "group.changed") return;
     if (
       event.type === "group.changed" &&
       (event.change.type === "participantRemoved" ||
@@ -8891,7 +8904,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       .catch((error) => {
         throw photonFailure(error);
       });
-    if (chat.guid !== event.chatGuid || chat.service !== "iMessage") return;
+    if (chat.guid !== event.chatGuid || chat.service !== "iMessage" || (chat.isGroup && adapter.authentication.identity.allocation === "shared")) return;
     const threadId = photonThreadId({
       lineId: adapter.authentication.identity.lineId,
       chatGuid: chat.guid,
@@ -9527,9 +9540,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
             );
           });
     if (endpoint.provider === "imessage-photon") {
-      const configuration = photonChannelConfigurationSchema.parse(input.photon ?? { projectId: credentials.projectId, lineId: credentials.lineId });
-      if (endpoint.botExternalId && (configuration.projectId !== endpoint.providerAccountId || credentials.lineId && configuration.lineId !== credentials.lineId)) throw conflict("A different Photon identity requires a new channel");
-      credentials = { ...credentials, ...configuration };
+      const configuration = photonChannelConfigurationSchema.parse(input.photon ?? (credentials.allocation === "shared" ? { allocation: "shared", projectId: credentials.projectId } : { projectId: credentials.projectId, lineId: credentials.lineId }));
+      const lineId = configuration.allocation === "shared" ? photonSharedScope(configuration.projectId) : configuration.lineId;
+      if (endpoint.botExternalId && (configuration.projectId !== endpoint.providerAccountId || credentials.lineId && lineId !== credentials.lineId)) throw conflict("A different Photon identity requires a new channel");
+      credentials = { ...credentials, ...configuration, lineId };
     }
     const identity = await verifyCredentials(endpoint.provider, credentials);
     // Once setup has claimed a provider bot identity, every credential repair
@@ -9610,7 +9624,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     if (endpoint.provider === "imessage-photon") {
       await invalidateRuntime(endpoint.id);
       await credentialLease.assertOwned();
-      await db.update(toolConnections).set({ config: { provider: endpoint.provider, photon: { projectId: credentials.projectId, lineId: credentials.lineId } } }).where(and(eq(toolConnections.companyId, endpoint.companyId), eq(toolConnections.id, endpoint.connectionId)));
+      if (credentials.allocation === "shared") await db.update(chatEndpoints).set({ allowGroupChats: false }).where(eq(chatEndpoints.id, endpoint.id));
+      await db.update(toolConnections).set({ config: { provider: endpoint.provider, photon: credentials.allocation === "shared" ? { allocation: "shared", projectId: credentials.projectId } : { allocation: "dedicated", projectId: credentials.projectId, lineId: credentials.lineId } } }).where(and(eq(toolConnections.companyId, endpoint.companyId), eq(toolConnections.id, endpoint.connectionId)));
     }
     if (
       (input.credentials && Object.keys(input.credentials).length > 0) ||
@@ -10272,9 +10287,13 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       tx,
       input.endpointId,
       input.runtimeContext,
-      ["active"],
+      ["active", "verifying"],
     );
-    if (!endpoint) {
+    // Photon setup already admits linked senders and publishes agent prompts.
+    // Let those prompts resolve so a clarifying question cannot deadlock the
+    // actual-reply qualification. Other providers retain their active-only gate.
+    if (!endpoint || (endpoint.status !== "active" &&
+      (endpoint.provider !== "imessage-photon" || endpoint.setup.step !== "test"))) {
       throw forbidden("This chat action is no longer authorized", {
         code: "chat_action_authorization_changed",
       });
@@ -27516,6 +27535,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     const initial = await endpointRecord(endpointId);
     if (!initial) throw notFound("Chat endpoint not found");
     if (updates.length === 0) return listResources(endpointId);
+    if (initial.endpoint.provider === "imessage-photon" && initial.endpoint.botExternalId?.startsWith("photon-project:") && updates.some((entry) => entry.enabled))
+      throw unprocessable("Photon shared channels support direct messages only; groups cannot be enabled");
     await withCredentialMutationLease(
       initial.endpoint,
       async (credentialLease) => {

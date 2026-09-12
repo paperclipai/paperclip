@@ -790,6 +790,7 @@ const chatEndpointResponseSchema = z
     providerAccountId: z.string().nullable(),
     providerAccountLabel: z.string().nullable(),
     botExternalId: z.string().nullable(),
+    photonAllocation: z.enum(["dedicated", "shared"]).optional(),
     botUsername: z.string().nullable(),
     botLabel: z.string().nullable(),
     botAvatarUrl: z.string().nullable(),
@@ -2153,9 +2154,9 @@ registry.registerPath({
   method: "post",
   path: "/api/chat-endpoints/{endpointId}/photon/inspect",
   tags: ["chat-channels"],
-  summary: "Inspect dedicated Photon numbers for channel setup",
+  summary: "Inspect Photon shared project or dedicated numbers for channel setup",
   description:
-    "Requires a board user with connection-management access. The project secret is write-only input. Returns the project's actual allocation and dedicated-line eligibility, never project secrets or minted line tokens. Responses are not cached. Inspection alone does not activate the channel.",
+    "Requires a board user with connection-management access. The project secret is write-only input. Returns the project's actual allocation and eligibility for shared DMs or dedicated lines, never project secrets or minted line tokens. Responses are not cached. Inspection alone does not activate the channel.",
   request: {
     params: z.object({ endpointId: z.string().uuid() }),
     body: jsonBody(inspectPhotonProjectSchema),

@@ -17,6 +17,7 @@ export interface PhotonReceiverOptions {
   state: PhotonState;
   lineId: string;
   intakeAfter: number;
+  allocation?: "dedicated" | "shared";
   catchUp?(sequence?: number): TypedEventStream<PhotonRecoveryEvent>;
   /** Renewal verifies both the selected identity and the current endpoint lease. */
   assertOwned(): Promise<void>;
@@ -42,7 +43,7 @@ export class PhotonReceiver {
     this.streams = [
       client.messages.subscribeEvents(),
       client.chats.subscribeEvents(),
-      client.groups.subscribeEvents(),
+      ...(this.options.allocation === "shared" ? [] : [client.groups.subscribeEvents()]),
       client.polls.subscribeEvents(),
     ];
     for (const stream of this.streams) {
@@ -104,7 +105,9 @@ export class PhotonReceiver {
         "history_gap",
         "Photon checkpoint is invalid; operator recovery is required",
       );
+    const shared = this.options.allocation === "shared";
     let sequence = original?.sequence;
+    let batchEvents = 0;
     const stream =
       this.options.catchUp?.(sequence) ?? client.events.catchUp(sequence);
     this.catchUpStream = stream;
@@ -117,13 +120,18 @@ export class PhotonReceiver {
           if (
             !Number.isSafeInteger(event.headSequence) ||
             event.headSequence < 0 ||
-            (sequence !== undefined && event.headSequence !== sequence)
+            (sequence !== undefined && (shared ? event.headSequence < sequence : event.headSequence !== sequence))
           )
             throw new PhotonError(
               "history_gap",
               "Photon history has a gap or reset; operator recovery is required",
             );
-          sequence ??= event.headSequence;
+          // Shared gateway replay is project-filtered: sequence numbers are
+          // increasing but not adjacent (the first live project event may be
+          // > 1 billion). A complete replay barrier covers the filtered tail.
+          // Commit shared batches only here, after every admission succeeds;
+          // malformed ordering or interrupted replay keeps the previous cursor.
+          sequence = shared ? event.headSequence : sequence ?? event.headSequence;
           await this.checkpoint(sequence);
           completed = true;
           break;
@@ -133,8 +141,12 @@ export class PhotonReceiver {
             "history_gap",
             "Photon returned an invalid event sequence",
           );
+        if (++batchEvents > 100_000)
+          throw new PhotonError("history_gap", "Photon replay exceeds the supported recovery window");
+        if (shared && sequence !== undefined && event.sequence < sequence && event.sequence > (original?.sequence ?? -1))
+          throw new PhotonError("history_gap", "Photon replay arrived out of order; the saved cursor was retained");
         if (sequence !== undefined && event.sequence <= sequence) continue;
-        if (sequence !== undefined && event.sequence !== sequence + 1)
+        if (!shared && sequence !== undefined && event.sequence !== sequence + 1)
           throw new PhotonError(
             "history_gap",
             "Photon event history is incomplete; operator recovery is required",
@@ -152,7 +164,7 @@ export class PhotonReceiver {
           if (occurredAt >= intakeAfter) await admit(event);
         }
         // admission must durably store or classify even irrelevant events.
-        await this.checkpoint(event.sequence);
+        if (!shared) await this.checkpoint(event.sequence);
         sequence = event.sequence;
       }
       if (!completed && !this.stopped)

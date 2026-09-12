@@ -3,6 +3,22 @@
 Date: 2026-09-11. Status: approved for implementation; qualification tracked below.
 Base: origin/master, 1c4bcff2b. Branch: codex/imessage-photon.
 
+## Approved scope update — 2026-09-12
+
+The operator approved Pro-compatible shared DMs with groups disabled. This
+supersedes the dedicated-only exclusions below for DMs. Shared setup uses the
+project token and fixed `imessage.spectrum.photon.codes:443` gateway, reserves the
+project across non-archived endpoints, and derives a project-scoped conversation
+and checkpoint namespace. It never claims ownership of a pool phone number.
+Sender enrollment in Photon and identity linking in Paperclip are separate gates.
+Dedicated lines retain the original behavior. Allocation changes require a new
+channel. Native groups remain unavailable on shared channels at every boundary.
+
+The real qualification uses an isolated clean database, a test-only agent, the
+operator's enrolled Messages identity, and the existing Apps wizard. Photon offers
+a terminal development provider and control-plane CLI; neither substitutes for
+an iMessage Cloud round trip. Record actual live results separately from fixtures.
+
 ## Outcome and defaults
 
 Add **iMessage Photon** (`imessage-photon`) behind the existing experimental

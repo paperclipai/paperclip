@@ -336,7 +336,8 @@ async function installChatControlPlaneMock(
   {
     enableChatConnectors,
     resourceCount = 2,
-  }: { enableChatConnectors: boolean; resourceCount?: number },
+    photonShared = false,
+  }: { enableChatConnectors: boolean; resourceCount?: number; photonShared?: boolean },
 ): Promise<ChatMock> {
   const endpoint = endpointFixture(provider, seed);
   const state: ChatMock & {
@@ -544,12 +545,16 @@ async function installChatControlPlaneMock(
       } else {
         expect(provider.provider).toBe("slack");
       }
+      if (provider.provider === "imessage-photon") {
+        expect(body.photon).toEqual(photonShared ? {allocation:"shared",projectId:"project-e2e"} : {allocation:"dedicated",projectId:"project-e2e",lineId:"line-one"});
+      }
       Object.assign(endpoint, {
+        ...(provider.provider === "imessage-photon" ? {photonAllocation: photonShared ? "shared" : "dedicated", allowGroupChats: !photonShared} : {}),
         status: "verifying",
         providerAccountId: `account-${provider.provider}`,
         providerAccountLabel: provider.accountLabel,
-        botExternalId: provider.provider === "imessage-photon" ? "+15555550100" : `bot-${provider.provider}`,
-        botUsername: provider.botUsername,
+        botExternalId: provider.provider === "imessage-photon" ? photonShared ? "photon-project:project-e2e" : "+15555550100" : `bot-${provider.provider}`,
+        botUsername: photonShared ? null : provider.botUsername,
         botLabel: provider.botLabel,
         setup: {
           ...endpoint.setup,
@@ -565,7 +570,7 @@ async function installChatControlPlaneMock(
 
     if (pathname === `/api/chat-endpoints/${endpoint.id}/photon/inspect` && method === "POST") {
       expect(bodyOf(route)).toEqual({projectId:"project-e2e",projectSecret:"photon-test-secret"});
-      await fulfill(route,{projectId:"project-e2e",projectName:"Photon Test",allocation:"dedicated",eligible:true,lines:[{lineId:"line-one",phoneNumber:"+15555550100",eligible:true},{lineId:"line-two",phoneNumber:"+15555550102",eligible:true}]}); return;
+      await fulfill(route,{projectId:"project-e2e",projectName:"Photon Test",allocation:photonShared ? "shared" : "dedicated",eligible:true,lines:photonShared ? [] : [{lineId:"line-one",phoneNumber:"+15555550100",eligible:true},{lineId:"line-two",phoneNumber:"+15555550102",eligible:true}]}); return;
     }
     if (
       pathname === `/api/chat-endpoints/${endpoint.id}/test` &&
@@ -3367,6 +3372,26 @@ test.describe("iMessage Photon setup and management", () => {
   test.beforeAll(async ({ request }) => {
     seed = await seedCompanyAndAgent(request);
   });
+  test("connects Pro shared DMs without presenting a fake owned number or enabling groups", async ({page}) => {
+    await installChatControlPlaneMock(page, photon, seed, { enableChatConnectors: true, photonShared: true });
+    await page.goto(`/${seed.prefix}/apps`);
+    await page.getByRole("button", {name:"Connect iMessage Photon",exact:true}).click();
+    await selectMaya(page);
+    await page.getByLabel("Project ID").fill("project-e2e");
+    await page.getByLabel("Project secret").fill("photon-test-secret");
+    await page.getByRole("button", {name:"Inspect Photon project"}).click();
+    await expect(page.getByText(/Groups cannot be enabled on this channel/)).toBeVisible();
+    await page.getByRole("button", {name:"Connect shared DMs"}).click();
+    await expect(page.getByRole("heading", {name:"Try Maya in iMessage Photon"})).toBeVisible();
+    await page.reload();
+    await expect(page.getByText(/enroll your sender in Users/)).toBeVisible();
+    await expect(page.getByRole("button", {name:/Copy \+1555/})).toHaveCount(0);
+    await page.getByRole("button", {name:"I've sent the test message"}).click();
+    await page.getByRole("tab", {name:"Settings"}).click();
+    await expect(page.getByText(/Shared Photon project · direct messages only/)).toBeVisible();
+    await expect(page.getByRole("switch", {name:"Enable Family project"})).toBeDisabled();
+    await expect(page.getByRole("button", {name:"Copy dedicated number"})).toHaveCount(0);
+  });
   for (const theme of ["light", "dark"] as const) {
     test(`discovers dedicated lines and completes the channel wizard (${theme})`, async ({
       page,
@@ -3398,7 +3423,7 @@ test.describe("iMessage Photon setup and management", () => {
         "password",
       );
       await page
-        .getByRole("button", { name: "Find dedicated numbers" })
+        .getByRole("button", { name: "Inspect Photon project" })
         .click();
       await expect(
         page.getByRole("button", { name: "Connect selected number" }),

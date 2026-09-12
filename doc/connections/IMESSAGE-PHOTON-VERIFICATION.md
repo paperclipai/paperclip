@@ -3,7 +3,7 @@
 Date: 2026-09-11. Branch: `codex/imessage-photon`.
 Base inspected: `1c4bcff2b`; rebased onto `fe3808517` (`origin/master`).
 Initial implementation checked: `7ada38eb7ef5dff5441f23c02131798b11d57712`.
-**Status: experimental implementation; not live-provider qualified.**
+**Status: experimental; Pro shared-DM live journeys verified below. Dedicated groups and the remaining release matrix are not yet qualified.**
 
 [PR #13299](https://github.com/paperclipai/paperclip/pull/13299) carries the current
 CI and review results. The Photon migration is `0274_jittery_anthem.sql`, regenerated after master added its own 0273 migration. Greptile reviewed the implementation commit at 5/5 with no
@@ -104,26 +104,120 @@ Some broad package runs encountered host embedded-Postgres startup limits during
 concurrent local development. These startup failures are not provider proof;
 inspect the linked PR for the current complete gate results.
 
+## Pro shared-DM qualification in progress (2026-09-12)
+
+The operator approved Pro-compatible shared DMs with groups disabled. The live
+test uses the isolated instance on port 3109, a Photon Pro project, its enrolled
+test participant, and the participant's actual iPhone. The test source was fully
+seeded through the worktree CLI; the primary instance remains untouched.
+
+Observed with SDK 2.1.0 on implementation base `e556f7dbefd3ee738bde7830d69d5e30c4e96872`
+plus the shared-DM changes in this PR:
+
+- Project inspection and vaulted setup succeeded against Photon Cloud's actual
+  shared allocation. Shared credentials select the fixed shared gateway and a
+  project-scoped identity, without inventing an owned phone number.
+- At 13:16 UTC, the participant sent a fresh iMessage from their iPhone. Photon
+  delivered it through authenticated recovery. The project-filtered event feed
+  jumped from an empty cursor to a non-adjacent sequence; the dedicated-only
+  adjacency check initially stopped in Attention.
+- After the shared recovery fix and an isolated server restart, reconnect replayed
+  the original message at 13:26 UTC. Paperclip discovered the exact sender but
+  created no conversation/task while the identity was unlinked. The normal private
+  confirmation flow then linked that identity to the isolated Board account.
+- At 13:27–13:28 UTC, the fresh linked request created a task, ran the native
+  Codex runner, and delivered the requested response back to Apple Messages.
+- A native poll created at 13:29 UTC survived restart. Setup initially rejected
+  interaction answers until the endpoint was active, deadlocking a clarifying
+  question before final-reply qualification. Photon now permits those responses
+  during its verified test step with the same identity, generation, and permission
+  checks. After restart, a fresh vote at 13:33 UTC produced exactly one canonical
+  answer and one native continuation. Its final reply arrived in Messages. A late
+  unvote did not undo the answer. Setup then completed normally.
+- At 13:35–13:37 UTC, two free-text answers were collected sequentially. Early
+  submission stayed pending; explicit submission of both drafts resumed the
+  native agent with both exact values. The test also corrected the missing-answer
+  hint to identify the unanswered question rather than always question 1.
+- At 13:38 UTC, the initial PNG/document import failed visibly because the shared
+  gateway returns project attachment aliases in metadata and native UUIDs in
+  stream headers. Shared downloads now retain authenticated source-message/chat
+  checks and the exact alias-addressed RPC, validate the header metadata, and
+  retain project aliases for provenance and restart. At 13:43–13:44 UTC, a fresh
+  two-file message sent during the outage was recovered, imported, inspected by
+  the agent, and returned as actual PNG and text-file attachments in Messages.
+  The agent correctly identified the image and the document's verification word.
+- At 13:46–13:49 UTC, a canonical `request_confirmation` rejected a bare Reject
+  reply with an actionable reason request. A correlated rejection with a reason
+  resolved the canonical interaction and resumed the native agent, which returned
+  the exact reason and confirmed that no further action ran.
+- At 13:49–13:50 UTC, a synthetic HEIC was sent through Apple Messages. Paperclip
+  retained the 676-byte original and created a 633-byte JPEG derivative. The agent
+  correctly described the solid blue 16×16 image and returned the original HEIC
+  through Photon; the file appeared in Messages. This tests the real transport and
+  converter together, but does not substitute for an actual iPhone camera photo.
+- At 13:51–13:53 UTC, Pause suppressed a delivered test message without creating
+  a task. Resume did not replay it as work; a fresh request created the next task
+  and received a reply. Reconnect reused the vaulted credentials and preserved
+  project/allocation identity, then completed its fresh-message/reply test.
+- At 13:53–13:54 UTC, revoking the linked identity caused the next live message to
+  be filtered with no task or agent run. The normal private confirmation flow
+  restored the link. Completed tasks remained idle between fresh requests, and
+  `/status` correctly reported no active task. `/new` requested a fresh message,
+  and `/close` closed the next active conversation. Its late correlated answer
+  left the old interaction unresolved and did not start another task.
+- At 13:56 UTC, Remove connection archived the test endpoint and its connection,
+  cleared saved secret bindings, and stopped intake. A message sent while removed
+  created no task. The same Photon project remained eligible in new setup.
+  A replacement endpoint was linked normally and completed a fresh native
+  task/reply test at 13:58 UTC. The test channel was left active.
+- An identical published test send was repeated with its original key, exact
+  payload digest, and reply target. Photon suppressed it but returned gRPC 6 with
+  SDK `internalError` and an empty context, saying the operation was already
+  processed. No new bubble appeared. Contrary to the documented original-result
+  behavior, the shared gateway supplied no receipt. A regression test preserves
+  delivery-unknown state in this case; no text matching or new key is used.
+- The shared receiver now commits only after the complete ordered replay barrier.
+  Regression cases cover sparse events, interrupted/out-of-order replay, and cursor
+  resets without advancing the saved checkpoint. Dedicated recovery remains strict.
+- All 39 chat-adapters browser tests passed, including shared setup after reload
+  and existing provider coverage. The 20 Photon unit cases passed. An integration
+  rerun initially hit the host's embedded-Postgres startup limit; this is a test
+  environment failure, not a provider result.
+
+The expanded unit suite has 22 passing cases, including shared attachment alias
+ownership, header validation, and missing duplicate receipts. All original 14 integration cases passed; added
+setup poll/continuation cases passed in targeted reruns. Full workspace typecheck,
+build, and token gates passed during this qualification, with a subsequent server
+typecheck after the media changes. A broad `pnpm test:run` was started and stopped
+when the host's shared-memory limit prevented the live isolated PostgreSQL from
+restarting. Only this task's exited test database resources were removed. This
+interrupted run is not a full-suite pass; current CI must qualify the final commit.
+
+Photon's CLI manages projects and users; its terminal provider simulates chat UI.
+Neither substitutes for actual Cloud iMessage delivery. The local Mac initially
+classified the assigned number as RCS, while the participant's iPhone sent the
+observed iMessage. No RCS/SMS fallback was enabled.
+
 ## Live qualification still required
 
-No dedicated Photon project/line credentials or approved test participants were
-available during implementation. No live messages, polls, uploads, or approvals
-were sent. The following matrix must be completed before release readiness.
+Dedicated-line credentials were unavailable during the initial implementation.
+The Pro shared-DM test above has begun; the remaining matrix must be completed
+before release readiness. Live inbound receipt alone is not full qualification.
 Record the tested commit, package versions, redacted project/line/chat IDs,
 participants, timestamps, and observable results when running it.
 
 | Live case | Status |
 | --- | --- |
-| Linked DM creates task and receives actual agent response | Not run. |
-| Enabled group with two linked people preserves attribution | Not run. |
-| Unlinked sender cannot start work | Not run. |
-| Inbound/outbound photos and real iPhone HEIC | Not run. |
-| Native poll and text answer resume correct interaction | Not run. |
-| Approval rejection reason reaches canonical interaction | Not run. |
-| Restart preserves DM/group replies and pending questions | Not run. |
-| Pause/resume/reconnect/removal enforce authority | Not run. |
-| Completed conversation stays idle until fresh input | Not run. |
-| Provider ambiguous-send/idempotency behavior | Not run against Photon. |
+| Linked DM creates task and receives actual agent response | Passed with Pro shared DMs and the native Codex runner. |
+| Enabled group with two linked people preserves attribution | Disabled for the approved Pro scope; dedicated-line live qualification remains unrun. |
+| Unlinked sender cannot start work | Passed for the live shared-DM probe; sender discovered, zero conversations/tasks created. |
+| Inbound/outbound photos and real iPhone HEIC | PNG, text file, and synthetic HEIC passed both directions; JPEG derivative verified. Real iPhone camera HEIC remains unrun. |
+| Native poll and text answer resume correct interaction | Passed, including sequential drafts, incomplete submission, explicit submission, and one poll continuation. |
+| Approval rejection reason reaches canonical interaction | Passed, including missing-reason correction and native continuation. |
+| Restart preserves DM/group replies and pending questions | Shared DM recovery and pending native poll passed; dedicated groups remain unrun. |
+| Pause/resume/reconnect/removal enforce authority | Passed for Pro DMs. Removal archived the endpoint and connection, cleared secret bindings, and stopped intake. |
+| Completed conversation stays idle until fresh input | Passed across successive tasks and status/authorization probes. |
+| Provider ambiguous-send/idempotency behavior | Real repeated key suppressed duplicates but returned no original receipt. Unknown-send recovery remains an operator action; no induced network-timeout test. |
 | HEIF conversion on Linux glibc/Windows and deployment packaging | Not run. Linux musl has no packaged converter. |
 
 Keep this channel behind the existing experimental gate. Mocked tests, synthetic

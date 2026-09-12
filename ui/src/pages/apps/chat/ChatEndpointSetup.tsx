@@ -130,7 +130,7 @@ export function ChatEndpointSetup() {
   return params.get("provider") === "agentmail" ? <EmailEndpointSetup /> : <ChatSdkEndpointSetup />;
 }
 function ChatSdkEndpointSetup() {
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
@@ -235,7 +235,14 @@ function ChatSdkEndpointSetup() {
         provider: provider!,
         assignedAgentId: agentId,
       }),
-    onSuccess: syncEndpointSnapshot,
+    onSuccess: (next) => {
+      syncEndpointSnapshot(next);
+      if (next.provider === "imessage-photon") {
+        const resumed = new URLSearchParams(params);
+        resumed.set("resume", next.id);
+        setParams(resumed, { replace: true });
+      }
+    },
     onError: (error) =>
       pushToast({
         title: "Couldn't start setup",
@@ -253,7 +260,7 @@ function ChatSdkEndpointSetup() {
     }) => chatEndpointsApi.setup(endpoint!.id, provider === "imessage-photon" ? {
       action,
       ...(values?.projectSecret ? { credentials: { projectSecret: values.projectSecret } } : {}),
-      ...(values?.projectId && values?.lineId ? { photon: { projectId: values.projectId, lineId: values.lineId } } : {}),
+      ...(values?.projectId && values.allocation === "shared" ? { photon: { allocation: "shared" as const, projectId: values.projectId } } : values?.projectId && values?.lineId ? { photon: { allocation: "dedicated" as const, projectId: values.projectId, lineId: values.lineId } } : {}),
     } : { action, credentials: values }),
     onMutate: () => setSetupError(null),
     onSuccess: (next) => {
@@ -480,6 +487,7 @@ function ChatSdkEndpointSetup() {
             agentName={selectedAgent?.name ?? endpoint.assignedAgentName}
             botLabel={endpoint.botLabel}
             botUsername={endpoint.botUsername}
+            photonAllocation={endpoint.photonAllocation}
             providerUrl={endpoint.setup?.providerUrl}
             guestIsolationState={
               experimentalSettingsQuery.isPending
@@ -1476,6 +1484,7 @@ function TryStep({
   agentName,
   botLabel,
   botUsername,
+  photonAllocation,
   providerUrl,
   guestIsolationState,
   pending,
@@ -1487,6 +1496,7 @@ function TryStep({
   agentName: string;
   botLabel?: string | null;
   botUsername?: string | null;
+  photonAllocation?: "dedicated" | "shared";
   providerUrl?: string | null;
   guestIsolationState: "loading" | "enabled" | "disabled" | "unknown";
   pending: boolean;
@@ -1505,7 +1515,7 @@ function TryStep({
     (identity) => identity.status !== "linked",
   );
   const freshConversationInstruction =
-    provider === "imessage-photon" ? "send a fresh message to the dedicated number" : provider === "telegram"
+    provider === "imessage-photon" ? "send a fresh message to your Photon number" : provider === "telegram"
       ? "start a fresh conversation with /new and send the test message again"
       : provider === "github"
         ? "start a new issue or pull request conversation and mention the agent again"
@@ -1563,10 +1573,10 @@ function TryStep({
     : (botLabel ?? agentName);
   const instructions =
     provider === "imessage-photon" ? [
-      `Open Apple Messages and send a fresh message to ${botUsername ?? botLabel ?? "the dedicated number"}.`,
+      photonAllocation === "shared" ? "In your Photon project, enroll your sender in Users and find its assigned number in Get started. Send a fresh message to that number from Apple Messages." : `Open Apple Messages and send a fresh message to ${botUsername ?? botLabel ?? "the dedicated number"}.`,
       "Link the discovered sender to a Paperclip person in Access, then send a fresh request.",
       "Wait for the agent’s actual reply. Setup completes after that reply is delivered.",
-      "For a group: add the number in Messages, send a message, enable the discovered group in Settings, then send a fresh request.",
+      ...(photonAllocation === "shared" ? ["This Pro-compatible channel supports DMs only. Group messages cannot start work."] : ["For a group: add the number in Messages, send a message, enable the discovered group in Settings, then send a fresh request."]),
     ] : provider === "discord"
       ? [
           "Open a text channel where the bot is installed.",

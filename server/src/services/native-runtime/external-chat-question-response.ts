@@ -705,7 +705,8 @@ async function resolveQuestionResponseChain(
     !["active", "waiting"].includes(conversation.state) ||
     endpoint.provider !== provider ||
     endpoint.assignedAgentId !== binding.agentId ||
-    endpoint.status !== "active" ||
+    (endpoint.status !== "active" &&
+      !(provider === "imessage-photon" && endpoint.status === "verifying" && record(endpoint.setup).step === "test")) ||
     publication.state !== "published" ||
     !publication.providerMessageId ||
     publication.issueId !== binding.issueId ||

@@ -102,7 +102,7 @@ describe.sequential("iMessage Photon channel control plane", () => {
       delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
     else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = oldKey;
   });
-  async function setup() {
+  async function setup(shared = false) {
     const companyId = randomUUID(),
       agentId = randomUUID(),
       userId = randomUUID();
@@ -147,7 +147,10 @@ describe.sequential("iMessage Photon channel control plane", () => {
       grantedByUserId: userId,
     });
     const f = photonFixture();
-    const allocation = await f.cloud.allocation("project", "secret");
+    const allocation = shared ? {
+      inspection: { projectId: "project", projectName: "Test shared", allocation: "shared" as const, eligible: true, lines: [] },
+      tokens: new Map<string, string>(), sharedToken: "shared-project-token", expiresIn: 300,
+    } : await f.cloud.allocation("project", "secret");
     vi.spyOn(PhotonCloudClient.prototype, "allocation").mockResolvedValue(
       allocation,
     );
@@ -254,7 +257,7 @@ describe.sequential("iMessage Photon channel control plane", () => {
       endpoint.id,
       {
         action: "configure",
-        photon: { projectId: "project", lineId: "line" },
+        photon: shared ? { allocation: "shared", projectId: "project" } : { projectId: "project", lineId: "line" },
         credentials: { projectSecret: "secret" },
       },
       userId,
@@ -357,6 +360,27 @@ describe.sequential("iMessage Photon channel control plane", () => {
       },
     };
   }
+  it("supports shared project DMs while rejecting groups, duplicate ownership and allocation changes", async () => {
+    const t = await setup(true);
+    const snapshot = await t.service.get(t.endpoint.id);
+    expect(snapshot).toMatchObject({ photonAllocation: "shared", botExternalId: "photon-project:project", botUsername: null, allowGroupChats: false });
+    await expect(t.service.update(t.endpoint.id, { allowGroupChats: true }, t.userId)).rejects.toThrow(/direct messages only/);
+    const group = photonChat("iMessage;+;shared-group", true);
+    t.chats.set(group.guid, group);
+    await t.deliver(photonEvent(10, group));
+    expect(await t.service.listResources(t.endpoint.id)).toHaveLength(0);
+    expect(t.wakeup).not.toHaveBeenCalled();
+    const conversation = await t.start();
+    expect(conversation.externalThreadId).toContain("shared-");
+    await t.qualify();
+    expect(t.f.client.groups.subscribeEvents).not.toHaveBeenCalled();
+    const duplicate = await t.service.create(t.companyId, { provider: "imessage-photon", assignedAgentId: t.agentId }, t.userId);
+    expect(await t.service.inspectPhoton(duplicate.id, {projectId: "project", projectSecret: "secret"})).toMatchObject({ allocation: "shared", eligible: false });
+    await expect(t.service.configure(duplicate.id, { action: "configure", photon: { allocation: "shared", projectId: "project" }, credentials: { projectSecret: "secret" } }, t.userId)).rejects.toThrow(/already/);
+    const restarted = await t.restart();
+    expect((await restarted.listConversations(t.endpoint.id))[0].id).toBe(conversation.id);
+    await expect(restarted.configure(t.endpoint.id, { action: "reconnect", photon: { projectId: "project", lineId: "line" }, credentials: { projectSecret: "secret" } }, t.userId)).rejects.toThrow(/allocation|identity|different/);
+  });
   it("distinguishes setup validation from provider outages without replacing credentials", async () => {
     const t = await setup();
     const allocation = vi.spyOn(PhotonCloudClient.prototype, "allocation");
@@ -453,10 +477,10 @@ describe.sequential("iMessage Photon channel control plane", () => {
     await t.deliver(photonEvent(4, group, "Fresh group request"));
     expect(await t.service.listConversations(t.endpoint.id)).toHaveLength(2);
   }, 30_000);
-  it("resolves only an authorized exact poll vote once and keeps text answers out of task comments", async () => {
+  it.each([true, false])("resolves an authorized exact poll vote once, including setup (qualified=%s)", async (qualified) => {
     const t = await setup();
     const conversation = await t.start();
-    await t.qualify();
+    if (qualified) await t.qualify();
     const interaction = await issueThreadInteractionService(db).create(
       { id: conversation.issueId, companyId: t.companyId },
       {
@@ -625,6 +649,8 @@ describe.sequential("iMessage Photon channel control plane", () => {
       )[0].status,
     ).toBe("pending");
     await t.service.processPendingPublications();
+    expect(t.f.client.messages.sendText.mock.calls.some((call) =>
+      call[1].includes(`Send /answer ${ref}.2 <answer> to correct it.`))).toBe(true);
     await t.deliver(photonEvent(9, group, `/answer ${ref}.2 Alice B`));
     await t.deliver(photonEvent(10, group, `/submit ${ref}`));
     const resolved = (
@@ -929,7 +955,7 @@ describe.sequential("iMessage Photon channel control plane", () => {
       (row) => row.type === "group_chat" && row.availability === "unavailable",
     )).toHaveLength(2);
   }, 30_000);
-  it("reconstructs native continuation authority when a second linked group person answers", async () => {
+  it.each(["active", "verifying"] as const)("reconstructs native continuation authority for a linked group responder (%s)", async (endpointStatus) => {
     const t = await setup();
     await t.start();
     await t.qualify();
@@ -1028,6 +1054,9 @@ describe.sequential("iMessage Photon channel control plane", () => {
       { agentId: t.agentId, runId: sourceRunId },
     );
     await t.service.processPendingPublications();
+    if (endpointStatus === "verifying") {
+      await db.update(chatEndpoints).set({status: "verifying", setup: sql`jsonb_set(${chatEndpoints.setup}, '{step}', '"test"')`}).where(eq(chatEndpoints.id, t.endpoint.id));
+    }
     const [action] = await db
       .select()
       .from(chatActions)

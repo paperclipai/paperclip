@@ -4,6 +4,7 @@ import { IMessageError } from "@photon-ai/advanced-imessage";
 import type { AskUserQuestionsInteraction } from "@paperclipai/shared";
 import {
   PhotonCloudClient,
+  PhotonLineAuthentication, photonSharedIdentity, photonSharedScope,
   PhotonError,
   photonFailure,
 } from "../../services/photon/cloud.js";
@@ -87,7 +88,7 @@ describe("Photon Cloud and fixed line identity", () => {
     expect(result.lines).toHaveLength(2);
     expect(JSON.stringify(result)).not.toMatch(/TOKEN|secret/);
   });
-  it("rejects credentials and shared/missing lines without leaking provider error bodies", async () => {
+  it("rejects credentials and missing dedicated lines while inspecting shared DMs without exposing tokens", async () => {
     const client = new PhotonCloudClient(
       async () => new Response("secret=BAD", { status: 401 }),
     );
@@ -101,7 +102,7 @@ describe("Photon Cloud and fixed line identity", () => {
       }),
     );
     expect(await shared.inspect("p", "secret")).toMatchObject({
-      eligible: false,
+      eligible: true,
       allocation: "shared",
       lines: [],
     });
@@ -115,6 +116,27 @@ describe("Photon Cloud and fixed line identity", () => {
       eligible: false,
       lines: [],
     });
+  });
+  it("binds shared gateway tokens to one project and fences renewal and group access", async () => {
+    let now = 0;
+    const cloud = new PhotonCloudClient();
+    const allocation = vi.spyOn(cloud, "allocation").mockResolvedValue({
+      inspection: {projectId: "p", projectName: "Shared", allocation: "shared", eligible: true, lines: []},
+      tokens: new Map(), sharedToken: "first", expiresIn: 60,
+    });
+    const identity = {allocation: "shared" as const, projectId: "p", lineId: photonSharedScope("p"), phoneNumber: photonSharedIdentity("p")};
+    const auth = new PhotonLineAuthentication(identity, "secret", cloud, () => now);
+    expect(auth.address).toBe("imessage.spectrum.photon.codes:443");
+    await expect(auth.token()).resolves.toBe("first");
+    expect(photonSharedScope("other")).not.toBe(identity.lineId);
+    expect(() => new PhotonLineAuthentication({...identity, projectId: "other"}, "secret", cloud)).toThrow(/match its project/);
+    const f = photonFixture();
+    const adapter = new PhotonChatAdapter("Shared", auth, f.state, f.adapter.client);
+    expect(() => adapter.encodeThreadId({lineId: identity.lineId, chatGuid: "group", isGroup: true})).toThrow(/direct messages only/);
+    expect(() => adapter.decodeThreadId(`imessage-photon:${identity.lineId}:g:Z3JvdXA`)).toThrow(/direct messages only/);
+    now = 60_000;
+    allocation.mockResolvedValueOnce({inspection: {projectId:"p", projectName:"Moved", allocation:"dedicated", eligible:true, lines:[]}, tokens:new Map(), expiresIn:60});
+    await expect(auth.token()).rejects.toMatchObject({code:"line_unavailable"});
   });
   it("renews only the selected line and refuses replacement identity or retired ownership", async () => {
     const f = photonFixture();
@@ -224,6 +246,29 @@ describe("Photon publication receipts", () => {
     });
     expect(f.client.attachments.upload).toHaveBeenCalledTimes(1);
   });
+  it("retains unknown delivery when the shared gateway rejects a duplicate without a receipt", async () => {
+    const f = photonFixture();
+    f.client.messages.sendText.mockRejectedValueOnce(new Error("lost receipt"));
+    await expect(f.adapter.publish(f.threadId, "duplicate", "hello", {
+      assertCurrent: guard,
+    })).rejects.toMatchObject({ code: "delivery_unknown" });
+    // Observed on Photon Pro: ALREADY_EXISTS arrives as internalError, without
+    // a message GUID. Neither the wording nor duplicate status proves a receipt.
+    f.client.messages.sendText.mockRejectedValueOnce(new IMessageError(
+      "[upstream] Operation already processed with this client message ID",
+      { code: "internalError", grpcCode: 6, retryable: false },
+    ));
+    await expect(f.adapter.publish(f.threadId, "duplicate", "hello", {
+      assertCurrent: guard, retryUnknown: true,
+    })).rejects.toMatchObject({ code: "delivery_unknown" });
+    await expect(f.adapter.publish(f.threadId, "duplicate", "hello", {
+      assertCurrent: guard,
+    })).rejects.toMatchObject({ code: "delivery_unknown" });
+    expect(f.client.messages.sendText).toHaveBeenCalledTimes(2);
+    expect(f.client.messages.sendText.mock.calls[0][2]).toEqual(
+      f.client.messages.sendText.mock.calls[1][2],
+    );
+  });
   it("distinguishes explicit quota errors and rechecks authorization between parts", async () => {
     const f = photonFixture();
     f.client.messages.sendText.mockRejectedValueOnce(
@@ -329,6 +374,24 @@ describe("Photon durable event recovery", () => {
     });
     await expect(lost.catchUp()).rejects.toThrow("lease lost");
     expect(admit).not.toHaveBeenCalled();
+  });
+  it("recovers sparse shared-project sequences and commits only a complete ordered replay", async () => {
+    const f = photonFixture();
+    const admit = vi.fn(guard);
+    await f.state.update("checkpoint", () => ({schema:1, lineId:"line", sequence:0}));
+    let events: any[] = [photonEvent(1_008_648_034), {type:"catchup.complete",headSequence:1_008_648_034}];
+    const receiver = new PhotonReceiver({client:f.adapter.client,state:f.state,lineId:"line",allocation:"shared",intakeAfter:0,assertOwned:guard,admit,failure:guard,catchUp:()=>stream(events)});
+    await receiver.catchUp();
+    expect(admit).toHaveBeenCalledTimes(1);
+    expect(await f.state.read("checkpoint")).toMatchObject({sequence:1_008_648_034});
+    events=[photonEvent(1_008_648_090),photonEvent(1_008_648_080),{type:"catchup.complete",headSequence:1_008_648_090}];
+    await expect(receiver.catchUp()).rejects.toThrow(/out of order/);
+    expect(await f.state.read("checkpoint")).toMatchObject({sequence:1_008_648_034});
+    events=[photonEvent(1_008_648_080)];
+    await expect(receiver.catchUp()).rejects.toMatchObject({code:"network"});
+    expect(await f.state.read("checkpoint")).toMatchObject({sequence:1_008_648_034});
+    events=[{type:"catchup.complete",headSequence:0}];
+    await expect(receiver.catchUp()).rejects.toMatchObject({code:"history_gap"});
   });
   it("reads sequence-only and complete frames over authenticated synthetic gRPC", async () => {
     const f = photonFixture();
@@ -551,6 +614,28 @@ describe("Photon native prompts and media", () => {
       optionIds: ["number"],
       otherText: "42",
     });
+  });
+  it("downloads a shared project alias with a native header UUID only after source ownership is verified", async () => {
+    const f = photonFixture();
+    const body = Buffer.from("synthetic shared attachment");
+    const alias = "spc-att-11111111-1111-4111-8111-111111111111";
+    const message = photonEvent(1).message;
+    const info = {guid: alias, totalBytes: body.length, fileName: "test.txt", mimeType: "text/plain", isHidden: false, isSticker: false};
+    (message.content.attachments as any[]).push(info);
+    f.client.messages.get.mockResolvedValue(message);
+    const native = {...info, guid: "22222222-2222-4222-8222-222222222222"};
+    f.client.attachments.downloadStream.mockImplementation(() => stream([
+      {type: "header", info: native}, {type: "primaryChunk", data: body},
+    ]));
+    const locator = {kind: "photon_attachment" as const, lineId: "line", chatGuid: f.chat.guid, messageGuid: message.guid, attachmentGuid: alias};
+    await expect(downloadPhotonAttachment(f.adapter.client, "line", locator)).rejects.toThrow("metadata changed");
+    await expect(downloadPhotonAttachment(f.adapter.client, "line", locator, "shared")).resolves.toEqual(body);
+    expect(f.client.attachments.downloadStream).toHaveBeenLastCalledWith(alias);
+    native.mimeType = "application/octet-stream";
+    await expect(downloadPhotonAttachment(f.adapter.client, "line", locator, "shared")).rejects.toThrow("metadata changed");
+    f.client.attachments.downloadStream.mockClear();
+    await expect(downloadPhotonAttachment(f.adapter.client, "line", {...locator, chatGuid: "wrong-chat"}, "shared")).rejects.toThrow("does not belong");
+    expect(f.client.attachments.downloadStream).not.toHaveBeenCalled();
   });
   it("retains source-bound Live Photo companion bytes and waits for incomplete companions", async () => {
     const f = photonFixture();

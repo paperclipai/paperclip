@@ -89,10 +89,10 @@ export const updateChatEndpointSchema = z
 
 export const photonProjectIdSchema = z.string().trim().min(1).max(128).regex(/^[a-zA-Z0-9_-]+$/);
 export const photonLineIdSchema = z.string().trim().min(1).max(63).regex(/^[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$/);
-export const photonChannelConfigurationSchema = z.object({
-  projectId: photonProjectIdSchema,
-  lineId: photonLineIdSchema,
-}).strict();
+export const photonChannelConfigurationSchema = z.union([
+  z.object({ allocation: z.literal("dedicated").default("dedicated"), projectId: photonProjectIdSchema, lineId: photonLineIdSchema }).strict(),
+  z.object({ allocation: z.literal("shared"), projectId: photonProjectIdSchema }).strict(),
+]);
 export const inspectPhotonProjectSchema = z.object({
   projectId: photonProjectIdSchema,
   projectSecret: z.string().min(1).max(4096),

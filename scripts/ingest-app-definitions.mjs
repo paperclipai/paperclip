@@ -367,10 +367,10 @@ const apps = [
   ],
   [
     "imessage-photon", "iMessage Photon",
-    "Message a Paperclip agent from Apple Messages using a dedicated Photon number.",
+    "Message a Paperclip agent from Apple Messages using Photon Cloud. Pro supports DMs; dedicated lines also support groups.",
     "communication", "photon.codes", ["https://photon.codes/*"],
     channelMethod("imessage-photon", [field("projectSecret", "Project secret", "Photon project secret")], ["direct_message", "group_chat"],
-      "Connect a Photon Cloud project with a dedicated number. Link people and explicitly enable each group before it can start work.",
+      "Connect a Photon Cloud project. Pro shared lines support DMs after sender enrollment in Photon and identity linking in Paperclip. Dedicated lines also support individually enabled groups.",
       { register: "https://photon.codes/", docs: "https://photon.codes/docs/spectrum-ts/providers/imessage/connection-and-routing" }),
   ],
   [
