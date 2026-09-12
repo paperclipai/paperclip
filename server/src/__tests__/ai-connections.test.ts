@@ -1,3 +1,6 @@
+import { connectionIntentService } from "../services/connection-intents.js";
+import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
+import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import * as localCredentials from "../services/local-ai-credentials.js";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -5,7 +8,7 @@ import { mkdtemp, rm, access, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, adapterAuthSessions, environments } from "@paperclipai/db";
+import { createDb, companies, agents, heartbeatRuns, companyMemberships, connectionGrants, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, adapterAuthSessions, environments, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
@@ -70,6 +73,8 @@ describe("managed AI connections", () => {
     const selected = await service.select({ ...input, userId: "alice" });
     await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, selected.grant.id));
     await create("alice", "Alice third");
+    expect(await toolAccessService(db).getConnection(selected.connection.id, companyId)).toMatchObject({ healthStatus: "missing_secret", requiresReauthorization: true });
+    expect((await toolAccessService(db).listConnections(companyId)).find(connection => connection.id === selected.connection.id)?.healthStatus).toBe("missing_secret");
     await expect(service.select({ ...input, userId: "alice" })).rejects.toThrow("Reconnect");
     const second = (await service.list(companyId, "alice")).find(a => a.name === "Alice second")!;
     await service.setDefault(companyId, "alice", second.grantId);
@@ -172,7 +177,7 @@ describe("managed AI connections", () => {
     const definition = await vault.createUserSecretDefinition(companyId, { key: "legacy_claude", name: "Existing owned Claude key", provider: "local_encrypted" }, { userId: "alice" });
     const secret = await vault.createCurrentUserSecretValue(companyId, "alice", { definitionId: definition.id, value: "fixture-legacy" }, { userId: "alice" });
     await vault.syncUserSecretDeclarationsForTarget(companyId, { targetType: "agent", targetId: agentId }, [{ definitionKey: definition.key, configPath: "env.ANTHROPIC_API_KEY", envKey: "ANTHROPIC_API_KEY", required: true }]);
-    const migration = await readFile(new URL("../../../packages/db/src/migrations/0273_organic_jackal.sql", import.meta.url), "utf8");
+    const migration = await readFile(new URL("../../../packages/db/src/migrations/0276_hard_mandroid.sql", import.meta.url), "utf8");
     const adoption = migration.slice(migration.indexOf("DO $$", migration.indexOf("-- Only declared")));
     await db.execute(sql.raw(adoption));
     const before = await service.list(companyId, "alice");
@@ -276,6 +281,12 @@ describe("managed AI connections", () => {
     try {
       expect((await request(app).post(url).send(payload)).status).toBe(403);
       expect(reader).not.toHaveBeenCalled();
+      expect((await request(app).post(`${url}/check`).send(payload)).status).toBe(403);
+      expect(reader).not.toHaveBeenCalled();
+      const checked = await request(app).post(`${url}/check`).set("x-local", "yes").send(payload);
+      expect(checked.status).toBe(200);
+      expect(checked.body).toEqual({ status: "ready" });
+      expect((await service.list(companyId, "alice")).some(c => c.name === payload.name)).toBe(false);
       const connected = await request(app).post(url).set("x-local", "yes").send(payload);
       expect(connected.status).toBe(201);
       expect(JSON.stringify(connected.body)).not.toContain("fixture-local-token");
@@ -296,7 +307,7 @@ describe("managed AI connections", () => {
       expect((await request(app).post(url).set("x-local", "yes").send(codex)).status).toBe(422);
       const prepared = await request(app).post(attempts).set("x-local", "yes").send(codex);
       expect(prepared.status).toBe(201);
-      expect(prepared.body.command).toMatch(/^CODEX_HOME=.* codex login$/);
+      expect(prepared.body.command).toMatch(/^\(export CODEX_HOME=.* && mkdir -p .* && codex -c .* login\)$/);
       expect((await request(app).post(attempts).set("x-local", "yes").send(codex)).body).toEqual(prepared.body);
       expect((await request(app).delete(`${attempts}/${prepared.body.sessionId}`).send()).status).toBe(403);
       expect((await request(app).delete(`${attempts}/${prepared.body.sessionId}`).set("x-local", "yes").send()).status).toBe(200);
@@ -402,4 +413,56 @@ describe("managed AI connections", () => {
     }
   }, 30000);
 
+});
+
+
+describe("AI connection recovery delivery", () => {
+  it.each(["restored", "newer failure", "different blocker", "revoked again", "closed task"])(
+    "continues only the repaired source failure: %s", async (scenario) => {
+      const userId = `recovery-${randomUUID()}`;
+      const recoveringAgentId = randomUUID();
+      const issueId = randomUUID();
+      const failedRunId = randomUUID();
+      await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
+      await db.insert(agents).values({ id: recoveringAgentId, companyId, name: "Recovery agent", status: "active", adapterType: "claude_local", runtimeConfig: { aiConnection: binding } });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Restore selected account", status: "in_progress", assigneeAgentId: recoveringAgentId });
+      await db.insert(heartbeatRuns).values({ id: failedRunId, companyId, agentId: recoveringAgentId, status: "running", responsibleUserId: userId, contextSnapshot: { issueId } });
+      const intents = connectionIntentService(db);
+      const pending = await intents.request({ sub: recoveringAgentId, company_id: companyId, run_id: failedRunId, responsible_user_id: userId }, "anthropic", { purpose: "ai" });
+      const account = await create(userId, `Recovered ${scenario}`);
+      expect((await intents.setupOptions(pending.interactionId!)).existingConnections.map(connection => connection.id)).toEqual([account.connectionId]);
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "configuration_incomplete", resultJson: { configurationIncomplete: { reason: "ai_connection_unavailable" } } }).where(eq(heartbeatRuns.id, failedRunId));
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, issueId));
+      await issueRecoveryActionService(db).upsertSourceScoped({ companyId, sourceIssueId: issueId, kind: "configuration_validation", cause: "configuration_incomplete", fingerprint: `ai:${issueId}`, nextAction: "Reconnect", ownerType: "board", evidence: { latestRunId: failedRunId } });
+      await intents.complete(pending.interactionId!, account.connectionId, userId);
+      if (scenario === "newer failure") await db.insert(heartbeatRuns).values({ companyId, agentId: recoveringAgentId, status: "failed", contextSnapshot: { issueId }, createdAt: new Date(Date.now() + 1000) });
+      if (scenario === "different blocker") await db.update(issueRecoveryActions).set({ cause: "workspace_validation_failed" }).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+      if (scenario === "closed task") await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+      if (scenario === "revoked again") {
+        await toolAccessService(db).revokeConnectionGrant(account.connectionId, account.grantId, { actorType: "user", actorId: userId });
+        const repairOptions = await intents.setupOptions(pending.interactionId!);
+        expect(repairOptions.existingConnections).toEqual([]);
+        expect(repairOptions.aiRepair).toMatchObject({ canReconnect: true, connection: { id: account.connectionId, grantId: account.grantId, isDefault: true, status: "revoked" } });
+      }
+      const wakeup = vi.fn(async (_agentId, opts) => {
+        await db.insert(agentWakeupRequests).values({ companyId, agentId: recoveringAgentId, source: "automation", status: "queued", idempotencyKey: opts.idempotencyKey });
+        return null;
+      });
+      const delivery = connectionIntentDeliveryService(db, { wakeup } as never);
+      await delivery.deliver(pending.interactionId!);
+      await delivery.deliver(pending.interactionId!);
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      if (scenario === "restored") {
+        expect(issue.status).toBe("in_progress");
+        expect(wakeup).toHaveBeenCalledTimes(1);
+        expect(wakeup).toHaveBeenCalledWith(recoveringAgentId, expect.objectContaining({ contextSnapshot: expect.objectContaining({ forceFreshSession: true }) }));
+        expect(await issueRecoveryActionService(db).getActiveForIssue(companyId, issueId)).toBeNull();
+        const [receipt] = await db.select().from(connectionIntentDeliveries).where(eq(connectionIntentDeliveries.interactionId, pending.interactionId!));
+        expect(receipt.deliveredAt).not.toBeNull();
+      } else {
+        expect(wakeup).not.toHaveBeenCalled();
+        expect(issue.status).toBe(scenario === "closed task" ? "done" : "blocked");
+      }
+    }, 30000,
+  );
 });

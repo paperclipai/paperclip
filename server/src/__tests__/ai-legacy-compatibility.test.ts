@@ -36,7 +36,7 @@ it("reconnect detaches an indexed credential without changing unadopted legacy a
   const legacyConfig = { env: { ANTHROPIC_API_KEY: { type: "user_secret_ref", key: definition.key, required: true } } };
   await db.update(agents).set({ adapterConfig: legacyConfig }).where(eq(agents.id, agentId));
   await vault.syncUserSecretDeclarationsForTarget(companyId, { targetType: "agent", targetId: agentId }, [{ definitionKey: definition.key, configPath: "env.ANTHROPIC_API_KEY", envKey: "ANTHROPIC_API_KEY", required: true }]);
-  const migration = await readFile(new URL("../../../packages/db/src/migrations/0273_organic_jackal.sql", import.meta.url), "utf8");
+  const migration = await readFile(new URL("../../../packages/db/src/migrations/0276_hard_mandroid.sql", import.meta.url), "utf8");
   await db.execute(sql.raw(migration.slice(migration.indexOf("DO $$", migration.indexOf("-- Only declared")))));
   const connection = (await service.list(companyId, owner)).find(c => c.name === secret.name)!;
   const resolve = () => vault.resolveUserSecretValue(companyId, { definitionId: definition.id, responsibleUserId: owner, required: true, version: "latest" }, { companyId, responsibleUserId: owner, actorType: "system" });
@@ -69,12 +69,22 @@ it("isolates sign-in and refresh from the host, survives restart, and completes 
   const attempt = await login.start(companyId, owner, loginIntent());
   const directory = directoryFor(attempt.sessionId);
   expect(await localAiLoginService(db).start(companyId, owner, loginIntent())).toEqual(attempt);
-  expect(attempt.command).toContain(`CODEX_HOME='${directory}' codex login`);
+  expect(attempt.command).toContain(`(export CODEX_HOME='${directory}' && mkdir -p "$CODEX_HOME" && codex`);
+  expect(await readFile(path.join(directory, "config.toml"), "utf8")).toContain('cli_auth_credentials_store = "file"');
+  expect(await login.check(companyId, owner, loginIntent(), attempt.sessionId)).toEqual({ status: "sign_in_required" });
+  // Resuming a valid attempt also repairs a missing directory without changing its ID.
+  await rm(directory, { recursive: true });
+  expect(await login.start(companyId, owner, loginIntent())).toEqual(attempt);
   expect(await readFile(path.join(directory, "config.toml"), "utf8")).toContain('cli_auth_credentials_store = "file"');
   // A valid host login cannot satisfy an unfinished connection-specific login.
   await expect(login.complete(companyId, owner, attempt.sessionId, loginIntent())).rejects.toThrow("sign-in command shown");
   expect((await aiConnectionService(db).list(companyId, owner)).filter(c => c.provider === "openai")).toHaveLength(0);
   await writeFile(path.join(directory, "auth.json"), auth("independent-login"));
+  expect(await login.check(companyId, owner, loginIntent(), attempt.sessionId)).toEqual({ status: "ready" });
+  expect((await aiConnectionService(db).list(companyId, owner)).filter(c => c.provider === "openai")).toHaveLength(0);
+  await expect(login.check(companyId, "another-owner", loginIntent(), attempt.sessionId)).rejects.toThrow("not found");
+  await expect(login.check(randomUUID(), owner, loginIntent(), attempt.sessionId)).rejects.toThrow("not found");
+  await expect(login.check(companyId, owner, { ...loginIntent(), ownership: "shared" }, attempt.sessionId)).rejects.toThrow("not found");
   // New service instance simulates process restart: all intent is durable.
   const results = await Promise.all([
     localAiLoginService(db).complete(companyId, owner, attempt.sessionId, loginIntent()),
@@ -127,10 +137,25 @@ it("enforces local attempt ownership, company, target, cancellation, and expiry"
   await writeFile(path.join(directoryFor(retry.sessionId), "auth.json"), auth("abandoned"));
   await db.update(adapterAuthSessions).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(adapterAuthSessions.id, retry.sessionId));
   await expect(login.complete(companyId, owner, retry.sessionId, loginIntent())).rejects.toThrow("expired");
+  expect(await login.check(companyId, owner, loginIntent(), retry.sessionId)).toEqual({ status: "expired" });
   await localAiLoginService(db).reapExpired();
   await expect(readFile(path.join(directoryFor(retry.sessionId), "auth.json"))).rejects.toHaveProperty("code", "ENOENT");
   const [row] = await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, retry.sessionId));
   expect(row.status).toBe("timed_out");
+});
+
+it("explicit retry replaces another owned local attempt while ordinary navigation preserves it", async () => {
+  const login = localAiLoginService(db);
+  const first = await login.start(companyId, owner, loginIntent());
+  const restricted = { ...loginIntent(), allAgents: false, agentIds: [agentId] };
+  await expect(login.start(companyId, owner, restricted)).rejects.toThrow("Another sign-in");
+  const retry = await login.start(companyId, owner, restricted, true);
+  expect(retry.sessionId).not.toBe(first.sessionId);
+  const [old] = await db.select().from(adapterAuthSessions).where(eq(adapterAuthSessions.id, first.sessionId));
+  expect(old.status).toBe("cancelled");
+  await expect(readFile(path.join(directoryFor(first.sessionId), "config.toml"))).rejects.toHaveProperty("code", "ENOENT");
+  expect(await login.start(companyId, owner, restricted)).toEqual(retry);
+  await login.cancel(companyId, owner, retry.sessionId);
 });
 
 it("blocks preview-era copied subscriptions until isolated reconnect, leaving legacy config intact", async () => {

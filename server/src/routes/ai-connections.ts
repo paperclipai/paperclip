@@ -15,6 +15,7 @@ import {
   createAiConnectionSchema,
   aiConnectionLoginIntentSchema,
   localAiConnectionSchema,
+  localAiLoginStartSchema,
   isAiConnectionCompatible,
   type AiConnectionLoginIntent,
   type AiProvider,
@@ -174,12 +175,20 @@ export function aiConnectionRoutes(db: Db) {
     if (req.actor.source !== "local_implicit")
       throw forbidden("Only the local operator can connect this machine's CLI account.");
   }
-  router.post("/companies/:companyId/ai-connections/local/attempts", validate(aiConnectionLoginIntentSchema), async (req, res) => {
+  router.post("/companies/:companyId/ai-connections/local/attempts", validate(localAiLoginStartSchema), async (req, res) => {
     assertLocalOperator(req);
     const companyId = req.params.companyId as string;
-    const intent = aiConnectionLoginIntentSchema.parse(req.body);
+    const { restart, ...intent } = localAiLoginStartSchema.parse(req.body);
     const userId = await assertAiConnectionCreateAccess(db, req, companyId, intent);
-    res.status(201).json(await localLogin.start(companyId, userId, intent));
+    res.status(201).json(await localLogin.start(companyId, userId, intent, restart));
+  });
+  router.post("/companies/:companyId/ai-connections/local/check", validate(localAiConnectionSchema), async (req, res) => {
+    assertLocalOperator(req);
+    const companyId = req.params.companyId as string;
+    const { localSessionId, ...intent } = localAiConnectionSchema.parse(req.body);
+    const userId = await assertAiConnectionCreateAccess(db, req, companyId, intent);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(await localLogin.check(companyId, userId, intent, localSessionId));
   });
   router.delete("/companies/:companyId/ai-connections/local/attempts/:sessionId", async (req, res) => {
     assertLocalOperator(req);

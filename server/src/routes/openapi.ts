@@ -9,6 +9,7 @@ import {
   createAiConnectionSchema,
   aiConnectionLoginIntentSchema,
   localAiConnectionSchema,
+  localAiLoginStartSchema,
   emailEndpointSetupSchema,
   emailConnectionSchema,
   emailSendSchema,
@@ -1289,6 +1290,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies/{companyId}/ai-connections",
   "POST /api/companies/{companyId}/ai-connections/local",
   "POST /api/companies/{companyId}/ai-connections/local/attempts",
+  "POST /api/companies/{companyId}/ai-connections/local/check",
   "DELETE /api/companies/{companyId}/ai-connections/local/attempts/{sessionId}",
   "PUT /api/companies/{companyId}/ai-connections/default",
   "GET /api/companies/{companyId}/ai-connections/{connectionId}/active-runs",
@@ -11092,7 +11094,7 @@ registerCurrentRoute({
   method: "post",
   path: "/api/companies/{companyId}/ai-connections/local/attempts",
   tags: ["ai-connections"], summary: "Prepare an isolated local subscription sign-in",
-  body: aiConnectionLoginIntentSchema,
+  body: localAiLoginStartSchema,
   responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
 });
 registerCurrentRoute({
@@ -11100,4 +11102,11 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/ai-connections/local/attempts/{sessionId}",
   tags: ["ai-connections"], summary: "Cancel an owned local subscription sign-in",
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/ai-connections/local/check",
+  tags: ["ai-connections"], summary: "Check the local operator's subscription sign-in without saving a connection",
+  body: localAiConnectionSchema,
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
 });

@@ -1,3 +1,4 @@
+import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import { and, eq } from "drizzle-orm";
@@ -441,6 +442,12 @@ export function connectionIntentService(db: Db) {
       },
     );
     if (interaction.status !== "pending") throw conflict("This connection request has already been resolved. Follow its recorded outcome.");
+    await logActivity(db, {
+      companyId: context.run.companyId, actorType: "agent", actorId: context.agent.id,
+      agentId: context.agent.id, runId: context.run.id,
+      action: "issue.thread_interaction_created", entityType: "issue", entityId: context.issue.id,
+      details: { interactionId: interaction.id, interactionKind: "connection_intent", purpose: options.purpose },
+    });
     return {
       version: 1,
       service: app.slug,
@@ -463,32 +470,39 @@ export function connectionIntentService(db: Db) {
     return { ...row, interaction };
   }
 
-  async function setupOptions(interactionId: string): Promise<ConnectionIntentSetupOptions> {
+  async function setupOptions(interactionId: string, options: { canManageOrganizationGrant?: boolean } = {}): Promise<ConnectionIntentSetupOptions> {
     const loaded = await loadIntent(interactionId);
     const payload = connectionIntentPayloadSchema.parse(loaded.interaction.payload);
     const app = await resolveService(payload.serviceSlug, loaded.issue.companyId, loaded.interaction.addresseeUserId!, payload.requestingAgentId, payload.purpose);
     const managed = payload.purpose === "ai" ? await managedAgent(loaded.issue.companyId, payload.requestingAgentId, app.slug) : null;
     if (payload.purpose === "ai" && !managed) throw conflict("The agent’s AI configuration changed. Start a new execution.");
     const inventory = await connectionInventory(loaded.issue.companyId);
+    const usableAiConnection = managed ? await usableConnectionForAgent({
+      companyId: loaded.issue.companyId, agentId: payload.requestingAgentId,
+      responsibleUserId: loaded.interaction.addresseeUserId!, serviceSlug: app.slug, purpose: "ai",
+    }) : null;
+    const aiAccounts = managed ? await aiConnectionService(db).list(loaded.issue.companyId, loaded.interaction.addresseeUserId!) : [];
+    const selectedAiAccount = managed ? aiAccounts.find((account) =>
+      account.provider === managed.binding.provider && account.method === managed.binding.method
+      && (managed.binding.mode === "responsible_user" ? account.isDefault
+        : account.id === managed.binding.connectionId && account.grantId === managed.binding.grantId)
+    ) : undefined;
+    const selectedAiGrant = selectedAiAccount
+      ? (await access.listConnectionGrants(selectedAiAccount.id, loaded.issue.companyId)).grants.find(grant => grant.id === selectedAiAccount.grantId)
+      : undefined;
     const matchingConnections = inventory.connections.filter((connection) =>
       sourceSlugForConnection(connection, inventory.applicationsById) === app.slug
       && connection.status === "active"
       && connection.enabled
     );
     const existingConnections = (await Promise.all(matchingConnections.map(async (connection) => {
+      if (managed) return connection.id === usableAiConnection?.id ? connection : null;
       const { grants } = await access.listConnectionGrants(connection.id, loaded.issue.companyId);
       const eligible = grants.some((grant) =>
         grant.status === "active"
         && (grant.kind === "organization" || grant.subjectUserId === loaded.interaction.addresseeUserId
           || (grant.kind === "agent" && grant.subjectAgentId === payload.requestingAgentId))
       );
-      if (managed) {
-        const metadata = connection.config?.ai as { provider?: string; method?: string } | undefined;
-        if (connection.connectionPurpose !== "ai" || metadata?.provider !== managed.binding.provider || metadata.method !== managed.binding.method) return null;
-        const available = await aiConnectionService(db).list(loaded.issue.companyId, loaded.interaction.addresseeUserId!, payload.requestingAgentId);
-        if (managed.binding.mode === "responsible_user") return available.some(account => account.id === connection.id && account.isDefault && account.ownerUserId === loaded.interaction.addresseeUserId) ? connection : null;
-        return connection.id === managed.binding.connectionId ? connection : null;
-      }
       return eligible && connection.connectionPurpose !== "ai" ? connection : null;
     }))).filter((connection): connection is ToolConnection => connection !== null);
     return {
@@ -509,6 +523,13 @@ export function connectionIntentService(db: Db) {
       })),
       requestedAgentId: payload.requestingAgentId,
       aiConnection: managed?.binding,
+      aiRepair: selectedAiAccount ? {
+        connection: selectedAiAccount,
+        canReconnect: selectedAiGrant?.createdByUserId === loaded.interaction.addresseeUserId
+          && (selectedAiAccount.ownership === "personal"
+            ? selectedAiAccount.ownerUserId === loaded.interaction.addresseeUserId
+            : options.canManageOrganizationGrant === true),
+      } : undefined,
     };
   }
 
