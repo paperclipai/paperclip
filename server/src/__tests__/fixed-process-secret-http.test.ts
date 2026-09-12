@@ -143,6 +143,16 @@ suite("fixed process key and run-secret HTTP boundary", () => {
       await db.update(agents).set({ adapterConfig: { fixedCommand: true, command: process.execPath, cwd: directory, args: fixedArgs, watchdogService: {
         assigneeAgentId: receiverId, signals: [{ type: "blind", marker: "[watchdog-blind]" }],
       } } }).where(eq(agents.id, agentId));
+      const triggerStatus = await request(server).get(`/api/agents/${agentId}`).set("Authorization", `Bearer ${permanentKey}`);
+      expect(triggerStatus.status).toBe(200);
+      expect(triggerStatus.body).not.toHaveProperty("permissions");
+      expect(Object.keys(triggerStatus.body.adapterConfig).sort()).toEqual(["args", "command", "cwd", "fixedCommand"]);
+      const extraSecret = await svc.create(companyId, { key: "UNRELATED_SERVICE", name: "Unrelated synthetic secret", provider: "local_encrypted", value: "synthetic-unrelated" });
+      await svc.createBinding({ companyId, secretId: extraSecret.id, targetType: "agent", targetId: agentId, configPath: "env.UNRELATED" });
+      expect((await request(server).post("/api/agents/me/secrets/unrelated_service/value")
+        .set("Authorization", `Bearer ${jwt}`).send({})).status).toBe(403);
+      expect((await request(server).post("/api/agents/me/secrets/watchdog_test/value")
+        .set("Authorization", `Bearer ${jwt}`).send({})).status).toBe(200);
       const incident = await request(server).post(`/api/companies/${companyId}/issues`)
         .set("Authorization", `Bearer ${jwt}`).send({ title: "[watchdog-blind] Проверить синтетический сигнал сторожа", status: "todo", assigneeAgentId: receiverId });
       expect(incident.status).toBe(201);
@@ -168,6 +178,12 @@ suite("fixed process key and run-secret HTTP boundary", () => {
       await db.insert(issues).values({ id: fakeId, companyId, title: "[watchdog-blind] Поддельный маркер",
         status: "todo", assigneeAgentId: receiverId, createdByAgentId: receiverId,
         originKind: "watchdog_service_signal", originId: `${agentId}/blind`, originRunId: runId });
+      expect((await request(server).get(`/api/issues/${fakeId}`).set("Authorization", `Bearer ${jwt}`)).status).toBe(403);
+      expect((await request(server).get(`/api/issues/${fakeId}/comments`).set("Authorization", `Bearer ${jwt}`)).status).toBe(403);
+      expect((await request(server).get(`/api/issues/${incident.body.id}/comments`).set("Authorization", `Bearer ${jwt}`)).status).toBe(200);
+      const visibleSignals = await request(server).get(`/api/companies/${companyId}/issues`).set("Authorization", `Bearer ${jwt}`);
+      expect(visibleSignals.status).toBe(200);
+      expect(visibleSignals.body.map((item: { id: string }) => item.id)).toEqual([incident.body.id]);
       const repeat = (id: string) => request(server).post(`/api/issues/${id}/comments`)
         .set("Authorization", `Bearer ${jwt}`).send({ body: "[watchdog-blind] Повторный сигнал" });
       expect((await repeat(fakeId)).status).toBe(403);

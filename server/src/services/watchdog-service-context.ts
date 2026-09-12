@@ -1,7 +1,7 @@
 import { isUuidLike } from "@paperclipai/shared";
-import { and, eq } from "drizzle-orm";
-import { agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
-import { forbidden } from "../errors.js";
+import { and, eq, inArray, or } from "drizzle-orm";
+import { agents, heartbeatRuns, issues, companySecrets, companySecretBindings, type Db } from "@paperclipai/db";
+import { forbidden, HttpError } from "../errors.js";
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -95,4 +95,33 @@ export async function assertWatchdogCommentTarget(db: Db, context: WatchdogServi
   ));
   if (!originRun) throw forbidden("Watchdog signal origin is not verified.");
   return signal;
+}
+
+export async function assertWatchdogSecret(db: Db, context: WatchdogServiceContext, key: string) {
+  const [binding] = await db.select({ id: companySecretBindings.id }).from(companySecretBindings)
+    .innerJoin(companySecrets, eq(companySecrets.id, companySecretBindings.secretId))
+    .where(and(eq(companySecretBindings.companyId, context.companyId),
+      eq(companySecrets.companyId, context.companyId), eq(companySecrets.key, key),
+      eq(companySecretBindings.targetType, "agent"), eq(companySecretBindings.targetId, context.agentId),
+      eq(companySecretBindings.configPath, "env.DOKPLOY_KEY")));
+  if (!binding) throw forbidden("Secret is not the administratively bound watchdog credential.");
+}
+
+export async function listWatchdogSignals(db: Db, context: WatchdogServiceContext) {
+  const candidates = await db.select().from(issues).where(and(
+    eq(issues.companyId, context.companyId), eq(issues.assigneeAgentId, context.assigneeAgentId),
+    inArray(issues.status, ["todo", "in_progress", "in_review", "blocked"]),
+    or(and(eq(issues.createdByAgentId, context.agentId), eq(issues.originKind, "watchdog_service_signal")),
+      inArray(issues.id, context.legacyIssues.map((pin) => pin.issueId as string))),
+  ));
+  const verified = [];
+  for (const issue of candidates) {
+    try {
+      await assertWatchdogCommentTarget(db, context, issue.id);
+      verified.push(issue);
+    } catch (error) {
+      if (!(error instanceof HttpError) || error.status !== 403) throw error;
+    }
+  }
+  return verified;
 }

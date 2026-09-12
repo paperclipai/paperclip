@@ -1,7 +1,7 @@
 import type { Request } from "express";
 import { activityLog, type Db } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
-import { loadWatchdogServiceContext, watchdogSignalOrigin, assertWatchdogCommentTarget, type WatchdogServiceContext } from "../services/watchdog-service-context.js";
+import { loadWatchdogServiceContext, assertWatchdogSecret, watchdogSignalOrigin, assertWatchdogCommentTarget, type WatchdogServiceContext } from "../services/watchdog-service-context.js";
 
 const contexts = new WeakMap<Request, WatchdogServiceContext>();
 export const trustedWatchdogContext = (req: Request) => contexts.get(req);
@@ -17,13 +17,20 @@ export async function assertWatchdogServiceRequest(db: Db, req: Request): Promis
   try {
     const path = req.path;
     const body = req.body ?? {};
-    if (req.method === "GET" && (
-      path === `/api/agents/${context.agentId}` ||
-      path === `/api/companies/${context.companyId}/issues` ||
-      /^\/api\/issues\/[0-9a-f-]+(?:\/comments)?$/.test(path)
-    )) return;
+    if (req.method === "GET") {
+      if (path === `/api/agents/${context.agentId}` || path === `/api/companies/${context.companyId}/issues`) return;
+      const issue = /^\/api\/issues\/([0-9a-f-]+)(?:\/comments)?$/.exec(path);
+      if (issue) {
+        await assertWatchdogCommentTarget(db, context, issue[1]!);
+        return;
+      }
+    }
     if (Object.keys(req.query).length !== 0) throw forbidden("Watchdog writes do not accept query parameters.");
-    if (req.method === "POST" && /^\/api\/agents\/me\/secrets\/[^/]+\/value$/.test(path) && Object.keys(body).length === 0) return;
+    const secret = /^\/api\/agents\/me\/secrets\/([^/]+)\/value$/.exec(path);
+    if (req.method === "POST" && secret && Object.keys(body).length === 0) {
+      await assertWatchdogSecret(db, context, decodeURIComponent(secret[1]!));
+      return;
+    }
     if (req.method === "POST" && path === `/api/companies/${context.companyId}/issues`) {
       origins.set(req, watchdogSignalOrigin(context, body));
       return;

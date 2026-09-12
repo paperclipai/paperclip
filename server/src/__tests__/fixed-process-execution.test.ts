@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { execute } from "../adapters/process/execute.js";
 import { assertFixedProcessExecution, assertFixedProcessUnresolvedEnvironment, captureFixedProcessEnvironment } from "../adapters/process/fixed-command.js";
 const saved = { fixedCommand: true, command: "/bin/bash", args: ["/service/watchdog.sh"], cwd: "/service" };
 describe("fixed process execution", () => {
@@ -37,4 +38,24 @@ describe("fixed process execution", () => {
     expect(() => approve(runtime)).toThrow();
   });
 
+});
+
+it("does not inherit unapproved server variables into a fixed process", async () => {
+  const variable = "ZOL13738_SYNTHETIC_AMBIENT";
+  const previous = process.env[variable];
+  process.env[variable] = "synthetic";
+  try {
+    for (const fixedCommand of [true, false]) {
+      const config = { fixedCommand, command: process.execPath, cwd: process.cwd(),
+        args: ["-e", `process.exit(process.env.${variable} === 'synthetic' ? 23 : 0)`] };
+      const result = await execute({ runId: "ambient-regression",
+        agent: { id: "ambient-regression", companyId: "isolated", name: "Synthetic process", adapterType: "process", adapterConfig: config },
+        config, context: {}, runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+        onLog: async () => {},
+      });
+      expect(result.exitCode).toBe(fixedCommand ? 0 : 23);
+    }
+  } finally {
+    if (previous === undefined) delete process.env[variable]; else process.env[variable] = previous;
+  }
 });

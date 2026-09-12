@@ -4070,6 +4070,16 @@ export function agentRoutes(
         return;
       }
     }
+    const fixedConfig = parseObject(agent.adapterConfig);
+    if (isSelf && req.actor.type === "agent" && req.actor.source === "agent_key" &&
+        agent.adapterType === "process" && fixedConfig.fixedCommand === true) {
+      res.json({ id: agent.id, adapterType: agent.adapterType, status: agent.status,
+        lastHeartbeatAt: agent.lastHeartbeatAt,
+        adapterConfig: { fixedCommand: true, command: fixedConfig.command, args: fixedConfig.args, cwd: fixedConfig.cwd },
+        runtimeConfig: { heartbeat: { maxConcurrentRuns: parseObject(parseObject(agent.runtimeConfig).heartbeat).maxConcurrentRuns } },
+      });
+      return;
+    }
     const canReadSensitiveDetail = isSelf
       ? true
       : await actorCanReadConfigurationsForCompany(req, agent.companyId);
