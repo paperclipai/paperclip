@@ -924,6 +924,10 @@ Minimum event set:
 - `agent.run.cancelled`
 - `approval.created`
 - `approval.decided`
+- `decision.created`
+- `decision.expired`
+- `decision.dismissed`
+- `decision.cancelled`
 - `budget.incident.opened`
 - `budget.incident.resolved`
 - `cost_event.created`

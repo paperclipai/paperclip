@@ -37,7 +37,14 @@ export function setPluginEventBus(bus: PluginEventBus): void {
   _pluginEventBus = bus;
 }
 
-function eventTypeForActivityAction(action: string): PluginEventType | null {
+/**
+ * Resolve the plugin event type for a logged activity action.
+ *
+ * Exported for direct testing, following `resolveResponsibleUserIdForActivity`:
+ * the mapping is the contract plugins subscribe against, and a silent regression
+ * here is invisible at runtime (the event is simply never delivered).
+ */
+export function eventTypeForActivityAction(action: string): PluginEventType | null {
   if (PLUGIN_EVENT_SET.has(action)) return action as PluginEventType;
   return ACTIVITY_ACTION_TO_PLUGIN_EVENT[action.replaceAll(".", "_")] ?? null;
 }

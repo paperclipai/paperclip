@@ -1708,6 +1708,14 @@ export const PLUGIN_EVENT_TYPES = [
   "goal.updated",
   "approval.created",
   "approval.decided",
+  // Decisions Desk lifecycle. A decision is the platform's "a human must choose,
+  // by this date" object, so excluding it left notifications unable to cover the
+  // surface operators most need to be woken for. The queue, triage, training and
+  // retention actions stay private: they are desk plumbing, not decisions.
+  "decision.created",
+  "decision.expired",
+  "decision.dismissed",
+  "decision.cancelled",
   "budget.incident.opened",
   "budget.incident.resolved",
   "cost_event.created",
