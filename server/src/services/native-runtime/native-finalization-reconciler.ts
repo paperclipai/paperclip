@@ -464,7 +464,7 @@ export async function claimNativeSessionResumptions(input: {
         terminalRunToEmit = updatedRun ?? null;
         await issueService(tx as unknown as Db).update(
           row.coordinator.issueId,
-          { status: "in_review" },
+          { status: "blocked" },
           tx,
         );
         await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({

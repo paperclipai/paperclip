@@ -58,3 +58,18 @@ export async function hasNativeLocalProcessStop(db: Db, companyId: string, runId
     .limit(1);
   return event?.eventType === LOCAL_PROCESS_STOPPED;
 }
+
+/** Recover the exact stopped identity after the mutable run fields were cleared. */
+export async function readNativeLocalProcessStop(db: Db, companyId: string, runId: string) {
+  const [event] = await db.select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+    .from(heartbeatRunEvents)
+    .where(and(eq(heartbeatRunEvents.companyId, companyId), eq(heartbeatRunEvents.runId, runId),
+      isNull(heartbeatRunEvents.sourceEventId),
+      inArray(heartbeatRunEvents.eventType, [PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, LOCAL_PROCESS_STOPPED])))
+    .orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+  const pid = event?.payload?.processPid;
+  const group = event?.payload?.processGroupId;
+  if (event?.eventType !== LOCAL_PROCESS_STOPPED || typeof pid !== "number" ||
+      !Number.isSafeInteger(pid) || pid <= 1 || group !== pid || !absent(pid) || !absent(-pid)) return null;
+  return { processPid: pid, processGroupId: pid };
+}

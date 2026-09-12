@@ -1,6 +1,8 @@
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
-import { PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
+import { hasAcknowledgedNativeStopIntent } from "../acknowledged-native-stop.js";
+import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
+import { readNativeLocalProcessStop, PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import { resolveConnectorAssignments, isConnectorSkill } from "../connector-runtime.js";
 import {
@@ -53,6 +55,7 @@ import {
   NativeSessionCleanupQuarantinedError,
   NativeSessionProtocolIntegrityError,
   completeRetainedNativeSessionCleanup,
+  completeTerminatedLocalNativeSessionCleanup,
   acpxRuntimeSessionDirectoryName,
   createNativeSessionBackend,
   createRunnerdCodexTransport,
@@ -86,6 +89,7 @@ import {
   eq,
   gt,
   inArray,
+  isNull,
   like,
   notInArray,
   or,
@@ -2249,6 +2253,129 @@ export function rebaseRetainedNativeCleanupProviderHome(
   } finally {
     database.close();
   }
+}
+
+/** Prove that a crashed local Codex turn ended without external effects. No provider
+ * is launched and no retained state is rewritten. The successor must use a fresh
+ * normalized session; the old directory remains available for investigation. */
+export async function verifyStoppedNativeSessionForReplacement(
+  db: Db,
+  run: typeof heartbeatRuns.$inferSelect,
+): Promise<{ evidence: Record<string, unknown>; retire: () => boolean } | null> {
+  try {
+    if (run.runtimeMode !== "native" || run.status !== "failed" || !run.finishedAt ||
+        !run.nativeIssueId || !run.nativeSessionId || !run.runnerInstanceId) return null;
+    const execution = parseNativeExecutionInput(record(run.runnerProfileJson).nativeExecutionInput);
+    if (execution.provider.kind !== "codex" || execution.session.driverKind !== "codex_app_server" ||
+        execution.binding.runId !== run.id || execution.binding.companyId !== run.companyId ||
+        execution.binding.agentId !== run.agentId || execution.binding.issueId !== run.nativeIssueId ||
+        nativeSessionKey(execution) !== run.nativeSessionId ||
+        record(run.runnerProfileJson).nativeToolContractFingerprint !== nativeToolContractFingerprintForTarget("local")) return null;
+    const scope = nativeSessionScopeKey(execution);
+    const idle = () => !activeNativeSessions.has(run.id) && !executingRunnerdSessionScopes.has(scope) &&
+      !initializingSessionToolAuthorities.has(scope) && !warmNativeSessions.has(scope);
+    if (!idle()) return null;
+    const leases = await db.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id)));
+    if (leases.some(lease => lease.provider !== "local" || !lease.releasedAt)) return null;
+    const stopped = await readNativeLocalProcessStop(db, run.companyId, run.id);
+    if (!stopped) return null;
+    const root = scopedRunnerdStateRoot(execution);
+    const snapshot = cleanupStateSnapshot(root);
+    const identity = record(snapshot.control.identity);
+    if (!durableIdentityMatchesExecution(identity, execution) || identity.runnerInstanceId !== run.runnerInstanceId ||
+        !["runnerInstanceId", "environmentLeaseId", "runId", "normalizedSessionId", "turnId", "itemId"].every(key =>
+          typeof identity[key] === "string" && identity[key] && snapshot.runner[key] === identity[key]) ||
+        snapshot.runner.lifecycle !== "ready" || snapshot.provider.lifecycle !== "turn_active" ||
+        record(snapshot.provider.config).provider !== "codex" || record(snapshot.provider.config).cwd !== execution.workspace.cwd ||
+        !Array.isArray(snapshot.control.committedEvents) || !Array.isArray(snapshot.control.commands)) return null;
+    const events = snapshot.control.committedEvents.map(entry => record(record(record(entry).envelope).payload));
+    const providerEvent = events.filter(event => ["session.started", "session.resumed"].includes(String(event.eventType))).at(-1);
+    const provider = record(providerEvent?.payload);
+    const bound = (event: Record<string, unknown>) => validatePrpEvent(event).ok && event.sourceKind === "runner" &&
+      event.sourceInstanceId === run.runnerInstanceId && event.runId === run.id &&
+      event.normalizedSessionId === run.nativeSessionId && event.turnId === identity.turnId && event.itemId === identity.itemId;
+    if (!providerEvent || !bound(providerEvent) || !cleanupProcessAbsent(provider.processId) ||
+        provider.processId === stopped.processPid || typeof provider.providerSessionId !== "string" ||
+        snapshot.provider.threadId !== provider.providerSessionId ||
+        typeof snapshot.provider.activeProviderTurnId !== "string") return null;
+    const receipts = await db.select().from(heartbeatRunEvents).where(and(
+      eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+      eq(heartbeatRunEvents.sourceInstanceId, run.runnerInstanceId),
+      inArray(heartbeatRunEvents.eventType, ["session.started", "session.resumed"]))).limit(2);
+    const receipt = receipts.length === 1 ? receipts[0] : undefined;
+    const durableEvent = record(record(receipt?.payload).prpEvent);
+    // The persisted adapter enriches identity payloads with driverSessionId. Bind
+    // the normalized and provider identities explicitly instead of comparing raw JSON.
+    const durableProvider = record(durableEvent.payload);
+    if (!receipt || !validatePrpEvent(durableEvent).ok || durableEvent.runId !== run.id ||
+        durableEvent.sourceInstanceId !== run.runnerInstanceId || durableEvent.normalizedSessionId !== run.nativeSessionId ||
+        receipt.sourceEventId !== `${run.runnerInstanceId}:${run.id}:${durableEvent.sourceSeq}` ||
+        receipt.sourcePayloadSha256 !== nativeSha256(durableEvent) ||
+        (durableProvider.processId !== undefined && durableProvider.processId !== provider.processId) ||
+        (durableProvider.driverSessionId ?? durableProvider.providerSessionId) !== provider.providerSessionId) return null;
+    const turnId = snapshot.provider.activeProviderTurnId;
+    if (!snapshot.control.commands.map(record).some(command => command.type === "turn.start" && command.status === "completed" &&
+        record(record(command.result).result).providerTurnId === turnId) ||
+        !events.some(event => bound(event) && event.eventType === "turn.accepted" &&
+          record(event.payload).providerTurnId === turnId && record(event.payload).providerSessionId === provider.providerSessionId)) return null;
+    // Completion bookkeeping may precede the final answer. Its exact accepted
+    // receipt is safe to preserve; arbitrary provider tools still prevent replay.
+    const completedTaskControlCalls: Array<{ callId: string; input: unknown }> = [];
+    for (const event of events.filter(event => event.eventType === "semantic_tool.input")) {
+      const semantic = record(record(event.payload).semantic_tool);
+      const correlation = record(semantic.correlation);
+      if (!bound(event) || semantic.operationId !== "paperclip_finish" || semantic.phase !== "input" ||
+          typeof semantic.callId !== "string" || !validatePrpStructuredRunResult(semantic.input).ok ||
+          correlation.runId !== run.id || correlation.normalizedSessionId !== run.nativeSessionId ||
+          correlation.turnId !== identity.turnId || correlation.itemId !== identity.itemId ||
+          record(semantic.content).digest !== `sha256:${nativeSha256(semantic.input)}` ||
+          !events.some(resultEvent => {
+            const result = record(record(resultEvent.payload).semantic_tool);
+            return bound(resultEvent) && resultEvent.eventType === "semantic_tool.result" &&
+              result.operationId === semantic.operationId && result.callId === semantic.callId &&
+              result.outcome === "succeeded" && result.operationReceiptId === `operation_${semantic.callId}` &&
+              canonicalJson(result.correlation) === canonicalJson(semantic.correlation);
+          }) || !snapshot.control.commands.map(record).some(command => {
+            const payload = record(command.payload);
+            return command.type === "semantic_tool.result" && command.status === "completed" &&
+              payload.callId === semantic.callId && payload.operationId === semantic.operationId &&
+              payload.sourceEventId === event.sourceEventId && payload.isError === false &&
+              record(payload.result).success === true && canonicalJson(payload.input) === canonicalJson(semantic.input) &&
+              canonicalJson(payload.correlation) === canonicalJson(semantic.correlation);
+          })) return null;
+      completedTaskControlCalls.push({ callId: semantic.callId, input: semantic.input });
+    }
+    if (completedTaskControlCalls.length > 1) return null;
+    const pendingInventory = JSON.stringify([snapshot.runner.outbox, snapshot.provider.pendingEvents, snapshot.provider.queuedEvents]);
+    if (/semantic_tool\.input|mcp_app\.tool_input|runtime\.input\.requested|runtime_request\.created/.test(pendingInventory) ||
+        events.some(event => ["mcp_app.tool_input", "runtime.input.requested", "runtime_request.created"].includes(String(event.eventType)))) return null;
+    if (snapshot.control.commands.map(record).some(command => command.status === "pending" &&
+        !["turn.stop", "runner.drain", "runner.suspend"].includes(String(command.type)))) return null;
+    const home = cleanupProviderHomeSnapshot(resolve(root, "codex-home"), false);
+    const rollouts = home.entries.filter(entry => !entry.directory && entry.path.startsWith("sessions/") &&
+      basename(entry.path).endsWith(`-${provider.providerSessionId}.jsonl`));
+    if (rollouts.length !== 1 || rollouts[0]!.size > 32 * 1024 * 1024) return null;
+    const rolloutPath = resolve(root, "codex-home", rollouts[0]!.path);
+    const bytes = readBoundedNativeFile(rolloutPath, 32 * 1024 * 1024, "native_crash_inventory_unproven");
+    // A partial final write is not a closed transcript.
+    if (!bytes.toString("utf8").endsWith("\n")) return null;
+    const rows = bytes.toString("utf8").trimEnd().split("\n").map(line => JSON.parse(line));
+    if (!stoppedCodexTurnIsTextOnly({ rows, threadId: provider.providerSessionId, turnId, cwd: execution.workspace.cwd, completedTaskControlCalls })) return null;
+    const rolloutSha256 = nativeSha256(bytes.toString("utf8"));
+    const evidence = { schema: "paperclip.stopped_text_turn.v1", runId: run.id, nativeSessionId: run.nativeSessionId,
+      runnerInstanceId: run.runnerInstanceId, processPid: stopped.processPid, providerPid: provider.processId,
+      providerSessionId: provider.providerSessionId, providerTurnId: turnId,
+      stateFingerprint: snapshot.fingerprint, rolloutSha256,
+      completedTaskControlCallIds: completedTaskControlCalls.map(call => call.callId) };
+    return {
+      evidence,
+      retire: () => idle() && cleanupProcessAbsent(stopped.processPid) && cleanupProcessAbsent(provider.processId) &&
+        cleanupStateSnapshot(root).fingerprint === snapshot.fingerprint &&
+        nativeSha256(readBoundedNativeFile(rolloutPath, 32 * 1024 * 1024, "native_crash_inventory_unproven").toString("utf8")) === rolloutSha256 &&
+        completeTerminatedLocalNativeSessionCleanup({ companyId: run.companyId, runId: run.id, runnerInstanceId: run.runnerInstanceId! }),
+    };
+  } catch { return null; }
 }
 
 /** Exact local cleanup only: the accepted result and original quarantine are
@@ -5538,7 +5665,7 @@ export function nativeSessionRecoveryProjection(input: {
     issueStatus:
       exhausted &&
       input.failureCode !== NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT
-        ? ("in_review" as const)
+        ? ("blocked" as const)
         : null,
     recoveryOwner: exhausted
       ? { kind: "board" as const }
@@ -7658,17 +7785,6 @@ async function executePaperclipNativeSessionWithinScope(
       input.db,
       input.execution.binding,
     );
-    // Invalidate prior stop evidence before a backend can spawn. A crash between
-    // spawn and the PID callback must not make an old receipt authorize a turn.
-    await appendHeartbeatRunEvent(input.db, {
-      companyId: input.execution.binding.companyId,
-      runId: input.execution.binding.runId,
-      agentId: input.execution.binding.agentId,
-      eventType: PROCESS_START_REQUESTED,
-      stream: "system",
-      level: "info",
-      message: "Native execution requested; prior local stop evidence no longer applies.",
-    });
     const runnerdBackend =
       input.useRunnerd && input.backend === undefined
         ? await createRunnerdBackend({
@@ -7701,6 +7817,18 @@ async function executePaperclipNativeSessionWithinScope(
         trace.activate(runnerSessionStartupScope);
         const result = await trace.run(runnerSessionStartupScope, () =>
           executeNativeSession({
+            onSessionAdmission: async () => {
+              // Invalidate prior stop evidence before a backend can spawn.
+              await appendHeartbeatRunEvent(input.db, {
+                companyId: input.execution.binding.companyId,
+                runId: input.execution.binding.runId,
+                agentId: input.execution.binding.agentId,
+                eventType: PROCESS_START_REQUESTED,
+                stream: "system",
+                level: "info",
+                message: "Native execution requested; prior local stop evidence no longer applies.",
+              });
+            },
             input: runnerExecution,
             remoteCleanupScope: remoteCleanupLease ? remoteLeaseCleanupScope(remoteCleanupLease) : undefined,
             turnTimeoutMs: input.turnTimeoutMs,
@@ -7962,6 +8090,37 @@ async function executePaperclipNativeSessionWithinScope(
       activeNativeSessions.delete(input.execution.binding.runId);
       clearSteeringDeliveries(input.execution.binding.runId);
       clearNativeRuntimeRequestResolutions(input.execution.binding.runId);
+      // Stop before paperclip_finish is normal. Bounded provider teardown has
+      // finished; a missing result must not overwrite cancellation or trigger
+      // another turn to perform completion bookkeeping.
+      if (protocolIntegrityFailure === null && error instanceof Error && error.message === "native_finalization_missing: session returned no semantic result") {
+        const [stoppedRun] = await input.db.select().from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.id, input.execution.binding.runId),
+          eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+          eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+          eq(heartbeatRuns.nativeIssueId, input.execution.binding.issueId),
+        )).limit(1);
+        if (stoppedRun && hasAcknowledgedNativeStopIntent(stoppedRun)) {
+          const [settled] = await input.db.update(nativeRunFinalizations).set({
+            phase: "terminal_failure", failureCode: "native_retry_cancelled", nextAttemptAt: null,
+            leaseOwner: null, leaseExpiresAt: null, controlDeadlineAt: null, recoveryState: null,
+            updatedAt: new Date(),
+          }).where(and(
+            eq(nativeRunFinalizations.runId, input.execution.binding.runId),
+            eq(nativeRunFinalizations.companyId, input.execution.binding.companyId),
+            eq(nativeRunFinalizations.leaseOwner, leaseOwner),
+            eq(nativeRunFinalizations.attempt, attempt),
+            isNull(nativeRunFinalizations.resultId),
+          )).returning({ runId: nativeRunFinalizations.runId });
+          if (settled) {
+            await stoppedLeaseRenewal;
+            if (warmSessionId !== null && lifecyclePolicy.mode === "warm") {
+              await releaseWarmNativeSession(warmSessionId, warmSessionOwnerToken, lifecyclePolicy.idleTimeoutMs, true);
+            }
+            error = new NativeCancellationPendingRecoveryError();
+          }
+        }
+      }
       if (
         error instanceof NativeResultPendingFinalizationError ||
         error instanceof NativeCancellationPendingRecoveryError

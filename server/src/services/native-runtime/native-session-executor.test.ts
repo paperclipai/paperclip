@@ -4184,6 +4184,7 @@ function leaseDb(
           : table === heartbeatRuns
             ? [
                 {
+                  id: boundExecution.binding.runId,
                   agentId: boundExecution.binding.agentId,
                   companyId: boundExecution.binding.companyId,
                   nativeIssueId: boundExecution.binding.issueId,
@@ -5915,6 +5916,25 @@ describe("native warm session supervision", () => {
 });
 
 describe("native session bounded recovery", () => {
+  it("does not turn an acknowledged Stop before completion into a failure or a retry", async () => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const stop: Record<string, unknown> = {};
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      Object.assign(stop, { cancelledByActorType: "user", cancelledByUserId: "board", nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", ...execution.binding, scope: "run", reasonCode: "cancellation_run_only",
+        dispatched: true, dispatchState: "acknowledged", intentAuditId: "intent", acknowledgementAuditId: "ack",
+      } });
+      throw new Error("native_finalization_missing: session returned no semantic result");
+    });
+    state.upsertRecoveryAction.mockClear();
+    await expect(executePaperclipNativeSession({
+      db: leaseDb(execution, {}, stop, updates), execution, runnerInstanceId: "stop-before-completion",
+    })).rejects.toThrow("native_cancellation_pending_recovery");
+    expect(updates.some(update => update.table === heartbeatRuns && update.values.status === "failed")).toBe(false);
+    expect(updates.some(update => update.table === nativeRunFinalizations && update.values.failureCode === "native_retry_cancelled")).toBe(true);
+    expect(state.upsertRecoveryAction).not.toHaveBeenCalled();
+  });
+
   it("keeps typed integrity failure permanent even if a wrapper changes its message", () => {
     const failure = new NativeSessionProtocolIntegrityError(
       "semantic_input_digest_mismatch",
@@ -6056,7 +6076,7 @@ describe("native session bounded recovery", () => {
         );
         expect(updateIssue).toHaveBeenCalledWith(
           execution.binding.issueId,
-          { status: "in_review" },
+          { status: "blocked" },
           expect.anything(),
         );
       } finally {
@@ -6151,7 +6171,7 @@ describe("native session bounded recovery", () => {
       );
       expect(updateIssue).toHaveBeenCalledWith(
         execution.binding.issueId,
-        { status: "in_review" },
+        { status: "blocked" },
         expect.anything(),
       );
     } finally {
@@ -6457,7 +6477,7 @@ describe("native session bounded recovery", () => {
     });
   });
 
-  it("escalates exhausted result-less sessions to board review instead of leaving the provider as its own owner", () => {
+  it("blocks exhausted result-less sessions without manufacturing a human review", () => {
     expect(
       nativeSessionRecoveryProjection({
         phase: "retryable_failure",
@@ -6481,7 +6501,7 @@ describe("native session bounded recovery", () => {
       }),
     ).toEqual({
       exhausted: true,
-      issueStatus: "in_review",
+      issueStatus: "blocked",
       recoveryOwner: { kind: "board" },
       recoveryActionOwnerType: "board",
       recoveryActionOwnerAgentId: null,
@@ -6560,6 +6580,10 @@ describe("native process ownership", () => {
     const onSpawn = vi.fn(async () => undefined);
     state.createBackend.mockClear();
     state.execute.mockReset().mockImplementation(async (options) => {
+      await options.onSessionAdmission();
+      expect(updates).toContainEqual({ table: heartbeatRunEvents, values: expect.objectContaining({
+        eventType: "native.process_start_requested", runId: execution.binding.runId,
+      }) });
       await options.backend.onSpawn(processMetadata);
       return {
         result: { summary: "completed" },
@@ -6575,9 +6599,7 @@ describe("native process ownership", () => {
     });
     const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
     state.createBackend.mockImplementationOnce((_input, options) => {
-      expect(updates).toContainEqual({ table: heartbeatRunEvents, values: expect.objectContaining({
-        eventType: "native.process_start_requested", runId: execution.binding.runId,
-      }) });
+      expect(updates.some(update => update.values.eventType === "native.process_start_requested")).toBe(false);
       return { kind: "test", onSpawn: options.onSpawn };
     });
 

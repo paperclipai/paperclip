@@ -13322,8 +13322,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { ...fixture, commentId, contractId, summary };
   }
 
-  it("commits a native passive Board response without manufacturing immediate work", async () => {
+  it.each(["issue_commented", "issue_reopened_via_comment"])("commits a native passive Board response without manufacturing immediate work (%s)", async (reason) => {
     const fixture = await seedNativePassiveBoardResponse();
+    await db.update(agentWakeupRequests).set({ reason }).where(eq(agentWakeupRequests.id, fixture.wakeupRequestId));
     await finalizeNativeRun({
       db,
       runId: fixture.runId,
@@ -13808,6 +13809,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     "source_delete",
     "different_user",
     "wake_actor",
+    "wake_reason",
     "wake_run",
     "native_issue",
     "new_comment",
@@ -13820,6 +13822,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(
         await readNativeBoardResponseWaitSource(db, fixture),
       ).not.toBeNull();
+      if (change === "wake_reason")
+        await db.update(agentWakeupRequests).set({ reason: "issue_continuation_needed" }).where(eq(agentWakeupRequests.id, fixture.wakeupRequestId));
       if (change === "source_edit")
         await db
           .update(issueComments)

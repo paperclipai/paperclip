@@ -12,9 +12,10 @@ import {
   deliverReconciledExecutions,
 } from "../execution-recovery-resolution.js";
 import { randomUUID } from "node:crypto";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { tmpdir } from "node:os";
 import { and, eq, inArray } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
   companies,
@@ -107,6 +108,39 @@ const support = externalDatabaseUrl
       });
       return { companyId, agentId, issueId, runId };
     }
+    it.each(["unproven", "changed", "verified"] as const)("requires stopped-session proof through commit (%s)", async (mode) => {
+      const source = await seed(2);
+      await db.update(nativeRunFinalizations).set({ failureCode: "native_session_cleanup_quarantined" }).where(eq(nativeRunFinalizations.runId, source.runId));
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, source.issueId));
+      await db.insert(issueRecoveryActions).values({ companyId: source.companyId, sourceIssueId: source.issueId,
+        kind: "active_run_watchdog", cause: "native_session_cleanup_quarantined", fingerprint: source.runId,
+        ownerType: "board", returnOwnerAgentId: source.agentId, status: "resolved", outcome: "blocked",
+        evidence: { runId: source.runId, automaticRecovery: { replay: "blocked" } }, nextAction: "Automatic recovery stopped.",
+      });
+      const retire = vi.fn(() => mode === "verified");
+      const verifyStoppedSession = vi.fn(async (run: typeof heartbeatRuns.$inferSelect) =>
+        run.id === source.runId && mode !== "unproven" ? { evidence: { completedTaskControlCallIds: ["completion"] }, retire } : null);
+      await appendHeartbeatRunEvent(db, { companyId: source.companyId, runId: source.runId, agentId: source.agentId,
+        eventType: "tool.execution.started", stream: "system",
+        payload: { name: "paperclip_finish", executionId: "completion", transport: "process" },
+      });
+      await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+      await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+      const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
+      expect(successors).toHaveLength(mode === "verified" ? 1 : 0);
+      const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId));
+      if (mode === "verified") {
+        expect(retire).toHaveBeenCalledOnce();
+        expect(hold).toMatchObject({ status: "resolved", outcome: "handed_back", evidence: { automaticRecovery: { replay: "verified_safe_replacement" } } });
+        // Prove that the real dispatch gate accepts the successor, not only that a row exists.
+        const dispatch = createRunDispatch(db);
+        await db.update(heartbeatRuns).set({ status: "queued" }).where(eq(heartbeatRuns.id, successors[0]!.id));
+        const result = await dispatch.cancelStaleQueuedRun({ companyId: source.companyId, runId: successors[0]!.id, expectedStatus: "queued", now: new Date() });
+        expect(result.outcome).toBe("not_stale");
+      } else {
+        expect(hold!.evidence.automaticRecovery).toEqual({ replay: "blocked" });
+      }
+    });
     it("automatically closes an exhausted incident once, preserves ownership, and records no replay", async () => {
       const source = await seed(3);
       await reconcileSafeNativeReplacements(db);

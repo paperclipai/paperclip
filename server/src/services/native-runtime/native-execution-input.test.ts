@@ -451,4 +451,26 @@ describe("native execution input external-chat framing", () => {
       }
     },
   );
+  it("gives ordinary Board tasks the same durable-question guidance as external chat", () => {
+    const input = buildNativeExecutionInput({
+      companyId: "10000000-0000-4000-8000-000000000001",
+      runId: "50000000-0000-4000-8000-000000000005",
+      agentId: "30000000-0000-4000-8000-000000000003",
+      issue: { id: "20000000-0000-4000-8000-000000000002", identifier: "QA-1", title: "Welcome", description: null, workMode: "standard" },
+      taskPrompt: "Ask whether the welcome should sound warm or formal before writing it.",
+      workspace: { id: "40000000-0000-4000-8000-000000000004", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      normalizedSessionId: null,
+      provider: "codex",
+      completionContract: {
+        id: "70000000-0000-4000-8000-000000000007", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
+        contract: { revision: "1", objective: "Write a welcome after the user's answer", criteria: [{ id: "objective", requirement: "Use the selected tone" }] },
+      },
+      runtimeContext: nativeRuntimeContextFixture(),
+    });
+    expect(input.task.prompt).toContain('interactionKind="questions"');
+    expect(input.task.prompt).toContain('continuationPolicy="wake_assignee"');
+    expect(input.task.prompt).toContain("Create the actual question before yielding");
+    expect(input.task.prompt).toContain("Wait for its real answer");
+  });
+
 });

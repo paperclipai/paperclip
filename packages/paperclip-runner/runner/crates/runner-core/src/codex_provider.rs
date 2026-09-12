@@ -3186,6 +3186,11 @@ fn classify_notification_thread(
             "Codex notification has malformed turn identity",
         ));
     }
+    // This connection-level notification carries no task authority. Codex can
+    // emit it while loading skills during the first turn.
+    if method == "skills/changed" && !contains_provider_work_binding(params) {
+        return Ok(NotificationThread::UnrelatedInformation);
+    }
     let thread = notification_thread_id(params);
     if thread.is_none()
         && turn_ids.is_empty()
@@ -4717,6 +4722,28 @@ mod notification_identity_tests {
             NotificationThread::Descendant
         );
     }
+    #[test]
+    fn skills_changed_is_connection_information_without_execution_authority() {
+        assert_eq!(
+            classify_notification_thread("skills/changed", "root", &BTreeSet::new(), &json!({}))
+                .unwrap(),
+            NotificationThread::UnrelatedInformation
+        );
+        for params in [
+            json!({"threadId": "other"}),
+            json!({"itemId": "unbound"}),
+            json!({"threadId": 7}),
+        ] {
+            assert!(classify_notification_thread(
+                "skills/changed",
+                "root",
+                &BTreeSet::new(),
+                &params
+            )
+            .is_err());
+        }
+    }
+
     #[test]
     fn rejects_missing_authority_and_malformed_turn_identities() {
         for method in [
