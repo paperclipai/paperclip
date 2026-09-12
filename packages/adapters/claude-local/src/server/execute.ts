@@ -1227,10 +1227,16 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       ...(proc.terminalResultCleanup ? { unmanagedBackgroundTask: proc.terminalResultCleanup } : {}),
     };
 
+    // The terminal-result cleanup is OUR signal, not the model's failure: once the CLI prints its result line,
+    // `runWithTerminalResultCleanup` SIGTERMs the process group so an unmanaged background task cannot outlive
+    // the run. The process then exits 143 with a perfectly good result already parsed. `parsedSucceeded` knows
+    // that here and was previously discarded, leaving the server to judge on `exitCode` alone.
+    const stoppedAfterTerminalResult = parsedSucceeded && proc.terminalResultCleanup?.terminalResultSeen === true;
     return {
       exitCode: proc.exitCode,
       signal: proc.signal,
       timedOut: false,
+      ...(stoppedAfterTerminalResult ? { stoppedAfterTerminalResult: true } : {}),
       errorMessage,
       errorCode: resolvedErrorCode,
       errorFamily,

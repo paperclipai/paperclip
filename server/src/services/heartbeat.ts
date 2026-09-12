@@ -23632,6 +23632,14 @@ export function heartbeatService(
           !processCancellation?.failed
         ) {
           outcome = "succeeded";
+        } else if (
+          adapterResult.stoppedAfterTerminalResult &&
+          !adapterResult.errorMessage
+        ) {
+          // The non-zero exit is Paperclip's own terminal-result cleanup signalling a process whose result it
+          // had already parsed as a success. Recording that as a failure blames the run for our cleanup, and
+          // (because `adapter_failed` is in TRANSIENT_INFRA_CONTINUATION_ERROR_CODES) re-runs completed work.
+          outcome = "succeeded";
         } else {
           outcome = "failed";
         }
