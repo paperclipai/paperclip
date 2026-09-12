@@ -130,11 +130,30 @@ async function probeEmbeddedPostgresSupport(): Promise<EmbeddedPostgresTestSuppo
   }
 }
 
+const ALLOW_SKIP_ENV = "PAPERCLIP_ALLOW_SKIP_EMBEDDED_POSTGRES";
+
 export async function getEmbeddedPostgresTestSupport(): Promise<EmbeddedPostgresTestSupport> {
   if (!embeddedPostgresSupportPromise) {
     embeddedPostgresSupportPromise = probeEmbeddedPostgresSupport();
   }
-  return await embeddedPostgresSupportPromise;
+  const support = await embeddedPostgresSupportPromise;
+
+  // Callers turn `supported` into `describe.skip`, so an unsupported environment
+  // reports a GREEN run that executed none of the integration layer. That hid a
+  // total loss of embedded-Postgres coverage on Windows for months (ALAA-3702).
+  // Refuse to be silent: fail the suite unless the gap is explicitly accepted.
+  if (!support.supported && process.env[ALLOW_SKIP_ENV] !== "1") {
+    throw new Error(
+      [
+        "Embedded PostgreSQL is unavailable, so this suite would skip every integration",
+        "test and still report GREEN.",
+        `Reason: ${support.reason ?? "unknown"}`,
+        `Fix the environment, or set ${ALLOW_SKIP_ENV}=1 to explicitly accept skipped coverage.`,
+      ].join("\n"),
+    );
+  }
+
+  return support;
 }
 
 export async function startEmbeddedPostgresTestDatabase(
