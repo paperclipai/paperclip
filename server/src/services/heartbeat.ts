@@ -821,6 +821,7 @@ const GIT_SENSITIVE_LOCAL_ADAPTER_TYPES = new Set([
 ]);
 export { MAX_TURN_CONTINUATION_RETRY_REASON };
 export const MAX_TURN_CONTINUATION_WAKE_REASON = "max_turns_continuation_retry";
+export const ISSUE_ASSIGNED_WAKE_REASON = "issue_assigned";
 const MAX_TURN_CONTINUATION_DEFAULT_MAX_ATTEMPTS = 2;
 const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
@@ -3514,18 +3515,153 @@ interface WakeupOptions {
   allowRunCoalescing?: boolean;
 }
 
-type UsageTotals = {
+export type UsageTotals = {
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
 };
 
+export type SessionCompactionTrigger =
+  | "t1"
+  | "t2"
+  | "t3"
+  | "t4"
+  | "t5"
+  | "legacy_runs"
+  | "legacy_raw_input";
+
 type SessionCompactionDecision = {
   rotate: boolean;
   reason: string | null;
+  triggeredBy: SessionCompactionTrigger | null;
   handoffMarkdown: string | null;
   previousRunId: string | null;
+  nearRotationReason: string | null;
 };
+
+export interface SessionCompactionTriggerInput {
+  policy: SessionCompactionPolicy;
+  runsCount: number;
+  latestRawUsage: UsageTotals | null;
+  // Session-cumulative cache_read across all heartbeatRuns rows for this session (T1).
+  // Distinct from latestRawUsage, which stays single-run for legacy_raw_input.
+  sessionCachedInputTokens: number | null;
+  // Session-cumulative turn count (sum of each run's num_turns result) (T5).
+  sessionTurnsCount: number | null;
+  sessionAgeHours: number;
+  openIssuesCount: number | null;
+  wakeReason: string | null;
+}
+
+// Pure decision rule for session rotation. Priority order:
+// legacy_runs > legacy_raw_input > T1 (session-cumulative cached input) > T5 (session-cumulative turns) >
+// T2 (age) > T3 (zero open issues) > T4 (new issue wake).
+// First match wins so triggeredBy is deterministic for retrospective tuning (ADR-0044 §Acceptance criteria).
+export function decideSessionCompactionTrigger(
+  input: SessionCompactionTriggerInput,
+): { reason: string; triggeredBy: SessionCompactionTrigger } | null {
+  const {
+    policy,
+    runsCount,
+    latestRawUsage,
+    sessionCachedInputTokens,
+    sessionTurnsCount,
+    sessionAgeHours,
+    openIssuesCount,
+    wakeReason,
+  } = input;
+
+  if (policy.maxSessionRuns > 0 && runsCount > policy.maxSessionRuns) {
+    return { reason: `session exceeded ${policy.maxSessionRuns} runs`, triggeredBy: "legacy_runs" };
+  }
+  if (
+    policy.maxRawInputTokens > 0 &&
+    latestRawUsage &&
+    latestRawUsage.inputTokens >= policy.maxRawInputTokens
+  ) {
+    return {
+      reason:
+        `session raw input reached ${formatCount(latestRawUsage.inputTokens)} tokens ` +
+        `(threshold ${formatCount(policy.maxRawInputTokens)})`,
+      triggeredBy: "legacy_raw_input",
+    };
+  }
+  if (
+    policy.maxCachedInputTokens > 0 &&
+    typeof sessionCachedInputTokens === "number" &&
+    sessionCachedInputTokens >= policy.maxCachedInputTokens
+  ) {
+    return {
+      reason:
+        `session cache_read reached ${formatCount(sessionCachedInputTokens)} tokens ` +
+        `(threshold ${formatCount(policy.maxCachedInputTokens)})`,
+      triggeredBy: "t1",
+    };
+  }
+  if (
+    policy.maxSessionTurns > 0 &&
+    typeof sessionTurnsCount === "number" &&
+    sessionTurnsCount >= policy.maxSessionTurns
+  ) {
+    return {
+      reason:
+        `session turns reached ${formatCount(sessionTurnsCount)} ` +
+        `(threshold ${formatCount(policy.maxSessionTurns)})`,
+      triggeredBy: "t5",
+    };
+  }
+  if (policy.maxSessionAgeHours > 0 && sessionAgeHours >= policy.maxSessionAgeHours) {
+    return { reason: `session age reached ${Math.floor(sessionAgeHours)} hours`, triggeredBy: "t2" };
+  }
+  if (
+    policy.rotateOnZeroOpenIssues &&
+    typeof openIssuesCount === "number" &&
+    openIssuesCount === 0
+  ) {
+    return { reason: "no open issues for agent", triggeredBy: "t3" };
+  }
+  if (policy.rotateOnNewIssueWake && wakeReason === ISSUE_ASSIGNED_WAKE_REASON) {
+    return { reason: "wake triggered by new issue assignment", triggeredBy: "t4" };
+  }
+  return null;
+}
+
+// Pre-rotation advisory: not a trigger, just a heads-up injected into the *current*
+// run when session-cumulative counters are already close to a T1/T5 threshold, so the
+// agent gets a chance to persist WORKING-CONTEXT/save_to_knowledge before a future
+// dispatch's evaluateSessionCompaction call actually rotates the session out from
+// under it (that call only runs between dispatches, never mid-run).
+const NEAR_ROTATION_WARNING_RATIO = 0.8;
+
+export function decideSessionNearRotationWarning(
+  input: SessionCompactionTriggerInput,
+): { reason: string } | null {
+  const { policy, sessionCachedInputTokens, sessionTurnsCount } = input;
+
+  if (
+    policy.maxCachedInputTokens > 0 &&
+    typeof sessionCachedInputTokens === "number" &&
+    sessionCachedInputTokens >= policy.maxCachedInputTokens * NEAR_ROTATION_WARNING_RATIO
+  ) {
+    return {
+      reason:
+        `session cache_read is at ${formatCount(sessionCachedInputTokens)} tokens, ` +
+        `approaching the ${formatCount(policy.maxCachedInputTokens)} rotation threshold`,
+    };
+  }
+  if (
+    policy.maxSessionTurns > 0 &&
+    typeof sessionTurnsCount === "number" &&
+    sessionTurnsCount >= policy.maxSessionTurns * NEAR_ROTATION_WARNING_RATIO
+  ) {
+    return {
+      reason:
+        `session has used ${formatCount(sessionTurnsCount)} turns, ` +
+        `approaching the ${formatCount(policy.maxSessionTurns)} turn rotation threshold`,
+    };
+  }
+  return null;
+}
 
 interface ParsedIssueAssigneeAdapterOverrides {
   adapterConfig: Record<string, unknown> | null;
@@ -11542,24 +11678,31 @@ export function heartbeatService(
     sessionId: string | null;
     issueId: string | null;
     continuationSummaryBody?: string | null;
+    wakeReason?: string | null;
+    openIssuesCount?: number | null;
+    policy?: SessionCompactionPolicy;
   }): Promise<SessionCompactionDecision> {
     const { agent, sessionId, issueId } = input;
     if (!sessionId) {
       return {
         rotate: false,
         reason: null,
+        triggeredBy: null,
         handoffMarkdown: null,
         previousRunId: null,
+        nearRotationReason: null,
       };
     }
 
-    const policy = parseSessionCompactionPolicy(agent);
+    const policy = input.policy ?? parseSessionCompactionPolicy(agent);
     if (!policy.enabled || !hasSessionCompactionThresholds(policy)) {
       return {
         rotate: false,
         reason: null,
+        triggeredBy: null,
         handoffMarkdown: null,
         previousRunId: null,
+        nearRotationReason: null,
       };
     }
 
@@ -11589,8 +11732,10 @@ export function heartbeatService(
       return {
         rotate: false,
         reason: null,
+        triggeredBy: null,
         handoffMarkdown: null,
         previousRunId: null,
+        nearRotationReason: null,
       };
     }
 
@@ -11610,30 +11755,62 @@ export function heartbeatService(
           )
         : 0;
 
-    let reason: string | null = null;
-    if (policy.maxSessionRuns > 0 && runs.length > policy.maxSessionRuns) {
-      reason = `session exceeded ${policy.maxSessionRuns} runs`;
-    } else if (
-      policy.maxRawInputTokens > 0 &&
-      latestRawUsage &&
-      latestRawUsage.inputTokens >= policy.maxRawInputTokens
-    ) {
-      reason =
-        `session raw input reached ${formatCount(latestRawUsage.inputTokens)} tokens ` +
-        `(threshold ${formatCount(policy.maxRawInputTokens)})`;
-    } else if (
-      policy.maxSessionAgeHours > 0 &&
-      sessionAgeHours >= policy.maxSessionAgeHours
-    ) {
-      reason = `session age reached ${Math.floor(sessionAgeHours)} hours`;
+    let sessionCachedInputTokens: number | null = null;
+    let sessionTurnsCount: number | null = null;
+    if (policy.maxCachedInputTokens > 0 || policy.maxSessionTurns > 0) {
+      const [aggregate] = await db
+        .select({
+          sessionCachedInputTokens: sql<string>`sum(
+            coalesce(
+              (${heartbeatRuns.usageJson} ->> 'rawCachedInputTokens')::numeric,
+              (${heartbeatRuns.usageJson} ->> 'cachedInputTokens')::numeric,
+              0
+            )
+          )`.as("sessionCachedInputTokens"),
+          sessionTurnsCount: sql<string>`sum(
+            coalesce((${heartbeatRuns.resultJson} ->> 'num_turns')::numeric, 0)
+          )`.as("sessionTurnsCount"),
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agent.id),
+            eq(heartbeatRuns.sessionIdAfter, sessionId),
+          ),
+        );
+      sessionCachedInputTokens =
+        policy.maxCachedInputTokens > 0 && aggregate?.sessionCachedInputTokens != null
+          ? Number(aggregate.sessionCachedInputTokens)
+          : null;
+      sessionTurnsCount =
+        policy.maxSessionTurns > 0 && aggregate?.sessionTurnsCount != null
+          ? Number(aggregate.sessionTurnsCount)
+          : null;
     }
 
+    const triggerInput: SessionCompactionTriggerInput = {
+      policy,
+      runsCount: runs.length,
+      latestRawUsage,
+      sessionCachedInputTokens,
+      sessionTurnsCount,
+      sessionAgeHours,
+      openIssuesCount: typeof input.openIssuesCount === "number" ? input.openIssuesCount : null,
+      wakeReason: input.wakeReason ?? null,
+    };
+    const trigger = decideSessionCompactionTrigger(triggerInput);
+    const reason: string | null = trigger?.reason ?? null;
+    const triggeredBy: SessionCompactionTrigger | null = trigger?.triggeredBy ?? null;
+
     if (!reason || !latestRun) {
+      const nearRotationReason = decideSessionNearRotationWarning(triggerInput)?.reason ?? null;
       return {
         rotate: false,
         reason: null,
+        triggeredBy: null,
         handoffMarkdown: null,
         previousRunId: latestRun?.id ?? null,
+        nearRotationReason,
       };
     }
 
@@ -11669,8 +11846,10 @@ export function heartbeatService(
     return {
       rotate: true,
       reason,
+      triggeredBy,
       handoffMarkdown,
       previousRunId: latestRun.id,
+      nearRotationReason: null,
     };
   }
 
@@ -16355,6 +16534,19 @@ export function heartbeatService(
         and(
           eq(heartbeatRuns.agentId, agentId),
           eq(heartbeatRuns.status, "running"),
+        ),
+      );
+    return Number(count ?? 0);
+  }
+
+  async function countOpenIssuesForAgent(agentId: string) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(issues)
+      .where(
+        and(
+          eq(issues.assigneeAgentId, agentId),
+          notInArray(issues.status, ["done", "cancelled"]),
         ),
       );
     return Number(count ?? 0);
@@ -21578,11 +21770,19 @@ export function heartbeatService(
         stripPaperclipSessionMetadataFromSessionParams(runtimeSessionParams),
       );
 
+      const wakeReasonForCompaction = readNonEmptyString(context?.wakeReason) ?? null;
+      const policyForCompaction = parseSessionCompactionPolicy(agent);
+      const openIssuesCountForCompaction = policyForCompaction.rotateOnZeroOpenIssues
+        ? await countOpenIssuesForAgent(agent.id)
+        : null;
       const sessionCompaction = await evaluateSessionCompaction({
         agent,
         sessionId: previousSessionDisplayId ?? runtimeSessionIdForAdapter,
         issueId,
         continuationSummaryBody: continuationSummary?.body ?? null,
+        policy: policyForCompaction,
+        wakeReason: wakeReasonForCompaction,
+        openIssuesCount: openIssuesCountForCompaction,
       });
       if (sessionCompaction.rotate) {
         context.paperclipSessionHandoffMarkdown =
@@ -21602,6 +21802,11 @@ export function heartbeatService(
         delete context.paperclipSessionHandoffMarkdown;
         delete context.paperclipSessionRotationReason;
         delete context.paperclipPreviousSessionId;
+      }
+      if (!sessionCompaction.rotate && sessionCompaction.nearRotationReason) {
+        context.paperclipSessionNearRotationNotice = sessionCompaction.nearRotationReason;
+      } else {
+        delete context.paperclipSessionNearRotationNotice;
       }
 
       const runtimeForAdapter = {
@@ -23749,6 +23954,7 @@ export function heartbeatService(
                   runtimeForAdapter.sessionDisplayId == null,
                 sessionRotated: sessionCompaction.rotate,
                 sessionRotationReason: sessionCompaction.reason,
+                freshSessionTriggeredBy: sessionCompaction.rotate ? sessionCompaction.triggeredBy : null,
                 configFreshness: configFreshnessResultMetadata,
                 provider:
                   readNonEmptyString(adapterResult.provider) ?? "unknown",
