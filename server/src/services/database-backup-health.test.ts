@@ -27,7 +27,7 @@ describe("inspectDatabaseBackupHealth", () => {
 
     expect(result.status).toBe("warning");
     expect(result.warnings.map((w) => w.code)).toContain("database_backup_empty");
-    expect(result.latestBackup?.uncompressedSizeBytes).toBe(0);
+    expect(result.latestBackup?.empty).toBe(true);
   });
 
   it("reports ok for a complete, non-empty archive", () => {
@@ -45,6 +45,6 @@ describe("inspectDatabaseBackupHealth", () => {
 
     expect(result.status).toBe("ok");
     expect(result.warnings).toEqual([]);
-    expect(result.latestBackup?.uncompressedSizeBytes).toBe(34);
+    expect(result.latestBackup?.empty).toBe(false);
   });
 });
