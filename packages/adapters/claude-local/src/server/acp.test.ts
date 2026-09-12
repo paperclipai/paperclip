@@ -1196,7 +1196,7 @@ describe("claude_local ACP lane", () => {
     });
   });
 
-  it("delivers the issue description exactly once per prompt and compacts non-assignment resume deltas", async () => {
+  it("delivers the current issue description exactly once on fresh and resumed prompts", async () => {
     const root = await makeTempRoot("paperclip-claude-acp-brief-");
     const runtimes: FakeRuntime[] = [];
     const execute = createClaudeAcpExecutor({
@@ -1264,9 +1264,9 @@ describe("claude_local ACP lane", () => {
     }));
     expect(second.exitCode).toBe(0);
     const resumePrompt = runtimes[1]?.startInputs[0]?.text ?? "";
-    expect(resumePrompt).not.toContain(description);
+    expect(resumePrompt.split(description)).toHaveLength(2);
     expect(resumePrompt).toContain("Paperclip task context:");
-    expect(resumePrompt).toContain(
+    expect(resumePrompt).not.toContain(
       "- issue description: omitted from this resume delta; fetch the issue if you need the latest brief",
     );
   });
