@@ -492,6 +492,58 @@ describe("GET /health", () => {
     });
   });
 
+  it("exposes full health details when valid health probe token is provided in authenticated mode", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-server-health-"));
+    process.env.PAPERCLIP_HOME = home;
+    delete process.env.PAPERCLIP_INSTANCE_ID;
+    process.env.PAPERCLIP_HEALTH_TOKEN = "test-health-probe-token";
+    const devServerStatus = await import("../dev-server-status.js");
+    vi.spyOn(devServerStatus, "readPersistedDevServerStatus").mockReturnValue(undefined);
+    const { healthRoutes } = await import("../routes/health.js");
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{ count: 1 }]),
+        })),
+      })),
+    } as unknown as Db;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "none", source: "none" };
+      next();
+    });
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+        serverInfo: testServerInfo,
+      }),
+    );
+
+    // Without token: redacted
+    const unauthRes = await request(app).get("/health");
+    expect(unauthRes.status).toBe(200);
+    expect(unauthRes.body.serverVersion).toBeUndefined();
+    expect(unauthRes.body.version).toBeUndefined();
+
+    // With wrong token: redacted
+    const wrongTokenRes = await request(app).get("/health").set("x-paperclip-health-token", "wrong-token");
+    expect(wrongTokenRes.status).toBe(200);
+    expect(wrongTokenRes.body.serverVersion).toBeUndefined();
+    expect(wrongTokenRes.body.version).toBeUndefined();
+
+    // With valid token: full details including version and serverVersion
+    const validTokenRes = await request(app).get("/health").set("x-paperclip-health-token", "test-health-probe-token");
+    expect(validTokenRes.status).toBe(200);
+    expect(validTokenRes.body.version).toBe(serverVersion);
+    expect(validTokenRes.body.serverVersion).toBe(serverVersion);
+    expect(validTokenRes.body.serverInfo).toEqual(testServerInfo);
+  });
+
   it("reports bootstrap_pending in authenticated mode when no instance admin exists", async () => {
     const { healthRoutes } = await import("../routes/health.js");
     const db = {
