@@ -1,3 +1,5 @@
+import { AiConnectionField, aiProviderForAdapter } from "../ai-connections/AiConnectionField";
+import type { AiConnectionBinding } from "@paperclipai/shared";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import {
   SETUP_CREDENTIAL_KEYS,
@@ -114,7 +116,7 @@ function Setup({
         : "codex_local"
     : adapterType;
   const connectionAdapter =
-    brandType === "claude_local" || brandType === "codex_local"
+    brandType === "claude_local" || brandType === "codex_local" || brandType === "grok_local"
       ? brandType
       : null;
   const multiProvider =
@@ -141,7 +143,13 @@ function Setup({
   const [providerBinding, setProviderBinding] = useState<EnvBinding | null>(
     null,
   );
+  const [runtimeAiBinding, setRuntimeAiBinding] = useState<AiConnectionBinding | undefined>(() =>
+    brandType === "opencode_local"
+      ? { provider: "openrouter", method: "api_key", mode: "responsible_user" }
+      : undefined,
+  );
   const [connection, setConnection] = useState<ProviderConnection | null>(null);
+  const aiBinding = runtimeAiBinding ?? connection?.aiConnection;
   const [repository, setRepository] = useState("");
   const [branch, setBranch] = useState("");
   const [createdInSession, setCreated] = useState<Agent | null>(null);
@@ -203,8 +211,8 @@ function Setup({
     queryFn: () => environmentsApi.capabilities(companyId),
   });
   const models = useQuery({
-    queryKey: queryKeys.agents.adapterModels(companyId, brandType),
-    queryFn: () => agentsApi.adapterModels(companyId, brandType),
+    queryKey: queryKeys.agents.adapterModels(companyId, brandType, null, aiBinding?.provider),
+    queryFn: () => agentsApi.adapterModels(companyId, brandType, { provider: aiBinding?.provider }),
     enabled: Boolean(brandType) && showModel,
     retry: false,
   });
@@ -343,7 +351,7 @@ function Setup({
         ...(runnerProvider === "claude" ? { acpxAgent: "claude" } : {}),
         ...(model ? { model } : {}),
       });
-    if (hasCredentialField && binding) {
+    if (!aiBinding && !nextConnection?.aiConnection && hasCredentialField && binding) {
       if (adapterType === "hermes_gateway") config.apiKey = binding;
       else
         config.env = { ...((config.env as object) ?? {}), [envKey]: binding };
@@ -401,6 +409,7 @@ function Setup({
     return buildConfig(nextConnection);
   }
   function pendingCredentials(nextConnection = connection) {
+    if (aiBinding || nextConnection?.aiConnection) return {};
     return {
       ...nextConnection?.credentials,
       ...(hasCredentialField && apiKey.trim()
@@ -423,6 +432,7 @@ function Setup({
         providerAdapter: brandType,
         adapterConfig: config,
         testCredentials: pendingCredentials(nextConnection),
+        aiConnection: runtimeAiBinding ?? nextConnection?.aiConnection,
         environmentId,
       });
       if (run !== generation.current) return false;
@@ -494,7 +504,7 @@ function Setup({
         defaultEnvironmentId:
           environmentOverride ||
           (forced.forced || managedOnly ? environmentId : null),
-        runtimeConfig: buildNewAgentRuntimeConfig({ heartbeatEnabled: false }),
+        runtimeConfig: { ...buildNewAgentRuntimeConfig({ heartbeatEnabled: false }), ...(aiBinding ? { aiConnection: aiBinding } : {}) },
         budgetMonthlyCents: 0,
         ...(connection?.storedSessionId
           ? { storedSessionId: connection.storedSessionId }
@@ -700,7 +710,7 @@ function Setup({
                     <div className="mb-8">
                       <OnboardingHeading
                         title="Connect a model"
-                        lede={`Connect ${name} to ${connectionAdapter === "claude_local" ? "Claude" : "OpenAI"}.`}
+                        lede={`Connect ${name} to ${connectionAdapter === "claude_local" ? "Claude" : connectionAdapter === "grok_local" ? "Grok" : "OpenAI"}.`}
                         center
                       />
                     </div>
@@ -710,6 +720,7 @@ function Setup({
                       adapterType={connectionAdapter}
                       environmentId={environmentId}
                       canLogin={canLogin}
+                      localEnvironment={environment?.driver === "local"}
                       onBack={() => navigate("/agents/all")}
                       testConnection={runTest}
                       testError={
@@ -758,7 +769,7 @@ function Setup({
                       <p className="text-sm text-muted-foreground">
                         {created.status === "pending_approval"
                           ? "An organization administrator must approve this agent before it can work."
-                          : "Your agent has not started running."}
+                          : "Assign a task when you’re ready for this agent to work."}
                       </p>
                     </div>
                     <div className="flex flex-wrap justify-between gap-3">
@@ -797,6 +808,9 @@ function Setup({
                     <fieldset disabled={busy} className="space-y-8">
                       <section className="space-y-5">
                         <h3 className="text-sm font-semibold">Runtime</h3>
+                        {aiProviderForAdapter(brandType) && <AiConnectionField companyId={companyId} agentName={name} adapterType={brandType} model={model} environmentId={environmentId ?? undefined} value={aiBinding}
+                          onChange={binding => { setRuntimeAiBinding(binding); resetTest(); }} />}
+                        {models.error && <p role="alert" className="text-sm text-destructive">Could not load models. Retry or enter a model ID manually.</p>}
                         {((showModel && !usingKimiApi) ||
                           efforts.length > 0) && (
                           <div className="grid items-start gap-5 sm:grid-cols-2">
@@ -866,7 +880,7 @@ function Setup({
                             manually.
                           </p>
                         )}
-                        {hasCredentialField && (
+                        {hasCredentialField && !aiBinding && (
                           <div className="grid gap-5 sm:grid-cols-2">
                             {chooseProvider && (
                               <Field label="API key provider">

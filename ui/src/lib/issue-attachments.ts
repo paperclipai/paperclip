@@ -25,7 +25,8 @@ export function attachmentDownloadPath(attachment: AttachmentPathLike) {
 }
 
 export function isImageAttachment(attachment: Pick<IssueAttachment, "contentType">) {
-  return normalizedContentType(attachment).startsWith("image/");
+  const type = normalizedContentType(attachment);
+  return type.startsWith("image/") && !/^image\/hei[cf](?:-sequence)?$/.test(type);
 }
 
 export function isVideoAttachment(

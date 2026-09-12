@@ -1057,6 +1057,8 @@ export interface IssueCommentMetadataSection {
 
 export interface IssueCommentMetadata {
   version: 1;
+  /** Inbound channel attribution; never an authorization input. */
+  sourceChannel?: "imessage-photon";
   sourceRunId?: string | null;
   sourceIdentityContextId?: string | null;
   authorizationReason?: string | null;
@@ -1329,6 +1331,8 @@ export type ConnectionIntentPhase = "requested" | "authorizing" | "needs_retry";
  */
 export interface ConnectionIntentPayload {
   version: 1;
+  /** Runtime authentication requests cannot be satisfied by tool credentials. */
+  purpose?: "ai";
   serviceSlug: string;
   serviceName: string;
   serviceLogoUrl?: string | null;

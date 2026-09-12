@@ -1,6 +1,7 @@
 import { TaskChatProjectCreatedCard } from "@/components/task-chat/TaskChatProjectCreatedCard";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { FileTree } from "@/components/FileTree";
+import { AiConnectionDesignExamples } from "@/components/ai-connections/AiConnectionDesignExamples";
 import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKeySelect";
 import { RepositoryEditor } from "@/components/RepositoryEditor";
 import { TaskChatRunnerActivityGroup } from "@/components/task-chat/TaskChatRunnerActivityGroup";
@@ -2357,6 +2358,10 @@ export function DesignGuide() {
             return next;
           })}
         />
+      </Section>
+
+      <Section title="AI Connections">
+        <AiConnectionDesignExamples />
       </Section>
 
       <Section title="Built-in Agent Lifecycle Chips">

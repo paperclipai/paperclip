@@ -142,6 +142,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           </button>
         </PopoverTrigger>
         <PopoverContent
+          data-mobile-entity-picker=""
           align="start"
           side="bottom"
           collisionPadding={16}
@@ -159,7 +160,7 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
         >
           <input
             ref={inputRef}
-            className="w-full border-b border-border bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground/60"
+            className="w-full border-b border-border bg-transparent px-2 py-1.5 text-base outline-none placeholder:text-muted-foreground/60 md:text-sm"
             placeholder={searchPlaceholder}
             value={query}
             onChange={(event) => {

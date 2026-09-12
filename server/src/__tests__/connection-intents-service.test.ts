@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  aiConnectionDefaults,
   agentWakeupRequests,
   issueComments,
   companies,
@@ -792,4 +793,33 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     await expect(service.search(claims, "notion"))
       .rejects.toThrow("no longer active");
   });
+  it("keeps runtime authentication requests distinct from the same provider's tool requests", async () => {
+    const companyId = claims.company_id;
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const aiRunId = randomUUID();
+    const binding = { provider: "anthropic", method: "api_key", mode: "responsible_user" } as const;
+    await db.insert(agents).values({ id: agentId, companyId, name: "AI Agent", adapterType: "claude_local", runtimeConfig: { aiConnection: binding } });
+    await db.insert(issues).values({ id: issueId, companyId, title: "AI authentication", status: "in_progress", assigneeAgentId: agentId });
+    await db.insert(heartbeatRuns).values({ id: aiRunId, companyId, agentId, status: "running", responsibleUserId: claims.responsible_user_id, contextSnapshot: { issueId } });
+    const [app] = await db.insert(toolApplications).values({ companyId, applicationKey: "ai-intent-fixture", name: "AI intent fixture", type: "mcp_http", metadata: { sourceTemplateKey: "anthropic" } }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: app!.id, name: "Personal Claude API", uid: `ai-${randomUUID()}`, connectionPurpose: "ai", transport: "runtime_auth", authKind: "api_key", credentialPolicy: "per_user", healthStatus: "ok", status: "active", enabled: true, config: { sourceTemplateKey: "anthropic", ai: { provider: "anthropic", method: "api_key" } } }).returning();
+    const [grant] = await db.insert(connectionGrants).values({ companyId, connectionId: connection!.id, kind: "user", subjectUserId: claims.responsible_user_id, createdByUserId: claims.responsible_user_id }).returning();
+    await db.insert(aiConnectionDefaults).values({ companyId, userId: claims.responsible_user_id!, provider: "anthropic", method: "api_key", grantId: grant!.id });
+    const aiClaims = { ...claims, sub: agentId, run_id: aiRunId };
+    const service = connectionIntentService(db);
+    const toolRequest = await service.request(aiClaims, "anthropic");
+    const aiRequest = await service.request(aiClaims, "anthropic", { purpose: "ai" });
+    expect(aiRequest.state).toBe("needs_user_action");
+    expect(aiRequest.interactionId).not.toBe(toolRequest.interactionId);
+    expect((await service.setupOptions(aiRequest.interactionId!)).aiConnection).toEqual(binding);
+    expect((await service.setupOptions(toolRequest.interactionId!)).existingConnections).toEqual([]);
+    await expect(service.complete(toolRequest.interactionId!, connection!.id, claims.responsible_user_id!)).rejects.toThrow("cannot satisfy");
+    await expect(service.complete(aiRequest.interactionId!, connection!.id, claims.responsible_user_id!)).resolves.toMatchObject({ status: "accepted" });
+    expect((await service.request(aiClaims, "anthropic", { purpose: "ai" })).state).toBe("ready");
+    expect((await service.request(aiClaims, "anthropic")).state).toBe("needs_user_action");
+    expect((await service.search(aiClaims, "openrouter")).results.some(result => result.service === "openrouter")).toBe(false);
+  });
+
+
 });

@@ -68,8 +68,8 @@ export type {
 
 export type ToolActorType = "agent" | "user" | "system" | "plugin";
 export type ToolConnectionTransport =
-  "mcp_remote" | "rest_api" | "local_stdio" | "chat_sdk";
-export type ToolConnectionPurpose = "tool" | "channel";
+  "mcp_remote" | "rest_api" | "local_stdio" | "chat_sdk" | "runtime_auth";
+export type ToolConnectionPurpose = "tool" | "channel" | "ai";
 export type ToolConnectionAuthKind = "oauth" | "api_key" | "none";
 export type ToolConnectionOwnership =
   "platform_shared" | "platform_provisioned" | "customer" | "dcr";
