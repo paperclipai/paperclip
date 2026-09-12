@@ -284,7 +284,7 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
 
       let dispatchedAt = 0;
       page.on("request", (req) => {
-        if (req.method() === "POST" && req.url().endsWith("/tree-holds"))
+        if (req.method() === "POST" && req.url().endsWith(`/heartbeat-runs/${parentRun.id}/cancel`))
           dispatchedAt = Date.now();
       });
       const clickedAt = Date.now();
@@ -293,16 +293,10 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       await expect(
         page.getByRole("button", { name: "Dismiss notification" }),
       ).toHaveCount(0);
-      for (const run of [parentRun, childRun]) {
-        await expect
-          .poll(
-            async () =>
-              (await json(await request.get(`/api/heartbeat-runs/${run.id}`)))
-                .status,
-            { timeout: 35_000 },
-          )
-          .toBe("cancelled");
-      }
+      await expect.poll(async () =>
+        (await json(await request.get(`/api/heartbeat-runs/${parentRun.id}`))).status,
+        { timeout: 35_000 },
+      ).toBe("cancelled");
       const stoppedAt = Date.now();
       expect(dispatchedAt - clickedAt).toBeLessThan(2000);
       expect(dispatchedAt).toBeGreaterThan(0);
@@ -313,7 +307,7 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
           .toBe(false);
         await expect
           .poll(() => processAlive(childRun.processPid), { timeout: 3000 })
-          .toBe(false);
+          .toBe(true);
       } else {
         const finalRun = await json(
           await request.get(`/api/heartbeat-runs/${parentRun.id}`),
@@ -332,6 +326,20 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         }),
         contentType: "application/json",
       });
+      expect(
+        (await json(await request.get(`/api/issues/${parent.id}/tree-control/state`))).activePauseHold,
+      ).toBeNull();
+      expect((await json(await request.get(`/api/heartbeat-runs/${childRun.id}`))).status).toBe("running");
+      await expect(editor).toBeVisible();
+      await expect(page.getByText("Subtree is paused.", { exact: true })).toHaveCount(0);
+      // Pausing future work is a separate, explicit subtree action.
+      await menu(page, "Pause subtree");
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+      await expect.poll(async () => (await json(await request.get(`/api/heartbeat-runs/${childRun.id}`))).status,
+        { timeout: 35_000 }).toBe("cancelled");
+      if (adapter === "process") {
+        await expect.poll(() => processAlive(childRun.processPid), { timeout: 3000 }).toBe(false);
+      }
       expect(
         (
           await json(
@@ -375,12 +383,16 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         .getByRole("button", { name: "Resume subtree", exact: true })
         .click();
       await expect(page.getByRole("dialog")).toHaveCount(0);
-      // The recovery policy parks these stopped tasks. Releasing the hold must
-      // leave them parked, even with Wake agents selected; no implicit replay.
-      expect(await json(await request.get(`/api/issues/${parent.id}/live-runs`))).toEqual([]);
-      expect(await json(await request.get(`/api/issues/${child.id}/live-runs`))).toEqual([]);
-      await reconcileDemoExecution(request, parent.id, parentRun.id);
-      await reconcileDemoExecution(request, child.id, childRun.id);
+      if (adapter === "process") {
+        // Legacy processes lack runner stop/action proof, so releasing the hold
+        // preserves their recovery gate until the fixture reconciles them.
+        expect(await json(await request.get(`/api/issues/${parent.id}/live-runs`))).toEqual([]);
+        expect(await json(await request.get(`/api/issues/${child.id}/live-runs`))).toEqual([]);
+        await reconcileDemoExecution(request, parent.id, parentRun.id);
+        await reconcileDemoExecution(request, child.id, childRun.id);
+      }
+      // A verified stopped native runner can honor the explicitly selected
+      // Wake agents option without another manual reconciliation step.
       const resumedParentRun = await running(request, parent.id, adapter);
       const resumedChildRun = await running(request, child.id, adapter);
       expect(resumedParentRun.id).not.toBe(parentRun.id);
