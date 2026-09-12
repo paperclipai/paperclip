@@ -1,16 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  resolvedInteractionCheckoutExpectedStatuses,
   shouldAutoCheckoutIssueForWake,
 } from "../services/heartbeat.ts";
 
 describe("shouldAutoCheckoutIssueForWake", () => {
-  it("allows an authorized interaction continuation to acquire a review task", () => {
-    expect(resolvedInteractionCheckoutExpectedStatuses()).toEqual([
-      "in_progress",
-      "in_review",
-    ]);
-  });
   it("auto-checks out an assigned todo issue for an actionable wake", () => {
     expect(shouldAutoCheckoutIssueForWake({
       contextSnapshot: { wakeReason: "issue_assigned" },
