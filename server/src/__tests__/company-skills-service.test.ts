@@ -949,6 +949,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
 
   it("filters by folder subtree, keeps search global, and returns canonical folder paths", async () => {
     const companyId = randomUUID();
+    const deploymentSkillName = `Deploy ${companyId}`;
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
@@ -981,7 +982,7 @@ describeEmbeddedPostgres("companySkillService.list", () => {
         folderId: operations.id,
         key: `company/${companyId}/deploy`,
         slug: "deploy",
-        name: "Deploy",
+        name: deploymentSkillName,
         markdown: "# Deploy",
         sourceType: "local_path",
         sourceLocator: deployDir,
@@ -997,8 +998,8 @@ describeEmbeddedPostgres("companySkillService.list", () => {
       expect.objectContaining({ name: "Review", folderPath: "engineering/reviews" }),
     ]);
     await expect(svc.list(companyId, { folderId: engineering.id })).resolves.toEqual([]);
-    await expect(svc.list(companyId, { folderId: engineering.id, q: "deploy" })).resolves.toEqual([
-      expect.objectContaining({ name: "Deploy", folderPath: "operations" }),
+    await expect(svc.list(companyId, { folderId: engineering.id, q: deploymentSkillName.toLowerCase().slice(0, -1) })).resolves.toEqual([
+      expect.objectContaining({ name: deploymentSkillName, folderPath: "operations" }),
     ]);
     const review = (await svc.list(companyId)).find((skill) => skill.name === "Review");
     await expect(svc.getById(companyId, review!.id)).resolves.toMatchObject({
