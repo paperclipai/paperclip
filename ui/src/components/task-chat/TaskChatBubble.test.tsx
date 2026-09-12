@@ -41,6 +41,19 @@ describe("TaskChatBubble attachment chips", () => {
     );
   }
 
+  it("shows persistent iMessage attribution only on inbound human bubbles", () => {
+    for (const author of ["human", "agent"] as const) {
+      flushSync(() => root!.render(
+        <ThemeProvider>
+          <TaskChatBubble item={{ id: "photon", kind: "message", author, text: "A reply", timestamp: "1:56 PM", sourceChannel: "imessage-photon" }} />
+        </ThemeProvider>,
+      ));
+      expect(container.textContent?.includes("Sent from iMessage")).toBe(author === "human");
+    }
+    renderMessage("Board reply");
+    expect(container.textContent).not.toContain("Sent from iMessage");
+  });
+
   it("opens attachment images in the shared task gallery", () => {
     const openGallery = vi.fn(() => true);
     const contentPath = "/api/attachments/shared-image/content";

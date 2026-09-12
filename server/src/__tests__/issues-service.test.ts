@@ -1466,7 +1466,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(result.map((issue) => issue.id)).toEqual([recentMediumIssueId]);
   });
 
-  it("ranks comment matches ahead of description-only matches", async () => {
+  it("ranks direct description matches ahead of comment-only matches", async () => {
     const companyId = randomUUID();
     const commentMatchId = randomUUID();
     const descriptionMatchId = randomUUID();
@@ -1508,7 +1508,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       includeRoutineExecutions: true,
     });
 
-    expect(result.map((issue) => issue.id)).toEqual([commentMatchId, descriptionMatchId]);
+    expect(result.map((issue) => issue.id)).toEqual([descriptionMatchId, commentMatchId]);
   });
 
   it("filters issue lists to the full descendant tree for a root issue", async () => {

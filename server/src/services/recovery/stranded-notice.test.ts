@@ -241,3 +241,12 @@ describe("buildStrandedRecoveryEscalationNotice", () => {
     ).toBe(false);
   });
 });
+
+
+it("names the unavailable AI account instead of suggesting secret bindings", () => {
+  const notice = buildConfigurationIncompleteRecoveryNoticeSeed({ reason: "ai_connection_unavailable", provider: "openai" });
+  expect(notice.nextAction).toContain("Reconnect the selected AI account");
+  expect(notice.title).toBe("AI connection needs attention");
+  expect(notice.body).toContain("Reconnect the account");
+  expect(notice.body).not.toContain("secret/env");
+});

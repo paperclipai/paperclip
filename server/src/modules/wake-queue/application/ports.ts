@@ -428,6 +428,8 @@ export interface WakeAdmissionWriter {
       existingDeferredWakeId: string;
       mergedPayload: Record<string, unknown>;
       nextCoalescedCount: number;
+      /** A fresh manual click replaces the merged queue's execution requester. */
+      manualUserWakeActorId?: string;
       /** Persist each durable input's own receipt atomically with the merge. */
       coalescedReceipt?: CoalescedDeferredAdmissionReceipt;
     },

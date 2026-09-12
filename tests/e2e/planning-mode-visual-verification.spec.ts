@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { mockOnboardingLocalAiConnection } from "./helpers/onboarding-ai-connection";
 import {
   expectLandsOnFirstTaskWithoutDashboardBounce,
   instrumentNavLog,
@@ -35,6 +36,7 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   const screenshotDir = "test-results/planning-mode";
 
   await instrumentNavLog(page);
+  await mockOnboardingLocalAiConnection(page);
 
   await page.route("**/test-environment", (route) =>
     route.fulfill({
@@ -92,8 +94,8 @@ test("captures planning mode UI for desktop and mobile", async ({ page }) => {
   // The connect step arrives with no source selected — the tile row is a
   // question, not a confirmation — so its CTA stays disabled until one is
   // pressed. It reads "Connect", not "Next": the button starts the sign-in
-  // where there is one to start. This instance has no sandbox environment, so
-  // there is none, and Connect goes straight to the hire.
+  // where there is one to start. The test simulates successful local account
+  // connection, then exercises the real first-task creation flow.
   //
   // Waited on for enabled rather than visible: it is already on screen, and
   // clicking a disabled button raises nothing and does nothing.

@@ -675,7 +675,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // holds no credential it does nothing (no random pick). This keeps the change
   // additive: the managed home still symlinks the shared `auth.json`, now at its
   // freshest same-identity copy. The off-switch (default on) skips the vend.
-  if (isCodexAuthCacheEnabled(process.env)) {
+  if (!config.managedAiConnection && isCodexAuthCacheEnabled(process.env)) {
     const sharedHomeAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
     // This caller reads `process.env` directly and holds no separate `env`
     // object, so `selectVendCredential` falls back to its own `process.env`
@@ -848,14 +848,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 restore: async ({ assetDir, readFile }) =>
                   void (await copyBackCodexAuth({
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
-                    hostAuthPath: path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
+                    hostAuthPath: path.join(config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
                     log: (line) => onLog("stdout", `${line}\n`),
                     // Additive cache write (sandbox to host): also cache the
                     // sandbox subscription credential in its per-identity slot,
                     // keyed by the real `account_id`. Company-scoped root; the
                     // helper ensures the slot directory private and containment-
                     // guarded. The off-switch (default on) is read inside.
-                    resolveCacheEntryPath: (accountId) =>
+                    resolveCacheEntryPath: config.managedAiConnection ? undefined : (accountId) =>
                       ensureCodexAuthCacheEntryDir(process.env, accountId, agent.companyId),
                     env: process.env,
                   })),

@@ -2,9 +2,42 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
+import { prepareManagedOpenCodeRemoteHomes, prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
+
+describe("prepareManagedOpenCodeRemoteHomes", () => {
+  it("keeps the sandbox home while isolating managed credentials outside scoped folders", () => {
+    const env = { HOME: "/host/private", XDG_DATA_HOME: "/host/data" };
+    prepareManagedOpenCodeRemoteHomes({
+      env,
+      config: { managedAiConnection: true },
+      runtimeRootDir: "/home/daytona/.paperclip-runtime/opencode",
+      runId: "run-1",
+      configDir: "/home/daytona/.paperclip-runtime/opencode/config",
+      workFolderHome: "/home/daytona",
+    });
+    expect(env).toEqual({
+      HOME: "/home/daytona",
+      XDG_CONFIG_HOME: "/home/daytona/.paperclip-runtime/opencode/config",
+      XDG_DATA_HOME: "/home/daytona/.paperclip-runtime/opencode/managed-auth/run-1/data",
+      XDG_CACHE_HOME: "/home/daytona/.paperclip-runtime/opencode/managed-auth/run-1/cache",
+      XDG_STATE_HOME: "/home/daytona/.paperclip-runtime/opencode/managed-auth/run-1/state",
+    });
+  });
+
+  it("preserves the isolated remote home for execution without work folders", () => {
+    const env: Record<string, string> = { HOME: "/host/private" };
+    prepareManagedOpenCodeRemoteHomes({
+      env,
+      config: { managedAiConnection: true },
+      runtimeRootDir: "/remote/runtime",
+      runId: "run-1",
+    });
+    expect(env.HOME).toBe("/remote/runtime/managed-auth/run-1");
+    expect(env.XDG_DATA_HOME).toBe("/remote/runtime/managed-auth/run-1/data");
+  });
+});
 
 afterEach(async () => {
   await Promise.all(
