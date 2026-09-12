@@ -3,6 +3,7 @@ import {
   SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
   SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_CEILING,
   SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS_DEFAULT,
+  hasArmedMonitorWake,
   parseSuccessfulRunMissingStateMaxAttempts,
   resolveSuccessfulRunMissingStateMaxAttempts,
 } from "./service.js";
@@ -72,5 +73,60 @@ describe("resolveSuccessfulRunMissingStateMaxAttempts", () => {
     expect(resolveSuccessfulRunMissingStateMaxAttempts(Number.POSITIVE_INFINITY)).toBe(
       SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS,
     );
+  });
+});
+
+// SPC-21314 deficiency #3 / SPC-37112 / SPC-39089: reconcileStrandedAssignedIssues
+// must not treat an issue as stranded while it has a legitimately armed,
+// unexpired monitor wake — that cadence is owned by tickDueIssueMonitors, not
+// the stranded-issue reconciler.
+describe("hasArmedMonitorWake", () => {
+  const now = new Date("2026-09-09T00:00:00.000Z");
+  const nineDaysOut = new Date("2026-09-18T00:00:00.000Z");
+  const oneMinuteAgo = new Date("2026-09-08T23:59:00.000Z");
+
+  it("is true for an in_progress issue with a future monitor wake", () => {
+    expect(
+      hasArmedMonitorWake(
+        { status: "in_progress", monitorNextCheckAt: nineDaysOut },
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it("is true for an in_review issue with a future monitor wake", () => {
+    expect(
+      hasArmedMonitorWake(
+        { status: "in_review", monitorNextCheckAt: nineDaysOut },
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it("is false once the monitor wake is in the past (due, not armed)", () => {
+    expect(
+      hasArmedMonitorWake(
+        { status: "in_progress", monitorNextCheckAt: oneMinuteAgo },
+        now,
+      ),
+    ).toBe(false);
+  });
+
+  it("is false when there is no scheduled monitor", () => {
+    expect(
+      hasArmedMonitorWake({ status: "in_progress", monitorNextCheckAt: null }, now),
+    ).toBe(false);
+  });
+
+  it("is false for statuses the monitor cannot be scheduled on", () => {
+    expect(
+      hasArmedMonitorWake({ status: "todo", monitorNextCheckAt: nineDaysOut }, now),
+    ).toBe(false);
+    expect(
+      hasArmedMonitorWake({ status: "blocked", monitorNextCheckAt: nineDaysOut }, now),
+    ).toBe(false);
+    expect(
+      hasArmedMonitorWake({ status: "done", monitorNextCheckAt: nineDaysOut }, now),
+    ).toBe(false);
   });
 });

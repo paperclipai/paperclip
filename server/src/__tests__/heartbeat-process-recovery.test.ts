@@ -6707,6 +6707,73 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  // SPC-21314 deficiency #3 / SPC-37112 / SPC-39089: without this gate the
+  // exact same fixture (paused, non-invokable source owner) escalates every
+  // reconciler tick via the branch exercised above — even when the issue has
+  // a legitimate monitor wake armed days out. That flap burned an in_progress
+  // issue with a 9-day-out monitor with 10+ issue_continuation_needed wakes
+  // in ~20 minutes on SPC-37112.
+  it("does not escalate a stranded-looking issue with a monitor wake armed far in the future", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
+      runErrorCode: "issue_continuation_waiting_on_review",
+      // The guard compares against wall-clock `new Date()`, not the fixture's
+      // fixed 2026-03-19 fixture timestamps, so this must be in the real
+      // future regardless of when the suite runs.
+      monitorNextCheckAt: new Date("2099-03-19T00:00:00.000Z"),
+    });
+    await db
+      .update(agents)
+      .set({ status: "paused" })
+      .where(eq(agents.id, agentId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(0);
+    expect(result.armedMonitorExempted).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(sourceIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+
+    const actions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+        ),
+      );
+    expect(actions).toHaveLength(0);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+        ),
+      );
+    expect(
+      wakeups.some(
+        (wake) =>
+          wake.reason === "issue_continuation_needed" ||
+          (wake.payload as { retryReason?: string } | null)?.retryReason ===
+            "issue_continuation_needed",
+      ),
+    ).toBe(false);
+  });
+
   it("keeps a legacy agent-owned recovery action readable without scheduling another takeover wake", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",

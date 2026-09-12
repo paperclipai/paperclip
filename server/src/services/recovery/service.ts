@@ -220,6 +220,30 @@ export function resolveSuccessfulRunMissingStateMaxAttempts(
   return SUCCESSFUL_RUN_MISSING_STATE_MAX_ATTEMPTS;
 }
 
+// SPC-21314 deficiency #3 / SPC-37112 / SPC-39089: an issue with an armed,
+// unexpired `executionState.monitor` (persisted denormalized as
+// `issue.monitorNextCheckAt`) owns its own wake cadence via
+// `tickDueIssueMonitors`. Treating it as "stranded" in
+// `reconcileStrandedAssignedIssues` duplicates that cadence and can
+// re-escalate on every reconciler tick: SPC-37112 saw an in_progress issue
+// with a monitor armed 9 days out rewoken via `issue_continuation_needed`
+// 10+ times in ~20 minutes (~1-2 min cadence) before the assignee worked
+// around it by force-setting status to `blocked` — itself a known-bad move
+// because it silently clears the monitor. `monitorNextCheckAt` is only
+// non-null while the monitor is "scheduled" (armed); it is nulled out on
+// trigger/clear/exhaustion, so a future value here is a reliable proxy for
+// "not cleared, not expired."
+export function hasArmedMonitorWake(
+  issue: { status: string; monitorNextCheckAt: Date | null },
+  now: Date,
+): boolean {
+  return (
+    (issue.status === "in_progress" || issue.status === "in_review") &&
+    !!issue.monitorNextCheckAt &&
+    issue.monitorNextCheckAt.getTime() > now.getTime()
+  );
+}
+
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -4216,6 +4240,7 @@ export function recoveryService(
       recentProgressExempted: 0,
       operatorCancelExempted: 0,
       onboardingFirstTaskExempted: 0,
+      armedMonitorExempted: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -4274,6 +4299,12 @@ export function recoveryService(
       if (
         unfinishedGoalBindings.has(`${issue.companyId}:${issue.id}:${agentId}`)
       ) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (hasArmedMonitorWake(issue, new Date())) {
+        result.armedMonitorExempted += 1;
         result.skipped += 1;
         continue;
       }
