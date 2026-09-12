@@ -987,3 +987,25 @@ For a board operator, the intended meaning is:
 - blockers explain waiting
 
 That is the execution contract Paperclip should present to operators.
+
+### Cancellation during native startup
+
+Cancellation records a preparation fence while holding the run row lock. Native
+runtime selection checks that fence, the running status, and the current startup
+controller lease in the same transaction that creates the native coordinator.
+The native executor rechecks cancellation and terminal status when claiming the
+coordinator, before starting or attaching a provider.
+
+A cancelled startup can continue from a newer authenticated user message after
+cleanup. The server requires either its explicit before-selection fence or an
+unclaimed native coordinator (zero attempts and controller generations, no
+controller, lease, or result). It also checks for contradictory launch/process
+evidence and verifies local cleanup or exact remote termination receipts. The
+preparer must have finished or its startup lease must have expired. A missing
+PID alone does not establish this proof.
+
+The existing bounded saved-message worker rechecks this proof after restart.
+Admission atomically settles an unclaimed coordinator and admits one fresh turn,
+preserving history, unknown action outcomes, and attempt counts. Pauses, approvals,
+budgets, task ownership, and terminal task status still gate admission. No
+automatic provider replay is authorized by a cancelled startup.

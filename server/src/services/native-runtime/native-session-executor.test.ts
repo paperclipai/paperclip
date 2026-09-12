@@ -4146,6 +4146,7 @@ function leaseDb(
   runResultJson: Record<string, unknown> = {},
   updates: Array<{ table: unknown; values: Record<string, unknown> }> = [],
   runnerProfileJson: Record<string, unknown> = {},
+  runStatus = "running",
 ): Db {
   const coordinator: LeaseCoordinator = {
     runId: boundExecution.binding.runId,
@@ -4189,6 +4190,7 @@ function leaseDb(
                   resultJson: runResultJson,
                   runnerProfileJson,
                   runtimeMode: "native",
+                  status: runStatus,
                 },
               ]
             : table === issues
@@ -6525,6 +6527,28 @@ describe("native process ownership", () => {
       execution.binding,
       expectedBinding,
     );
+  });
+
+  it.each(["cancelled", "succeeded", "interrupted", "timed_out", "failed"])(
+    "refuses native provider claims after the run became %s", async status => {
+      const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+      state.createBackend.mockClear();
+      await expect(executePaperclipNativeSession({
+        db: leaseDb(execution, {}, {}, updates, {}, status), execution, runnerInstanceId: "late-startup",
+      })).rejects.toThrow();
+      expect(state.createBackend).not.toHaveBeenCalled();
+      expect(updates.some(update => update.table === nativeRunFinalizations)).toBe(false);
+      expect(updates.some(update => update.values.eventType === "native.process_start_requested")).toBe(false);
+    },
+  );
+
+  it("fences a cancellation request before its terminal status commits", async () => {
+    state.createBackend.mockClear();
+    await expect(executePaperclipNativeSession({
+      db: leaseDb(execution, {}, { startupCancellation: { requestedAt: new Date().toISOString() } }),
+      execution, runnerInstanceId: "cancel-requested",
+    })).rejects.toThrow();
+    expect(state.createBackend).not.toHaveBeenCalled();
   });
 
   it("forwards the app-server PID and process group through the production backend seam", async () => {

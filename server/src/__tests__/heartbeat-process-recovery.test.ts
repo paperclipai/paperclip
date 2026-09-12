@@ -1729,11 +1729,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           revision: 1,
           schemaVersion: "paperclip.completion-contract.v1",
           policyVersion: "phase6-v1",
-          risk: "standard",
-          completionAuthority: "server_arbiter",
+          risk: "low",
+          completionAuthority: "agent_claim_policy",
           incompleteCriteriaPolicy: "preserve_non_terminal",
           contractJson: {
-            revision: "phase6-v1",
+            revision: CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim.contractRevision,
             objective: "Retained cleanup lifecycle",
             criteria: [{ id: "objective", requirement: "Keep cleanup joined" }],
           },
@@ -1789,6 +1789,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             projectRunStatus: true,
           }),
         ).resolves.toMatchObject({ phase: "committed" });
+        expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("done");
         // The visible successful result was already repaired. This private
         // diagnostic is what permits the separate control-only maintenance lane.
         await db
@@ -2536,6 +2537,69 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await fs.rm(home, { recursive: true, force: true });
     }
   }
+
+  it("fences native selection when cancellation wins during preparation", async () => {
+    await withTempPaperclipHome(async () => {
+      const { agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+      await db.update(agents).set({ adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.6-luna" },
+      }).where(eq(agents.id, agentId));
+      const factory = vi.fn(() => { throw new Error("provider must not start"); });
+      let reachedSelection = false;
+      const heartbeat = heartbeatService(db, {
+        nativeSessionBackendFactory: factory,
+        beforeNativeRuntimeSelection: async id => {
+          reachedSelection = true;
+          await heartbeat.cancelRun(id);
+        },
+      });
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect(reachedSelection).toBe(true);
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", runtimeMode: "legacy",
+        runtimeModeResolvedAt: null, nativeSessionId: null,
+        resultJson: { startupCancellation: { beforeNativeSelection: true },
+          startupPreparationSettledAt: expect.any(String) },
+      });
+      expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId))).toHaveLength(0);
+      expect(factory).not.toHaveBeenCalled();
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(task.executionRunId).toBeNull();
+    });
+  });
+
+  it("does not dispatch when cancellation wins after native selection", async () => {
+    await withTempPaperclipHome(async () => {
+      const { agentId, issueId, runId } = await seedQueuedIssueRunFixture();
+      await db.update(agents).set({ adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex", model: "gpt-5.6-luna" },
+      }).where(eq(agents.id, agentId));
+      await db.update(heartbeatRuns).set({ invocationSource: "automation" }).where(eq(heartbeatRuns.id, runId));
+      const factory = vi.fn(() => { throw new Error("provider must not start"); });
+      let reachedDispatch = false;
+      const heartbeat = heartbeatService(db, {
+        nativeSessionBackendFactory: factory,
+        beforeChatControlRecoveryCheck: async ({ stage, runId: id }) => {
+          if (stage !== "dispatch") return;
+          reachedDispatch = true;
+          expect((await heartbeat.getRun(id))?.runtimeMode).toBe("native");
+          await heartbeat.cancelRun(id);
+        },
+      });
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect(reachedDispatch).toBe(true);
+      expect(await heartbeat.getRun(runId)).toMatchObject({ status: "cancelled", runtimeMode: "native",
+        resultJson: { startupPreparationSettledAt: expect.any(String) },
+      });
+      expect(factory).not.toHaveBeenCalled();
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
+      expect(coordinator).toMatchObject({ attempt: 0, leaseOwner: null });
+      const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(task.executionRunId).toBeNull();
+    });
+  });
 
   it("dispatches local native external chat inside the server-selected task root", async () => {
     await withTempPaperclipHome(async () => {

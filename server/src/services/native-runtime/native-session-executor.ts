@@ -1,3 +1,4 @@
+import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import { resolveConnectorAssignments, isConnectorSkill } from "../connector-runtime.js";
@@ -6965,6 +6966,7 @@ async function executePaperclipNativeSessionWithinScope(
               nativeIssueId: heartbeatRuns.nativeIssueId,
               resultJson: heartbeatRuns.resultJson,
               runtimeMode: heartbeatRuns.runtimeMode,
+              status: heartbeatRuns.status,
             })
             .from(heartbeatRuns)
             .where(eq(heartbeatRuns.id, input.execution.binding.runId))
@@ -6979,6 +6981,12 @@ async function executePaperclipNativeSessionWithinScope(
             boundRun.nativeIssueId !== input.execution.binding.issueId
           ) {
             throw new Error("native_execution_binding_changed");
+          }
+          // A cancellation can win after heartbeat dispatch admission but
+          // before this claim. Never revive a terminal run or a settled startup.
+          if (boundRun.status !== "running" || boundRun.resultJson?.startupCancellation ||
+              coordinator.phase === "terminal_failure") {
+            throw new NativeCancellationPendingRecoveryError();
           }
           const cancellationIntent = record(
             record(boundRun.resultJson).nativeCancellation,
@@ -11229,6 +11237,12 @@ async function createRunnerdBackendWithinSessionClaim(
       : "local_filesystem",
     onSpawn: input.onSpawn,
     dynamicTools,
+    completionFeedback: async (result) => {
+      const current = sessionToolAuthorityEpochs.get(sessionScopeId);
+      if (!current) throw new Error("native_session_tool_authority_unavailable");
+      await current.definitions(); // Reject a revoked run authority before reading task state.
+      return nativeCompletionFeedback(input.db, current.runId, result);
+    },
     dynamicToolHandler: executeCurrentToolAuthority,
     acpxDynamicToolHandler: executeCurrentToolAuthority,
     opencodeRuntimeDirectory: resolve(

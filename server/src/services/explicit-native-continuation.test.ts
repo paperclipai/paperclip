@@ -49,6 +49,72 @@ const support = await getEmbeddedPostgresTestSupport();
       agentId: f.agentId, status: "queued", contextSnapshot: { issueId: f.issueId, previousRunId: result.previousRunId, forceFreshSession: true } });
     return result;
   });
+  async function seedCancelledStartup() {
+    const f = await seed();
+    await db.update(heartbeatRuns).set({ status: "cancelled", processPid: null,
+      startedAt: new Date("2026-09-11T09:59:59Z"),
+      runtimeModeResolvedAt: new Date("2026-09-11T10:00:01Z"),
+      controllerBootId: randomUUID(), controllerLeaseExpiresAt: new Date("2026-09-11T10:01:00Z"),
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(nativeRunFinalizations).set({ phase: "observed", attempt: 0,
+      failureDetail: null,
+    }).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.insert(environmentLeases).values({ companyId: f.companyId, heartbeatRunId: f.sourceRunId,
+      provider: "local", status: "released", releasedAt: new Date("2026-09-11T10:00:02Z"),
+      cleanupStatus: "succeeded", leasePolicy: "ephemeral" });
+    return f;
+  }
+
+  it("settles a cancelled unclaimed coordinator after restart and admits one user successor", async () => {
+    const f = await seedCancelledStartup();
+    expect(await admit(f, true)).toMatchObject({ previousRunId: f.sourceRunId });
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId)))[0].phase).toBe("observed");
+    const results = await Promise.all([admit(f), admit(f)]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    expect(coordinator).toMatchObject({ phase: "terminal_failure", attempt: 0,
+      failureCode: "native_startup_cancelled", failureDetail: { replacementDenied: "explicit_user_continuation" } });
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    expect(action.evidence.automaticRecovery).toMatchObject({ actionOutcome: "unknown", replay: "explicit_user_continuation" });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId)))[0].status).toBe("cancelled");
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.successorRunId))).toHaveLength(1);
+  });
+
+  it("continues native-runner preparation cancelled before runtime selection", async () => {
+    const f = await seedCancelledStartup();
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", runtimeModeResolvedAt: null, nativeIssueId: null,
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+      resultJson: { startupCancellation: { beforeNativeSelection: true }, startupPreparationSettledAt: new Date().toISOString() },
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    expect(await admit(f)).toMatchObject({ previousRunId: f.sourceRunId });
+  });
+
+  it.each(["attempt", "generation", "controller", "lease", "process", "launch", "provider", "cleanup", "remote", "preparing", "closed", "reassigned"])(
+    "retains cancellation safeguards with %s evidence", async kind => {
+      const f = await seedCancelledStartup();
+      if (kind === "attempt") await db.update(nativeRunFinalizations).set({ attempt: 1 }).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+      if (kind === "generation") await db.update(nativeRunFinalizations).set({ controllerGeneration: 1 }).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+      if (kind === "controller") await db.update(nativeRunFinalizations).set({ controllerBootId: "old-owner" }).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+      if (kind === "lease") await db.update(nativeRunFinalizations).set({ leaseOwner: "owner", leaseExpiresAt: new Date(Date.now() + 60000) }).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+      if (kind === "process") await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      if (kind === "launch" || kind === "provider") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId,
+        agentId: f.agentId, runId: f.sourceRunId, seq: 1,
+        eventType: kind === "launch" ? PROCESS_START_REQUESTED : "provider.event",
+        ...(kind === "provider" ? { sourceEventId: "provider-1", sourceInstanceId: "provider", sourceSeq: 1, protocolSchemaVersion: 1, canonicalPayloadHash: "hash" } : {}),
+      });
+      if (kind === "cleanup") await db.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed" }).where(eq(environmentLeases.heartbeatRunId, f.sourceRunId));
+      if (kind === "remote") await db.update(environmentLeases).set({ provider: "daytona", providerLeaseId: "unverified" }).where(eq(environmentLeases.heartbeatRunId, f.sourceRunId));
+      if (kind === "preparing") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60000) }).where(eq(heartbeatRuns.id, f.sourceRunId));
+      if (kind === "closed") await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issueId));
+      if (kind === "reassigned") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issueId));
+      expect(await admit(f)).toBeNull();
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId)))[0].phase).toBe("observed");
+      await db.delete(environmentLeases).where(eq(environmentLeases.heartbeatRunId, f.sourceRunId));
+    },
+  );
+
   it("preserves local stop proof after process metadata is cleared and invalidates it on another launch", async () => {
     const f = await seed();
     const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.sourceRunId));
@@ -85,8 +151,8 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await hasNativeLocalProcessStop(db, f.companyId, source.id)).toBe(false);
   });
 
-  it("resumes saved local messages after restart exactly once and keeps the same wait receipt while blocked", async () => {
-    const f = await seed();
+  it.each(["stopped_process", "cancelled_startup"])("resumes saved local messages after restart exactly once: %s", async kind => {
+    const f = kind === "cancelled_startup" ? await seedCancelledStartup() : await seed();
     await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
     await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.sourceRunId));
     // A prior cancelled admission is also held, but cannot select the native
@@ -105,7 +171,7 @@ const support = await getEmbeddedPostgresTestSupport();
       requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, commentId: f.commentId },
       contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
     const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
-    expect(waiting.payload?.executionWait).toMatchObject({ reason: "process_running" });
+    expect(waiting.payload?.executionWait).toMatchObject({ reason: kind === "cancelled_startup" ? "controller_settling" : "process_running" });
     const makeDue = () => db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, waiting.id));
     await makeDue();
     await heartbeatService(db).resumeExecutionWaitComments();

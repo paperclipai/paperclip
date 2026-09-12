@@ -338,13 +338,13 @@ describe("PaperclipControlPlanePort conformance", () => {
       expect.objectContaining({ phase: "committed" }),
     ]);
     await expect(db.select().from(issues).where(eq(issues.id, identity.issueId))).resolves.toEqual([
-      expect.objectContaining({ status: "in_review", statusVersion: 1 }),
+      expect.objectContaining({ status: "in_progress", statusVersion: 1 }),
     ]);
     await expect(db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, identity.runId))).resolves.toEqual([
       expect.objectContaining({ phase: "committed" }),
     ]);
     await expect(db.select().from(statusDecisions).where(eq(statusDecisions.issueId, identity.issueId))).resolves.toEqual([
-      expect.objectContaining({ toStatus: "in_review", reasonCode: "external_verification_required", applicationState: "applied" }),
+      expect.objectContaining({ toStatus: "in_progress", reasonCode: "completion_evidence_incomplete", applicationState: "applied" }),
     ]);
     await expect(db.select().from(activityLog).where(eq(activityLog.entityId, identity.issueId))).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ action: "issue.updated" })]),
@@ -1037,7 +1037,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       backendKind: "mock",
       sourceInstanceId: runnerInstanceId,
     });
-    const result = { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review" as const };
+    const result = { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review" as const, attentionRequests: [{ kind: "approval" as const, summary: "Approve publication", ownerClass: "human" as const }, { kind: "review" as const, summary: "Review release notes", ownerClass: "human" as const }] };
     await port.completeRun({
       result,
       terminal: { ...CONTROL_PLANE_CONFORMANCE_TERMINAL, reportedWorkDisposition: "needs_review" },
@@ -1067,8 +1067,44 @@ describe("PaperclipControlPlanePort conformance", () => {
       { userId: "reviewer-24" },
     );
     await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toEqual([
+      expect.objectContaining({ status: "in_review" }),
+    ]);
+    const remaining = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId));
+    expect(remaining).toHaveLength(2);
+    const secondReview = remaining.find((entry) => entry.status === "pending")!;
+    await issueThreadInteractionService(db).acceptInteraction(
+      { id: issueId, companyId: identity.companyId, projectId: null, goalId: null, status: "in_review" },
+      secondReview.id, {}, { userId: "reviewer-24" },
+    );
+    await expect(db.select().from(issues).where(eq(issues.id, issueId))).resolves.toEqual([
       expect.objectContaining({ status: "done" }),
     ]);
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    const newRevision = "review-round-two";
+    const reviews = [];
+    for (const key of ["one", "two"]) {
+      reviews.push(await issueThreadInteractionService(db).create(
+        { id: issueId, companyId: identity.companyId },
+        { kind: "request_confirmation", title: `Review ${key}`, addresseeUserId: "reviewer-24",
+          resolverPolicy: "human_only", continuationPolicy: "wake_assignee", sourceRunId: runId,
+          payload: { version: 1, prompt: `Approve ${key}`, acceptLabel: "Approve", rejectLabel: "Decline", allowDeclineReason: true,
+            target: { type: "custom", key: "native_completion_review", revisionId: newRevision } } },
+        { systemId: "test-multiple-reviewers", runId },
+      ));
+    }
+    await issueThreadInteractionService(db).rejectInteraction(
+      { id: issueId, companyId: identity.companyId }, reviews[0]!.id,
+      { reason: "Needs another change" }, { userId: "reviewer-24" },
+    );
+    // Even if another actor puts the task back in review, a declined decision
+    // in the same review round must not be erased by another reviewer's approval.
+    await db.update(issues).set({ status: "in_review" }).where(eq(issues.id, issueId));
+    await issueThreadInteractionService(db).acceptInteraction(
+      { id: issueId, companyId: identity.companyId, projectId: null, goalId: null, status: "in_review" },
+      reviews[1]!.id, {}, { userId: "reviewer-24" },
+    );
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("in_review");
+
   });
 
   it("completes DOT-29-style low-risk work with an environment caveat and no corrective run", async () => {
@@ -1408,7 +1444,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       {
         suffix: 20,
         failpoint: "interaction_materialization",
-        result: { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review" },
+        result: { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review", attentionRequests: [{ kind: "approval", summary: "Approve publication", ownerClass: "human" }] },
       },
       {
         suffix: 21,

@@ -581,14 +581,14 @@ async function materializeDecisionEffect(input: {
       { kind: "request_confirmation" }
     > = {
       kind: "request_confirmation",
-      idempotencyKey: `native-review:${input.decisionId}`,
+      idempotencyKey: `native-review:${input.decisionId}${effect.requestKey ? `:${effect.requestKey}` : ""}`,
       sourceRunId: input.runId,
       resolverPolicy: effect.ownerAgentId ? "anyone" : "human_only",
       addresseeAgentId: effect.ownerAgentId ?? null,
       addresseeUserId: effect.ownerUserId,
-      title: "Native completion review",
+      title: "Review requested",
       summary:
-        "The native runner requires authoritative review before completion.",
+        effect.prompt,
       continuationPolicy: "wake_assignee",
       payload: {
         version: 1,

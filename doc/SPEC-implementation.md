@@ -1635,3 +1635,14 @@ allocation retains one selected number and individually enabled groups.
 
 See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
 contract, setup, recovery, boundaries, and qualification status.
+
+### Native task completion
+
+For ordinary low-risk tasks, accept the current agent's structured `done` claim
+subject to explicit workflow constraints. Missing independent evidence or a
+`needs_review` label alone must not create a human approval. Require a concrete
+reviewer decision for a new review request. Keep unfinished work with the agent,
+with bounded continuation and visible recovery. Preserve explicit approvals,
+current task ownership, cancellation, dependencies, and newer task state. See
+`doc/architecture/native-status-arbitration.md` for finish feedback and the
+provenance-checked cleanup of historical automatic completion reviews.

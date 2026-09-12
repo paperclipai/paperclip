@@ -1,3 +1,4 @@
+import { dismissAutomaticCompletionReviews, decisionHasRetiredAutomaticReview } from "./automatic-completion-reviews.js";
 import { logger } from "../../middleware/logger.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
@@ -17,6 +18,8 @@ import {
 } from "@paperclipai/db";
 import {
   finalizeNativeRun,
+  pendingNativeGovernance,
+  resolveNativeFinalizerStatus,
   recordNativeFinalizationFailure,
   repairCommittedNativeReviewResponse,
   repairCommittedNativeChatResponse,
@@ -540,6 +543,13 @@ export async function reconcileNativeFinalizations(
   await dismissObsoleteNativePolicyReviews(db, runIds).catch((err) => {
     logger.warn({ err }, "Obsolete native policy review lookup failed; continuing native reconciliation");
   });
+  if (runIds?.length) {
+    const scopes = await db.select({ issueId: nativeRunFinalizations.issueId }).from(nativeRunFinalizations)
+      .where(inArray(nativeRunFinalizations.runId, runIds));
+    for (const scope of scopes) await dismissAutomaticCompletionReviews(db, scope.issueId);
+  } else {
+    await dismissAutomaticCompletionReviews(db);
+  }
   const rows = await db
     .select({
       runId: heartbeatRuns.id,
@@ -632,12 +642,7 @@ export async function reconcileNativeFinalizations(
           )).limit(1).then((entries) => entries[0] ?? null)
         : null;
       const currentDecision = row.decisionId
-        ? await db.select({
-            assessmentId: statusDecisions.assessmentId,
-            decisionVersion: statusDecisions.decisionVersion,
-            toStatus: statusDecisions.toStatus,
-            decisionJson: statusDecisions.decisionJson,
-          }).from(statusDecisions).where(and(
+        ? await db.select().from(statusDecisions).where(and(
             eq(statusDecisions.id, row.decisionId),
             eq(statusDecisions.companyId, row.companyId),
             eq(statusDecisions.issueId, row.issueId),
@@ -699,10 +704,12 @@ export async function reconcileNativeFinalizations(
         assessment.priorIssueStatus !== row.issueStatus
         || Number(assessment.priorStatusVersion) !== Number(row.issueStatusVersion)
       );
+      const retiredAutomaticReview = issueMatchesCurrentDecision && currentDecision
+        ? await decisionHasRetiredAutomaticReview(db, currentDecision) : false;
       let reassessment = null;
       let resultRow = null;
       let contractRow = null;
-      if (assessment && (authoritativeStatusChanged || changedEvidence)) {
+      if (assessment && (authoritativeStatusChanged || changedEvidence || retiredAutomaticReview)) {
         [resultRow, contractRow] = await Promise.all([
           db.select().from(nativeRunResults).where(and(
             eq(nativeRunResults.id, assessment.resultId),
@@ -736,10 +743,29 @@ export async function reconcileNativeFinalizations(
         : newEvidenceSatisfiesContract
           ? { newEvidenceSatisfiesContract: true }
           : {};
-      if (Object.keys(facts).length > 0) {
+      if (Object.keys(facts).length > 0 || retiredAutomaticReview) {
         if (!assessment || !reassessment || !resultRow || !contractRow) {
           throw new Error("native_reconciliation_reassessment_missing");
         }
+        const currentIssue = retiredAutomaticReview
+          ? await db.select().from(issues).where(and(eq(issues.id, row.issueId), eq(issues.companyId, row.companyId))).then((entries) => entries[0])
+          : null;
+        const readiness = retiredAutomaticReview ? await issueService(db).getDependencyReadiness(row.issueId, db) : null;
+        const currentRun = retiredAutomaticReview ? await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, row.runId)).then((entries) => entries[0]) : null;
+        // Never replay an old result over a new run or a later task contract.
+        const latestContract = retiredAutomaticReview ? await db.select({ id: completionContracts.id }).from(completionContracts)
+          .where(and(eq(completionContracts.companyId, row.companyId), eq(completionContracts.issueId, row.issueId)))
+          .orderBy(desc(completionContracts.revision)).limit(1).then((entries) => entries[0]) : null;
+        if (retiredAutomaticReview && (!currentIssue || currentRun?.status !== "succeeded"
+          || latestContract?.id !== contractRow.id
+          || (currentIssue.executionRunId && currentIssue.executionRunId !== row.runId))) continue;
+        // A committed decision proves the original barrier passed. If a later
+        // workspace operation exists, do not ignore a pending or failed retry.
+        const reviewBarrier = retiredAutomaticReview ? await db.select({ status: workspaceOperations.status })
+          .from(workspaceOperations).where(and(eq(workspaceOperations.companyId, row.companyId),
+            eq(workspaceOperations.heartbeatRunId, row.runId), eq(workspaceOperations.phase, "workspace_finalize")))
+          .orderBy(desc(workspaceOperations.createdAt)).limit(1).then((entries) => entries[0]) : null;
+        if (reviewBarrier && reviewBarrier.status !== "succeeded") continue;
         const reassessmentRow = await recordNativeWorkAssessment({
           db,
           companyId: row.companyId,
@@ -757,11 +783,19 @@ export async function reconcileNativeFinalizations(
           assessment: reassessment,
           supersedesAssessmentId: assessment.id,
         });
-        const decision = resolveNativeReconciliationStatus({
-          facts,
-          priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus,
-          agentId: row.agentId,
-        });
+        const decision = retiredAutomaticReview && currentIssue
+          ? resolveNativeFinalizerStatus({
+              assessment: reassessment, terminalState: "succeeded", workspaceFinalizeStatus: "succeeded",
+              governanceGate: await pendingNativeGovernance({ db, companyId: row.companyId, issueId: row.issueId,
+                runId: row.runId, executionState: record(currentIssue.executionState) }),
+              completionClaimPolicyAccepted: contractRow.risk === "low" && contractRow.completionAuthority === "agent_claim_policy",
+              hasUnresolvedIssueBlockers: (readiness?.unresolvedBlockerCount ?? 0) > 0,
+              reviewOwnerUserId: currentIssue.responsibleUserId ?? currentIssue.createdByUserId,
+              priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus, agentId: row.agentId,
+            })
+          : resolveNativeReconciliationStatus({
+              facts, priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus, agentId: row.agentId,
+            });
         let committed: Awaited<ReturnType<typeof commitNativeStatusDecision>>;
         try {
           committed = await commitNativeStatusDecision({
