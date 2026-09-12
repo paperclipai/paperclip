@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
 import { execute } from "@paperclipai/adapter-codex-local/server";
+import { buildPaperclipTaskMarkdown } from "../services/heartbeat.js";
+import { AGENT_CHAT_DIRECTIVE } from "../services/agent-conversations.js";
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -1243,7 +1245,7 @@ process.exit(1);
     }
   });
 
-  it("uses a compact wake delta instead of the full heartbeat prompt when resuming a session", async () => {
+  it.each([{ conversationMode: false, resumedSession: true }, { conversationMode: true, resumedSession: true }, { conversationMode: true, resumedSession: false }])("retains current task policy (conversation=$conversationMode, resumed=$resumedSession)", async ({ conversationMode, resumedSession }) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-resume-wake-"));
     const workspace = path.join(root, "workspace");
     const commandPath = path.join(root, "codex");
@@ -1257,6 +1259,14 @@ process.exit(1);
     process.env.HOME = root;
     await seedSharedCodexAuth(root);
 
+    const policy = conversationMode
+      ? buildPaperclipTaskMarkdown({
+          issue: { id: "issue-1", title: "Chat", workMode: "planning", conversationAgentId: "agent-1" },
+          interaction: { kind: "request_confirmation", status: "rejected" },
+          planReview: { status: "rejected", reason: "Revise the final note." },
+          includeDescription: false,
+        })
+      : "Current ordinary task policy";
     let invocationPrompt = "";
     let invocationNotes: string[] = [];
     let promptMetrics: Record<string, number> = {};
@@ -1273,7 +1283,7 @@ process.exit(1);
         runtime: {
           sessionId: null,
           sessionParams: {
-            sessionId: "codex-session-1",
+            sessionId: resumedSession ? "codex-session-1" : null,
             cwd: workspace,
           },
           sessionDisplayId: null,
@@ -1287,9 +1297,12 @@ process.exit(1);
           env: {
             PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
           },
-          promptTemplate: "Follow the paperclip heartbeat.",
+          promptTemplate: conversationMode ? undefined : "Follow the paperclip heartbeat.",
         },
         context: {
+          conversationMode,
+          paperclipTaskMarkdown: `Full description that must not replay\n${policy}`,
+          paperclipTaskMarkdownCompact: policy,
           issueId: "issue-1",
           taskId: "issue-1",
           wakeReason: "issue_commented",
@@ -1337,18 +1350,35 @@ process.exit(1);
       expect(result.errorMessage).toBeNull();
 
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
-      expect(capture.argv).toEqual(expect.arrayContaining(["resume", "codex-session-1", "-"]));
-      expect(capture.prompt).toContain("## Paperclip Resume Delta");
+      if (resumedSession) expect(capture.argv).toEqual(expect.arrayContaining(["resume", "codex-session-1", "-"]));
+      else expect(capture.argv).not.toContain("resume");
+      expect(capture.prompt).toContain(resumedSession ? "## Paperclip Resume Delta" : "## Paperclip Wake Payload");
       expect(capture.prompt).toContain("Do not switch to another issue until you have handled this wake.");
       expect(capture.prompt).toContain("Second comment");
+      expect(capture.prompt).toContain(policy);
+      expect(invocationPrompt).toContain(policy);
+      if (resumedSession) expect(capture.prompt).not.toContain("Full description that must not replay");
+      else expect(capture.prompt).toContain("Full description that must not replay");
+      expect(promptMetrics.taskContextChars).toBe(resumedSession ? policy.length : `Full description that must not replay\n${policy}`.length);
+      if (conversationMode) {
+        expect(invocationPrompt).toContain(AGENT_CHAT_DIRECTIVE);
+        expect(invocationPrompt).toContain("baseRevisionId set to that latestRevisionId");
+        expect(capture.prompt).not.toContain("Execution contract:");
+        expect(capture.prompt).not.toContain("Use child issues");
+      } else {
+        expect(capture.prompt).toContain("Execution contract:");
+      }
       expect(capture.prompt).not.toContain("Follow the paperclip heartbeat.");
-      expect(capture.prompt).not.toContain("You are managed instructions.");
-      expect(invocationPrompt).toContain("## Paperclip Resume Delta");
-      expect(invocationNotes).toContain(
-        "Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.",
-      );
-      expect(promptMetrics.instructionsChars).toBe(0);
-      expect(promptMetrics.heartbeatPromptChars).toBe(0);
+      if (resumedSession) {
+        expect(capture.prompt).not.toContain("You are managed instructions.");
+        expect(invocationPrompt).toContain("## Paperclip Resume Delta");
+        expect(invocationNotes).toContain("Skipped stdin instruction reinjection because an existing Codex session is being resumed with a wake delta.");
+        expect(promptMetrics.instructionsChars).toBe(0);
+        expect(promptMetrics.heartbeatPromptChars).toBe(0);
+      } else {
+        expect(capture.prompt).toContain("You are managed instructions.");
+        expect(promptMetrics.heartbeatPromptChars).toBeGreaterThan(0);
+      }
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

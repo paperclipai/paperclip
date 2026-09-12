@@ -505,10 +505,12 @@ export const issuesApi = {
     reopen?: boolean,
     interrupt?: boolean,
     attachmentIds?: string[],
+    clientRequestId?: string,
   ) =>
     confirmedCommentResponse(
       api.post<IssueComment>(`/issues/${id}/comments`, {
         body,
+        ...(clientRequestId ? { clientRequestId } : {}),
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
         ...(attachmentIds?.length ? { attachmentIds } : {}),

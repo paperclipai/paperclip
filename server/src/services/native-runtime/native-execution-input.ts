@@ -54,6 +54,7 @@ export function buildNativeExecutionInput(input: {
    */
   wakePayload?: unknown;
   resumedSession?: boolean;
+  conversationMode?: boolean;
   agentId: string;
   workspace: {
     id: string;
@@ -155,6 +156,7 @@ export function buildNativeExecutionInput(input: {
       : input.wakePayload;
   const wakePrompt = renderPaperclipWakePrompt(wakePayload, {
     resumedSession: input.resumedSession === true,
+    conversationMode: input.conversationMode === true,
     suppressIssueDescription: input.taskPrompt.trim().length > 0,
     nativeWakeReaderAvailable: true,
   });

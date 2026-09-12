@@ -245,6 +245,7 @@ import {
   nativeSessionFailureSourceCode,
   nativeSessionRecoveryProjection,
   nativeGovernedWaitResult,
+  nativeConversationReplyResult,
   nativeToolsRefreshWaitResult,
   parseRemoteExecutableCandidate,
   buildRemoteCodexLauncherCommand,
@@ -3929,6 +3930,55 @@ describe("provider plan synchronization", () => {
   });
 });
 
+describe("native conversation replies", () => {
+  const reply: PrpEvent = {
+    schema: "paperclip.prp.event.v1", sourceInstanceId: "runner-1",
+    sourceEventId: "runner-1:run-1:8", sourceSeq: 8, sourceKind: "runner",
+    runId: "run-1", normalizedSessionId: "session-1", turnId: "turn-1",
+    eventType: "item.completed", schemaVersion: 1, priority: 1,
+    emittedAt: "2026-09-11T18:00:00.000Z",
+    payload: { kind: "agentMessage", channel: "final", text: "Which project should own this?" },
+  };
+  const terminal = { ...reply, sourceEventId: "runner-1:run-1:9", sourceSeq: 9,
+    eventType: "turn.completed", payload: { status: "completed" } } as PrpEvent;
+  const input = { conversation: true, replyEvent: reply, terminalEvent: terminal,
+    completionContract: { revision: "1", objective: "Ongoing conversation",
+      criteria: [{ id: "objective", requirement: "Help the user" }] } };
+
+  it("yields an evidenced completed reply without claiming execution completion", () => {
+    expect(nativeConversationReplyResult(input)).toMatchObject({
+      reportedWorkDisposition: "yielded", summary: "Which project should own this?",
+      completionClaim: { objectiveSatisfied: false, criteria: [{ status: "unknown" }] },
+      evidence: [{ ref: "run-event:runner-1:run-1:8" }],
+      continuation: { kind: "response_wake" }, attentionRequests: [],
+    });
+  });
+
+  it.each(["turn.failed", "turn.cancelled", "turn.interrupted"])(
+    "does not reinterpret a %s provider turn as a chat reply", (eventType) => {
+      expect(nativeConversationReplyResult({ ...input,
+        terminalEvent: { ...terminal, eventType } as PrpEvent })).toBeNull();
+    },
+  );
+
+  it("keeps ordinary execution tasks and absent or unfinished replies fail-closed", () => {
+    expect(nativeConversationReplyResult({ ...input, conversation: false })).toBeNull();
+    expect(nativeConversationReplyResult({ ...input, replyEvent: null })).toBeNull();
+    for (const payload of [
+      { kind: "agentMessage", channel: "progress", text: "Still working" },
+      { kind: "agentMessage", channel: "final", text: " " },
+      { kind: "toolCall", channel: "final", text: "Tool result" },
+    ]) expect(nativeConversationReplyResult({ ...input, replyEvent: { ...reply, payload } })).toBeNull();
+  });
+
+  it.each(["runId", "turnId", "normalizedSessionId"] as const)(
+    "rejects a final message from another %s", (key) => {
+      expect(nativeConversationReplyResult({ ...input,
+        replyEvent: { ...reply, [key]: "old-authority" } })).toBeNull();
+    },
+  );
+});
+
 describe("native governed waits", () => {
   it("yields to an existing tools-refresh wake without claiming completion or a human interaction", () => {
     const result = nativeToolsRefreshWaitResult({
@@ -5010,6 +5060,34 @@ describe("native session same-turn steering", () => {
 });
 
 describe("native warm session supervision", () => {
+  it.each([true, false])(
+    "uses provider turn completion without a semantic-result cutoff: chat=%s",
+    async (conversationMode) => {
+      state.execute.mockReset().mockImplementationOnce(async (options) => {
+        // The provider must finish streaming its reply after task tools return.
+        // A semantic-result grace timer would truncate that output.
+        expect(options).not.toHaveProperty("semanticResultTerminalGraceMs");
+        return {
+          result: { summary: "Reply completed" },
+          terminal: { runTerminalState: "succeeded" },
+          turnId: "turn-grace",
+          normalizedSessionId: execution.session.normalizedSessionId,
+          providerSessionId: "provider-grace",
+          driverKind: "test",
+          driverVersion: "1",
+          nativeEventCount: 1,
+          highestContiguousSourceSeq: 1,
+        };
+      });
+      await executePaperclipNativeSession({
+        db: leaseDb(),
+        execution,
+        runnerInstanceId: "runner",
+        conversationMode,
+      });
+    },
+  );
+
   it("persists agent-created goal continuity before a per-turn runner settles", async () => {
     const goalCheckpoint = {
       identity: { runId: execution.binding.runId, sessionId: "session" },

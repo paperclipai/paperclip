@@ -74,6 +74,16 @@ report, history, and Pages jobs receive none of these secrets.
 Each full-stack matrix cell receives only its selected profile credential, plus
 Daytona only for Daytona cells. Secret-bearing and OIDC jobs use frozen installs
 without a shared dependency cache.
+On disposable GitHub Linux runners with Ubuntu's unprivileged-user-namespace
+restriction, the authorized default-branch workflow provisions an AppArmor profile before provider credentials are exposed. The profile is attached to the exact
+lockfile-pinned Codex executable. It grants `userns` so Codex can construct its
+filesystem sandbox; it does not disable the kernel restriction or Codex's
+workspace policy. Setup fails before invoking a model if the noninteractive
+profile load fails. Target-controlled tests only probe the existing sandbox and never invoke sudo or load host policy. This host-only profile disappears with the ephemeral runner.
+See [Ubuntu's namespace restriction documentation](https://documentation.ubuntu.com/security/security-features/privilege-restriction/apparmor/).
+Local developer machines are never modified by this setup. Legacy Codex fixtures
+disable optional shell-environment snapshots to avoid persisting credentials;
+the secret scanner retains its existing rejection rules.
 The Paperclip server process also receives none; the browser posts each value
 once to the encrypted company secret API and agents/environments retain only
 secret references.

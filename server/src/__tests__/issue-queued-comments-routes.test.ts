@@ -12,7 +12,6 @@ import {
   companyMemberships,
   companySkills,
   createDb,
-  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issues,

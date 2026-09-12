@@ -357,6 +357,8 @@ function decision(
  */
 export function resolveHeartbeatRunResponse(input: {
   resultJson: Record<string, unknown> | null | undefined;
+  /** Server-owned conversation finalization, after normal governance checks. */
+  conversationTurnFinished?: boolean;
   existingComment?: { id: string; body?: string | null } | null;
   preferFinalResponseOverExistingComment?: boolean;
   externalChatResponseWakeSummaryAuthorized?: boolean;
@@ -519,7 +521,7 @@ export function resolveHeartbeatRunResponse(input: {
   // still emit terminal-looking prose while the control plane is yielding for
   // an interaction; keep that prose in activity and let the durable
   // interaction own the visible waiting state.
-  if (hasYieldedSemanticResult(resultJson)) {
+  if (hasYieldedSemanticResult(resultJson) && !input.conversationTurnFinished) {
     return {
       text: null,
       decision: decision("none", {
