@@ -1944,7 +1944,7 @@ export function IssueProperties({
       <ProjectTile
         color={issueProject?.color ?? null}
         icon={issueProject?.icon ?? null}
-        size="xs"
+        size="sm"
       />
       <span className="text-sm truncate min-w-0" title={projectName(issue.projectId)}>{projectName(issue.projectId)}</span>
     </>
@@ -2332,7 +2332,7 @@ export function IssueProperties({
         <PropertyRow label="Status">
           <StatusIcon
             status={issue.status}
-            className="size-3"
+            className="mx-1"
             blockerAttention={issue.blockerAttention}
             onChange={(status) => onUpdate({ status })}
             showLabel
