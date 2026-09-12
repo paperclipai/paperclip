@@ -2537,7 +2537,7 @@ export function issueThreadInteractionService(
           || existing.sourceRunId !== input.sourceRunId
           || existing.addresseeUserId !== input.addresseeUserId
           || (existing.kind === "connection_intent"
-            ? connectionIntentPayloadSchema.parse(existing.payload).serviceSlug !== payload.serviceSlug
+            ? (connectionIntentPayloadSchema.parse(existing.payload).serviceSlug !== payload.serviceSlug || connectionIntentPayloadSchema.parse(existing.payload).purpose !== payload.purpose)
             : !isDeepStrictEqual(existing.payload, payload))
         ) {
           throw conflict(
@@ -2574,7 +2574,7 @@ export function issueThreadInteractionService(
           eq(issueThreadInteractions.addresseeUserId, input.addresseeUserId),
         ));
         const reusable = pending.find((candidate) =>
-          connectionIntentPayloadSchema.parse(candidate.payload).serviceSlug === payload.serviceSlug);
+          connectionIntentPayloadSchema.parse(candidate.payload).serviceSlug === payload.serviceSlug && connectionIntentPayloadSchema.parse(candidate.payload).purpose === payload.purpose);
         if (reusable) return reusable;
 
         const [sourceRun] = await tx.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
@@ -2628,7 +2628,7 @@ export function issueThreadInteractionService(
             );
             return (
               candidatePayload.success &&
-              candidatePayload.data.serviceSlug === payload.serviceSlug
+              candidatePayload.data.serviceSlug === payload.serviceSlug && candidatePayload.data.purpose === payload.purpose
             );
           })
           .map((candidate) => candidate.id);

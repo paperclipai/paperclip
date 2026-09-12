@@ -206,7 +206,7 @@ async function prepareCodexRemoteManagedHome(
         restore: async ({ assetDir, readFile }) =>
           void (await copyBackCodexAuth({
             readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
-            hostAuthPath: path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
+            hostAuthPath: path.join(input.config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
             log: (line) => onLog("stdout", `${line}\n`),
           })),
       },

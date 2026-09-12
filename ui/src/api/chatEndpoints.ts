@@ -1,5 +1,7 @@
 import { api } from "./client";
 import type {
+  PhotonProjectInspection,
+  PhotonChannelConfiguration,
   ChatPublicationBatchStatus,
   ChatPublicationState,
   ChatPublicationSummary,
@@ -12,7 +14,7 @@ export type {
 } from "@paperclipai/shared";
 
 export type ChatProvider =
-  "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "agentmail";
+  "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "agentmail" | "imessage-photon";
 export type ChatEndpointStatus =
   | "draft"
   | "verifying"
@@ -33,6 +35,7 @@ export interface ChatEndpointResource {
   availability: "available" | "unavailable" | "removed";
   enabled: boolean;
   detail?: string | null;
+  participants?: string[];
 }
 
 export interface ChatIdentityLink {
@@ -97,6 +100,7 @@ export interface ChatEndpoint {
   botLabel?: string | null;
   botUsername?: string | null;
   botExternalId?: string | null;
+  photonAllocation?: "dedicated" | "shared";
   allowDirectMessages?: boolean;
   allowGroupChats?: boolean;
   allowUnlinkedPeople: boolean;
@@ -188,8 +192,11 @@ export const chatEndpointsApi = {
     input: {
       action: ChatEndpointSetupAction;
       credentials?: Record<string, string>;
+      photon?: PhotonChannelConfiguration;
     },
   ) => api.post<ChatEndpoint>(`/chat-endpoints/${endpointId}/setup`, input),
+  inspectPhoton: (endpointId: string, input: { projectId: string; projectSecret: string }) =>
+    api.post<PhotonProjectInspection>(`/chat-endpoints/${endpointId}/photon/inspect`, input),
   generateSetupSecret: (endpointId: string) =>
     api.post<ChatEndpointSetupSecret>(
       `/chat-endpoints/${endpointId}/setup-secret`,

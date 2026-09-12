@@ -1,3 +1,4 @@
+import { nativePhotonInteraction } from "./photon/interactions.js";
 import { randomBytes } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -313,6 +314,7 @@ export async function enqueueIssueInteractionChatPublications(
           )
         : null;
     const supportsCallbacks =
+      endpoint.provider !== "imessage-photon" &&
       formDraft === null &&
       question !== null &&
       endpoint.capabilities.actions === true;
@@ -430,7 +432,13 @@ export async function enqueueIssueInteractionChatPublications(
       .onConflictDoNothing()
       .returning();
     const publication = rows[0];
-    if (publication && formDraft) {
+    if (publication && endpoint.provider === "imessage-photon" && nativePhotonInteraction(interaction)) {
+      const reference = randomBytes(9).toString("base64url");
+      await db.insert(chatActions).values({ companyId: interaction.companyId, endpointId: endpoint.id, conversationId: conversation.id,
+        kind: "photon_interaction", providerActionId: `photon:${reference}`,
+        payload: { version: 1, reference, interactionId: interaction.id, publicationId: publication.id, sessionGeneration: conversation.sessionGeneration,
+          expiresAt: new Date(publication.createdAt.getTime() + CHAT_QUESTION_ACTION_TOKEN_TTL_MS).toISOString() }, status: "issued" });
+    } else if (publication && formDraft) {
       await db.insert(chatActions).values(
         chatQuestionFormActionRecords(formDraft, {
           companyId: interaction.companyId,
@@ -540,10 +548,12 @@ export async function enqueueTerminalIssueInteractionChatPublications(
       and(
         eq(chatActions.companyId, interaction.companyId),
         inArray(chatActions.kind, [
+          "photon_interaction",
           "question_answer",
           "question_form_open",
           "question_form_submit",
           "confirmation_response",
+          "photon_interaction",
         ]),
         eq(chatActions.status, "issued"),
         eq(
@@ -763,6 +773,7 @@ export async function cancelPendingIssueInteractionChatPublications(
           "question_form_open",
           "question_form_submit",
           "confirmation_response",
+          "photon_interaction",
         ]),
         eq(chatActions.status, "issued"),
         inArray(sql<string>`${chatActions.payload}->>'interactionId'`, [

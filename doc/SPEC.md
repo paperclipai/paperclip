@@ -567,3 +567,31 @@ A paused task takes over the composer with an amber notice and a Resume action.
 Operators must release the effective task or ancestor pause before sending a new
 message. The draft stays intact. This applies to both task interfaces and to
 board comment API requests; an agent may still report interrupted work.
+
+### Experimental iMessage Photon channel
+
+A Photon Cloud project can represent one agent through the existing
+experimental channel subsystem. DMs and explicitly enabled groups create or
+continue task-bound conversations. Linked sender identity is the default;
+telephone numbers, email addresses, names, and group membership do not grant
+Paperclip authority. Photos/files and ordinary questions/confirmations use the
+existing attachment, interaction, continuation, and publication contracts.
+Pause and Disconnect govern runtime behavior independently of the UI gate.
+Local Mac access, unsolicited conversations, and SMS/RCS
+fallback are excluded. Live qualification is required before release readiness.
+Pro shared allocation supports DMs only, with sender enrollment in Photon and
+separate identity linking in Paperclip. Shared channels reserve one project, not
+a pool phone number; group admission and publication are disabled. Dedicated
+allocation retains one selected number and individually enabled groups.
+
+See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
+contract, setup, recovery, boundaries, and qualification status.
+
+## Task search relevance
+
+Task discovery uses PostgreSQL and the existing search indexes, with no external
+search service or background indexing job. The task-list quick search and full
+company search share lexical matching and ranking. Known identifiers and direct
+title matches lead; current conversation and document content supplies supporting
+evidence. See [Task search relevance](SEARCH.md) for the evaluation rubric,
+matching contract and reproducible quality tests.

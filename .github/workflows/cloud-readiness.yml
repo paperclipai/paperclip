@@ -32,7 +32,8 @@ jobs:
   artifacts:
     if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
     name: Wait for exact-source cloud artifacts
-    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
+    # Bookkeeping must not wait for the AWS builders it observes.
+    runs-on: ubuntu-latest
     timeout-minutes: 35
     permissions:
       contents: read
@@ -55,7 +56,8 @@ jobs:
     name: Cloud source verified v1
     needs: [verify]
     if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
-    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
+    # Bookkeeping must not wait for the AWS builders it observes.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
@@ -81,7 +83,8 @@ jobs:
     name: Cloud deployable v1
     needs: [verify, image, artifacts]
     if: github.repository == 'paperclipai/paperclip' && github.ref == 'refs/heads/master'
-    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
+    # Bookkeeping must not wait for the AWS builders it observes.
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Record cloud readiness

@@ -14,13 +14,14 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueRecoveryActions,
   issues,
   runIdentityContexts,
 } from "@paperclipai/db";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { heartbeatService } from "../services/heartbeat.js";
-import { reconcileSteeredIdentity } from "../services/run-identity.js";
+import { initializeRunIdentity, reconcileSteeredIdentity } from "../services/run-identity.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -194,6 +195,145 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0]!.status).toBe("running");
     },
   );
+
+  it("does not accept interruption authority from an agent wake payload", async () => {
+    const seeded = await seedQueue();
+    await db.update(agents).set({ adapterType: "claude_local",
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy" }).where(eq(heartbeatRuns.id, seeded.runId));
+    await heartbeatService(db).wakeup(seeded.agentId, {
+      source: "on_demand", reason: "issue_commented",
+      requestedByActorType: "agent", requestedByActorId: seeded.agentId,
+      payload: { issueId: seeded.issueId, commentId: seeded.commentIds[1],
+        queuedCommentInterrupt: { actorId: "other-operator", requestedAt: new Date().toISOString() } },
+      contextSnapshot: { issueId: seeded.issueId, wakeCommentId: seeded.commentIds[1] },
+    });
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, seeded.companyId));
+    expect(wakes.length).toBeGreaterThan(0);
+    expect(wakes.every(wake => !wake.payload?.queuedCommentInterrupt)).toBe(true);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId));
+    expect(runs.find(run => run.id === seeded.runId)?.status).toBe("running");
+    expect(runs.every(run => !run.contextSnapshot?.explicitUserContinuation)).toBe(true);
+  });
+
+  it("denies a viewer's interrupt before persisting intent or cancelling a run", async () => {
+    const seeded = await seedQueue();
+    await db.update(companyMemberships).set({ membershipRole: "viewer" })
+      .where(eq(companyMemberships.principalId, "other-operator"));
+    const client = app(seeded.companyId, "other-operator");
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+      queueId: seeded.wakeId, revision: queue.body.revision, targetRunId: seeded.runId,
+    }).expect(403);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(wake.payload?.queuedCommentInterrupt).toBeUndefined();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seeded.runId)))[0].status).toBe("running");
+  });
+
+  it.each([null, "stopped-target", "system-receipt"])("sends a stopped legacy queue once with target %s", async (target) => {
+    const seeded = await seedQueue();
+    if (target === "system-receipt") await db.update(agentWakeupRequests).set({
+      requestedByActorType: "system", requestedByActorId: "heartbeat",
+    }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db.update(agents).set({ adapterType: "claude_local",
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "succeeded",
+      finishedAt: new Date("2026-08-22T15:03:00.000Z"),
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, seeded.issueId));
+    // Occupy this agent on a different task so the actual successor remains
+    // queued and the test never launches a provider.
+    await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      status: "running", contextSnapshot: { issueId: randomUUID() },
+    });
+    const client = app(seeded.companyId, "other-operator");
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    expect(queue.body.targetRunId).toBeNull();
+    const body = { queueId: seeded.wakeId, revision: queue.body.revision,
+      targetRunId: target === "stopped-target" ? seeded.runId : null };
+    await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send(body).expect(200);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(wake.status).toBe("coalesced");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId!));
+    expect(successor.status).toBe("queued");
+    expect(successor.responsibleUserId).toBe("other-operator");
+    const identity = await initializeRunIdentity(db, {
+      companyId: seeded.companyId, issueId: seeded.issueId,
+      runId: successor.id, messageIds: seeded.commentIds, responsibleUserId: "queue-owner", cause: "dispatch",
+    });
+    expect(identity.responsibleUserId).toBe("other-operator");
+    expect(identity.cause).toBe("queued_comment_interrupt");
+    expect(successor.contextSnapshot?.wakeCommentIds).toEqual(seeded.commentIds);
+    await heartbeatService(db).resumeQueuedCommentInterrupt(seeded.companyId, seeded.wakeId);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(3);
+    await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send(body).expect(409);
+  });
+
+  it.each(["user", "system"])("keeps stopped-run interruption intent on a %s receipt across restart until the process stops, then delivers once", async (actorType) => {
+    const seeded = await seedQueue();
+    await db.update(agentWakeupRequests).set({ requestedByActorType: actorType })
+      .where(eq(agentWakeupRequests.id, seeded.wakeId));
+    await db.update(agents).set({ adapterType: "claude_local",
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "failed",
+      processPid: process.pid, errorCode: "process_lost",
+      finishedAt: new Date("2026-08-22T15:03:00.000Z"),
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, seeded.issueId));
+    await db.insert(issueRecoveryActions).values({ companyId: seeded.companyId, sourceIssueId: seeded.issueId,
+      kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", fingerprint: seeded.runId,
+      status: "resolved", outcome: "blocked", nextAction: "Automatic recovery stopped.",
+      evidence: { runId: seeded.runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+    });
+    await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      status: "running", contextSnapshot: { issueId: randomUUID() },
+    });
+    const client = app(seeded.companyId, "other-operator");
+    const queue = await request(client).get(`/api/issues/${seeded.issueId}/queued-comments`).expect(200);
+    await request(client).post(`/api/issues/${seeded.issueId}/queued-comments/interrupt`).send({
+      queueId: seeded.wakeId, revision: queue.body.revision, targetRunId: null,
+    }).expect(200);
+    const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(waiting.status).toBe("deferred_issue_execution");
+    expect(waiting.payload?.queuedCommentInterrupt).toMatchObject({ actorId: "other-operator" });
+    expect(waiting.payload?.executionWait).toMatchObject({ reason: "process_running" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(2);
+    await db.update(heartbeatRuns).set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    // New service instances have no memory of the HTTP request. Concurrent
+    // periodic workers must consume its durable receipt exactly once.
+    await Promise.all([heartbeatService(db).resumeQueuedRuns(), heartbeatService(db).resumeQueuedRuns()]);
+    const [delivered] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(delivered.status).toBe("coalesced");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, delivered.runId!));
+    expect(successor.contextSnapshot).toMatchObject({ wakeCommentIds: seeded.commentIds,
+      previousRunId: seeded.runId, forceFreshSession: true });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(3);
+  });
+
+  it("recovers a message deferred after legacy finalization released the task lock", async () => {
+    const seeded = await seedQueue();
+    await db.update(agents).set({ adapterType: "claude_local",
+      runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
+    }).where(eq(agents.id, seeded.agentId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "succeeded",
+      finishedAt: new Date("2026-08-22T15:03:00.000Z"),
+    }).where(eq(heartbeatRuns.id, seeded.runId));
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, seeded.issueId));
+    await db.insert(heartbeatRuns).values({ companyId: seeded.companyId, agentId: seeded.agentId,
+      status: "running", contextSnapshot: { issueId: randomUUID() },
+    });
+    await heartbeatService(db).resumeQueuedRuns();
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, seeded.wakeId));
+    expect(wake.status).toBe("queued");
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, wake.runId!));
+    expect(successor.contextSnapshot?.wakeCommentIds).toEqual(seeded.commentIds);
+    await heartbeatService(db).resumeQueuedRuns();
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, seeded.companyId))).toHaveLength(3);
+  });
 
   async function promoteQueue(seeded: Awaited<ReturnType<typeof seedQueue>>) {
     const queueRunId = randomUUID();
