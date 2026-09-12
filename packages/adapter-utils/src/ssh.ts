@@ -189,8 +189,10 @@ export function remoteEnvFilePathExpr(id: string) {
  */
 export function buildRemoteEnvFileContent(entries: Array<[string, string]>, pathExpr: string): string {
   return [
+    `__paperclip_env_file=${pathExpr}`,
+    'rm -f -- "$__paperclip_env_file"',
+    "unset __paperclip_env_file",
     ...entries.map(([key, value]) => `export ${key}=${shellQuote(value)}`),
-    `rm -f ${pathExpr}`,
     "",
   ].join("\n");
 }
@@ -210,10 +212,12 @@ export function buildRemoteEnvFileContent(entries: Array<[string, string]>, path
  * Returns `null` when there is nothing to inject, so a run without environment
  * overrides still opens exactly one connection.
  */
-async function provisionRemoteEnvFile(input: {
+export async function provisionRemoteEnvFile(input: {
   spec: SshConnectionConfig;
   env: Array<[string, string]>;
   timeoutMs?: number;
+  deadlineAt?: number;
+  runCommand?: typeof runSshCommand;
 }): Promise<{ sourceExpr: string; cleanup: () => Promise<void> } | null> {
   if (input.env.length === 0) {
     return null;
@@ -225,6 +229,7 @@ async function provisionRemoteEnvFile(input: {
   }
 
   const pathExpr = remoteEnvFilePathExpr(randomUUID());
+  const runCommand = input.runCommand ?? runSshCommand;
   // `umask 077` has to precede the redirection so the file is never briefly
   // group- or world-readable between creation and `chmod`.
   const writeScript = [
@@ -235,10 +240,27 @@ async function provisionRemoteEnvFile(input: {
     `chmod 600 ${pathExpr}`,
   ].join(" && ");
 
-  await runSshCommand(input.spec, writeScript, {
-    stdin: buildRemoteEnvFileContent(input.env, pathExpr),
-    timeoutMs: input.timeoutMs ?? 30_000,
-  });
+  try {
+    await runCommand(input.spec, writeScript, {
+      stdin: buildRemoteEnvFileContent(input.env, pathExpr),
+      timeoutMs: input.timeoutMs ?? 30_000,
+    });
+  } catch (error) {
+    // The write may have reached the remote before ssh reported a timeout,
+    // disconnect, or non-zero exit. Retain the locally generated path and
+    // remove it on that failure path instead of returning without a cleanup
+    // handle and potentially leaving credentials on disk indefinitely.
+    try {
+      const cleanupTimeoutMs = input.deadlineAt == null
+        ? 15_000
+        : Math.max(1, Math.min(15_000, input.deadlineAt - Date.now()));
+      await runCommand(input.spec, `rm -f ${pathExpr}`, { timeoutMs: cleanupTimeoutMs });
+    } catch {
+      // Preserve the provisioning failure as the actionable error. A remote
+      // that cannot be reached also cannot be cleaned synchronously here.
+    }
+    throw error;
+  }
 
   return {
     sourceExpr: pathExpr,
@@ -246,7 +268,7 @@ async function provisionRemoteEnvFile(input: {
       // Best effort: the file removes itself once the wrapper sources it, so
       // this only matters when the run never got that far.
       try {
-        await runSshCommand(input.spec, `rm -f ${pathExpr}`, { timeoutMs: 15_000 });
+        await runCommand(input.spec, `rm -f ${pathExpr}`, { timeoutMs: 15_000 });
       } catch {
         // A remote that is already gone cannot leak the file either.
       }
@@ -1294,6 +1316,15 @@ export async function runSshCommand(
     maxBuffer?: number;
   } = {},
 ): Promise<SshCommandResult> {
+  const operationTimeoutMs = options.timeoutMs ?? 15_000;
+  const deadline = Date.now() + operationTimeoutMs;
+  const remainingTimeoutMs = () => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      throw new Error(`SSH command timed out after ${operationTimeoutMs}ms`);
+    }
+    return remaining;
+  };
   let cleanup: () => Promise<void> = () => Promise.resolve();
   try {
     const auth = await createSshAuthArgs(config);
@@ -1322,7 +1353,12 @@ export async function runSshCommand(
     // them over stdin into a 0600 file that the wrapper sources and that
     // deletes itself (REVIP-3492). Sourcing happens after the profiles so
     // caller-supplied overrides still win over anything a profile re-exports.
-    const envFile = await provisionRemoteEnvFile({ spec: config, env: envEntries });
+    const envFile = await provisionRemoteEnvFile({
+      spec: config,
+      env: envEntries,
+      timeoutMs: remainingTimeoutMs(),
+      deadlineAt: deadline,
+    });
     if (envFile) {
       const previousCleanup = cleanup;
       cleanup = async () => {
@@ -1349,11 +1385,11 @@ export async function runSshCommand(
     return options.stdin != null
       ? await spawnText("ssh", sshArgs, {
           stdin: options.stdin,
-          timeout: options.timeoutMs ?? 15_000,
+          timeout: remainingTimeoutMs(),
           maxBuffer: options.maxBuffer ?? 1024 * 128,
         })
       : await execFileText("ssh", sshArgs, {
-          timeout: options.timeoutMs ?? 15_000,
+          timeout: remainingTimeoutMs(),
           maxBuffer: options.maxBuffer ?? 1024 * 128,
         });
   } finally {

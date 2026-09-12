@@ -8,6 +8,7 @@ import {
   buildSshEnvLabFixtureConfig,
   buildSshSpawnTarget,
   getSshEnvLabSupport,
+  provisionRemoteEnvFile,
   remoteEnvFilePathExpr,
   runSshCommand,
   startSshEnvLabFixture,
@@ -103,13 +104,15 @@ describe("ssh remote environment delivery (REVIP-3492)", () => {
     // A single-quoted body with the embedded quote escaped as '"'"'. Nothing in
     // the value can terminate the quoting and become shell syntax.
     expect(lines[0]).toBe(
+      `__paperclip_env_file="$HOME/.paperclip-run-env/11111111-2222-3333-4444-555555555555.env"`,
+    );
+    expect(lines[1]).toBe('rm -f -- "$__paperclip_env_file"');
+    expect(lines[2]).toBe("unset __paperclip_env_file");
+    expect(lines[3]).toBe(
       `export PAPERCLIP_API_KEY='s3cr3t'"'"'";$(id)\`whoami\`\\end`,
     );
-    expect(lines[1]).toBe(`second-line'`);
-    expect(lines[2]).toBe("export SECOND='plain'");
-    // The file removes itself while being sourced, so a run that is killed
-    // later still leaves no secret on the remote disk.
-    expect(lines[3]).toBe(`rm -f "$HOME/.paperclip-run-env/11111111-2222-3333-4444-555555555555.env"`);
+    expect(lines[4]).toBe(`second-line'`);
+    expect(lines[5]).toBe("export SECOND='plain'");
     // Trailing newline: `.` on a file whose last line lacks one is unspecified.
     expect(content.endsWith("\n")).toBe(true);
   });
@@ -150,6 +153,82 @@ describe("ssh remote environment delivery (REVIP-3492)", () => {
     // newline: nothing was expanded, split, or truncated on the way through.
     expect(result.stdout).toBe(HOSTILE_SECRET);
     await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("deletes the file before caller HOME and PATH overrides can redirect cleanup", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "paperclip-env-home-"));
+    fixtures.push({ rootDir: home, state: null });
+    const id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const pathExpr = remoteEnvFilePathExpr(id);
+    const filePath = path.join(home, ".paperclip-run-env", `${id}.env`);
+    await mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
+    await writeFile(
+      filePath,
+      buildRemoteEnvFileContent([
+        ["HOME", "/redirected-home"],
+        ["PATH", "/path-without-rm"],
+        ["VALUE", "delivered"],
+      ], pathExpr),
+      { mode: 0o600 },
+    );
+
+    const result = await new Promise<{ stdout: string; code: number | null }>((resolve, reject) => {
+      const script = `. ${pathExpr} && printf '%s|%s|%s' "$HOME" "$PATH" "$VALUE"`;
+      const child = spawn("sh", ["-c", script], {
+        stdio: ["ignore", "pipe", "inherit"],
+        env: { HOME: home, PATH: process.env.PATH ?? "" },
+      });
+      let stdout = "";
+      child.stdout?.on("data", (chunk) => { stdout += String(chunk); });
+      child.once("error", reject);
+      child.once("close", (code) => resolve({ stdout, code }));
+    });
+
+    expect(result).toEqual({ stdout: "/redirected-home|/path-without-rm|delivered", code: 0 });
+    await expect(stat(filePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("attempts remote cleanup when provisioning reports failure after writing the file", async () => {
+    const commands: Array<{ command: string; stdin?: string; timeoutMs?: number }> = [];
+    await expect(provisionRemoteEnvFile({
+      spec: {
+        host: "fixture",
+        port: 22,
+        username: "tester",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: false,
+      },
+      env: [["PAPERCLIP_API_KEY", "secret"]],
+      runCommand: async (_spec, command, options) => {
+        commands.push({ command, stdin: options.stdin, timeoutMs: options.timeoutMs });
+        if (commands.length === 1) throw new Error("provisioning failed after write");
+        return { stdout: "", stderr: "" };
+      },
+    })).rejects.toThrow("provisioning failed after write");
+
+    expect(commands).toHaveLength(2);
+    expect(commands[0]?.command).toContain("cat >");
+    expect(commands[0]?.command).not.toContain("secret");
+    expect(commands[0]?.stdin).toContain("secret");
+    expect(commands[1]?.command).toMatch(/^rm -f /);
+    expect(commands[1]?.command).not.toContain("secret");
+  });
+
+  it("bounds environment provisioning by the caller timeout", async () => {
+    const startedAt = Date.now();
+    await expect(runSshCommand({
+      host: "192.0.2.1",
+      port: 22,
+      username: "tester",
+      privateKey: null,
+      knownHosts: null,
+      strictHostKeyChecking: false,
+    }, "true", {
+      env: { PAPERCLIP_API_KEY: "secret" },
+      timeoutMs: 100,
+    })).rejects.toThrow();
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
   });
 
   it("fails closed when the environment file is missing instead of running without secrets", async () => {
