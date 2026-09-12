@@ -34,7 +34,7 @@ import {
   type CompanyImportTransferPartUploadResult,
   type CompanyImportTransferStatus,
 } from "@paperclipai/shared/company-import-transfer";
-import { badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { badRequest, conflict, forbidden, notFound, payloadTooLarge, unprocessable } from "../errors.js";
 import { PORTABLE_ZIP_UPLOAD_LIMIT_BYTES } from "../http/body-limits.js";
 import { logger } from "../middleware/logger.js";
 import { validate } from "../middleware/validate.js";
@@ -272,6 +272,26 @@ function wantsAsyncImport(req: Request) {
 export interface CompanyRoutesOptions {
   /** Overridable in tests; defaults to `<instance root>/import-transfers`. */
   importTransferSpoolRoot?: string;
+}
+
+function sendExportBundle(res: Response, result: unknown) {
+  // The whole bundle rides back as one JSON string; past V8's max string
+  // length JSON.stringify throws RangeError, which must not escape as a
+  // generic 500. Serialize explicitly so an oversized export fails with a
+  // clear, actionable error instead.
+  let payload: string;
+  try {
+    payload = JSON.stringify(result);
+  } catch (err) {
+    if (err instanceof RangeError) {
+      throw payloadTooLarge(
+        "Company export exceeds the maximum serializable response size. Retry with a narrower include set or a scoped issue export.",
+        { code: "export_too_large" },
+      );
+    }
+    throw err;
+  }
+  res.type("application/json").send(payload);
 }
 
 export function companyRoutes(db: Db, storage?: StorageService, options?: CompanyRoutesOptions) {
@@ -529,7 +549,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const body = companyPortabilityExportSchema.parse(req.body);
     const allowExternalInstructions = await assertExternalInstructionExportAllowed(req, companyId, body);
     const result = await portability.exportBundle(companyId, body, { allowExternalInstructions });
-    res.json(result);
+    sendExportBundle(res, result);
   });
 
   router.get("/:companyId/export/fidelity", async (req, res) => {
@@ -1133,7 +1153,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     const body = companyPortabilityExportSchema.parse(req.body);
     const allowExternalInstructions = await assertExternalInstructionExportAllowed(req, companyId, body);
     const result = await portability.exportBundle(companyId, body, { allowExternalInstructions });
-    res.json(result);
+    sendExportBundle(res, result);
   });
 
   router.post("/:companyId/imports/preview", async (req, res) => {

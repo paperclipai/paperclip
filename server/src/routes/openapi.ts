@@ -1975,7 +1975,7 @@ registry.registerPath({
   tags: ["companies"],
   summary: "Export company data",
   request: { params: z.object({ companyId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 401: r.unauthorized, 413: r.payloadTooLarge },
 });
 
 registry.registerPath({
@@ -8578,7 +8578,7 @@ registry.registerPath({
     params: z.object({ companyId: z.string() }),
     body: jsonBody(companyPortabilityExportSchema),
   },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  responses: { 200: r.ok(), 401: r.unauthorized, 413: r.payloadTooLarge },
 });
 
 registry.registerPath({
