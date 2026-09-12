@@ -9625,10 +9625,12 @@ describe("runnerd provider runtime wiring", () => {
       runtimeContext: nativeRuntimeContextFixture(),
     } as unknown as NativeExecutionInputV1;
     state.createBackend.mockClear();
+    const onSpawn = vi.fn(async () => undefined);
     await createRunnerdBackend({
       db: leaseDb(acpxExecution),
       execution: acpxExecution,
       runnerInstanceId: "runner",
+      onSpawn,
     });
 
     expect(state.createBackend).toHaveBeenCalledWith(
@@ -9647,6 +9649,7 @@ describe("runnerd provider runtime wiring", () => {
         provider: "acpx",
         acpxAgent: "codex",
         acpxPermissionMode: "approve-reads",
+        onSpawn,
       }),
     );
   });

@@ -1135,6 +1135,9 @@ export interface CapabilityRunnerdCodexTransportOptions {
   turnStartTimeoutMs?: number;
   onDiagnostic?: (message: string) => void;
   onEvidence?: (evidence: Readonly<CapabilityRunnerdProcessEvidence>) => void;
+  /** Persist process ownership immediately after spawn, before waiting for
+   * provider bootstrap or activating a deferred PRP registration. */
+  onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   stateDirectory?: string;
   lifecyclePolicy?:
     | { mode: "per_turn"; idleTimeoutMs: null }
@@ -3915,6 +3918,19 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     };
   }
 
+  async #publishSpawnedProcess(handle: RunnerProcessHandle): Promise<void> {
+    this.#evidence.runnerPid = handle.child.pid ?? null;
+    this.#evidence.runnerProcessGroupId = handle.processGroupId ?? null;
+    this.#publish();
+    if (handle.child.pid !== undefined) {
+      await this.options.onSpawn?.({
+        pid: handle.child.pid,
+        processGroupId: handle.processGroupId ?? null,
+        startedAt: this.#startedAt,
+      });
+    }
+  }
+
   async #readDurableRunnerState(): Promise<Record<string, unknown>> {
     if (this.options.readRunnerState) return this.options.readRunnerState();
     return record(
@@ -4267,6 +4283,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   ): Promise<Record<string, unknown>> {
     if (this.#core !== null)
       throw new Error("PRP provider thread is already started");
+    if (this.options.adoptExistingRunner) {
+      // A crash can precede the first driver checkpoint even though runnerd
+      // already opened the provider. Exact process adoption must reuse that
+      // authority instead of enqueueing another run.prepare/session.open pair.
+      await this.#resume();
+      return this.#openedThreadResponse(params);
+    }
     const token = randomUUID().replaceAll("-", "");
     const identity = this.options.prpIdentity ?? {
       runnerInstanceId: `runner_lab_${token}`,
@@ -4665,6 +4688,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     });
     this.#handle = handle;
     this.#watchRunner(handle);
+    await this.#publishSpawnedProcess(handle);
     await registration?.activate?.();
     if (registration?.failure) {
       void registration.failure.catch((error: unknown) => {
@@ -4683,6 +4707,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     await this.#waitForProviderIdentity();
     this.#startupComplete = true;
     this.#diagnostic("runnerd authenticated to the durable PRP control plane");
+    return this.#openedThreadResponse(params);
+  }
+
+  #openedThreadResponse(params: Record<string, unknown>): Record<string, unknown> {
+    const provider = this.options.provider ?? "codex";
+    const acpxAgent = this.options.acpxAgent ?? "codex";
     return {
       thread: {
         id: this.#threadId,
@@ -5288,6 +5318,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (handle) {
       this.#handle = handle;
       this.#watchRunner(handle);
+      await this.#publishSpawnedProcess(handle);
     }
     if (oldTransitionRegistration && newTransitionRegistration) {
       await oldTransitionRegistration.activate?.();

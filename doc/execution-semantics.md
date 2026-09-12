@@ -1117,6 +1117,10 @@ not create a new failed run or change the task's state.
 
 ### Native controller restart ownership
 
+The controller persists a newly spawned runner's process identity before
+waiting for provider startup. An abrupt controller exit during session opening
+can then recover through the same exact process-identity checks as an active turn.
+
 Both graceful and hot restarts detach the old controller from native sessions.
 If shutdown begins while a provider session is opening, its eventual publication
 honors the pending detachment before dispatching a turn. Once detached, an old

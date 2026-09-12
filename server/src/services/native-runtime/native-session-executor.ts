@@ -11492,6 +11492,7 @@ async function createRunnerdBackendWithinSessionClaim(
     ),
     codexTransportFactory: (recoveryContext) =>
       createRunnerdCodexTransport({
+        onSpawn: input.onSpawn,
         provider:
           input.execution.provider.kind === "codex"
             ? "codex"
