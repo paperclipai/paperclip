@@ -132,20 +132,30 @@ export async function ownerHasRequiredGrant(
     });
   }
   const { permissionKeys } = requirement;
+  const memberships = await db
+    .select({
+      companyId: companyMemberships.companyId,
+      membershipRole: companyMemberships.membershipRole,
+    })
+    .from(companyMemberships)
+    .where(and(
+      eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.principalId, ownerUserId),
+      eq(companyMemberships.status, "active"),
+      inArray(companyMemberships.companyId, [...companyIds]),
+    ));
+  const membershipRoleByCompany = new Map(
+    memberships.map((membership) => [membership.companyId, membership.membershipRole]),
+  );
+  if (companyIds.some((companyId) => !membershipRoleByCompany.has(companyId))) return false;
+
   const rows = await db
     .select({
       companyId: principalPermissionGrants.companyId,
       permissionKey: principalPermissionGrants.permissionKey,
       grantOrigin: principalPermissionGrants.grantOrigin,
-      membershipRole: companyMemberships.membershipRole,
     })
     .from(principalPermissionGrants)
-    .innerJoin(companyMemberships, and(
-      eq(companyMemberships.companyId, principalPermissionGrants.companyId),
-      eq(companyMemberships.principalType, "user"),
-      eq(companyMemberships.principalId, ownerUserId),
-      eq(companyMemberships.status, "active"),
-    ))
     .where(and(
       inArray(principalPermissionGrants.companyId, [...companyIds]),
       eq(principalPermissionGrants.principalType, "user"),
@@ -156,7 +166,7 @@ export async function ownerHasRequiredGrant(
   for (const row of rows) {
     if (row.grantOrigin === "legacy_unknown") {
       const currentRolePermissionKeys = new Set(
-        grantsForHumanRole(normalizeHumanRole(row.membershipRole))
+        grantsForHumanRole(normalizeHumanRole(membershipRoleByCompany.get(row.companyId)))
           .map((grant) => grant.permissionKey),
       );
       if (!currentRolePermissionKeys.has(row.permissionKey as PermissionKey)) continue;
