@@ -11948,10 +11948,20 @@ async function createRunnerdBackendWithinSessionClaim(
   const wrapManagedSession = (session: NativeSession): NativeSession => {
     if (!input.managedAiCredentialHome || input.execution.provider.kind !== "codex") return session;
     const close = session.close.bind(session);
+    const detach = session.detachControllerForRestart?.bind(session);
+    let detachedForRestart = false;
+    if (detach) {
+      session.detachControllerForRestart = async () => {
+        // Ownership is relinquished before the asynchronous detach completes.
+        // Late close finalizers must leave the live runner's credentials alone.
+        detachedForRestart = true;
+        await detach();
+      };
+    }
     let copied = false;
     session.close = async (closeInput) => {
       await close(closeInput);
-      if (copied) return;
+      if (detachedForRestart || copied) return;
       copied = true;
       const remoteAuth = remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, "codex-home", "auth.json") : null;
       const localAuth = join(root, "codex-home", "auth.json");

@@ -129,6 +129,7 @@ const state = vi.hoisted(() => ({
     }),
   ),
   cancel: vi.fn(),
+  copyBackCodexAuth: vi.fn(async () => "kept-host"),
   toolAuthorityDefinitions: vi.fn(
     async (_binding: Record<string, unknown>) => [],
   ),
@@ -177,6 +178,13 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => ({
   retainedRunnerdMaintenanceIsIdle: state.maintenanceIdle,
   completeRetainedNativeSessionCleanup: state.retireCleanup,
   parsePaperclipQuestionSet: (value: unknown) => value,
+}));
+
+vi.mock("@paperclipai/adapter-codex-local/server", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@paperclipai/adapter-codex-local/server")
+  >()),
+  copyBackCodexAuth: state.copyBackCodexAuth,
 }));
 
 vi.mock("./paperclip-runner-tool-authority.js", () => ({
@@ -6807,6 +6815,87 @@ describe("runnerd provider runtime wiring", () => {
       process.env.PAPERCLIP_RUNNER_STATE_DIR = previousStateDirectory;
     }
     await rm(isolatedStateDirectory, { recursive: true, force: true });
+  });
+
+  it.each([
+    ["open", "before-close"],
+    ["open", "during-close"],
+    ["recover", "before-close"],
+    ["recover", "during-close"],
+  ] as const)("preserves managed Codex credentials after %s session detachment %s", async (mode, timing) => {
+    let finishClose!: () => void;
+    const closing = new Promise<void>((resolve) => { finishClose = resolve; });
+    const close = vi.fn(async () => {
+      if (timing === "during-close") await closing;
+    });
+    const detach = vi.fn(async () => undefined);
+    const rawSession = { close, detachControllerForRestart: detach };
+    state.copyBackCodexAuth.mockClear();
+    state.createBackend.mockReturnValueOnce({
+      kind: "test",
+      openSession: async () => rawSession,
+      recoverSession: async () => ({ recovered: true, session: rawSession }),
+    } as never);
+    const backend = await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: "runner-managed-credential-detach",
+      managedAiCredentialHome: join(isolatedStateDirectory, "managed-home"),
+    });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const root = state.createTransport.mock.calls.at(-1)![0].stateDirectory!;
+    const authPath = join(root, "codex-home", "auth.json");
+    const auth = JSON.stringify({ OPENAI_API_KEY: "fixture-managed-codex-credential" });
+    await mkdir(join(root, "codex-home"), { recursive: true });
+    await writeFile(authPath, auth);
+    const session = mode === "open"
+      ? await backend.openSession({} as never)
+      : (await backend.recoverSession!({} as never)).session!;
+
+    if (timing === "before-close") {
+      await session.detachControllerForRestart!();
+      await session.close({ reason: "old controller finalizer" });
+    } else {
+      const closed = session.close({ reason: "old controller finalizer" });
+      await session.detachControllerForRestart!();
+      finishClose();
+      await closed;
+    }
+
+    expect(detach).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(state.copyBackCodexAuth).not.toHaveBeenCalled();
+    await expect(readFile(authPath, "utf8")).resolves.toBe(auth);
+  });
+
+  it("still cleans up managed Codex credentials after an owned session closes", async () => {
+    const close = vi.fn(async () => undefined);
+    state.copyBackCodexAuth.mockClear();
+    state.createBackend.mockReturnValueOnce({
+      kind: "test",
+      openSession: async () => ({ close }),
+    } as never);
+    const managedHome = join(isolatedStateDirectory, "managed-home");
+    const backend = await createRunnerdBackend({
+      db: leaseDb(execution),
+      execution,
+      runnerInstanceId: "runner-managed-credential-close",
+      managedAiCredentialHome: managedHome,
+    });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const root = state.createTransport.mock.calls.at(-1)![0].stateDirectory!;
+    const authPath = join(root, "codex-home", "auth.json");
+    await mkdir(join(root, "codex-home"), { recursive: true });
+    await writeFile(authPath, "fixture-managed-codex-credential");
+    const session = await backend.openSession({} as never);
+
+    await session.close({ reason: "completed" });
+    await session.close({ reason: "repeated cleanup" });
+
+    expect(state.copyBackCodexAuth).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ hostAuthPath: join(managedHome, "auth.json") }),
+    );
+    await expect(access(authPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("stages from the authenticated run snapshot and cleans up after the provider turn", async () => {
