@@ -121,10 +121,10 @@ describe("native status authority", () => {
       }),
     ).toEqual(
       expect.objectContaining({
-        statusAction: "in_review",
-        toStatus: "in_review",
-        reasonCode: "external_verification_required",
-        effects: [expect.objectContaining({ kind: "bind_reviewer" })],
+        statusAction: "in_progress",
+        toStatus: "in_progress",
+        reasonCode: "completion_evidence_incomplete",
+        effects: [expect.objectContaining({ kind: "enqueue_continuation" })],
       }),
     );
     const claimOnly = assessment({
@@ -156,8 +156,8 @@ describe("native status authority", () => {
     });
     expect(arbitrate({ assessment: claimOnly })).toEqual(
       expect.objectContaining({
-        toStatus: "in_review",
-        reasonCode: "external_verification_required",
+        toStatus: "in_progress",
+        reasonCode: "completion_evidence_incomplete",
       }),
     );
     expect(
@@ -177,8 +177,8 @@ describe("native status authority", () => {
       }),
     ).toEqual(
       expect.objectContaining({
-        toStatus: "in_review",
-        effects: [expect.objectContaining({ kind: "bind_reviewer" })],
+        toStatus: "in_progress",
+        effects: [expect.objectContaining({ kind: "enqueue_continuation" })],
       }),
     );
     expect(
@@ -349,7 +349,7 @@ describe("native status authority", () => {
     );
   });
 
-  it("sends failed verification and actionable attention to owned review without retrying", () => {
+  it("keeps failed verification with the agent and routes explicit attention to its owner", () => {
     const failed = assessment({
       verificationPassed: false,
       hasFailedVerification: true,
@@ -373,12 +373,12 @@ describe("native status authority", () => {
       }),
     ).toEqual(
       expect.objectContaining({
-        toStatus: "in_review",
-        reasonCode: "completion_claim_conflict",
+        toStatus: "in_progress",
+        reasonCode: "completion_evidence_incomplete",
         effects: [
           expect.objectContaining({
-            kind: "bind_reviewer",
-            ownerUserId: "user-1",
+            kind: "enqueue_continuation",
+            agentId: "agent",
           }),
         ],
       }),
@@ -460,7 +460,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v4",
+        policyVersion: "phase6-v5",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",

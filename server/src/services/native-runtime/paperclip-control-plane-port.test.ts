@@ -338,13 +338,13 @@ describe("PaperclipControlPlanePort conformance", () => {
       expect.objectContaining({ phase: "committed" }),
     ]);
     await expect(db.select().from(issues).where(eq(issues.id, identity.issueId))).resolves.toEqual([
-      expect.objectContaining({ status: "in_review", statusVersion: 1 }),
+      expect.objectContaining({ status: "in_progress", statusVersion: 1 }),
     ]);
     await expect(db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, identity.runId))).resolves.toEqual([
       expect.objectContaining({ phase: "committed" }),
     ]);
     await expect(db.select().from(statusDecisions).where(eq(statusDecisions.issueId, identity.issueId))).resolves.toEqual([
-      expect.objectContaining({ toStatus: "in_review", reasonCode: "external_verification_required", applicationState: "applied" }),
+      expect.objectContaining({ toStatus: "in_progress", reasonCode: "completion_evidence_incomplete", applicationState: "applied" }),
     ]);
     await expect(db.select().from(activityLog).where(eq(activityLog.entityId, identity.issueId))).resolves.toEqual(
       expect.arrayContaining([expect.objectContaining({ action: "issue.updated" })]),
@@ -1037,7 +1037,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       backendKind: "mock",
       sourceInstanceId: runnerInstanceId,
     });
-    const result = { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review" as const };
+    const result = { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review" as const, attentionRequests: [{ kind: "approval" as const, summary: "Approve publication", ownerClass: "human" as const }] };
     await port.completeRun({
       result,
       terminal: { ...CONTROL_PLANE_CONFORMANCE_TERMINAL, reportedWorkDisposition: "needs_review" },
@@ -1408,7 +1408,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       {
         suffix: 20,
         failpoint: "interaction_materialization",
-        result: { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review" },
+        result: { ...structuredClone(CONTROL_PLANE_CONFORMANCE_RESULT), reportedWorkDisposition: "needs_review", attentionRequests: [{ kind: "approval", summary: "Approve publication", ownerClass: "human" }] },
       },
       {
         suffix: 21,

@@ -45,6 +45,25 @@ import {
 import { RUNNERD_CANONICAL_ITEM } from "./codex-driver-values.js";
 
 describe("Codex app-server Codex driver", () => {
+  it("returns current approval feedback and permits correcting a rejected completion report", async () => {
+    const transport = new FakeCodexTransport();
+    const feedback = vi.fn()
+      .mockRejectedValueOnce(new Error("Name the reviewer decision or finish the remaining work."))
+      .mockResolvedValue("Task remains in review. Accept [Publish](/approvals/approval-1) before completion.");
+    const session = await makeDriver([transport], { completionFeedback: feedback }).openSession({
+      runId: "run-feedback", normalizedSessionId: "feedback-session", workingDirectory: WORKSPACE,
+    });
+    await session.startTurn({ message: { role: "user", text: "Finish" } });
+    const call = (callId: string) => transport.invoke({ id: callId, method: "item/tool/call",
+      params: { threadId: "thread-1", turnId: "turn-1", callId, tool: "paperclip_finish", arguments: result } });
+    expect(await call("first")).toMatchObject({ success: false });
+    expect((await session.snapshot()).semanticResult).toBeNull();
+    expect(await call("corrected")).toMatchObject({ success: true,
+      contentItems: [{ type: "inputText", text: expect.stringContaining("/approvals/approval-1") }] });
+    expect((await session.snapshot()).semanticResult?.result).toEqual(result);
+    await session.close();
+  });
+
   it("accepts an explicit response-wake yield through paperclip_finish", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

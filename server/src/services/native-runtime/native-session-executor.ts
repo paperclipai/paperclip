@@ -1,3 +1,4 @@
+import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
 import { remoteLeaseCleanupScope } from "../remote-execution-termination.js";
 import { resolveConnectorAssignments, isConnectorSkill } from "../connector-runtime.js";
@@ -11168,6 +11169,12 @@ async function createRunnerdBackendWithinSessionClaim(
       : "local_filesystem",
     onSpawn: input.onSpawn,
     dynamicTools,
+    completionFeedback: async (result) => {
+      const current = sessionToolAuthorityEpochs.get(sessionScopeId);
+      if (!current) throw new Error("native_session_tool_authority_unavailable");
+      await current.definitions(); // Reject a revoked run authority before reading task state.
+      return nativeCompletionFeedback(input.db, current.runId, result);
+    },
     dynamicToolHandler: executeCurrentToolAuthority,
     acpxDynamicToolHandler: executeCurrentToolAuthority,
     opencodeRuntimeDirectory: resolve(

@@ -1594,3 +1594,14 @@ normal task conversation; rich email cards show the correspondence and delivery
 outcomes without a separate email composer. See
 [AgentMail connections](connections/AGENTMAIL.md) for setup, transports, recovery,
 authorization, and the API/CLI contract.
+
+### Native task completion
+
+For ordinary low-risk tasks, accept the current agent's structured `done` claim
+subject to explicit workflow constraints. Missing independent evidence or a
+`needs_review` label alone must not create a human approval. Require a concrete
+reviewer decision for a new review request. Keep unfinished work with the agent,
+with bounded continuation and visible recovery. Preserve explicit approvals,
+current task ownership, cancellation, dependencies, and newer task state. See
+`doc/architecture/native-status-arbitration.md` for finish feedback and the
+provenance-checked cleanup of historical automatic completion reviews.

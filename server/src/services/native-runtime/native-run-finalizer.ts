@@ -1,8 +1,10 @@
+import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   approvals,
+  agentWakeupRequests,
   completionContracts,
   heartbeatRuns,
   heartbeatRunEvents,
@@ -113,7 +115,7 @@ export function resolveNativeFinalizerStatus(
   return arbitrateNativeStatus(input);
 }
 
-async function pendingNativeGovernance(input: {
+export async function pendingNativeGovernance(input: {
   db: Db;
   companyId: string;
   issueId: string;
@@ -1089,6 +1091,13 @@ export async function finalizeNativeRun(input: {
     ],
   };
 
+  await dismissAutomaticCompletionReviews(input.db, coordinator.issueId);
+  const sourceWake = run.wakeupRequestId ? await input.db.select({ payload: agentWakeupRequests.payload })
+    .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.id, run.wakeupRequestId),
+      eq(agentWakeupRequests.companyId, run.companyId))).then((rows) => rows[0]) : null;
+  // One follow-up may repair an incomplete report. Repeated incomplete results
+  // require a visible recovery action instead of an unbounded wake loop.
+  const allowIncompleteContinuation = record(sourceWake?.payload).continuationIdempotencyKey !== "native-completion-incomplete";
   let supersedesAssessmentId: string | null = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const authoritativeIssue = await input.db
@@ -1159,6 +1168,7 @@ export async function finalizeNativeRun(input: {
       terminalState: terminalState as "succeeded" | "failed" | "cancelled",
       workspaceFinalizeStatus: input.workspaceFinalizeStatus,
       governanceGate,
+      allowIncompleteContinuation,
       completionClaimPolicyAccepted:
         contractRow.risk === "low" &&
         contractRow.completionAuthority === "agent_claim_policy",

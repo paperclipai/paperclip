@@ -101,6 +101,7 @@ export class CodexSessionState {
   readonly goalReasonCode: string | null;
   readonly goalReason: string | null;
   readonly dynamicTools: readonly Readonly<Record<string, unknown>>[];
+  readonly completionFeedback: CodexAppServerDriverOptions["completionFeedback"];
   readonly dynamicToolHandler: CodexAppServerDriverOptions["dynamicToolHandler"];
   readonly eventQueue = new AsyncQueue<PrpEvent>();
   sourceSequence: number;
@@ -172,6 +173,7 @@ export class CodexSessionState {
     goalReasonCode: string | null;
     goalReason: string | null;
     dynamicTools: readonly Readonly<Record<string, unknown>>[];
+    completionFeedback?: CodexAppServerDriverOptions["completionFeedback"];
     dynamicToolHandler?: CodexAppServerDriverOptions["dynamicToolHandler"];
   }) {
     this.codexUsageBaseline = input.codexUsageBaseline ?? null;
@@ -195,6 +197,7 @@ export class CodexSessionState {
     this.goalReason = input.goalReason;
     this.dynamicTools = input.dynamicTools;
     this.dynamicToolHandler = input.dynamicToolHandler;
+    this.completionFeedback = input.completionFeedback;
     this.currentGoal = input.goal === undefined ? null : structuredClone(input.goal);
     for (const entry of input.lineage ?? [input.opened.lineage]) {
       this.lineageByThread.set(entry.threadId, structuredClone(entry));

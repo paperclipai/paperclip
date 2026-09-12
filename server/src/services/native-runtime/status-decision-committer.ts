@@ -586,9 +586,9 @@ async function materializeDecisionEffect(input: {
       resolverPolicy: effect.ownerAgentId ? "anyone" : "human_only",
       addresseeAgentId: effect.ownerAgentId ?? null,
       addresseeUserId: effect.ownerUserId,
-      title: "Native completion review",
+      title: "Review requested",
       summary:
-        "The native runner requires authoritative review before completion.",
+        effect.prompt,
       continuationPolicy: "wake_assignee",
       payload: {
         version: 1,
