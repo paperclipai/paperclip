@@ -1,4 +1,5 @@
 import { TaskChatProjectCreatedCard } from "@/components/task-chat/TaskChatProjectCreatedCard";
+import { useTranslation } from "@/i18n";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { AiConnectionDesignExamples } from "@/components/ai-connections/AiConnectionDesignExamples";
 import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKeySelect";
@@ -479,6 +480,7 @@ function TaskExecutionControlsExample() {
 }
 
 export function DesignGuide() {
+  const { t } = useTranslation();
   const [status, setStatus] = useState("todo");
   const [priority, setPriority] = useState("medium");
   const [selectValue, setSelectValue] = useState("in_progress");
@@ -629,7 +631,7 @@ export function DesignGuide() {
       {/* ============================================================ */}
       {/*  TYPOGRAPHY                                                   */}
       {/* ============================================================ */}
-      <Section title="Runner activity">
+      <Section title={t("sep12Screens.designRunnerActivity")}>
         <TaskChatRunnerActivityGroup item={{ id: "design-runner-activity", kind: "activity_phase", active: true, summary: "", interstitial: { id: "design-runner-commentary", kind: "message", author: "agent", text: "I’ll inspect the activity feed and check the layout.", interstitial: true }, items: [
           { id: "design-runner-read", kind: "tool", name: "read", target: "TaskChatRunnerTurn.tsx", status: "completed", detail: "Found the activity groups." },
           { id: "design-runner-check", kind: "tool", name: "exec_command", target: "pnpm check:token-gates", status: "in_progress" },
@@ -1207,7 +1209,7 @@ export function DesignGuide() {
       {/*  CARDS                                                        */}
       {/* ============================================================ */}
       <Section title="Cards">
-        <SubSection title="Dashboard agent runs">
+        <SubSection title={t("sep12Screens.designDashboardRuns")}>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {["running", "queued", "succeeded", "failed", "timed_out", "cancelled", "interrupted"].map((status) => (
               <AgentRunCard
@@ -1222,7 +1224,7 @@ export function DesignGuide() {
               />
             ))}
           </div>
-          <p className="text-xs text-muted-foreground">The dashboard and Live runs page use the same compact cards. In-progress task icons animate across the app, including between runs, to represent task workflow status. Live indicators report active execution. Open a run to view its status and transcript.</p>
+          <p className="text-xs text-muted-foreground">{t("sep12Screens.designDashboardRunsDescription")}</p>
         </SubSection>
         <SubSection title="Standard Card">
           <Card>
@@ -1658,9 +1660,7 @@ export function DesignGuide() {
       <Section title="Navigation Patterns">
         <SubSection title="Sidebar nav items">
           <p className="text-sm text-muted-foreground">
-            Layout accepts sidebarSections to compose additional SidebarSection groups inside the shared sidebar.
-            Use SidebarNavItem for each row, with sibling action buttons for starring or menus.
-            Starred agent conversations precede recent conversations without a divider. Stars appear on hover or keyboard focus. Task breadcrumbs support leading identity and trailing actions beside the label, including single-item task headers; see the Agent chat Storybook.
+            {t("sep12Screens.designSidebarDescription")}
           </p>
           <Card className="block w-60 p-3 space-y-0.5">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium bg-accent text-accent-foreground">
@@ -2209,8 +2209,8 @@ export function DesignGuide() {
         <EnvironmentVariablesEditorShowcase />
       </Section>
 
-      <Section title="Tasks created from a task">
-        <SubSection title="Subtasks and created work are independent">
+      <Section title={t("sep12Screens.designCreatedTasks")}>
+        <SubSection title={t("sep12Screens.designIndependentSubtasks")}>
           <div className="max-w-xl">
             <TaskDetailTasksPanel
               subtasks={[DESIGN_GUIDE_TASK]}
@@ -2222,7 +2222,7 @@ export function DesignGuide() {
             />
           </div>
         </SubSection>
-        <SubSection title="Empty, loading and failed">
+        <SubSection title={t("sep12Screens.designTaskStates")}>
           <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} />
           <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} isLoading />
           <TaskDetailTasksPanel subtasks={[]} createdTasks={[]} projects={[]} hasError onRetry={() => {}} />
@@ -2231,10 +2231,7 @@ export function DesignGuide() {
 
       <Section title="Execution recovery">
         <p className="text-sm text-muted-foreground">
-          Recovery runs in the background. Task lists keep their ordinary status without
-          execution badges. Active transcript headers keep saying Working during automatic
-          recovery. Recovery decisions and attempts belong in the run log;
-          there is no execution status card or reconciliation form.
+          {t("sep12Screens.designRecoveryDescription")}
         </p>
       </Section>
 

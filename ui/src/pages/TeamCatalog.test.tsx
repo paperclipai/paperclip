@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { i18n } from "@/i18n";
 
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -237,6 +238,7 @@ function findButton(label: string): HTMLButtonElement | undefined {
 
 describe("TeamCatalog install preview path", () => {
   let container: HTMLDivElement;
+  let root: ReturnType<typeof createRoot> | null = null;
 
   beforeEach(() => {
     mockAdapterAvailability.disabled = new Set(["paperclip_runner"]);
@@ -262,17 +264,19 @@ describe("TeamCatalog install preview path", () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await act(() => { root?.unmount(); root = null; });
+    await i18n.changeLanguage("en");
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
   });
 
   async function renderPage() {
-    const root = createRoot(container);
+    root = createRoot(container);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => {
-      root.render(
+      root!.render(
         <QueryClientProvider client={queryClient}>
           <TooltipProvider>
             <TeamCatalog />
@@ -291,6 +295,14 @@ describe("TeamCatalog install preview path", () => {
     // summary grid counts
     expect(document.body.textContent).toContain("Agents");
     expect(document.body.textContent).toContain("Projects");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(document.body.textContent).toContain("Агенты");
+    expect(document.body.textContent).toContain("Проекты");
+    expect(findButton("Установить команду")).toBeTruthy();
+    expect(document.body.textContent).toContain("Core Exec Team");
+    expect(document.body.textContent).toContain("A starter executive team.");
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(findButton("Install team")).toBeTruthy();
   });
 
   it("opens the installer, fetches the preview, and submits the install", async () => {

@@ -1,11 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
+import { afterEach, describe, expect, it } from "vitest";
 import { buildAgentSkillSourceMeta } from "./agent-skill-source";
 
 function source(overrides: Parameters<typeof buildAgentSkillSourceMeta>[0]) {
   return buildAgentSkillSourceMeta(overrides).label;
 }
 
+afterEach(async () => { await i18n.changeLanguage("en"); });
+
 describe("buildAgentSkillSourceMeta", () => {
+  it("localizes fallback display only and preserves custom metadata", async () => {
+    await i18n.changeLanguage("ru");
+    const source = { sourceBadge: "local", sourceType: "local_path", sourceLabel: "/opt/my-skill", sourceLocator: "/opt/my-skill" } as const;
+    const original = { ...source };
+    expect(buildAgentSkillSourceMeta(source).label).toBe("Локальная папка");
+    expect(buildAgentSkillSourceMeta({ ...source, sourceLabel: "My custom source" }).label).toBe("My custom source");
+    expect(source).toEqual(original);
+  });
   it("shows GitHub skills as owner/repo text", () => {
     expect(source({
       sourceBadge: "github",

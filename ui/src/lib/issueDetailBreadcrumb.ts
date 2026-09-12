@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { Issue } from "@paperclipai/shared";
 
 type IssueDetailSource = "issues" | "inbox";
@@ -269,4 +270,22 @@ export function readIssueDetailBreadcrumb(
 export function shouldArmIssueDetailInboxQuickArchive(state: unknown): boolean {
   if (typeof state !== "object" || state === null) return false;
   return (state as IssueDetailLocationState).issueDetailInboxQuickArchiveArmed === true;
+}
+
+/** Localize built-in navigation labels without changing stored state or route inference. */
+export function readIssueDetailBreadcrumbDisplay(
+  issuePathId: string | null | undefined,
+  state: unknown,
+  search?: string,
+): IssueDetailBreadcrumb | null {
+  const breadcrumb = readIssueDetailBreadcrumb(issuePathId, state, search);
+  if (!breadcrumb) return null;
+  const labels: Record<string, string> = {
+    Inbox: "nav.inbox", "Входящие": "nav.inbox",
+    Tasks: "nav.tasks", "Задачи": "nav.tasks",
+  };
+  const path = breadcrumb.href.split(/[?#]/)[0];
+  const isBuiltInRoute = /(?:^|\/)(?:inbox|issues)(?:\/|$)/.test(path);
+  const key = isBuiltInRoute ? labels[breadcrumb.label] : undefined;
+  return key ? { ...breadcrumb, label: t(key) } : breadcrumb;
 }

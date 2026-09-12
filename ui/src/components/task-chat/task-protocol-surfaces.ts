@@ -1,3 +1,48 @@
+import { t } from "@/i18n";
+
+const PROTOCOL_RATIONALE_KEYS: Readonly<Record<string, string>> = {
+  "Provider-neutral semantic activity is readable in the task turn.": "localizationTaskRuntime.protocolRationale.ui_Provider_neutral_semantic_activity_is_readable_in_the_task_turn_jl3y9t",
+  "In-progress workspace changes update one diff card.": "localizationTaskRuntime.protocolRationale.ui_In_progress_workspace_changes_update_one_diff_card_1sfjyq6",
+  "The runner-verified final diff replaces the in-progress revision.": "localizationTaskRuntime.protocolRationale.ui_The_runner_verified_final_diff_replaces_the_in_progress_revision_yc856m",
+  "Verified references open a bounded preview and the production file viewer.": "localizationTaskRuntime.protocolRationale.ui_Verified_references_open_a_bounded_preview_and_the_production_fil_1ttu25k",
+  "Semantic operations reuse the production tool row.": "localizationTaskRuntime.protocolRationale.ui_Semantic_operations_reuse_the_production_tool_row_gynv1",
+  "Semantic operation outcomes update the matching tool row.": "localizationTaskRuntime.protocolRationale.ui_Semantic_operation_outcomes_update_the_matching_tool_row_1ebb69k",
+  "Recovered semantic operation outcomes update the matching tool row without duplicating it.": "localizationTaskRuntime.protocolRationale.ui_Recovered_semantic_operation_outcomes_update_the_matching_tool_ro_12cpdfi",
+  "MCP inputs reuse the production tool row.": "localizationTaskRuntime.protocolRationale.ui_MCP_inputs_reuse_the_production_tool_row_14rmssm",
+  "MCP outcomes update the matching tool row.": "localizationTaskRuntime.protocolRationale.ui_MCP_outcomes_update_the_matching_tool_row_13ztgdl",
+  "Action requests materialize as authoritative issue-thread interactions.": "localizationTaskRuntime.protocolRationale.ui_Action_requests_materialize_as_authoritative_issue_thread_interac_1winryg",
+  "Action resolution is shown on the authoritative interaction card.": "localizationTaskRuntime.protocolRationale.ui_Action_resolution_is_shown_on_the_authoritative_interaction_card_1w9ocl9",
+  "Pending provider runtime requests remain visible and actionable when a resolver is available.": "localizationTaskRuntime.protocolRationale.ui_Pending_provider_runtime_requests_remain_visible_and_actionable_w_1pvk456",
+  "Resolution updates the existing request card.": "localizationTaskRuntime.protocolRationale.ui_Resolution_updates_the_existing_request_card_1w5r6zi",
+  "Expiry updates the existing request card.": "localizationTaskRuntime.protocolRationale.ui_Expiry_updates_the_existing_request_card_op6e7d",
+  "Cancellation updates the existing request card.": "localizationTaskRuntime.protocolRationale.ui_Cancellation_updates_the_existing_request_card_13uw1u1",
+  "The control-plane interaction record is canonical and owns rendering.": "localizationTaskRuntime.protocolRationale.ui_The_control_plane_interaction_record_is_canonical_and_owns_render_cqfmtb",
+  "Structured completion, evidence, verification, blockers, and artifacts remain inspectable.": "localizationTaskRuntime.protocolRationale.ui_Structured_completion_evidence_verification_blockers_and_artifact_1hnvwrr",
+  "Acceptance updates the existing result without duplicating it.": "localizationTaskRuntime.protocolRationale.ui_Acceptance_updates_the_existing_result_without_duplicating_it_1w479g2",
+  "Rejected results remain part of run governance rather than a second completion card.": "localizationTaskRuntime.protocolRationale.ui_Rejected_results_remain_part_of_run_governance_rather_than_a_seco_1jx4tyw",
+  "Terminal outcome and stop reason remain visible.": "localizationTaskRuntime.protocolRationale.ui_Terminal_outcome_and_stop_reason_remain_visible_1b522ns",
+  "Routine lifecycle transitions are summarized by the run turn and composer state.": "localizationTaskRuntime.protocolRationale.ui_Routine_lifecycle_transitions_are_summarized_by_the_run_turn_and__eaciu4",
+  "Actionable failure text is folded into the run or system notice.": "localizationTaskRuntime.protocolRationale.ui_Actionable_failure_text_is_folded_into_the_run_or_system_notice_149l5uu",
+  "Item payloads normalize into messages, reasoning, tools, diffs, or usage.": "localizationTaskRuntime.protocolRationale.ui_Item_payloads_normalize_into_messages_reasoning_tools_diffs_or_us_1toxmnr",
+  "Sandbox telemetry is available in run details, not the primary task thread.": "localizationTaskRuntime.protocolRationale.ui_Sandbox_telemetry_is_available_in_run_details_not_the_primary_tas_bdtg6d",
+  "MCP application transport lifecycle remains in run details unless it produces an actionable failure.": "localizationTaskRuntime.protocolRationale.ui_MCP_application_transport_lifecycle_remains_in_run_details_unless_12vbvpu",
+  "Authoritative task status, attention, and interaction records own this state.": "localizationTaskRuntime.protocolRationale.ui_Authoritative_task_status_attention_and_interaction_records_own_t_1xv2a7l",
+  "Permission choices render on the runtime request card.": "localizationTaskRuntime.protocolRationale.ui_Permission_choices_render_on_the_runtime_request_card_z7bvgp",
+  "Structured runtime input renders on the runtime request card.": "localizationTaskRuntime.protocolRationale.ui_Structured_runtime_input_renders_on_the_runtime_request_card_1wegt4y",
+  "Uses the production confirmation card.": "localizationTaskRuntime.protocolRationale.ui_Uses_the_production_confirmation_card_31qpx2",
+  "Uses the production bounded checkbox card.": "localizationTaskRuntime.protocolRationale.ui_Uses_the_production_bounded_checkbox_card_1pzoq4l",
+  "Uses the production per-item verdict card.": "localizationTaskRuntime.protocolRationale.ui_Uses_the_production_per_item_verdict_card_1j708l7",
+  "Uses the production typed question controls.": "localizationTaskRuntime.protocolRationale.ui_Uses_the_production_typed_question_controls_g1stgr",
+  "Uses the production task suggestion tree.": "localizationTaskRuntime.protocolRationale.ui_Uses_the_production_task_suggestion_tree_19isd68",
+};
+
+/** Read-time localization only; the registry remains the raw protocol contract. */
+export function taskProtocolRationaleDisplay(registration: TaskProtocolSurfaceRegistration): string {
+  const key = PROTOCOL_RATIONALE_KEYS[registration.rationale];
+  return key ? t(key) : registration.rationale;
+}
+
+
 /**
  * Exhaustive product disposition for Paperclip Runner Protocol surfaces.
  *

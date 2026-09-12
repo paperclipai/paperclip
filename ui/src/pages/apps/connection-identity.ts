@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type {
   ConnectionGrantKind,
   ConnectionAudienceMember,
@@ -15,17 +16,17 @@ import type {
  * card cannot drift into three different names for the same thing.
  */
 
-export type ConnectionTypeLabel = "Personal" | "Dedicated agent" | "Company";
+export type ConnectionTypeLabel = string;
 
 /** The two connection types shown throughout the product. */
 export function connectionTypeLabel(
   credentialPolicy: ToolConnectionCredentialPolicy,
 ): ConnectionTypeLabel {
   return credentialPolicy === "per_user"
-    ? "Personal"
+    ? t("localizationApps.personal671")
     : credentialPolicy === "per_agent"
-      ? "Dedicated agent"
-      : "Company";
+      ? t("localizationApps.dedicatedAgent672")
+      : t("localizationActivity.company");
 }
 
 const COMPANY_NAME_SUFFIX = " for the company";
@@ -45,7 +46,7 @@ export function connectionNameForCredentialPolicy(
 ): string {
   return connectionNameForGrantKind(
     name,
-    connectionTypeLabel(credentialPolicy) === "Company" ? "organization" : "user",
+    credentialPolicy === "shared" || credentialPolicy === "per_user_with_fallback" ? "organization" : "user",
   );
 }
 
@@ -57,15 +58,15 @@ export function connectionNameForCredentialPolicy(
 export function grantStatusLabel(status: ConnectionGrantStatus | null): string {
   switch (status) {
     case "active":
-      return "Connected";
+      return t("pages.apps.notConnected.statusConnected");
     case "needs_reauthorization":
-      return "Needs attention";
+      return t("pages.apps.connections.statusNeedsAttention");
     case "expired":
-      return "Expired";
+      return t("localizationApps.expired146");
     case "revoked":
-      return "Revoked";
+      return t("localizationAgents.ui96_Revoked");
     default:
-      return "Not connected";
+      return t("pages.apps.connections.statusNotConnected");
   }
 }
 
@@ -96,9 +97,9 @@ export function grantAccountLabel(
 ): string {
   const tenantName = grant?.providerTenant?.name?.trim();
   if (tenantName) return tenantName;
-  if (grant?.kind === "user") return options.subjectLabel?.trim() || "Connected account";
-  if (grant?.kind === "agent") return options.subjectLabel?.trim() || "Dedicated account";
-  return "Shared credential";
+  if (grant?.kind === "user") return options.subjectLabel?.trim() || t("localizationApps.connectedAccount676");
+  if (grant?.kind === "agent") return options.subjectLabel?.trim() || t("localizationApps.dedicatedAccount677");
+  return t("localizationApps.sharedCredential678");
 }
 
 /**
@@ -108,8 +109,8 @@ export function grantAccountLabel(
  */
 export function audienceSummary(grant: Pick<ConnectionGrant, "members"> | null): string {
   const count = grant?.members?.length ?? 0;
-  if (count === 0) return "All organization members";
-  return `${count} selected ${count === 1 ? "member" : "members"}`;
+  if (count === 0) return t("localizationApps.allOrganizationMembers397");
+  return t("localizationApps.selectedMembers", { count });
 }
 
 export function audienceUserIds(grant: Pick<ConnectionGrant, "members"> | null): Set<string> {

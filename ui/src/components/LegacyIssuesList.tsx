@@ -1,3 +1,4 @@
+import { t, i18n, useTranslation } from "@/i18n";
 import { startTransition, useDeferredValue, useEffect, useMemo, useState, useCallback, useRef } from "react";
 import type { ReactNode } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -16,8 +17,8 @@ import {
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
 } from "../lib/keyboardShortcuts";
-import { formatAssigneeUserLabel } from "../lib/assignees";
-import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
+import { formatAssigneeUserDisplayLabel as formatAssigneeUserLabel } from "../lib/assignees";
+import { buildCompanyUserLabelMap, buildCompanyUserProfileMap, companyUserProfileDisplayLabel } from "../lib/company-members";
 import { createIssueDetailPath, rememberIssueDetailLocationState, withIssueDetailHeaderSeed } from "../lib/issueDetailBreadcrumb";
 import { prefetchIssueDetailForNavigation } from "../lib/issueDetailCache";
 import {
@@ -123,22 +124,22 @@ function findIssuesScrollContainer(element: HTMLElement | null): HTMLElement | n
 }
 const boardIssueStatuses = ISSUE_STATUSES;
 const issueStatusLabels: Record<IssueStatus, string> = {
-  backlog: "Backlog",
-  todo: "Todo",
-  in_progress: "In progress",
-  in_review: "In review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
+  get backlog() { return t("status.backlog", { defaultValue: "Backlog" }); },
+  get todo() { return t("status.todo", { defaultValue: "Todo" }); },
+  get in_progress() { return t("status.in_progress", { defaultValue: "In progress" }); },
+  get in_review() { return t("status.in_review", { defaultValue: "In review" }); },
+  get done() { return t("status.done", { defaultValue: "Done" }); },
+  get blocked() { return t("status.blocked", { defaultValue: "Blocked" }); },
+  get cancelled() { return t("status.cancelled", { defaultValue: "Cancelled" }); },
 };
 const progressSegmentClasses: Record<IssueStatus, string> = {
-  backlog: "bg-muted-foreground/40",
-  todo: "bg-blue-500",
-  in_progress: "bg-yellow-500",
-  in_review: "bg-violet-500",
-  done: "bg-green-500",
-  blocked: "bg-red-500",
-  cancelled: "bg-neutral-400",
+  get backlog() { return t("status.backlog", { defaultValue: "bg-muted-foreground/40" }); },
+  get todo() { return t("status.todo", { defaultValue: "bg-blue-500" }); },
+  get in_progress() { return t("status.in_progress", { defaultValue: "bg-yellow-500" }); },
+  get in_review() { return t("status.in_review", { defaultValue: "bg-violet-500" }); },
+  get done() { return t("status.done", { defaultValue: "bg-green-500" }); },
+  get blocked() { return t("status.blocked", { defaultValue: "bg-red-500" }); },
+  get cancelled() { return t("status.cancelled", { defaultValue: "bg-neutral-400" }); },
 };
 
 /* ── View state ── */
@@ -320,7 +321,7 @@ export function issueAgeBucket(date: Date | string, now: number = Date.now()): 0
 }
 
 export function issueAgeSeparatorLabel(bucket: 1 | 2): string {
-  return bucket === 1 ? "Older than a day" : "Older than a week";
+  return bucket === 1 ? t("localizationIssueLists.olderDay", { defaultValue: "Older than a day" }) : t("localizationIssueLists.olderWeek", { defaultValue: "Older than a week" });
 }
 
 export function issueAgeBucketsCrossed(
@@ -343,6 +344,7 @@ function issueDateSeparatorField(state: IssueViewState): "createdAt" | "updatedA
 }
 
 function IssueDateSeparator({ label }: { label: string }) {
+  useTranslation();
   return (
     <div
       className="flex items-center gap-2 px-3 py-1.5 sm:pl-0 sm:pr-4"
@@ -505,6 +507,7 @@ function IssueSearchInput({
   value: string;
   onDebouncedChange?: (search: string) => void;
 }) {
+  useTranslation();
   const [draftValue, setDraftValue] = useState(value);
   const lastCommittedValueRef = useRef(value);
 
@@ -551,9 +554,9 @@ function IssueSearchInput({
             e.currentTarget.blur();
           }
         }}
-        placeholder="Search tasks..."
+        placeholder={t("localizationIssueLists.searchTasksPlaceholder", { defaultValue: "Search tasks..." })}
         className="pl-7 text-xs sm:text-sm"
-        aria-label="Search tasks"
+        aria-label={t("localizationIssueLists.searchTasks", { defaultValue: "Search tasks" })}
         data-page-search-target="true"
       />
     </div>
@@ -569,6 +572,7 @@ function SubIssueProgressSummaryStrip({
   issueLinkState?: unknown;
   parentIssueIdForCostSummary?: string;
 }) {
+  useTranslation();
   const target = summary.target;
   const targetIssue = target?.issue ?? null;
   const targetPathId = targetIssue?.identifier ?? targetIssue?.id ?? "";
@@ -599,35 +603,31 @@ function SubIssueProgressSummaryStrip({
         <div className="min-w-0 flex-1 space-y-2">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
             <span className="font-medium text-foreground">
-              {summary.doneCount}/{summary.totalCount} done
+              {t("localizationIssueLists.doneCount", { defaultValue: "{{done}}/{{total}} done", done: summary.doneCount, total: summary.totalCount })}
             </span>
             <span className="text-muted-foreground">
-              {summary.inProgressCount} in progress
+              {summary.inProgressCount} {t("localizationIssueLists.progress", { defaultValue: "in progress" })}
             </span>
             <span className="text-muted-foreground">
-              {summary.blockedCount} blocked
+              {summary.blockedCount} {t("localizationIssueLists.blocked", { defaultValue: "blocked" })}
             </span>
             {showCostSummary && (
               <>
                 <span
                   className="text-muted-foreground tabular-nums"
-                  title={`${costSummary.runCount.toLocaleString()} run${
-                    costSummary.runCount === 1 ? "" : "s"
-                  } across ${costSummary.issueCount} sub-task${
-                    costSummary.issueCount === 1 ? "" : "s"
-                  }`}
+                  title={t("localizationIssueLists.runSummary", { defaultValue: "Runs: {{runs}} · Sub-tasks: {{tasks}}", runs: costSummary.runCount, tasks: costSummary.issueCount })}
                 >
-                  {formatTokens(totalTokens)} tokens
+                  {formatTokens(totalTokens)} {t("localizationIssueLists.tokens", { defaultValue: "tokens" })}
                 </span>
                 <span className="text-muted-foreground tabular-nums">
-                  {formatDurationMs(costSummary.runtimeMs)} runtime
+                  {formatDurationMs(costSummary.runtimeMs)} {t("localizationIssueLists.runtime", { defaultValue: "runtime" })}
                 </span>
               </>
             )}
           </div>
           <div
             role="progressbar"
-            aria-label="Sub-tasks completion progress"
+            aria-label={t("localizationIssueLists.completionProgress", { defaultValue: "Sub-tasks completion progress" })}
             aria-valuemin={0}
             aria-valuenow={summary.doneCount}
             aria-valuemax={summary.totalCount}
@@ -649,7 +649,7 @@ function SubIssueProgressSummaryStrip({
           {target && targetIssue ? (
             <>
               <div className="text-xs font-medium text-muted-foreground">
-                {target.kind === "next" ? "Next up" : "Waiting on blockers"}
+                {target.kind === "next" ? t("localizationIssueLists.nextUp", { defaultValue: "Next up" }) : t("localizationIssueLists.waitingBlockers", { defaultValue: "Waiting on blockers" })}
               </div>
               <Link
                 to={createIssueDetailPath(targetPathId)}
@@ -664,11 +664,11 @@ function SubIssueProgressSummaryStrip({
               </Link>
             </>
           ) : summary.totalCount === 0 ? (
-            <div className="text-sm font-medium text-foreground">No active sub-tasks</div>
+            <div className="text-sm font-medium text-foreground">{t("localizationIssueLists.noActiveSubtasks", { defaultValue: "No active sub-tasks" })}</div>
           ) : summary.doneCount === summary.totalCount ? (
-            <div className="text-sm font-medium text-foreground">All sub-tasks done</div>
+            <div className="text-sm font-medium text-foreground">{t("localizationIssueLists.allSubtasksDone", { defaultValue: "All sub-tasks done" })}</div>
           ) : (
-            <div className="text-sm font-medium text-foreground">No actionable sub-tasks</div>
+            <div className="text-sm font-medium text-foreground">{t("localizationIssueLists.noActionableSubtasks", { defaultValue: "No actionable sub-tasks" })}</div>
           )}
         </div>
       </div>
@@ -708,6 +708,7 @@ export function IssuesList({
   onSearchChange,
   onUpdateIssue,
 }: IssuesListProps) {
+  useTranslation();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -883,11 +884,11 @@ export function IssuesList({
 
   const companyUserLabelMap = useMemo(
     () => buildCompanyUserLabelMap(companyMembers?.users),
-    [companyMembers?.users],
+    [i18n.resolvedLanguage, companyMembers?.users],
   );
   const companyUserProfileMap = useMemo(
     () => buildCompanyUserProfileMap(companyMembers?.users),
-    [companyMembers?.users],
+    [i18n.resolvedLanguage, companyMembers?.users],
   );
 
   const projectById = useMemo(() => {
@@ -896,7 +897,7 @@ export function IssuesList({
       map.set(project.id, { name: project.name, color: project.color ?? null });
     }
     return map;
-  }, [projects]);
+  }, [i18n.resolvedLanguage, projects]);
 
   const projectWorkspaceById = useMemo(() => {
     const map = new Map<string, { name: string; projectId: string }>();
@@ -906,7 +907,7 @@ export function IssuesList({
       }
     }
     return map;
-  }, [projects]);
+  }, [i18n.resolvedLanguage, projects]);
 
   const defaultProjectWorkspaceIdByProjectId = useMemo(() => {
     const map = new Map<string, string>();
@@ -918,10 +919,10 @@ export function IssuesList({
       if (defaultWorkspaceId) map.set(project.id, defaultWorkspaceId);
     }
     return map;
-  }, [projects]);
+  }, [i18n.resolvedLanguage, projects]);
   const defaultProjectWorkspaceIds = useMemo(
     () => new Set(defaultProjectWorkspaceIdByProjectId.values()),
-    [defaultProjectWorkspaceIdByProjectId],
+    [i18n.resolvedLanguage, defaultProjectWorkspaceIdByProjectId],
   );
 
   const executionWorkspaceById = useMemo(() => {
@@ -943,11 +944,11 @@ export function IssuesList({
       });
     }
     return map;
-  }, [executionWorkspaces, projectWorkspaceById]);
+  }, [i18n.resolvedLanguage, executionWorkspaces, projectWorkspaceById]);
   const issueFilterWorkspaceContext = useMemo(() => ({
     executionWorkspaceById,
     defaultProjectWorkspaceIdByProjectId,
-  }), [defaultProjectWorkspaceIdByProjectId, executionWorkspaceById]);
+  }), [i18n.resolvedLanguage, defaultProjectWorkspaceIdByProjectId, executionWorkspaceById]);
 
   const workspaceNameMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -964,7 +965,7 @@ export function IssuesList({
       map.set(workspaceId, workspace.name);
     }
     return map;
-  }, [defaultProjectWorkspaceIds, executionWorkspaceById, projectWorkspaceById]);
+  }, [i18n.resolvedLanguage, defaultProjectWorkspaceIds, executionWorkspaceById, projectWorkspaceById]);
 
   const workspaceOptions = useMemo(() => {
     const options = new Map<string, string>();
@@ -974,7 +975,7 @@ export function IssuesList({
     return [...options.entries()]
       .sort((a, b) => a[1].localeCompare(b[1]))
       .map(([id, name]) => ({ id, name }));
-  }, [workspaceNameMap]);
+  }, [i18n.resolvedLanguage, workspaceNameMap]);
 
   const creatorOptions = useMemo<CreatorOption[]>(() => {
     const options = new Map<string, CreatorOption>();
@@ -983,7 +984,7 @@ export function IssuesList({
     if (currentUserId) {
       options.set(`user:${currentUserId}`, {
         id: `user:${currentUserId}`,
-        label: currentUserId === "local-board" ? "Board" : "Me",
+        label: currentUserId === "local-board" ? t("pages.inbox.board") : t("filter.me"),
         kind: "user",
         searchText: currentUserId === "local-board" ? "board me human local-board" : `me board human ${currentUserId}`,
       });
@@ -1034,21 +1035,21 @@ export function IssuesList({
       if (a.kind !== b.kind) return a.kind === "user" ? -1 : 1;
       return a.label.localeCompare(b.label);
     });
-  }, [agents, currentUserId, issues]);
+  }, [i18n.resolvedLanguage, agents, currentUserId, issues]);
 
-  const visibleIssueColumnSet = useMemo(() => new Set(visibleIssueColumns), [visibleIssueColumns]);
+  const visibleIssueColumnSet = useMemo(() => new Set(visibleIssueColumns), [i18n.resolvedLanguage, visibleIssueColumns]);
   const availableIssueColumns = useMemo(
     () => getAvailableInboxIssueColumns(isolatedWorkspacesEnabled),
-    [isolatedWorkspacesEnabled],
+    [i18n.resolvedLanguage, isolatedWorkspacesEnabled],
   );
-  const availableIssueColumnSet = useMemo(() => new Set(availableIssueColumns), [availableIssueColumns]);
+  const availableIssueColumnSet = useMemo(() => new Set(availableIssueColumns), [i18n.resolvedLanguage, availableIssueColumns]);
   const subtreeLiveCounts = useMemo(
     () => collectSubtreeLiveCounts(issues, liveIssueIds ?? new Set<string>()),
-    [issues, liveIssueIds],
+    [i18n.resolvedLanguage, issues, liveIssueIds],
   );
   const visibleTrailingIssueColumns = useMemo(
     () => issueTrailingColumns.filter((column) => visibleIssueColumnSet.has(column) && availableIssueColumnSet.has(column)),
-    [availableIssueColumnSet, visibleIssueColumnSet],
+    [i18n.resolvedLanguage, availableIssueColumnSet, visibleIssueColumnSet],
   );
 
   const issueById = useMemo(() => {
@@ -1057,7 +1058,7 @@ export function IssuesList({
       map.set(issue.id, issue);
     }
     return map;
-  }, [issues]);
+  }, [i18n.resolvedLanguage, issues]);
 
   const issueTitleMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -1065,7 +1066,7 @@ export function IssuesList({
       map.set(issue.id, issue.identifier ? `${issue.identifier}: ${issue.title}` : issue.title);
     }
     return map;
-  }, [issues]);
+  }, [i18n.resolvedLanguage, issues]);
 
   const boardIssues = useMemo(() => {
     if (viewState.viewMode !== "board" || searchWithinLoadedIssues) return null;
@@ -1079,32 +1080,32 @@ export function IssuesList({
     }
     if (merged.size > 0) return [...merged.values()];
     return isPending ? issues : [];
-  }, [boardIssueQueries, issues, searchWithinLoadedIssues, viewState.viewMode]);
+  }, [i18n.resolvedLanguage, boardIssueQueries, issues, searchWithinLoadedIssues, viewState.viewMode]);
   const boardColumnLimitReached = useMemo(
     () =>
       viewState.viewMode === "board" &&
       !searchWithinLoadedIssues &&
       boardIssueQueries.some((query) => (query.data?.length ?? 0) === ISSUE_BOARD_COLUMN_RESULT_LIMIT),
-    [boardIssueQueries, searchWithinLoadedIssues, viewState.viewMode],
+    [i18n.resolvedLanguage, boardIssueQueries, searchWithinLoadedIssues, viewState.viewMode],
   );
 
   const sourceIssues = useMemo(() => {
     const useRemoteSearch = normalizedIssueSearch.length > 0 && !searchWithinLoadedIssues;
     return boardIssues ?? (useRemoteSearch ? searchedIssues : issues);
-  }, [boardIssues, issues, normalizedIssueSearch, searchedIssues, searchWithinLoadedIssues]);
+  }, [i18n.resolvedLanguage, boardIssues, issues, normalizedIssueSearch, searchedIssues, searchWithinLoadedIssues]);
 
   const searchScopedIssues = useMemo(
     () => normalizedIssueSearch.length > 0 && searchWithinLoadedIssues
       ? sourceIssues.filter((issue) => issueMatchesLocalSearch(issue, normalizedIssueSearch))
       : sourceIssues,
-    [normalizedIssueSearch, searchWithinLoadedIssues, sourceIssues],
+    [i18n.resolvedLanguage, normalizedIssueSearch, searchWithinLoadedIssues, sourceIssues],
   );
   const hasExternalObjectStatusFilters = viewState.externalObjectStatuses.length > 0;
   const issueIdsForExternalObjectSummaries = useMemo(
     () => (viewState.viewMode === "list" || hasExternalObjectStatusFilters
       ? searchScopedIssues.map((issue) => issue.id)
       : []),
-    [hasExternalObjectStatusFilters, searchScopedIssues, viewState.viewMode],
+    [i18n.resolvedLanguage, hasExternalObjectStatusFilters, searchScopedIssues, viewState.viewMode],
   );
   const {
     summaries: externalObjectSummaryByIssueId,
@@ -1118,7 +1119,7 @@ export function IssuesList({
     ...issueFilterWorkspaceContext,
     externalObjectSummaryByIssueId,
     externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
-  }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId, issueFilterWorkspaceContext]);
+  }), [i18n.resolvedLanguage, externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId, issueFilterWorkspaceContext]);
   const externalObjectFilterLoading = hasExternalObjectStatusFilters
     && externalObjectSummariesLoading
     && !externalObjectSummariesReady;
@@ -1133,7 +1134,7 @@ export function IssuesList({
       issueFilterContext,
     );
     return sortIssues(filteredByControls, viewState);
-  }, [
+  }, [i18n.resolvedLanguage,
     searchScopedIssues,
     viewState,
     currentUserId,
@@ -1146,13 +1147,13 @@ export function IssuesList({
     () => shouldRenderSubIssueProgressSummary(showProgressSummary, issues.length)
       ? buildSubIssueProgressSummary(issues)
       : null,
-    [issues, showProgressSummary],
+    [i18n.resolvedLanguage, issues, showProgressSummary],
   );
   const checklistAffordanceEnabled = useMemo(
     () =>
       defaultSortField === "workflow"
       && viewState.groupBy === "none",
-    [defaultSortField, viewState.groupBy],
+    [i18n.resolvedLanguage, defaultSortField, viewState.groupBy],
   );
   const workflowChecklistMeta = useMemo(() => {
     if (!checklistAffordanceEnabled) return null;
@@ -1187,7 +1188,7 @@ export function IssuesList({
       unresolvedVisibleBlockersByIssueId,
       currentStepIssueId: currentStepIssue?.id ?? null,
     };
-  }, [checklistAffordanceEnabled, filtered, issueById, viewState.nestingEnabled]);
+  }, [i18n.resolvedLanguage, checklistAffordanceEnabled, filtered, issueById, viewState.nestingEnabled]);
 
   const { data: labels } = useQuery({
     queryKey: queryKeys.issues.labels(selectedCompanyId!),
@@ -1206,7 +1207,7 @@ export function IssuesList({
       || (viewState.boardColdLaneMode === "auto" && boardHighVolume)
         ? [...KANBAN_COLD_STATUSES]
         : [],
-    [boardHighVolume, viewState.boardColdLaneMode],
+    [i18n.resolvedLanguage, boardHighVolume, viewState.boardColdLaneMode],
   );
   const boardDensityCustomized =
     viewState.boardCardDensity !== "auto"
@@ -1243,7 +1244,7 @@ export function IssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_workspace" ? "No Workspace" : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
+          label: key === "__no_workspace" ? t("localizationIssueLists.noWorkspace", { defaultValue: "No Workspace" }) : (workspaceNameMap.get(key) ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -1259,7 +1260,7 @@ export function IssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_project" ? "No Project" : (projectById.get(key)?.name ?? key.slice(0, 8)),
+          label: key === "__no_project" ? t("localizationIssueLists.noProject", { defaultValue: "No Project" }) : (projectById.get(key)?.name ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -1274,7 +1275,7 @@ export function IssuesList({
         })
         .map((key) => ({
           key,
-          label: key === "__no_parent" ? "No Parent" : (issueTitleMap.get(key) ?? key.slice(0, 8)),
+          label: key === "__no_parent" ? t("localizationIssueLists.noParent", { defaultValue: "No Parent" }) : (issueTitleMap.get(key) ?? key.slice(0, 8)),
           items: groups[key]!,
         }));
     }
@@ -1287,13 +1288,13 @@ export function IssuesList({
       key,
       label:
         key === "__unassigned"
-          ? "Unassigned"
+          ? t("filter.unassigned")
           : key.startsWith("__user:")
-            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId, companyUserLabelMap) ?? "User")
+            ? (formatAssigneeUserLabel(key.slice("__user:".length), currentUserId, companyUserLabelMap) ?? t("localizationFilters.user"))
             : (agentName(key) ?? key.slice(0, 8)),
       items: groups[key]!,
     }));
-  }, [
+  }, [i18n.resolvedLanguage,
     filtered,
     issueFilterWorkspaceContext,
     viewState.groupBy,
@@ -1339,7 +1340,7 @@ export function IssuesList({
       for (const root of roots) walk(root);
     }
     return out;
-  }, [
+  }, [i18n.resolvedLanguage,
     groupedContent,
     viewState.viewMode,
     viewState.collapsedGroups,
@@ -1622,8 +1623,8 @@ export function IssuesList({
     viewState.groupBy,
   ]);
 
-  const createActionLabel = createIssueLabel ? `Create ${createIssueLabel}` : "Create Task";
-  const createButtonLabel = createIssueLabel ? `New ${createIssueLabel}` : "New Task";
+  const createActionLabel = createIssueLabel ? t("localizationIssueLists.createLabel", { defaultValue: "Create {{label}}", label: createIssueLabel }) : t("pages.newIssueDialog.createTask");
+  const createButtonLabel = createIssueLabel ? t("localizationIssueLists.newLabel", { defaultValue: "New {{label}}", label: createIssueLabel }) : t("nav.newTask");
   const openCreateIssueDialog = useCallback((group?: { key: string; items: Issue[] }) => {
     openNewIssue(newIssueDefaults(group));
   }, [newIssueDefaults, openNewIssue]);
@@ -1682,12 +1683,12 @@ export function IssuesList({
 
         <div className="flex items-center gap-0.5 sm:gap-1 shrink-0">
           {/* View mode toggle */}
-          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label="View mode">
+          <div className="flex items-center border border-border rounded-md overflow-hidden mr-1" role="group" aria-label={t("pages.agents.viewMode", { defaultValue: "View mode" })}>
             <button
               className={`flex h-8 w-8 items-center justify-center transition-colors ${viewState.viewMode === "list" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "list" })}
-              title="List view"
-              aria-label="List view"
+              title={t("pages.agents.viewList", { defaultValue: "List view" })}
+              aria-label={t("pages.agents.viewList", { defaultValue: "List view" })}
               aria-pressed={viewState.viewMode === "list"}
             >
               <List className="h-3.5 w-3.5" />
@@ -1695,8 +1696,8 @@ export function IssuesList({
             <button
               className={`flex h-8 w-8 items-center justify-center transition-colors ${viewState.viewMode === "board" ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => updateView({ viewMode: "board" })}
-              title="Board view"
-              aria-label="Board view"
+              title={t("localizationIssueLists.boardView", { defaultValue: "Board view" })}
+              aria-label={t("localizationIssueLists.boardView", { defaultValue: "Board view" })}
               aria-pressed={viewState.viewMode === "board"}
             >
               <SquareKanban className="h-3.5 w-3.5" />
@@ -1710,7 +1711,7 @@ export function IssuesList({
               size="icon"
               className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", viewState.nestingEnabled && "bg-accent")}
               onClick={() => updateView({ nestingEnabled: !viewState.nestingEnabled })}
-              title={viewState.nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+              title={viewState.nestingEnabled ? t("pages.inbox.disableNesting", { defaultValue: "Disable parent-child nesting" }) : t("pages.inbox.enableNesting", { defaultValue: "Enable parent-child nesting" })}
             >
               <ListTree className="h-3.5 w-3.5" />
             </Button>
@@ -1724,7 +1725,7 @@ export function IssuesList({
                 size="icon"
                 className={cn("h-8 w-8 shrink-0", boardCompactCards && "bg-accent")}
                 onClick={() => updateView({ boardCardDensity: boardCompactCards ? "comfortable" : "compact" })}
-                title={boardCompactCards ? "Use comfortable cards" : "Use compact cards"}
+                title={boardCompactCards ? t("localizationIssueLists.comfortableCards", { defaultValue: "Use comfortable cards" }) : t("localizationIssueLists.compactCards", { defaultValue: "Use compact cards" })}
               >
                 <ChevronsDownUp className="h-3.5 w-3.5" />
               </Button>
@@ -1734,7 +1735,7 @@ export function IssuesList({
                 size="icon"
                 className={cn("h-8 w-8 shrink-0", boardCollapsedStatuses.length > 0 && "bg-accent")}
                 onClick={() => updateView({ boardColdLaneMode: boardCollapsedStatuses.length > 0 ? "expanded" : "collapsed" })}
-                title={boardCollapsedStatuses.length > 0 ? "Expand cold lanes" : "Collapse cold lanes"}
+                title={boardCollapsedStatuses.length > 0 ? t("localizationIssueLists.expandColdLanes", { defaultValue: "Expand cold lanes" }) : t("localizationIssueLists.collapseColdLanes", { defaultValue: "Collapse cold lanes" })}
               >
                 <PanelTopClose className="h-3.5 w-3.5" />
               </Button>
@@ -1748,7 +1749,7 @@ export function IssuesList({
                       "h-8 shrink-0 gap-1.5 px-2",
                       viewState.boardColumnPageSize !== KANBAN_COLUMN_DEFAULT_PAGE_SIZE && "bg-accent",
                     )}
-                    title="Cards per column"
+                    title={t("localizationIssueLists.cardsPerColumn", { defaultValue: "Cards per column" })}
                   >
                     <ListCollapse className="h-3.5 w-3.5" />
                     <span className="min-w-4 text-xs tabular-nums">{viewState.boardColumnPageSize}</span>
@@ -1768,7 +1769,7 @@ export function IssuesList({
                         )}
                         onClick={() => updateView({ boardColumnPageSize: pageSize })}
                       >
-                        <span>{pageSize} per column</span>
+                        <span>{pageSize} {t("localizationIssueLists.perColumn", { defaultValue: "per column" })}</span>
                         {viewState.boardColumnPageSize === pageSize && <Check className="h-3.5 w-3.5" />}
                       </button>
                     ))}
@@ -1786,7 +1787,7 @@ export function IssuesList({
                   boardColumnPageSize: KANBAN_COLUMN_DEFAULT_PAGE_SIZE,
                 })}
                 disabled={!boardDensityCustomized}
-                title="Reset board density"
+                title={t("localizationIssueLists.resetBoardDensity", { defaultValue: "Reset board density" })}
               >
                 <RotateCcw className="h-3.5 w-3.5" />
               </Button>
@@ -1798,7 +1799,7 @@ export function IssuesList({
             visibleColumnSet={visibleIssueColumnSet}
             onToggleColumn={toggleIssueColumn}
             onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-            title="Choose which task columns stay visible"
+            title={t("localizationIssueLists.taskColumns", { defaultValue: "Choose which task columns stay visible" })}
             iconOnly
           />
 
@@ -1823,7 +1824,7 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Sort">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("pages.inbox.sort", { defaultValue: "Sort" })}>
                   <ArrowUpDown className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
@@ -1831,12 +1832,12 @@ export function IssuesList({
                 <div className="p-2 space-y-0.5">
                   {/* PAP-411: "priority" sort option hidden behind SHOW_TASK_PRIORITY_UI (comparator stays dormant). */}
                   {([
-                    ["workflow", "Workflow"],
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["title", "Title"],
-                    ["created", "Created"],
-                    ["updated", "Updated"],
+                    ["workflow", t("localizationIssueLists.workflow", { defaultValue: "Workflow" })],
+                    ["status", t("nav.status")],
+                    ["priority", t("localizationFilters.priority")],
+                    ["title", t("pages.cases.sortTitle")],
+                    ["created", t("localizationIssueLists.created", { defaultValue: "Created" })],
+                    ["updated", t("pages.projects.sort.updated")],
                   ] as const)
                     .filter(([field]) => SHOW_TASK_PRIORITY_UI || field !== "priority")
                     .map(([field, label]) => (
@@ -1870,7 +1871,7 @@ export function IssuesList({
           {viewState.viewMode === "list" && (
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title="Group">
+                <Button variant="outline" size="icon" className="h-8 w-8 shrink-0" title={t("pages.inbox.group", { defaultValue: "Group" })}>
                   <Layers className="h-3.5 w-3.5" />
                 </Button>
               </PopoverTrigger>
@@ -1878,13 +1879,13 @@ export function IssuesList({
                 <div className="p-2 space-y-0.5">
                   {/* PAP-411: "priority" group-by option hidden behind SHOW_TASK_PRIORITY_UI (group logic stays dormant). */}
                   {([
-                    ["status", "Status"],
-                    ["priority", "Priority"],
-                    ["assignee", "Responsible"],
-                    ["project", "Project"],
-                    ["workspace", "Workspace"],
-                    ["parent", "Parent Task"],
-                    ["none", "None"],
+                    ["status", t("nav.status")],
+                    ["priority", t("localizationFilters.priority")],
+                    ["assignee", t("pages.inbox.groupByAssignee")],
+                    ["project", t("pages.inbox.groupByProject")],
+                    ["workspace", t("pages.inbox.groupByWorkspace")],
+                    ["parent", t("pages.artifacts.groupParentTask")],
+                    ["none", t("status.none")],
                   ] as const)
                     .filter(([value]) => SHOW_TASK_PRIORITY_UI || value !== "priority")
                     .map(([value, label]) => (
@@ -1910,18 +1911,18 @@ export function IssuesList({
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
-          Showing up to {ISSUE_SEARCH_RESULT_LIMIT} matches. Refine the search to narrow further.
+          {t("localizationIssueLists.searchLimit", { defaultValue: "Showing up to {{limit}} matches. Refine the search to narrow further.", limit: ISSUE_SEARCH_RESULT_LIMIT })}
         </p>
       )}
       {boardColumnLimitReached && (
         <p className="text-xs text-muted-foreground">
-          Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} tasks. Refine filters or search to reveal the rest.
+          {t("localizationIssueLists.boardLimit", { defaultValue: "Some board columns are showing up to {{limit}} tasks. Refine filters or search to reveal the rest.", limit: ISSUE_BOARD_COLUMN_RESULT_LIMIT })}
         </p>
       )}
       {!isLoading && !externalObjectFilterLoading && filtered.length === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
-          message="No tasks match the current filters or search."
+          message={t("localizationIssueLists.noTaskMatches", { defaultValue: "No tasks match the current filters or search." })}
           action={createActionLabel}
           onAction={() => openCreateIssueDialog()}
         />
@@ -1980,8 +1981,8 @@ export function IssuesList({
                     variant="ghost"
                     size="icon-xs"
                     className="-mr-2 text-muted-foreground"
-                    title={`New task in ${group.label}`}
-                    aria-label={`New task in ${group.label}`}
+                    title={t("pages.inbox.newTaskIn", { group: group.label })}
+                    aria-label={t("pages.inbox.newTaskIn", { group: group.label })}
                     onClick={() => openCreateIssueDialog(group)}
                   >
                     <Plus className="h-3 w-3" />
@@ -2016,7 +2017,7 @@ export function IssuesList({
                     issue.assigneeUserId,
                     currentUserId,
                     companyUserLabelMap,
-                  ) ?? assigneeUserProfile?.label ?? null;
+                  ) ?? companyUserProfileDisplayLabel(assigneeUserProfile) ?? null;
                   const originatingActor = deriveOriginatingActor(issue);
                   const originatingUserId = originatingActor?.kind === "user" ? originatingActor.id : null;
                   const originatingViaAgentId =
@@ -2115,18 +2116,18 @@ export function IssuesList({
                           <>
                             {hasChildren && !isExpanded ? (
                               <span className="ml-1.5 text-xs text-muted-foreground">
-                                ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
+                                ({t("localizationIssueLists.subtaskCount", { count: totalDescendants })})
                               </span>
                             ) : null}
                             {issueBadge ? (
                               issueBadge === "Paused" ? (
                                 <Badge variant="ghost"
                                   className={cn("ml-1.5 px-1.5 text-(length:--text-nano)", statusBadge.paused)}
-                                  aria-label="Paused"
-                                  title="Paused"
+                                  aria-label={t("status.paused", { defaultValue: "Paused" })}
+                                  title={t("status.paused", { defaultValue: "Paused" })}
                                 >
                                   <CircleSlash2 className="h-3 w-3" />
-                                  Paused
+                                  {t("status.paused", { defaultValue: "Paused" })}
                                 </Badge>
                               ) : (
                                 <Badge variant="outline" className="ml-1.5 border-amber-500/40 bg-amber-500/10 px-1.5 text-(length:--text-nano) text-amber-700 dark:text-amber-300">
@@ -2137,11 +2138,11 @@ export function IssuesList({
                             {isSuccessfulRunHandoffRequired(issue) ? (
                               <Badge variant="outline"
                                 className="ml-1.5 border-amber-400/45 bg-amber-50/60 px-1.5 text-(length:--text-nano) text-amber-700 dark:border-amber-300/35 dark:bg-amber-400/10 dark:text-amber-300"
-                                aria-label="Needs next step"
-                                title="This task needs a next step"
+                                aria-label={t("localizationIssueLists.needsNextStep", { defaultValue: "Needs next step" })}
+                                title={t("localizationIssueLists.needsNextStepHelp", { defaultValue: "This task needs a next step" })}
                               >
                                 <CircleDot className="h-3 w-3" />
-                                Needs next step
+                                {t("localizationIssueLists.needsNextStep", { defaultValue: "Needs next step" })}
                               </Badge>
                             ) : null}
                           </>
@@ -2229,7 +2230,7 @@ export function IssuesList({
                                         <Identity name={agentName(issue.assigneeAgentId)!} size="sm" shape="square" className="min-w-0" />
                                       ) : issue.assigneeUserId ? (
                                         <Identity
-                                          name={assigneeUserLabel ?? "User"}
+                                          name={assigneeUserLabel ?? t("localizationFilters.user", { defaultValue: "User" })}
                                           avatarUrl={assigneeUserProfile?.image ?? null}
                                           size="sm"
                                           className="min-w-0"
@@ -2239,7 +2240,7 @@ export function IssuesList({
                                           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-dashed border-muted-foreground/35 bg-muted/30">
                                             <User className="h-3.5 w-3.5" />
                                           </span>
-                                          Assignee
+                                          {t("localizationFilters.assignee", { defaultValue: "Assignee" })}
                                         </span>
                                       )}
                                     </button>
@@ -2252,7 +2253,7 @@ export function IssuesList({
                                   >
                                     <input
                                       className="mb-1 w-full border-b border-border bg-transparent px-2 py-1.5 text-xs outline-none placeholder:text-muted-foreground/50"
-                                      placeholder="Search responsible..."
+                                      placeholder={t("pages.routines.searchResponsiblePlaceholder", { defaultValue: "Search responsible..." })}
                                       value={assigneeSearch}
                                       onChange={(e) => setAssigneeSearch(e.target.value)}
                                       autoFocus
@@ -2269,7 +2270,7 @@ export function IssuesList({
                                           assignIssue(issue.id, null, null);
                                         }}
                                       >
-                                        No responsible
+                                        {t("pages.pipelines.noResponsible", { defaultValue: "No responsible" })}
                                       </button>
                                       {currentUserId && (
                                         <button
@@ -2284,7 +2285,7 @@ export function IssuesList({
                                           }}
                                         >
                                           <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                          <span>Me</span>
+                                          <span>{t("filter.me", { defaultValue: "Me" })}</span>
                                         </button>
                                       )}
                                       {(agents ?? [])
@@ -2363,10 +2364,10 @@ export function IssuesList({
             <div className="py-2" data-testid="issues-load-more-sentinel">
               <p className="text-xs text-muted-foreground">
                 {isLoadingMoreIssues
-                  ? "Loading more tasks..."
+                  ? t("localizationIssueLists.loadingMore", { defaultValue: "Loading more tasks..." })
                   : remainingIssueRowCount > 0
-                    ? `Rendering ${Math.min(renderedIssueRowLimit, filtered.length)} of ${filtered.length} tasks`
-                    : "Scroll to load more tasks"}
+                    ? t("localizationIssueLists.renderingTasks", { defaultValue: "Rendering {{visible}} of {{total}} tasks", visible: Math.min(renderedIssueRowLimit, filtered.length), total: filtered.length })
+                    : t("localizationIssueLists.scrollMore", { defaultValue: "Scroll to load more tasks" })}
               </p>
             </div>
           )}

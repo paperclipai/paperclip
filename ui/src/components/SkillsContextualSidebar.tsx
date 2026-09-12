@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { Compass, Library, PencilRuler } from "lucide-react";
 import { useLocation } from "@/lib/router";
 import {
@@ -17,34 +18,35 @@ export {
 } from "@/pages/skills/skills-navigation";
 
 export function SkillsContextualSidebar() {
+  const { t } = useTranslation();
   const location = useLocation();
   const activeView = resolveSkillsNavigationView(location.pathname, location.search);
 
   return (
     <ContextualSidebarFrame
       surface="skills"
-      title="Skills"
+      title={t("localizationCommonChrome.skills")}
       icon={Library}
       fallbackTo="/dashboard"
       showHeader={false}
       className="border-r border-border bg-background"
     >
       <nav
-        aria-label="Skills"
+        aria-label={t("localizationCommonChrome.skills")}
         data-slot="contextual-sidebar-nav"
         className={contextualSidebarStyles.nav}
       >
         <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
           <SidebarNavItem
             to={SKILLS_NAVIGATION_HREFS.installed}
-            label="Installed"
+            label={t("localizationCommonChrome.installed")}
             icon={Library}
             active={activeView === "installed"}
             end
           />
           <SidebarNavItem
             to={SKILLS_NAVIGATION_HREFS.discover}
-            label="Discover"
+            label={t("localizationCommonChrome.discover")}
             icon={Compass}
             active={activeView === "discover"}
             end
@@ -55,19 +57,15 @@ export function SkillsContextualSidebar() {
           <div
             data-slot="contextual-sidebar-section-label"
             className={contextualSidebarStyles.sectionLabel}
-          >
-            Author
-          </div>
+          >{t("localizationCommonChrome.author")}</div>
           <p
             data-slot="contextual-sidebar-section-description"
             className={contextualSidebarStyles.sectionDescription}
-          >
-            Skills you create, edit, and test.
-          </p>
+          >{t("localizationCommonChrome.skillsYouCreate")}</p>
           <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
             <SidebarNavItem
               to={SKILLS_NAVIGATION_HREFS.authored}
-              label="My Skills"
+              label={t("localizationCommonChrome.mySkills")}
               icon={PencilRuler}
               active={activeView === "authored"}
             />

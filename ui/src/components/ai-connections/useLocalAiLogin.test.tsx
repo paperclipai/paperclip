@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { i18n } from "@/i18n";
 import { StrictMode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -10,7 +11,8 @@ const api = vi.hoisted(() => ({ startLocalLogin: vi.fn(), checkLocalLogin: vi.fn
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: api }));
 let root: ReturnType<typeof createRoot>;
 let host: HTMLDivElement;
-beforeEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage("en");
   vi.resetAllMocks();
   api.startLocalLogin.mockImplementation(async () => ({ sessionId: "attempt-1", command: "isolated codex login", expiresAt: "2099-01-01T00:00:00Z" }));
   api.checkLocalLogin.mockResolvedValue({ status: "sign_in_required" });
@@ -18,9 +20,9 @@ beforeEach(() => {
   api.connectLocal.mockResolvedValue({ connectionId: "connection", grantId: "grant" });
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
-afterEach(() => { flushSync(() => root.unmount()); host.remove(); });
-function Harness({ name = "Account", provider = "openai", enabled = true }: { name?: string; provider?: "anthropic" | "openai"; enabled?: boolean }) {
-  const login = useLocalAiLogin("company", { provider, method: "subscription", name, ownership: "personal", agentIds: [], allAgents: true }, enabled, { allowHostClaude: true });
+afterEach(() => { flushSync(() => root.unmount()); host.remove(); void i18n.changeLanguage("en"); });
+function Harness({ name = "Account", provider = "openai", enabled = true, options = { allowHostClaude: true } }: { name?: string; provider?: "anthropic" | "openai"; enabled?: boolean; options?: { allowHostClaude?: boolean } }) {
+  const login = useLocalAiLogin("company", { provider, method: "subscription", name, ownership: "personal", agentIds: [], allAgents: true }, enabled, options);
   return <><LocalProviderLoginInstructions adapterType={provider === "anthropic" ? "claude_local" : "codex_local"} login={login} /><button onClick={() => void login.connect()}>Connect</button></>;
 }
 it("checks once under StrictMode, preserves renaming and navigation, and cancels only on explicit retry", async () => {
@@ -78,4 +80,52 @@ it("explicit retry can replace an attempt opened in another authentication host"
   flushSync(() => Array.from(host.querySelectorAll('button')).find(b => b.textContent === 'Start sign-in again')!.click());
   await vi.waitFor(() => expect(host.textContent).toContain("isolated codex login"));
   expect(api.startLocalLogin).toHaveBeenLastCalledWith("company", expect.objectContaining({ restart: true }));
+});
+
+it.each(["anthropic", "openai"] as const)("retranslates persistent isolated %s errors en/ru/en without restarting or rechecking login", async (provider) => {
+  api.checkLocalLogin.mockResolvedValue({ status: "expired" });
+  flushSync(() => root.render(<Harness name="User-provided account" provider={provider} options={{}} />));
+  await vi.waitFor(() => expect(host.textContent).toContain("This sign-in attempt expired."));
+  const checks = api.checkLocalLogin.mock.calls.length;
+  for (const [locale, message] of [
+    ["ru", "Время на вход истекло."],
+    ["en", "This sign-in attempt expired."],
+  ]) {
+    flushSync(() => { void i18n.changeLanguage(locale); });
+    expect(host.textContent).toContain(message);
+    expect(api.startLocalLogin).toHaveBeenCalledTimes(1);
+    expect(api.checkLocalLogin).toHaveBeenCalledTimes(checks);
+    expect(api.cancelLocalLogin).not.toHaveBeenCalled();
+    expect(api.connectLocal).not.toHaveBeenCalled();
+  }
+});
+
+it("keeps unknown provider failures verbatim after a language change", async () => {
+  api.checkLocalLogin.mockRejectedValue(new Error("External provider diagnostic"));
+  flushSync(() => root.render(<Harness />));
+  await vi.waitFor(() => expect(host.textContent).toContain("External provider diagnostic"));
+  flushSync(() => { void i18n.changeLanguage("ru"); });
+  expect(host.textContent).toContain("External provider diagnostic");
+  expect(api.checkLocalLogin).toHaveBeenCalledTimes(1);
+});
+
+it.each([{}, { allowHostClaude: false }, { allowHostClaude: true }])("requires explicit host-Claude permission and preserves isolation across locale changes: %j", async (options) => {
+  const command = "CLAUDE_CONFIG_DIR='/isolated/claude' claude auth login";
+  api.startLocalLogin.mockResolvedValue({ sessionId: "claude-attempt", command, expiresAt: "2099-01-01T00:00:00Z" });
+  flushSync(() => root.render(<StrictMode><Harness provider="anthropic" name="Exact account name" options={options} /></StrictMode>));
+  await vi.waitFor(() => expect(host.querySelector("code")).not.toBeNull());
+  const isolated = !options.allowHostClaude;
+  const checks = api.checkLocalLogin.mock.calls.length;
+  for (const locale of ["en", "ru", "en"]) {
+    flushSync(() => { void i18n.changeLanguage(locale); });
+    expect(host.querySelector("code")?.textContent).toBe(isolated ? command : "claude auth login");
+    expect(api.startLocalLogin).toHaveBeenCalledTimes(isolated ? 1 : 0);
+    expect(api.checkLocalLogin).toHaveBeenCalledTimes(checks);
+    expect(api.cancelLocalLogin).not.toHaveBeenCalled();
+    expect(api.connectLocal).not.toHaveBeenCalled();
+  }
+  const input = { provider: "anthropic", method: "subscription", name: "Exact account name", ownership: "personal", agentIds: [], allAgents: true, ...(isolated ? { localSessionId: "claude-attempt" } : {}) };
+  expect(api.checkLocalLogin).toHaveBeenCalledWith("company", input);
+  flushSync(() => Array.from(host.querySelectorAll("button")).find((button) => button.textContent === "Connect")!.click());
+  await vi.waitFor(() => expect(api.connectLocal).toHaveBeenCalledExactlyOnceWith("company", input));
 });

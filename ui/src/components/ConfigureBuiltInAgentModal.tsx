@@ -1,3 +1,5 @@
+import { Trans } from "react-i18next";
+import { t, useTranslation } from "@/i18n";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
@@ -22,6 +24,23 @@ import {
   builtInAgentsApi,
   type BuiltInAgentState,
 } from "@/api/builtInAgents";
+
+// Guard stock metadata by registry ID and exact source so custom/future copy is not masked.
+function builtInPurpose(definition: BuiltInAgentState["definition"]): string {
+  if (definition.key === "briefs" && definition.shortPurpose === "Prepares concise operational briefs for the board and agent company.") {
+    return t("localizationAgentChrome.builtinPurpose_briefs");
+  }
+  if (definition.key === "learning" && definition.shortPurpose === "Maintains reusable company learning from completed work and recurring patterns.") {
+    return t("localizationAgentChrome.builtinPurpose_learning");
+  }
+  if (definition.key === "reflection-coach" && definition.shortPurpose === "Runs evidence-backed reflection loops on recent agent work, proposes small instruction and skill improvements, and requests approval before changes are applied.") {
+    return t("localizationAgentChrome.builtinPurpose_reflection_coach");
+  }
+  if (definition.key === "summarizer" && definition.shortPurpose === "Writes short, human-readable Markdown status summaries into project, workspaces-overview, project-workspace, and execution-workspace summary slots on demand.") {
+    return t("localizationAgentChrome.builtinPurpose_summarizer");
+  }
+  return definition.shortPurpose;
+}
 
 /** Adapters whose config completeness is keyed on a non-empty `model`. */
 function isModelBasedAdapter(adapterType: string): boolean {
@@ -60,6 +79,7 @@ export function ConfigureBuiltInAgentModal({
   onOpenChange,
   onConfigured,
 }: ConfigureBuiltInAgentModalProps) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { definition } = state;
 
@@ -80,7 +100,7 @@ export function ConfigureBuiltInAgentModal({
     const cents = definition.defaultBudgetMonthlyCents ?? 0;
     return cents > 0 ? String(cents / 100) : "";
   });
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | true | null>(null);
 
   // Restrict adapter choices to the registry's allow-list. Non-model adapters
   // are still selectable: provisioning creates the row, then full agent config
@@ -111,7 +131,7 @@ export function ConfigureBuiltInAgentModal({
     models.some((candidate) => candidate.id === normalizedModel);
   const modelError = modelKnown
     ? null
-    : `Model “${normalizedModel}” is not available for ${adapterType}. Choose a known model.`;
+    : t("localizationAgentChrome.modelUnavailable", { model: normalizedModel, adapter: adapterType });
   const budgetMonthlyCents = parseBudgetMonthlyCents(budgetDollars);
   const budgetValid = !budgetDollars.trim() || budgetMonthlyCents !== undefined;
   const canSubmit =
@@ -119,8 +139,8 @@ export function ConfigureBuiltInAgentModal({
     modelKnown &&
     (setupSupportedInModal ? !modelRequired || normalizedModel.length > 0 : true);
   const submitLabel = setupSupportedInModal
-    ? `Configure & enable ${definition.displayName}`
-    : `Provision ${definition.displayName}`;
+    ? t("localizationAgentChrome.configureEnable", { name: definition.displayName })
+    : t("localizationAgentChrome.provisionAgent", { name: definition.displayName });
 
   const provision = useMutation({
     mutationFn: async () => {
@@ -143,7 +163,7 @@ export function ConfigureBuiltInAgentModal({
       onOpenChange(false);
     },
     onError: (err) => {
-      setError(err instanceof ApiError ? err.message : "Failed to configure the built-in agent.");
+      setError(err instanceof ApiError ? err.message : true);
     },
   });
 
@@ -151,18 +171,16 @@ export function ConfigureBuiltInAgentModal({
     <Dialog open={open} onOpenChange={(next) => (provision.isPending ? undefined : onOpenChange(next))}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Set up the {definition.displayName}</DialogTitle>
-          <DialogDescription>{definition.shortPurpose}</DialogDescription>
+          <DialogTitle>{t("localizationAgentChrome.setUpAgentTitle", { name: definition.displayName })}</DialogTitle>
+          <DialogDescription>{builtInPurpose(definition)}</DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4">
           <InlineBanner tone="info" compact>
-            Creates <strong>{definition.displayName}</strong> in your roster, badged{" "}
-            <strong>Built-in</strong>. Organizations that require hire approval will queue this for the
-            board.
+            <Trans i18nKey="localizationAgentChrome.createsBuiltIn" values={{ name: definition.displayName }} components={{ name: <strong />, badge: <strong /> }} />
           </InlineBanner>
 
-          <Field label="Adapter type">
+          <Field label={t("pages.inviteLanding.agentForm.adapterType")}>
             <AdapterTypeDropdown
               value={adapterType}
               onChange={(next) => {
@@ -195,13 +213,10 @@ export function ConfigureBuiltInAgentModal({
           )}
 
           {!setupSupportedInModal && (
-            <InlineBanner tone="warning" compact>
-              This adapter needs command or endpoint fields before it can run. Provision the
-              built-in row now, then finish those fields from the full agent configuration.
-            </InlineBanner>
+            <InlineBanner tone="warning" compact>{t("localizationAgentChrome.ui56_This_adapter_needs_command_or_endpoint_fields_before")}</InlineBanner>
           )}
 
-          <Field label="Monthly budget (optional)" hint="Leave blank for no cap.">
+          <Field label={t("localizationAgentChrome.ui57_Monthly_budget_optional")} hint={t("localizationAgentChrome.ui58_Leave_blank_for_no_cap")}>
             <div className="flex items-center gap-2">
               <span className="text-sm text-muted-foreground">$</span>
               <Input
@@ -214,13 +229,13 @@ export function ConfigureBuiltInAgentModal({
                 onChange={(event) => setBudgetDollars(event.target.value)}
                 className="w-32"
               />
-              <span className="text-sm text-muted-foreground">/ month</span>
+              <span className="text-sm text-muted-foreground">{t("localizationAgentChrome.ui59_month")}</span>
             </div>
           </Field>
 
           {error && (
             <p className="text-sm text-destructive" role="alert">
-              {error}
+              {error === true ? t("localizationAgentChrome.ui50_Failed_to_configure_the_built_in_agent") : error}
             </p>
           )}
         </div>
@@ -230,9 +245,7 @@ export function ConfigureBuiltInAgentModal({
             variant="ghost"
             onClick={() => onOpenChange(false)}
             disabled={provision.isPending}
-          >
-            Not now
-          </Button>
+          >{t("localizationIssueDetail.ui_Not_now")}</Button>
           <Button
             onClick={() => {
               setError(null);
@@ -240,7 +253,7 @@ export function ConfigureBuiltInAgentModal({
             }}
             disabled={!canSubmit || provision.isPending}
           >
-            {provision.isPending ? "Configuring…" : submitLabel}
+            {provision.isPending ? t("localizationAgentChrome.ui60_Configuring") : submitLabel}
           </Button>
         </DialogFooter>
       </DialogContent>

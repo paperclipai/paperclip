@@ -565,15 +565,15 @@ export function OnboardingRoutePage() {
   }
 
   const title = matchedCompany
-    ? `Add another agent to ${matchedCompany.name}`
+    ? t("app.onboarding.addAgentTitle", { name: matchedCompany.name })
     : companies.length > 0
-      ? "Create another organization"
-      : "Create your first organization";
+      ? t("app.onboarding.createAnotherTitle")
+      : t("app.noCompanies.title");
   const description = matchedCompany
-    ? "Run onboarding again to add an agent and a starter task for this organization."
+    ? t("app.onboarding.addAgentDescription")
     : companies.length > 0
-      ? "Run onboarding again to create another organization and seed its first agent."
-      : "Get started by creating an organization and your first agent.";
+      ? t("app.onboarding.createAnotherDescription")
+      : t("app.onboarding.firstDescription");
 
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -587,10 +587,7 @@ export function OnboardingRoutePage() {
               say why instead of rendering an inert control. */}
           {!matchedCompany && cloudInstance && !createStackUrl ? (
             <p className="text-sm text-muted-foreground">
-              {t("app.cloudCreateUnavailable", {
-                defaultValue:
-                  "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
-              })}
+              {t("app.cloudCreateUnavailable")}
             </p>
           ) : (
             <Button
@@ -611,7 +608,7 @@ export function OnboardingRoutePage() {
                     : openOnboarding()
               }
             >
-              {matchedCompany ? "Add Agent" : "Start Onboarding"}
+              {matchedCompany ? t("app.onboarding.addAgent") : t("app.onboarding.start")}
             </Button>
           )}
         </div>
@@ -706,20 +703,17 @@ function NoCompaniesStartPage() {
     <div className="mx-auto max-w-xl py-10">
       <div className="rounded-lg border border-border bg-card p-6">
         <h1 className="text-xl font-semibold">
-          {t("app.noCompanies.title", { defaultValue: "Create your first organization" })}
+          {t("app.noCompanies.title")}
         </h1>
         <p className="mt-2 text-sm text-muted-foreground">
-          {t("app.noCompanies.description", { defaultValue: "Get started by creating an organization." })}
+          {t("app.noCompanies.description")}
         </p>
         <div className="mt-4">
           {/* Same as the onboarding route: no Cloud origin means nowhere to
               send the click, and in-app creation is a 403 floor here. */}
           {cloudInstance && !createStackUrl ? (
             <p className="text-sm text-muted-foreground">
-              {t("app.cloudCreateUnavailable", {
-                defaultValue:
-                  "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
-              })}
+              {t("app.cloudCreateUnavailable")}
             </p>
           ) : (
             <Button
@@ -729,7 +723,7 @@ function NoCompaniesStartPage() {
                   : openOnboarding()
               }
             >
-              {t("app.noCompanies.newCompany", { defaultValue: "New Organization" })}
+              {t("app.noCompanies.newCompany")}
             </Button>
           )}
         </div>

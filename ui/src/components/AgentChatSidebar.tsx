@@ -9,6 +9,7 @@ import { useSidebar } from "@/context/SidebarContext";
 import type { Agent } from "@paperclipai/shared";
 import { agentRouteRef } from "@/lib/utils";
 import { orderChatAgents } from "@/lib/recent-agent-chats";
+import { useTranslation } from "@/i18n";
 export function AgentChatSidebar({
   activeId,
   starredIds,
@@ -25,6 +26,7 @@ export function AgentChatSidebar({
   recentIds: string[];
   onToggleStar: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(true);
   const { collapsed, peeking, isMobile, setSidebarOpen } = useSidebar();
   const rail = collapsed && !peeking;
@@ -47,9 +49,9 @@ export function AgentChatSidebar({
             type="button"
             variant="ghost"
             size="icon-xs"
-            aria-label={`${pinned ? "Unstar" : "Star"} ${agent.name}`}
+            aria-label={t(pinned ? "sep12Shell.unstarAgentNamed" : "sep12Shell.starAgentNamed", { name: agent.name })}
             aria-pressed={pinned}
-            title={pinned ? "Unstar agent" : "Star agent to pin"}
+            title={t(pinned ? "sep12Shell.unstarAgent" : "sep12Shell.starAgentToPin")}
             onClick={(event) => {
               event.stopPropagation();
               onToggleStar(agent.id);
@@ -68,20 +70,20 @@ export function AgentChatSidebar({
   return (
     <>
       <SidebarSection
-        label="Agents"
+        label={t("sep12Shell.agents")}
         collapsible={{ open, onOpenChange: setOpen }}
       >
         {ordered.map((agent) => row(agent))}
         <Link
           to="/agents/all"
           className="flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-muted-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="See all agents"
+          aria-label={t("sep12Shell.seeAllAgents")}
           onClick={() => {
             if (isMobile) setSidebarOpen(false);
           }}
         >
           <Users className="h-4 w-4 shrink-0" />
-          {!rail && <span>See all agents</span>}
+          {!rail && <span>{t("sep12Shell.seeAllAgents")}</span>}
         </Link>
       </SidebarSection>
     </>

@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatEndpoint, ChatProvider } from "@/api/chatEndpoints";
 import { ChatEndpointSetup } from "./ChatEndpointSetup";
 import { ChatEndpointDetail } from "./ChatEndpointDetail";
+import { i18n } from "@/i18n";
+import { chatUiErrorMessage, type ChatUiError } from "./chat-copy";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -50,7 +52,8 @@ describe("chat setup and identity-link clipboard actions", () => {
   let execCommand: ReturnType<typeof vi.fn>;
   const secret = "synthetic-one-time-webhook-secret";
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -81,7 +84,7 @@ describe("chat setup and identity-link clipboard actions", () => {
         "/chat-identity/confirm?token=synthetic-private-confirmation-token",
     });
   });
-  afterEach(() => {
+  afterEach(async () => {
     flushSync(() => root.unmount());
     client.clear();
     container.remove();
@@ -89,6 +92,7 @@ describe("chat setup and identity-link clipboard actions", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
   });
   async function settle() {
     for (let i = 0; i < 5; i += 1)
@@ -169,6 +173,36 @@ describe("chat setup and identity-link clipboard actions", () => {
     expect(writeText).not.toHaveBeenCalled();
   });
 
+  it("switches setup EN → RU → EN without changing credentials, manifests, links, or connection requests", async () => {
+    await render("slack");
+    const credential = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(credential, "synthetic-token-kept-in-form");
+      credential.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle();
+    const manifest = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    const manifestValue = manifest.value;
+    const reads = mocks.get.mock.calls.length;
+    const localError: ChatUiError = { key: "chatUi.privateKeyEmpty" };
+    const diagnostic = "Provider response: DO_NOT_TRANSLATE 403";
+    for (const language of ["en", "ru", "en"]) {
+      await i18n.changeLanguage(language);
+      await settle();
+      expect(container.querySelector('input[type="password"]')).toBe(credential);
+      expect(credential.value).toBe("synthetic-token-kept-in-form");
+      expect(container.querySelector("textarea")).toBe(manifest);
+      expect(manifest.value).toBe(manifestValue);
+      expect(container.textContent).toContain(language === "ru" ? "Подключить приложение Slack" : "Connect a Slack app");
+      expect(container.querySelector("h1")?.textContent).toContain("Slack");
+      expect(mocks.get).toHaveBeenCalledTimes(reads);
+      expect(mocks.generateSetupSecret).not.toHaveBeenCalled();
+      expect(chatUiErrorMessage(localError)).toContain(language === "ru" ? "Файл пуст" : "That file is empty");
+      expect(chatUiErrorMessage(diagnostic)).toBe(diagnostic);
+      expect(mocks.setBreadcrumbs.mock.calls.at(-1)?.[0]?.[1]?.label).toBe(i18n.t("chatUi.chatEndpointSetup.connectChat"));
+    }
+  });
+
   it("reports a failed secret copy without exposing the secret or an unhandled rejection", async () => {
     await render("github");
     await click("Generate webhook secret");
@@ -180,6 +214,23 @@ describe("chat setup and identity-link clipboard actions", () => {
       tone: "error",
     });
     expect(JSON.stringify(mocks.pushToast.mock.calls)).not.toContain(secret);
+  });
+
+  it("preserves Telegram command text inside localized provider instructions", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    await render("telegram");
+    for (const language of ["en", "ru", "en"]) {
+      await i18n.changeLanguage(language);
+      await settle();
+      const commands = [...container.querySelectorAll("code")].map((node) => node.textContent);
+      expect(commands).toContain("/newbot");
+      expect(commands).toContain("bot");
+      expect(commands).toContain("/task@bot_username <request>");
+      const button = [...container.querySelectorAll("button")].find((node) => node.textContent?.includes("BotFather"));
+      expect(button).toBeDefined();
+      flushSync(() => button!.click());
+      expect(open).toHaveBeenLastCalledWith("https://t.me/BotFather", "_blank", "noopener,noreferrer");
+    }
   });
 
   it("copies the private identity link with fallback and preserves success feedback", async () => {

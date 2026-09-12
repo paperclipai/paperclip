@@ -1,4 +1,5 @@
 import { Brain, CirclePause, Gauge, Layers3 } from "lucide-react";
+import type { TFunction } from "i18next";
 import type { TaskChatActivityPhaseItem } from "./task-chat-model";
 import {
   toolActivityPresentation,
@@ -25,8 +26,38 @@ const labels: Record<ToolFamily, string> = {
   other: "Used tools",
 };
 
+const displayKeys: Readonly<Record<string, string>> = {
+  "Ran commands": "commands",
+  "Searched files": "searchedFiles",
+  "Read files": "readFiles",
+  "Edited files": "editedFiles",
+  "Searched the web": "web",
+  "Worked on a plan": "plan",
+  "Requested input": "input",
+  "Worked with agents": "agents",
+  "Reviewed safety": "safety",
+  "Worked with images": "images",
+  "Waited": "waited",
+  "Used connected tools": "connectedTools",
+  "Used tools": "tools",
+  "Worked with artifacts": "artifacts",
+  "Managed context": "context",
+  "Checked memory": "memory",
+  "Checked model settings": "modelSettings",
+  "Worked in review mode": "review",
+  "Ran hooks": "hooks",
+  "Received a provider update": "providerUpdate",
+  "Worked on files": "workedOnFiles",
+  "Referenced files": "referencedFiles",
+  "Added resources": "resources",
+  "Checked files": "checkedFiles",
+  "Thought through the task": "thought",
+  "Activity stopped": "stopped",
+  "Recorded usage": "usage",
+};
+
 /** Describe observed activities, never infer success from a finished group. */
-export function completedActivitySummary(items: Activity[]) {
+export function completedActivitySummary(items: Activity[], t?: TFunction) {
   const categories = new Map<
     string,
     { label: string; icon: ToolIcon; order: number }
@@ -115,7 +146,14 @@ export function completedActivitySummary(items: Activity[]) {
       add("Activity stopped", CirclePause);
     else add("Recorded usage", Gauge);
   }
-  const values = [...categories.values()].sort((a, b) => a.order - b.order);
+  // Dedupe and classification above use canonical labels and raw protocol fields.
+  // Translation changes only this final display projection, never category identity.
+  const values = [...categories.values()]
+    .sort((a, b) => a.order - b.order)
+    .map((value) => ({
+      ...value,
+      label: t ? t(`sep12Chat.completed.${displayKeys[value.label]}`, { defaultValue: value.label }) : value.label,
+    }));
   const join = (parts: string[]) =>
     parts
       .map((p, i) => (i ? p.charAt(0).toLowerCase() + p.slice(1) : p))
@@ -124,7 +162,9 @@ export function completedActivitySummary(items: Activity[]) {
   return {
     label:
       values.length > 3
-        ? `${join(values.slice(0, 2).map((v) => v.label))}, and more`
+        ? t
+          ? t("sep12Chat.completed.andMore", { summary: join(values.slice(0, 2).map((v) => v.label)) })
+          : `${join(values.slice(0, 2).map((v) => v.label))}, and more`
         : fullLabel,
     fullLabel,
     icon: values.length === 1 ? values[0].icon : Layers3,

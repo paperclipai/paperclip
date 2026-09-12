@@ -4,6 +4,9 @@ import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
 import { TaskChatScrollReady } from "@/components/task-chat/scroll-navigation";
 import {
+   useTranslation } from "@/i18n";
+import { taskChatDisplayLabel, taskThreadBuiltinLabel } from "@/components/task-chat/task-chat-display";
+import {
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -465,7 +468,52 @@ function durableInputLabel(
  * to the tool history. Turns without a reply bubble keep the standalone
  * folded row. flag-OFF remains byte-for-byte IssueChatThread.
  */
+
+
+function pendingInputDisplayLabel(input: PendingComposerInput): string {
+  const providedTitle = input.kind === "runtime" ? input.item.questionSet?.title : input.interaction.title;
+  return providedTitle ?? taskThreadBuiltinLabel(input.label);
+}
+
+function QueuedInterruptButton({ isInterrupting, runId, onInterrupt }: {
+  isInterrupting: boolean;
+  runId: string;
+  onInterrupt: NonNullable<TaskChatThreadProps["onInterruptQueued"]>;
+}) {
+  const { t } = useTranslation();
+  return (
+    <Button type="button" variant="link" className="h-auto p-0 text-(length:--text-micro)"
+      disabled={isInterrupting} onClick={() => void onInterrupt(runId)}
+    >
+      {t(isInterrupting ? "localizationTaskThread.interrupting" : "localizationTaskThread.interrupt")}
+    </Button>
+  );
+}
+
+/**
+ * Chat-style task thread — the default task detail experience.
+ *
+ * Renders the Claude-Code-style thread for the live task. It shares
+ * IssueChatThread's exact prop type — so the IssueDetail seam ternary
+ * (`classic ? IssueChatThread : TaskChatThread`, flag:
+ * `enableClassicTaskInterface`) type-checks with no casts.
+ *
+ * Two data sources feed the render layer, both reused from the existing thread:
+ *   - the comment stream (incl. optimistic echoes) → author-typed bubbles, and
+ *   - the live run transcript (useLiveRunTranscripts, the same poll+websocket
+ *     source the current thread uses) → clean TaskChatLiveTail rows (tool cards,
+ *     diffs, streamed reply markdown) while in flight, via the same
+ *     transcriptToTaskChatItems converter the settled turns use (PAP-463).
+ *
+ * Once a run terminates, its settled turn anchors after the run's
+ * last comment (comment.runId linkage) and — when it directly follows that
+ * reply bubble — attaches to it: the "✓ Worked · …" summary renders appended
+ * to the bubble's always-visible timestamp line (round 9), still expandable
+ * to the tool history. Turns without a reply bubble keep the standalone
+ * folded row. flag-OFF remains byte-for-byte IssueChatThread.
+ */
 export function TaskChatThread(props: TaskChatThreadProps) {
+  const {  t } = useTranslation();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const {
     initialHistoryPending = false,
@@ -494,7 +542,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     showComposer = true,
     composerPause,
     composerDisabledReason,
-    emptyMessage = "No messages yet.",
+    emptyMessage = t("localizationTaskThread.empty"),
     companyId,
     linkedRuns,
     liveRuns,
@@ -2162,7 +2210,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     () => (tailRunId ? toolCountSummaryFromEntries(tailEntries) : null),
     // tailEntries is a fresh array each render; tailContentKey tracks its content.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tailRunId, tailContentKey],
+    [tailRunId, tailContentKey, t],
   );
 
   // The tail's clean rows (PAP-463 C1): the streaming transcript parsed through
@@ -2440,15 +2488,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
       const isInterrupting = interruptingQueuedRunId === runId;
       return (
-        <Button
-          type="button"
-          variant="link"
-          className="h-auto p-0 text-(length:--text-micro)"
-          disabled={isInterrupting}
-          onClick={() => void onInterruptQueued(runId)}
-        >
-          {isInterrupting ? "Interrupting…" : "Interrupt"}
-        </Button>
+        <QueuedInterruptButton isInterrupting={isInterrupting} runId={runId} onInterrupt={onInterruptQueued} />
       );
     },
     [composerPause, interruptingQueuedRunId, onInterruptQueued],
@@ -2555,7 +2595,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     takeoverMode === "open" && selectedPendingInput && takeoverContent
       ? {
           id: selectedPendingInput.key,
-          label: selectedPendingInput.label,
+          label: pendingInputDisplayLabel(selectedPendingInput),
           hideLabel:
             selectedPendingInput.kind === "durable" &&
             selectedPendingInput.interaction.kind === "request_confirmation" &&
@@ -2698,10 +2738,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   role="status"
                   className="absolute inset-x-0 top-0 z-20 mx-auto flex w-full max-w-(--tc-shell-max-w) items-center gap-2 border border-border bg-background px-4 py-2 text-sm text-muted-foreground"
                 >
-                  Some task history could not be loaded.
-                  <Button variant="ghost" size="sm" onClick={retryHistory}>
-                    Retry
-                  </Button>
+                  {t("localizationTaskThread.historyLoadFailed")}
+                  <Button variant="ghost" size="sm" onClick={retryHistory}>{t("localizationRoutines.retry")}</Button>
                 </div>
               ) : null}
               {!historyRevealed ? (
@@ -2709,7 +2747,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                   className="absolute inset-0 z-10 overflow-hidden bg-background"
                   data-testid="task-chat-history-loading"
                   role="status"
-                  aria-label="Loading conversation"
+                  aria-label={t("localizationTaskThread.loadingConversation")}
                 >
                   <div className="mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-4 px-4 py-3">
                     {threadHeader}
@@ -2860,13 +2898,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                     items={tailItems}
                                     emptyMessage={
                                       tailStatus === "queued"
-                                        ? "Waiting to start..."
+                                        ? t("localizationTaskThread.waitingStart")
                                         : (liveRun && liveRun.id === tailRunId
-                                            ? liveRun.currentStatusMessage
+                                            ? (liveRun.currentStatusMessage ? taskChatDisplayLabel(liveRun.currentStatusMessage) : null)
                                             : null) ||
                                           (tailStatus === "failed"
-                                            ? "This run stopped before a response was available. Review the task’s connection or recovery action below."
-                                            : "Waiting for transcript...")
+                                            ? t("sep13Queue.stoppedBeforeResponse")
+                                            : t("localizationTaskThread.waitingTranscript"))
                                     }
                                   />
                                 </>
@@ -3002,7 +3040,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         pendingComposerInputs.length > 0
                           ? {
                               count: pendingComposerInputs.length,
-                              label: `${pendingComposerInputs.length} pending input${pendingComposerInputs.length === 1 ? "" : "s"}`,
+                              label: t("localizationTaskThread.pendingInputs", { count: pendingComposerInputs.length }),
                               onOpen: openPendingTakeover,
                             }
                           : null

@@ -6,6 +6,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
+import { i18n } from "@/i18n";
+import ruTranslations from "@/i18n/locales/ru.json";
 import { queryKeys } from "@/lib/queryKeys";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
 import { AppsConnect } from "./AppsConnect";
@@ -278,6 +280,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     document.body.innerHTML = "";
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
   });
 
   async function render(queryClient?: QueryClient, byoOnly = false, content?: ReactNode) {
@@ -295,6 +298,65 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     return root;
   }
+
+  it("retranslates a rejected MCP URL without resetting its draft or attempting a connection", async () => {
+    await render();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="MCP server URL"]')!;
+    await act(async () => setInputValue(input, "raw-invalid-link"));
+    await act(async () => buttonByText("Continue")!.click());
+    for (const locale of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(container.textContent).toContain(i18n.t("localizationConnections.pasteAFullHttpOrHttpsLink86"));
+      expect(input.value).toBe("raw-invalid-link");
+      expect(container.contains(input)).toBe(true);
+      expect(connectAppMock).not.toHaveBeenCalled();
+      expect(startOAuthMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    ["generic", "Pick app   ·   Access   ·   Add your key", "Выбор приложения   ·   Доступ   ·   Добавление ключа", "Step 2 of 3", "Шаг 2 из 3"],
+    ["zapier", "Access   ·   Add MCP URL", "Доступ   ·   Добавление URL MCP", "Step 1 of 2", "Шаг 1 из 2"],
+  ] as const)("refreshes %s step labels without resetting access choices or starting connections", async (flow, englishLabels, russianLabels, englishStep, russianStep) => {
+    await i18n.changeLanguage("en");
+    mockSearch.value = flow === "zapier" ? "source=zapier" : "";
+    await render();
+    if (flow === "generic") {
+      const link = container.querySelector<HTMLInputElement>('input[placeholder^="https://"]')!;
+      expect(link).toBeTruthy();
+      await act(async () => setInputValue(link, "https://mcp.example.test/original-path"));
+      await act(async () => buttonByText("Continue")!.click());
+      await flushReact();
+    }
+    const onlyAgents = radioContaining("Just agents I pick")!;
+    expect(onlyAgents).toBeTruthy();
+    await act(async () => onlyAgents.click());
+    await flushReact();
+    const next = buttonByText("Save and continue") ?? buttonByText("Continue");
+    expect(next).toBeTruthy();
+    expect(next!.disabled).toBe(true);
+    const labels = Array.from(container.querySelectorAll("div")).find((node) => node.textContent === englishLabels)!;
+    expect(labels).toBeTruthy();
+    const reads = [listGalleryMock, listApplicationsMock, listConnectionsMock, listAgentsMock, getCloudConnectorEnrollmentMock];
+    const readCounts = reads.map((mock) => mock.mock.calls.length);
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(labels.textContent).toBe(language === "ru" ? russianLabels : englishLabels);
+      expect(container.textContent).toContain(language === "ru" ? russianStep : englishStep);
+      expect(container.contains(labels)).toBe(true);
+      expect(container.contains(onlyAgents)).toBe(true);
+      expect(onlyAgents.getAttribute("aria-checked")).toBe("true");
+      expect(container.contains(next!)).toBe(true);
+      expect(next!.disabled).toBe(true);
+      expect(reads.map((mock) => mock.mock.calls.length)).toEqual(readCounts);
+      for (const mutation of [connectAppMock, startOAuthMock, finishAppMock, putConnectionInstallsMock, startCloudConnectorEnrollmentMock]) {
+        expect(mutation).not.toHaveBeenCalled();
+      }
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    }
+  });
 
   it("shows only MCP URL setup on the BYO page", async () => {
     await render(undefined, true);
@@ -961,6 +1023,81 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     },
   );
 
+  it("localizes the dedicated GitHub explanation while preserving the selected identity and agent", async () => {
+    await i18n.changeLanguage("en");
+    mockParams.appKey = "github";
+    const gallery = { apps: [GITHUB_MANAGED], capabilities: {
+      canCreateOrganizationGrant: true, organizationGrantReason: null,
+      canSetCompanyInstall: true, companyInstallReason: null,
+    } };
+    const original = JSON.stringify(gallery);
+    listGalleryMock.mockResolvedValue(gallery);
+    await render();
+    const english = "This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.";
+    const russian = ruTranslations.localizationApps.dedicatedGitHubAccountExplanation;
+    const personal = radioContaining("My GitHub account")!;
+    const dedicated = radioContaining("A dedicated account for an agent")!;
+    const mutations = [connectAppMock, startOAuthMock, finishAppMock, putConnectionInstallsMock, startCloudConnectorEnrollmentMock];
+    const mutationCounts = mutations.map((mock) => mock.mock.calls.length);
+    expect(personal).toBeTruthy();
+    expect(dedicated).toBeTruthy();
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(personal)).toBe(true);
+      expect(personal.getAttribute("aria-checked")).toBe("true");
+      expect(container.textContent).not.toContain(english);
+      expect(container.textContent).not.toContain(russian);
+      expect(mutations.map((mock) => mock.mock.calls.length)).toEqual(mutationCounts);
+    }
+
+    await act(async () => { dedicated.click(); });
+    await flushReact();
+    const explanation = [...container.querySelectorAll("p")].find((node) => node.textContent === english)!;
+    expect(explanation).toBeTruthy();
+    await act(async () => { buttonByText("Select agents")!.click(); });
+    await flushReact();
+    const ada = document.body.querySelector<HTMLButtonElement>('[aria-label="Allow Ada"]')!;
+    expect(ada).toBeTruthy();
+    await act(async () => { ada.click(); });
+    await flushReact();
+    const filter = document.body.querySelector<HTMLInputElement>('input[placeholder="Filter agents"]');
+    expect(filter).toBeTruthy();
+    await act(async () => { setInputValue(filter!, "Ada"); });
+    await flushReact();
+    const next = buttonByText("Continue")!;
+    expect(next).toBeTruthy();
+    expect(next.disabled).toBe(false);
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(explanation)).toBe(true);
+      expect(explanation.textContent).toBe(language === "ru" ? russian : english);
+      expect(container.contains(dedicated)).toBe(true);
+      expect(dedicated.getAttribute("aria-checked")).toBe("true");
+      expect(personal.getAttribute("aria-checked")).toBe("false");
+      expect(document.body.contains(ada)).toBe(true);
+      expect(ada.getAttribute("aria-checked")).toBe("true");
+      expect(document.body.contains(filter)).toBe(true);
+      expect(filter!.value).toBe("Ada");
+      expect(container.contains(next)).toBe(true);
+      expect(next.disabled).toBe(false);
+      expect(mutations.map((mock) => mock.mock.calls.length)).toEqual(mutationCounts);
+      expect(JSON.stringify(gallery)).toBe(original);
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    }
+
+    await act(async () => { buttonByText("Done")!.click(); });
+    await act(async () => { next.click(); });
+    await flushReact();
+    await act(async () => { buttonByText("Continue to GitHub")!.click(); });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledExactlyOnceWith("company-1", expect.objectContaining({
+      galleryKey: "github", grantKind: "agent", subjectAgentId: "agent-1",
+    }));
+  });
+
   it("labels GitHub's local setup transition without promising a provider handoff", async () => {
     mockSearch.value = "source=github";
     listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
@@ -1062,6 +1199,105 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await flushReact();
     expect(container.textContent).toContain("Continue to GitHub");
     expect(container.textContent).not.toContain("GitHub sign-in is unavailable");
+  });
+
+  it("localizes unavailable GitHub sign-in and its pending retry without losing the dedicated identity", async () => {
+    await i18n.changeLanguage("en");
+    mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
+    const storageKey = "paperclip.connector-enrollment-access:github";
+    const accessIntent = {
+      companyId: "company-1", grantKind: "agent", installChoice: "specific", agentIds: ["agent-1"],
+    };
+    window.sessionStorage.setItem(storageKey, JSON.stringify(accessIntent));
+    const unavailableGallery = {
+      apps: [{
+        ...GITHUB,
+        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
+        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+      }],
+    };
+    const canonicalGallery = JSON.stringify(unavailableGallery);
+    listGalleryMock.mockResolvedValue(unavailableGallery);
+    await render();
+
+    const heading = [...container.querySelectorAll("h2")].find((node) => node.textContent === "GitHub sign-in is unavailable")!;
+    expect(heading).toBeTruthy();
+    const description = heading.nextElementSibling!;
+    const retry = buttonByText("Try again")!;
+    const back = buttonByText("Back")!;
+    expect(retry).toBeTruthy();
+    expect(back).toBeTruthy();
+    const reads = [listGalleryMock, listApplicationsMock, listConnectionsMock, listAgentsMock, getCloudConnectorEnrollmentMock];
+    const readCounts = reads.map((mock) => mock.mock.calls.length);
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(heading)).toBe(true);
+      expect(heading.textContent).toBe(language === "ru" ? "Вход в GitHub недоступен" : "GitHub sign-in is unavailable");
+      expect(description.textContent).toBe(language === "ru"
+        ? "Этот экземпляр подключён к Paperclip, но вход в GitHub сейчас недоступен. Повторите попытку чуть позже или обратитесь к администратору экземпляра."
+        : "This instance is connected to Paperclip, but GitHub sign-in is not currently available. Try again shortly or contact your instance administrator.");
+      expect(container.contains(retry)).toBe(true);
+      expect(retry.textContent).toBe(language === "ru" ? "Повторить попытку" : "Try again");
+      expect(retry.disabled).toBe(false);
+      expect(container.contains(back)).toBe(true);
+      expect(back.textContent).toBe(language === "ru" ? "Назад" : "Back");
+      expect(container.querySelector('input[type="password"]')).toBeNull();
+      expect(container.textContent).not.toContain("Your GitHub key");
+      expect(window.sessionStorage.getItem(storageKey)).toBeNull();
+      expect(reads.map((mock) => mock.mock.calls.length)).toEqual(readCounts);
+      expect(JSON.stringify(unavailableGallery)).toBe(canonicalGallery);
+      for (const mutation of [connectAppMock, startOAuthMock, finishAppMock, putConnectionInstallsMock, startCloudConnectorEnrollmentMock]) {
+        expect(mutation).not.toHaveBeenCalled();
+      }
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    }
+
+    let resolveGallery!: (value: { apps: typeof GITHUB_MANAGED[] }) => void;
+    const refreshedGallery = new Promise<{ apps: typeof GITHUB_MANAGED[] }>((resolve) => { resolveGallery = resolve; });
+    listGalleryMock.mockReturnValueOnce(refreshedGallery);
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    await act(async () => { retry.click(); });
+    await flushReact();
+    expect(listGalleryMock).toHaveBeenCalledTimes(readCounts[0] + 1);
+    expect(listGalleryMock).toHaveBeenLastCalledWith("company-1");
+    const retryReadCounts = reads.map((mock) => mock.mock.calls.length);
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(heading)).toBe(true);
+      expect(heading.textContent).toBe(language === "ru" ? "Вход в GitHub недоступен" : "GitHub sign-in is unavailable");
+      expect(container.contains(retry)).toBe(true);
+      expect(retry.textContent).toBe(language === "ru" ? "Повторить попытку" : "Try again");
+      expect(retry.disabled).toBe(true);
+      expect(reads.map((mock) => mock.mock.calls.length)).toEqual(retryReadCounts);
+      expect(connectAppMock).not.toHaveBeenCalled();
+      expect(startOAuthMock).not.toHaveBeenCalled();
+      expect(window.sessionStorage.getItem(storageKey)).toBeNull();
+    }
+    await act(async () => { resolveGallery({ apps: [GITHUB_MANAGED] }); });
+    await flushReact();
+    expect(container.contains(heading)).toBe(false);
+    expect(buttonByText("Continue to GitHub")?.disabled).toBe(false);
+    expect(container.querySelector('input[type="password"]')).toBeNull();
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    const continueToGitHub = buttonByText("Перейти в GitHub")!;
+    expect(continueToGitHub).toBeTruthy();
+    expect(connectAppMock).not.toHaveBeenCalled();
+    await act(async () => { continueToGitHub.click(); });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "github", grantKind: "agent", subjectAgentId: "agent-1",
+    }));
+    expect(accessIntent).toEqual({
+      companyId: "company-1", grantKind: "agent", installChoice: "specific", agentIds: ["agent-1"],
+    });
+    expect(JSON.stringify(unavailableGallery)).toBe(canonicalGallery);
+    expect(startCloudConnectorEnrollmentMock).not.toHaveBeenCalled();
   });
 
   it("keeps GitHub sign-in intent when enrollment recovery reveals an unavailable profile", async () => {
@@ -1262,6 +1498,24 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       const fieldsRegion = document.getElementById(managedAuth!.getAttribute("aria-controls")!);
       expect(fieldsRegion?.getAttribute("role")).toBe("region");
       expect(fieldsRegion?.textContent).toContain("Client ID");
+      const clientId = container.querySelector<HTMLInputElement>("#curated-oauth-client-id")!;
+      const clientSecret = container.querySelector<HTMLInputElement>("#curated-oauth-client-secret")!;
+      await act(async () => {
+        setInputValue(clientId, "raw-google-client-id");
+        setInputValue(clientSecret, "raw-google-client-secret");
+      });
+      for (const locale of ["ru", "en"] as const) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        expect(managedAuth?.textContent?.trim()).toBe(locale === "ru" ? "Использовать Paperclip" : "Use Paperclip instead");
+        expect(fieldsRegion?.getAttribute("aria-label")).toBe(locale === "ru" ? "Ваше приложение OAuth" : "Your OAuth app");
+        expect(managedAuth?.getAttribute("aria-expanded")).toBe("true");
+        expect(document.getElementById(managedAuth!.getAttribute("aria-controls")!)).toBe(fieldsRegion);
+        expect(container.querySelector<HTMLInputElement>("#curated-oauth-client-id")).toBe(clientId);
+        expect(clientId.value).toBe("raw-google-client-id");
+        expect(clientSecret.value).toBe("raw-google-client-secret");
+        expect(connectAppMock).not.toHaveBeenCalled();
+        expect(startOAuthMock).not.toHaveBeenCalled();
+      }
       await act(async () => {
         managedAuth!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });

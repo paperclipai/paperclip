@@ -1,3 +1,4 @@
+import { i18n, t } from "@/i18n";
 import type { HeartbeatRun } from "@paperclipai/shared";
 
 export type SourceResolvedFoldCleanupOutcome =
@@ -131,4 +132,24 @@ export function formatSilenceAgeMs(ms: number | null | undefined): string | null
 export function shortenEvidenceId(id: string): string {
   if (id.length <= 12) return id;
   return id.slice(0, 8);
+}
+
+export function formatCleanupOutcomeDisplay(outcome: string): string {
+  if (i18n.resolvedLanguage === "en") return formatCleanupOutcome(outcome);
+  return Object.hasOwn(CLEANUP_OUTCOME_LABELS, outcome)
+    ? t(`localizationIssuePanels.cleanup_${outcome}`)
+    : outcome;
+}
+
+export function formatSilenceAgeMsDisplay(ms: number | null | undefined): string | null {
+  if (i18n.resolvedLanguage === "en") return formatSilenceAgeMs(ms);
+  if (!ms || ms <= 0) return null;
+  const totalMinutes = Math.floor(ms / 60_000);
+  if (totalMinutes < 1) return t("localizationIssuePanels.silenceUnderMinute");
+  if (totalMinutes < 60) return t("localizationIssuePanels.silenceMinutes", { count: totalMinutes });
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes === 0
+    ? t("localizationIssuePanels.silenceHours", { count: hours })
+    : t("localizationIssuePanels.silenceHoursMinutes", { hours, minutes });
 }

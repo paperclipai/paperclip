@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { toolsApi } from "@/api/tools";
@@ -14,6 +15,7 @@ export function EmailConnectionAccess({
   connectionId: string;
   agents: Agent[];
 }) {
+  const { t } = useTranslation();
   const cache = useQueryClient();
   const grants = useQuery({
     queryKey: queryKeys.tools.connectionGrants(connectionId),
@@ -34,23 +36,23 @@ export function EmailConnectionAccess({
     },
   });
   if (grants.isLoading || installs.isLoading)
-    return <p className="text-sm text-muted-foreground">Loading access…</p>;
+    return <p className="text-sm text-muted-foreground">{t("sep12Connections.loadingAccess")}</p>;
   if (grants.error || installs.error)
     return (
       <p role="alert" className="text-sm text-destructive">
-        Connection access could not be loaded.
+        {t("sep12Connections.accessLoadFailed")}
       </p>
     );
   const active = grants.data?.grants.filter((g) => g.status === "active") ?? [];
   const everyone = active.some((g) => g.kind === "organization");
   const personal = active.find((g) => g.kind === "user");
   const humanLabel = everyone
-    ? "Any human in the company"
+    ? t("sep12Connections.anyHuman")
     : personal
       ? personal.subjectUserId === grants.data?.currentUserId
-        ? "Just me"
-        : "Only the credential owner"
-      : "Access revoked";
+        ? t("sep12Connections.justMe")
+        : t("sep12Connections.credentialOwnerOnly")
+      : t("sep12Connections.accessRevoked");
   const allAgents =
     installs.data?.installs.some((i) => i.targetType === "company") ?? false;
   const selected = new Set(
@@ -63,22 +65,22 @@ export function EmailConnectionAccess({
     <div className="space-y-8">
       <section className="space-y-3">
         <h2 className="text-sm font-semibold">
-          Which humans can use this credential?
+          {t("sep12Connections.whichHumans")}
         </h2>
         <p className="text-sm">{humanLabel}</p>
       </section>
       <section className="space-y-4">
         <h2 className="text-sm font-semibold">
-          Which agents can use this connection?
+          {t("sep12Connections.whichAgents")}
         </h2>
         <RadioCardGroup
-          ariaLabel="Which agents can use this connection"
+          ariaLabel={t("sep12Connections.whichAgentsLabel")}
           value={allAgents ? "all" : "selected"}
           disabled={disabled}
           className="sm:grid-cols-2"
           options={[
-            { value: "selected", title: "Just agents I pick" },
-            { value: "all", title: "Any agent" },
+            { value: "selected", title: t("sep12Connections.selectedAgents") },
+            { value: "all", title: t("sep12Connections.anyAgent") },
           ]}
           onValueChange={(value) =>
             save.mutate(
@@ -107,7 +109,7 @@ export function EmailConnectionAccess({
           />
         )}
         <p className="text-xs text-muted-foreground">
-          Removing an assigned agent stops receiving and sending from its inbox.
+          {t("sep12Connections.removingAgentNotice")}
         </p>
         {save.error && (
           <p role="alert" className="text-sm text-destructive">

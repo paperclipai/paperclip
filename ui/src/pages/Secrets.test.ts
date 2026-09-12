@@ -10,6 +10,7 @@ import {
   getProviderConfigBlockReason,
 } from "./Secrets";
 import type { SecretProviderHealthResponse } from "../api/secrets";
+import { i18n } from "@/i18n";
 
 const awsProvider: SecretProviderDescriptor = {
   id: "aws_secrets_manager",
@@ -52,6 +53,36 @@ function providerConfig(
 }
 
 describe("Secrets page provider helpers", () => {
+  it.each([
+    ["local_encrypted", "Local encrypted (default)", "Локальное хранилище с шифрованием (по умолчанию)"],
+    ["local_encrypted", "Local encrypted", "Локальное хранилище с шифрованием"],
+    ["local_encrypted", "Operator's local store", "Operator's local store"],
+    ["local_encrypted", "Local encrypted (custom)", "Local encrypted (custom)"],
+    ["aws_secrets_manager", "AWS Secrets Manager", "AWS Secrets Manager"],
+    ["aws_secrets_manager", "Local encrypted (default)", "Local encrypted (default)"],
+    ["future_provider", "Local encrypted (default)", "Local encrypted (default)"],
+  ])("localizes only known bundled display labels: %s / %s", async (id, label, russianLabel) => {
+    const descriptor: SecretProviderDescriptor = {
+      ...localProvider,
+      id: id as SecretProviderDescriptor["id"],
+      label,
+    };
+    const original = { ...descriptor };
+    try {
+      for (const locale of ["en", "ru", "en"]) {
+        await i18n.changeLanguage(locale);
+        expect(getCreateProviderBlockReason(descriptor, "external", null)).toBe(
+          i18n.t("pages.secrets.provider.noExternalSupport", {
+            provider: locale === "ru" ? russianLabel : label,
+          }),
+        );
+        expect(descriptor).toEqual(original);
+      }
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
+
   it("previews the derived AWS managed path from provider health details", () => {
     const health: SecretProviderHealthResponse = {
       providers: [

@@ -1,3 +1,5 @@
+import { Trans } from "react-i18next";
+import { useTranslation } from "@/i18n";
 import { useEffect, useState, type ReactNode } from "react";
 import type {
   FeedbackDataSharingPreference,
@@ -48,14 +50,15 @@ export function agentBubbleDateLabel(date: Date | string | undefined): string {
  * re-declaring the same button markup on each surface.
  */
 export function BubbleCopyButton({ copyText }: { copyText: string }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
   return (
     <button
       type="button"
       className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-      title="Copy message"
-      aria-label="Copy message"
+      title={t("localizationTaskRuntime.ui_Copy_message_1b3i557")}
+      aria-label={t("localizationTaskRuntime.ui_Copy_message_1b3i557")}
       onClick={() => {
         void copyTextToClipboard(copyText)
           .then(() => {
@@ -109,6 +112,7 @@ export function AgentBubbleActionRow({
   menuItems?: ReactNode;
   className?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <div className={cn("mt-2 flex items-center gap-1", className)}>
       <BubbleCopyButton copyText={copyText} />
@@ -141,8 +145,8 @@ export function AgentBubbleActionRow({
             variant="ghost"
             size="icon-xs"
             className="text-muted-foreground hover:text-foreground"
-            title="More actions"
-            aria-label="More actions"
+            title={t("localizationIssueDetail.ui_More_actions")}
+            aria-label={t("localizationIssueDetail.ui_More_actions")}
           >
             <MoreHorizontal className="h-3.5 w-3.5" />
           </Button>
@@ -153,9 +157,7 @@ export function AgentBubbleActionRow({
               void copyTextToClipboard(copyText).catch(() => {});
             }}
           >
-            <Copy className="mr-2 h-3.5 w-3.5" />
-            Copy message
-          </DropdownMenuItem>
+            <Copy className="mr-2 h-3.5 w-3.5" />{t("localizationTaskRuntime.ui_Copy_message_1b3i557")}</DropdownMenuItem>
           {menuItems}
         </DropdownMenuContent>
       </DropdownMenu>
@@ -179,6 +181,7 @@ export function IssueChatFeedbackButtons({
   termsUrl: string | null;
   onVote: (vote: FeedbackVoteValue, options?: { allowSharing?: boolean; reason?: string }) => Promise<void>;
 }) {
+  const { t } = useTranslation();
   const [isSaving, setIsSaving] = useState(false);
   const [optimisticVote, setOptimisticVote] = useState<FeedbackVoteValue | null>(null);
   const [reasonOpen, setReasonOpen] = useState(false);
@@ -258,8 +261,8 @@ export function IssueChatFeedbackButtons({
             ? "text-green-600 dark:text-green-400"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
         )}
-        title="Helpful"
-        aria-label="Helpful"
+        title={t("localizationTaskRuntime.ui_Helpful_x076el")}
+        aria-label={t("localizationTaskRuntime.ui_Helpful_x076el")}
         onClick={handleThumbsUp}
       >
         <ThumbsUp className="h-3.5 w-3.5" />
@@ -275,19 +278,19 @@ export function IssueChatFeedbackButtons({
                 ? "text-amber-600 dark:text-amber-400"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
-            title="Needs work"
-            aria-label="Needs work"
+            title={t("localizationTaskRuntime.ui_Needs_work_v7b92r")}
+            aria-label={t("localizationTaskRuntime.ui_Needs_work_v7b92r")}
             onClick={handleThumbsDown}
           >
             <ThumbsDown className="h-3.5 w-3.5" />
           </button>
         </PopoverTrigger>
         <PopoverContent side="top" align="start" className="w-80 p-3">
-          <div className="mb-2 text-sm font-medium">What could have been better?</div>
+          <div className="mb-2 text-sm font-medium">{t("localizationTaskRuntime.ui_What_could_have_been_better_1natcm5")}</div>
           <Textarea
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
-            placeholder="Add a short note"
+            placeholder={t("localizationIssueDetail.ui_Add_a_short_note")}
             className="min-h-20 resize-y bg-background text-sm"
             disabled={isSaving}
           />
@@ -301,16 +304,14 @@ export function IssueChatFeedbackButtons({
                 setReasonOpen(false);
                 setDownvoteReason("");
               }}
-            >
-              Dismiss
-            </Button>
+            >{t("pages.inbox.dismiss")}</Button>
             <Button
               type="button"
               size="sm"
               disabled={isSaving || !downvoteReason.trim()}
               onClick={handleSubmitReason}
             >
-              {isSaving ? "Saving..." : "Save note"}
+              {isSaving ? t("pages.companySettings.saving") : t("localizationTaskRuntime.ui_Save_note_1f8pchg")}
             </Button>
           </div>
         </PopoverContent>
@@ -327,30 +328,22 @@ export function IssueChatFeedbackButtons({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Save your feedback sharing preference</DialogTitle>
-            <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs. This
-              answer becomes the default for future thumbs up and thumbs down votes.
-            </DialogDescription>
+            <DialogTitle>{t("localizationTaskRuntime.ui_Save_your_feedback_sharing_preference_1ebw6en")}</DialogTitle>
+            <DialogDescription>{t("localizationTaskRuntime.ui_Choose_whether_voted_AI_outputs_can_be_shared_with_Paperclip_Labs_crke3y")}</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm text-muted-foreground">
-            <p>This vote is always saved locally.</p>
+            <p>{t("localizationTaskRuntime.ui_This_vote_is_always_saved_locally_kj9hq1")}</p>
             <p>
-              Choose <span className="font-medium text-foreground">Always allow</span> to share
-              this vote and future voted AI outputs. Choose{" "}
-              <span className="font-medium text-foreground">Don't allow</span> to keep this vote
-              and future votes local.
+              <Trans i18nKey="localizationAgentManagement.feedbackSharing" values={{ allowLabel: t("pages.apps.review.alwaysAllow"), denyLabel: t("localizationSettings.dontAllow") }} components={{ allow: <span className="font-medium text-foreground" />, deny: <span className="font-medium text-foreground" /> }} />
             </p>
-            <p>You can change this later in Settings &gt; General.</p>
+            <p>{t("localizationTaskRuntime.ui_You_can_change_this_later_in_Settings_General_1veml1c")}</p>
             {termsUrl ? (
               <a
                 href={termsUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex text-sm text-foreground underline underline-offset-4"
-              >
-                Read our terms of service
-              </a>
+              >{t("localizationSettings.terms")}</a>
             ) : null}
           </div>
           <DialogFooter>
@@ -366,7 +359,7 @@ export function IssueChatFeedbackButtons({
                 ).then(() => setPendingSharingDialog(null));
               }}
             >
-              {isSaving ? "Saving..." : "Don't allow"}
+              {isSaving ? t("pages.companySettings.saving") : t("localizationSettings.dontAllow")}
             </Button>
             <Button
               type="button"
@@ -379,7 +372,7 @@ export function IssueChatFeedbackButtons({
                 }).then(() => setPendingSharingDialog(null));
               }}
             >
-              {isSaving ? "Saving..." : "Always allow"}
+              {isSaving ? t("pages.companySettings.saving") : t("pages.apps.review.alwaysAllow")}
             </Button>
           </DialogFooter>
         </DialogContent>

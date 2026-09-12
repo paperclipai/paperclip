@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from "react";
+import { act as reactAct, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -11,6 +11,7 @@ import type {
   CompanySkillVersion,
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import {
   AgentsUsingSkillBadge,
   AgentsUsingSkillDialog,
@@ -178,7 +179,8 @@ function makeSkill(overrides: Partial<CompanySkillDetail> = {}): CompanySkillDet
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage("en");
   mockAgentsApi.list.mockResolvedValue([]);
   mockAgentsApi.skills.mockResolvedValue({
     adapterType: "claude_local",
@@ -194,12 +196,50 @@ beforeEach(() => {
   mockPushToast.mockReset();
 });
 
-afterEach(() => {
+afterEach(async () => {
   teardown();
+  await i18n.changeLanguage("en");
   vi.clearAllMocks();
 });
 
 describe("AgentsUsingSkillBadge", () => {
+  it.each([
+    [1, "агент", "использует"], [2, "агента", "используют"],
+    [5, "агентов", "используют"], [21, "агент", "использует"],
+  ] as const)("reactively translates %i agents without resetting the dialog or translating agent IDs", async (count, noun, verb) => {
+    const skill = makeSkill({
+      usedByAgents: Array.from({ length: count }, (_, index) => makeAgent({
+        id: `raw-agent-${index}`, name: `Raw Agent ${index}`, urlKey: `raw-agent-${index}`,
+      })),
+    });
+    const original = JSON.stringify(skill);
+    await reactAct(async () => { await renderNode(<AgentsUsingSkillBadge companyId="company-1" skill={skill} />); });
+    const badge = findButton(`${count} ${count === 1 ? "agent" : "agents"}`);
+    await reactAct(async () => badge.click());
+    await reactAct(async () => { await flush(); });
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    const link = dialog!.querySelector("a")!;
+    const href = link.getAttribute("href");
+
+    for (const locale of ["en", "ru", "en"] as const) {
+      await reactAct(async () => { await i18n.changeLanguage(locale); });
+      expect(container?.querySelector("button")).toBe(badge);
+      expect(badge.textContent?.trim()).toBe(locale === "ru" ? `${count} ${noun}` : `${count} ${count === 1 ? "agent" : "agents"}`);
+      expect(badge.getAttribute("aria-label")).toBe(locale === "ru"
+        ? `${count} ${noun} ${verb} этот навык`
+        : `${count} ${count === 1 ? "agent uses" : "agents use"} this skill`);
+      expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+      expect(link.getAttribute("href")).toBe(href);
+      expect(link.textContent).toContain("Raw Agent 0");
+      expect(JSON.stringify(skill)).toBe(original);
+      expect(mockAgentsApi.list).toHaveBeenCalledExactlyOnceWith("company-1");
+      expect(mockCompanySkillsApi.versions).toHaveBeenCalledExactlyOnceWith("company-1", "skill-1");
+      expect(mockAgentsApi.skills).not.toHaveBeenCalled();
+      expect(mockAgentsApi.syncSkills).not.toHaveBeenCalled();
+    }
+  });
+
   it("renders a muted '0 agents' button with an a11y label when unused", async () => {
     await renderNode(<AgentsUsingSkillBadge companyId="company-1" skill={makeSkill()} />);
     const badge = findButton("0 agents");

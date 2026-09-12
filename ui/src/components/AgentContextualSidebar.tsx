@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import {
   Activity,
@@ -42,23 +43,24 @@ const localIcons = {
 } satisfies Record<AgentLocalDetailView, typeof Sparkles>;
 
 const auditItems = [
-  { section: "activity", label: "Activity", icon: Activity },
-  { section: "runs", label: "Runs", icon: PlayCircle },
-  { section: "costs", label: "Costs", icon: ReceiptText },
-  { section: "budgets", label: "Budgets", icon: BadgeDollarSign },
+  { section: "activity", get label() { return t("localizationActivity.section_activity"); }, icon: Activity },
+  { section: "runs", get label() { return t("localizationActivity.section_runs"); }, icon: PlayCircle },
+  { section: "costs", get label() { return t("localizationActivity.section_costs"); }, icon: ReceiptText },
+  { section: "budgets", get label() { return t("localizationActivity.section_budgets"); }, icon: BadgeDollarSign },
 ] as const;
 
 export function AgentContextualSidebar({
   agentRef,
   agentId,
   agentName,
-  labels = { secrets: "Secrets & variables" },
+  labels,
 }: {
   agentRef: string;
   agentId?: string;
   agentName?: string;
   labels?: Partial<Record<AgentLocalDetailView, string>>;
 }) {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { enabled: chatConnectorsEnabled } = useChatConnectorsEnabled();
   const shouldResolveAgent = !agentId || !agentName;
@@ -68,7 +70,7 @@ export function AgentContextualSidebar({
     enabled: shouldResolveAgent && Boolean(agentRef && selectedCompanyId),
   });
   const resolvedId = agentId ?? resolvedAgent?.id;
-  const resolvedName = agentName ?? resolvedAgent?.name ?? "Agent";
+  const resolvedName = agentName ?? resolvedAgent?.name ?? t("pages.agentDetail.agentFallback");
 
   return (
     <ContextualSidebarFrame
@@ -79,13 +81,13 @@ export function AgentContextualSidebar({
       className="border-r border-border bg-background"
     >
       <nav
-        aria-label={`${resolvedName} navigation`}
+        aria-label={t("localizationAgentChrome.agentNavigation", { name: resolvedName })}
         data-slot="contextual-sidebar-nav"
         className={contextualSidebarStyles.nav}
       >
         {AGENT_DETAIL_NAVIGATION.map((section) => (
           <div
-            key={section.label}
+            key={section.items[0]?.value}
             data-slot="contextual-sidebar-section"
             className={contextualSidebarStyles.section}
           >
@@ -104,7 +106,7 @@ export function AgentContextualSidebar({
                     <SidebarNavItem
                       key={item.value}
                       to={href}
-                      label={labels?.[item.value] ?? item.label}
+                      label={labels?.[item.value] ?? (labels === undefined && item.value === "secrets" ? t("localizationAgentChrome.secretsAndVariables") : item.label)}
                       icon={localIcons[item.value]}
                     />
                   );
@@ -117,9 +119,7 @@ export function AgentContextualSidebar({
           <p
             data-slot="contextual-sidebar-section-label"
             className={contextualSidebarStyles.sectionLabel}
-          >
-            Audit
-          </p>
+          >{t("pages.agentDetail.tabAudit")}</p>
           <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
             {resolvedId ? auditItems.map((item) => (
               <SidebarNavItem
@@ -129,7 +129,7 @@ export function AgentContextualSidebar({
                 icon={item.icon}
               />
             )) : (
-              <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading audit links…</p>
+              <p className="px-2 py-1.5 text-xs text-muted-foreground">{t("localizationAgentChrome.ui68_Loading_audit_links")}</p>
             )}
           </div>
         </div>

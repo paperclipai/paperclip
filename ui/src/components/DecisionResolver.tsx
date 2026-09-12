@@ -1,4 +1,5 @@
 import { useCallback, useMemo } from "react";
+import { useTranslation } from "@/i18n";
 import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { decisionEffectTargetIssueIds, type Agent, type AttentionSubject } from "@paperclipai/shared";
@@ -41,6 +42,7 @@ export function signedCancelTreePreviewIds(targetIssueId: string, snapshot: { de
  * success — same conventions as {@link AttentionInteractionResolver}.
  */
 export function DecisionResolver({ companyId, decisionId, originIssue, agentMap, initialDecision, onResolved }: DecisionResolverProps) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { selectedCompany } = useCompany();
   const prefix = selectedCompany?.issuePrefix ?? "";
@@ -166,7 +168,7 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
   if (detail.isLoading) {
     return (
       <div className="flex items-center gap-2 py-3 text-xs text-muted-foreground">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading decision…
+        <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("localizationFinalAudit.loadingDecision")}
       </div>
     );
   }
@@ -174,7 +176,7 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
   if (detail.error || !decision) {
     return (
       <p className="py-3 text-xs text-muted-foreground">
-        This decision is no longer available — it may have been resolved elsewhere.
+        {t("localizationFinalAudit.decisionUnavailable")}
       </p>
     );
   }

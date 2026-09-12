@@ -11,7 +11,9 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useLocation } from "@/lib/router";
 import { agentRouteRef } from "@/lib/utils";
 import { AgentChatSidebar } from "./AgentChatSidebar";
+import { useTranslation } from "@/i18n";
 export function SidebarAgentChats() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { data: agents = [] } = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId!),
@@ -43,7 +45,7 @@ export function SidebarAgentChats() {
           resourceType: "agent",
           resourceId: id,
           resourceName:
-            agents.find((agent) => agent.id === id)?.name ?? "Agent",
+            agents.find((agent) => agent.id === id)?.name ?? t("pages.agentDetail.agentFallback"),
           starred: !stars.includes(id),
         });
       }}

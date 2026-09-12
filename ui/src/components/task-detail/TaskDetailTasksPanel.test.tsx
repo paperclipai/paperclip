@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import type { Issue, Project } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TaskDetailTasksPanel } from "./TaskDetailTasksPanel";
+import { i18n } from "@/i18n";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 vi.mock("@/lib/router", () => ({ Link: ({ to, children, ...props }: { to: string; children: React.ReactNode }) => <a href={to} {...props}>{children}</a> }));
@@ -12,7 +13,7 @@ const task = (id: string, overrides: Partial<Issue> = {}) => ({ id, title: id, s
 const project = { id: "project-1", name: "Board UI", urlKey: "board-ui" } as Project;
 let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
-afterEach(() => { act(() => root?.unmount()); container?.remove(); });
+afterEach(async () => { act(() => root?.unmount()); container?.remove(); await i18n.changeLanguage("en"); });
 function render(props: React.ComponentProps<typeof TaskDetailTasksPanel>) {
   container = document.createElement("div"); document.body.append(container);
   root = createRoot(container);
@@ -20,6 +21,29 @@ function render(props: React.ComponentProps<typeof TaskDetailTasksPanel>) {
 }
 
 describe("TaskDetailTasksPanel", () => {
+  it("retranslates group controls while retaining folded state, raw task names, and retry behavior", async () => {
+    await i18n.changeLanguage("en");
+    const retry = vi.fn();
+    render({ subtasks: [], createdTasks: [task("raw-title", { title: "Subtasks", projectId: project.id }), task("unowned")], projects: [project], hasError: true, onRetry: retry });
+    const group = container.querySelector('section[aria-label="Board UI"]')!;
+    const projectUrl = group.querySelector("a")?.getAttribute("href");
+    act(() => (group.querySelector("button") as HTMLButtonElement).click());
+    expect(group.querySelector("[data-task-id]")).toBeNull();
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(container.querySelector('section[aria-label="Связанные задачи"]')).not.toBeNull();
+    expect(container.querySelector('section[aria-label="Без проекта"]')?.textContent).toContain("unowned");
+    expect(group.querySelector('a[aria-label="Перейти к проекту «Board UI»"]')?.getAttribute("href")).toBe(projectUrl);
+    expect(group.querySelector("[data-task-id]")).toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Не удалось загрузить все задачи.");
+    act(() => [...container.querySelectorAll("button")].find(button => button.textContent === "Повторить")!.click());
+    expect(retry).toHaveBeenCalledOnce();
+    act(() => (group.querySelector("button") as HTMLButtonElement).click());
+    expect(group.querySelector('[data-task-id="raw-title"]')?.textContent).toBe("Subtasks");
+    await act(async () => { await i18n.changeLanguage("en"); });
+    expect(container.querySelector('section[aria-label="Related tasks"]')).not.toBeNull();
+    expect(group.querySelector('a[aria-label="Go to Board UI project"]')).not.toBeNull();
+    expect(group.querySelector('[data-task-id="raw-title"]')?.textContent).toBe("Subtasks");
+  });
   it("keeps subtask membership separate from creation membership, including overlap", () => {
     const manual = task("manual-child");
     const overlap = task("created-child", { projectId: project.id });

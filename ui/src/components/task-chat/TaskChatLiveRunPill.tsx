@@ -1,3 +1,5 @@
+import { t, useTranslation } from "@/i18n";
+import { taskChatDurationLabel } from "./task-chat-display";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { Loader2 } from "lucide-react";
 import type { TranscriptEntry } from "../../adapters";
@@ -29,8 +31,8 @@ export function toolCountSummaryFromEntries(entries: readonly TranscriptEntry[])
     else other += 1;
   }
   const parts: string[] = [];
-  if (commands > 0) parts.push(`ran ${commands} command${commands === 1 ? "" : "s"}`);
-  if (other > 0) parts.push(`called ${other} tool${other === 1 ? "" : "s"}`);
+  if (commands > 0) parts.push(t("localizationTaskRuntime.ranCommands", { count: commands }));
+  if (other > 0) parts.push(t("localizationTaskRuntime.calledTools", { count: other }));
   return parts.length > 0 ? parts.join(", ") : null;
 }
 
@@ -57,6 +59,7 @@ export function TaskChatLiveRunPill({
   finishedAtMs?: number | null;
   toolSummary: string | null;
 }) {
+  useTranslation();
   const active = !isTerminalRunStatus(status);
   // One shared page-wide ticker drives the live elapsed readout, matching the
   // default view's `useLiveElapsed`.
@@ -65,11 +68,11 @@ export function TaskChatLiveRunPill({
   const elapsedMs =
     startedAtMs == null ? null : (active ? Date.now() : finishedAtMs ?? Date.now()) - startedAtMs;
   const elapsed = elapsedMs != null
-    ? formatDurationWords(elapsedMs)
+    ? taskChatDurationLabel(formatDurationWords(elapsedMs) ?? "")
     : null;
   const failed = ["failed", "timed_out", "cancelled", "interrupted"].includes(status);
-  const verb = active ? "Working" : failed ? "Stopped" : "Worked";
-  const suffix = elapsed ? `for ${elapsed}` : null;
+  const verb = active ? t("localizationTaskRuntime.ui_Working_1pyssg8") : failed ? t("localizationTaskRuntime.ui_Stopped_118y86m") : t("localizationTaskRuntime.worked");
+  const suffix = elapsed ? t("localizationTaskRuntime.forDuration", { duration: elapsed }) : null;
 
   return (
     <div

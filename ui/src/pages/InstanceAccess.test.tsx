@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { CompanyProvider, useCompany } from "@/context/CompanyContext";
 import { InstanceAccess } from "./InstanceAccess";
+import { i18n, t } from "@/i18n";
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(), directory: vi.fn(), detachInflightList: vi.fn(), detachInflightDirectory: vi.fn(),
@@ -116,6 +117,25 @@ describe("InstanceAccess company directory", () => {
     mocks.directory.mockResolvedValue([companyA, companyB]);
     await act(async () => button("Try again")!.click());
     await eventually(() => expect(button("Save organization access")).toBeDefined());
+  });
+
+  it("retranslates directory errors without changing access or repeating the request", async () => {
+    mocks.directory.mockRejectedValue(new Error("Raw provider diagnostic"));
+    await renderPage();
+    await eventually(() => expect(button("Try again")).toBeDefined());
+    const requestCount = mocks.directory.mock.calls.length;
+    try {
+      for (const locale of ["ru", "en", "ru"]) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        expect(container.textContent).toContain(t("localizationSettings.organizationsLoadFailedBeforeAccess"));
+        expect(button(t("common.tryAgain"))).toBeDefined();
+        expect(container.querySelector("nav")?.textContent).toBe("Company A");
+        expect(mocks.directory).toHaveBeenCalledTimes(requestCount);
+        expect(mocks.setUserCompanyAccess).not.toHaveBeenCalled();
+      }
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
   });
 
   it("does not request the directory when instance administration is forbidden", async () => {

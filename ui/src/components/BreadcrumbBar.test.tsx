@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BreadcrumbProvider, useBreadcrumbs } from "../context/BreadcrumbContext";
 import { BreadcrumbBar } from "./BreadcrumbBar";
+import { i18n } from "@/i18n";
 
 const viewport = vi.hoisted(() => ({ isMobile: false }));
 
@@ -47,12 +48,14 @@ function TaskBreadcrumbs({
   taskDetailLayout = false,
   identifier = "PAP-16679",
   sourceHref = "/issues",
+  sourceLabel = "Tasks",
 }: {
   onOpen?: () => void;
   panelControl?: { open: boolean; onToggle: () => void };
   taskDetailLayout?: boolean;
   identifier?: string;
   sourceHref?: string;
+  sourceLabel?: string;
 }) {
   const {
     setBreadcrumbs,
@@ -62,7 +65,7 @@ function TaskBreadcrumbs({
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Tasks", href: sourceHref },
+      { label: sourceLabel, href: sourceHref },
       {
         label: "Hire your first engineer and create a hiring plan",
         identifier,
@@ -89,6 +92,7 @@ function TaskBreadcrumbs({
     setBreadcrumbToolbar,
     setBreadcrumbs,
     sourceHref,
+    sourceLabel,
   ]);
 
   return <BreadcrumbBar taskDetailLayout={taskDetailLayout} />;
@@ -108,9 +112,32 @@ describe("BreadcrumbBar", () => {
     root = createRoot(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     act(() => root.unmount());
     container.remove();
+    await i18n.changeLanguage("en");
+  });
+
+  it.each([true, false])("retranslates the controlled properties action (open=%s) without toggling it", async (open) => {
+    const onToggle = vi.fn();
+    await act(async () => {
+      await i18n.changeLanguage("en");
+      root.render(<BreadcrumbProvider><TaskBreadcrumbs taskDetailLayout panelControl={{ open, onToggle }} /></BreadcrumbProvider>);
+    });
+    const english = open ? "Hide properties" : "Show properties";
+    const russian = open ? "Скрыть свойства" : "Показать свойства";
+    const button = container.querySelector<HTMLButtonElement>(`button[aria-label="${english}"]`)!;
+    expect(button).not.toBeNull();
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      const label = language === "ru" ? russian : english;
+      expect(container.querySelector(`button[aria-label="${label}"]`)).toBe(button);
+      expect(button.title).toBe(label);
+      expect(container.textContent).toContain("PAP-16679");
+      expect(onToggle).not.toHaveBeenCalled();
+    }
+    await act(async () => button.click());
+    expect(onToggle).toHaveBeenCalledOnce();
   });
 
   it("keeps a single task breadcrumb compact with adjacent identity and settings action", async () => {
@@ -140,12 +167,12 @@ describe("BreadcrumbBar", () => {
     expect(container.querySelector('button[aria-label="Hide properties"]')).not.toBeNull();
   });
 
-  it("shows only the title followed by its identifier for a company-scoped mobile task header", async () => {
+  it.each(["Tasks", "Задачи"])("shows a company-scoped mobile task header independently of its section label (%s)", async (sourceLabel) => {
     viewport.isMobile = true;
     await act(async () => {
       root.render(
         <BreadcrumbProvider>
-          <TaskBreadcrumbs identifier="TES-3" sourceHref="/TES/issues" />
+          <TaskBreadcrumbs identifier="TES-3" sourceHref="/TES/issues" sourceLabel={sourceLabel} />
         </BreadcrumbProvider>,
       );
     });

@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { i18n } from "@/i18n";
+import { taskThreadMarkerDetailDisplay, taskThreadErrorDisplay } from "./task-chat/task-chat-display";
 import type { ReactElement } from "react";
 import { act, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
 import { flushSync } from "react-dom";
@@ -124,13 +126,14 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
   flushSync(() => root?.unmount());
   queryClient.clear();
   root = null;
   container.remove();
   localStorage.clear();
   vi.restoreAllMocks();
+  await act(async () => { await i18n.changeLanguage("en"); });
 });
 
 function render(ui: ReactElement) {
@@ -3568,6 +3571,191 @@ describe("TaskChatThread live transcript", () => {
     // The pill has settled to its "Worked" state rather than flipping back to a
     // spinner while it waits for the reply comment.
     expect(container.textContent).toContain("Worked");
+  });
+});
+
+describe("TaskChatThread live localization invariants", () => {
+  async function locale(language: "ru" | "en") { await act(async () => { await i18n.changeLanguage(language); }); }
+
+  it.each([
+    [1, "called 1 tool", "вызван 1 инструмент"],
+    [2, "called 2 tools", "вызваны 2 инструмента"],
+    [5, "called 5 tools", "вызвано 5 инструментов"],
+    [21, "called 21 tools", "вызван 21 инструмент"],
+  ] as const)("refreshes %i live tool counts across en → ru → en without new entries or resetting the draft", async (count, englishTools, russianTools) => {
+    await locale("en");
+    const fetch = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Unexpected localization fetch"));
+    const add = vi.fn();
+    const draftKey = "thread-live-count-draft";
+    localStorage.setItem(draftKey, "Keep original **live draft**");
+    const entries = [
+      { kind: "tool_call", ts: "2026-08-25T18:00:01Z", name: "bash", toolUseId: "command-raw-1", input: { command: "ls" } },
+      { kind: "tool_call", ts: "2026-08-25T18:00:02Z", name: "bash", toolUseId: "command-raw-2", input: { command: "pwd" } },
+      ...Array.from({ length: count }, (_, index) => ({
+        kind: "tool_call", ts: "2026-08-25T18:00:03Z", name: "read_file", toolUseId: `tool-raw-${index}`, input: { path: `src/raw-${index}.ts` },
+      })),
+    ];
+    const originalEntries = structuredClone(entries);
+    transcriptState.transcriptByRun.set("run-live-counts", entries);
+    render(<TaskChatThread comments={[]} onAdd={add} issueStatus="in_progress" draftKey={draftKey}
+      activeRun={{ id: "run-live-counts", runtimeMode: "legacy", status: "running", invocationSource: "issue", triggerDetail: null,
+        startedAt: "2026-08-25T18:00:00Z", finishedAt: null, createdAt: "2026-08-25T18:00:00Z", agentId: "agent-raw", agentName: "Original agent", adapterType: "codex_local" }}
+    />);
+    const pill = container.querySelector('[data-testid="task-chat-live-run-pill"]')!;
+    const tail = container.querySelector('[data-testid="task-chat-live-transcript"]')!;
+    const editor = container.querySelector('[data-testid="mock-editor"]')!;
+    const legacyRuns = transcriptHookRuns.legacy.at(-1);
+    const nativeRuns = transcriptHookRuns.native.at(-1);
+    expect(pill).toBeTruthy();
+    expect(tail).toBeTruthy();
+    expect(editor).toBeTruthy();
+    for (const language of ["en", "ru", "en"] as const) {
+      await locale(language);
+      const expected = language === "ru" ? `выполнены 2 команды, ${russianTools}` : `ran 2 commands, ${englishTools}`;
+      expect(pill.textContent).toContain(expected);
+      expect(pill.textContent).not.toContain(language === "ru" ? "called " : "вызван");
+      expect(container.querySelector('[data-testid="task-chat-live-run-pill"]')).toBe(pill);
+      expect(container.querySelector('[data-testid="task-chat-live-transcript"]')).toBe(tail);
+      expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+      expect(editor.textContent).toBe("Keep original **live draft**");
+      expect(localStorage.getItem(draftKey)).toBe("Keep original **live draft**");
+      expect(transcriptState.transcriptByRun.get("run-live-counts")).toBe(entries);
+      expect(entries).toEqual(originalEntries);
+      expect(transcriptHookRuns.legacy.at(-1)).toBe(legacyRuns);
+      expect(transcriptHookRuns.native.at(-1)).toBe(nativeRuns);
+      expect(fetch).not.toHaveBeenCalled();
+      expect(add).not.toHaveBeenCalled();
+    }
+  });
+
+  it("keeps an open failed-run disclosure, draft and retry eligibility across ru → en → ru", async () => {
+    await locale("ru");
+    localStorage.setItem("thread-original-draft", "Keep original **draft**");
+    const transcript = [{ kind: "assistant", ts: "2026-08-25T18:00:01Z", text: "Original progress", channel: "progress" }];
+    nativeTranscriptState.transcriptByRun.set("run-raw", transcript);
+    const retry = vi.fn();
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="blocked" draftKey="thread-original-draft" onRetryFailedRun={retry}
+      linkedRuns={[{ runId: "run-raw", runtimeMode: "native", status: "failed", errorCode: "raw_error_code", agentId: "agent-raw", adapterType: "paperclip_runner",
+        createdAt: "2026-08-25T18:00:00Z", startedAt: "2026-08-25T18:00:00Z", finishedAt: "2026-08-25T18:00:02Z" }]}
+    />);
+    const toggle = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-collapsible-marker"] button[aria-expanded]')!;
+    await act(async () => { toggle.click(); });
+    const details = container.querySelector('[data-testid="task-chat-collapsible-marker-details"]')!;
+    const editor = container.querySelector('[data-testid="mock-editor"]')!;
+    expect(details.textContent).toContain("до получения ответа (raw_error_code)");
+    await locale("en");
+    expect(details.textContent).toContain("before returning an answer (raw_error_code)");
+    await locale("ru");
+    expect(container.querySelector('[data-testid="task-chat-collapsible-marker-details"]')).toBe(details);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector('[data-testid="mock-editor"]')).toBe(editor);
+    expect(editor.textContent).toBe("Keep original **draft**");
+    expect(localStorage.getItem("thread-original-draft")).toBe("Keep original **draft**");
+    const retryButton = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]')!;
+    await act(async () => { retryButton.click(); });
+    expect(retry).toHaveBeenCalledWith("run-raw");
+    expect(nativeTranscriptState.transcriptByRun.get("run-raw")).toBe(transcript);
+  });
+
+  it("preserves pending form selection, user titles and raw answer IDs while translating built-in labels", async () => {
+    await locale("ru");
+    const originalInteraction = questionInteraction("question-raw", "Original question?", "2026-08-25T18:00:00Z");
+    if (originalInteraction.kind !== "ask_user_questions") throw new Error("Unexpected fixture kind");
+    const interaction = { ...originalInteraction, title: null, payload: { ...originalInteraction.payload, questions: originalInteraction.payload.questions.map((question) => ({ ...question, selectionMode: "multi" as const })) } };
+    const answer = vi.fn();
+    render(<TaskChatThread comments={[]} interactions={[interaction]} onAdd={async () => {}} onSubmitInteractionAnswers={answer} issueId="issue-raw" />);
+    const takeover = container.querySelector('[data-testid="task-chat-composer-takeover"]')!;
+    expect(takeover.getAttribute("aria-label")).toBe("Вопросы");
+    const option = [...takeover.querySelectorAll<HTMLButtonElement>('button[role="checkbox"]')].find((b) => b.textContent?.includes("Yes"))!;
+    await act(async () => { option.click(); });
+    expect(option.getAttribute("aria-checked")).toBe("true");
+    await locale("en");
+    expect(takeover.getAttribute("aria-label")).toBe("Questions");
+    await locale("ru");
+    expect(container.querySelector('[data-testid="task-chat-composer-takeover"]')).toBe(takeover);
+    expect(takeover.contains(option)).toBe(true);
+    expect(option.getAttribute("aria-checked")).toBe("true");
+    const skip = [...takeover.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.trim() === "Пропустить");
+    // Required questions have no skip action in the updated paginated form.
+    expect(skip).toBeUndefined();
+    expect(takeover.contains(option)).toBe(true);
+    expect(option.getAttribute("aria-checked")).toBe("true");
+    const submit = [...takeover.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.includes("Отправить ответы"));
+    expect(submit).toBeTruthy();
+    await act(async () => { submit!.click(); });
+    expect(answer).toHaveBeenCalledWith(interaction, [{ questionId: "question-raw-question", optionIds: ["yes"] }]);
+    expect(interaction.kind === "ask_user_questions" && interaction.payload.questions?.[0]?.options?.[0]?.id).toBe("yes");
+  });
+
+  it("localizes resource revisions and byte units without changing filenames, MIME types or links", async () => {
+    await locale("ru");
+    const document = { ...planDocument(), key: "custom-document", title: "Original document title", latestRevisionNumber: 21 };
+    const attachment = { id: "attachment-raw", originalFilename: null, contentType: "text/plain", byteSize: 1536, contentPath: "/api/raw/content", openPath: "/api/raw/open", createdByAgentId: "agent-raw", createdByUserId: null, issueCommentId: null, createdAt: new Date("2026-08-25T18:00:00Z") };
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} documents={[document]} attachments={[attachment as never]} />);
+    const doc = container.querySelector('[data-testid="task-chat-resource-document"]')!;
+    const file = container.querySelector('[data-testid="task-chat-resource-attachment"]')!;
+    const href = file.closest("a")!.getAttribute("href");
+    expect(doc.textContent).toContain("Документ · версия 21");
+    expect(file.textContent).toContain("text/plain · 1,5 КБ");
+    await locale("en");
+    expect(doc.textContent).toContain("Document · rev 21");
+    expect(file.textContent).toContain("text/plain · 1.5 KB");
+    await locale("ru");
+    expect(container.querySelector('[data-testid="task-chat-resource-document"]')).toBe(doc);
+    expect(container.querySelector('[data-testid="task-chat-resource-attachment"]')).toBe(file);
+    expect(file.closest("a")!.getAttribute("href")).toBe(href);
+    expect(doc.textContent).toContain("Original document title");
+    expect(document.key).toBe("custom-document");
+  });
+
+  it("preserves the exact queued run callback and pending disabled state", async () => {
+    await locale("ru");
+    const interrupt = vi.fn();
+    const comment = { ...createLongThreadComments()[0], queueState: "queued" as const, queueTargetRunId: "run-raw", body: "Original queued message" };
+    const props = { comments: [comment], onAdd: async () => {}, onInterruptQueued: interrupt };
+    render(<TaskChatThread {...props} />);
+    const button = [...container.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Прервать")!;
+    await locale("en");
+    expect(button.textContent).toBe("Interrupt");
+    await locale("ru");
+    expect(container.contains(button)).toBe(true);
+    await act(async () => { button.click(); });
+    expect(interrupt).toHaveBeenCalledWith("run-raw");
+    render(<TaskChatThread {...props} interruptingQueuedRunId="run-raw" />);
+    const pending = [...container.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "Прерываем…")!;
+    expect(pending.disabled).toBe(true);
+    await locale("en"); await locale("ru");
+    expect(pending.disabled).toBe(true);
+    expect(container.contains(pending)).toBe(true);
+    expect(comment.body).toBe("Original queued message");
+  });
+
+  it("covers complete before/after and retry messages with unknown raw fallbacks", async () => {
+    for (const language of ["ru", "en", "ru"] as const) {
+      await locale(language);
+      for (const action of ["cancelled", "interrupted"]) {
+        for (const boundary of ["before returning an answer", "after returning a final response"]) {
+          const raw = "The run was " + action + " " + boundary + ".";
+          const display = taskThreadMarkerDetailDisplay(raw);
+          expect(display).not.toContain("localizationTaskThread");
+          expect(language === "en" ? display === raw : display !== raw).toBe(true);
+        }
+      }
+      for (const action of ["timed out", "stopped"]) {
+        for (const boundary of ["before returning an answer", "after returning a final response"]) {
+          const raw = "The runner " + action + " " + boundary + " (raw_error_code).";
+          const display = taskThreadMarkerDetailDisplay(raw);
+          expect(display).toContain("raw_error_code");
+          expect(language === "en" ? display === raw : display !== raw).toBe(true);
+        }
+      }
+      expect(taskThreadMarkerDetailDisplay("Original provider diagnostic")).toBe("Original provider diagnostic");
+      expect(taskThreadErrorDisplay("Original network error")).toBe("Original network error");
+      expect(taskThreadErrorDisplay("Skipping this interaction is unavailable.")).toBe(language === "en" ? "Skipping this interaction is unavailable." : "Пропустить это взаимодействие нельзя.");
+      for (const count of [1, 2, 5, 21]) {
+        expect(i18n.t("localizationTaskThread.pendingInputs", { count })).not.toContain("localizationTaskThread");
+      }
+    }
   });
 });
 

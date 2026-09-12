@@ -1,14 +1,17 @@
+import { t, useTranslation } from "@/i18n";
+import { chatUiErrorMessage, type ChatUiError } from "@/pages/apps/chat/chat-copy";
 import { useEffect, useRef, useState } from "react";
 import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
 
 /** Every authentication host uses the same local credential check and login lifecycle. */
 export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLoginIntent, enabled: boolean, options: { allowHostClaude?: boolean } = {}) {
+  useTranslation();
   const isolated = intent.provider !== "anthropic" || !options.allowHostClaude;
   const active = Boolean(companyId && enabled);
   const [attempt, setAttempt] = useState<LocalAiLoginAttempt | null>(null);
   const [status, setStatus] = useState<LocalAiLoginStatus["status"] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ChatUiError | null>(null);
   const [generation, setGeneration] = useState(0);
   const latestIntent = useRef(intent);
   const restartRequested = useRef(false);
@@ -54,12 +57,12 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
         });
         if (cancelled) return;
         setStatus(next.status);
-        setError(next.status === "expired" ? "This sign-in attempt expired. Start sign-in again." : null);
+        setError(next.status === "expired" ? { key: "sep13Connections.signInExpired" } : null);
         // Stop polling a verified account. Focus still rechecks after a terminal
         // visit; awaiting terminal login never requires repeated Connect clicks.
         if (next.status === "sign_in_required") timer = setTimeout(() => void check(), 5000);
       } catch (cause) {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : "Could not check local sign-in.");
+        if (!cancelled) setError(cause instanceof Error ? cause.message : { key: "sep13Connections.localSignInError" });
       } finally { checking = false; }
     }
     const onFocus = () => { if (!document.hidden) void check(); };
@@ -81,11 +84,11 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
     command: attempt?.command,
     status,
     preparing: active && !status && !error,
-    error,
+    error: chatUiErrorMessage(error),
     retry: () => { restartRequested.current = true; cancelCurrent(); setGeneration((value) => value + 1); },
     connect: (input = intent) => {
-      if (!companyId) throw new Error("Choose a company before connecting.");
-      if (isolated && !attempt) throw new Error("Prepare local sign-in before connecting.");
+      if (!companyId) throw new Error(t("sep13Connections.chooseCompany"));
+      if (isolated && !attempt) throw new Error(t("sep13Connections.prepareSignIn"));
       return aiConnectionsApi.connectLocal(companyId, { ...input, ...(attempt ? { localSessionId: attempt.sessionId } : {}) });
     },
   };

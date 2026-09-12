@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActiveAgentsPanel, AgentRunCard } from "./ActiveAgentsPanel";
+import { i18n } from "@/i18n";
 
 const mockHeartbeatsApi = vi.hoisted(() => ({
   liveRunsForCompany: vi.fn(),
@@ -269,6 +270,36 @@ describe("ActiveAgentsPanel", () => {
     expect(container.textContent).toContain("Task unavailable");
     expect(container.querySelector('a[href="/issues/issue-missing"]')).not.toBeNull();
     await act(async () => root.unmount());
+  });
+
+  it("retranslates compact run cards without changing names, identifiers, routes, or unknown statuses", async () => {
+    const root = createRoot(container);
+    try {
+      await act(async () => {
+        await i18n.changeLanguage("en");
+        root.render(<>
+          <AgentRunCard companyId="company-1" run={{ ...createRun(1), agentName: "Board", status: "queued", startedAt: null, invocationSource: "timer" }} />
+          <AgentRunCard companyId="company-1" run={{ ...createIssueRun(2, "raw-task-id"), agentName: "You", status: "provider_custom_status" }} issue={{ title: "No linked task", identifier: "RAW-21", status: "in_review" }} />
+        </>);
+      });
+      expect(container.querySelector('a[aria-label="Board — Queued. View run"]')).not.toBeNull();
+      expect(container.textContent).toContain("Scheduled heartbeat");
+      const originalUrls = [...container.querySelectorAll("a")].map(link => link.getAttribute("href"));
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      expect(container.querySelector('a[aria-label="Board — В очереди. Открыть запуск"]')).not.toBeNull();
+      expect(container.textContent).toContain("Плановый цикл активности");
+      expect(container.querySelector('a[aria-label="You — provider_custom_status. Открыть запуск"]')).not.toBeNull();
+      expect(container.querySelector('[aria-label="Задача на проверке"]')).not.toBeNull();
+      expect(container.textContent).toContain("No linked task");
+      expect(container.textContent).toContain("RAW-21");
+      expect([...container.querySelectorAll("a")].map(link => link.getAttribute("href"))).toEqual(originalUrls);
+      expect(container.textContent).not.toContain("Run output");
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(container.querySelector('a[aria-label="Board — Queued. View run"]')).not.toBeNull();
+      expect(container.querySelector('[aria-label="Task in review"]')).not.toBeNull();
+    } finally {
+      await act(async () => { root.unmount(); await i18n.changeLanguage("en"); });
+    }
   });
 
   it("does not animate running records while execution is reconnecting", async () => {

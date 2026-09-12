@@ -1,3 +1,5 @@
+import { i18n, useTranslation } from "@/i18n";
+import { routineRunSourceLabel } from "@/lib/routine-run-display";
 import { useEffect, useState } from "react";
 import { Clock3, RefreshCw, Save, Trash2, Webhook, Zap } from "lucide-react";
 import type { RoutineTrigger } from "@paperclipai/shared";
@@ -44,6 +46,7 @@ export function RoutineTriggerCard({
   onDelete: (id: string) => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState({
     label: trigger.label ?? "",
     cronExpression: trigger.cronExpression ?? "",
@@ -69,7 +72,7 @@ export function RoutineTriggerCard({
 
   return (
     <form
-      aria-label={`Trigger: ${trigger.label ?? trigger.kind}`}
+      aria-label={t("localizationRoutines.triggerAria", { name: trigger.label ?? routineRunSourceLabel(trigger.kind) })}
       className="space-y-4 rounded-lg border border-border p-4"
       onSubmit={(event) => event.preventDefault()}
     >
@@ -77,7 +80,7 @@ export function RoutineTriggerCard({
         <div className="min-w-0 space-y-1">
           <div className="flex items-center gap-2 text-sm font-medium">
             <KindIcon className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{trigger.label ?? trigger.kind}</span>
+            <span className="truncate">{trigger.label ?? routineRunSourceLabel(trigger.kind)}</span>
           </div>
           {humanCron ? (
             <p id={`cron-readable-${trigger.id}`} className="text-xs text-muted-foreground">
@@ -93,17 +96,17 @@ export function RoutineTriggerCard({
           ) : null}
           <span className="text-xs text-muted-foreground">
             {trigger.kind === "schedule" && trigger.nextRunAt
-              ? `Next: ${new Date(trigger.nextRunAt).toLocaleString()}`
+              ? t("localizationRoutines.triggerNext", { date: new Date(trigger.nextRunAt).toLocaleString(i18n.language) })
               : trigger.kind === "webhook"
-                ? "Webhook"
-                : "API"}
+                ? t("localizationRoutines.webhook")
+                : t("localizationActivity.source_api")}
           </span>
         </div>
       </div>
 
       <div className="grid gap-3 md:grid-cols-2">
         <div className="space-y-1.5">
-          <Label className="text-xs">Label</Label>
+          <Label className="text-xs">{t("localizationRoutines.label")}</Label>
           <Input
             value={draft.label}
             disabled={disabled}
@@ -112,7 +115,7 @@ export function RoutineTriggerCard({
         </div>
         {trigger.kind === "schedule" && (
           <div className="space-y-1.5 md:col-span-2">
-            <Label className="text-xs">Schedule</Label>
+            <Label className="text-xs">{t("localizationRoutines.schedule")}</Label>
             <ScheduleEditor
               value={draft.cronExpression}
               onChange={(cronExpression) =>
@@ -124,7 +127,7 @@ export function RoutineTriggerCard({
         {trigger.kind === "webhook" && (
           <>
             <div className="space-y-1.5">
-              <Label className="text-xs">Signing mode</Label>
+              <Label className="text-xs">{t("localizationRoutines.signingMode")}</Label>
               <Select
                 value={draft.signingMode}
                 onValueChange={(signingMode) =>
@@ -146,7 +149,7 @@ export function RoutineTriggerCard({
             </div>
             {!SIGNING_MODES_WITHOUT_REPLAY_WINDOW.has(draft.signingMode) && (
               <div className="space-y-1.5">
-                <Label className="text-xs">Replay window (seconds)</Label>
+                <Label className="text-xs">{t("localizationRoutines.replayWindow")}</Label>
                 <Input
                   value={draft.replayWindowSec}
                   disabled={disabled}
@@ -168,14 +171,10 @@ export function RoutineTriggerCard({
             className="mr-auto text-muted-foreground hover:text-destructive"
             onClick={() => onDelete(trigger.id)}
           >
-            <Trash2 className="mr-1.5 h-3.5 w-3.5" />
-            Delete
-          </Button>
+            <Trash2 className="mr-1.5 h-3.5 w-3.5" />{t("localizationRoutines.delete")}</Button>
           {trigger.kind === "webhook" && (
             <Button variant="outline" size="sm" onClick={() => onRotate(trigger.id)}>
-              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
-              Rotate secret
-            </Button>
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />{t("localizationRoutines.rotateSecret")}</Button>
           )}
           <Button
             variant="outline"
@@ -184,9 +183,7 @@ export function RoutineTriggerCard({
               onSave(trigger.id, buildRoutineTriggerPatch(trigger, draft, getLocalTimezone()))
             }
           >
-            <Save className="mr-1.5 h-3.5 w-3.5" />
-            Save trigger
-          </Button>
+            <Save className="mr-1.5 h-3.5 w-3.5" />{t("localizationRoutines.saveTrigger")}</Button>
         </div>
       )}
     </form>

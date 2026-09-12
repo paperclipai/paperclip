@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { EmailMessageCard } from "./EmailMessageCard";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -68,6 +69,7 @@ function EmailDelivery({
   publication: EmailPublicationSummary;
   onResolved: () => void;
 }) {
+  const { t } = useTranslation();
   const [messageId, setMessageId] = useState("");
   const resolve = useMutation({
     mutationFn: (outcome: "sent" | "failed") =>
@@ -78,35 +80,34 @@ function EmailDelivery({
     <div className="space-y-2 text-xs text-muted-foreground">
       {p.request && !p.providerMessageId && (
         <article
-          aria-label="Email send intent"
+          aria-label={t("sep12Connections.emailSendIntent")}
           className="space-y-3 rounded-lg border border-border p-4"
         >
-          <p className="font-semibold">{p.request.subject ?? "Email reply"}</p>
-          {p.request.to && <p>To: {p.request.to.join(", ")}</p>}
+          <p className="font-semibold">{p.request.subject ?? t("sep12Connections.emailReply")}</p>
+          {p.request.to && <p>{t("sep12Connections.to", { recipients: p.request.to.join(", ") })}</p>}
           <div className="whitespace-pre-wrap break-words text-sm text-foreground">
             {p.request.text}
           </div>
         </article>
       )}
       <p>
-        Email {p.outcome}
+        {t(`sep12Connections.emailOutcome.${p.outcome}`, { defaultValue: `Email ${p.outcome}` })}
         {p.error ? ` — ${p.error}` : ""}
       </p>
       {p.outcome === "uncertain" && (
         <details>
           <summary className="cursor-pointer">
-            Resolve delivery after checking AgentMail
+            {t("sep12Connections.resolveDelivery")}
           </summary>
           <div className="space-y-2 py-2">
             <p>
-              Confirm the outcome in AgentMail before resolving. This action
-              does not resend.
+              {t("sep12Connections.resolveDeliveryNotice")}
             </p>
             <Input
-              aria-label="Provider message ID"
+              aria-label={t("sep12Connections.providerMessageId")}
               value={messageId}
               onChange={(e) => setMessageId(e.target.value)}
-              placeholder="Provider message ID"
+              placeholder={t("sep12Connections.providerMessageId")}
             />
             <div className="flex gap-2">
               <Button
@@ -115,7 +116,7 @@ function EmailDelivery({
                 disabled={!messageId || resolve.isPending}
                 onClick={() => resolve.mutate("sent")}
               >
-                Confirm sent
+                {t("sep12Connections.confirmSent")}
               </Button>
               <Button
                 size="sm"
@@ -123,7 +124,7 @@ function EmailDelivery({
                 disabled={resolve.isPending}
                 onClick={() => resolve.mutate("failed")}
               >
-                Confirm not sent
+                {t("sep12Connections.confirmNotSent")}
               </Button>
             </div>
             {resolve.error && (

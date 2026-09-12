@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
 import type { IssueRelationIssueSummary } from "@paperclipai/shared";
@@ -23,6 +24,7 @@ export function IssueReferencePill({
   /** Reserves space for a separate hover/focus action without moving the task link. */
   onRemove?: (issueId: string) => void;
 }) {
+  const { t } = useTranslation();
   const issueLabel = issue.identifier ?? issue.title;
   const classNames = cn(
     variant === "property" || onRemove
@@ -75,7 +77,7 @@ export function IssueReferencePill({
         data-mention-kind="issue"
         className={classNames}
         title={issue.title}
-        aria-label={`Task: ${issue.title}`}
+        aria-label={t("localizationIssueChrome.taskAria", { title: issue.title })}
       >
         {content}
       </span>
@@ -89,7 +91,7 @@ export function IssueReferencePill({
       data-mention-kind="issue"
       className={classNames}
       title={issue.title}
-      aria-label={`Task ${issueLabel}: ${issue.title}`}
+      aria-label={t("localizationIssueChrome.taskIdentifierAria", { identifier: issueLabel, title: issue.title })}
     >
       {content}
     </Link>

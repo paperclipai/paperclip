@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { i18n } from "@/i18n";
 import { act as reactAct, useState, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -157,7 +158,8 @@ function button(label: string) {
   ) as HTMLButtonElement | undefined;
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage("en");
   setupOptionsMock.mockReset();
   completeMock.mockReset();
   declineMock.mockReset();
@@ -180,6 +182,7 @@ afterEach(async () => {
     .forEach((node) => node.remove());
   root = null;
   host = null;
+  await i18n.changeLanguage("en");
 });
 
 describe("ConnectionIntentInteractionBody states and audience", () => {
@@ -461,4 +464,30 @@ describe("AI repair inside the card", () => {
     expect(document.body.textContent).toContain("The task still needs a working AI connection");
     expect(document.body.textContent).not.toContain("can continue without it");
   });
+});
+
+it("retranslates inline AI repair en/ru/en and continues the exact selected account", async () => {
+  const interaction: ConnectionIntentInteraction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload, purpose: "ai" } };
+  const connection = { id: "canonical-selected-account", name: "User-owned Account", provider: "openai", method: "api_key", ownership: "personal", ownerName: "Board", status: "connected" };
+  setupOptionsMock.mockResolvedValue({ interaction, existingConnections: [connection], aiRepair: { connection, canReconnect: true } });
+  completeMock.mockResolvedValue({ ...interaction, status: "accepted" });
+  renderBody(interaction);
+  await flush();
+  await act(() => button("Fix connection")!.click());
+  for (const [locale, title, action] of [
+    ["ru", "Подключение к ИИ требует внимания", "Продолжить задачу"],
+    ["en", "AI connection needs attention", "Continue task"],
+  ]) {
+    await act(async () => { await i18n.changeLanguage(locale); });
+    expect(document.body.textContent).toContain(title);
+    expect(document.body.textContent).toContain("User-owned Account");
+    expect(button(action)).toBeDefined();
+    expect(document.querySelector('[data-testid="ai-connection-inline-repair"]')).not.toBeNull();
+    expect(document.querySelector('[data-testid="shared-ai-credentials"]')).toBeNull();
+    expect(completeMock).not.toHaveBeenCalled();
+    expect(declineMock).not.toHaveBeenCalled();
+    expect(setPhaseMock).not.toHaveBeenCalled();
+  }
+  await act(() => button("Continue task")!.click());
+  expect(completeMock).toHaveBeenCalledExactlyOnceWith(interaction.id, "canonical-selected-account");
 });

@@ -27,6 +27,7 @@ import {
   type IssueThreadInteractionResolverPolicy,
   type IssueThreadInteractionResolverPolicyProvenance,
 } from "@paperclipai/shared";
+import { t } from "@/i18n";
 import type { IssueThreadInteraction } from "./issue-thread-interactions";
 
 /**
@@ -269,6 +270,109 @@ export function describeAttentionResolverAudience(
   const audience: AttentionResolverAudience | null | undefined = item.resolverAudience;
   if (!audience) return null;
   return describeResolverAudience({
+    facts: {
+      effectiveResolverPolicy: audience.effectiveResolverPolicy,
+      requestedResolverPolicy: audience.requestedResolverPolicy,
+      effectiveResolverPolicySource: audience.effectiveResolverPolicySource,
+      resolverPolicyProvenance: audience.resolverPolicyProvenance,
+      hasAddressee: Boolean(audience.addresseeAgentId || audience.addresseeUserId),
+      isUserAddressee: Boolean(audience.addresseeUserId),
+    },
+    creatorLabel: audience.createdByAgentName,
+    addresseeLabel: audience.addresseeName,
+  });
+}
+
+/** Display-only policy vocabulary; canonical helpers above remain stable. */
+export function resolverPolicyLabelDisplay(policy: IssueThreadInteractionResolverPolicy): string {
+  return t(`localizationInteractionAudience.label_${normalizeIssueThreadInteractionResolverPolicy(policy)}`);
+}
+
+export function resolverPolicyEffectDisplay(policy: IssueThreadInteractionResolverPolicy): string {
+  return t(`localizationInteractionAudience.effect_${normalizeIssueThreadInteractionResolverPolicy(policy)}`);
+}
+
+export function getResolverPolicyChoicesDisplay() {
+  return RESOLVER_POLICY_CHOICES.map((choice) => ({
+    ...choice,
+    get label() { return resolverPolicyLabelDisplay(choice.value); },
+    get effect() { return resolverPolicyEffectDisplay(choice.value); },
+  }));
+}
+
+type AudienceDisplayLabels = {
+  creatorLabel?: string | null;
+  addresseeLabel?: string | null;
+  /** Actor identity, never inferred from a translated name such as You/Вы. */
+  isCreatorCurrentUser?: boolean;
+  isAddresseeCurrentUser?: boolean;
+};
+
+/**
+ * Same server facts and narrowing semantics, with late-read display fields.
+ * Getters also keep a captured audience current inside a stored UI error.
+ */
+export function describeResolverAudienceDisplay({
+  facts, creatorLabel, addresseeLabel, isCreatorCurrentUser, isAddresseeCurrentUser,
+}: { facts: InteractionAudienceFacts } & AudienceDisplayLabels): InteractionAudienceDescription {
+  const raw = describeResolverAudience({ facts, creatorLabel, addresseeLabel });
+  const creator = creatorLabel?.trim();
+  const addressee = addresseeLabel?.trim();
+  const summary = (short: boolean) => {
+    const suffix = facts.isUserAddressee
+      ? isAddresseeCurrentUser ? "UserSelf" : addressee ? "UserNamed" : "UserGeneric"
+      : raw.policy === "human_only"
+        ? facts.hasAddressee ? addressee ? "HumanNamed" : "HumanGeneric" : "Human"
+        : facts.hasAddressee
+          ? addressee ? "AgentNamed" : "AgentGeneric"
+          : raw.policy === "not_creator"
+            ? isCreatorCurrentUser ? "CreatorSelf" : creator ? "CreatorNamed" : "CreatorGeneric"
+            : "Anyone";
+    return t(`localizationInteractionAudience.${short ? "short" : "summary"}${suffix}`, { creator, addressee });
+  };
+  return {
+    ...raw,
+    get label() {
+      return (raw.policy !== "human_only" || facts.isUserAddressee) && facts.hasAddressee
+        ? t("localizationInteractionAudience.labelAddressed")
+        : resolverPolicyLabelDisplay(raw.policy);
+    },
+    get summary() { return summary(false); },
+    get shortSummary() { return summary(true); },
+    get narrowedNote() {
+      if (raw.narrowedBy === "governed_action") return t("localizationInteractionAudience.narrowGoverned");
+      if (raw.narrowedBy === "company_cap") return t("localizationInteractionAudience.narrowCompanyCap", {
+        requested: resolverPolicyLabelDisplay(raw.requestedPolicy),
+        effective: resolverPolicyLabelDisplay(raw.policy),
+      });
+      if (raw.narrowedBy === "legacy_restriction") return t("localizationInteractionAudience.narrowLegacy");
+      return null;
+    },
+  };
+}
+
+export function describeInteractionAudienceDisplay({
+  interaction, ...labels
+}: { interaction: IssueThreadInteraction } & AudienceDisplayLabels): InteractionAudienceDescription {
+  return describeResolverAudienceDisplay({
+    facts: {
+      effectiveResolverPolicy: interaction.effectiveResolverPolicy,
+      requestedResolverPolicy: interaction.requestedResolverPolicy,
+      effectiveResolverPolicySource: interaction.effectiveResolverPolicySource,
+      resolverPolicyProvenance: interaction.resolverPolicyProvenance,
+      hasAddressee: Boolean(interaction.addresseeAgentId || interaction.addresseeUserId),
+      isUserAddressee: Boolean(interaction.addresseeUserId),
+    },
+    ...labels,
+  });
+}
+
+export function describeAttentionResolverAudienceDisplay(
+  item: Pick<AttentionItem, "sourceKind" | "resolverAudience">,
+): InteractionAudienceDescription | null {
+  if (item.sourceKind !== "issue_thread_interaction" || !item.resolverAudience) return null;
+  const audience = item.resolverAudience;
+  return describeResolverAudienceDisplay({
     facts: {
       effectiveResolverPolicy: audience.effectiveResolverPolicy,
       requestedResolverPolicy: audience.requestedResolverPolicy,

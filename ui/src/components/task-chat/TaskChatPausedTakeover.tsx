@@ -1,4 +1,5 @@
 import { useId } from "react";
+import { useTranslation } from "@/i18n";
 import { Loader2, Pause, Play } from "lucide-react";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,7 @@ export function TaskChatPausedTakeover({
 }: {
   hasDraft?: boolean;
 } & TaskComposerPause) {
+  const { t } = useTranslation();
   const headingId = useId();
   const subtree = scope === "subtree";
   return (
@@ -35,12 +37,12 @@ export function TaskChatPausedTakeover({
         <Pause aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-(--status-task-icon-todo)" />
         <div className="flex min-w-0 flex-col gap-1">
           <h2 id={headingId} className="text-sm font-medium text-foreground">
-            {subtree ? "Subtree is paused." : "Task is paused."}
+            {t(subtree ? "sep12Chat.pause.subtreeHeading" : "sep12Chat.pause.taskHeading")}
           </h2>
           <p className="text-sm text-muted-foreground">
             {subtree
-              ? "Resume this subtree to send a message."
-              : "Resume this task to send a message."}
+              ? t("sep12Chat.pause.subtreeDescription")
+              : t("sep12Chat.pause.taskDescription")}
           </p>
         </div>
       </div>
@@ -51,21 +53,21 @@ export function TaskChatPausedTakeover({
       ) : null}
       <div className="flex flex-wrap items-center justify-end gap-3">
         {hasDraft ? (
-          <p className="mr-auto text-xs text-muted-foreground">Your draft is saved.</p>
+          <p className="mr-auto text-xs text-muted-foreground">{t("sep12Chat.pause.draftSaved")}</p>
         ) : null}
         {resumeHref ? (
-          <Button asChild size="sm" className="bg-(--status-agent-paused) text-foreground hover:bg-(--status-agent-paused)/80 dark:text-background">
-            <Link to={resumeHref}><Play aria-hidden="true" />Resume subtree</Link>
+          <Button asChild size="sm" className="h-auto min-h-9 max-w-full whitespace-normal text-center bg-(--status-agent-paused) text-foreground hover:bg-(--status-agent-paused)/80 dark:text-background">
+            <Link to={resumeHref}><Play aria-hidden="true" />{t("sep12Chat.pause.resumeSubtree")}</Link>
           </Button>
         ) : (
           <Button
             size="sm"
             disabled={pending || !onResume}
             onClick={onResume}
-            className="bg-(--status-agent-paused) text-foreground hover:bg-(--status-agent-paused)/80 dark:text-background"
+            className="h-auto min-h-9 max-w-full whitespace-normal text-center bg-(--status-agent-paused) text-foreground hover:bg-(--status-agent-paused)/80 dark:text-background"
           >
             {pending ? <Loader2 aria-hidden="true" className="animate-spin" /> : <Play aria-hidden="true" />}
-            {pending ? "Resuming…" : subtree ? "Resume subtree" : "Resume task"}
+            {t(pending ? "sep12Chat.pause.resuming" : subtree ? "sep12Chat.pause.resumeSubtree" : "sep12Chat.pause.resumeTask")}
           </Button>
         )}
       </div>

@@ -1,7 +1,9 @@
+import { useTranslation } from "@/i18n";
 import type { SecretStatus, UserSecretCoverageSummary } from "@paperclipai/shared";
 import { UserRound } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { t } from "@/i18n";
 
 /**
  * User secrets are visually distinct from company secrets via a violet accent
@@ -13,7 +15,14 @@ export const USER_SECRET_ACCENT_BORDER = "border-violet-500/30";
 export const USER_SECRET_ACCENT_BG = "bg-violet-500/10";
 
 /** Small pill used to mark user-scoped rows and headers. */
-export function UserSecretChip({ className, label = "User secret" }: { className?: string; label?: string }) {
+export function UserSecretChip({
+  className,
+  label = t("pages.secrets.common.userSecret"),
+}: {
+  className?: string;
+  label?: string;
+}) {
+  useTranslation();
   return (
     <Badge variant="outline"
       className={cn(
@@ -44,6 +53,19 @@ export function secretStatusTone(status: SecretStatus): string {
   }
 }
 
+export function secretStatusLabel(status: SecretStatus): string {
+  switch (status) {
+    case "active":
+      return t("pages.secrets.status.active");
+    case "disabled":
+      return t("pages.secrets.status.disabled");
+    case "archived":
+      return t("pages.secrets.status.archived");
+    default:
+      return status;
+  }
+}
+
 /** Tone for "my value" state: set (emerald), not set (amber), inactive (muted). */
 export type MyValueState = "set" | "not_set" | "inactive";
 
@@ -61,11 +83,11 @@ export function myValueTone(state: MyValueState): string {
 export function myValueLabel(state: MyValueState): string {
   switch (state) {
     case "set":
-      return "Value set";
+      return t("pages.secrets.myValue.set");
     case "not_set":
-      return "Not set";
+      return t("pages.secrets.myValue.notSet");
     case "inactive":
-      return "Disabled";
+      return t("pages.secrets.status.disabled");
   }
 }
 
@@ -76,5 +98,5 @@ export function myValueLabel(state: MyValueState): string {
 export function coverageSummaryLabel(summary: UserSecretCoverageSummary | undefined): string {
   if (!summary) return "—";
   const total = summary.configuredCount + summary.missingCount + summary.inactiveCount;
-  return `${summary.configuredCount} of ${total} set`;
+  return t("pages.secrets.coverage.summary", { configured: summary.configuredCount, total });
 }

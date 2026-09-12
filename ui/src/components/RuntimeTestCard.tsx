@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import {
   CircleCheck,
   CircleAlert,
@@ -12,29 +13,29 @@ export type TestState = "idle" | "running" | "pass" | "fail";
 
 const copy = {
   idle: {
-    title: "Test your agent",
-    description: "Check that your runtime and model can respond.",
-    action: "Run test",
+    get title() { return t("agentSetup.testAgent"); },
+    get description() { return t("agentSetup.testAgentDescription"); },
+    get action() { return t("agentSetup.runTest"); },
   },
   running: {
-    title: "Testing connection",
-    description: "Checking the runtime and waiting for a model response…",
-    action: "Testing…",
+    get title() { return t("agentSetup.testingConnection"); },
+    get description() { return t("agentSetup.testRuntimeDescription"); },
+    get action() { return t("agentSetup.testing"); },
   },
   pass: {
-    title: "Connection successful",
-    description: "Your runtime checks passed. Review the details below.",
-    action: "Test again",
+    get title() { return t("agentSetup.connectionSuccessful"); },
+    get description() { return t("agentSetup.testSuccessDescription"); },
+    get action() { return t("agentSetup.testAgain"); },
   },
   warn: {
-    title: "Connection needs attention",
-    description: "Review the test details before running your agent.",
-    action: "Test again",
+    get title() { return t("agentSetup.testAttention"); },
+    get description() { return t("agentSetup.testAttentionDescription"); },
+    get action() { return t("agentSetup.testAgain"); },
   },
   fail: {
-    title: "Couldn't connect",
-    description: "Check your model and provider connection, then try again.",
-    action: "Retry test",
+    get title() { return t("agentSetup.testFailed"); },
+    get description() { return t("agentSetup.testFailedDescription"); },
+    get action() { return t("agentSetup.retryTest"); },
   },
 } as const;
 
@@ -51,6 +52,7 @@ export function RuntimeTestCard({
   onTest: () => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   const content = copy[state];
   const Icon =
     state === "running"
@@ -62,7 +64,7 @@ export function RuntimeTestCard({
           : Play;
   return (
     <section
-      aria-label="Runtime test"
+      aria-label={t("agentSetup.runtimeTest")}
       className="rounded-lg border border-border bg-card"
     >
       <div className="flex items-start gap-3 p-4 sm:items-center">
@@ -117,7 +119,7 @@ export function RuntimeTestCard({
               aria-hidden="true"
               className="size-3 transition-transform group-open:rotate-90"
             />
-            Test details
+            {t("agentSetup.testDetails")}
           </summary>
           <ul className="space-y-3 px-4 pb-4">
             {result.checks.map((check) => (

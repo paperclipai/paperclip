@@ -4,6 +4,7 @@ import { act, StrictMode, useState, type ReactElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import {
   buildAgentMentionHref,
   buildSkillMentionHref,
@@ -1726,6 +1727,54 @@ describe("TaskChatComposer", () => {
   });
 
   describe("paused task takeover", () => {
+    afterEach(async () => { await i18n.changeLanguage("en"); });
+
+    it("preserves a paused draft through EN–RU–EN without resuming or submitting", async () => {
+      const onAdd = vi.fn();
+      const onResume = vi.fn();
+      const props = { onAdd, workMode: "standard" as const, draftKey: "pause-locale-draft" };
+      render(<TaskChatComposer {...props} />);
+      typeText("Draft stays **exactly** as written.");
+      render(<TaskChatComposer {...props} pause={{ scope: "leaf", onResume }} />);
+      const button = container.querySelector("button");
+      for (const language of ["en", "ru", "en"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(container.querySelector("button")).toBe(button);
+        expect(container.textContent).toContain(language === "ru" ? "Черновик сохранён." : "Your draft is saved.");
+        expect(container.querySelector('[data-testid="mdx-editor"]')).toBeNull();
+        expect(onAdd).not.toHaveBeenCalled();
+        expect(onResume).not.toHaveBeenCalled();
+      }
+      render(<TaskChatComposer {...props} />);
+      expect(editable().textContent).toBe("Draft stays **exactly** as written.");
+      await act(async () => sendButton().click());
+      expect(onAdd).toHaveBeenCalledExactlyOnceWith("Draft stays **exactly** as written.", undefined, undefined);
+    });
+
+    it("retranslates a retained conversation goal error and preserves raw slash command submission", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onRunnerGoalCommand = vi.fn();
+      render(<TaskChatComposer onAdd={onAdd} conversationMode workMode="standard" onRunnerGoalCommand={onRunnerGoalCommand} />);
+      typeText("/goal Keep the original goal text");
+      await act(async () => sendButton().click());
+      const editor = editable();
+      const alert = container.querySelector('[data-testid="task-chat-goal-error"]');
+      for (const language of ["en", "ru", "en"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(editable()).toBe(editor);
+        expect(editor.textContent).toBe("/goal Keep the original goal text");
+        expect(container.querySelector('[data-testid="task-chat-goal-error"]')).toBe(alert);
+        expect(alert?.textContent).toBe(language === "ru"
+          ? "Если агент должен продолжать работу над целью, создайте отдельную задачу."
+          : "Create a separate task for work that needs an ongoing execution goal.");
+        expect(onAdd).not.toHaveBeenCalled();
+        expect(onRunnerGoalCommand).not.toHaveBeenCalled();
+      }
+      typeText("/new");
+      await act(async () => sendButton().click());
+      expect(onAdd).toHaveBeenCalledExactlyOnceWith("/new", undefined, undefined, undefined, expect.any(String));
+    });
+
     it("allows only standalone /new to resume a paused conversation through the normal composer", async () => {
       const onAdd = vi.fn().mockResolvedValue(undefined);
       render(<TaskChatComposer onAdd={onAdd} conversationMode workMode="standard" pause={{ scope: "leaf" }} />);
@@ -2260,6 +2309,24 @@ describe("TaskChatComposer", () => {
         expect(document.activeElement?.textContent).toBe("Second");
         act(() => vi.advanceTimersByTime(160));
         expect(container.textContent).toContain("2 of 3");
+      });
+
+      it("does not restart a pending advance or change the selected ID on language switches", async () => {
+        render(form());
+        click('[role="radio"]');
+        const selected = container.querySelector('[role="radio"]');
+        act(() => vi.advanceTimersByTime(80));
+        for (const language of ["ru", "en"]) {
+          await act(async () => { await i18n.changeLanguage(language); });
+          expect(container.querySelector('[role="radio"]')).toBe(selected);
+          expect(selected?.getAttribute("aria-checked")).toBe("true");
+          expect(container.querySelector(".tc-question-choice-confirm")).not.toBeNull();
+        }
+        act(() => vi.advanceTimersByTime(80));
+        expect(container.textContent).toContain("2 of 3");
+        expect(document.activeElement?.textContent).toBe("Second");
+        click('[aria-label="Previous question"]');
+        expect(container.querySelector('[role="radio"]')?.getAttribute("aria-checked")).toBe("true");
       });
 
       it.each(["navigation", "custom answer", "disabled", "unmount"])("cancels the pending advance on %s", (reason) => {

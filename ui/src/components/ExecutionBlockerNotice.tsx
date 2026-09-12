@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useTranslation } from "@/i18n";
 import type { ExecutionBlocker } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { activityApi } from "../api/activity";
@@ -11,6 +12,7 @@ export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried 
   blocker: ExecutionBlocker;
   onRetried: () => void;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { data: runs } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
@@ -29,11 +31,11 @@ export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried 
     },
   });
   return (
-    <div role="status" aria-label="Task recovery" className="mx-(--sz-execution-blocker-inline) my-(--sz-execution-blocker-block) flex flex-wrap items-center justify-between execution-blocker-notice border border-border bg-muted text-foreground">
-      <span>{blocker.cause === "legacy_execution_requires_reconciliation" ? "Automatic recovery of this task stopped." : blocker.nextAction}</span>
+    <div role="status" aria-label={t("sep13Recovery.label")} className="mx-(--sz-execution-blocker-inline) my-(--sz-execution-blocker-block) flex flex-wrap items-center justify-between execution-blocker-notice border border-border bg-muted text-foreground">
+      <span>{blocker.cause === "legacy_execution_requires_reconciliation" ? t("sep13Recovery.stopped") : blocker.nextAction}</span>
       {failedRun && (
         <Button variant="outline" size="sm" disabled={retry.isPending} onClick={() => retry.mutate()}>
-          {retry.isPending ? "Retrying…" : "Retry"}
+          {retry.isPending ? t("sep12Screens.retrying") : t("sep12Screens.retry")}
         </Button>
       )}
       {retry.isError && (

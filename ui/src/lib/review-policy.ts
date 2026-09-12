@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { UserCheck, UserMinus, type LucideIcon } from "lucide-react";
 import { ISSUE_REVIEW_POLICIES, type IssueReviewPolicy } from "@paperclipai/shared";
 
@@ -32,23 +33,23 @@ export interface IssueReviewPolicyBadge {
 const BADGES: Partial<Record<IssueReviewPolicy, IssueReviewPolicyBadge>> = {
   not_creator: {
     value: "not_creator",
-    label: "Anyone else",
-    description: "Anyone except whoever asked for the review can approve it.",
+    get label() { return t("localizationTaskRuntime.ui_Anyone_else_holkpc"); },
+    get description() { return t("localizationTaskRuntime.ui_Anyone_except_whoever_asked_for_the_review_can_approve_it_53us2y"); },
     Icon: UserMinus,
   },
   human_only: {
     value: "human_only",
-    label: "Human only",
-    description: "Only a person can approve this review. Agents cannot give the verdict.",
+    get label() { return t("localizationTaskRuntime.ui_Human_only_9zzfeg"); },
+    get description() { return t("localizationTaskRuntime.ui_Only_a_person_can_approve_this_review_Agents_cannot_give_the_verd_15ym0h2"); },
     Icon: UserCheck,
   },
 };
 
 /** Mid-sentence wording for activity lines and field-change receipts. */
 const VALUE_LABELS: Record<IssueReviewPolicy, string> = {
-  anyone: "anyone",
-  not_creator: "anyone else",
-  human_only: "human only",
+  get anyone() { return t("localizationTaskRuntime.anyReviewer"); },
+  get not_creator() { return t("localizationTaskRuntime.ui_anyone_else_1ephtdc"); },
+  get human_only() { return t("localizationTaskRuntime.ui_human_only_143rlso"); },
 };
 
 /**

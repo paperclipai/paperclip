@@ -1,3 +1,7 @@
+import { t, useTranslation, i18n } from "@/i18n";
+import { Trans } from "react-i18next";
+import { formatFileSizeDisplay } from "./task-chat/task-chat-attachments";
+import { taskChatDisplayLabel, taskChatDurationLabel, taskChatEnumLabel } from "./task-chat/task-chat-display";
 import { TaskChatPausedTakeover, type TaskComposerPause } from "./task-chat/TaskChatPausedTakeover";
 import { useEmailComment } from "./EmailMessageCard";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
@@ -70,6 +74,8 @@ import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
 import {
   buildIssueChatMessages,
   formatDurationWords,
+
+  issueChatRunLabelDisplay,
   isCoTSegmentActive,
   stabilizeThreadMessages,
   type IssueChatComment,
@@ -95,7 +101,8 @@ import {
 import { isLiveIssueRun } from "../lib/liveIssueIds";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import {
-  formatTimelineWorkspaceLabel,
+
+  timelineWorkspaceLabelDisplay as formatTimelineWorkspaceLabel,
   type IssueTimelineAssignee,
   type IssueTimelineEvent,
   type IssueTimelineWorkspace,
@@ -169,8 +176,8 @@ import {
   restoreComposerViewportSnapshot,
   shouldPreserveComposerViewport,
 } from "../lib/issue-chat-scroll";
-import { formatAssigneeUserLabel } from "../lib/assignees";
-import type { CompanyUserProfile } from "../lib/company-members";
+import { formatAssigneeUserDisplayLabel as formatAssigneeUserLabel, formatAssigneeUserLabel as canonicalAssigneeUserLabel } from "../lib/assignees";
+import { companyUserLabelDisplayLabel, companyUserProfileDisplayLabel, type CompanyUserProfile } from "../lib/company-members";
 import { timeAgo } from "../lib/timeAgo";
 import {
   isSuccessfulRunHandoffComment,
@@ -188,6 +195,7 @@ import {
   mapCommentMetadataToSystemNoticeSections,
   systemNoticeLabelForTone,
 } from "../lib/system-notice-comment";
+import  { systemNoticeMetadataLabelDisplay, systemNoticeMetadataValueDisplay, systemNoticeRunStatusDisplay } from "../lib/system-notice-comment";
 import type {
   IssueCommentMetadata,
   IssueCommentPresentation,
@@ -201,6 +209,8 @@ import {
   parseToolPayload,
   summarizeToolInput,
   summarizeToolResult,
+
+  toolInputDetailDisplay,
 } from "../lib/transcriptPresentation";
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { useComposerStop } from "@/hooks/useComposerStop";
@@ -405,7 +415,7 @@ function useLiveElapsed(
   // timer rather than one per element.
   useSecondTick(Boolean(active && startMs));
   if (!active || !startMs) return null;
-  return formatDurationWords(Date.now() - startMs);
+  return  taskChatDurationLabel(formatDurationWords(Date.now() - startMs) ?? "");
 }
 
 function readCustomString(
@@ -430,6 +440,7 @@ function IssueChatLiveRunStatusLine({
   active: boolean;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const currentStatusMessage = readCustomString(custom, "currentStatusMessage");
   const currentToolName = readCustomString(custom, "currentToolName");
   const lastAssistantSnippet = readCustomString(custom, "lastAssistantSnippet");
@@ -441,14 +452,14 @@ function IssueChatLiveRunStatusLine({
   if (!active) return null;
 
   const primary = currentToolName
-    ? `Using ${currentToolName}`
+    ? t("localizationTaskRuntime.liveUsingTool", { tool: currentToolName })
     : lastAssistantSnippet
       ? lastAssistantSnippet
       : currentStatusMessage;
   const activityText = lastActivityElapsed
     ? lastActivityAgeMs !== null && lastActivityAgeMs >= 15_000
-      ? `no output for ${lastActivityElapsed} - still running`
-      : `${lastActivityElapsed} ago`
+      ? t("localizationTaskRuntime.noOutputRunning", { duration: lastActivityElapsed })
+      : t("localizationTaskRuntime.timeAgo", { duration: lastActivityElapsed })
     : "";
   const text = [primary, activityText].filter(Boolean).join(" · ");
   if (!text) return null;
@@ -480,7 +491,7 @@ function useStableEvent<T extends (...args: never[]) => unknown>(
     // Keep the wrapper stable while the callback identity changes; the ref above
     // carries the current callback implementation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [Boolean(callback)]);
+  }, [i18n.resolvedLanguage, Boolean(callback)]);
 }
 
 interface CommentReassignment {
@@ -784,16 +795,18 @@ export function IssueAssigneePausedNotice({
   onResume?: () => Promise<void> | void;
   resuming?: boolean;
 }) {
+
+  const { t } = useTranslation();
   if (!agent || agent.status !== "paused") return null;
 
   const pauseDetail =
     agent.pauseReason === "budget"
-      ? "It was paused by a budget hard stop."
+      ? t("localizationTaskRuntime.ui_It_was_paused_by_a_budget_hard_stop_1b05ob1")
       : agent.pauseReason === "import"
-        ? "It arrived paused from an organization import — imported agents stay parked until you resume them."
+        ? t("localizationTaskRuntime.ui_It_arrived_paused_from_an_organization_import_imported_agents_sta_lvfkig")
         : agent.pauseReason === "system"
-          ? "It was paused by the system."
-          : "It was paused manually.";
+          ? t("localizationTaskRuntime.ui_It_was_paused_by_the_system_1rec418")
+          : t("localizationTaskRuntime.ui_It_was_paused_manually_16f49io");
   // Budget pauses clear on their own when the budget resets; resuming by hand
   // would fight the hard stop, so the action is only offered for the rest.
   const canResume = Boolean(onResume) && agent.pauseReason !== "budget";
@@ -804,11 +817,7 @@ export function IssueAssigneePausedNotice({
         tone="warning"
         icon={PauseCircle}
         compact
-        title={
-          <>
-            <span className="font-medium">{agent.name}</span> is paused.
-          </>
-        }
+        title={<Trans i18nKey="localizationTaskRuntime.agentPaused" values={{ name: agent.name }} components={{ agent: <span className="font-medium" /> }} />}
         actions={
           canResume ? (
             <Button
@@ -818,12 +827,12 @@ export function IssueAssigneePausedNotice({
               disabled={resuming}
               data-testid="issue-assignee-paused-resume"
             >
-              {resuming ? "Resuming…" : "Resume agent"}
+              {resuming ? t("localizationTaskRuntime.ui_Resuming_1uisyc1") : t("localizationTaskRuntime.ui_Resume_agent_1iqt3xn")}
             </Button>
           ) : undefined
         }
       >
-        New runs will not start until the agent is resumed. {pauseDetail}
+        {t("localizationTaskRuntime.ui_New_runs_will_not_start_until_the_agent_is_resumed_h8divt")} {pauseDetail}
       </InlineBanner>
     </div>
   );
@@ -835,9 +844,9 @@ function fallbackAuthorLabel(message: ThreadMessage) {
   if (typeof custom?.["authorName"] === "string") return custom["authorName"];
   if (typeof custom?.["runAgentName"] === "string")
     return custom["runAgentName"];
-  if (message.role === "assistant") return "Agent";
-  if (message.role === "user") return "You";
-  return "System";
+  if (message.role === "assistant") return t("localizationTaskRuntime.ui_Agent_1w5o8jq");
+  if (message.role === "user") return t("localizationTaskRuntime.ui_You_1efd4xo");
+  return t("localizationTaskRuntime.ui_System_13qbhrw");
 }
 
 function fallbackTextParts(message: ThreadMessage) {
@@ -848,10 +857,10 @@ function fallbackTextParts(message: ThreadMessage) {
       continue;
     }
     if (part.type === "tool-call") {
-      const lines = [`Tool: ${part.toolName}`];
-      if (part.argsText?.trim()) lines.push(`Args:\n${part.argsText}`);
+      const lines = [t("localizationTaskRuntime.toolFallback", { tool: part.toolName })];
+      if (part.argsText?.trim()) lines.push(t("localizationTaskRuntime.argsFallback", { args: part.argsText }));
       if (typeof part.result === "string" && part.result.trim())
-        lines.push(`Result:\n${part.result}`);
+        lines.push(t("localizationTaskRuntime.resultFallback", { result: part.result }));
       contentLines.push(lines.join("\n\n"));
     }
   }
@@ -863,7 +872,7 @@ function fallbackTextParts(message: ThreadMessage) {
     typeof custom?.["waitingText"] === "string" &&
     custom["waitingText"].trim()
   ) {
-    contentLines.push(custom["waitingText"]);
+    contentLines.push(issueChatRunLabelDisplay(custom["waitingText"], taskChatDurationLabel));
   }
   return contentLines;
 }
@@ -879,18 +888,17 @@ function IssueChatFallbackThread({
   variant: "full" | "embedded";
   externalReferences?: MarkdownExternalReferenceMap;
 }) {
+
+  const { t } = useTranslation();
   return (
     <div className={cn(variant === "embedded" ? "space-y-3" : "space-y-4")}>
       <div className="rounded-xl border border-amber-300/60 bg-amber-50/80 px-4 py-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-950/20 dark:text-amber-200">
         <div className="flex items-start gap-2">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
           <div className="space-y-1">
-            <p className="font-medium">
-              Chat renderer hit an internal state error.
-            </p>
+            <p className="font-medium">{t("localizationTaskRuntime.ui_Chat_renderer_hit_an_internal_state_error_cywhli")}</p>
             <p className="text-xs opacity-80">
-              Showing a safe fallback transcript instead of crashing the tasks
-              page.
+              {t("localizationTaskRuntime.ui_Showing_a_safe_fallback_transcript_instead_of_crashing_the_tasks__fg7682")}
             </p>
           </div>
         </div>
@@ -937,9 +945,7 @@ function IssueChatFallbackThread({
                       </MarkdownBody>
                     ))
                   ) : (
-                    <p className="text-sm text-muted-foreground">
-                      No message content.
-                    </p>
+                    <p className="text-sm text-muted-foreground">{t("localizationTaskRuntime.ui_No_message_content_177uukq")}</p>
                   )}
                 </div>
               </Card>
@@ -972,9 +978,7 @@ function hasFilePayload(evt: ReactDragEvent<HTMLDivElement>) {
 
 function formatAttachmentSize(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "";
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return formatFileSizeDisplay(bytes);
 }
 
 function toIsoString(value: string | Date | null | undefined): string | null {
@@ -1083,6 +1087,8 @@ export function SuccessfulRunHandoffCommentCallout({
   recessed?: boolean;
   onImageClick?: (src: string) => void;
 }) {
+
+  useTranslation();
   const escalated = isSuccessfulRunHandoffEscalationComment(text);
   return (
     <div
@@ -1116,8 +1122,8 @@ export function SuccessfulRunHandoffCommentCallout({
 }
 
 function humanizeValue(value: string | null) {
-  if (!value) return "None";
-  return value.replace(/_/g, " ");
+  if (!value) return t("localizationTaskRuntime.ui_None_deku7v");
+  return t(`status.${value}`, { defaultValue: value.replace(/_/g, " ") });
 }
 
 function initialsForName(name: string) {
@@ -1139,12 +1145,12 @@ function formatInteractionActorLabel(args: {
   if (agentId) return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
   if (userId) {
     return (
-      userLabelMap?.get(userId) ??
+      companyUserLabelDisplayLabel(userId, userLabelMap) ??
       formatAssigneeUserLabel(userId, currentUserId, userLabelMap) ??
-      "Board"
+      t("localizationTaskRuntime.ui_Board_1hpelzf")
     );
   }
-  return "System";
+  return t("localizationTaskRuntime.ui_System_13qbhrw");
 }
 
 export function resolveIssueChatHumanAuthor(args: {
@@ -1152,18 +1158,25 @@ export function resolveIssueChatHumanAuthor(args: {
   authorUserId?: string | null;
   currentUserId?: string | null;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile> | null;
+
+  userLabelMap?: ReadonlyMap<string, string> | null;
 }) {
-  const { authorName, authorUserId, currentUserId, userProfileMap } = args;
+  const { authorName, authorUserId, currentUserId, userProfileMap , userLabelMap } = args;
   const profile = authorUserId
     ? (userProfileMap?.get(authorUserId) ?? null)
     : null;
   const isCurrentUser = Boolean(
     authorUserId && currentUserId && authorUserId === currentUserId,
   );
-  const resolvedAuthorName =
-    profile?.label?.trim() ||
-    authorName?.trim() ||
-    (authorUserId === "local-board" ? "Board" : isCurrentUser ? "You" : "User");
+  const explicitLabel = companyUserProfileDisplayLabel(profile)?.trim()
+    || companyUserLabelDisplayLabel(authorUserId, userLabelMap)?.trim();
+  // Translate only generated author fallbacks; real names remain unchanged.
+  const canonicalFallback = canonicalAssigneeUserLabel(authorUserId, currentUserId) ?? "You";
+  const displayAuthorName = !explicitLabel && authorName === canonicalFallback
+    ? formatAssigneeUserLabel(authorUserId, currentUserId) ?? t("localizationTaskRuntime.ui_You_1efd4xo")
+    : authorName?.trim();
+  const resolvedAuthorName = explicitLabel || displayAuthorName
+    || (authorUserId === "local-board" ? t("localizationTaskRuntime.ui_Board_1hpelzf") : isCurrentUser ? t("localizationTaskRuntime.ui_You_1efd4xo") : t("localizationTaskRuntime.ui_User_1qbyk9e"));
 
   return {
     isCurrentUser,
@@ -1182,8 +1195,8 @@ function toolCountSummary(toolParts: ToolCallMessagePart[]): string | null {
   }
   const parts: string[] = [];
   if (commands > 0)
-    parts.push(`ran ${commands} command${commands === 1 ? "" : "s"}`);
-  if (other > 0) parts.push(`called ${other} tool${other === 1 ? "" : "s"}`);
+    parts.push(t("localizationTaskRuntime.ranCommands", { count: commands }));
+  if (other > 0) parts.push(t("localizationTaskRuntime.calledTools", { count: other }));
   return parts.join(", ");
 }
 
@@ -1206,6 +1219,7 @@ function IssueChatChainOfThought({
   message: ThreadMessage;
   cotParts: readonly IssueChatCoTPart[];
 }) {
+  const { t } = useTranslation();
   const { agentMap } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const runAgentId =
@@ -1230,7 +1244,7 @@ function IssueChatChainOfThought({
 
   const myIndex = useMemo(
     () => findCoTSegmentIndex(message.content, cotParts),
-    [message.content, cotParts],
+    [i18n.resolvedLanguage, message.content, cotParts],
   );
 
   const allReasoningText = cotParts
@@ -1263,15 +1277,15 @@ function IssueChatChainOfThought({
   let headerVerb: string;
   let headerSuffix: string | null = null;
   if (isActive) {
-    headerVerb = "Working";
-    if (liveElapsed) headerSuffix = `for ${liveElapsed}`;
+    headerVerb = taskChatDisplayLabel("Working");
+    if (liveElapsed) headerSuffix = t("localizationTaskRuntime.forDuration", { duration: liveElapsed });
   } else if (segmentTiming) {
     const durationMs = segmentTiming.endMs - segmentTiming.startMs;
-    const durationText = formatDurationWords(durationMs);
-    headerVerb = "Worked";
-    if (durationText) headerSuffix = `for ${durationText}`;
+    const durationText = taskChatDurationLabel(formatDurationWords(durationMs) ?? "");
+    headerVerb = t("localizationTaskRuntime.worked");
+    if (durationText) headerSuffix = t("localizationTaskRuntime.forDuration", { duration: durationText });
   } else {
-    headerVerb = "Worked";
+    headerVerb = t("localizationTaskRuntime.worked");
   }
 
   const toolSummary = toolCountSummary(toolParts);
@@ -1384,6 +1398,8 @@ function IssueChatChainOfThought({
 // reader has scrolled up to review earlier thinking. All other adapters keep
 // the ticker (IssueChatReasoningPart below), which is unchanged.
 function IssueChatVerboseLiveReasoningPart({ text }: { text: string }) {
+
+  useTranslation();
   const lines = text.split("\n").filter((l) => l.trim());
   const scrollRef = useRef<HTMLDivElement>(null);
   const pinnedToBottomRef = useRef(true);
@@ -1428,6 +1444,8 @@ function IssueChatVerboseLiveReasoningPart({ text }: { text: string }) {
 }
 
 function IssueChatReasoningPart({ text }: { text: string }) {
+
+  useTranslation();
   const lines = text.split("\n").filter((l) => l.trim());
   const lastLine = lines[lines.length - 1] ?? text.slice(-200);
   const prevRef = useRef(lastLine);
@@ -1479,6 +1497,8 @@ function IssueChatRollingToolPart({
 }: {
   toolParts: ToolCallMessagePart[];
 }) {
+
+  useTranslation();
   const latest = toolParts[toolParts.length - 1];
   if (!latest) return null;
 
@@ -1542,6 +1562,7 @@ function CopyablePreBlock({
   children: string;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const toastActions = useOptionalToastActions();
   return (
@@ -1553,8 +1574,8 @@ function CopyablePreBlock({
           "absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-md bg-background/80 text-muted-foreground opacity-0 backdrop-blur-sm transition-opacity hover:text-foreground group-hover/pre:opacity-100",
           copied && "opacity-100",
         )}
-        title="Copy"
-        aria-label="Copy"
+        title={t("localizationTaskRuntime.ui_Copy_s6g5lw")}
+        aria-label={t("localizationTaskRuntime.ui_Copy_s6g5lw")}
         onClick={() => {
           void copyTextToClipboard(children)
             .then(() => {
@@ -1563,11 +1584,11 @@ function CopyablePreBlock({
             })
             .catch((error) => {
               toastActions?.pushToast({
-                title: "Copy failed",
+                get title() { return t("localizationTaskRuntime.ui_Copy_failed_1begn1d"); },
                 body:
                   error instanceof Error
                     ? error.message
-                    : "Unable to copy text",
+                    : t("localizationTaskRuntime.ui_Unable_to_copy_text_kfatar"),
                 tone: "error",
               });
             });
@@ -1605,6 +1626,7 @@ function IssueChatToolPart({
   result?: unknown;
   isError?: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   if (toolName === "paperclip_provider_activity") {
     return (
@@ -1673,13 +1695,13 @@ function IssueChatToolPart({
             {nonIntentDetails.length > 0 ? (
               <div>
                 <div className="mb-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground/60">
-                  Input
+                  {t("localizationTaskRuntime.ui_Input_189z5sr")}
                 </div>
                 <dl className="space-y-1.5">
                   {nonIntentDetails.map((detail) => (
                     <div key={`${detail.label}:${detail.value}`}>
                       <dt className="text-(length:--text-nano) font-medium text-muted-foreground/60">
-                        {detail.label}
+                        {toolInputDetailDisplay(detail, parsedArgs).label}
                       </dt>
                       <dd
                         className={cn(
@@ -1688,7 +1710,7 @@ function IssueChatToolPart({
                             "font-mono text-(length:--text-micro)",
                         )}
                       >
-                        {detail.value}
+                        {toolInputDetailDisplay(detail, parsedArgs).value}
                       </dd>
                     </div>
                   ))}
@@ -1697,7 +1719,7 @@ function IssueChatToolPart({
             ) : rawArgsText ? (
               <div>
                 <div className="mb-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground/60">
-                  Input
+                  {t("localizationTaskRuntime.ui_Input_189z5sr")}
                 </div>
                 <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-(length:--text-micro) leading-4 text-foreground/70">
                   {rawArgsText}
@@ -1706,9 +1728,7 @@ function IssueChatToolPart({
             ) : null}
             {result !== undefined ? (
               <div>
-                <div className="mb-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground/60">
-                  Result
-                </div>
+                <div className="mb-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground/60">{t("pages.secrets.import.steps.result")}</div>
                 <CopyablePreBlock className="overflow-x-auto rounded-md bg-accent/30 p-2 text-(length:--text-micro) leading-4 text-foreground/70">
                   {resultText}
                 </CopyablePreBlock>
@@ -1732,6 +1752,7 @@ function IssueChatProviderActivity({
   open: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useTranslation();
   const value =
     typeof args === "object" && args !== null && !Array.isArray(args)
       ? (args as Record<string, unknown>)
@@ -1743,7 +1764,7 @@ function IssueChatProviderActivity({
       ? (value.payload as Record<string, unknown>)
       : {};
   const title =
-    typeof value.title === "string" ? value.title : "Provider activity";
+    typeof value.title === "string" ? value.title : t("localizationTaskRuntime.ui_Provider_activity_3z9emh");
   const summary = typeof value.summary === "string" ? value.summary : "";
   const steps = Array.isArray(payload.steps) ? payload.steps.slice(0, 256) : [];
   const children = Array.isArray(payload.children)
@@ -1825,9 +1846,9 @@ function IssueChatProviderActivity({
               return (
                 <div key={String(child.childId ?? index)}>
                   <span className="font-medium">
-                    {String(child.role ?? "Child agent")}
+                    {String(child.role ?? t("localizationTaskRuntime.ui_Child_agent_ffy6zw"))}
                   </span>{" "}
-                  · {String(child.status ?? "unknown")}
+                  · {taskChatEnumLabel(String(child.status ?? "unknown"))}
                   {child.summary ? ` — ${String(child.summary)}` : ""}
                 </div>
               );
@@ -1854,17 +1875,15 @@ function IssueChatProviderActivity({
                       {String(source.title ?? href)}
                     </a>
                   ) : (
-                    <span>{String(source.title ?? "Unavailable source")}</span>
+                    <span>{String(source.title ?? t("localizationTaskRuntime.ui_Unavailable_source_19zoxse"))}</span>
                   )}{" "}
-                  <span className="text-muted-foreground">
-                    (provider-reported)
-                  </span>
+                  <span className="text-muted-foreground">{t("localizationTaskRuntime.ui__provider_reported_1gwckph")}</span>
                 </div>
               );
             })}
             {effectiveModel ? (
               <div>
-                <span className="text-muted-foreground">Model</span>{" "}
+                <span className="text-muted-foreground">{t("localizationTaskRuntime.ui_Model_107rbay")}</span>{" "}
                 {requestedModel && requestedModel !== effectiveModel
                   ? `${requestedModel} → `
                   : ""}
@@ -1899,6 +1918,8 @@ const IssueChatTextParts = memo(function IssueChatTextParts({
   recessed?: boolean;
   onAccent?: boolean;
 }) {
+
+  useTranslation();
   return (
     <>
       {message.content
@@ -1962,6 +1983,8 @@ const IssueChatAssistantParts = memo(function IssueChatAssistantParts({
   message: ThreadMessage;
   hasCoT: boolean;
 }) {
+
+  useTranslation();
   const groupedParts = useMemo(
     () => groupAssistantParts(message.content),
     [message.content],
@@ -1998,11 +2021,15 @@ function IssueChatUserMessage({
   isInterruptingQueuedRun: boolean;
 }) {
   const {
+     t } = useTranslation();
+  const {
     onInterruptQueued,
     onCancelQueued,
     onDeleteComment,
     currentUserId,
     userProfileMap,
+
+    userLabelMap,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId =
@@ -2024,7 +2051,7 @@ function IssueChatUserMessage({
   const queueReason =
     typeof custom.queueReason === "string" ? custom.queueReason : null;
   const queueBadgeLabel =
-    queueReason === "hold" ? "\u23f8 Deferred wake" : "Queued";
+    queueReason === "hold" ? t("localizationTaskThread.deferredWake") : taskChatDisplayLabel("Queued");
   const pending = custom.clientStatus === "pending";
   const deleted = Boolean(custom.deletedAt);
   const queueTargetRunId =
@@ -2043,6 +2070,8 @@ function IssueChatUserMessage({
     authorUserId,
     currentUserId,
     userProfileMap,
+
+    userLabelMap,
   });
   const authorAvatar = (
     <Avatar size="sm" className="shrink-0">
@@ -2086,7 +2115,7 @@ function IssueChatUserMessage({
             variant="outline"
             className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)"
           >
-            Follow-up
+            {t("localizationTaskRuntime.ui_Follow_up_91gycy")}
           </Badge>
         ) : null}
       </div>
@@ -2124,7 +2153,7 @@ function IssueChatUserMessage({
                 disabled={isInterruptingQueuedRun}
                 onClick={() => void onInterruptQueued(queueTargetRunId)}
               >
-                {isInterruptingQueuedRun ? "Interrupting..." : "Interrupt"}
+                {isInterruptingQueuedRun ? t("localizationTaskRuntime.ui_Interrupting_1jn05i6") : t("localizationTaskRuntime.ui_Interrupt_1arf5yo")}
               </Button>
             ) : null}
             {onCancelQueued ? (
@@ -2134,15 +2163,13 @@ function IssueChatUserMessage({
                 className="h-6 border-amber-300 px-2 text-(length:--text-micro) text-amber-900 hover:bg-amber-100/80 hover:text-amber-950 dark:border-amber-500/40 dark:text-amber-100 dark:hover:bg-amber-500/10"
                 onClick={() => onCancelQueued(commentId)}
               >
-                Cancel
+                {t("localizationTaskRuntime.ui_Cancel_ew9em3")}
               </Button>
             ) : null}
           </div>
         ) : null}
         {deleted ? (
-          <div className="text-sm italic text-muted-foreground">
-            Comment deleted
-          </div>
+          <div className="text-sm italic text-muted-foreground">{t("localizationIssueDetail.ui_Comment_deleted")}</div>
         ) : (
           <div className="min-w-0 max-w-full space-y-3">
             <IssueChatTextParts
@@ -2155,7 +2182,7 @@ function IssueChatUserMessage({
 
       {sentFromIMessage && !deleted ? (
         <div className="mt-1 px-1 text-xs text-muted-foreground">
-          Sent from iMessage
+          {t("communityPhoton.sentFromIMessage")}
         </div>
       ) : null}
       {pending ? (
@@ -2165,7 +2192,7 @@ function IssueChatUserMessage({
             isCurrentUser ? "justify-end" : "justify-start",
           )}
         >
-          Sending...
+          {t("localizationTaskRuntime.ui_Sending_2q3xjh")}
         </div>
       ) : (
         <div
@@ -2191,8 +2218,8 @@ function IssueChatUserMessage({
             <button
               type="button"
               className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-              title="Copy message"
-              aria-label="Copy message"
+              title={t("localizationTaskRuntime.ui_Copy_message_1b3i557")}
+              aria-label={t("localizationTaskRuntime.ui_Copy_message_1b3i557")}
               onClick={() => {
                 const text = message.content
                   .filter(
@@ -2208,11 +2235,11 @@ function IssueChatUserMessage({
                   })
                   .catch((error) => {
                     toastActions?.pushToast({
-                      title: "Copy failed",
+                      title: t("localizationAgents.ui93_Copy_failed"),
                       body:
                         error instanceof Error
                           ? error.message
-                          : "Unable to copy message",
+                          : t("localizationTaskRuntime.ui_Unable_to_copy_message_9tn003"),
                       tone: "error",
                     });
                   });
@@ -2229,8 +2256,8 @@ function IssueChatUserMessage({
             <button
               type="button"
               className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-destructive"
-              title="Delete comment"
-              aria-label="Delete comment"
+              title={t("localizationTaskRuntime.ui_Delete_comment_1o5c6oj")}
+              aria-label={t("localizationTaskRuntime.ui_Delete_comment_1o5c6oj")}
               onClick={handleDeleteComment}
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -2266,9 +2293,9 @@ function IssueChatUserMessage({
       <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Delete comment?</DialogTitle>
+            <DialogTitle>{t("localizationTaskRuntime.ui_Delete_comment_co8f44")}</DialogTitle>
             <DialogDescription>
-              This will replace the comment with a deleted-comment marker.
+              {t("localizationTaskRuntime.ui_This_will_replace_the_comment_with_a_deleted_comment_marker_qkvt99")}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -2276,10 +2303,10 @@ function IssueChatUserMessage({
               variant="outline"
               onClick={() => setDeleteDialogOpen(false)}
             >
-              Cancel
+              {t("localizationTaskRuntime.ui_Cancel_ew9em3")}
             </Button>
             <Button variant="destructive" onClick={confirmDeleteComment}>
-              Delete comment
+              {t("localizationTaskRuntime.ui_Delete_comment_1o5c6oj")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2300,13 +2327,15 @@ function IssueChatAssistantMessage({
   isStoppingRun: boolean;
 }) {
   const {
+     t } = useTranslation();
+  const {
     feedbackDataSharingPreference,
     feedbackTermsUrl,
     onVote,
     agentMap,
     onStopRun,
-    stopRunLabel = "Stop run",
-    stoppingRunLabel = "Stopping...",
+    stopRunLabel = t("localizationTaskRuntime.ui_Stop_run_94a594"),
+    stoppingRunLabel = t("localizationTaskRuntime.ui_Stopping_1qfhze5"),
     stopRunVariant = "stop",
     runFinalizationActions = [],
     userLabelMap,
@@ -2320,7 +2349,7 @@ function IssueChatAssistantMessage({
       ? custom.authorName
       : typeof custom.runAgentName === "string"
         ? custom.runAgentName
-        : "Agent";
+        : t("localizationTaskRuntime.ui_Agent_1w5o8jq");
   const authorAgentId =
     typeof custom.authorAgentId === "string" ? custom.authorAgentId : null;
   const runId = typeof custom.runId === "string" ? custom.runId : null;
@@ -2342,7 +2371,7 @@ function IssueChatAssistantMessage({
         ? custom.onBehalfOfUserId
         : null,
     issueAssigneeAgentId,
-    resolveUserLabel: (userId) => userLabelMap?.get(userId),
+    resolveUserLabel: (userId) => companyUserLabelDisplayLabel(userId, userLabelMap),
   });
   const notices = Array.isArray(custom.notices)
     ? custom.notices.filter(
@@ -2441,8 +2470,8 @@ function IssueChatAssistantMessage({
       <button
         type="button"
         className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        title="Copy message"
-        aria-label="Copy message"
+        title={t("localizationTaskRuntime.ui_Copy_message_1b3i557")}
+        aria-label={t("localizationTaskRuntime.ui_Copy_message_1b3i557")}
         onClick={() => {
           void copyTextToClipboard(copyText)
             .then(() => {
@@ -2451,11 +2480,11 @@ function IssueChatAssistantMessage({
             })
             .catch((error) => {
               toastActions?.pushToast({
-                title: "Copy failed",
+                title: t("localizationAgents.ui93_Copy_failed"),
                 body:
                   error instanceof Error
                     ? error.message
-                    : "Unable to copy message",
+                    : t("localizationTaskRuntime.ui_Unable_to_copy_message_9tn003"),
                 tone: "error",
               });
             });
@@ -2494,8 +2523,8 @@ function IssueChatAssistantMessage({
             variant="ghost"
             size="icon-xs"
             className="text-muted-foreground hover:text-foreground"
-            title="More actions"
-            aria-label="More actions"
+            title={t("localizationIssueDetail.ui_More_actions")}
+            aria-label={t("localizationIssueDetail.ui_More_actions")}
           >
             <MoreHorizontal className="h-3.5 w-3.5" />
           </Button>
@@ -2505,18 +2534,18 @@ function IssueChatAssistantMessage({
             onClick={() => {
               void copyTextToClipboard(copyText).catch((error) => {
                 toastActions?.pushToast({
-                  title: "Copy failed",
+                  get title() { return t("localizationTaskRuntime.ui_Copy_failed_1begn1d"); },
                   body:
                     error instanceof Error
                       ? error.message
-                      : "Unable to copy message",
+                      : t("localizationTaskRuntime.ui_Unable_to_copy_message_9tn003"),
                   tone: "error",
                 });
               });
             }}
           >
             <Copy className="mr-2 h-3.5 w-3.5" />
-            Copy message
+            {t("localizationTaskRuntime.ui_Copy_message_1b3i557")}
           </DropdownMenuItem>
           {canStopRun && onStopRun && runId ? (
             <DropdownMenuItem
@@ -2541,9 +2570,7 @@ function IssueChatAssistantMessage({
           {runHref ? (
             <DropdownMenuItem asChild>
               <Link to={runHref} target="_blank" rel="noreferrer noopener">
-                <Search className="mr-2 h-3.5 w-3.5" />
-                View run
-              </Link>
+                <Search className="mr-2 h-3.5 w-3.5" />{t("localizationActivity.viewRun")}</Link>
             </DropdownMenuItem>
           ) : null}
         </DropdownMenuContent>
@@ -2589,7 +2616,7 @@ function IssueChatAssistantMessage({
                 variant="outline"
                 className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)"
               >
-                Follow-up
+                {t("localizationTaskRuntime.ui_Follow_up_91gycy")}
               </Badge>
             ) : null}
           </div>
@@ -2604,9 +2631,7 @@ function IssueChatAssistantMessage({
             )}
           >
             {deleted ? (
-              <div className="text-sm italic text-muted-foreground">
-                Comment deleted
-              </div>
+              <div className="text-sm italic text-muted-foreground">{t("localizationIssueDetail.ui_Comment_deleted")}</div>
             ) : (
               <div className="min-w-0 max-w-full space-y-3">
                 <IssueChatAssistantParts message={message} hasCoT={false} />
@@ -2651,7 +2676,7 @@ function IssueChatAssistantMessage({
                 artifactLabel="comment"
               />
               <span className="text-xs text-muted-foreground/60">
-                {chainOfThoughtLabel?.toLowerCase()}
+                {chainOfThoughtLabel? issueChatRunLabelDisplay(chainOfThoughtLabel, taskChatDurationLabel).toLowerCase() : null}
               </span>
               <span className="ml-auto flex items-center gap-1.5">
                 {message.createdAt ? (
@@ -2681,7 +2706,7 @@ function IssueChatAssistantMessage({
                   variant="outline"
                   className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)"
                 >
-                  Follow-up
+                  {t("localizationTaskRuntime.ui_Follow_up_91gycy")}
                 </Badge>
               ) : null}
               {isRunning ? (
@@ -2695,16 +2720,14 @@ function IssueChatAssistantMessage({
                   )}
                 >
                   <Loader2 className="h-3 w-3 animate-spin" />
-                  Running
+                  {t("localizationTaskRuntime.ui_Running_j6ts6k")}
                 </Badge>
               ) : null}
             </div>
           )}
 
           {deleted ? (
-            <div className="rounded-sm bg-muted/40 px-3 py-2 text-sm italic text-muted-foreground">
-              Comment deleted
-            </div>
+            <div className="rounded-sm bg-muted/40 px-3 py-2 text-sm italic text-muted-foreground">{t("localizationIssueDetail.ui_Comment_deleted")}</div>
           ) : !folded ? (
             <>
               <div className="space-y-3">
@@ -2721,7 +2744,7 @@ function IssueChatAssistantMessage({
                         ) : (
                           <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
                         )}
-                        <span className="shimmer-text">{waitingText}</span>
+                        <span className="shimmer-text">{issueChatRunLabelDisplay(waitingText, taskChatDurationLabel)}</span>
                       </span>
                     </div>
                     <IssueChatLiveRunStatusLine
@@ -2768,6 +2791,7 @@ function IssueChatFeedbackButtons({
     options?: { allowSharing?: boolean; reason?: string },
   ) => Promise<void>;
 }) {
+  const { t } = useTranslation();
   const [isSaving, setIsSaving] = useState(false);
   const [optimisticVote, setOptimisticVote] =
     useState<FeedbackVoteValue | null>(null);
@@ -2849,8 +2873,8 @@ function IssueChatFeedbackButtons({
             ? "text-green-600 dark:text-green-400"
             : "text-muted-foreground hover:bg-accent hover:text-foreground",
         )}
-        title="Helpful"
-        aria-label="Helpful"
+        title={t("localizationTaskRuntime.ui_Helpful_x076el")}
+        aria-label={t("localizationTaskRuntime.ui_Helpful_x076el")}
         onClick={handleThumbsUp}
       >
         <ThumbsUp className="h-3.5 w-3.5" />
@@ -2866,21 +2890,19 @@ function IssueChatFeedbackButtons({
                 ? "text-amber-600 dark:text-amber-400"
                 : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
-            title="Needs work"
-            aria-label="Needs work"
+            title={t("localizationTaskRuntime.ui_Needs_work_v7b92r")}
+            aria-label={t("localizationTaskRuntime.ui_Needs_work_v7b92r")}
             onClick={handleThumbsDown}
           >
             <ThumbsDown className="h-3.5 w-3.5" />
           </button>
         </PopoverTrigger>
         <PopoverContent side="top" align="start" className="w-80 p-3">
-          <div className="mb-2 text-sm font-medium">
-            What could have been better?
-          </div>
+          <div className="mb-2 text-sm font-medium">{t("localizationTaskRuntime.ui_What_could_have_been_better_1natcm5")}</div>
           <Textarea
             value={downvoteReason}
             onChange={(event) => setDownvoteReason(event.target.value)}
-            placeholder="Add a short note"
+            placeholder={t("localizationIssueDetail.ui_Add_a_short_note")}
             className="min-h-20 resize-y bg-background text-sm"
             disabled={isSaving}
           />
@@ -2895,7 +2917,7 @@ function IssueChatFeedbackButtons({
                 setDownvoteReason("");
               }}
             >
-              Dismiss
+              {t("localizationTaskRuntime.ui_Dismiss_an1pf7")}
             </Button>
             <Button
               type="button"
@@ -2903,7 +2925,7 @@ function IssueChatFeedbackButtons({
               disabled={isSaving || !downvoteReason.trim()}
               onClick={handleSubmitReason}
             >
-              {isSaving ? "Saving..." : "Save note"}
+              {isSaving ? t("localizationTaskRuntime.ui_Saving_8kfkb3") : t("localizationTaskRuntime.ui_Save_note_1f8pchg")}
             </Button>
           </div>
         </PopoverContent>
@@ -2920,32 +2942,22 @@ function IssueChatFeedbackButtons({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Save your feedback sharing preference</DialogTitle>
+            <DialogTitle>{t("localizationTaskRuntime.ui_Save_your_feedback_sharing_preference_1ebw6en")}</DialogTitle>
             <DialogDescription>
-              Choose whether voted AI outputs can be shared with Paperclip Labs.
-              This answer becomes the default for future thumbs up and thumbs
-              down votes.
+              {t("localizationTaskRuntime.ui_Choose_whether_voted_AI_outputs_can_be_shared_with_Paperclip_Labs_crke3y")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 text-sm text-muted-foreground">
-            <p>This vote is always saved locally.</p>
-            <p>
-              Choose{" "}
-              <span className="font-medium text-foreground">Always allow</span>{" "}
-              to share this vote and future voted AI outputs. Choose{" "}
-              <span className="font-medium text-foreground">Don't allow</span>{" "}
-              to keep this vote and future votes local.
-            </p>
-            <p>You can change this later in Settings &gt; General.</p>
+            <p>{t("localizationTaskRuntime.ui_This_vote_is_always_saved_locally_kj9hq1")}</p>
+            <p><Trans i18nKey="localizationTaskRuntime.feedbackSharingPolicy" components={{ allow: <span className="font-medium text-foreground" />, deny: <span className="font-medium text-foreground" /> }} /></p>
+            <p>{t("localizationTaskRuntime.ui_You_can_change_this_later_in_Settings_General_1veml1c")}</p>
             {termsUrl ? (
               <a
                 href={termsUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex text-sm text-foreground underline underline-offset-4"
-              >
-                Read our terms of service
-              </a>
+              >{t("localizationSettings.terms")}</a>
             ) : null}
           </div>
           <DialogFooter>
@@ -2963,7 +2975,7 @@ function IssueChatFeedbackButtons({
                 ).then(() => setPendingSharingDialog(null));
               }}
             >
-              {isSaving ? "Saving..." : "Don't allow"}
+              {isSaving ? t("localizationTaskRuntime.ui_Saving_8kfkb3") : t("localizationSettings.dontAllow")}
             </Button>
             <Button
               type="button"
@@ -2978,7 +2990,7 @@ function IssueChatFeedbackButtons({
                 }).then(() => setPendingSharingDialog(null));
               }}
             >
-              {isSaving ? "Saving..." : "Always allow"}
+              {isSaving ? t("localizationTaskRuntime.ui_Saving_8kfkb3") : t("localizationTaskRuntime.ui_Always_allow_1vl0a6l")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -2996,6 +3008,8 @@ function ExpiredRequestConfirmationActivity({
   anchorId?: string;
   interaction: RequestConfirmationInteraction;
 }) {
+  const {
+     t } = useTranslation();
   const {
     agentMap,
     currentUserId,
@@ -3043,7 +3057,7 @@ function ExpiredRequestConfirmationActivity({
         )}
       >
         <span className="font-medium text-foreground">{actorName}</span>
-        <span className="text-muted-foreground">updated this task</span>
+        <span className="text-muted-foreground">{t("localizationTaskRuntime.taskUpdatedBy")}</span>
         <a
           href={anchorId ? `#${anchorId}` : undefined}
           className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
@@ -3063,7 +3077,7 @@ function ExpiredRequestConfirmationActivity({
               expanded && "rotate-180",
             )}
           />
-          {expanded ? "Hide confirmation" : "Expired confirmation"}
+          {expanded ? t("localizationTaskRuntime.ui_Hide_confirmation_1e7a40q") : t("localizationTaskRuntime.ui_Expired_confirmation_1qkbp3b")}
         </button>
       </div>
       {expanded ? (
@@ -3195,15 +3209,17 @@ function StaleDispositionWarningMetadataRow({
 }: {
   row: SystemNoticeMetadataRow;
 }) {
+
+  useTranslation();
   const label = (
     <span className="text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-      {row.label}
+      {systemNoticeMetadataLabelDisplay(row.label)}
     </span>
   );
   const value = (() => {
     switch (row.kind) {
       case "text":
-        return <span>{row.value}</span>;
+        return <span>{systemNoticeMetadataValueDisplay(row)}</span>;
       case "code":
         return (
           <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--text-micro) text-foreground/80">
@@ -3249,7 +3265,7 @@ function StaleDispositionWarningMetadataRow({
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--text-micro) text-foreground/80">
               {runShort}
             </code>
-            {row.status ? <span>{row.status}</span> : null}
+            {row.status ? <span>{systemNoticeRunStatusDisplay(row.status)}</span> : null}
           </>
         );
         return row.href ? (
@@ -3319,11 +3335,11 @@ function StaleDispositionWarningDetails({
 }: {
   sections: SystemNoticeMetadataSection[];
 }) {
+
+  const { t } = useTranslation();
   if (sections.length === 0) {
     return (
-      <div className="text-xs leading-5 text-muted-foreground">
-        No additional details.
-      </div>
+      <div className="text-xs leading-5 text-muted-foreground">{t("localizationTaskRuntime.ui_No_additional_details_as053x")}</div>
     );
   }
 
@@ -3333,7 +3349,7 @@ function StaleDispositionWarningDetails({
         <div key={metadataSectionKey(section)} className="space-y-1.5">
           {section.title ? (
             <div className="text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
-              {section.title}
+              {systemNoticeMetadataLabelDisplay(section.title)}
             </div>
           ) : null}
           <div className="space-y-1">
@@ -3361,6 +3377,7 @@ function StaleDispositionWarningRow({
   metadata: IssueCommentMetadata | null;
   runAgentId?: string | null;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const detailsId = useId();
   const sections = mapCommentMetadataToSystemNoticeSections(metadata, {
@@ -3380,7 +3397,7 @@ function StaleDispositionWarningRow({
             onClick={() => setOpen((value) => !value)}
           >
             <span className="text-sm font-medium text-foreground/80">
-              Stale disposition warning
+              {t("localizationTaskRuntime.ui_Stale_disposition_warning_8mzu19")}
             </span>
             <span className="ml-auto flex items-center gap-1.5">
               {message.createdAt ? (
@@ -3439,6 +3456,8 @@ function CompactSystemNoticeRow({
   noticeProps: SystemNoticeProps;
   defaultOpen?: boolean;
 }) {
+
+  useTranslation();
   const [open, setOpen] = useState(defaultOpen);
   const detailsId = useId();
 
@@ -3509,6 +3528,7 @@ function SystemNoticeCommentContent({
   message: ThreadMessage;
   anchorId?: string;
 }) {
+  const { t } = useTranslation();
   const { onImageClick, agentMap, issueStatus, successfulRunHandoff } =
     useContext(IssueChatCtx);
   const toastActions = useOptionalToastActions();
@@ -3585,11 +3605,11 @@ function SystemNoticeCommentContent({
       })
       .catch((error) => {
         toastActions?.pushToast({
-          title: "Copy failed",
+          get title() { return t("localizationTaskRuntime.ui_Copy_failed_1begn1d"); },
           body:
             error instanceof Error
               ? error.message
-              : "Unable to copy system notice",
+              : t("localizationTaskRuntime.ui_Unable_to_copy_system_notice_1dn1n2n"),
           tone: "error",
         });
       });
@@ -3605,11 +3625,11 @@ function SystemNoticeCommentContent({
       })
       .catch((error) => {
         toastActions?.pushToast({
-          title: "Copy failed",
+          get title() { return t("localizationTaskRuntime.ui_Copy_failed_1begn1d"); },
           body:
             error instanceof Error
               ? error.message
-              : "Unable to copy system notice link",
+              : t("localizationTaskRuntime.ui_Unable_to_copy_system_notice_link_19f923l"),
           tone: "error",
         });
       });
@@ -3666,8 +3686,8 @@ function SystemNoticeCommentContent({
             <button
               type="button"
               className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-              title="Copy link"
-              aria-label="Copy link to system notice"
+              title={t("pages.secrets.actions.copyLink")}
+              aria-label={t("localizationTaskRuntime.ui_Copy_link_to_system_notice_35y0i")}
               onClick={handleCopyLink}
             >
               {copiedLink ? (
@@ -3680,8 +3700,8 @@ function SystemNoticeCommentContent({
           <button
             type="button"
             className="inline-flex h-6 w-6 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-            title="Copy notice text"
-            aria-label="Copy system notice"
+            title={t("localizationTaskRuntime.ui_Copy_notice_text_1v4vodb")}
+            aria-label={t("localizationTaskRuntime.ui_Copy_system_notice_1i8uion")}
             onClick={handleCopy}
           >
             {copied ? (
@@ -3712,6 +3732,8 @@ function IssueChatMetadataRow({
   children: ReactNode;
   testid?: string;
 }) {
+
+  useTranslation();
   return (
     <div id={anchorId} data-testid={testid}>
       <div className="ml-3 flex items-start gap-2.5 border-l-2 border-border/50 py-0.5 pl-3">
@@ -3725,6 +3747,8 @@ function IssueChatMetadataRow({
 }
 
 function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
+  const {
+     t } = useTranslation();
   const {
     agentMap,
     currentUserId,
@@ -3834,8 +3858,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
           <span className="font-medium text-foreground">{actorName}</span>
           <span className="text-muted-foreground">
             {custom.followUpRequested === true
-              ? "requested follow-up"
-              : "updated this task"}
+              ? t("localizationTaskRuntime.followUpRequestedBy") : t("localizationTaskRuntime.taskUpdatedBy")}
           </span>
           <a
             href={anchorId ? `#${anchorId}` : undefined}
@@ -3848,7 +3871,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         {statusChange ? (
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
             <span className="text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground/70">
-              Status
+              {t("localizationTaskRuntime.ui_Status_3pd73")}
             </span>
             <span className="text-muted-foreground">
               {humanizeValue(statusChange.from)}
@@ -3868,9 +3891,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
                 isCurrentUser && "justify-end",
               )}
             >
-              <span className="text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground/70">
-                Assignee
-              </span>
+              <span className="text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground/70">{t("localizationFilters.assignee")}</span>
               <AssigneeChip
                 assignee={assigneeChange.from}
                 resolvers={handoffResolvers}
@@ -3894,7 +3915,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
         {workspaceChange ? (
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
             <span className="text-(length:--text-nano) font-medium uppercase tracking-wider text-muted-foreground/70">
-              Workspace
+              {t("localizationTaskRuntime.ui_Workspace_aw4cba")}
             </span>
             <span className="text-muted-foreground">
               {formatTimelineWorkspaceLabel(workspaceChange.from)}
@@ -3937,7 +3958,7 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
           >
             {displayedRunAgentName}
           </Link>
-          <span className="text-muted-foreground">run</span>
+          <span className="text-muted-foreground">{t("localizationActivity.run")}</span>
           <Link
             to={`/agents/${runAgentId}/runs/${runId}`}
             className="inline-flex items-center rounded-md border border-border bg-accent/40 px-1.5 py-0.5 font-mono text-(length:--text-nano) text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground"
@@ -4300,6 +4321,8 @@ const VirtualizedIssueChatThreadList = forwardRef<
   VirtualizedIssueChatThreadListHandle,
   VirtualizedIssueChatThreadListProps
 >(function VirtualizedIssueChatThreadList(props, ref) {
+
+  useTranslation();
   const probeRef = useRef<HTMLDivElement | null>(null);
   // Default to window scroll on first render so the imperative handle is
   // available immediately for hash-target / submit-scroll effects. After mount
@@ -4554,11 +4577,12 @@ function IssueChatDeletedComment({
   message: ThreadMessage;
   deletedAt: string;
 }) {
+  const { t } = useTranslation();
   const custom = issueChatMessageCustom(message);
   const anchorId =
     typeof custom.anchorId === "string" ? custom.anchorId : undefined;
   const authorName =
-    typeof custom.authorName === "string" ? custom.authorName : "Comment";
+    typeof custom.authorName === "string" ? custom.authorName : t("localizationTaskRuntime.ui_Comment_169e4n2");
   const deletedDate = new Date(deletedAt);
   const deletedDateLabel = Number.isNaN(deletedDate.getTime())
     ? ""
@@ -4570,8 +4594,7 @@ function IssueChatDeletedComment({
         <Trash2 className="h-3.5 w-3.5" />
       </div>
       <div className="min-w-0 rounded-md border border-dashed border-border bg-muted/20 px-3 py-2 text-sm text-muted-foreground">
-        <span className="font-medium text-foreground/80">{authorName}</span>
-        <span> deleted this comment</span>
+        <Trans i18nKey="localizationTaskRuntime.commentDeletedBy" values={{ actor: authorName }} components={{ actor: <span className="font-medium text-foreground/80" /> }} />
         {deletedDateLabel ? (
           <span className="text-xs"> · {deletedDateLabel}</span>
         ) : null}
@@ -4587,6 +4610,8 @@ const IssueChatMessageRow = memo(function IssueChatMessageRow({
   stoppingRunId,
   interruptingQueuedRunId,
 }: IssueChatMessageRowProps) {
+
+  useTranslation();
   const kind = issueChatMessageKind(message);
   const deletedAt = issueChatMessageDeletedAt(message);
   const activeVote = issueChatMessageActiveVote(
@@ -4693,6 +4718,7 @@ const IssueChatComposer = forwardRef<
   },
   forwardedRef,
 ) {
+  useTranslation();
   const stopControl = useComposerStop(onStop, stopPending);
   // Initialize before StrictMode's mount cleanup can flush an empty value over
   // the stored draft. The effect below handles subsequent task-key changes.
@@ -5053,7 +5079,7 @@ const IssueChatComposer = forwardRef<
       } else if (onAttachImage) {
         const attachment = await onAttachImage(file);
         if (!attachment?.contentPath)
-          throw new Error("Upload did not return a file URL");
+          throw new Error(t("localizationTaskRuntime.ui_Upload_did_not_return_a_file_URL_gsrcr4"));
         if (
           !composerAttachmentsRef.current.some(
             (item) => item.id === attachmentId,
@@ -5085,7 +5111,7 @@ const IssueChatComposer = forwardRef<
               ? {
                   ...item,
                   status: "error",
-                  error: "This file type cannot be attached here",
+                  error: t("localizationTaskRuntime.ui_This_file_type_cannot_be_attached_here_1htxodp"),
                 }
               : item,
           ),
@@ -5098,7 +5124,7 @@ const IssueChatComposer = forwardRef<
             ? {
                 ...item,
                 status: "error",
-                error: err instanceof Error ? err.message : "Upload failed",
+                error: err instanceof Error ? err.message : t("localizationTaskRuntime.ui_Upload_failed_mxel7t"),
               }
             : item,
         ),
@@ -5182,7 +5208,7 @@ const IssueChatComposer = forwardRef<
           agentId: m.agentId ?? m.id.replace(/^agent:/, ""),
           name: m.name,
         })),
-    [mentions],
+    [i18n.resolvedLanguage, mentions],
   );
   const handoffResolvers = useMemo<HandoffChipResolvers>(
     () => ({
@@ -5191,15 +5217,15 @@ const IssueChatComposer = forwardRef<
       resolveUserLabel: (userId: string) =>
         formatAssigneeUserLabel(userId, null, userLabelMap),
     }),
-    [agentMap, currentUserId, userLabelMap],
+    [i18n.resolvedLanguage, agentMap, currentUserId, userLabelMap],
   );
-  const mentionedAgentIds = useMemo(() => extractAgentMentionIds(body), [body]);
+  const mentionedAgentIds = useMemo(() => extractAgentMentionIds(body), [i18n.resolvedLanguage, body]);
   const plainNameCandidate = useMemo(
     () =>
       mentionedAgentIds.length > 0
         ? null
         : findPlainAgentNameCandidate(body, agentMentionOptions),
-    [body, mentionedAgentIds, agentMentionOptions],
+    [i18n.resolvedLanguage, body, mentionedAgentIds, agentMentionOptions],
   );
   const handoffPreview = useMemo(
     () =>
@@ -5212,7 +5238,7 @@ const IssueChatComposer = forwardRef<
         plainNameCandidate,
       }),
     [
-      reassignTarget,
+      i18n.resolvedLanguage, reassignTarget,
       currentAssigneeValue,
       hasActiveRun,
       mentionedAgentIds,
@@ -5306,12 +5332,9 @@ const IssueChatComposer = forwardRef<
               <Paperclip className="h-4 w-4" />
             </span>
             <div className="min-w-0">
-              <div className="text-sm font-medium text-foreground">
-                Drop to upload
-              </div>
+              <div className="text-sm font-medium text-foreground">{t("localizationTaskRuntime.ui_Drop_to_upload_1ry58ii")}</div>
               <div className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                Images insert into the reply. Other files are added to this
-                task.
+                {t("localizationTaskRuntime.ui_Images_insert_into_the_reply_Other_files_are_added_to_this_task_3zeklq")}
               </div>
             </div>
           </div>
@@ -5323,10 +5346,7 @@ const IssueChatComposer = forwardRef<
           role="alert"
           className="mb-3 space-y-2 rounded-md border border-border bg-muted p-3 text-sm"
         >
-          <p>
-            We couldn’t confirm whether this comment was saved. It may already
-            be in the conversation. Review it before starting another draft.
-          </p>
+          <p>{t("localizationTaskExecution.uncertainDraft")}</p>
           <Button
             type="button"
             variant="outline"
@@ -5335,7 +5355,7 @@ const IssueChatComposer = forwardRef<
               setReviewError(false);
               try {
                 if (!onReviewConversation)
-                  throw new Error("Review unavailable");
+                  throw new Error(t("localizationTaskExecution.reviewUnavailable"));
                 await onReviewConversation();
                 if (mountedTaskKey.current !== draftKey) return;
                 const reviewed = { ...uncertainSubmission, reviewed: true };
@@ -5350,18 +5370,13 @@ const IssueChatComposer = forwardRef<
                 setReviewError(true);
               }
             }}
-          >
-            Review conversation
-          </Button>
+          >{t("localizationTaskExecution.reviewConversation")}</Button>
           {reviewError ? (
-            <p>Couldn’t refresh the conversation. Try reviewing it again.</p>
+            <p>{t("localizationTaskExecution.reviewRefreshFailed")}</p>
           ) : null}
           {uncertainSubmission.reviewed ? (
             <>
-              <p>
-                Discarding this draft does not remove any saved comment or
-                uploaded file.
-              </p>
+              <p>{t("localizationTaskExecution.discardHelp")}</p>
               <Button
                 type="button"
                 variant="outline"
@@ -5374,9 +5389,7 @@ const IssueChatComposer = forwardRef<
                   setComposerAttachments([]);
                   setUncertainSubmission(null);
                 }}
-              >
-                Discard draft and start new
-              </Button>
+              >{t("localizationTaskExecution.discardDraft")}</Button>
             </>
           ) : null}
         </div>
@@ -5386,14 +5399,14 @@ const IssueChatComposer = forwardRef<
         readOnly={!!uncertainSubmission}
         value={body}
         onChange={setBody}
-        placeholder="Reply"
+        placeholder={t("localizationTaskRuntime.ui_Reply_1m7jlqf")}
         mentions={mentions}
         onSubmit={handleSubmit}
         imageUploadHandler={
           canAcceptFiles
             ? async (file) => {
                 const url = await attachFile(file, false);
-                if (!url) throw new Error("Upload did not return a file URL");
+                if (!url) throw new Error(t("localizationTaskRuntime.ui_Upload_did_not_return_a_file_URL_gsrcr4"));
                 return url;
               }
             : undefined
@@ -5431,12 +5444,12 @@ const IssueChatComposer = forwardRef<
             const sizeLabel = formatAttachmentSize(attachment.size);
             const statusLabel =
               attachment.status === "uploading"
-                ? "Uploading to task"
+                ? t("localizationTaskRuntime.ui_Uploading_to_task_oz74y6")
                 : attachment.status === "error"
-                  ? (attachment.error ?? "Upload failed")
+                  ? (attachment.error ?? t("localizationIssueDetail.ui_Upload_failed"))
                   : attachment.inline
-                    ? "Inserted inline"
-                    : "Attached to task";
+                    ? t("localizationTaskRuntime.ui_Inserted_inline_c4671e")
+                    : t("localizationTaskRuntime.ui_Attached_to_task_1lfao4j");
             return (
               <div
                 key={attachment.id}
@@ -5511,7 +5524,7 @@ const IssueChatComposer = forwardRef<
                 size="icon-sm"
                 onClick={() => attachInputRef.current?.click()}
                 disabled={attaching}
-                title="Attach file"
+                title={t("localizationTaskRuntime.ui_Attach_file_9gvepm")}
               >
                 <Paperclip className="h-4 w-4" />
               </Button>
@@ -5574,7 +5587,7 @@ const IssueChatComposer = forwardRef<
                   );
                 })}
                 <div className="mt-1 border-t px-2 py-1.5 text-(length:--text-nano) text-muted-foreground">
-                  Cmd/Ctrl+. cycles modes
+                  {t("localizationTaskRuntime.ui_Cmd_Ctrl_cycles_modes_j5v7qv")}
                 </div>
               </PopoverContent>
             </Popover>
@@ -5586,16 +5599,16 @@ const IssueChatComposer = forwardRef<
             ref={reassignTriggerRef}
             value={reassignTarget}
             options={reassignOptions}
-            placeholder="Responsible"
-            noneLabel="No responsible"
-            searchPlaceholder="Search responsible..."
-            emptyMessage="No responsible found."
+            placeholder={t("localizationTaskRuntime.ui_Responsible_1ndhgwz")}
+            noneLabel={t("localizationTaskRuntime.ui_No_responsible_ja20kq")}
+            searchPlaceholder={t("localizationTaskRuntime.ui_Search_responsible_1izi5bd")}
+            emptyMessage={t("pages.routines.noResponsibleFound")}
             onChange={setReassignTarget}
             className="h-8 text-xs"
             renderTriggerValue={(option) => {
               if (!option)
                 return (
-                  <span className="text-muted-foreground">Responsible</span>
+                  <span className="text-muted-foreground">{t("localizationTaskRuntime.ui_Responsible_1ndhgwz")}</span>
                 );
               const agentId = option.id.startsWith("agent:")
                 ? option.id.slice("agent:".length)
@@ -5640,11 +5653,11 @@ const IssueChatComposer = forwardRef<
             size="icon-sm"
             disabled={stopControl.stopping}
             onClick={() => void stopControl.stop()}
-            aria-label={stopControl.stopping ? "Stopping…" : "Stop"}
+            aria-label={stopControl.stopping ? t("localizationActivityTail.stopping") : t("localizationActivityTail.stop")}
             title={
               stopScope === "subtree"
-                ? "Stop and pause subtree"
-                : "Stop and pause task"
+                ? t("localizationTaskExecution.stopSubtree")
+                : t("localizationTaskExecution.stopTask")
             }
           >
             {stopControl.stopping ? (
@@ -5659,7 +5672,7 @@ const IssueChatComposer = forwardRef<
             disabled={!canSubmit}
             onClick={() => void handleSubmit()}
           >
-            {submitting ? "Posting..." : "Send"}
+            {submitting ? t("localizationTaskRuntime.ui_Posting_61smlx") : t("localizationTaskRuntime.ui_Send_1vatbdb")}
           </Button>
         )}
       </div>
@@ -5685,11 +5698,9 @@ const IssueChatComposer = forwardRef<
           }}
         >
           <AlertDialogHeader>
-            <AlertDialogTitle>No responsible selected</AlertDialogTitle>
+            <AlertDialogTitle>{t("localizationTaskRuntime.ui_No_responsible_selected_1xq8qiv")}</AlertDialogTitle>
             <AlertDialogDescription>
-              This comment will be posted without an assignee, so no agent will
-              be woken to act on it. Go back to pick a responsible, or send
-              anyway.
+              {t("localizationTaskRuntime.ui_This_comment_will_be_posted_without_an_assignee_so_no_agent_will__1hsa25s")}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -5698,16 +5709,14 @@ const IssueChatComposer = forwardRef<
               onClick={() => {
                 focusAssigneeOnDialogCloseRef.current = true;
               }}
-            >
-              Go back
-            </AlertDialogCancel>
+            >{t("common.goBack")}</AlertDialogCancel>
             <AlertDialogAction
               data-testid="issue-chat-no-assignee-send-anyway"
               onClick={() => {
                 void submitComment();
               }}
             >
-              Send anyway
+              {t("localizationTaskRuntime.ui_Send_anyway_15ji5uc")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -5813,6 +5822,7 @@ export function IssueChatThread({
   externalReferences,
   linkCaseReferences = false,
 }: IssueChatThreadProps) {
+  const { t } = useTranslation();
   const location = useLocation();
   const lastScrolledHashRef = useRef<string | null>(null);
   const didInitialHashScrollDecisionRef = useRef(false);
@@ -5871,14 +5881,14 @@ export function IssueChatThread({
       (a, b) =>
         new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
     );
-  }, [activeRun, issueStatus, liveRuns]);
+  }, [i18n.resolvedLanguage, activeRun, issueStatus, liveRuns]);
   const transcriptRuns = useMemo(() => {
     return resolveIssueChatTranscriptRuns({
       linkedRuns,
       liveRuns: displayLiveRuns,
       activeRun,
     });
-  }, [activeRun, displayLiveRuns, linkedRuns]);
+  }, [i18n.resolvedLanguage, activeRun, displayLiveRuns, linkedRuns]);
   const activeRunIds = useMemo(() => {
     const ids = new Set<string>();
     for (const run of displayLiveRuns) {
@@ -5887,10 +5897,10 @@ export function IssueChatThread({
       }
     }
     return ids;
-  }, [displayLiveRuns]);
+  }, [i18n.resolvedLanguage, displayLiveRuns]);
   const hasActiveRun = useMemo(
     () => displayLiveRuns.some((run) => run.status === "running"),
-    [displayLiveRuns],
+    [i18n.resolvedLanguage, displayLiveRuns],
   );
   // Real-time view of the handoff: a run that starts after the issue payload
   // was fetched must quiet the missing-disposition warnings without waiting
@@ -5904,7 +5914,7 @@ export function IssueChatThread({
     return liveNow
       ? { ...successfulRunHandoff, hasLiveContinuation: true }
       : successfulRunHandoff;
-  }, [successfulRunHandoff, activeRunIds, issueId, liveIssueIds]);
+  }, [i18n.resolvedLanguage, successfulRunHandoff, activeRunIds, issueId, liveIssueIds]);
   const clearLatestSettleTimeouts = useCallback(() => {
     for (const timeout of latestSettleTimeoutsRef.current) {
       window.clearTimeout(timeout);
@@ -5942,6 +5952,7 @@ export function IssueChatThread({
         issueStatus,
       }),
     [
+      i18n.resolvedLanguage,
       comments,
       interactions,
       timelineEvents,
@@ -5972,7 +5983,7 @@ export function IssueChatThread({
     stableMessagesRef.current = stabilized.messages;
     stableMessageCacheRef.current = stabilized.cache;
     return stabilized.messages;
-  }, [rawMessages]);
+  }, [i18n.resolvedLanguage, rawMessages]);
   const latestMessagesRef = useRef<readonly ThreadMessage[]>(messages);
   latestMessagesRef.current = messages;
 
@@ -5985,13 +5996,13 @@ export function IssueChatThread({
         (blocker) =>
           blocker.status !== "done" && blocker.status !== "cancelled",
       ),
-    [blockedBy],
+    [i18n.resolvedLanguage, blockedBy],
   );
   const assignedAgent = useMemo(() => {
     if (!currentAssigneeValue.startsWith("agent:")) return null;
     const assigneeAgentId = currentAssigneeValue.slice("agent:".length);
     return agentMap?.get(assigneeAgentId) ?? null;
-  }, [agentMap, currentAssigneeValue]);
+  }, [i18n.resolvedLanguage, agentMap, currentAssigneeValue]);
   const feedbackVoteByTargetId = useMemo(() => {
     const map = new Map<string, FeedbackVoteValue>();
     for (const feedbackVote of feedbackVotes) {
@@ -5999,7 +6010,7 @@ export function IssueChatThread({
       map.set(feedbackVote.targetId, feedbackVote.vote);
     }
     return map;
-  }, [feedbackVotes]);
+  }, [i18n.resolvedLanguage, feedbackVotes]);
   const useVirtualizedThread =
     messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
   const messageAnchorIndex = useMemo(() => {
@@ -6009,7 +6020,7 @@ export function IssueChatThread({
       if (anchorId) map.set(anchorId, index);
     });
     return map;
-  }, [messages]);
+  }, [i18n.resolvedLanguage, messages]);
 
   function scrollToThreadAnchor(
     anchorId: string,
@@ -6477,6 +6488,7 @@ export function IssueChatThread({
       linkCaseReferences,
     }),
     [
+      i18n.resolvedLanguage,
       feedbackDataSharingPreference,
       feedbackTermsUrl,
       agentMap,
@@ -6512,8 +6524,8 @@ export function IssueChatThread({
   const resolvedEmptyMessage =
     emptyMessage ??
     (variant === "embedded"
-      ? "No run output yet."
-      : "This task conversation is empty. Start with a message below.");
+      ? t("localizationTaskRuntime.ui_No_run_output_yet_2yw4og")
+      : t("localizationTaskRuntime.ui_This_task_conversation_is_empty_Start_with_a_message_below_l5j6pd"));
   const previousErrorBoundaryMessagesRef = useRef<
     readonly ThreadMessage[] | null
   >(null);
@@ -6535,8 +6547,8 @@ export function IssueChatThread({
                 onClick={handleJumpToLatest}
                 className="text-xs text-muted-foreground transition-colors hover:text-foreground"
               >
-                Jump to latest
-              </button>
+              {t("localizationTaskRuntime.ui_Jump_to_latest_vvelvx")}
+            </button>
             </div>
           ) : null}
 
@@ -6624,29 +6636,15 @@ export function IssueChatThread({
                     {legacyRecoverySourceIssue ? (
                       <SystemNotice
                         tone="info"
-                        label="Legacy recovery task"
-                        body={
-                          <span>
-                            Legacy recovery task. Newer recovery actions live on
-                            the source task
-                            {legacyRecoverySourceIssue.identifier ? (
-                              <>
-                                {" — "}
-                                <Link
-                                  to={legacyRecoverySourceIssue.href}
-                                  className="underline-offset-2 hover:underline"
-                                >
-                                  {legacyRecoverySourceIssue.identifier}
-                                  {legacyRecoverySourceIssue.title ? (
-                                    <span className="text-muted-foreground">
-                                      {" "}
-                                      — {legacyRecoverySourceIssue.title}
-                                    </span>
-                                  ) : null}
-                                </Link>
-                              </>
-                            ) : (
-                              "."
+                        label={t("localizationTaskRuntime.ui_Legacy_recovery_task_km5a86")}
+                      body={
+                        <span>
+                          {legacyRecoverySourceIssue.identifier ? (
+                            <Trans i18nKey="localizationTaskRuntime.legacyRecoverySourceLinked"
+                              values={{ identifier: legacyRecoverySourceIssue.identifier, title: legacyRecoverySourceIssue.title ? ` — ${legacyRecoverySourceIssue.title}` : "" }}
+                              components={{ sourceLink: <Link to={legacyRecoverySourceIssue.href} className="underline-offset-2 hover:underline" /> }}
+                            />
+                          ) : t("localizationTaskRuntime.legacyRecoverySourcePlain"
                             )}
                           </span>
                         }

@@ -1,3 +1,5 @@
+import { Trans } from "react-i18next";
+import { useTranslation } from "@/i18n";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Download, ScrollText, ShieldAlert } from "lucide-react";
@@ -16,10 +18,10 @@ import {
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Identity } from "@/components/Identity";
 import { AgentIcon } from "@/components/AgentIconPicker";
-import { cn, relativeTime } from "@/lib/utils";
+import { cn, relativeTime, formatDateTime } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { formatActivityVerb } from "@/lib/activity-format";
-import { buildCompanyUserProfileMap, type CompanyUserProfile } from "@/lib/company-members";
+import { buildCompanyUserProfileMap, companyUserProfileDisplayLabel, type CompanyUserProfile } from "@/lib/company-members";
 import { auditApi, type AuditActionRecord, type AuditActionFilters } from "@/api/audit";
 import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
@@ -31,26 +33,26 @@ const ALL = "__all";
 
 /** Action-domain prefixes offered in the filter (server does a prefix match). */
 const ACTION_DOMAINS: { value: string; label: string }[] = [
-  { value: ALL, label: "All actions" },
-  { value: "issue.", label: "Tasks" },
-  { value: "agent.", label: "Agents" },
-  { value: "heartbeat.", label: "Runs" },
-  { value: "approval.", label: "Approvals" },
-  { value: "project.", label: "Projects" },
-  { value: "goal.", label: "Goals" },
-  { value: "tool_gateway.", label: "Tools" },
-  { value: "cost.", label: "Costs" },
-  { value: "company.", label: "Company" },
+  { value: ALL, label: "localizationActivity.allActions" },
+  { value: "issue.", label: "localizationActivity.tasks" },
+  { value: "agent.", label: "localizationActivity.agents" },
+  { value: "heartbeat.", label: "localizationActivity.runsLabel" },
+  { value: "approval.", label: "localizationActivity.approvals" },
+  { value: "project.", label: "localizationActivity.projects" },
+  { value: "goal.", label: "localizationActivity.goals" },
+  { value: "tool_gateway.", label: "localizationActivity.tools" },
+  { value: "cost.", label: "localizationActivity.costs" },
+  { value: "company.", label: "localizationActivity.company" },
 ];
 
 /** Entity types offered in the filter (server does an exact match). */
 const ENTITY_TYPES: { value: string; label: string }[] = [
-  { value: ALL, label: "All entities" },
-  { value: "issue", label: "Task" },
-  { value: "agent", label: "Agent" },
-  { value: "project", label: "Project" },
-  { value: "goal", label: "Goal" },
-  { value: "company", label: "Company" },
+  { value: ALL, label: "localizationActivity.allEntities" },
+  { value: "issue", label: "localizationActivity.taskLabel" },
+  { value: "agent", label: "localizationActivity.agentLabel" },
+  { value: "project", label: "localizationActivity.projectLabel" },
+  { value: "goal", label: "localizationActivity.goalLabel" },
+  { value: "company", label: "localizationActivity.company" },
 ];
 
 /**
@@ -100,11 +102,12 @@ function AuditActor({
   agentMap: Map<string, Agent>;
   userProfileMap: Map<string, CompanyUserProfile>;
 }) {
+  const { t } = useTranslation();
   // Agent names are company-readable through the same authorization-filtered
   // directory used by this page. The basic audit tier strips privileged
   // attribution (`agentId`) but retains the acting principal (`actorId`), so
   // use that principal to avoid presenting a trivially joinable identity as
-  // an anonymous "Agent" in the UI.
+  // an anonymous t("localizationActivity.agentLabel") in the UI.
   const actorAgentId = record.agentId
     ?? (record.actorType === "agent" ? record.actorId : null);
   const agent = actorAgentId ? agentMap.get(actorAgentId) : null;
@@ -122,23 +125,23 @@ function AuditActor({
     const profile = userProfileMap.get(record.actorId);
     return (
       <Identity
-        name={profile?.label ?? "User"}
+        name={companyUserProfileDisplayLabel(profile) ?? t("localizationActivity.user")}
         avatarUrl={profile?.image ?? null}
         size="sm"
         className="font-medium text-foreground"
       />
     );
   }
-  // Fall back to the actor *type*, never a blanket "System". This still covers
+  // Fall back to the actor *type*, never a blanket t("localizationActivity.system"). This still covers
   // deleted or authorization-filtered agents that are absent from the directory.
   const label =
     record.actorType === "plugin"
-      ? "Plugin"
+      ? t("localizationActivity.plugin")
       : record.actorType === "agent"
-        ? "Agent"
+        ? t("localizationActivity.agentLabel")
         : record.actorType === "user"
-          ? "User"
-          : "System";
+          ? t("localizationActivity.user")
+          : t("localizationActivity.system");
   return <Identity name={label} size="sm" className="font-medium text-foreground" />;
 }
 
@@ -150,13 +153,14 @@ function AuditActor({
  * that would duplicate the verb.
  */
 function AuditEntityNode({ record }: { record: AuditActionRecord }) {
+  const { t } = useTranslation();
   const { issue, document } = record.entity;
   const issueRef = issue?.identifier ?? issue?.id ?? null;
 
   if (issueRef) {
     return (
       <Link to={`/issues/${issueRef}`} className="font-medium text-primary hover:underline">
-        {issue?.identifier ? `${issue.identifier}${issue.title ? ` · ${issue.title}` : ""}` : "the task"}
+        {issue?.identifier ? `${issue.identifier}${issue.title ? ` · ${issue.title}` : ""}` : t("localizationActivity.theTask")}
       </Link>
     );
   }
@@ -164,7 +168,7 @@ function AuditEntityNode({ record }: { record: AuditActionRecord }) {
     return <span className="font-medium text-foreground">{document.key}</span>;
   }
   // Non-linkable entities (company, agent, goal, …) — show a plain descriptor.
-  return <span className="text-muted-foreground">{record.entityType}</span>;
+  return <span className="text-muted-foreground">{t(`localizationActivity.entity_${record.entityType}`, { defaultValue: record.entityType })}</span>;
 }
 
 function AuditRow({
@@ -176,6 +180,7 @@ function AuditRow({
   agentMap: Map<string, Agent>;
   userProfileMap: Map<string, CompanyUserProfile>;
 }) {
+  const { t } = useTranslation();
   const verb = formatActivityVerb(record.action, record.details, { agentMap, userProfileMap });
   const responsible = record.responsibleUserId ? userProfileMap.get(record.responsibleUserId) : null;
   // Suppress the "on behalf of" chip when the human actor *is* the responsible user.
@@ -183,7 +188,7 @@ function AuditRow({
     record.responsibleUserId
       && !(record.actorType === "user" && record.actorId === record.responsibleUserId),
   );
-  const responsibleLabel = responsible?.label ?? (record.responsibleUserId ? "a user" : null);
+  const responsibleLabel = companyUserProfileDisplayLabel(responsible) ?? (record.responsibleUserId ? t("localizationActivity.aUser") : null);
   const excerpt = record.entity.comment?.excerpt?.trim();
   // Show the document key only when it isn't already the linked entity node.
   const documentKey = record.entity.issue && record.entity.document ? record.entity.document.key : null;
@@ -193,9 +198,15 @@ function AuditRow({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-foreground">
-            <AuditActor record={record} agentMap={agentMap} userProfileMap={userProfileMap} />
-            <span className="text-muted-foreground">{verb}</span>
-            <AuditEntityNode record={record} />
+            <Trans
+              t={t}
+              i18nKey="localizationActivity.activitySentence"
+              components={{
+                actor: <AuditActor record={record} agentMap={agentMap} userProfileMap={userProfileMap} />,
+                action: <span className="text-muted-foreground">{verb}</span>,
+                entity: <AuditEntityNode record={record} />,
+              }}
+            />
           </div>
           {excerpt ? (
             <p className="line-clamp-2 border-l-2 border-border pl-2 text-muted-foreground">
@@ -204,13 +215,13 @@ function AuditRow({
           ) : null}
           {documentKey ? (
             <p className="text-xs text-muted-foreground">
-              Document <span className="font-mono text-(length:--text-micro)">{documentKey}</span>
+              {t("localizationActivity.document")} <span className="font-mono text-(length:--text-micro)">{documentKey}</span>
             </p>
           ) : null}
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             {showOnBehalf && responsibleLabel ? (
               <span className="inline-flex items-center rounded-full bg-muted px-2 py-0.5">
-                on behalf of {responsibleLabel}
+                {t("localizationActivity.onBehalfOf", { name: responsibleLabel })}
               </span>
             ) : null}
             {record.runId && record.agentId ? (
@@ -218,7 +229,7 @@ function AuditRow({
                 to={`/agents/${record.agentId}/runs/${record.runId}`}
                 className="text-primary hover:underline"
               >
-                View run
+                {t("localizationActivity.viewRun")}
               </Link>
             ) : null}
             <span className="font-mono text-(length:--text-micro) opacity-70">{record.action}</span>
@@ -227,7 +238,7 @@ function AuditRow({
         <time
           className="shrink-0 whitespace-nowrap text-xs text-muted-foreground"
           dateTime={record.createdAt}
-          title={new Date(record.createdAt).toLocaleString()}
+          title={formatDateTime(record.createdAt)}
         >
           {relativeTime(record.createdAt)}
         </time>
@@ -238,18 +249,15 @@ function AuditRow({
 
 /** The permission-denied / upsell state shown when the caller lacks the grant. */
 function AuditUpsell() {
+  const { t } = useTranslation();
   return (
     <Card>
       <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
         <ShieldAlert className="h-10 w-10 text-muted-foreground/50" />
         <div>
-          <p className="text-sm font-medium text-foreground">Agent audit is a Paperclip Enterprise view</p>
+          <p className="text-sm font-medium text-foreground">{t("localizationActivity.auditEnterprise")}</p>
           <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
-            The agent audit log gives you a searchable, exportable record of everything your agents
-            did — every comment, task change, approval, and run — with the responsible person for
-            each action. Ask an administrator to grant you the{" "}
-            <span className="font-mono text-(length:--text-micro)">audit:view_agent_actions</span>{" "}
-            permission to view it.
+            {t("localizationActivity.auditEnterpriseDescription", { permission: "audit:view_agent_actions" })}
           </p>
         </div>
       </CardContent>
@@ -264,6 +272,7 @@ export function AuditFeed({
   mode,
   onModeChange,
 }: AuditFeedProps) {
+  const { t } = useTranslation();
   const { pushToast } = useToastActions();
   const [agent, setAgent] = useState<string>(ALL);
   const [responsibleUser, setResponsibleUser] = useState<string>(ALL);
@@ -359,7 +368,7 @@ export function AuditFeed({
   // them, so `hasMixedAccessTiers` would stay true forever. Only call the feed
   // "recovering" while that attempt is outstanding; once it has settled, fall
   // through to normal rendering. Otherwise the banner permanently hides the
-  // error state and its "Try again" button, with no way off the page. Falling
+  // error state and its t("localizationActivity.tryAgain") button, with no way off the page. Falling
   // through is safe because `items` already excludes the privileged pages, so
   // an unrecovered cache renders as a plain basic-tier feed.
   const downgradeRecoveryExhausted = Boolean(
@@ -444,11 +453,11 @@ export function AuditFeed({
       // Browsers may read blob URLs lazily after click(), so keep the URL alive
       // long enough for the download to start.
       window.setTimeout(() => URL.revokeObjectURL(url), 5_000);
-      pushToast({ title: "Audit exported", body: "Your CSV download has started.", tone: "success" });
+      pushToast({ title: t("localizationActivity.auditExported"), body: t("localizationActivity.csvStarted"), tone: "success" });
     } catch (error) {
       pushToast({
-        title: "Export failed",
-        body: error instanceof Error ? error.message : "Could not export the audit log.",
+        title: t("localizationActivity.exportFailed"),
+        body: error instanceof Error ? error.message : t("localizationActivity.exportError"),
         tone: "error",
       });
     } finally {
@@ -465,11 +474,11 @@ export function AuditFeed({
       {!hideHeader ? (
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h1 className="text-lg font-semibold text-foreground">Activity</h1>
+            <h1 className="text-lg font-semibold text-foreground">{t("localizationActivity.activity")}</h1>
             <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
               {resolvedMode === "agents"
-                ? "Every recorded agent action, newest first — with the responsible person and run behind each one."
-                : "Everything happening in your company, newest first — people, agents, and the system. Each line is one recorded action."}
+                ? t("localizationActivity.agentFeedDescription")
+                : t("localizationActivity.allFeedDescriptionCompany")}
             </p>
           </div>
         </div>
@@ -477,9 +486,9 @@ export function AuditFeed({
 
       {showModeToggle ? (
         <Tabs value={resolvedMode} onValueChange={(value) => onModeChange?.(value as AuditFeedMode)}>
-          <TabsList aria-label="Activity scope">
-            <TabsTrigger value="all">All activity</TabsTrigger>
-            <TabsTrigger value="agents">Agent actions</TabsTrigger>
+          <TabsList aria-label={t("localizationActivity.activityScope")}>
+            <TabsTrigger value="all">{t("localizationActivity.allActivity")}</TabsTrigger>
+            <TabsTrigger value="agents">{t("localizationActivity.agentActionsLower")}</TabsTrigger>
           </TabsList>
         </Tabs>
       ) : null}
@@ -489,10 +498,10 @@ export function AuditFeed({
           {!lockedAgentId ? (
             <Select value={agent} onValueChange={setAgent}>
               <SelectTrigger className="w-40">
-                <SelectValue placeholder="Agent" />
+                <SelectValue placeholder={t("localizationActivity.agentLabel")} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value={ALL}>All agents</SelectItem>
+                <SelectItem value={ALL}>{t("localizationActivity.allAgents")}</SelectItem>
                 {(agents.data ?? []).map((a) => (
                   <SelectItem key={a.id} value={a.id}>
                     {a.name}
@@ -502,12 +511,12 @@ export function AuditFeed({
             </Select>
           ) : null}
           <Select value={responsibleUser} onValueChange={setResponsibleUser}>
-            {/* Wide enough for "All responsible users" — w-44 truncated it. */}
+            {/* Wide enough for t("localizationActivity.allResponsibleUsers") — w-44 truncated it. */}
             <SelectTrigger className="w-52">
-              <SelectValue placeholder="Responsible user" />
+              <SelectValue placeholder={t("localizationActivity.responsibleUser")} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={ALL}>All responsible users</SelectItem>
+              <SelectItem value={ALL}>{t("localizationActivity.allResponsibleUsers")}</SelectItem>
               {(userDirectory.data?.users ?? []).map((u) => (
                 <SelectItem key={u.principalId} value={u.principalId}>
                   {u.user?.name ?? u.user?.email ?? u.principalId.slice(0, 8)}
@@ -517,31 +526,31 @@ export function AuditFeed({
           </Select>
           <Select value={actionDomain} onValueChange={setActionDomain}>
             <SelectTrigger className="w-36">
-              <SelectValue placeholder="Action" />
+              <SelectValue placeholder={t("localizationActivity.action")} />
             </SelectTrigger>
             <SelectContent>
               {ACTION_DOMAINS.map((d) => (
                 <SelectItem key={d.value} value={d.value}>
-                  {d.label}
+                  {t(d.label)}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
           <Select value={entityType} onValueChange={setEntityType}>
             <SelectTrigger className="w-36">
-              <SelectValue placeholder="Entity" />
+              <SelectValue placeholder={t("localizationActivity.entity")} />
             </SelectTrigger>
             <SelectContent>
               {ENTITY_TYPES.map((e) => (
                 <SelectItem key={e.value} value={e.value}>
-                  {e.label}
+                  {t(e.label)}
                 </SelectItem>
               ))}
             </SelectContent>
           </Select>
           <Input
             type="date"
-            aria-label="From date"
+            aria-label={t("localizationActivity.fromDate")}
             value={dateFrom}
             max={dateTo || undefined}
             onChange={(e) => setDateFrom(e.target.value)}
@@ -549,7 +558,7 @@ export function AuditFeed({
           />
           <Input
             type="date"
-            aria-label="To date"
+            aria-label={t("localizationActivity.toDate")}
             value={dateTo}
             min={dateFrom || undefined}
             onChange={(e) => setDateTo(e.target.value)}
@@ -557,7 +566,7 @@ export function AuditFeed({
           />
           {hasActiveFilters ? (
             <Button variant="ghost" size="sm" onClick={clearFilters}>
-              Clear filters
+              {t("localizationActivity.clearFilters")}
             </Button>
           ) : null}
           <Button
@@ -568,7 +577,7 @@ export function AuditFeed({
             disabled={exporting || feed.isLoading || items.length === 0}
           >
             <Download className="mr-1.5 h-4 w-4" />
-            {exporting ? "Exporting…" : "Export CSV"}
+            {exporting ? t("localizationActivity.exporting") : t("localizationActivity.exportCsv")}
           </Button>
         </div>
       ) : null}
@@ -576,21 +585,21 @@ export function AuditFeed({
       {recoveringFromAccessDowngrade || fallingBackToAllActivity ? (
         <Card>
           <CardContent className="py-14 text-center text-sm text-muted-foreground">
-            Refreshing audit access…
+            {t("localizationActivity.refreshingAccess")}
           </CardContent>
         </Card>
       ) : feed.isLoading ? (
         <Card>
-          <CardContent className="py-14 text-center text-sm text-muted-foreground">Loading…</CardContent>
+          <CardContent className="py-14 text-center text-sm text-muted-foreground">{t("localizationActivity.loading")}</CardContent>
         </Card>
       ) : feed.error ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
             <p className="text-sm text-muted-foreground">
-              {feed.error instanceof Error ? feed.error.message : "Failed to load the audit log."}
+              {feed.error instanceof Error ? feed.error.message : t("localizationActivity.loadAuditError")}
             </p>
             <Button variant="outline" size="sm" onClick={() => feed.refetch()}>
-              Try again
+              {t("localizationActivity.tryAgain")}
             </Button>
           </CardContent>
         </Card>
@@ -600,19 +609,19 @@ export function AuditFeed({
             <ScrollText className="h-10 w-10 text-muted-foreground/40" />
             <div>
               <p className="text-sm font-medium text-foreground">
-                {hasActiveFilters ? "No actions match these filters" : "Nothing here yet"}
+                {hasActiveFilters ? t("localizationActivity.noMatchingActions") : t("localizationActivity.nothingYet")}
               </p>
               <p className="mt-1 max-w-md text-sm text-muted-foreground">
                 {hasActiveFilters
-                  ? "Try a wider date range or different filters."
+                  ? t("localizationActivity.widenFilters")
                   : resolvedMode === "agents"
-                    ? "As soon as your agents start doing things, their actions show up here."
-                    : "As soon as anyone in your company does something, it shows up here."}
+                    ? t("localizationActivity.agentActivityEmpty")
+                    : t("localizationActivity.allActivityEmptyCompany")}
               </p>
             </div>
             {hasActiveFilters ? (
               <Button variant="outline" size="sm" onClick={clearFilters}>
-                Clear filters
+                {t("localizationActivity.clearFilters")}
               </Button>
             ) : null}
           </CardContent>
@@ -642,13 +651,13 @@ export function AuditFeed({
             onClick={() => feed.fetchNextPage()}
             disabled={feed.isFetchingNextPage}
           >
-            {feed.isFetchingNextPage ? "Loading…" : "Load more"}
+            {feed.isFetchingNextPage ? t("localizationActivity.loading") : t("localizationActivity.loadMore")}
           </Button>
         </div>
       ) : null}
 
       <p className="text-xs text-muted-foreground">
-        Recorded by Paperclip — entries can't be edited. Sensitive values are never stored.
+        {t("localizationActivity.auditFootnote")}
       </p>
     </div>
   );

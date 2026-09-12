@@ -1,3 +1,5 @@
+import { taskThreadErrorDisplay } from "./task-chat-display";
+import { t, useTranslation } from "@/i18n";
 import {
   useEffect,
   useRef,
@@ -8,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { cn } from "@/lib/utils";
+import { companyUserProfileDisplayLabel } from "@/lib/company-members";
 import { useComposerStop } from "@/hooks/useComposerStop";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
@@ -50,7 +53,7 @@ import {
   AttachmentMedia,
   AttachmentTitle,
 } from "@/components/ui/attachment";
-import { fileKindForName, formatFileSize } from "./task-chat-attachments";
+import { fileKindForNameDisplay as fileKindForName, formatFileSizeDisplay as formatFileSize } from "./task-chat-attachments";
 import {
   MarkdownEditor,
   type MarkdownEditorRef,
@@ -206,7 +209,7 @@ export function parseRunnerGoalCommand(value: string): ParsedRunnerGoalCommand {
     if (extra.length > 0) {
       return {
         matched: true,
-        error: `/goal ${subcommand} does not accept extra arguments.`,
+        error: t("localizationTaskExecution.goalNoExtraArgs", { subcommand }),
       };
     }
     return {
@@ -251,6 +254,7 @@ function AssigneeIdentityAvatar({
     | undefined;
   placement: "trigger" | "option";
 }) {
+  useTranslation();
   if (assigneeValue.startsWith("agent:")) {
     const agentId = assigneeValue.slice("agent:".length);
     const icon = agentMap?.get(agentId)?.icon ?? "bot";
@@ -274,7 +278,7 @@ function AssigneeIdentityAvatar({
   if (assigneeValue.startsWith("user:")) {
     const userId = assigneeValue.slice("user:".length);
     const profile = userProfileMap?.get(userId);
-    const resolvedLabel = profile?.label ?? label;
+    const resolvedLabel = companyUserProfileDisplayLabel(profile) ?? label;
     return (
       <Avatar
         size="xs"
@@ -297,25 +301,25 @@ function AssigneeIdentityAvatar({
 }
 
 const MODE_DESCRIPTION: Partial<Record<IssueWorkMode, string>> = {
-  standard: "Make changes and run work",
-  planning: "Draft a plan before acting",
-  ask: "Answer questions only, no changes",
+  get standard() { return t("localizationTaskRuntime.ui_Make_changes_and_run_work_1dp03gb"); },
+  get planning() { return t("localizationTaskRuntime.ui_Draft_a_plan_before_acting_17vq4wn"); },
+  get ask() { return t("localizationTaskRuntime.ui_Answer_questions_only_no_changes_86pd32"); },
 };
 
 /** v7 per-mode placeholder copy; `{agent}` is the pending assignee's name. */
 function modePlaceholder(mode: IssueWorkMode, agentName: string, mobile: boolean): string {
   if (mobile) {
-    if (mode === "planning") return `Plan with ${agentName}…`;
-    if (mode === "ask") return `Ask ${agentName}…`;
-    return `Message ${agentName}…`;
+    if (mode === "planning") return t("localizationTaskExecution.planWith", { name: agentName });
+    if (mode === "ask") return t("localizationTaskExecution.askAgent", { name: agentName });
+    return t("localizationTaskExecution.messageAgent", { name: agentName });
   }
   switch (mode) {
     case "planning":
-      return `Plan with ${agentName} — shapes the plan doc, no code changes…`;
+      return t("localizationTaskRuntime.composerPlanning", { agent: agentName });
     case "ask":
-      return `Ask ${agentName} a question — read-only, nothing runs…`;
+      return t("localizationTaskRuntime.composerAsk", { agent: agentName });
     default:
-      return `Message ${agentName} — describe what you want done…`;
+      return t("localizationTaskRuntime.composerStandard", { agent: agentName });
   }
 }
 
@@ -413,6 +417,7 @@ export function TaskChatComposer({
   onRunnerGoalCommand,
   onRunnerGoalReassign,
 }: TaskChatComposerProps) {
+  const { t } = useTranslation();
   const streamlined = useStreamlinedTaskChatPresentation();
   const stopControl = useComposerStop(onStop, stopPending);
   const [body, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
@@ -439,7 +444,7 @@ export function TaskChatComposer({
     useState<HTMLElement | null>(null);
   const [pendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | { key: "sep12Chat.composer.goalNeedsTask" } | null>(null);
   const [attachments, setAttachmentState] = useState<ComposerAttachment[]>(
     () =>
       draftKey
@@ -602,28 +607,28 @@ export function TaskChatComposer({
     enableReassign && reassignOptions && reassignOptions.length > 0,
   );
   const assigneeValue = pendingAssignee ?? currentAssigneeValue;
-  const assigneeLabel =
-    reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
+  const rawAssigneeLabel = reassignOptions?.find((o) => o.id === assigneeValue)?.label;
+  const assigneeLabel = rawAssigneeLabel ?? t("localizationTaskRuntime.ui_Unassigned_f745fm");
   const assigneeName =
-    assigneeLabel === "Unassigned" ? "the agent" : assigneeLabel;
+    rawAssigneeLabel == null || rawAssigneeLabel === "Unassigned" ? t("localizationTaskRuntime.ui_the_agent_12to8b1") : assigneeLabel;
   const effectivePlaceholder = queuedEdit
-    ? "Edit queued message…"
+    ? t("localizationTaskRuntime.ui_Edit_queued_message_3jucsp")
     : (placeholder ?? modePlaceholder(pendingMode, assigneeName, mobile));
   const goalUnavailable = runnerGoalCapability?.availability !== "available";
   const goalCommandOption: ActionCommandOption = {
     id: "action:goal",
     kind: "action",
     command: "goal",
-    name: "Goal",
+    name: t("localizationGoals.goal"),
     description:
       !runnerGoalCapability || runnerGoalCapability.verified === false
-        ? "Support will be verified when the session starts."
-        : "Pursue work across turns.",
+        ? t("localizationTaskExecution.goalSupportVerification")
+        : t("localizationTaskExecution.goalPursue"),
     aliases: ["goal", "pursue", "continue"],
     disabled: goalUnavailable && runnerGoalCapability !== null,
     disabledReason:
       runnerGoalCapability?.reason ??
-      "Session goals are unsupported by this agent.",
+      t("localizationTaskExecution.sessionGoalUnsupported"),
   };
 
   function updatePendingAssignee(value: string | null) {
@@ -649,9 +654,9 @@ export function TaskChatComposer({
       const url = onAttachImage
         ? attachment?.contentPath
         : await onImageUpload?.(file);
-      if (!url) throw new Error("Upload did not return a file URL");
+      if (!url) throw new Error(t("localizationTaskRuntime.ui_Upload_did_not_return_a_file_URL_gsrcr4"));
       if (!attachmentsRef.current.some((item) => item.id === id))
-        throw new Error("Attachment was removed");
+        throw new Error(t("localizationTaskExecution.attachmentRemoved"));
       setAttachments((prev) =>
         prev.map((item) =>
           item.id === id
@@ -672,7 +677,7 @@ export function TaskChatComposer({
             ? {
                 ...item,
                 status: "error",
-                error: err instanceof Error ? err.message : "Upload failed",
+                error: err instanceof Error ? err.message : t("localizationIssueDetail.ui_Upload_failed"),
               }
             : item,
         ),
@@ -696,7 +701,7 @@ export function TaskChatComposer({
               ? {
                   ...item,
                   status: "error",
-                  error: "This file type cannot be attached here",
+                  get error() { return t("localizationTaskRuntime.ui_This_file_type_cannot_be_attached_here_1htxodp"); },
                 }
               : item,
           ),
@@ -705,7 +710,7 @@ export function TaskChatComposer({
       }
       const attachment = await onAttachImage(file);
       if (!attachment?.contentPath)
-        throw new Error("Upload did not return a file URL");
+        throw new Error(t("localizationTaskRuntime.ui_Upload_did_not_return_a_file_URL_gsrcr4"));
       const name = attachment?.originalFilename ?? file.name;
       setAttachments((prev) =>
         prev.map((item) =>
@@ -727,7 +732,7 @@ export function TaskChatComposer({
             ? {
                 ...item,
                 status: "error",
-                error: err instanceof Error ? err.message : "Upload failed",
+                error: err instanceof Error ? err.message : t("localizationTaskRuntime.ui_Upload_failed_mxel7t"),
               }
             : item,
         ),
@@ -829,7 +834,7 @@ export function TaskChatComposer({
       ? ({ matched: false } as const)
       : parseRunnerGoalCommand(submittedBody);
     if (goalCommand.matched && conversationMode) {
-      setActionError("Create a separate task for work that needs an ongoing execution goal.");
+      setActionError({ key: "sep12Chat.composer.goalNeedsTask" });
       return;
     }
     if (goalCommand.matched) {
@@ -838,13 +843,13 @@ export function TaskChatComposer({
         return;
       }
       if (attachmentsRef.current.length > 0) {
-        setActionError("Remove attachments before using /goal.");
+        setActionError(t("localizationTaskExecution.goalRemoveAttachments"));
         return;
       }
       if (!onRunnerGoalCommand) {
         setActionError(
           runnerGoalCapability?.reason ??
-            "Session goals are unsupported by this agent.",
+            t("localizationTaskExecution.sessionGoalUnsupported"),
         );
         return;
       }
@@ -854,7 +859,7 @@ export function TaskChatComposer({
       ) {
         setActionError(
           runnerGoalCapability.reason ??
-            "Session goals are unsupported by this agent.",
+            t("localizationTaskExecution.sessionGoalUnsupported"),
         );
         return;
       }
@@ -864,7 +869,7 @@ export function TaskChatComposer({
         if (hasReassignment && goalCommand.command.action !== "focus") {
           const reassignment = parseAssigneeValue(assigneeValue);
           if (!reassignment || !onRunnerGoalReassign) {
-            setActionError("Select an agent before starting a session goal.");
+            setActionError(t("localizationTaskExecution.selectSessionGoalAgent"));
             return;
           }
           await onRunnerGoalReassign(reassignment);
@@ -882,7 +887,7 @@ export function TaskChatComposer({
         setActionError(
           error instanceof Error
             ? error.message
-            : "The goal action could not be applied.",
+            : t("localizationTaskExecution.goalActionFailed"),
         );
       }
       return;
@@ -1023,7 +1028,7 @@ export function TaskChatComposer({
     if (!uncertainSubmission) return;
     setReviewError(false);
     try {
-      if (!onReviewConversation) throw new Error("Review unavailable");
+      if (!onReviewConversation) throw new Error(t("localizationTaskExecution.reviewUnavailable"));
       await onReviewConversation();
       if (mountedTaskKey.current !== draftKey) return;
       const reviewed = { ...uncertainSubmission, reviewed: true };
@@ -1056,7 +1061,7 @@ export function TaskChatComposer({
       setTakeoverError(
         cause instanceof Error
           ? cause.message
-          : "This request could not be skipped.",
+          : t("localizationTaskRuntime.ui_This_request_could_not_be_skipped_1jabha1"),
       );
     });
   }
@@ -1072,7 +1077,7 @@ export function TaskChatComposer({
       {takeoverBusy ? (
         <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
       ) : null}
-      Skip
+      {t("localizationTaskRuntime.ui_Skip_1hpqu3m")}
     </Button>
   ) : null;
 
@@ -1111,35 +1116,25 @@ export function TaskChatComposer({
           role="alert"
           className="mb-3 space-y-2 rounded-md border border-border bg-muted p-3 text-sm"
         >
-          <p>
-            We couldn’t confirm whether this comment was saved. It may already
-            be in the conversation. Review it before starting another draft.
-          </p>
+          <p>{t("localizationTaskExecution.uncertainDraft")}</p>
           <Button
             type="button"
             variant="outline"
             size="sm"
             onClick={reviewUncertainSubmission}
-          >
-            Review conversation
-          </Button>
+          >{t("localizationTaskExecution.reviewConversation")}</Button>
           {reviewError ? (
-            <p>Couldn’t refresh the conversation. Try reviewing it again.</p>
+            <p>{t("localizationTaskExecution.reviewRefreshFailed")}</p>
           ) : null}
           {uncertainSubmission.reviewed ? (
             <>
-              <p>
-                Discarding this draft does not remove any saved comment or
-                uploaded file.
-              </p>
+              <p>{t("localizationTaskExecution.discardHelp")}</p>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 onClick={discardUncertainDraft}
-              >
-                Discard draft and start new
-              </Button>
+              >{t("localizationTaskExecution.discardDraft")}</Button>
             </>
           ) : null}
         </div>
@@ -1180,7 +1175,7 @@ export function TaskChatComposer({
                   className="h-7 px-2"
                   onClick={takeover.onShowNext}
                 >
-                  {takeover.pendingCount} pending
+                  {t("localizationTaskRuntime.pendingCount", { count: takeover.pendingCount })}
                 </Button>
               ) : null}
               <div
@@ -1193,7 +1188,7 @@ export function TaskChatComposer({
                 size="icon-xs"
                 variant="ghost"
                 className="text-muted-foreground hover:text-foreground"
-                aria-label={`Dismiss ${takeover.label}`}
+                aria-label={t("localizationTaskRuntime.dismissRequest", { label: takeover.label })}
                 disabled={takeoverBusy}
                 onClick={takeover.onDismiss}
               >
@@ -1228,7 +1223,7 @@ export function TaskChatComposer({
           </div>
           {takeoverError ? (
             <p className="mt-2 text-sm text-destructive" role="alert">
-              {takeoverError}
+              {taskThreadErrorDisplay(takeoverError)}
             </p>
           ) : null}
           {!takeover.inlineSkip && !takeover.hideSkip ? (
@@ -1248,17 +1243,17 @@ export function TaskChatComposer({
             >
               <CircleHelp className="h-4 w-4 shrink-0" aria-hidden />
               <span className="min-w-0 flex-1 truncate">
-                {pendingTakeover?.label ?? takeover?.label ?? "Pending input"}
+                {pendingTakeover?.label ?? takeover?.label ?? t("localizationTaskRuntime.ui_Pending_input_1g1krug")}
               </span>
               <span className="shrink-0 font-medium">
-                {pendingTakeover?.count ?? takeover?.pendingCount ?? 1} pending
+                {t("localizationTaskRuntime.pendingCount", { count: pendingTakeover?.count ?? takeover?.pendingCount ?? 1 })}
               </span>
             </button>
           ) : null}
           {pause && conversationMode ? (
             <div className="space-y-2">
               <TaskChatPausedTakeover {...pause} hasDraft={Boolean(body.trim() || attachments.length)} />
-              <p className="text-xs text-muted-foreground">Send /new to start a fresh session and resume this conversation.</p>
+              <p className="text-xs text-muted-foreground">{t("sep12Chat.composer.newSessionHint")}</p>
             </div>
           ) : null}
           <div data-testid="task-chat-composer-input">
@@ -1268,14 +1263,14 @@ export function TaskChatComposer({
               onChange={setBody}
               placeholder={
                 disabled
-                  ? (disabledReason ?? "Composer disabled")
+                  ? (disabledReason ?? t("localizationTaskRuntime.ui_Composer_disabled_bdf06h"))
                   : effectivePlaceholder
               }
               readOnly={disabled || !!uncertainSubmission}
               mentions={mentions}
               actionCommands={conversationMode ? [{
-                id: "action:new", kind: "action", command: "new", name: "New session",
-                description: "Start fresh context here, preserving conversation history.", aliases: ["new"],
+                id: "action:new", kind: "action", command: "new", name: t("sep12Chat.composer.newSession"),
+                description: t("sep12Chat.composer.newSessionDescription"), aliases: ["new"],
                 disabled,
               }] : [goalCommandOption]}
               onSubmit={() => void submit()}
@@ -1299,7 +1294,7 @@ export function TaskChatComposer({
               role="alert"
               data-testid="task-chat-goal-error"
             >
-              {actionError}
+              {typeof actionError === "string" ? actionError : t(actionError.key)}
             </p>
           ) : null}
 
@@ -1337,9 +1332,9 @@ export function TaskChatComposer({
                       </AttachmentTitle>
                       <AttachmentDescription className="max-w-48">
                         {attachment.status === "uploading"
-                          ? "Uploading…"
+                          ? t("localizationTaskRuntime.ui_Uploading_tvrypa")
                           : attachment.status === "error"
-                            ? (attachment.error ?? "Upload failed")
+                            ? (attachment.error ?? t("localizationTaskRuntime.ui_Upload_failed_mxel7t"))
                             : [kind.label, sizeLabel]
                                 .filter(Boolean)
                                 .join(" · ")}
@@ -1347,7 +1342,7 @@ export function TaskChatComposer({
                     </AttachmentContent>
                     <AttachmentActions>
                       <AttachmentAction
-                        aria-label={`Remove ${attachment.name}`}
+                        aria-label={t("localizationTaskRuntime.removeAttachment", { name: attachment.name })}
                         disabled={!!uncertainSubmission}
                         onClick={() =>
                           setAttachments((prev) =>
@@ -1380,8 +1375,8 @@ export function TaskChatComposer({
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   disabled={disabled}
-                  title="Attach file"
-                  aria-label="Attach file"
+                  title={t("localizationTaskRuntime.ui_Attach_file_9gvepm")}
+                  aria-label={t("localizationTaskRuntime.ui_Attach_file_9gvepm")}
                   className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
                   data-testid="task-chat-composer-attach"
                 >
@@ -1393,8 +1388,8 @@ export function TaskChatComposer({
             {queuedEdit ? (
               <span className="px-1 text-xs font-medium text-muted-foreground">
                 {queuedEdit.stale
-                  ? "Queued message changed"
-                  : "Editing queued message"}
+                  ? t("localizationTaskRuntime.ui_Queued_message_changed_fn7z8f")
+                  : t("localizationTaskRuntime.ui_Editing_queued_message_1shaxvn")}
               </span>
             ) : (
               <DropdownMenu>
@@ -1465,10 +1460,10 @@ export function TaskChatComposer({
               <InlineEntitySelector
                 value={assigneeValue}
                 options={reassignOptions ?? []}
-                placeholder="Assignee"
-                noneLabel="No assignee"
-                searchPlaceholder="Search assignees…"
-                emptyMessage="No matches."
+                placeholder={t("localizationFilters.assignee")}
+                noneLabel={t("localizationIssueLists.noAssignee")}
+                searchPlaceholder={t("localizationFilters.searchAssignees")}
+                emptyMessage={t("localizationIssueDetail.ui_No_matches")}
                 onChange={updatePendingAssignee}
                 disabled={disabled}
                 triggerTestId="task-chat-composer-assignee"
@@ -1515,7 +1510,7 @@ export function TaskChatComposer({
                 disabled={submitting}
                 className="h-8 shrink-0 rounded-md px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50"
               >
-                Cancel
+                {t("localizationTaskRuntime.ui_Cancel_ew9em3")}
               </button>
             ) : null}
 
@@ -1536,30 +1531,30 @@ export function TaskChatComposer({
               title={
                 showStop
                   ? stopControl.stopping
-                    ? "Stopping…"
+                    ? t("localizationActivityTail.stopping")
                     : stopScope === "subtree"
-                      ? "Stop and pause subtree"
-                      : "Stop and pause task"
+                      ? t("localizationTaskExecution.stopSubtree")
+                      : t("localizationTaskExecution.stopTask")
                   : queuedEdit
                     ? queuedEdit.stale
-                      ? "Queue as new message"
-                      : "Save queued message"
+                      ? t("localizationTaskRuntime.ui_Queue_as_new_message_1nniz0p")
+                      : t("localizationTaskRuntime.ui_Save_queued_message_nftgoi")
                     : uploadPending
-                      ? "Waiting for upload to finish"
+                      ? t("localizationTaskRuntime.ui_Waiting_for_upload_to_finish_1bq6lvk")
                       : uploadFailed
-                        ? "Remove the failed attachment to send"
-                        : "Send (⌘+Enter)"
+                        ? t("localizationTaskRuntime.ui_Remove_the_failed_attachment_to_send_ko9vyt")
+                        : t("localizationTaskRuntime.ui_Send_Enter_1hz8l27")
               }
               aria-label={
                 showStop
                   ? stopControl.stopping
-                    ? "Stopping…"
-                    : "Stop"
+                    ? t("localizationActivityTail.stopping")
+                    : t("localizationActivityTail.stop")
                   : queuedEdit
                     ? queuedEdit.stale
-                      ? "Queue as new message"
-                      : "Save queued message"
-                    : "Send"
+                      ? t("localizationTaskRuntime.ui_Queue_as_new_message_1nniz0p")
+                      : t("localizationTaskRuntime.ui_Save_queued_message_nftgoi")
+                    : t("localizationTaskRuntime.ui_Send_1vatbdb")
               }
               className={cn(
                 "flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-transform hover:scale-105 disabled:scale-100",

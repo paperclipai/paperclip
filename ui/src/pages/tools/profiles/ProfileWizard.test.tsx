@@ -24,6 +24,7 @@ vi.mock("@/api/tools", () => ({ toolsApi: api }));
 vi.mock("./useProfilesData", () => ({ useProfilesData: () => profilesData.current }));
 
 import { ProfileWizard } from "./ProfileWizard";
+import { i18n } from "@/i18n";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -120,6 +121,36 @@ describe("ProfileWizard", () => {
     expect(input.name).toBe("Everyday work");
     // Step 2 is now visible.
     expect(container.textContent).toContain("New tools that appear later");
+  });
+
+  it("preserves the edited name and draft payload when the UI language changes", async () => {
+    const originalLanguage = i18n.language;
+    try {
+      await i18n.changeLanguage("en");
+      setData([]);
+      await render({ initialTemplate: "everyday" });
+      const nameInput = container.querySelector("#profile-name") as HTMLInputElement;
+      await act(async () => {
+        setNativeValue(nameInput, "My custom profile");
+        await Promise.resolve();
+      });
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      expect((container.querySelector("#profile-name") as HTMLInputElement).value).toBe("My custom profile");
+      expect(api.createProfile).not.toHaveBeenCalled();
+      const continueButton = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Продолжить");
+      expect(continueButton).toBeDefined();
+      await act(async () => {
+        continueButton?.click();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(api.createProfile).toHaveBeenCalledTimes(1);
+      expect(api.createProfile.mock.calls[0][1]).toMatchObject({
+        name: "My custom profile", profileKey: "my-custom-profile", status: "draft", defaultAction: "deny",
+      });
+    } finally {
+      await act(async () => { await i18n.changeLanguage(originalLanguage); });
+    }
   });
 
   it("resumes a draft at the first unfinished step", async () => {

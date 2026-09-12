@@ -135,7 +135,7 @@ export function commentsToTaskChatItems(
       presentation: kind === "system" ? comment.presentation ?? null : undefined,
       metadata: kind === "system" ? comment.metadata ?? null : undefined,
       runAgentId: kind === "system" ? comment.runAgentId ?? null : undefined,
-      createdAtIso: kind === "system" ? createdAtIso : undefined,
+      createdAtIso,
     });
   }
   return items;

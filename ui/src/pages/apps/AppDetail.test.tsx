@@ -5,6 +5,9 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
+import ruTranslations from "@/i18n/locales/ru.json";
+import { queryKeys } from "@/lib/queryKeys";
 import { AppDetail } from "./AppDetail";
 import { APP_TABS } from "./app-tabs";
 
@@ -433,11 +436,12 @@ describe("AppDetail", () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     flushSync(() => root?.unmount());
     container.remove();
     vi.restoreAllMocks();
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
   });
 
   async function renderAppDetail() {
@@ -451,6 +455,7 @@ describe("AppDetail", () => {
       );
     });
     await flushReact();
+    return client;
   }
 
   it("uses Permissions as the primary connection page and has no Setup tab", () => {
@@ -1558,6 +1563,224 @@ describe("AppDetail", () => {
     expect(container.querySelector('input[aria-label="Search GitHub repositories"]')).toBeNull();
     expect(container.querySelector('a[href="https://github.com/apps/paperclip-test/installations/new"]')?.textContent).toBe("Add More Repos on GitHub");
     expect(updateConnectionMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [1, "Выбран 1 репозиторий"],
+    [2, "Выбрано 2 репозитория"],
+    [5, "Выбрано 5 репозиториев"],
+    [21, "Выбран 21 репозиторий"],
+  ] as const)("localizes %s GitHub repositories live without translating provider data or fetching again", async (count, russianCount) => {
+    await i18n.changeLanguage("en");
+    getConnectionMock.mockResolvedValue(perUserConnection());
+    const repositories = Array.from({ length: count }, (_, index) => ({
+      id: `repo-${index + 1}`,
+      fullName: index === 0 ? "Board/Me" : `Board/repo-${index + 1}`,
+      installationId: "installation-raw-456",
+      private: index === 0,
+    }));
+    const grant = dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
+      login: "Board",
+      repositoryCount: count,
+      installationOwnerLogins: ["Board"],
+      repositories,
+    });
+    const canonicalGrant = JSON.stringify(grant);
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [grant], capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+    });
+    await renderAppDetail();
+
+    const list = container.querySelector('ul[aria-label="Accessible GitHub repositories"]')!;
+    const account = container.querySelector('a[href="https://github.com/Board"]')!;
+    const refresh = container.querySelector('button[aria-label="Refresh access"]')!;
+    const repositoryLinks = [...list.querySelectorAll("a")];
+    const reads = [getConnectionMock, listConnectionGrantsMock, listApplicationsMock, listGalleryMock, listCatalogMock];
+    const readCounts = reads.map((mock) => mock.mock.calls.length);
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      const ru = language === "ru";
+      expect(container.textContent).toContain(ru ? "Аккаунт GitHub" : "GitHub account");
+      expect(container.textContent).toContain(ru ? russianCount : `${count} selected ${count === 1 ? "repository" : "repositories"}`);
+      expect(container.querySelector(`ul[aria-label="${ru ? "Доступные репозитории GitHub" : "Accessible GitHub repositories"}"]`)).toBe(list);
+      expect(list.querySelectorAll("li")).toHaveLength(count);
+      expect([...list.querySelectorAll("a")]).toEqual(repositoryLinks);
+      expect(repositoryLinks.map((link) => link.textContent)).toEqual(repositories.map((repo) => repo.fullName));
+      expect(repositoryLinks.map((link) => link.getAttribute("href"))).toEqual(repositories.map((repo) => `https://github.com/${repo.fullName}`));
+      for (const link of repositoryLinks) {
+        expect(link.getAttribute("target")).toBe("_blank");
+        expect(link.getAttribute("rel")).toBe("noreferrer");
+      }
+      expect(list.querySelectorAll('[role="img"]')).toHaveLength(1);
+      expect(repositoryLinks[0].querySelector('[role="img"]')?.getAttribute("aria-label")).toBe(ru ? "Закрытый репозиторий" : "Private repository");
+      expect(container.contains(account)).toBe(true);
+      expect(account.textContent).toBe("@Board");
+      expect(account.getAttribute("href")).toBe("https://github.com/Board");
+      expect(container.contains(refresh)).toBe(true);
+      expect(refresh.getAttribute("aria-label")).toBe(ru ? "Обновить доступ" : "Refresh access");
+      expect(refresh.getAttribute("title")).toBe(ru ? "Обновить доступ" : "Refresh access");
+      const configurationLinks = [...container.querySelectorAll('a[href="https://github.com/apps/paperclip-test/installations/new"]')];
+      expect(configurationLinks.map((link) => link.textContent)).toEqual(ru
+        ? ["Разрешить доступ к другим репозиториям в GitHub", "Настройте доступ на GitHub"]
+        : ["Add More Repos on GitHub", "Configure access on GitHub"]);
+      expect(configurationLinks[1].parentElement?.textContent).toBe(ru
+        ? "Не видите нужную организацию или репозиторий? Настройте доступ на GitHub и обновите список."
+        : "Missing an organization or repository? Configure access on GitHub, then refresh this list.");
+      expect(JSON.stringify(grant)).toBe(canonicalGrant);
+      expect(reads.map((mock) => mock.mock.calls.length)).toEqual(readCounts);
+      for (const mutation of [updateConnectionMock, checkConnectionHealthMock, startOAuthMock, startPersonalAuthorizationMock, replaceConnectionGrantMembersMock]) {
+        expect(mutation).not.toHaveBeenCalled();
+      }
+      expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it("localizes the current unfiltered GitHub repository empty state without refetching", async () => {
+    await i18n.changeLanguage("en");
+    getConnectionMock.mockResolvedValue(perUserConnection());
+    const grant = dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
+      repositoryCount: 0,
+      repositories: [],
+    });
+    const canonicalGrant = JSON.stringify(grant);
+    listConnectionGrantsMock.mockResolvedValue({
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [grant], capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+    });
+    await renderAppDetail();
+    const empty = container.querySelector('[role="status"]')!;
+    const readCount = listConnectionGrantsMock.mock.calls.length;
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.querySelector('[role="status"]')).toBe(empty);
+      expect(empty.textContent?.trim()).toBe(language === "ru" ? "Нет доступных репозиториев." : "No accessible repositories.");
+      expect(container.querySelector('input[aria-label="Search GitHub repositories"]')).toBeNull();
+      expect(listConnectionGrantsMock).toHaveBeenCalledTimes(readCount);
+      expect(JSON.stringify(grant)).toBe(canonicalGrant);
+    }
+    expect(updateConnectionMock).not.toHaveBeenCalled();
+    expect(checkConnectionHealthMock).not.toHaveBeenCalled();
+    expect(replaceConnectionGrantMembersMock).not.toHaveBeenCalled();
+  });
+
+  it("localizes missing GitHub repository configuration and refreshes the canonical connection only on request", async () => {
+    await i18n.changeLanguage("ru");
+    getConnectionMock.mockResolvedValue(perUserConnection());
+    const grant = dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
+      installationUrl: undefined,
+      repositories: undefined,
+    });
+    const response = {
+      connection: { id: "conn-1", uid: "conn-1" },
+      grants: [grant], capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+    };
+    const canonicalGrant = JSON.stringify(grant);
+    listConnectionGrantsMock.mockResolvedValue(response);
+    await renderAppDetail();
+    const load = findButton("Загрузить настройки GitHub")!;
+    expect(load).toBeTruthy();
+    const reads = listConnectionGrantsMock.mock.calls.length;
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(load)).toBe(true);
+      expect(load.textContent).toBe(language === "ru" ? "Загрузить настройки GitHub" : "Load GitHub configuration");
+      expect(container.textContent).toContain(language === "ru"
+        ? "Обновите доступ, чтобы загрузить актуальный список репозиториев."
+        : "Refresh access to load the current repository list.");
+      expect(container.querySelector('a[href="https://github.com/settings/installations/456"]')).toBeNull();
+      expect(listConnectionGrantsMock).toHaveBeenCalledTimes(reads);
+      expect(checkConnectionHealthMock).not.toHaveBeenCalled();
+    }
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    listConnectionGrantsMock.mockResolvedValue({
+      ...response,
+      grants: [dedicatedGitHubGrant({ kind: "user", subjectAgentId: null, subjectUserId: "user-1" }, {
+        appSlug: "paperclip-staging",
+      })],
+    });
+    await act(async () => { load.click(); });
+    await flushReact();
+    expect(checkConnectionHealthMock).toHaveBeenCalledExactlyOnceWith("conn-1");
+    expect(container.querySelector('a[href="https://github.com/apps/paperclip-staging/installations/new"]')?.textContent).toBe("Разрешить доступ к другим репозиториям в GitHub");
+    expect(container.contains(load)).toBe(false);
+    expect(JSON.stringify(grant)).toBe(canonicalGrant);
+    expect(updateConnectionMock).not.toHaveBeenCalled();
+  });
+
+  it("localizes the dedicated GitHub explanation without changing identity or permission choices", async () => {
+    await i18n.changeLanguage("en");
+    const english = "This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.";
+    const russian = ruTranslations.localizationApps.dedicatedGitHubAccountExplanation;
+    const dedicatedConnection = connection({ credentialPolicy: "per_agent", authKind: "oauth" });
+    const grant = dedicatedGitHubGrant({}, { login: "Board" });
+    const grantsResponse = {
+      connection: { id: "conn-1", uid: "conn-1" }, grants: [grant],
+      capabilities: fullCapabilities(), currentUserId: "user-1", members: [],
+    };
+    const original = JSON.stringify({ dedicatedConnection, grantsResponse });
+    getConnectionMock.mockResolvedValue(dedicatedConnection);
+    listConnectionGrantsMock.mockResolvedValue(grantsResponse);
+    const client = await renderAppDetail();
+    const explanation = [...container.querySelectorAll("p")].find((node) => node.textContent === english)!;
+    const account = container.querySelector('a[href="https://github.com/Board"]')!;
+    const agent = container.querySelector('a[href="/agents/coder"]')!;
+    const askFirst = container.querySelector<HTMLButtonElement>('button[aria-label="Write issue: Ask first"]')!;
+    const actionSearch = container.querySelector<HTMLInputElement>('input[aria-label="Find an action"]')!;
+    expect(explanation).toBeTruthy();
+    expect(account).toBeTruthy();
+    expect(agent).toBeTruthy();
+    expect(askFirst).toBeTruthy();
+    expect(actionSearch).toBeTruthy();
+    await act(async () => { setInputValue(actionSearch, "Write issue"); });
+    await flushReact();
+    expect(askFirst.getAttribute("aria-checked")).toBe("true");
+    const mutations = [updateConnectionMock, finishAppMock, finalizeOAuthAccessMock, putConnectionInstallsMock,
+      refreshCatalogMock, checkConnectionHealthMock, startOAuthMock, revokeConnectionGrantMock,
+      createConnectionGrantDelegationMock, revokeConnectionGrantDelegationMock,
+      replaceConnectionGrantMembersMock, startPersonalAuthorizationMock];
+    const mutationCounts = mutations.map((mock) => mock.mock.calls.length);
+
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.contains(explanation)).toBe(true);
+      expect(explanation.textContent).toBe(language === "ru" ? russian : english);
+      expect(container.querySelector('a[href="https://github.com/Board"]')).toBe(account);
+      expect(account.textContent).toBe("@Board");
+      expect(container.querySelector('a[href="/agents/coder"]')).toBe(agent);
+      expect(agent.textContent).toContain("Coder");
+      expect(container.contains(askFirst)).toBe(true);
+      expect(askFirst.getAttribute("aria-checked")).toBe("true");
+      expect(container.contains(actionSearch)).toBe(true);
+      expect(actionSearch.value).toBe("Write issue");
+      expect(mutations.map((mock) => mock.mock.calls.length)).toEqual(mutationCounts);
+      expect(JSON.stringify({ dedicatedConnection, grantsResponse })).toBe(original);
+    }
+
+    const personalConnection = perUserConnection();
+    const personalResponse = { ...grantsResponse, grants: [dedicatedGitHubGrant({
+      kind: "user", subjectAgentId: null, subjectUserId: "user-1",
+    }, { login: "Board" })] };
+    const originalPersonal = JSON.stringify({ personalConnection, personalResponse });
+    await act(async () => {
+      client.setQueryData(queryKeys.tools.connection("conn-1"), personalConnection);
+      client.setQueryData(queryKeys.tools.connectionGrants("conn-1"), personalResponse);
+    });
+    await flushReact();
+    for (const language of ["en", "ru", "en"] as const) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      await flushReact();
+      expect(container.textContent).not.toContain(english);
+      expect(container.textContent).not.toContain(russian);
+      expect(container.querySelector('a[href="https://github.com/Board"]')?.textContent).toBe("@Board");
+      expect(mutations.map((mock) => mock.mock.calls.length)).toEqual(mutationCounts);
+      expect(JSON.stringify({ personalConnection, personalResponse })).toBe(originalPersonal);
+    }
   });
 
   it("shows dedicated GitHub access as compact action rows and links to the agent", async () => {

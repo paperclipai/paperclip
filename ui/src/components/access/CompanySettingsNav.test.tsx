@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { i18n } from "@/i18n";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -59,10 +60,11 @@ describe("CompanySettingsNav", () => {
     currentPathname = "/company/settings";
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
   });
 
   it("maps company settings routes to the expected shared tab value", () => {
@@ -135,6 +137,11 @@ describe("CompanySettingsNav", () => {
       }),
     );
 
+    const valuesBefore = pageTabBarMock.mock.calls.at(-1)![0].items.map((item: { value: string }) => item.value);
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(pageTabBarMock.mock.calls.at(-1)![0].items.map((item: { value: string }) => item.value)).toEqual(valuesBefore);
+    expect(pageTabBarMock.mock.calls.at(-1)![0].items.find((item: { value: string }) => item.value === "secrets")?.label).toBe("Секреты");
+    expect(navigateMock).not.toHaveBeenCalled();
     const button = container.querySelector("button");
     expect(button).not.toBeNull();
 

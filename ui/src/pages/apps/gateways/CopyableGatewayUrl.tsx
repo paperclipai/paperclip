@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { Copy } from "lucide-react";
 import { useToast } from "@/context/ToastContext";
 import { copyTextToClipboard } from "@/lib/clipboard";
@@ -19,17 +20,18 @@ export function CopyableGatewayUrl({
   endpointPath: string;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const { pushToast } = useToast();
   const url = gatewayEndpointUrl(endpointPath);
 
   async function copy() {
     try {
       await copyTextToClipboard(url);
-      pushToast({ title: "Gateway URL copied", tone: "success" });
+      pushToast({ title: t("localizationApps.gatewayURLCopied322"), tone: "success" });
     } catch {
       pushToast({
-        title: "Copy failed",
-        body: "Clipboard access is unavailable.",
+        title: t("pages.agentDetail.copyFailed"),
+        body: t("pages.agentDetail.clipboardUnavailable"),
         tone: "error",
       });
     }
@@ -46,8 +48,8 @@ export function CopyableGatewayUrl({
         "flex min-w-0 max-w-full items-center gap-1 text-left font-mono text-xs text-muted-foreground hover:text-foreground",
         className,
       )}
-      title={`${url} — click to copy`}
-      aria-label="Copy gateway URL"
+      title={t("localizationApps.urlClickCopy", { url })}
+      aria-label={t("localizationApps.copyGatewayURL324")}
     >
       <span className="min-w-0 truncate">{url}</span>
       <Copy className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />

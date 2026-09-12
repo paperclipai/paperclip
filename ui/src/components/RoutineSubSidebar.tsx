@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useRef } from "react";
 import {
   Activity as ActivityIcon,
@@ -40,21 +41,21 @@ type NavGroup = {
 
 const NAV_GROUPS: NavGroup[] = [
   {
-    label: "Routine",
+    get label() { return t("localizationRoutines.routine"); },
     items: [
-      { key: "overview", label: "Overview", icon: Circle },
-      { key: "triggers", label: "Triggers", icon: Clock3 },
-      { key: "variables", label: "Variables", icon: LayoutGrid },
-      { key: "secrets", label: "Secrets", icon: KeyRound },
-      { key: "delivery", label: "Delivery", icon: Send },
+      { key: "overview", get label() { return t("localizationRoutines.overview"); }, icon: Circle },
+      { key: "triggers", get label() { return t("localizationRoutines.triggers"); }, icon: Clock3 },
+      { key: "variables", get label() { return t("localizationRoutines.variables"); }, icon: LayoutGrid },
+      { key: "secrets", get label() { return t("localizationRoutines.secrets"); }, icon: KeyRound },
+      { key: "delivery", get label() { return t("localizationRoutines.delivery"); }, icon: Send },
     ],
   },
   {
-    label: "Operate",
+    get label() { return t("localizationRoutines.operate"); },
     items: [
-      { key: "runs", label: "Runs", icon: Play },
-      { key: "activity", label: "Activity", icon: ActivityIcon },
-      { key: "history", label: "History", icon: HistoryIcon },
+      { key: "runs", get label() { return t("localizationRoutines.runs"); }, icon: Play },
+      { key: "activity", get label() { return t("localizationRoutines.activity"); }, icon: ActivityIcon },
+      { key: "history", get label() { return t("localizationRoutines.history"); }, icon: HistoryIcon },
     ],
   },
 ];
@@ -74,6 +75,7 @@ export function RoutineSubSidebar({
   hasLiveRun: boolean;
   onNavigate: (section: RoutineSectionKey) => void;
 }) {
+  const { t } = useTranslation();
   const itemRefs = useRef<Array<HTMLAnchorElement | null>>([]);
 
   const focusItem = (index: number) => {
@@ -109,7 +111,7 @@ export function RoutineSubSidebar({
 
   return (
     <nav
-      aria-label="Routine sections"
+      aria-label={t("localizationRoutines.routineSections")}
       className="hidden h-full w-52 shrink-0 flex-col gap-4 overflow-y-auto border-r border-border bg-background px-3 py-4 md:flex"
     >
       {NAV_GROUPS.map((group) => (
@@ -152,7 +154,7 @@ export function RoutineSubSidebar({
                   <span className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500 motion-safe:animate-pulse" />
                 ) : dirty ? (
                   <span
-                    aria-label="Unsaved changes"
+                    aria-label={t("localizationRoutines.unsavedChanges")}
                     className="ml-auto h-1.5 w-1.5 shrink-0 rounded-full bg-amber-500 ring-2 ring-background"
                   />
                 ) : null}
@@ -175,6 +177,7 @@ export function RoutineSectionPicker({
   onNavigate: (section: RoutineSectionKey) => void;
   isSectionDirty: (section: RoutineSectionKey) => boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="sticky top-0 z-10 border-b border-border bg-background px-4 py-2 md:hidden">
       <Select
@@ -185,7 +188,7 @@ export function RoutineSectionPicker({
           }
         }}
       >
-        <SelectTrigger className="h-11 w-full" aria-label="Routine section">
+        <SelectTrigger className="h-11 w-full" aria-label={t("localizationRoutines.routineSection")}>
           <SelectValue />
         </SelectTrigger>
         <SelectContent>

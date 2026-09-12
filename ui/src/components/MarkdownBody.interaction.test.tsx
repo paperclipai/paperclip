@@ -6,6 +6,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "../context/ThemeContext";
 import { MarkdownBody } from "./MarkdownBody";
+import { act as reactAct } from "react";
+import { setLocale } from "@/i18n";
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -29,13 +31,14 @@ vi.mock("../api/issues", () => ({
 let root: ReturnType<typeof createRoot> | null = null;
 let container: HTMLDivElement | null = null;
 
-afterEach(() => {
+afterEach(async () => {
   if (root) {
-    flushSync(() => root?.unmount());
+    await reactAct(async () => root?.unmount());
   }
   root = null;
   container?.remove();
   container = null;
+  setLocale("en");
 });
 
 function renderMarkdown(children: string) {
@@ -71,6 +74,24 @@ function click(element: Element | null) {
 }
 
 describe("MarkdownBody code block interactions", () => {
+  it("retranslates code and table controls without changing markdown content or wrap state", async () => {
+    let node!: HTMLDivElement;
+    await reactAct(async () => { node = renderMarkdown("Raw user prose.\n\n```sh\npnpm dev --host 127.0.0.1\n```\n\n| Raw header | Other |\n| --- | --- |\n| Value | Text |"); });
+    const wrapButton = node.querySelector<HTMLButtonElement>(".paperclip-markdown-codeblock-wrap")!;
+    await reactAct(async () => wrapButton.click());
+    const source = node.querySelector("pre")?.textContent;
+    await reactAct(async () => setLocale("ru"));
+    expect(node.querySelector("pre")?.textContent).toBe(source);
+    expect(node.textContent).toContain("Raw user prose.");
+    expect(node.textContent).toContain("Raw header");
+    expect(wrapButton.getAttribute("aria-label")).toBe("Отключить перенос строк");
+    expect(wrapButton.getAttribute("aria-pressed")).toBe("true");
+    expect(node.querySelector('[role="region"]')?.getAttribute("aria-label")).toBe("Таблица с прокруткой");
+    expect(node.querySelector(".paperclip-markdown-codeblock-copy")?.getAttribute("aria-label")).toBe("Скопировать код");
+    await reactAct(async () => setLocale("en"));
+    expect(node.querySelector("pre")?.textContent).toBe(source);
+    expect(node.querySelector('[role="region"]')?.getAttribute("aria-label")).toBe("Scrollable table");
+  });
   it("toggles line wrapping for indented preformatted markdown blocks", () => {
     const node = renderMarkdown("Plan:\n\n    source fetch/sync -> signal inbox");
     const pre = node.querySelector("pre");

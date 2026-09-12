@@ -6,6 +6,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
+import { i18n } from "@/i18n";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { TaskChatBubble } from "./TaskChatBubble";
 import type { TaskChatMessageItem } from "./task-chat-model";
@@ -52,6 +53,20 @@ describe("TaskChatBubble attachment chips", () => {
     }
     renderMessage("Board reply");
     expect(container.textContent).not.toContain("Sent from iMessage");
+  });
+
+  it("switches iMessage provenance EN → RU → EN while keeping message content and source intact", async () => {
+    const item: TaskChatMessageItem = { id: "photon-localized", kind: "message", author: "human", text: "Original message DO_NOT_TRANSLATE", timestamp: "1:56 PM", sourceChannel: "imessage-photon" };
+    const original = JSON.stringify(item);
+    flushSync(() => root!.render(<ThemeProvider><TaskChatBubble item={item} /></ThemeProvider>));
+    for (const locale of ["en", "ru", "en"]) {
+      await i18n.changeLanguage(locale);
+      flushSync(() => {});
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(container.textContent).toContain(locale === "ru" ? "Отправлено через iMessage" : "Sent from iMessage");
+      expect(container.textContent).toContain(item.text);
+      expect(JSON.stringify(item)).toBe(original);
+    }
   });
 
   it("opens attachment images in the shared task gallery", () => {

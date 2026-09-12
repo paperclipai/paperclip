@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type AiProvider, type AiAuthMethod, type AiConnectionLoginIntent } from "@paperclipai/shared";
@@ -35,6 +36,7 @@ export function AiConnectionCredentialStep(props: Props) {
 }
 
 function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedMethod, connectionId, name: initialName, ownership, agentIds, allAgents, environmentId: suppliedEnvironmentId, onComplete, onCancel }: Props) {
+  const { t } = useTranslation();
   const [name, setName] = useState(initialName);
   const [chosenEnvironment, setChosenEnvironment] = useState<string>();
   const client = useQueryClient();
@@ -55,7 +57,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
       managedSandboxEnvironmentId: resolveManagedSandboxEnvironmentId(envs.data),
       visibleEnvironmentIds: envs.data?.map((env) => env.id),
     });
-  } catch (error) { environmentError = error instanceof Error ? error.message : "Could not resolve the sign-in environment."; }
+  } catch (error) { environmentError = error instanceof Error ? error.message : t("sep13Connections.environmentError"); }
   const loginEnvironments = (envs.data ?? []).filter((env) =>
     env.status === "active" && (env.driver === "local" || (env.driver === "sandbox" &&
     typeof env.config.provider === "string" &&
@@ -74,13 +76,13 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
   const error = environmentError ?? [envs, caps, settings, experimental, general].find((query) => query.error)?.error?.message;
   const intent: AiConnectionLoginIntent = { provider, method: "subscription", name, ownership, agentIds, allAgents, connectionId };
   return <div className="mx-auto w-full min-w-0 max-w-xl space-y-6">
-    <label className="block space-y-2 text-sm">Connection name<Input value={name} onChange={(event) => setName(event.target.value)} disabled={Boolean(connectionId)} /></label>
+    <label className="block space-y-2 text-sm">{t("sep13Connections.connectionName")}<Input value={name} onChange={(event) => setName(event.target.value)} disabled={Boolean(connectionId)} /></label>
     {!suppliedEnvironmentId && !forced.forced && loginEnvironments.length > 1 && <Select value={environmentId ?? ""} onValueChange={setChosenEnvironment}>
-      <SelectTrigger aria-label="Sign-in environment"><SelectValue placeholder="Sign-in environment" /></SelectTrigger>
+      <SelectTrigger aria-label={t("sep13Connections.signInEnvironment")}><SelectValue placeholder={t("sep13Connections.signInEnvironment")} /></SelectTrigger>
       <SelectContent>{loginEnvironments.map((env) => <SelectItem key={env.id} value={env.id}>{env.name}</SelectItem>)}</SelectContent>
     </Select>}
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-    {loading ? <p role="status" className="text-sm text-muted-foreground">Preparing sign-in…</p> : <AgentProviderConnection
+    {loading ? <p role="status" className="text-sm text-muted-foreground">{t("sep13Connections.preparingSignIn")}</p> : <AgentProviderConnection
       key={environmentId ?? "local"}
       companyId={companyId}
       adapterType={provider === "anthropic" ? "claude_local" : provider === "xai" ? "grok_local" : "codex_local"}
@@ -96,6 +98,7 @@ function SubscriptionConnectionStep({ companyId, provider, initialMethod, fixedM
 }
 
 function ApiKeyConnectionStep({ companyId, provider, connectionId, name: initialName, ownership, agentIds, allAgents, onComplete, onCancel }: Props) {
+  const { t } = useTranslation();
   const [name, setName] = useState(initialName);
   const [apiKey, setApiKey] = useState("");
   const client = useQueryClient();
@@ -105,9 +108,9 @@ function ApiKeyConnectionStep({ companyId, provider, connectionId, name: initial
     onSettled: () => setApiKey(""),
   });
   return <div className="mx-auto w-full min-w-0 max-w-xl space-y-4">
-    <label className="block space-y-2 text-sm">Connection name<Input value={name} onChange={(event) => setName(event.target.value)} disabled={Boolean(connectionId)} /></label>
+    <label className="block space-y-2 text-sm">{t("sep13Connections.connectionName")}<Input value={name} onChange={(event) => setName(event.target.value)} disabled={Boolean(connectionId)} /></label>
     {save.error && <p role="alert" className="text-sm text-destructive">{save.error.message}</p>}
-    <ProviderApiKeyCard providerName="OpenRouter" value={apiKey} onChange={setApiKey} onSubmit={() => save.mutate()} disabled={save.isPending} placeholder="Enter API key here" autoFocus />
-    <div className="flex justify-between gap-2"><Button variant="ghost" onClick={onCancel}>Cancel</Button><Button disabled={!name.trim() || !apiKey.trim() || save.isPending} onClick={() => save.mutate()}>{save.isPending ? "Connecting…" : "Connect"}</Button></div>
+    <ProviderApiKeyCard providerName="OpenRouter" value={apiKey} onChange={setApiKey} onSubmit={() => save.mutate()} disabled={save.isPending} placeholder={t("sep13Connections.apiKeyPlaceholder")} autoFocus />
+    <div className="flex justify-between gap-2"><Button variant="ghost" onClick={onCancel}>{t("sep13Connections.cancel")}</Button><Button disabled={!name.trim() || !apiKey.trim() || save.isPending} onClick={() => save.mutate()}>{save.isPending ? t("sep13Connections.connecting") : t("sep13Connections.connect")}</Button></div>
   </div>;
 }

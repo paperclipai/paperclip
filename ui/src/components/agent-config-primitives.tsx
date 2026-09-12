@@ -1,3 +1,5 @@
+import { Trans } from "react-i18next";
+import { t, useTranslation } from "@/i18n";
 import { useState, useRef, useEffect, useCallback } from "react";
 import {
   Tooltip,
@@ -16,59 +18,58 @@ import {
 import { Button } from "@/components/ui/button";
 import { HelpCircle, ChevronDown, ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
-import { AGENT_ROLE_LABELS } from "@paperclipai/shared";
+import { localizedAgentRoleLabels } from "../lib/entity-labels";
 
 /* ---- Help text for (?) tooltips ---- */
 export const help: Record<string, string> = {
-  name: "Display name for this agent.",
-  title: "Job title shown in the org chart.",
-  role: "Organizational role. Determines position and capabilities.",
-  reportsTo: "The agent this one reports to in the org hierarchy.",
-  capabilities: "Describes what this agent can do. Shown in the org chart and used for task routing.",
-  adapterType: "How this agent runs: local CLI (Claude/Codex/OpenCode), OpenClaw Gateway, spawned process, or generic HTTP webhook.",
-  cwd: "Deprecated legacy working directory fallback for local adapters. Existing agents may still carry this value, but new configurations should use project workspaces instead.",
-  promptTemplate: "Sent on every heartbeat. Keep this small and dynamic. Use it for current-task framing, not large static instructions. Supports {{ agent.id }}, {{ agent.name }}, {{ agent.role }} and other template variables.",
-  model: "Override the default model used by the adapter.",
-  thinkingEffort: "Control model reasoning depth. Supported values vary by adapter/model.",
-  chrome: "Enable Claude's Chrome integration by passing --chrome.",
-  dangerouslySkipPermissions: "Run unattended by auto-approving adapter permission prompts when supported.",
-  dangerouslyBypassSandbox: "Run Codex without sandbox restrictions. Required for filesystem/network access.",
-  search: "Enable Codex web search capability during runs.",
-  fastMode: "Enable Codex Fast mode. This burns credits/tokens much faster and is supported on GPT-6 Astra, GPT-5.6, GPT-5.5, GPT-5.4, and manual Codex model IDs.",
-  workspaceStrategy: "How Paperclip should realize an execution workspace for this agent. Keep project_primary for normal cwd execution, or use git_worktree for issue-scoped isolated checkouts.",
-  workspaceBaseRef: "Base git ref used when creating a worktree branch. Leave blank to use the resolved workspace ref or HEAD.",
-  workspaceBranchTemplate: "Template for naming derived branches. Supports {{issue.identifier}}, {{issue.title}}, {{agent.name}}, {{project.id}}, {{workspace.repoRef}}, and {{slug}}.",
-  worktreeParentDir: "Directory where derived worktrees should be created. Absolute, ~-prefixed, and repo-relative paths are supported.",
-  runtimeServicesJson: "Optional workspace runtime service definitions. Use this for shared app servers, workers, or other long-lived companion processes attached to the workspace.",
-  maxTurnsPerRun: "Maximum number of agentic turns (tool calls) per heartbeat run.",
-  command: "The command to execute (e.g. node, python).",
-  localCommand: "Override the path to the CLI command you want the adapter to call (e.g. /usr/local/bin/claude, codex, opencode).",
-  args: "Command-line arguments, comma-separated.",
-  extraArgs: "Extra CLI arguments for local adapters, comma-separated.",
-  envVars: "Environment variables injected into the adapter process. Use plain values or secret references.",
-  secretAccess:
-    "Secrets this agent can reach. Env-var bindings are injected at run start; API-access bindings are fetched on demand via the run-bound agent API and never written to the environment.",
-  bootstrapPrompt: "Only sent when Paperclip starts a fresh session. Use this for stable setup guidance that should not be repeated on every heartbeat.",
-  payloadTemplateJson: "Optional JSON merged into remote adapter request payloads before Paperclip adds its standard wake and workspace fields.",
-  webhookUrl: "The URL that receives POST requests when the agent is invoked.",
-  heartbeatInterval: "Run this agent automatically on a timer. Useful for periodic tasks like checking for new work.",
-  intervalSec: "Seconds between automatic heartbeat invocations.",
-  timeoutSec: "Maximum seconds a run can take before being terminated. 0 means no timeout.",
-  graceSec: "Seconds to wait after sending interrupt before force-killing the process.",
-  wakeOnDemand: "Allow this agent to be woken by assignments, API calls, UI actions, or automated systems.",
-  cooldownSec: "Minimum seconds between consecutive heartbeat runs.",
-  maxConcurrentRuns: "Maximum number of heartbeat runs that can execute simultaneously for this agent.",
-  maxTurnContinuationEnabled: "Automatically queue bounded continuation runs when an adapter stops because its per-run turn cap was exhausted.",
-  maxTurnContinuationMaxAttempts: "Maximum automatic continuations after one max-turn stop. This is separate from max turns per run.",
-  maxTurnContinuationDelaySec: "Seconds to wait before starting each max-turn continuation.",
-  budgetMonthlyCents: "Monthly spending limit in cents. 0 means no limit.",
+  get name() { return t("localizationAgents.help_name"); },
+  get title() { return t("localizationAgents.help_title"); },
+  get role() { return t("localizationAgents.help_role"); },
+  get reportsTo() { return t("localizationAgents.help_reportsTo"); },
+  get capabilities() { return t("localizationAgents.help_capabilities"); },
+  get adapterType() { return t("localizationAgents.help_adapterType"); },
+  get cwd() { return t("localizationAgents.help_cwd"); },
+  get promptTemplate() { return t("localizationAgents.help_promptTemplate", { interpolation: { prefix: "{{@", suffix: "@}}" } }); },
+  get model() { return t("localizationAgents.help_model"); },
+  get thinkingEffort() { return t("localizationAgents.help_thinkingEffort"); },
+  get chrome() { return t("localizationAgents.help_chrome"); },
+  get dangerouslySkipPermissions() { return t("localizationAgents.help_dangerouslySkipPermissions"); },
+  get dangerouslyBypassSandbox() { return t("localizationAgents.help_dangerouslyBypassSandbox"); },
+  get search() { return t("localizationAgents.help_search"); },
+  get fastMode() { return t("localizationAgents.help_fastMode"); },
+  get workspaceStrategy() { return t("localizationAgents.help_workspaceStrategy"); },
+  get workspaceBaseRef() { return t("localizationAgents.help_workspaceBaseRef"); },
+  get workspaceBranchTemplate() { return t("localizationAgents.help_workspaceBranchTemplate", { interpolation: { prefix: "{{@", suffix: "@}}" } }); },
+  get worktreeParentDir() { return t("localizationAgents.help_worktreeParentDir"); },
+  get runtimeServicesJson() { return t("localizationAgents.help_runtimeServicesJson"); },
+  get maxTurnsPerRun() { return t("localizationAgents.help_maxTurnsPerRun"); },
+  get command() { return t("localizationAgents.help_command"); },
+  get localCommand() { return t("localizationAgents.help_localCommand"); },
+  get args() { return t("localizationAgents.help_args"); },
+  get extraArgs() { return t("localizationAgents.help_extraArgs"); },
+  get envVars() { return t("localizationAgents.help_envVars"); },
+  get secretAccess() { return t("localizationAgents.help_secretAccess"); },
+  get bootstrapPrompt() { return t("localizationAgents.help_bootstrapPrompt"); },
+  get payloadTemplateJson() { return t("localizationAgents.help_payloadTemplateJson"); },
+  get webhookUrl() { return t("localizationAgents.help_webhookUrl"); },
+  get heartbeatInterval() { return t("localizationAgents.help_heartbeatInterval"); },
+  get intervalSec() { return t("localizationAgents.help_intervalSec"); },
+  get timeoutSec() { return t("localizationAgents.help_timeoutSec"); },
+  get graceSec() { return t("localizationAgents.help_graceSec"); },
+  get wakeOnDemand() { return t("localizationAgents.help_wakeOnDemand"); },
+  get cooldownSec() { return t("localizationAgents.help_cooldownSec"); },
+  get maxConcurrentRuns() { return t("localizationAgents.help_maxConcurrentRuns"); },
+  get maxTurnContinuationEnabled() { return t("localizationAgents.help_maxTurnContinuationEnabled"); },
+  get maxTurnContinuationMaxAttempts() { return t("localizationAgents.help_maxTurnContinuationMaxAttempts"); },
+  get maxTurnContinuationDelaySec() { return t("localizationAgents.help_maxTurnContinuationDelaySec"); },
+  get budgetMonthlyCents() { return t("localizationAgents.help_budgetMonthlyCents"); },
 };
 
 import { getAdapterLabels } from "../adapters/adapter-display-registry";
 
 export const adapterLabels = getAdapterLabels();
 
-export const roleLabels = AGENT_ROLE_LABELS as Record<string, string>;
+export const roleLabels = localizedAgentRoleLabels;
 
 /* ---- Primitive components ---- */
 
@@ -381,6 +382,7 @@ export function DraftNumberInput({
  * type the path due to browser security limitations.
  */
 export function ChoosePathButton() {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   return (
     <>
@@ -389,54 +391,53 @@ export function ChoosePathButton() {
         className="inline-flex items-center rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground hover:bg-accent/50 transition-colors shrink-0"
         onClick={() => setOpen(true)}
       >
-        Choose
+        {t("localizationAgents.choosePath")}
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Specify path manually</DialogTitle>
+            <DialogTitle>{t("localizationAgents.manualPath")}</DialogTitle>
             <DialogDescription>
-              Browser security blocks apps from reading full local paths via a file picker.
-              Copy the absolute path and paste it into the input.
+              {t("localizationAgents.browserPathSecurity")}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 text-sm">
             <section className="space-y-1.5">
               <p className="font-medium">macOS (Finder)</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in Finder.</li>
-                <li>Hold <kbd>Option</kbd> and right-click the folder.</li>
-                <li>Click "Copy &lt;folder name&gt; as Pathname".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{t("localizationAgents.findInFinder")}</li>
+                <li><Trans i18nKey="localizationAgents.holdOption" components={{ key: <kbd /> }} /></li>
+                <li>{t("localizationAgents.finderCopy")}</li>
+                <li>{t("localizationAgents.pastePath")}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                 /Users/yourname/Documents/project
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Windows (File Explorer)</p>
+              <p className="font-medium">{t("localizationAgents.windowsExplorer")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Find the folder in File Explorer.</li>
-                <li>Hold <kbd>Shift</kbd> and right-click the folder.</li>
-                <li>Click "Copy as path".</li>
-                <li>Paste the result into the path input.</li>
+                <li>{t("localizationAgents.findExplorer")}</li>
+                <li><Trans i18nKey="localizationAgents.holdShift" components={{ key: <kbd /> }} /></li>
+                <li>{t("localizationAgents.copyAsPath")}</li>
+                <li>{t("localizationAgents.pastePath")}</li>
               </ol>
               <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs">
                 C:\Users\yourname\Documents\project
               </p>
             </section>
             <section className="space-y-1.5">
-              <p className="font-medium">Terminal fallback (macOS/Linux)</p>
+              <p className="font-medium">{t("localizationAgents.terminalFallback")}</p>
               <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-                <li>Run <code>cd /path/to/folder</code>.</li>
-                <li>Run <code>pwd</code>.</li>
-                <li>Copy the output and paste it into the path input.</li>
+                <li><Trans i18nKey="localizationAgents.runCd" components={{ key: <code /> }} /></li>
+                <li><Trans i18nKey="localizationAgents.runPwd" components={{ key: <code /> }} /></li>
+                <li>{t("localizationAgents.copyOutput")}</li>
               </ol>
             </section>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpen(false)}>
-              OK
+              {t("localizationAgents.understood")}
             </Button>
           </DialogFooter>
         </DialogContent>

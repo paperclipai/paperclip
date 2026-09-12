@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Connections } from "./Connections";
+import { i18n } from "@/i18n";
 
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listApplicationsMock = vi.hoisted(() => vi.fn());
@@ -161,7 +162,8 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
     listGalleryMock.mockResolvedValue({ apps: [] });
     listAppsAttentionMock.mockResolvedValue({ apps: [] });
     listApplicationsMock.mockResolvedValue({ applications: [] });
@@ -181,10 +183,11 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     document.body.appendChild(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     act(() => root?.unmount());
     container.remove();
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
   });
 
   async function renderApps() {
@@ -199,6 +202,32 @@ describe("Connections table (M1b / PAP-13254 door 2)", () => {
     });
     await flushReact();
   }
+
+  it("keeps connection identity and policy behavior stable through EN → RU → EN", async () => {
+    const connections = [
+      connection({ id: "shared-id", applicationId: "app-slack", name: "Slack", credentialPolicy: "shared" }),
+      connection({ id: "personal-id", applicationId: "app-slack", name: "Work Identity", credentialPolicy: "per_user" }),
+    ];
+    const original = JSON.stringify(connections);
+    listApplicationsMock.mockResolvedValue({ applications: [application({ id: "app-slack", name: "Slack" })] });
+    listConnectionsMock.mockResolvedValue({ connections });
+    await renderApps();
+    const reads = listConnectionsMock.mock.calls.length;
+    for (const locale of ["en", "ru", "en"]) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      await flushReact();
+      const rows = [...container.querySelectorAll("tbody tr")];
+      const shared = rows.find((row) => row.textContent?.includes("Slack for the company"));
+      const personal = rows.find((row) => row.textContent?.includes("Work Identity"));
+      expect(shared?.querySelectorAll("td")[1]?.textContent).toBe(i18n.t("localizationActivity.company"));
+      expect(personal?.querySelectorAll("td")[1]?.textContent).toBe(i18n.t("localizationApps.personal671"));
+      await act(() => { shared?.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+      expect(mockNavigate).toHaveBeenLastCalledWith("/apps/shared-id/permissions");
+      expect(listConnectionsMock).toHaveBeenCalledTimes(reads);
+      expect(archiveConnectionMock).not.toHaveBeenCalled();
+      expect(JSON.stringify(connections)).toBe(original);
+    }
+  });
 
   it("renders applications without connections as not connected with a Connect action", async () => {
     listApplicationsMock.mockResolvedValue({

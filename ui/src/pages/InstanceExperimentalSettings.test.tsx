@@ -10,6 +10,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InstanceExperimentalSettings } from "./InstanceExperimentalSettings";
 import { queryKeys } from "../lib/queryKeys";
+import { i18n, t } from "../i18n";
 
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
@@ -213,6 +214,50 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
       expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({ enableChatConnectors: enabled });
       expect(container.querySelector(selector)?.getAttribute("aria-checked")).toBe(String(enabled));
       expect(currentExperimentalSettings.enableApps).toBe(true);
+    }
+  });
+
+  it("switches chat connector labels without replaying settings changes", async () => {
+    await renderPage();
+    const initialFetches = mockInstanceSettingsApi.getExperimental.mock.calls.length;
+    try {
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      const name = t("localizationExperimental.features.enableChatConnectors.ariaLabel");
+      const toggle = [...container.querySelectorAll<HTMLButtonElement>("button")].find(b => b.getAttribute("aria-label") === name)!;
+      expect(toggle).toBeDefined();
+      expect(container.textContent).toContain(t("localizationExperimental.features.enableChatConnectors.footnote"));
+      expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalledTimes(initialFetches);
+      expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+      await act(() => toggle.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({ enableChatConnectors: true });
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('button[aria-label="Toggle chat connectors experimental setting"]')?.getAttribute("aria-checked")).toBe("true");
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
+
+  it("switches agent chat labels without changing its raw setting or replaying the toggle", async () => {
+    await renderPage();
+    const initialFetches = mockInstanceSettingsApi.getExperimental.mock.calls.length;
+    try {
+      expect(container.textContent).toContain("Talk to each agent in one ongoing conversation.");
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Включить или выключить экспериментальный чат с агентом"]')!;
+      expect(toggle).not.toBeNull();
+      expect(container.textContent).toContain("Общайтесь с каждым агентом в отдельной беседе, к которой можно возвращаться.");
+      expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalledTimes(initialFetches);
+      expect(mockInstanceSettingsApi.updateExperimental).not.toHaveBeenCalled();
+      await act(() => toggle.click());
+      await flushReact();
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledExactlyOnceWith({ enableAgentChat: true });
+      await act(async () => { await i18n.changeLanguage("en"); });
+      expect(container.querySelector('button[aria-label="Toggle agent chat experimental setting"]')?.getAttribute("aria-checked")).toBe("true");
+      expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
     }
   });
 

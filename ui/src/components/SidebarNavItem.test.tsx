@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Inbox } from "lucide-react";
 import { SidebarNavItem, SidebarNavExpandedProvider } from "./SidebarNavItem";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { setLocale, useTranslation } from "@/i18n";
 
 const sidebarState = vi.hoisted(() => ({
   isMobile: false,
@@ -43,6 +44,7 @@ describe("SidebarNavItem", () => {
   let root: Root;
 
   beforeEach(() => {
+    setLocale("en");
     sidebarState.collapsed = false;
     sidebarState.peeking = false;
     container = document.createElement("div");
@@ -56,6 +58,31 @@ describe("SidebarNavItem", () => {
     });
     container.remove();
     vi.clearAllMocks();
+    setLocale("en");
+  });
+
+  it.each([1, 2, 5, 21, 22, 25])("announces a localized count in the collapsed rail (%i) without changing the link", async (count) => {
+    sidebarState.collapsed = true;
+    function LocalizedItem() {
+      const { t } = useTranslation();
+      return <SidebarNavItem to="/inbox" label={t("nav.inbox")} badge={count} badgeDescription={t("localizationSidebar.unreadCount", { count })} />;
+    }
+    render(<LocalizedItem />);
+    expect(link().getAttribute("aria-label")).toBe(`Inbox, ${count} unread`);
+    await act(async () => setLocale("ru"));
+    expect(link().getAttribute("aria-label")).toBe(`Входящие, непрочитанных: ${count}`);
+    expect(link().getAttribute("href")).toBe("/inbox");
+    await act(async () => setLocale("en"));
+    expect(link().getAttribute("aria-label")).toBe(`Inbox, ${count} unread`);
+  });
+
+  it("retranslates live execution counts while preserving user-authored names", async () => {
+    render(<SidebarNavItem to="/issues/raw-id" label="Raw task title" liveCount={2} />);
+    expect(container.textContent).toContain("2 live");
+    await act(async () => setLocale("ru"));
+    expect(container.textContent).toContain("Выполняется: 2");
+    expect(container.textContent).toContain("Raw task title");
+    expect(link().getAttribute("href")).toBe("/issues/raw-id");
   });
 
   function render(node: ReactNode) {

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { ManagedAiConnectionDetails } from "@/components/ai-connections/ManagedAiConnectionDetails";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { EmailConnectionAccess } from "@/components/EmailConnectionAccess";
@@ -66,6 +67,7 @@ export function AppDetail({ renderActions, onReconnect }: {
   renderActions?: (connection: ToolConnection) => ReactNode;
   onReconnect?: (connection: ToolConnection) => void;
 } = {}) {
+  const { t } = useTranslation();
   const { connectionId = "", tab } = useParams<{ connectionId: string; tab?: string }>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -173,13 +175,13 @@ export function AppDetail({ renderActions, onReconnect }: {
     )
     : grantsQuery.data?.capabilities.canConfigure === true;
   const reconnectUnavailableMessage = grantsQuery.isLoading
-    ? "Checking who can reconnect this identity…"
+    ? t("localizationApps.checkingWhoCanReconnectThisIdentity3")
     : grantsQuery.isError
-      ? "We couldn't verify who can reconnect this identity. Reload the page to try again."
+      ? t("localizationApps.weCouldnTVerifyWhoCanReconnectThisIdentityRel4")
       : managedIdentityGrant?.kind === "user"
         && managedPersonalUserId !== grantsQuery.data?.currentUserId
-        ? "The person this connection belongs to must reconnect it."
-        : "You don't have permission to reconnect this identity.";
+        ? t("localizationApps.thePersonThisConnectionBelongsToMustReconnect5")
+        : t("localizationApps.youDonTHavePermissionToReconnectThisIdentity6");
   const logoEntry = useMemo(
     () => galleryEntryFor((galleryQuery.data?.apps ?? []) as AppGalleryDisplayEntry[], connection, application),
     [galleryQuery.data, connection, application],
@@ -194,10 +196,10 @@ export function AppDetail({ renderActions, onReconnect }: {
   const owner = connection ? connectionOwnerProfile(connection, userProfileById) : null;
   const baseAppName = connection
     ? logoEntry ? appDefinitionName(logoEntry) : humanizeConnectionDisplayName(connection)
-    : "App";
+    : t("pages.apps.common.app");
   const appName = connection
     ? connectionDisplayNameForOwner(connection, baseAppName, owner)
-    : "App";
+    : t("pages.apps.common.app");
   const successNoticeShownFor = useRef<string | null>(null);
 
   useEffect(() => {
@@ -209,22 +211,22 @@ export function AppDetail({ renderActions, onReconnect }: {
     ) return;
     successNoticeShownFor.current = connection.id;
     pushToast({
-      title: `${appName} connected`,
-      body: "The connection is ready. Review permissions or test an action below.",
+      title: t("localizationApps.appConnected", { app: appName }),
+      body: t("localizationApps.theConnectionIsReadyReviewPermissionsOrTestAn9"),
       tone: "success",
     });
     navigate(appTabHref(connection.id, "permissions"), { replace: true });
-  }, [activeTab, appName, connection, navigate, pushToast, searchParams]);
+  }, [activeTab, appName, connection, navigate, pushToast, searchParams, t]);
 
   useEffect(() => {
     if (!activeTab) return;
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: t("localizationConnections.connectors16"), href: "/apps" },
       { label: appName, href: appTabHref(connectionId, "permissions") },
       { label: appTabLabel(activeTab) },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, appName, connectionId, activeTab]);
+  }, [setBreadcrumbs, appName, connectionId, activeTab, t]);
 
   const catalog = catalogQuery.data?.catalog ?? [];
   const profile = useMemo(
@@ -270,8 +272,8 @@ export function AppDetail({ renderActions, onReconnect }: {
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't save that",
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("localizationApps.couldnTSaveThat11"),
+        body: error instanceof Error ? error.message : t("pages.apps.common.tryAgain"),
         tone: "error",
       }),
     onSettled: () => setPending(false),
@@ -289,8 +291,8 @@ export function AppDetail({ renderActions, onReconnect }: {
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't rename the app",
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("localizationApps.couldnTRenameTheApp13"),
+        body: error instanceof Error ? error.message : t("pages.apps.common.tryAgain"),
         tone: "error",
       }),
   });
@@ -306,16 +308,16 @@ export function AppDetail({ renderActions, onReconnect }: {
         navigateTopLevel(target.url);
       } catch (error) {
         pushToast({
-          title: "Couldn't start sign-in",
-          body: error instanceof Error ? error.message : "Please try again.",
+          title: t("localizationApps.couldnTStartSignIn14"),
+          body: error instanceof Error ? error.message : t("pages.apps.common.tryAgain"),
           tone: "error",
         });
       }
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't start sign-in",
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("localizationApps.couldnTStartSignIn14"),
+        body: error instanceof Error ? error.message : t("pages.apps.common.tryAgain"),
         tone: "error",
       }),
   });
@@ -333,7 +335,7 @@ export function AppDetail({ renderActions, onReconnect }: {
   const startPersonalAuth = useMutation({
     mutationFn: () => {
       const subjectUserId = grantsQuery.data?.currentUserId;
-      if (!subjectUserId) throw new Error("Sign in again to connect your own account.");
+      if (!subjectUserId) throw new Error(t("localizationApps.signInAgainToConnectYourOwnAccount15"));
       return toolsApi.startPersonalAuthorization(selectedCompanyId!, connectionId, {
         subjectUserId,
         returnTo: appTabHref(connectionId, "permissions"),
@@ -348,16 +350,16 @@ export function AppDetail({ renderActions, onReconnect }: {
         navigateTopLevel(target.url);
       } catch (error) {
         pushToast({
-          title: "Couldn't start sign-in",
-          body: error instanceof Error ? error.message : "Please try again.",
+          title: t("localizationApps.couldnTStartSignIn14"),
+          body: error instanceof Error ? error.message : t("pages.apps.common.tryAgain"),
           tone: "error",
         });
       }
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't start sign-in",
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("localizationApps.couldnTStartSignIn14"),
+        body: error instanceof Error ? error.message : t("pages.apps.common.tryAgain"),
         tone: "error",
       }),
   });
@@ -374,15 +376,15 @@ export function AppDetail({ renderActions, onReconnect }: {
       invalidateGrants();
       setAudienceOpenGrantId(null);
       pushToast({
-        title: "Audience saved",
+        title: t("localizationApps.audienceSaved16"),
         body: (grant.members?.length ?? 0) === 0
-          ? "Every organization member can use this identity."
-          : `${grant.members?.length} ${grant.members?.length === 1 ? "member" : "members"} can use this identity.`,
+          ? t("localizationApps.everyOrganizationMemberCanUseThisIdentity17")
+          : t("localizationApps.membersCanUseIdentity", { count: grant.members?.length ?? 0 }),
         tone: "success",
       });
     },
     onError: (error) =>
-      setAudienceError(error instanceof Error ? error.message : "We couldn't save that audience."),
+      setAudienceError(error instanceof Error ? error.message : t("localizationApps.weCouldnTSaveThatAudience19")),
   });
 
   const refreshTools = useMutation({
@@ -394,17 +396,17 @@ export function AppDetail({ renderActions, onReconnect }: {
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connections(selectedCompanyId!) });
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
       pushToast({
-        title: `Found ${result.discoveredCount} ${result.discoveredCount === 1 ? "action" : "actions"}`,
+        title: t("localizationApps.actionsFound", { count: result.discoveredCount }),
         body: result.quarantinedCount > 0
-          ? `${result.quarantinedCount} new ${result.quarantinedCount === 1 ? "action needs" : "actions need"} your OK.`
+          ? t("localizationApps.newActionsNeedOk", { count: result.quarantinedCount })
           : undefined,
         tone: "success",
       });
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't refresh actions",
-        body: error instanceof Error ? error.message : "Please try again.",
+        title: t("localizationApps.couldnTRefreshActions24"),
+        body: error instanceof Error ? error.message : t("pages.apps.common.tryAgain"),
         tone: "error",
       }),
   });
@@ -415,14 +417,14 @@ export function AppDetail({ renderActions, onReconnect }: {
       queryClient.invalidateQueries({ queryKey: queryKeys.tools.connectionGrants(connectionId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.apps.attention(selectedCompanyId!) });
       pushToast({
-        title: "GitHub access refreshed",
-        body: "Account, installation, and repository access are current.",
+        title: t("localizationApps.gitHubAccessRefreshed25"),
+        body: t("localizationApps.accountInstallationAndRepositoryAccessAreCurr26"),
         tone: "success",
       });
     },
     onError: (error) => pushToast({
-      title: "Couldn't refresh GitHub access",
-      body: error instanceof Error ? error.message : "Please try again.",
+      title: t("localizationApps.couldnTRefreshGitHubAccess27"),
+      body: error instanceof Error ? error.message : t("pages.apps.common.tryAgain"),
       tone: "error",
     }),
   });
@@ -462,7 +464,7 @@ export function AppDetail({ renderActions, onReconnect }: {
   }
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage apps.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("pages.apps.common.selectOrganization")}</div>;
   }
   if (connectionQuery.isLoading) {
     return (
@@ -476,17 +478,15 @@ export function AppDetail({ renderActions, onReconnect }: {
   if (!connection) {
     return (
       <div className="max-w-3xl p-6">
-        <p className="text-sm text-muted-foreground">We couldn't find that app.</p>
-        <Button className="mt-4" variant="outline" onClick={() => navigate("/apps")}>
-          Back to connectors
-        </Button>
+        <p className="text-sm text-muted-foreground">{t("localizationApps.weCouldnTFindThatApp29")}</p>
+        <Button className="mt-4" variant="outline" onClick={() => navigate("/apps")}>{t("localizationApps.backToConnectors30")}</Button>
       </div>
     );
   }
 
   const aiGrantRevoked = connection.connectionPurpose === "ai"
     && grantRows.length > 0 && grantRows.every((grant) => grant.status === "revoked");
-  const status: StatusInfo = aiGrantRevoked ? { label: "Revoked", tone: "attention" } : statusFor(connection);
+  const status: StatusInfo = aiGrantRevoked ? { label: t("status.revoked"), tone: "attention" } : statusFor(connection);
   const needsReconnect = connection.requiresReauthorization
     ?? (status.tone === "attention" && connection.healthStatus !== "unknown");
   const quarantined = catalog.filter((e) => e.status === "quarantined");
@@ -527,9 +527,9 @@ export function AppDetail({ renderActions, onReconnect }: {
 
       {status.tone === "attention" && connection.requiresReauthorization === false && (
         <div role="status">
-          <p>{connection.healthMessage || "GitHub access could not be checked. Try again."}</p>
+          <p>{connection.healthMessage || t("chatUi.githubAccessCheckFailed")}</p>
           <Button variant="outline" disabled={refreshGitHubAccess.isPending} onClick={() => refreshGitHubAccess.mutate()}>
-            Retry access
+            {t("chatUi.browse.retryAccess")}
           </Button>
         </div>
       )}
@@ -629,7 +629,7 @@ export function AppDetail({ renderActions, onReconnect }: {
                 refreshPending={refreshTools.isPending}
                 permissionChangeWarning={
                   connection.credentialPolicy === "per_agent" && managedIdentityGrant?.providerTenant?.github
-                    ? "Shell Git and gh use this account for the run and are not constrained by per-tool Ask-first controls."
+                    ? t("localizationApps.shellGitAndGhUseThisAccountForTheRunAndAreNot31")
                     : undefined
                 }
                 onSaveAccess={(next) => apply({ access: connection.connectionPurpose === "ai" ? next : accessIncludingInstalls(next, install) })}
@@ -675,6 +675,7 @@ function AppDetailHeader({
   onRenameCancel: () => void;
   onRenameSubmit: (value: string) => void;
 }) {
+  const { t } = useTranslation();
   const unverifiedHost = unverifiedRemoteHost(connection);
   return (
     <header>
@@ -697,18 +698,16 @@ function AppDetailHeader({
               }}
             >
               <Input
-                aria-label="App name"
+                aria-label={t("pages.apps.detail.appNameAria")}
                 value={nameDraft}
                 onChange={(event) => onNameDraftChange(event.target.value)}
                 className="h-9 w-64 text-lg font-bold"
                 autoFocus
               />
               <Button type="submit" size="sm" disabled={renamePending || !nameDraft.trim()}>
-                {renamePending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
+                {renamePending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t("pages.apps.common.save")}
               </Button>
-              <Button type="button" size="sm" variant="ghost" onClick={onRenameCancel} disabled={renamePending}>
-                Cancel
-              </Button>
+              <Button type="button" size="sm" variant="ghost" onClick={onRenameCancel} disabled={renamePending}>{t("pages.apps.common.cancel")}</Button>
             </form>
           ) : (
             <div className="flex items-center gap-1.5">
@@ -717,7 +716,7 @@ function AppDetailHeader({
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7 text-muted-foreground"
-                aria-label="Rename app"
+                aria-label={t("pages.apps.detail.renameAria")}
                 onClick={onRenameStart}
               >
                 <Pencil className="h-3.5 w-3.5" />
@@ -728,7 +727,7 @@ function AppDetailHeader({
             <StatusBadge status={status} />
             {connection.config?.provider !== "agentmail" && actionCount !== null && (
               <span className="text-xs text-muted-foreground">
-                {actionCount} {actionCount === 1 ? "action" : "actions"} available
+                {t("localizationApps.actionsAvailable", { count: actionCount })}
               </span>
             )}
             {connectionDisplaySecondaryHint(connection) ? (
@@ -746,19 +745,21 @@ function AppDetailHeader({
 }
 
 function ToolsLoading({ mcpActions = false }: { mcpActions?: boolean }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-center gap-2 py-8 text-sm text-muted-foreground" role="status">
       <Loader2 className="h-4 w-4 animate-spin" />
-      {mcpActions ? "Loading MCP actions, this may take a minute." : "Loading tools…"}
+      {mcpActions ? t("localizationApps.loadingMCPActionsThisMayTakeAMinute33") : t("localizationApps.loadingTools34")}
     </div>
   );
 }
 
 function ToolsLoadError({ onRetry }: { onRetry: () => void }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-3 py-8">
-      <p className="text-sm text-destructive">Couldn’t load tools for this app.</p>
-      <Button size="sm" variant="outline" onClick={onRetry}>Try again</Button>
+      <p className="text-sm text-destructive">{t("localizationApps.couldnTLoadToolsForThisApp35")}</p>
+      <Button size="sm" variant="outline" onClick={onRetry}>{t("pages.apps.common.retry")}</Button>
     </div>
   );
 }
@@ -789,15 +790,16 @@ type StatusInfo = { label: string; tone: "connected" | "attention" | "paused" };
 
 function statusFor(connection: ToolConnection): StatusInfo {
   if (connection.enabled === false || connection.status === "disabled") {
-    return { label: "Paused", tone: "paused" };
+    return { label: t("pages.apps.connections.statusPaused"), tone: "paused" };
   }
   if (isAttentionHealthStatus(connection.healthStatus) || (connection.connectionPurpose === "ai" && (connection.healthStatus !== "ok" || aiSubscriptionNeedsIsolatedLogin(connection.config)))) {
-    return { label: "Needs attention", tone: "attention" };
+    return { label: t("pages.apps.connections.statusNeedsAttention"), tone: "attention" };
   }
-  return { label: "Connected", tone: "connected" };
+  return { label: t("pages.apps.notConnected.statusConnected"), tone: "connected" };
 }
 
 function StatusBadge({ status }: { status: StatusInfo }) {
+  useTranslation();
   const klass: Record<StatusInfo["tone"], string> = {
     connected: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
     attention: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",

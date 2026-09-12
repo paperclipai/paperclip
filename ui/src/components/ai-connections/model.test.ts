@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  AI_PROVIDERS,
+  AI_CONNECTION_STATUS,
+  aiMethodLabel,
   aiConnectionProblem,
   bindingProblem,
   matchesAiRequirement,
@@ -8,6 +12,9 @@ import {
   type AiConnectionRequirement,
   type AiConnectionBinding,
 } from "./model";
+
+beforeEach(async () => { await i18n.changeLanguage("en"); });
+afterEach(async () => { await i18n.changeLanguage("en"); });
 
 const requirement: AiConnectionRequirement = {
   companyId: "company",
@@ -145,4 +152,26 @@ describe("AI connection selection presentation", () => {
       }),
     ).toBe("Not in the shared audience");
   });
+});
+
+it("localizes live helper output while retaining canonical defaults and raw diagnostics", async () => {
+  const revoked = { ...account, status: "revoked" as const };
+  for (const [locale, method, status] of [
+    ["en", "Claude subscription", "Revoked"],
+    ["ru", "Подписка Claude", "Доступ отозван"],
+    ["en", "Claude subscription", "Revoked"],
+  ]) {
+    await i18n.changeLanguage(locale);
+    expect(aiMethodLabel("anthropic", "subscription")).toBe(method);
+    expect(AI_PROVIDERS.anthropic.subscriptionName).toBe(method);
+    expect(AI_CONNECTION_STATUS.revoked).toBe(status);
+    expect(aiConnectionProblem(revoked)).toContain(status);
+    expect(personalAiDefault([revoked], requirement, "alice")).toBe(revoked);
+    expect(aiConnectionProblem({ ...account, unavailableReason: "Custom provider denial" })).toBe("Custom provider denial");
+    expect(binding.provider).toBe("anthropic");
+    expect(binding.method).toBe("subscription");
+    expect(binding.mode).toBe("responsible_user");
+  }
+  await i18n.changeLanguage("ru");
+  expect(aiConnectionProblem({ ...account, unavailableReason: "Reconnect with a separate sign-in to protect your existing terminal login." })).toContain("сохранить текущую авторизацию в терминале");
 });

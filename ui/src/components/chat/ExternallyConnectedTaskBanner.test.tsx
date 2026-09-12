@@ -9,6 +9,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExternallyConnectedTaskBanner } from "./ExternallyConnectedTaskBanner";
 import { boardSendDraftKey, readBoardSendDraft } from "./board-send-draft";
 import { ApiError } from "@/api/client";
+import { i18n, t } from "@/i18n";
+
+describe("publication batch English copy compatibility", () => {
+  it.each([
+    ["batchPublished", "published"],
+    ["batchAwaitingConsent", "awaiting consent"],
+    ["batchDeclined", "declined"],
+    ["batchExpired", "expired"],
+    ["batchCancelled", "cancelled"],
+  ])("preserves the source sentence for %s", async (key, label) => {
+    await i18n.changeLanguage("en");
+    for (const count of [0, 1, 2, 5, 21]) {
+      expect(t(`chatUi.${key}`, { count, formattedCount: String(count) })).toBe(`${count} ${label}`);
+    }
+  });
+});
 
 const mockChatEndpointsApi = vi.hoisted(() => ({
   getIssueBinding: vi.fn(),

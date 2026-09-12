@@ -1,3 +1,5 @@
+import { i18n, t } from "@/i18n";
+
 type TranscriptDensity = "comfortable" | "compact";
 
 type TranscriptActivity = {
@@ -118,7 +120,7 @@ export function isCommandTool(name: string, input: unknown): boolean {
 }
 
 export function displayToolName(name: string, input: unknown): string {
-  if (isCommandTool(name, input)) return "Executing command";
+  if (isCommandTool(name, input)) return t("localizationTranscriptChrome.executingCommand");
   return humanizeLabel(name);
 }
 
@@ -135,7 +137,7 @@ export function summarizeToolInput(
   const record = asRecord(input);
   if (!record) {
     const serialized = compactWhitespace(formatUnknown(input));
-    return serialized ? truncate(serialized, compactMax) : `Inspect ${name} input`;
+    return serialized ? truncate(serialized, compactMax) : t("localizationTranscriptChrome.inspectInput", { name });
   }
 
   const command = typeof record.command === "string"
@@ -162,14 +164,14 @@ export function summarizeToolInput(
   if (Array.isArray(record.paths) && record.paths.length > 0) {
     const first = record.paths.find((value): value is string => typeof value === "string" && value.trim().length > 0);
     if (first) {
-      return truncate(`${record.paths.length} paths, starting with ${first}`, compactMax);
+      return truncate(t("localizationTranscriptChrome.pathsSummary", { count: record.paths.length, value: new Intl.NumberFormat(i18n.resolvedLanguage).format(record.paths.length), first }), compactMax);
     }
   }
 
   const keys = Object.keys(record);
-  if (keys.length === 0) return `No ${name} input`;
-  if (keys.length === 1) return truncate(`${keys[0]} payload`, compactMax);
-  return truncate(`${keys.length} fields: ${keys.slice(0, 3).join(", ")}`, compactMax);
+  if (keys.length === 0) return t("localizationTranscriptChrome.noInput", { name });
+  if (keys.length === 1) return truncate(t("localizationTranscriptChrome.fieldPayload", { key: keys[0] }), compactMax);
+  return truncate(t("localizationTranscriptChrome.fieldsSummary", { count: keys.length, value: new Intl.NumberFormat(i18n.resolvedLanguage).format(keys.length), fields: keys.slice(0, 3).join(", ") }), compactMax);
 }
 
 function readToolDetailValue(value: unknown, max = 200): string | null {
@@ -242,15 +244,15 @@ export function summarizeToolResult(
   isError: boolean | undefined,
   density: TranscriptDensity = "comfortable",
 ): string {
-  if (!result) return isError ? "Tool failed" : "Waiting for result";
+  if (!result) return isError ? t("localizationTranscriptChrome.toolFailed") : t("localizationTranscriptChrome.waitingResult");
   const structured = parseStructuredToolResult(result);
   if (structured) {
     if (structured.body) {
       return truncate(structured.body.split("\n")[0] ?? structured.body, density === "compact" ? 84 : 140);
     }
-    if (structured.status === "completed") return "Completed";
+    if (structured.status === "completed") return t("localizationTranscriptChrome.completed");
     if (structured.status === "failed" || structured.status === "error") {
-      return structured.exitCode ? `Failed with exit code ${structured.exitCode}` : "Failed";
+      return structured.exitCode ? t("localizationTranscriptChrome.exitCode", { code: structured.exitCode }) : t("localizationTranscriptChrome.failed");
     }
   }
   const lines = result
@@ -278,4 +280,39 @@ export function shouldHideNiceModeStderr(text: string): boolean {
 
 export function summarizeNotice(text: string, max = 160): string {
   return truncate(compactWhitespace(text), max);
+}
+
+/** Presentation only. Canonical detail labels still drive Intent selection and row keys. */
+export function toolInputDetailDisplay(detail: ToolInputDetail, input: unknown): ToolInputDetail {
+  const labels: Record<string, string> = {
+  "Intent": "localizationTaskRuntime.display.ui_Intent_kdk7sb",
+  "Path": "localizationTaskRuntime.display.ui_Path_1tbd3yu",
+  "Query": "localizationTaskRuntime.display.ui_Query_17zlk03",
+  "Target": "localizationTaskRuntime.display.ui_Target_12ohkdk",
+  "Name": "localizationTaskRuntime.display.ui_Name_4el6o6",
+  "Command": "localizationTaskRuntime.display.ui_Command_1j2mkia",
+  "Input": "localizationTaskRuntime.display.ui_Input_189z5sr",
+  "Directory": "localizationTranscriptChrome.detail_Directory",
+  "Prompt": "localizationTranscriptChrome.detail_Prompt",
+  "Pattern": "localizationTranscriptChrome.detail_Pattern",
+  "Paths": "localizationTranscriptChrome.detail_Paths"
+};
+  let value = detail.value;
+  const record = asRecord(input);
+  if (detail.label === "Paths" && Array.isArray(record?.paths) && record.paths.length > 3) {
+    const paths = record.paths
+      .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      .slice(0, 3)
+      .join(", ");
+    const count = record.paths.length - 3;
+    // Translate only our generated suffix, never a custom/provider string.
+    if (paths && detail.value === `${paths}, +${count} more`) {
+      value = t("localizationTranscriptChrome.morePaths", {
+        count,
+        value: new Intl.NumberFormat(i18n.resolvedLanguage).format(count),
+        paths,
+      });
+    }
+  }
+  return { ...detail, label: labels[detail.label] ? t(labels[detail.label]) : detail.label, value };
 }

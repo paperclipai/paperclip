@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { accessApi } from "@/api/access";
@@ -14,6 +15,7 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
   onClose: () => void;
   onBack: () => void;
 }) {
+  const { t } = useTranslation();
   const cache = useQueryClient();
   const mounted = useRef(true);
   useEffect(() => {
@@ -57,28 +59,28 @@ export function ExternalAgentInviteDialog({ companyId, onClose, onBack }: {
   });
   return <Dialog open onOpenChange={(open) => { if (!open) onClose(); }}>
     <DialogContent className="max-h-(--sz-calc-16) overflow-y-auto sm:max-w-2xl">
-      <DialogTitle>{prompt ? "Agent onboarding prompt" : "Invite an external agent"}</DialogTitle>
+      <DialogTitle>{prompt ? t("localizationAgents.ui230_Agent_onboarding_prompt") : t("localizationAgents.ui220_Invite_an_external_agent")}</DialogTitle>
       <DialogDescription>
-        {prompt ? "Send this one-time prompt to the agent that should join your organization."
-          : "Generate a one-time onboarding prompt for an external agent. An organization admin must approve its join request before it can claim an API key."}
+        {prompt ? t("agentSetup.invitePromptDescription")
+          : t("agentSetup.inviteDescription")}
       </DialogDescription>
       {prompt ? <>
-        <Textarea aria-label="Agent onboarding prompt" readOnly value={prompt} className="min-h-64 font-mono text-xs" />
-        {copyError && <p role="alert" className="text-sm text-muted-foreground">Clipboard unavailable. Copy the prompt manually from the field above.</p>}
+        <Textarea aria-label={t("localizationAgents.ui230_Agent_onboarding_prompt")} readOnly value={prompt} className="min-h-64 font-mono text-xs" />
+        {copyError && <p role="alert" className="text-sm text-muted-foreground">{t("agentSetup.clipboardUnavailable")}</p>}
         <div className="flex justify-between gap-4">
-          <Button variant="ghost" onClick={onClose}>Done</Button>
-          <Button variant="outline" onClick={() => void copy(prompt)}>{copied ? "Copied prompt" : "Copy prompt"}</Button>
+          <Button variant="ghost" onClick={onClose}>{t("common.done")}</Button>
+          <Button variant="outline" onClick={() => void copy(prompt)}>{copied ? t("localizationAgents.ui233_Copied_prompt") : t("localizationAgents.ui234_Copy_prompt")}</Button>
         </div>
       </> : <>
         <label className="space-y-2 text-sm">
-          <span>Optional message for the agent</span>
+          <span>{t("localizationAgents.ui225_Optional_message_for_the_agent")}</span>
           <Textarea value={message} onChange={(event) => setMessage(event.target.value)} maxLength={4000} className="min-h-24" />
         </label>
         {createInvite.error && <p role="alert" className="text-sm text-destructive">{createInvite.error.message}</p>}
         <div className="flex justify-between gap-4">
-          <Button variant="ghost" onClick={onBack}>Back</Button>
+          <Button variant="ghost" onClick={onBack}>{t("pages.secrets.actions.back")}</Button>
           <Button disabled={createInvite.isPending} onClick={() => createInvite.mutate()}>
-            {createInvite.isPending ? "Generating…" : "Generate onboarding prompt"}
+            {createInvite.isPending ? t("localizationAgents.ui228_Generating_") : t("localizationAgents.ui229_Generate_onboarding_prompt")}
           </Button>
         </div>
       </>}

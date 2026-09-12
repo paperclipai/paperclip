@@ -4,6 +4,7 @@ import { act, type ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import type { IssueQueuedCommentQueue } from "@paperclipai/shared";
 import {
   reorderQueuedMessageEntries,
@@ -58,9 +59,10 @@ describe("TaskChatQueuedMessages", () => {
     root = createRoot(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     flushSync(() => root.unmount());
     container.remove();
+    await i18n.changeLanguage("en");
   });
 
   function render(
@@ -327,5 +329,52 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.textContent).toContain(
       "Queued messages will be sent when the previous run has stopped.",
     );
+  });
+
+  it("retranslates a stopped queue's wait without changing messages or sending them", async () => {
+    const onInterrupt = vi.fn();
+    const props = render({ queue: { ...queue, protocol: "legacy", targetRunId: null,
+      executionWait: { reason: "remote_cleanup", message: "Waiting for the previous environment to stop. Your message will start automatically." } }, onInterrupt });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-comment-1"]');
+    for (const locale of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBe(row);
+      expect(row?.textContent).toContain("First queued message");
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')?.title)
+        .toBe(locale === "ru" ? "Отправить сообщения из очереди сейчас" : "Send queued messages now");
+      const message = container.querySelector('[role="status"]')?.textContent;
+      expect(message).toBe(locale === "en"
+        ? "Waiting for the previous environment to stop. Your message will start automatically."
+        : i18n.t("sep13QueueMetadata.remoteCleanup"));
+      expect(onInterrupt).not.toHaveBeenCalled();
+      expect(props.onSteer).not.toHaveBeenCalled();
+      expect(props.onDiscard).not.toHaveBeenCalled();
+    }
+  });
+
+  it("retranslates a retained interruption announcement without repeating the action or rebuilding queued rows", async () => {
+    const acknowledgement = deferred<void>();
+    const onInterrupt = vi.fn().mockReturnValue(acknowledgement.promise);
+    const props = render({ queue: { ...queue, protocol: "legacy", steeringDisposition: "unsupported" }, onInterrupt });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-comment-1"]');
+    const interrupt = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')!;
+    await act(async () => interrupt.click());
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(interrupt.disabled).toBe(true);
+    expect(interrupt.title).toBe("Прервать текущий ход и отправить сообщения из очереди");
+    expect(container.querySelector(".sr-only")?.textContent).toBe("Отправляем сообщения из очереди.");
+    await act(async () => { acknowledgement.resolve(); await acknowledgement.promise; });
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBe(row);
+      expect(container.querySelector(".sr-only")?.textContent).toBe(language === "ru"
+        ? "Сообщения из очереди будут отправлены после остановки предыдущего запуска."
+        : "Queued messages will be sent when the previous run has stopped.");
+      expect(row?.textContent).toContain("First queued message");
+      expect(onInterrupt).toHaveBeenCalledTimes(1);
+      expect(props.onReorder).not.toHaveBeenCalled();
+      expect(props.onSteer).not.toHaveBeenCalled();
+      expect(props.onDiscard).not.toHaveBeenCalled();
+    }
   });
 });

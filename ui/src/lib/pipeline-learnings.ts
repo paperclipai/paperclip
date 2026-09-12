@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { PipelineCompanyCaseEvent } from "../api/pipelines";
 import { formatShortDate } from "./utils";
 
@@ -23,7 +24,7 @@ function eventItemTitle(event: PipelineCompanyCaseEvent): string {
     asString(payload.itemTitle) ??
     asString(payload.caseTitle) ??
     asString(payload.title) ??
-    "Untitled item"
+    t("localizationActivityChrome.untitledItem")
   );
 }
 
@@ -34,7 +35,7 @@ function eventActorName(event: PipelineCompanyCaseEvent): string {
     asString(payload.actorName) ??
     asString(payload.reviewerName) ??
     asString(payload.decidedByName) ??
-    "Someone"
+    t("localizationActivityChrome.someone")
   );
 }
 
@@ -47,12 +48,6 @@ function payloadText(event: PipelineCompanyCaseEvent, ...keys: string[]): string
   return null;
 }
 
-function reviewVerb(decision: string | null): string {
-  if (decision === "request_changes") return "sent back";
-  if (decision === "reject" || decision === "drop") return "declined";
-  return "approved";
-}
-
 export function formatLearningEvent(event: PipelineCompanyCaseEvent): LearningEventPresentation {
   const payload = asRecord(event.payload);
   const title = eventItemTitle(event);
@@ -60,14 +55,16 @@ export function formatLearningEvent(event: PipelineCompanyCaseEvent): LearningEv
   if (event.type === "review_decided") {
     const actor = eventActorName(event);
     const decision = asString(payload.decision);
+    const decisionKey = decision === "request_changes" ? "sentBack"
+      : decision === "reject" || decision === "drop" ? "declined" : "approved";
     const toStageName =
       asString(event.toStage?.name) ?? payloadText(event, "toStageName", "stageName", "targetStageName");
-    const stageCopy = toStageName ? ` moving to ${toStageName}` : "";
     const note = payloadText(event, "reason", "note");
-    const noteCopy = note ? ` - note: ${note}` : "";
     return {
       kind: "review",
-      sentence: `${actor} ${reviewVerb(decision)} '${title}'${stageCopy}${noteCopy}.`,
+      sentence: t(`localizationActivityChrome.review_${decisionKey}_${toStageName ? "stage" : "plain"}_${note ? "note" : "noNote"}`, {
+        actor, title, stage: toStageName, note,
+      }),
     };
   }
 
@@ -75,19 +72,18 @@ export function formatLearningEvent(event: PipelineCompanyCaseEvent): LearningEv
     const fromStageName = asString(event.fromStage?.name) ?? payloadText(event, "fromStageName");
     const toStageName =
       asString(event.toStage?.name) ?? payloadText(event, "toStageName", "stageName", "targetStageName");
-    const fromCopy = fromStageName ? ` from ${fromStageName}` : "";
-    const toCopy = toStageName ? ` to ${toStageName}` : "";
     const reason = payloadText(event, "reason", "note");
-    const reasonCopy = reason ? ` - reason: ${reason}` : "";
     return {
       kind: "forced_move",
-      sentence: `'${title}' was moved by hand${fromCopy}${toCopy}${reasonCopy}.`,
+      sentence: t(`localizationActivityChrome.forced_${fromStageName ? "from" : "noFrom"}_${toStageName ? "to" : "noTo"}_${reason ? "reason" : "noReason"}`, {
+        title, from: fromStageName, to: toStageName, reason,
+      }),
     };
   }
 
   return {
     kind: "unknown",
-    sentence: `'${title}' changed.`,
+    sentence: t("localizationActivityChrome.itemChanged", { title }),
   };
 }
 
@@ -99,13 +95,13 @@ export function learningDayKey(value: string | Date) {
 
 export function learningDayLabel(value: string | Date) {
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Unknown";
+  if (Number.isNaN(date.getTime())) return t("localizationActivityChrome.unknownDate");
   const today = new Date();
   const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
   const startOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
   const diffDays = Math.round((startOfToday - startOfDay) / 86_400_000);
-  if (diffDays === 0) return "Today";
-  if (diffDays === 1) return "Yesterday";
+  if (diffDays === 0) return t("localizationActivityChrome.today");
+  if (diffDays === 1) return t("localizationActivityChrome.yesterday");
   return formatShortDate(date);
 }
 

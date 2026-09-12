@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type { AdapterModel } from "../../api/agents";
 import type { Issue, Project } from "@paperclipai/shared";
 import { extractProviderIdWithFallback } from "../../lib/model-utils";
@@ -55,19 +56,19 @@ export function toDateTimeLocalValue(value: string | null | undefined) {
 
 export const ISSUE_THINKING_EFFORT_OPTIONS = {
   claude_local: [
-    { value: "", label: "Default" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
+    { value: "", get label() { return t("localizationIssueDetail.default"); } },
+    { value: "low", get label() { return t("priority.low"); } },
+    { value: "medium", get label() { return t("priority.medium"); } },
+    { value: "high", get label() { return t("priority.high"); } },
   ],
   opencode_local: [
-    { value: "", label: "Default" },
-    { value: "minimal", label: "Minimal" },
-    { value: "low", label: "Low" },
-    { value: "medium", label: "Medium" },
-    { value: "high", label: "High" },
-    { value: "xhigh", label: "X-High" },
-    { value: "max", label: "Max" },
+    { value: "", get label() { return t("localizationIssueDetail.default"); } },
+    { value: "minimal", get label() { return t("localizationIssueLists.effortMinimal"); } },
+    { value: "low", get label() { return t("priority.low"); } },
+    { value: "medium", get label() { return t("priority.medium"); } },
+    { value: "high", get label() { return t("priority.high"); } },
+    { value: "xhigh", get label() { return t("localizationIssueLists.effortExtraHigh"); } },
+    { value: "max", get label() { return t("localizationIssueLists.effortMax"); } },
   ],
 } as const;
 

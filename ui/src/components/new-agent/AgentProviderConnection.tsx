@@ -1,3 +1,5 @@
+import { useTranslation } from "@/i18n";
+import { AgentSetupError, agentSetupErrorText } from "@/lib/agent-setup-error";
 import { healthApi } from "@/api/health";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { useLocalAiLogin } from "../ai-connections/useLocalAiLogin";
@@ -62,6 +64,7 @@ export function AgentProviderConnection({
     onComplete: (result: { connectionId: string; grantId: string; method: "subscription" | "api_key" }) => void;
   };
 }) {
+  const { t } = useTranslation();
   const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: localEnvironment });
   const canUseLocalLogin = localEnvironment && (health.data?.localAiLoginSupported ?? health.data?.deploymentMode === "local_trusted");
   const epoch = useRef(0);
@@ -85,7 +88,8 @@ export function AgentProviderConnection({
   const phaseBeforeSubmit = useRef<"ready" | "waiting">("ready");
   const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [connectionFailure, setError] = useState<Error | null>(null);
+  const error = agentSetupErrorText(connectionFailure, t);
   const [storedConnection, setStoredConnection] =
     useState<ProviderConnection | null>(null);
   const provider = adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : "OpenAI";
@@ -192,15 +196,15 @@ export function AgentProviderConnection({
       if (connected) onConnected(connection);
       else
         setError(
-          "The provider did not respond. Check the connection and try again.",
+          new AgentSetupError("agentSetup.providerNoResponse"),
         );
     } catch (cause) {
       if (run !== epoch.current) return;
       if (managedAccount) setApiKey("");
       setError(
         cause instanceof Error
-          ? cause.message
-          : "Could not connect to the provider.",
+          ? cause
+          : new AgentSetupError("agentSetup.providerConnectFailed"),
       );
     } finally {
       if (run === epoch.current) setBusy(false);
@@ -217,7 +221,7 @@ export function AgentProviderConnection({
   return (
     <div className="min-w-0 max-w-full">
       <ModelSourceTiles
-        label="Connect your model provider"
+        label={t("agentSetup.connectProvider")}
         sources={[
           {
             id: adapterType,
@@ -250,8 +254,7 @@ export function AgentProviderConnection({
       )}
       {!opened && savedKeys.options.length > 0 && (
         <p className="mt-2 text-sm text-muted-foreground">
-          {savedKeys.options.length} saved API{" "}
-          {savedKeys.options.length === 1 ? "key available" : "keys available"}.
+          {t("agentSetup.savedKeysAvailable", { count: savedKeys.options.length })}
         </p>
       )}
       {method === "subscription" &&
@@ -278,8 +281,8 @@ export function AgentProviderConnection({
               <OnboardingLoginCard
                 instruction={
                   savedKeys.options.length
-                    ? "Choose a saved API key or enter a new one"
-                    : `Provide your ${provider} API key to connect`
+                    ? t("agentSetup.chooseSavedKey")
+                    : t("agentSetup.provideApiKey", { provider })
                 }
               >
                 <SavedProviderKeySelect
@@ -295,14 +298,14 @@ export function AgentProviderConnection({
                 />
                 {!selectedKey && (
                   <OnboardingCardField
-                    label="API key"
+                    label={t("localizationAgents.ui386_API_key")}
                     masked
                     autoFocus
                     value={apiKey}
                     placeholder={
                       storedConnection
-                        ? "Key entered. Retry the connection."
-                        : "Enter API key here"
+                        ? t("agentSetup.keyRetry")
+                        : t("localizationOnboarding.apiKeyPlaceholder")
                     }
                     onChange={(value) => {
                       setSelectedKeyId("");
@@ -336,7 +339,7 @@ export function AgentProviderConnection({
                 }}
                 onConnected={(sessionId) => {
                   if (managedAccount) {
-                    if (!sessionId) { setError("The login did not return a saved connection. Try again."); return; }
+                    if (!sessionId) { setError(new AgentSetupError("sep13ProviderIntegration.loginMissingConnection")); return; }
                     const run = epoch.current;
                     setLoginPhase("connecting");
                     void aiConnectionsApi.loginResult(companyId, sessionId).then((result) => {
@@ -344,7 +347,7 @@ export function AgentProviderConnection({
                     }).catch(() => {
                       if (run !== epoch.current) return;
                       setLoginPhase("ready");
-                      setError("Could not retrieve the saved connection. Go back and retry.");
+                      setError(new AgentSetupError("sep13ProviderIntegration.retrieveSavedConnectionFailed"));
                     });
                     return;
                   }
@@ -358,10 +361,10 @@ export function AgentProviderConnection({
             ) : (
               <p className="text-sm text-muted-foreground">
                 {storedLogin.data
-                  ? "Use your saved Claude subscription for this agent."
+                  ? t("agentSetup.useClaudeSubscription")
                   : canLogin
-                    ? "Use the existing provider connection for this environment."
-                    : "This environment does not support browser sign-in. Choose a sign-in environment or connect with an API key."}
+                    ? t("agentSetup.useEnvironmentConnection")
+                    : t("sep13ProviderIntegration.unsupportedBrowserLogin")}
               </p>
             )}
           </div>
@@ -369,7 +372,7 @@ export function AgentProviderConnection({
       </motion.div>
       {method === "subscription" && storedLogin.isError && (
         <p role="alert" className="mt-4 text-sm text-destructive">
-          Could not check your saved Claude subscription. Try again.
+          {t("agentSetup.checkClaudeFailed")}
         </p>
       )}
       {error && (
@@ -378,7 +381,7 @@ export function AgentProviderConnection({
         </p>
       )}
       {localEnvironment && health.isError && (
-        <p role="alert" className="mt-4 text-sm text-destructive">Could not prepare sign-in. Reload this page to try again.</p>
+        <p role="alert" className="mt-4 text-sm text-destructive">{t("sep13Auth.prepareFailed")}</p>
       )}
       <FooterNav
         onBack={() => {
@@ -387,17 +390,17 @@ export function AgentProviderConnection({
         }}
         primaryLabel={
           opened && needsLogin
-            ? loginPhase === "waiting" ? "Waiting for code"
-              : loginPhase === "connecting" ? "Connecting"
-              : `Sign in to ${provider}`
+            ? loginPhase === "waiting" ? t("localizationOnboarding.waitingForCode")
+              : loginPhase === "connecting" ? t("localizationOnboarding.connecting")
+              : t("localizationAgents.signInProvider", { provider })
             : busy
-            ? "Connecting"
+            ? t("localizationOnboarding.connecting")
             : method === "subscription" &&
                 (storedLogin.data || savedSubscription)
-              ? "Use saved subscription"
+              ? t("agentSetup.useSavedSubscription")
               : method === "api" && selectedKey
-                ? "Use saved API key"
-                : "Connect"
+                ? t("agentSetup.useSavedKey")
+                : t("pages.apps.connections.connect")
         }
         primaryDisabled={
           managedAccount?.disabled ||

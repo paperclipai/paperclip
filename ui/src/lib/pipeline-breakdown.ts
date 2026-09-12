@@ -1,3 +1,4 @@
+import { i18n, t } from "@/i18n";
 import type { PipelineStage } from "../api/pipelines";
 
 /**
@@ -5,8 +6,8 @@ import type { PipelineStage } from "../api/pipelines";
  *
  * The server stores the breakdown config on `stage.config.breakdown` (see
  * `pipelineStageBreakdownSchema`). Only the singular `pieceNoun` is persisted;
- * the plural is derived here exactly the way the server's health checks derive
- * it (`${pieceNoun}s`) so every count/banner string stays consistent.
+ * English display retains the server-style plural. Russian keeps the original
+ * user-authored name and places it in grammatical templates without inflecting it.
  *
  * All copy in this module is prosumer-facing — no API terms ("case", "child",
  * "stage key") ever surface; the configured piece noun is the dominant token.
@@ -114,10 +115,10 @@ export function hasStageBreakdown(stage: PipelineStage | null | undefined): bool
   return readStageBreakdown(stage) !== null;
 }
 
-/** Plural form of the piece noun, derived the same way the server does. */
+/** Display form only; never modifies the saved piece name. */
 export function pieceNounPlural(noun: string): string {
   const trimmed = noun.trim() || "piece";
-  return `${trimmed}s`;
+  return (i18n.resolvedLanguage ?? "en").split("-")[0] !== "en" ? trimmed : `${trimmed}s`;
 }
 
 /** "a and b" / "a, b and c" — for inherited-field lists. */
@@ -125,8 +126,7 @@ export function joinWithAnd(items: string[]): string {
   const list = items.filter((item) => item.trim().length > 0);
   if (list.length === 0) return "";
   if (list.length === 1) return list[0]!;
-  if (list.length === 2) return `${list[0]} and ${list[1]}`;
-  return `${list.slice(0, -1).join(", ")} and ${list[list.length - 1]}`;
+  return new Intl.ListFormat(i18n.resolvedLanguage, { style: "long", type: "conjunction" }).format(list);
 }
 
 export interface BreakdownCopyNames {
@@ -151,17 +151,17 @@ export function breakdownSummarySentence(
   }
   const noun = config.pieceNoun;
   const parts: string[] = [
-    `Paperclip will create one ${noun} per item in ${names.targetPipelineName} → ${names.entryStageName}`,
+    t("localizationOperations.breakdownCreates", { noun, pipeline: names.targetPipelineName, stage: names.entryStageName }),
   ];
   if (names.inheritedFieldLabels.length > 0) {
-    parts.push(`carry over ${joinWithAnd(names.inheritedFieldLabels)}`);
+    parts.push(t("localizationOperations.breakdownCarry", { fields: joinWithAnd(names.inheritedFieldLabels) }));
   }
   if (names.advanceToName) {
-    parts.push(`move this case to ${names.advanceToName}`);
+    parts.push(t("localizationOperations.breakdownAdvance", { stage: names.advanceToName }));
   }
   let sentence = parts.join(", ");
   if (config.waitForPieces && names.whenFinishedName) {
-    sentence += `, then wait until every ${noun} is finished before moving it to ${names.whenFinishedName}`;
+    sentence += t("localizationOperations.breakdownWait", { noun, stage: names.whenFinishedName });
   }
   return `${sentence}.`;
 }
@@ -176,18 +176,18 @@ export function breakdownMechanicsBullets(
 ): string[] {
   const noun = config.pieceNoun;
   const bullets: string[] = [
-    `Creates one ${noun} per item the agent returns, in ${names.targetPipelineName || "the destination pipeline"} → ${names.entryStageName || "its entry step"}.`,
-    `Links every ${noun} to this case so progress rolls up here.`,
+    t("localizationOperations.mechanicsCreates", { noun, pipeline: names.targetPipelineName || t("localizationOperations.destinationPipeline"), stage: names.entryStageName || t("localizationOperations.entryStage") }),
+    t("localizationOperations.mechanicsLinks", { noun }),
   ];
   if (names.inheritedFieldLabels.length > 0) {
-    bullets.push(`Carries over ${joinWithAnd(names.inheritedFieldLabels)} from this case onto each ${noun}.`);
+    bullets.push(t("localizationOperations.mechanicsCarry", { fields: joinWithAnd(names.inheritedFieldLabels), noun }));
   }
   if (names.advanceToName) {
-    bullets.push(`Moves this case to ${names.advanceToName} as soon as the pieces are created.`);
+    bullets.push(t("localizationOperations.mechanicsAdvance", { stage: names.advanceToName }));
   }
   if (config.waitForPieces && names.whenFinishedName) {
-    bullets.push(`Waits until every ${noun} is finished, then moves this case to ${names.whenFinishedName}.`);
-    bullets.push(`If the agent returns an empty list, this case skips ahead to ${names.whenFinishedName}.`);
+    bullets.push(t("localizationOperations.mechanicsWait", { noun, stage: names.whenFinishedName }));
+    bullets.push(t("localizationOperations.mechanicsSkip", { stage: names.whenFinishedName }));
   }
   return bullets;
 }

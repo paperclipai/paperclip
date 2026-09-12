@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useMemo } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { agentsApi } from "@/api/agents";
@@ -13,6 +14,7 @@ import { groupCatalogByApp } from "./profile-model";
  * connection) and the lookup maps both surfaces need.
  */
 export function useProfilesData(companyId: string) {
+  const { t } = useTranslation();
   const profiles = useQuery({
     queryKey: queryKeys.tools.profiles(companyId),
     queryFn: () => toolsApi.listProfiles(companyId),
@@ -65,7 +67,7 @@ export function useProfilesData(companyId: string) {
 
   const appGroups = useMemo(
     () => groupCatalogByApp(catalog, maps.applicationsById, maps.connectionsById),
-    [catalog, maps.applicationsById, maps.connectionsById],
+    [catalog, maps.applicationsById, maps.connectionsById, t],
   );
 
   return {

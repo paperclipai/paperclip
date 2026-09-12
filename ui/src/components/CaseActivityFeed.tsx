@@ -1,3 +1,4 @@
+import { i18n, t, useTranslation } from "@/i18n";
 import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import { Bot, User, Cog, ChevronDown, ListFilter } from "lucide-react";
@@ -16,24 +17,24 @@ import {
 import { cn, relativeTime } from "@/lib/utils";
 
 const EVENT_LABEL: Record<CaseEventKind, string> = {
-  created: "created",
-  updated: "updated",
-  fields_changed: "fields changed",
-  status_changed: "status changed",
-  issue_linked: "issue linked",
-  issue_unlinked: "issue unlinked",
-  document_revised: "document revised",
-  child_linked: "child linked",
-  attachment_added: "attachment added",
-  label_added: "label added",
-  label_removed: "label removed",
+  get created() { return t("localizationActivityTail.caseEvent_created"); },
+  get updated() { return t("localizationActivityTail.caseEvent_updated"); },
+  get fields_changed() { return t("localizationActivityTail.caseEvent_fields_changed"); },
+  get status_changed() { return t("localizationActivityTail.caseEvent_status_changed"); },
+  get issue_linked() { return t("localizationActivityTail.caseEvent_issue_linked"); },
+  get issue_unlinked() { return t("localizationActivityTail.caseEvent_issue_unlinked"); },
+  get document_revised() { return t("localizationActivityTail.caseEvent_document_revised"); },
+  get child_linked() { return t("localizationActivityTail.caseEvent_child_linked"); },
+  get attachment_added() { return t("localizationActivityTail.caseEvent_attachment_added"); },
+  get label_added() { return t("localizationActivityTail.caseEvent_label_added"); },
+  get label_removed() { return t("localizationActivityTail.caseEvent_label_removed"); },
 };
 
 /** Human label for the actor, preferring the resolved agent name. */
 function actorLabel(event: CaseEvent): string {
-  if (event.actorType === "agent") return event.actorAgentName ?? "Agent";
-  if (event.actorType === "user") return "User";
-  return "System";
+  if (event.actorType === "agent") return event.actorAgentName ?? t("localizationActivityTail.agent");
+  if (event.actorType === "user") return t("localizationActivityTail.user");
+  return t("localizationActivityTail.system");
 }
 
 function ActorIcon({ event }: { event: CaseEvent }) {
@@ -42,14 +43,16 @@ function ActorIcon({ event }: { event: CaseEvent }) {
 }
 
 function issueRelationLabel(event: CaseEvent): string {
-  return event.kind === "issue_linked" || event.kind === "issue_unlinked" ? "issue" : "via";
+  return event.kind === "issue_linked" || event.kind === "issue_unlinked" ? t("localizationActivityTail.issue") : t("localizationActivityTail.via");
 }
 
 /** One event with actor + run→issue attribution (P4 §1). */
 export function CaseEventRow({ event, compact = false }: { event: CaseEvent; compact?: boolean }) {
+  const { t } = useTranslation();
+  const statusLabel = (status: unknown) => typeof status === "string" ? t(`status.${status}`, { defaultValue: status }) : "?";
   const detail =
     event.kind === "status_changed" && event.payload
-      ? `${(event.payload.previousStatus as string) ?? "?"} → ${(event.payload.status as string) ?? "?"}`
+      ? `${statusLabel(event.payload.previousStatus)} → ${statusLabel(event.payload.status)}`
       : "";
   return (
     <div className={cn("flex items-start gap-2 text-xs", compact ? "py-1.5" : "py-2")}>
@@ -86,6 +89,7 @@ export function CaseEventRow({ event, compact = false }: { event: CaseEvent; com
 
 /** The full activity feed with kind filters (detail-page Activity tab). */
 export function CaseActivityFeed({ events }: { events: CaseEvent[] }) {
+  const { t } = useTranslation();
   const [active, setActive] = useState<Set<CaseEventKind>>(new Set());
 
   // Only offer filters for kinds actually present, in first-seen order.
@@ -110,20 +114,20 @@ export function CaseActivityFeed({ events }: { events: CaseEvent[] }) {
   }
 
   const filterLabel = active.size === 0
-    ? "All activity"
+    ? t("localizationActivityTail.allActivity")
     : active.size === 1
       ? EVENT_LABEL[[...active][0]!] ?? [...active][0]!
-      : `${active.size} filters`;
+      : t("localizationActivityTail.filters", { count: active.size, value: new Intl.NumberFormat(i18n.resolvedLanguage).format(active.size) });
 
   if (events.length === 0) {
-    return <p className="py-6 text-center text-sm text-muted-foreground">No activity yet.</p>;
+    return <p className="py-6 text-center text-sm text-muted-foreground">{t("localizationActivityTail.noActivity")}</p>;
   }
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground">
-          {filtered.length} of {events.length} events
+          {t("localizationActivityTail.eventCount", { visible: filtered.length, count: events.length })}
         </p>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -134,9 +138,9 @@ export function CaseActivityFeed({ events }: { events: CaseEvent[] }) {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
-            <DropdownMenuLabel>Activity filter</DropdownMenuLabel>
+            <DropdownMenuLabel>{t("localizationActivityTail.activityFilter")}</DropdownMenuLabel>
             <DropdownMenuItem onSelect={() => setActive(new Set())}>
-              All activity
+              {t("localizationActivityTail.allActivity")}
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             {presentKinds.map((kind) => (
@@ -152,7 +156,7 @@ export function CaseActivityFeed({ events }: { events: CaseEvent[] }) {
         </DropdownMenu>
       </div>
       {filtered.length === 0 ? (
-        <p className="py-6 text-center text-sm text-muted-foreground">No events match this filter.</p>
+        <p className="py-6 text-center text-sm text-muted-foreground">{t("localizationActivityTail.noMatchingEvents")}</p>
       ) : (
         <div className="divide-y divide-border">
           {filtered.map((event) => (

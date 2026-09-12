@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
 import { useSearchParams } from "@/lib/router";
 import type { ToolConnectionCredentialSource } from "@paperclipai/shared";
@@ -16,6 +17,7 @@ export function AppsConnect({
   byoOnly?: boolean;
   credentialSource?: ToolConnectionCredentialSource;
 } = {}) {
+  useTranslation();
   const [searchParams] = useSearchParams();
   const interactionId = searchParams.get("intent")?.trim() || undefined;
   return (

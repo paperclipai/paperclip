@@ -9,6 +9,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { t, i18n, useTranslation } from "@/i18n";
+import { systemNoticeMetadataLabelDisplay, systemNoticeMetadataValueDisplay, systemNoticeRunStatusDisplay, systemNoticeTitleDisplay, systemNoticeLabelForTone } from "@/lib/system-notice-comment";
 
 export type SystemNoticeTone = "neutral" | "info" | "success" | "warning" | "danger";
 
@@ -100,7 +102,7 @@ const TONE_TOKENS: Record<SystemNoticeTone, ToneTokens> = {
 
 function formatTimestamp(ts: string) {
   try {
-    return new Date(ts).toLocaleString(undefined, {
+    return new Date(ts).toLocaleString(i18n.resolvedLanguage, {
       month: "short",
       day: "numeric",
       hour: "numeric",
@@ -112,16 +114,17 @@ function formatTimestamp(ts: string) {
 }
 
 function MetadataRow({ row, tone }: { row: SystemNoticeMetadataRow; tone: ToneTokens }) {
+  useTranslation();
   return (
     <div className="grid grid-cols-(--gtc-8) gap-x-3 gap-y-0.5 px-3 py-1.5 text-xs">
       <div className="truncate text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
-        {row.label}
+        {systemNoticeMetadataLabelDisplay(row.label)}
       </div>
       <div className="min-w-0 break-words text-foreground/90">
         {(() => {
           switch (row.kind) {
             case "text":
-              return <span>{row.value}</span>;
+              return <span>{systemNoticeMetadataValueDisplay(row)}</span>;
             case "code":
               return (
                 <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-(length:--text-micro) text-foreground/80">
@@ -179,7 +182,7 @@ function MetadataRow({ row, tone }: { row: SystemNoticeMetadataRow; tone: ToneTo
                 <>
                   <code className="rounded bg-muted px-1.5 py-0.5 text-foreground/80">{runShort}</code>
                   {row.status ? (
-                    <span className={cn("font-sans", tone.label)}>{row.status}</span>
+                    <span className={cn("font-sans", tone.label)}>{systemNoticeRunStatusDisplay(row.status)}</span>
                   ) : null}
                 </>
               );
@@ -217,6 +220,7 @@ export function SystemNoticeMetadataSections({
   sections: SystemNoticeMetadataSection[];
   tone?: SystemNoticeTone;
 }) {
+  useTranslation();
   const tokens = TONE_TOKENS[tone];
   return (
     <div className="divide-y divide-border/50 px-1 py-1">
@@ -224,7 +228,7 @@ export function SystemNoticeMetadataSections({
         <div key={sectionIdx} className="py-1.5 first:pt-2 last:pb-2">
           {section.title ? (
             <div className="px-3 pb-1 pt-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-              {section.title}
+              {systemNoticeMetadataLabelDisplay(section.title)}
             </div>
           ) : null}
           <div>
@@ -248,20 +252,13 @@ export function SystemNotice({
   timestamp,
   className,
 }: SystemNoticeProps) {
+  useTranslation();
   const tokens = TONE_TOKENS[tone];
   const ToneIcon = tokens.icon;
   const [open, setOpen] = useState(detailsDefaultOpen);
   const detailsId = useId();
   const hasDetails = Boolean(metadata && metadata.length > 0);
-  const resolvedLabel =
-    label ??
-    {
-      neutral: "System notice",
-      info: "System notice",
-      success: "System notice",
-      warning: "System warning",
-      danger: "System alert",
-    }[tone];
+  const resolvedLabel = systemNoticeTitleDisplay(systemNoticeLabelForTone(tone, label));
 
   return (
     <section
@@ -326,7 +323,7 @@ export function SystemNotice({
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50",
             )}
           >
-            <span>{open ? "Hide details" : "Details"}</span>
+            <span>{open ? t("localizationTaskRuntime.ui_Hide_details_12grv3z") : t("localizationTaskRuntime.ui_Details_43f6md")}</span>
             <ChevronDown
               className={cn(
                 "h-3.5 w-3.5 transition-transform duration-150",

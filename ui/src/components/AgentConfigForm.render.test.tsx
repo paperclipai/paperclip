@@ -13,6 +13,7 @@ import { AgentConfigForm, AdapterLoginPanel, subtractPersistedOverlay, type Adap
 import { defaultCreateValues } from "./agent-config-defaults";
 import { buildNewAgentHirePayload } from "../lib/new-agent-hire-payload";
 import { ApiError } from "../api/client";
+import { i18n } from "../i18n";
 
 const mockAgentsApi = vi.hoisted(() => ({
   adapterModels: vi.fn(),
@@ -261,6 +262,7 @@ async function renderForm(
   agentOverrides: Partial<Agent> = {},
   options: {
     showAdapterTestEnvironmentButton?: boolean;
+    sectionLayout?: "cards";
     content?: "configuration" | "secrets";
     environmentVariablesPlacement?: "configuration" | "secrets";
     hideInlineSave?: boolean;
@@ -299,6 +301,7 @@ async function renderForm(
               onSaveActionChange={options.onSaveActionChange}
               onCancelActionChange={options.onCancelActionChange}
               showAdapterTypeField={false}
+              sectionLayout={options.sectionLayout}
               showAdapterTestEnvironmentButton={options.showAdapterTestEnvironmentButton ?? false}
             />
           </TooltipProvider>
@@ -739,6 +742,63 @@ describe("AgentConfigForm environment selector", () => {
     vi.clearAllMocks();
   });
 
+  it.each(["codex_local", "claude_local"] as const)("retranslates a conflicting %s login without resuming, starting or cancelling either account", async (adapterType) => {
+    const originalLanguage = i18n.language;
+    const activeQuery = adapterType === "claude_local"
+      ? mockAgentsApi.getActiveClaudeSetupTokenLoginSession
+      : mockAgentsApi.getActiveAdapterAuthLoginSession;
+    activeQuery.mockResolvedValue({
+      sessionId: "other-account-session", environmentId: "other-environment", status: "waiting_for_user",
+      aiConnection: { provider: adapterType === "claude_local" ? "anthropic" : "openai", method: "subscription", ownership: "shared", connectionId: "other-account" },
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}>
+        <AdapterLoginPanel companyId="company-1" adapterType={adapterType} environmentId="sandbox-1" chrome="onboarding" autoStart
+          aiConnection={{ provider: adapterType === "claude_local" ? "anthropic" : "openai", method: "subscription", name: "Canonical name", ownership: "personal", agentIds: [], allAgents: true }} />
+      </QueryClientProvider>));
+      await flushUntil(() => Boolean(container.querySelector('[role="alert"]')));
+      for (const locale of ["en", "ru", "en"]) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        await flushReact();
+        expect(container.querySelector('[role="alert"]')?.textContent).toBe(locale === "ru"
+          ? "Уже выполняется другая попытка входа. Прежде чем начать новую, завершите или отмените текущую в настройках соответствующего аккаунта."
+          : "Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
+        expect(activeQuery).toHaveBeenCalledTimes(1);
+        expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+        expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
+        expect(mockAgentsApi.cancelClaudeSetupTokenLogin).not.toHaveBeenCalled();
+        expect(mockAgentsApi.getAdapterAuthLoginStatus).not.toHaveBeenCalled();
+        expect(mockAgentsApi.getClaudeSetupTokenLoginStatus).not.toHaveBeenCalled();
+      }
+    } finally {
+      await act(async () => { await i18n.changeLanguage(originalLanguage); });
+    }
+  });
+
+  it("updates card headings in Russian while preserving the Cursor command placeholder", async () => {
+    const originalLanguage = i18n.language;
+    const result = await renderForm([], { adapterType: "cursor" }, { sectionLayout: "cards" });
+    roots.push(result.root);
+    try {
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      await flushReact();
+
+      expect(result.container.querySelector('[data-config-section="identity"] h3')?.textContent).toBe("Профиль");
+      expect(result.container.querySelector('[data-config-section="adapter"] h3')?.textContent).toBe("Адаптер");
+      await clickByText(result.container, "Дополнительно");
+      expect(result.container.querySelector('input[placeholder="agent"]')).not.toBeNull();
+      expect(result.container.querySelector('input[placeholder="агентов"]')).toBeNull();
+    } finally {
+      await act(async () => { await i18n.changeLanguage(originalLanguage); });
+    }
+  });
+
   it("promotes environment drafts through the page Save action and discards them through the page Discard action", async () => {
     const dirty = vi.fn();
     let save: (() => void) | null = null;
@@ -770,11 +830,11 @@ describe("AgentConfigForm environment selector", () => {
   it("reads and saves Pi thinking effort using the Pi runtime key", async () => {
     const result = await renderForm([], { adapterType: "pi_local", adapterConfig: { model: "openrouter/anthropic/claude-sonnet-4.6", thinking: "high" } });
     roots.push(result.root);
-    const effort = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "high")!;
+    const effort = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "High")!;
     expect(effort).toBeTruthy();
     await act(async () => effort.click());
     await flushReact();
-    const low = [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "lowlow")!;
+    const low = [...document.querySelectorAll("button")].find(button => button.textContent?.trim() === "Lowlow")!;
     expect(low).toBeTruthy();
     await act(async () => low.click());
     await flushReact();

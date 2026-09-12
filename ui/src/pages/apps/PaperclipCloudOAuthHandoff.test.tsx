@@ -4,6 +4,7 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { savePendingCloudHandoff } from "@/lib/oauthHandoff";
+import { i18n } from "@/i18n";
 import { PaperclipCloudOAuthHandoffPage } from "./PaperclipCloudOAuthHandoff";
 
 const navigateTopLevel = vi.hoisted(() => vi.fn());
@@ -36,7 +37,8 @@ async function flushReact() {
 let container: HTMLDivElement;
 let root: Root;
 
-beforeEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage("en");
   window.sessionStorage.clear();
   navigateTopLevel.mockReset();
   container = document.createElement("div");
@@ -44,9 +46,10 @@ beforeEach(() => {
   root = createRoot(container);
 });
 
-afterEach(() => {
+afterEach(async () => {
   act(() => root.unmount());
   container.remove();
+  await i18n.changeLanguage("en");
   vi.restoreAllMocks();
 });
 
@@ -83,6 +86,21 @@ describe("PaperclipCloudOAuthHandoffPage", () => {
     expect(container.textContent).toContain("Sign-in couldn’t continue");
     expect(container.textContent).toContain("This sign-in expired. Start the connection again.");
     expect(navigateTopLevel).not.toHaveBeenCalled();
+  });
+
+  it("switches locale during a pending handoff without starting another authorization request", async () => {
+    savePendingCloudHandoff(SESSION);
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(() => new Promise<Response>(() => {}));
+    await act(async () => root.render(<PaperclipCloudOAuthHandoffPage />));
+    expect(container.textContent).toContain("Preparing secure sign-in");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    expect(container.textContent).toContain(i18n.t("localizationConnections.preparingSecureSignIn73"));
+    expect(container.textContent).not.toContain("Preparing secure sign-in");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(navigateTopLevel).not.toHaveBeenCalled();
+    expect(window.sessionStorage.length).toBeGreaterThan(0);
   });
 
   it("does not loop when recent-login recovery remains stale", async () => {

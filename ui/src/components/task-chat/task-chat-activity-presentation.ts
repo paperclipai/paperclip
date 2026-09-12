@@ -1,3 +1,5 @@
+import { t } from "@/i18n";
+import { taskChatToolActivityLabel } from "./task-chat-display";
 import {
   AlertTriangle,
   BookOpen,
@@ -174,6 +176,25 @@ export function protocolActivityPresentation(item: TaskChatProtocolItem): TaskCh
     case "run_terminal":
       return null;
   }
+}
+
+/** Display-only projection: provider metadata labels stay raw for classification. */
+export function protocolActivityDisplayPresentation(item: TaskChatProtocolItem): TaskChatActivityPresentation | null {
+  const presentation = protocolActivityPresentation(item);
+  if (!presentation) return null;
+  const fileCount = item.surface === "workspace_change" ? item.totals.files || item.files.length : 0;
+  return {
+    ...presentation,
+    runningLabel: taskChatToolActivityLabel(presentation.runningLabel),
+    completedLabel: taskChatToolActivityLabel(presentation.completedLabel),
+    failedLabel: presentation.failedLabel ? taskChatToolActivityLabel(presentation.failedLabel) : undefined,
+    interruptedLabel: presentation.interruptedLabel ? taskChatToolActivityLabel(presentation.interruptedLabel) : undefined,
+    detail: fileCount > 0 ? t("localizationTaskRuntime.fileCount", { count: fileCount }) : presentation.detail,
+  };
+}
+
+export function protocolActivityDisplayLabel(item: TaskChatProtocolItem, presentation: TaskChatActivityPresentation): string {
+  return taskChatToolActivityLabel(protocolActivityLabel(item, presentation));
 }
 
 export function protocolActivityIsRunning(item: TaskChatProtocolItem): boolean {

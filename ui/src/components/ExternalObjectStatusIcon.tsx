@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import type {
   ExternalObjectLivenessState,
   ExternalObjectStatusCategory,
@@ -51,15 +52,16 @@ export function ExternalObjectStatusIcon({
   sizeClassName = "h-3.5 w-3.5",
   inline = false,
 }: ExternalObjectStatusIconProps) {
+  const { t } = useTranslation();
   const reducedMotion = usePrefersReducedMotion();
   const Icon = externalObjectIconForKey(statusIconKey) ?? externalObjectIconForCategory(category);
   const tone = statusIconKey === "git-merge"
     ? "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400"
     : externalObjectStatusIcon[category] ?? externalObjectStatusIconDefault;
-  const livenessSuffix = liveness === "fresh" || liveness === "unknown"
-    ? ""
-    : ` (${externalObjectLivenessLabel(liveness)})`;
-  const ariaLabel = `${label ?? externalObjectCategoryLabel(category)}${livenessSuffix}`;
+  const statusLabel = label ?? externalObjectCategoryLabel(category);
+  const ariaLabel = liveness === "fresh" || liveness === "unknown"
+    ? statusLabel
+    : t("localizationExternalChrome.statusLiveness", { status: statusLabel, liveness: externalObjectLivenessLabel(liveness) });
 
   // The clock overlay needs a positioned wrapper. Inline mode keeps the icon
   // tight to the surrounding text; pill mode expects to size by sizeClassName.

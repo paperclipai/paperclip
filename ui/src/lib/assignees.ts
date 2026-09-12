@@ -1,3 +1,6 @@
+import { t } from "../i18n";
+import { isGeneratedCompanyUserLabel } from "./company-members";
+
 export interface AssigneeSelection {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -94,4 +97,37 @@ export function formatUserLabel(
   }
   if (userId === "local-board") return "Board";
   return userId.slice(0, 5);
+}
+
+/** UI-only labels. Keep the canonical helpers above stable for stored chat metadata. */
+export function currentUserAssigneeDisplayOptions(currentUserId: string | null | undefined): AssigneeOption[] {
+  return currentUserAssigneeOption(currentUserId).map((option) => ({
+    ...option,
+    get label() { return t("localizationAssigneeChrome.me"); },
+    get searchText() { return `${option.searchText} ${t("localizationAssigneeChrome.searchAliases")}`; },
+  }));
+}
+
+export function formatAssigneeUserDisplayLabel(
+  userId: string | null | undefined,
+  currentUserId: string | null | undefined,
+  userLabels?: ReadonlyMap<string, string> | Record<string, string> | null,
+): string | null {
+  if (!userId) return null;
+  if (currentUserId && userId === currentUserId) return t("localizationAssigneeChrome.you");
+  return formatUserDisplayLabel(userId, userLabels);
+}
+
+export function formatUserDisplayLabel(
+  userId: string | null | undefined,
+  userLabels?: ReadonlyMap<string, string> | Record<string, string> | null,
+): string | null {
+  const label = formatUserLabel(userId, userLabels);
+  const customLabel = userId && userLabels
+    ? userLabels instanceof Map ? userLabels.get(userId) : (userLabels as Record<string, string>)[userId]
+    : null;
+  if (userId === "local-board" && (isGeneratedCompanyUserLabel(userId, userLabels) || !(typeof customLabel === "string" && customLabel.trim()))) {
+    return t("localizationAssigneeChrome.board");
+  }
+  return label;
 }

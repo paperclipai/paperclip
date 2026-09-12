@@ -1,12 +1,13 @@
+import { Trans } from "react-i18next";
 import { Link } from "@/lib/router";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { deriveInitials } from "./Identity";
 import { IssueReferenceActivitySummary } from "./IssueReferenceActivitySummary";
-import { timeAgo } from "../lib/timeAgo";
-import { cn } from "../lib/utils";
+import { cn, relativeTime } from "../lib/utils";
 import { formatActivityVerb } from "../lib/activity-format";
 import { deriveProjectUrlKey, type ActivityEvent, type Agent } from "@paperclipai/shared";
-import type { CompanyUserProfile } from "../lib/company-members";
+import { companyUserProfileDisplayLabel, type CompanyUserProfile } from "../lib/company-members";
+import { useTranslation } from "@/i18n";
 
 function entityLink(entityType: string, entityId: string, name?: string | null): string | null {
   switch (entityType) {
@@ -29,6 +30,7 @@ interface ActivityRowProps {
 }
 
 export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, entityTitleMap, className }: ActivityRowProps) {
+  const { t } = useTranslation();
   const verb = formatActivityVerb(event.action, event.details, { agentMap, userProfileMap });
 
   const isHeartbeatEvent = event.entityType === "heartbeat_run";
@@ -48,7 +50,12 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
 
   const actor = event.actorType === "agent" ? agentMap.get(event.actorId) : null;
   const userProfile = event.actorType === "user" ? userProfileMap?.get(event.actorId) : null;
-  const actorName = actor?.name ?? (event.actorType === "system" ? "System" : userProfile?.label ?? (event.actorType === "user" ? "Board" : event.actorId || "Unknown"));
+  const userLabel = companyUserProfileDisplayLabel(userProfile);
+  const actorName = actor?.name ?? (event.actorType === "system"
+    ? t("pages.dashboard.activityActorSystem")
+    : userLabel ?? (event.actorType === "user"
+      ? t("pages.dashboard.activityActorBoard")
+      : event.actorId || t("common.unknown")));
   const actorAvatarUrl = userProfile?.image ?? null;
 
   const inner = (
@@ -61,9 +68,8 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
         <div className="flex min-w-0 flex-1 flex-col gap-1 @xl:contents">
           <div className="flex min-w-0 items-baseline gap-2 @xl:contents">
             <p className="flex h-6 min-w-0 flex-1 items-center gap-1.5">
-              <span className="max-w-1/2 shrink-0 truncate" title={`${actorName} ${verb}`}>
-                <span>{actorName}</span>{" "}
-                <span className="text-muted-foreground">{verb}</span>
+              <span className="max-w-1/2 shrink-0 truncate" title={t("sep12Shell.actorAction", { actor: actorName, action: verb })}>
+                <Trans t={t} i18nKey="localizationActivity.activitySentenceWithoutEntity" components={{ actor: <span>{actorName}</span>, action: <span className="text-muted-foreground">{verb}</span> }} />
               </span>
               {event.entityType === "issue" ? (
                 <span className="min-w-0 flex-1 truncate" title={entityTitle}>{entityTitle}</span>
@@ -80,7 +86,7 @@ export function ActivityRow({ event, agentMap, userProfileMap, entityNameMap, en
           </div>
           <div className="flex min-h-6 min-w-0 items-center @xl:contents">
             <span className="ml-auto w-(--dashboard-list-time-width) shrink-0 whitespace-nowrap text-right text-xs text-muted-foreground">
-              {timeAgo(event.createdAt)}
+              {relativeTime(event.createdAt)}
             </span>
           </div>
         </div>

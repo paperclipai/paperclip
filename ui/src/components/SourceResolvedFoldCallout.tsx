@@ -1,10 +1,12 @@
+import { useTranslation } from "@/i18n";
 import { Sparkles } from "lucide-react";
 import { Link } from "@/lib/router";
-import { cn, relativeTime } from "@/lib/utils";
+import { entityStatusLabel } from "@/lib/entity-labels";
+import { cn, relativeTime, formatDateTime } from "@/lib/utils";
 import {
   type SourceResolvedWatchdogFold,
-  formatCleanupOutcome,
-  formatSilenceAgeMs,
+  formatCleanupOutcomeDisplay as formatCleanupOutcome,
+  formatSilenceAgeMsDisplay as formatSilenceAgeMs,
   shortenEvidenceId,
 } from "@/lib/source-resolved-watchdog-fold";
 
@@ -19,7 +21,7 @@ function isoOrLocaleString(value: string | null | undefined): string | null {
   if (!value) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return date.toLocaleString();
+  return formatDateTime(date);
 }
 
 function issueLink(id: string, identifier: string | null) {
@@ -48,6 +50,7 @@ export function SourceResolvedFoldCallout({
   finalizedAt,
   className,
 }: SourceResolvedFoldCalloutProps) {
+  const { t } = useTranslation();
   const sourceLabel = fold.sourceIssueIdentifier ?? fold.sourceIssueId.slice(0, 8);
   const evidenceShort = shortenEvidenceId(fold.sameRunEvidenceId);
   const evidenceAt = isoOrLocaleString(fold.sameRunEvidenceAt);
@@ -60,7 +63,7 @@ export function SourceResolvedFoldCallout({
   return (
     <section
       role="status"
-      aria-label="Source-resolved watchdog fold"
+      aria-label={t("localizationIssuePanels.ui_Source_resolved_watchdog_fold_1py5nth")}
       data-source-resolved-fold
       className={cn(
         "relative w-full overflow-hidden rounded-lg border text-sm shadow-(--shadow-extract-8)",
@@ -81,10 +84,10 @@ export function SourceResolvedFoldCallout({
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow)">
-            <span className="text-emerald-900 dark:text-emerald-200">SOURCE-RESOLVED FOLD</span>
+            <span className="text-emerald-900 dark:text-emerald-200">{t("localizationIssuePanels.ui_SOURCE_RESOLVED_FOLD_t57cd6")}</span>
             <span className="text-muted-foreground/60" aria-hidden>·</span>
             <span className="font-medium normal-case tracking-normal text-muted-foreground">
-              system audit
+              {t("localizationIssuePanels.ui_system_audit_9f3o6r")}
             </span>
             {finalizedRelative ? (
               <>
@@ -96,7 +99,7 @@ export function SourceResolvedFoldCallout({
             ) : null}
           </div>
           <p className="mt-1 text-sm leading-6">
-            This run was folded as a source-resolved false positive.
+            {t("localizationIssuePanels.ui_This_run_was_folded_as_a_source_resolved_false_positive_1rdcl70")}
           </p>
         </div>
       </header>
@@ -107,7 +110,7 @@ export function SourceResolvedFoldCallout({
           "[&>*]:border-emerald-300/40 dark:[&>*]:border-emerald-500/20",
         )}
       >
-        <MetaRow label="Source task">
+        <MetaRow label={t("localizationIssuePanels.ui_Source_task_19xzeq5")}>
           <span className="inline-flex flex-wrap items-center gap-1.5">
             <Link
               to={issueLink(fold.sourceIssueId, fold.sourceIssueIdentifier)}
@@ -116,11 +119,11 @@ export function SourceResolvedFoldCallout({
               {sourceLabel}
             </Link>
             <span className="rounded-md border border-emerald-300/60 bg-background/60 px-1.5 py-0.5 text-(length:--text-micro) font-medium text-emerald-900 dark:border-emerald-500/30 dark:text-emerald-200">
-              {fold.sourceIssueStatus}
+              {entityStatusLabel(fold.sourceIssueStatus)}
             </span>
           </span>
         </MetaRow>
-        <MetaRow label="Same-run evidence">
+        <MetaRow label={t("localizationIssuePanels.ui_Same_run_evidence_1hcuuwo")}>
           <span className="inline-flex flex-wrap items-baseline gap-1.5">
             <span className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-(length:--text-micro) text-emerald-900 dark:bg-background/40 dark:text-emerald-100">
               {fold.sameRunEvidenceKind}
@@ -132,26 +135,26 @@ export function SourceResolvedFoldCallout({
               {evidenceShort}
             </code>
             {evidenceAt ? (
-              <span className="text-(length:--text-micro) text-muted-foreground">at {evidenceAt}</span>
+              <span className="text-(length:--text-micro) text-muted-foreground">{t("localizationIssuePanels.evidenceAt", { time: evidenceAt })}</span>
             ) : null}
           </span>
         </MetaRow>
-        <MetaRow label="Silence age before fold">
+        <MetaRow label={t("localizationIssuePanels.ui_Silence_age_before_fold_1lrorh5")}>
           {silenceAgeLabel ? (
             <span>
               {silenceAgeLabel}
               {silenceStartedLabel ? (
-                <span className="text-muted-foreground"> (silence started {silenceStartedLabel})</span>
+                <span className="text-muted-foreground"> {t("localizationIssuePanels.silenceStarted", { time: silenceStartedLabel })}</span>
               ) : null}
             </span>
           ) : (
-            <span className="text-muted-foreground">unknown</span>
+            <span className="text-muted-foreground">{t("localizationIssuePanels.ui_unknown_174uabd")}</span>
           )}
         </MetaRow>
-        <MetaRow label="Process cleanup">
+        <MetaRow label={t("localizationIssuePanels.ui_Process_cleanup_gxqcpa")}>
           <span
             className="inline-flex flex-wrap items-baseline gap-1.5"
-            title={fold.cleanup.outcome}
+            title={cleanupLabel}
           >
             <span>{cleanupLabel}</span>
             {fold.cleanup.error ? (
@@ -160,7 +163,7 @@ export function SourceResolvedFoldCallout({
           </span>
         </MetaRow>
         {fold.evaluationIssueId ? (
-          <MetaRow label="Evaluation task">
+          <MetaRow label={t("localizationIssuePanels.ui_Evaluation_task_z69yck")}>
             <Link
               to={issueLink(fold.evaluationIssueId, fold.evaluationIssueIdentifier)}
               className="rounded-sm font-medium underline-offset-2 hover:underline"

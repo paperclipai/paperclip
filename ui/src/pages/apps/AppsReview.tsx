@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect } from "react";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
@@ -14,31 +15,30 @@ import { ReviewQueueCard } from "./ReviewQueueCard";
  * "Needs attention"; decisions live here.
  */
 export function AppsReview() {
+  const { t } = useTranslation();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
-      { label: "Review" },
+      { label: t("localizationConnections.connectors16"), href: "/apps" },
+      { label: t("pages.apps.tabs.review") },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to review approvals.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("pages.apps.review.selectOrganization")}</div>;
   }
 
   return (
     <div className="max-w-3xl space-y-6 pb-12">
       <header>
-        <h1 className="text-2xl font-bold tracking-tight">Review</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Actions your agents want to run that need your OK first. Approve, always-allow, or decline.
-        </p>
+        <h1 className="text-2xl font-bold tracking-tight">{t("pages.apps.review.title")}</h1>
+        <p className="mt-1 text-sm text-muted-foreground">{t("localizationApps.actionsYourAgentsWantToRunThatNeedYourOKFirst327")}</p>
       </header>
 
-      <ReviewQueueCard emptyState="reassure" heading="Waiting for your OK" />
+      <ReviewQueueCard emptyState="reassure" heading={t("pages.apps.review.queueTitle")} />
     </div>
   );
 }

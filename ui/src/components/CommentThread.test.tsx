@@ -7,6 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import type { Agent, Approval } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommentThread } from "./CommentThread";
+import { i18n } from "@/i18n";
 
 vi.mock("./MarkdownBody", () => ({
   MarkdownBody: ({
@@ -166,6 +167,29 @@ describe("CommentThread", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("updates the run noun in a mounted timeline without changing raw run/agent IDs or submitting comments", async () => {
+    const root = createRoot(container);
+    const onAdd = vi.fn(async () => {});
+    const linkedRuns = [{ runId: "raw-run-12345678", agentId: "raw-agent", status: "succeeded" as const,
+      createdAt: "2026-03-11T07:00:00.000Z", startedAt: "2026-03-11T08:00:00.000Z", finishedAt: "2026-03-11T10:00:00.000Z" }];
+    const agentMap = new Map([["raw-agent", { id: "raw-agent", name: "Board", icon: null } as Agent]]);
+    const before = JSON.stringify(linkedRuns);
+    try {
+      await act(async () => { await i18n.changeLanguage("en"); root.render(<MemoryRouter><CommentThread comments={[]} linkedRuns={linkedRuns} agentMap={agentMap} onAdd={onAdd} /></MemoryRouter>); });
+      const link = container.querySelector('a[href="/agents/raw-agent/runs/raw-run-12345678"]')!;
+      const row = container.querySelector("#run-raw-run-12345678")!;
+      for (const [locale, noun] of [["en", "run"], ["ru", "запуск"], ["en", "run"]] as const) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        expect(link.previousElementSibling?.textContent).toBe(noun);
+        expect(link.textContent).toBe("raw-run-");
+        expect(container.querySelector("#run-raw-run-12345678")).toBe(row);
+        expect(container.querySelector('a[href="/agents/raw-agent/runs/raw-run-12345678"]')).toBe(link);
+        expect(row.textContent).toContain("Board"); expect(JSON.stringify(linkedRuns)).toBe(before);
+        expect(onAdd).not.toHaveBeenCalled();
+      }
+    } finally { await act(async () => root.unmount()); await i18n.changeLanguage("en"); }
   });
 
   it("replaces the composer with a warning when comments are disabled", () => {

@@ -1,3 +1,4 @@
+import { i18n, t, useTranslation } from "@/i18n";
 import {
   Component,
   type ClipboardEvent,
@@ -247,7 +248,7 @@ function isSafeMarkdownLinkUrl(url: string): boolean {
 function richEditorErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
-  return "Rich editor failed to render";
+  return t("localizationIssueDetail.ui_Rich_editor_failed_to_render");
 }
 
 /**
@@ -320,7 +321,7 @@ const MAX_AUTOCOMPLETE_OPTIONS = 50;
 const MENTION_MENU_CARET_GAP = 10;
 
 const CODE_BLOCK_LANGUAGES: Record<string, string> = {
-  txt: "Text",
+  get txt() { return t("localizationIssueDetail.codeText"); },
   md: "Markdown",
   js: "JavaScript",
   jsx: "JavaScript (JSX)",
@@ -717,7 +718,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   onSubmit,
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
-  const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
+  useTranslation();
+  const editorValue = useMemo(() => prepareMarkdownForEditor(value), [i18n.resolvedLanguage, value]);
   const { slashCommands: sharedSlashCommands } = useEditorAutocomplete();
   const slashCommands = useMemo(
     () => [...actionCommands, ...sharedSlashCommands],
@@ -771,7 +773,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       }
     }
     return map;
-  }, [mentions]);
+  }, [i18n.resolvedLanguage, mentions]);
 
   const setEditorRef = useCallback((instance: MDXEditorMethods | null) => {
     ref.current = instance;
@@ -801,7 +803,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     return mentions
       .filter((m) => m.name.toLowerCase().includes(q))
       .slice(0, MAX_AUTOCOMPLETE_OPTIONS);
-  }, [mentionState, mentions, slashCommands]);
+  }, [i18n.resolvedLanguage, mentionState, mentions, slashCommands]);
 
   const insertMarkdown = useCallback((markdown: string) => {
     if (readOnly) return;
@@ -894,7 +896,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           if (!looksEmpty()) return;
           setRichEditorError({
             code: "MDE-EMPTY",
-            message: "Rich editor failed to load content",
+            get message() { return t("localizationIssueDetail.ui_Rich_editor_failed_to_load_content"); },
           });
         }, RICH_EDITOR_EMPTY_CONFIRM_MS);
       }, RICH_EDITOR_EMPTY_CHECK_MS);
@@ -953,7 +955,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             }, 100);
             return src;
           } catch (err) {
-            const message = err instanceof Error ? err.message : "Image upload failed";
+            const message = err instanceof Error ? err.message : t("localizationIssueDetail.ui_Image_upload_failed");
             setUploadError(message);
             throw err;
           }
@@ -982,7 +984,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       all.push(imagePlugin({ imageUploadHandler: imageHandler, disableImageSettingsButton: true }));
     }
     return all;
-  }, [hasImageUpload]);
+  }, [i18n.resolvedLanguage, hasImageUpload]);
 
   useEffect(() => {
     if (editorValue !== latestValueRef.current) {
@@ -1311,7 +1313,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       >
         <div className="flex items-start justify-between gap-3 px-3 pt-2 text-xs text-muted-foreground">
           <p>
-            Rich editor unavailable for this markdown. Showing raw source instead.{" "}
+            {t("localizationIssueDetail.ui_Rich_editor_unavailable_for_this_markdown_Showing_raw_source_instead")}{" "}
             <span data-testid="markdown-editor-fallback-code" className="font-mono">
               {richEditorError.code}
             </span>
@@ -1327,7 +1329,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               setRichEditorError(null);
             }}
           >
-            Retry rich editor
+            {t("localizationIssueDetail.ui_Retry_rich_editor")}
           </button>
         </div>
         <textarea
@@ -1471,6 +1473,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           ref={setEditorRef}
           markdown={editorValue}
           iconComponentFor={editorIconFor}
+          translation={(key, defaultValue, interpolations) => t(`localizationIssueDetail.mdxeditor.${key}`, { defaultValue, ...interpolations })}
           suppressHtmlProcessing
           placeholder={placeholder}
           readOnly={readOnly}
@@ -1617,27 +1620,27 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 )}
                 {option.kind === "issue" && (
                   <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Task
+                    {t("pages.artifacts.groupTask")}
                   </span>
                 )}
                 {option.kind === "project" && option.projectId && (
                   <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Project
+                    {t("pages.inbox.groupByProject")}
                   </span>
                 )}
                 {option.kind === "user" && (
                   <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    User
+                    {t("localizationFilters.user")}
                   </span>
                 )}
                 {option.kind === "skill" && (
                   <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Skill
+                    {t("localizationIssueDetail.ui_Skill")}
                   </span>
                 )}
                 {option.kind === "routine" && (
                   <span className="ml-auto text-(length:--text-nano) uppercase tracking-wide text-muted-foreground">
-                    Routine
+                    {t("pages.secrets.targets.routine")}
                   </span>
                 )}
                 {option.kind === "action" && (
@@ -1658,7 +1661,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
             !bordered && "inset-0 rounded-sm",
           )}
         >
-          Drop {onDropFile ? "file" : "image"} to upload
+          {t(onDropFile ? "localizationIssueDetail.dropFile" : "localizationIssueDetail.dropImage")}
         </div>
       )}
       {uploadError && (

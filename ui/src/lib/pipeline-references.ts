@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 /**
  * Typed work references for pipeline cases.
  *
@@ -119,7 +120,7 @@ export function extractWorkReferences(caseItem: ReferenceCaseInput): WorkReferen
 
   const workspaceRef = readRecord(caseItem.workspaceRef);
   if (workspaceRef && (workspaceRef.path || workspaceRef.folder || workspaceRef.workspacePath || workspaceRef.name)) {
-    references.push(workspaceFromRecord("workspaceRef", "Workspace folder", workspaceRef));
+    references.push(workspaceFromRecord("workspaceRef", t("localizationActivityTail.workspaceFolder"), workspaceRef));
   }
 
   for (const [key, value] of Object.entries(caseItem.fields ?? {})) {

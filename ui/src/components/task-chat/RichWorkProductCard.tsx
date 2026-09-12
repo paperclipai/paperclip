@@ -1,3 +1,4 @@
+import { t, useTranslation, i18n } from "@/i18n";
 import { useContext, useState, type CSSProperties } from "react";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
 import { ImageGalleryModal } from "@/components/ImageGalleryModal";
@@ -32,34 +33,34 @@ export function stateChipFor(
   reviewState: IssueWorkProduct["reviewState"] | string | null | undefined,
 ): StateChip | null {
   if (reviewState === "changes_requested" || status === "changes_requested") {
-    return { label: "Changes requested", tone: "failure" };
+    return { get label() { return t("localizationTaskRuntime.ui_Changes_requested_i679pu"); }, tone: "failure" };
   }
   if (reviewState === "needs_board_review" || status === "ready_for_review") {
-    return { label: "Review", tone: "review" };
+    return { get label() { return t("localizationTaskRuntime.ui_Review_tnr3lt"); }, tone: "review" };
   }
   if (["failed", "unhealthy", "down"].includes(status ?? "")) {
-    return { label: "Failed", tone: "failure" };
+    return { get label() { return t("localizationTaskRuntime.ui_Failed_npsixg"); }, tone: "failure" };
   }
   if (["pending", "opening"].includes(status ?? "")) {
-    return { label: status === "opening" ? "Opening" : "Pending", tone: "progress", dashed: true };
+    return { label: status === "opening" ? t("localizationTaskRuntime.ui_Opening_dfet3") : t("localizationTaskRuntime.ui_Pending_e8nfto"), tone: "progress", dashed: true };
   }
   if (kind === "pull_request" && (status === "active" || status === "open")) {
-    return { label: "Open", tone: "progress" };
+    return { get label() { return t("localizationTaskRuntime.ui_Open_n6hn1l"); }, tone: "progress" };
   }
   if (kind === "pull_request" && status === "draft") {
-    return { label: "Draft", tone: "review" };
+    return { get label() { return t("localizationTaskRuntime.ui_Draft_129n38s"); }, tone: "review" };
   }
   if (kind === "pull_request" && status === "merged") {
-    return { label: "Merged", tone: "success" };
+    return { get label() { return t("localizationTaskRuntime.ui_Merged_b3sjo9"); }, tone: "success" };
   }
   if (kind === "pull_request" && status === "closed") {
-    return { label: "Closed", tone: "neutral" };
+    return { get label() { return t("localizationTaskRuntime.ui_Closed_dvi7s5"); }, tone: "neutral" };
   }
   if (kind === "runtime_service" && status === "active") {
-    return { label: "Running", tone: "progress" };
+    return { get label() { return t("localizationTaskRuntime.ui_Running_j6ts6k"); }, tone: "progress" };
   }
   if (kind === "runtime_service" && status === "closed") {
-    return { label: "Stopped", tone: "failure" };
+    return { get label() { return t("localizationTaskRuntime.ui_Stopped_118y86m"); }, tone: "failure" };
   }
   return null;
 }
@@ -82,9 +83,9 @@ function numberMeta(metadata: Record<string, unknown> | null, ...keys: string[])
 }
 
 function formatBytes(value: number): string {
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  const unit = value < 1024 ? "bytes" : value < 1024 * 1024 ? "kilobytes" : "megabytes";
+  const size = value < 1024 ? value : value < 1024 * 1024 ? value / 1024 : value / (1024 * 1024);
+  return t(`localizationIssueDetail.${unit}`, { size: new Intl.NumberFormat(i18n.resolvedLanguage, { useGrouping: false, minimumFractionDigits: value < 1024 ? 0 : 1, maximumFractionDigits: value < 1024 ? 0 : 1 }).format(size) });
 }
 
 function urlLabel(url: string | null): string | null {
@@ -98,6 +99,7 @@ function urlLabel(url: string | null): string | null {
 }
 
 function Chip({ chip }: { chip: StateChip }) {
+  useTranslation();
   const cssVar = chip.tone === "failure"
     ? "--status-task-blocked"
     : chip.tone === "success"
@@ -127,6 +129,7 @@ export interface RichWorkProductCardProps {
 }
 
 export function RichWorkProductCard({ workProduct, href, variant = "card" }: RichWorkProductCardProps) {
+  useTranslation();
   const openIssueGallery = useContext(IssueGalleryContext);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const metadata = workProduct.metadata;
@@ -135,7 +138,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
   const isVideo = isVideoLikeOutput(contentType, stringMeta(metadata, "originalFilename"));
   let Icon: LucideIcon = File;
   let meta: Array<string | null> = [];
-  let action = "Open preview";
+  let action = t("localizationTaskRuntime.ui_Open_preview_ijv7rx");
 
   switch (workProduct.type) {
     case "pull_request": {
@@ -145,40 +148,40 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
       const base = stringMeta(metadata, "baseRef", "base", "baseBranch");
       const head = stringMeta(metadata, "headRef", "head", "headBranch", "branch");
       meta = [repository, number ? `#${number.replace(/^#/, "")}` : null, base && head ? `${base} ← ${head}` : null, urlLabel(workProduct.url)];
-      action = "Open on GitHub";
+      action = t("localizationTaskRuntime.ui_Open_on_GitHub_a4llll");
       break;
     }
     case "commit":
       Icon = GitCommit;
       meta = [stringMeta(metadata, "shortSha", "sha")?.slice(0, 8) ?? workProduct.externalId?.slice(0, 8) ?? null, stringMeta(metadata, "branch", "branchName"), urlLabel(workProduct.url)];
-      action = "Open on GitHub";
+      action = t("localizationTaskRuntime.ui_Open_on_GitHub_a4llll");
       break;
     case "branch":
       Icon = GitBranch;
       meta = [stringMeta(metadata, "repository", "repo", "repositoryName"), stringMeta(metadata, "branch", "branchName") ?? workProduct.externalId, urlLabel(workProduct.url)];
-      action = "Open on GitHub";
+      action = t("localizationTaskRuntime.ui_Open_on_GitHub_a4llll");
       break;
     case "artifact": {
       Icon = isImage ? Image : isVideo ? Film : File;
       const size = numberMeta(metadata, "byteSize", "size");
-      meta = [isImage ? "Image" : isVideo ? "Video" : stringMeta(metadata, "kind", "fileType") ?? "File", size === null ? null : formatBytes(size)];
-      action = isImage || isVideo ? "Open gallery" : "Open preview";
+      meta = [isImage ? t("localizationTaskRuntime.ui_Image_ophmze") : isVideo ? t("localizationTaskRuntime.ui_Video_pd0tu4") : stringMeta(metadata, "kind", "fileType") ?? t("localizationTaskRuntime.ui_File_bygjtv"), size === null ? null : formatBytes(size)];
+      action = isImage || isVideo ? t("localizationTaskRuntime.ui_Open_gallery_15roi53") : t("localizationTaskRuntime.ui_Open_preview_ijv7rx");
       break;
     }
     case "document":
       Icon = FileText;
-      meta = ["Document", stringMeta(metadata, "revision", "revisionNumber") ? `rev ${stringMeta(metadata, "revision", "revisionNumber")}` : null];
-      action = "Open document";
+      meta = [t("localizationTaskRuntime.ui_Document_1wvusj8"), stringMeta(metadata, "revision", "revisionNumber") ? t("localizationTaskRuntime.revisionShort", { number: stringMeta(metadata, "revision", "revisionNumber") }) : null];
+      action = t("localizationTaskRuntime.ui_Open_document_1isshgu");
       break;
     case "preview_url":
       Icon = Globe;
       meta = [urlLabel(workProduct.url)];
-      action = "Open preview";
+      action = t("localizationTaskRuntime.ui_Open_preview_ijv7rx");
       break;
     case "runtime_service":
       Icon = Server;
-      meta = [stringMeta(metadata, "service", "serviceName") ?? workProduct.provider, stringMeta(metadata, "port") ? `port ${stringMeta(metadata, "port")}` : null];
-      action = "Open service";
+      meta = [stringMeta(metadata, "service", "serviceName") ?? workProduct.provider, stringMeta(metadata, "port") ? t("localizationTaskRuntime.port", { number: stringMeta(metadata, "port") }) : null];
+      action = t("localizationTaskRuntime.ui_Open_service_1b95l3i");
       break;
   }
 
@@ -188,9 +191,9 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
   const unhealthyChip =
     workProduct.healthStatus === "unhealthy"
       ? workProduct.type === "preview_url"
-        ? { label: "Down", tone: "failure" as const }
+        ? { get label() { return t("localizationTaskRuntime.ui_Down_19o4rhx"); }, tone: "failure" as const }
         : workProduct.type === "runtime_service" && workProduct.status !== "closed"
-          ? { label: "Unhealthy", tone: "failure" as const }
+          ? { get label() { return t("localizationTaskRuntime.ui_Unhealthy_1rx27pn"); }, tone: "failure" as const }
           : null
       : null;
   const chip =
@@ -210,7 +213,7 @@ export function RichWorkProductCard({ workProduct, href, variant = "card" }: Ric
   const changeCounts = [additions === null ? null : `+${additions}`, deletions === null ? null : `−${deletions}`]
     .filter(Boolean)
     .join(" ");
-  const fileCount = files === null ? null : `${files} ${files === 1 ? "file" : "files"}`;
+  const fileCount = files === null ? null : t("localizationTaskRuntime.fileCount", { count: files });
   const statsLabel = [changeCounts || null, fileCount].filter(Boolean).join(" · ");
   const compact = variant === "compact";
   const imagePath = isImage

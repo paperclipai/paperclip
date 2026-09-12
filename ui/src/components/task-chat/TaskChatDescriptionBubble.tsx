@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useState } from "react";
 import { Pencil } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -8,6 +9,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import { formatTaskChatTimestamp } from "./task-chat-adapter";
+import { taskChatTimestampDisplay } from "./task-chat-display";
 
 /**
  * Host binding for the description-as-first-bubble (PAP-375): the LIVE issue
@@ -58,6 +60,7 @@ function initialsForName(name: string) {
  * an empty bubble.
  */
 export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubbleProps) {
+  const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
   const isHuman = brief.author === "human";
   const hasDescription = brief.description.trim().length > 0;
@@ -73,7 +76,7 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
           onSave={brief.onSave}
           as="p"
           className="text-sm leading-7 text-foreground"
-          placeholder="Add a description..."
+          placeholder={t("localizationIssueDetail.ui_Add_a_description")}
           multiline
           defaultEditing
           onEditingChange={(next) => {
@@ -97,13 +100,11 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
         onClick={() => setEditing(true)}
         data-testid="task-chat-description-ghost"
       >
-        <Pencil className="h-3.5 w-3.5 shrink-0" aria-hidden />
-        Add a description...
-      </button>
+        <Pencil className="h-3.5 w-3.5 shrink-0" aria-hidden />{t("localizationIssueDetail.ui_Add_a_description")}</button>
     );
   }
 
-  const timestamp = formatTaskChatTimestamp(brief.createdAt);
+  const timestamp = taskChatTimestampDisplay(brief.createdAt, formatTaskChatTimestamp(brief.createdAt));
   return (
     <div
       className={cn(
@@ -164,7 +165,7 @@ export function TaskChatDescriptionBubble({ brief }: TaskChatDescriptionBubblePr
             type="button"
             className="mt-1 shrink-0 rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent/50 hover:text-foreground focus-visible:opacity-100 group-hover/brief:opacity-100"
             onClick={() => setEditing(true)}
-            aria-label="Edit description"
+            aria-label={t("localizationTaskRuntime.ui_Edit_description_1y3ezcn")}
             data-testid="task-chat-description-edit"
           >
             <Pencil className="h-3.5 w-3.5" aria-hidden />

@@ -17,6 +17,7 @@ import { Fragment, useMemo, type ReactNode } from "react";
 import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
 import { cn } from "../lib/utils";
+import { useTranslation } from "@/i18n";
 
 type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
 
@@ -53,6 +54,7 @@ function GlobalToolbar({
 }
 
 export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?: boolean }) {
+  const { t } = useTranslation();
   const {
     breadcrumbs,
     breadcrumbToolbar,
@@ -102,14 +104,14 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
       size="icon-sm"
       className="mr-2 shrink-0"
       onClick={toggleSidebar}
-      aria-label="Open sidebar"
+      aria-label={t("common.openSidebar")}
     >
       <Menu className="h-5 w-5" />
     </Button>
   );
 
   const currentCrumb = breadcrumbs[breadcrumbs.length - 1];
-  if (isMobile && breadcrumbs[0]?.label === "Tasks" && currentCrumb.identifier) {
+  if (isMobile && /^(?:\/[^/]+)?\/issues(?:[/?#]|$)/.test(breadcrumbs[0]?.href ?? "") && currentCrumb.identifier) {
     return (
       <div className="h-(--sz-60px) shrink-0 flex items-center border-b border-border px-4">
         {menuButton}
@@ -231,8 +233,8 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
           size="icon-sm"
           className="ml-5 size-9 shrink-0 text-muted-foreground"
           onClick={toggleTaskPanel}
-          aria-label={taskPanelOpen ? "Hide properties" : "Show properties"}
-          title={taskPanelOpen ? "Hide properties" : "Show properties"}
+          aria-label={taskPanelOpen ? t("localizationCommonChrome.hideProperties") : t("localizationGoals.showProperties")}
+          title={taskPanelOpen ? t("localizationCommonChrome.hideProperties") : t("localizationGoals.showProperties")}
         >
           {taskPanelOpen ? <PanelRightClose className="h-4 w-4" /> : <PanelRightOpen className="h-4 w-4" />}
         </Button>

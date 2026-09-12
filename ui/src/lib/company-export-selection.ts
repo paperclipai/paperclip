@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type {
   CompanyPortabilityEmbeddedAssetManifestEntry,
   CompanyPortabilityIssueManifestEntry,
@@ -39,12 +40,12 @@ export const EXPORT_CATEGORY_ORDER: ExportCategoryKey[] = [
 ];
 
 export const EXPORT_CATEGORY_LABELS: Record<ExportCategoryKey, string> = {
-  agents: "Agents",
-  projects: "Projects",
-  skills: "Skills",
-  routines: "Routines",
-  tasks: "Tasks",
-  attachments: "Attachments",
+  get agents() { return t("localizationProjects.category_agents"); },
+  get projects() { return t("localizationProjects.category_projects"); },
+  get skills() { return t("localizationProjects.category_skills"); },
+  get routines() { return t("localizationProjects.category_routines"); },
+  get tasks() { return t("localizationProjects.category_tasks"); },
+  get attachments() { return t("localizationProjects.category_attachments"); },
 };
 
 /** Everything exports by default. */

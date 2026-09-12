@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FileText, SlidersHorizontal } from "lucide-react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidePanelTabs } from "./SidePanelTabs";
+import { i18n } from "@/i18n";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -32,10 +33,28 @@ describe("SidePanelTabs", () => {
     });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     act(() => root.unmount());
     container.remove();
     vi.restoreAllMocks();
+    await i18n.changeLanguage("en");
+  });
+
+  it("retranslates close actions while keeping raw tab labels, IDs, and selection", async () => {
+    await act(async () => { await i18n.changeLanguage("en"); });
+    const { onCloseTab, onActiveTabChange } = renderTabs();
+    const tab = container.querySelector('[role="tab"][aria-selected="true"]');
+    const close = container.querySelector<HTMLButtonElement>('button[aria-label="Close Properties"]')!;
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(container.querySelector('[role="tab"][aria-selected="true"]')).toBe(tab);
+      expect(tab?.textContent).toContain("Properties");
+      expect(close.getAttribute("aria-label")).toBe(language === "ru" ? "Закрыть вкладку «Properties»" : "Close Properties");
+      expect(onCloseTab).not.toHaveBeenCalled();
+      expect(onActiveTabChange).not.toHaveBeenCalled();
+    }
+    await act(async () => close.click());
+    expect(onCloseTab).toHaveBeenCalledExactlyOnceWith("properties");
   });
 
   function renderTabs(

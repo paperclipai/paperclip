@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Check, Copy, Download } from "lucide-react";
@@ -20,6 +21,7 @@ export function TaskWorkspaceFilePanel({
   payload: WorkspaceFilePayload;
   onFallbackToProject?: () => void;
 }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const [announcement, setAnnouncement] = useState("");
   const state: FileViewerUrlState = {
@@ -60,8 +62,8 @@ export function TaskWorkspaceFilePanel({
               type="button"
               variant="ghost"
               size="icon-sm"
-              aria-label="Copy file contents"
-              title={copied ? "Copied" : "Copy file contents"}
+              aria-label={t("localizationCommonTail.copyFileContents")}
+              title={copied ? t("localizationCommonTail.copied") : t("localizationCommonTail.copyFileContents")}
               onClick={() => {
                 void copyTextToClipboard(contentQuery.data!.content.data).then(() => {
                   setCopied(true);
@@ -74,7 +76,7 @@ export function TaskWorkspaceFilePanel({
           ) : null}
           {downloadUrl ? (
             <Button asChild variant="ghost" size="icon-sm">
-              <a href={downloadUrl} download={resource?.title} aria-label="Download file" title="Download file">
+              <a href={downloadUrl} download={resource?.title} aria-label={t("localizationCommonTail.downloadFile")} title={t("localizationCommonTail.downloadFile")}>
                 <Download aria-hidden />
               </a>
             </Button>

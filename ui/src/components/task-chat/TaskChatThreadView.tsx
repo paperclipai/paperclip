@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { TaskChatProjectCreatedCard } from "./TaskChatProjectCreatedCard";
 import { useMemo, type ReactNode } from "react";
 import type { IssueAttachment } from "@paperclipai/shared";
@@ -114,6 +115,9 @@ function renderItem(
           item={attachedTurnItem}
           timestampPrefix={
             attachedTurnItem.standaloneHeader ? undefined : item.timestamp
+          }
+          timestampValue={
+            attachedTurnItem.standaloneHeader ? undefined : item.createdAtIso ?? item.atMs
           }
           leading={attachedTurnItem.standaloneHeader ? undefined : actions}
           renderChild={(child) =>
@@ -325,6 +329,7 @@ export function TaskChatThreadView({
   scroll = true,
   attachments = EMPTY_ATTACHMENTS,
 }: TaskChatThreadViewProps) {
+  useTranslation();
   const streamlined = useStreamlinedTaskChatPresentation();
   const retryableMarkerId =
     onRetryFailedRun || onTryAgainNoLiveExecutionPath

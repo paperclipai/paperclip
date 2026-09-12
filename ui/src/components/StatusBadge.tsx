@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import type { CSSProperties } from "react";
 import { cn } from "../lib/utils";
 import {
@@ -18,7 +19,7 @@ function scStyle(cssVar: string): CSSProperties {
 
 /** "in_review" → "In review" (sentence case). */
 function sentenceCaseStatus(status: string): string {
-  const s = status.replace(/_/g, " ");
+  const s = status.replace(/_/g, " ").toLocaleLowerCase();
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
@@ -28,6 +29,8 @@ function sentenceCaseStatus(status: string): string {
 // design-allow(pill-pattern): DECISION-SHEET.md C8 - status badges keep the bespoke WCAG-tuned
 // .status-chip color-mix mechanic and do not wrap the Badge primitive.
 export function StatusBadge({ status, label }: { status: string; label?: string }) {
+  const { t, i18n } = useTranslation();
+  const originalLabel = status.replace(/[_-]/g, " ");
   return (
     <span
       className={cn(
@@ -35,7 +38,9 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
         statusBadge[status] ?? statusBadgeDefault
       )}
     >
-      {label ?? status.replace(/[_-]/g, " ")}
+      {label ?? (i18n.resolvedLanguage === "en"
+        ? originalLabel
+        : t(`status.${status}`, { defaultValue: originalLabel }))}
     </span>
   );
 }
@@ -46,6 +51,7 @@ export function StatusBadge({ status, label }: { status: string; label?: string 
  * renders as "idle" (alias for dead code).
  */
 export function AgentStatusBadge({ status }: { status: string }) {
+  const { t } = useTranslation();
   const cssVar = agentStatusVar[status] ?? agentStatusVarDefault;
   const label = status === "active" ? "idle" : status;
   return (
@@ -53,7 +59,7 @@ export function AgentStatusBadge({ status }: { status: string }) {
       className="status-chip inline-flex items-center rounded-full border px-3 py-1 text-xs font-medium leading-none whitespace-nowrap shrink-0"
       style={scStyle(cssVar)}
     >
-      {label.replace(/_/g, " ")}
+      {t(`status.${label}`, { defaultValue: label.replace(/_/g, " ") }).toLocaleLowerCase()}
     </span>
   );
 }
@@ -84,6 +90,7 @@ export function AgentStatusCapsule({ status }: { status: string }) {
  * unaffected.
  */
 export function IssueStatusBadge({ status }: { status: string }) {
+  const { t } = useTranslation();
   const cssVar = taskStatusVar[status] ?? taskStatusVarDefault;
   return (
     <span
@@ -94,7 +101,7 @@ export function IssueStatusBadge({ status }: { status: string }) {
       style={scStyle(cssVar)}
     >
       <StatusGlyph status={status} size="sm" />
-      {sentenceCaseStatus(status)}
+      {sentenceCaseStatus(t(`status.${status}`, { defaultValue: status }))}
     </span>
   );
 }

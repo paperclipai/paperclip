@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { IssueChatThread } from "./IssueChatThread";
 import type { IssueChatComment } from "../lib/issue-chat-messages";
 import type { LiveRunForIssue } from "../api/heartbeats";
@@ -31,6 +32,7 @@ vi.mock("./MarkdownEditor", () => ({
 }));
 
 vi.mock("./InlineEntitySelector", () => ({ InlineEntitySelector: () => null }));
+vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompany: null }) }));
 vi.mock("./Identity", () => ({ Identity: ({ name }: { name: string }) => <span>{name}</span> }));
 vi.mock("./OutputFeedbackButtons", () => ({ OutputFeedbackButtons: () => null }));
 vi.mock("@/components/ui/tooltip", () => ({
@@ -106,6 +108,61 @@ const baseTimestamps = {
 };
 
 describe("IssueChatThread system notice routing", () => {
+  it("translates queued and deferred-wake badges without changing raw comment metadata", async () => {
+    const comments: IssueChatComment[] = ["hold", "active_run"].map((reason, index) => ({
+      id: "queued-raw-" + index,
+      authorType: "user",
+      presentation: null,
+      metadata: null,
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorAgentId: null,
+      authorUserId: "user-raw",
+      body: "Original queued comment " + index,
+      ...baseTimestamps,
+      queueState: "queued",
+      queueReason: reason as "hold" | "active_run",
+      queueTargetRunId: "run-raw-" + index,
+    }));
+    const original = structuredClone(comments);
+    try {
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      renderThread(comments);
+      for (const language of ["ru", "en", "ru"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(container.textContent).toContain(language === "ru" ? "⏸ Запуск отложен" : "⏸ Deferred wake");
+        expect(container.textContent).toContain(language === "ru" ? "В очереди" : "Queued");
+        expect(container.textContent).toContain("Original queued comment 0");
+        expect(container.textContent).toContain("Original queued comment 1");
+        expect(comments).toEqual(original);
+      }
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
+
+  it("keeps legacy source link text and href through ru → en → ru", async () => {
+    try {
+      await act(async () => {
+        await i18n.changeLanguage("ru");
+        root.render(<MemoryRouter><IssueChatThread
+          comments={[]} linkedRuns={[]} timelineEvents={[]} liveRuns={[]}
+          onAdd={async () => {}} showComposer enableLiveTranscriptPolling={false}
+          legacyRecoverySourceIssue={{ identifier: "RAW-21", title: "Original source title", href: "/issues/RAW-21" }}
+        /></MemoryRouter>);
+      });
+      const link = container.querySelector('a[href="/issues/RAW-21"]');
+      expect(link).not.toBeNull();
+      for (const language of ["ru", "en", "ru"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(container.querySelector('a[href="/issues/RAW-21"]')).toBe(link);
+        expect(link?.textContent).toBe("RAW-21 — Original source title");
+      }
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
+
   it("renders authorType=system comments as a SystemNotice rather than a user bubble", () => {
     const comment: IssueChatComment = {
       id: "comment-system",

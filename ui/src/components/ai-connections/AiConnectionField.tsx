@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -56,6 +57,7 @@ export function AiConnectionField({
   legacy?: boolean;
   readOnly?: boolean;
 }) {
+  const { t } = useTranslation();
   const provider = aiProviderForAdapter(adapterType);
   const returnFocus = useRef<HTMLElement | null>(null);
   const restoreFocus = (event: Event) => { event.preventDefault(); returnFocus.current?.focus(); };
@@ -86,8 +88,7 @@ export function AiConnectionField({
     <div className="space-y-4">
       {value && (adapterType !== "opencode_local" || Boolean(model)) && !isAiConnectionCompatible(value, adapterType, model) && (
         <p role="alert" className="text-sm text-destructive">
-          This connection does not support the current harness and model. Choose
-          a compatible connection before saving.
+          {t("sep13Connections.harnessIncompatible")}
         </p>
       )}
       <AiConnectionPicker
@@ -114,30 +115,27 @@ export function AiConnectionField({
       >
         <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={restoreFocus}>
           <DialogHeader>
-            <DialogTitle>Adopt Connections for {agentName}</DialogTitle>
+            <DialogTitle>{t("sep13Connections.adoptForAgent", { agent: agentName })}</DialogTitle>
             <DialogDescription>
-              Saving tests this account in {agentName}’s environment before
-              replacing its existing authentication. Other agents keep their
-              current configuration.
+              {t("sep13Connections.adoptDescription", { agent: agentName })}
             </DialogDescription>
           </DialogHeader>
           <p className="text-sm">
             {pendingAdoption?.mode === "responsible_user"
-              ? `Responsible user’s default. For you: ${accounts.data?.connections.find((account) => account.isDefault && account.provider === provider && account.method === pendingAdoption.method)?.name ?? "Not connected"}. Other users use their own default.`
+              ? t("sep13Connections.responsibleDefaultDescription", { connection: accounts.data?.connections.find((account) => account.isDefault && account.provider === provider && account.method === pendingAdoption.method)?.name ?? t("sep13Connections.notConnected") })
               : accounts.data?.connections.find(
                   (account) => account.id === pendingAdoption?.connectionId,
                 )?.name}
           </p>
           <p className="text-xs text-muted-foreground">
-            After adoption, missing credentials block execution. Previous
-            authentication will not be used as a fallback.
+            {t("sep13Connections.adoptWarning")}
           </p>
           <DialogFooter>
             <Button
               variant="ghost"
               onClick={() => setPendingAdoption(undefined)}
             >
-              Cancel
+              {t("sep13Connections.cancel")}
             </Button>
             <Button
               onClick={() => {
@@ -145,7 +143,7 @@ export function AiConnectionField({
                 setPendingAdoption(undefined);
               }}
             >
-              Use this binding when saved
+              {t("sep13Connections.useBindingWhenSaved")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -153,13 +151,13 @@ export function AiConnectionField({
       <Dialog open={connecting} onOpenChange={setConnecting}>
         <DialogContent className="max-h-(--sz-85vh) overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={restoreFocus}>
           <DialogHeader>
-            <DialogTitle>Connect account</DialogTitle>
+            <DialogTitle>{t("sep13Connections.connectAccount")}</DialogTitle>
           </DialogHeader>
           <AiConnectionCredentialStep
             companyId={companyId}
             provider={provider}
             initialMethod={method}
-            name={`My ${provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : "OpenRouter"} ${method === "subscription" ? "subscription" : "API"}`}
+            name={t(method === "subscription" ? "sep13Connections.defaultSubscriptionName" : "sep13Connections.defaultApiName", { provider: provider === "anthropic" ? "Claude" : provider === "openai" ? "OpenAI" : provider === "xai" ? "Grok" : "OpenRouter" })}
             ownership="personal"
             agentIds={agentId ? [agentId] : []}
             allAgents={false}

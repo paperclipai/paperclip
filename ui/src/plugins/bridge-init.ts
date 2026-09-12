@@ -48,7 +48,7 @@ import { useProjectOrder } from "@/hooks/useProjectOrder";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import {
   assigneeValueFromSelection,
-  currentUserAssigneeOption,
+  currentUserAssigneeDisplayOptions as currentUserAssigneeOption,
   parseAssigneeValue,
 } from "@/lib/assignees";
 import { queryKeys } from "@/lib/queryKeys";

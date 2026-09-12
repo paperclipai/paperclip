@@ -1,3 +1,4 @@
+import { i18n, t, useTranslation } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -49,9 +50,9 @@ interface IssuePropertiesArtifactsTabProps {
 }
 
 function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n < 1024) return t("localizationIssueDetail.bytes", { size: n.toLocaleString(i18n.resolvedLanguage) });
+  if (n < 1024 * 1024) return t("localizationIssueDetail.kilobytes", { size: (n / 1024).toLocaleString(i18n.resolvedLanguage, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) });
+  return t("localizationIssueDetail.megabytes", { size: (n / (1024 * 1024)).toLocaleString(i18n.resolvedLanguage, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) });
 }
 
 /** Work-product status → label + `--status-task-*` base-hue var for `.status-chip`. */
@@ -59,16 +60,16 @@ function workProductStatusBadge(status: string): { label: string; cssVar: string
   switch (status) {
     case "active":
     case "draft":
-      return { label: "In progress", cssVar: "--status-task-in_progress" };
+      return { get label() { return t("pages.caseDetail.statusInProgress"); }, cssVar: "--status-task-in_progress" };
     case "ready_for_review":
-      return { label: "For review", cssVar: "--status-task-in_review" };
+      return { get label() { return t("localizationIssueDetail.ui_For_review"); }, cssVar: "--status-task-in_review" };
     case "approved":
     case "merged":
-      return { label: "Done", cssVar: "--status-task-done" };
+      return { get label() { return t("common.done"); }, cssVar: "--status-task-done" };
     case "changes_requested":
-      return { label: "Changes requested", cssVar: "--status-task-todo" };
+      return { get label() { return t("pages.pipelines.changesRequested"); }, cssVar: "--status-task-todo" };
     case "failed":
-      return { label: "Failed", cssVar: "--status-task-blocked" };
+      return { get label() { return t("status.failed"); }, cssVar: "--status-task-blocked" };
     default:
       return null;
   }
@@ -97,6 +98,7 @@ function MarkdownWorkProductRow({
   reviewDoc: IssueDocument | undefined;
   openRequestId?: number;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
   const headerRef = useRef<HTMLDivElement | null>(null);
@@ -149,7 +151,7 @@ function MarkdownWorkProductRow({
   if (tooLarge) {
     expandedBody = (
       <p className="text-sm text-muted-foreground">
-        This Markdown file is too large to preview. Use Raw or Download instead.
+        {t("localizationIssueDetail.ui_This_Markdown_file_is_too_large_to_preview_Use_Raw_or_Download_instead")}
       </p>
     );
   } else if (reviewDoc) {
@@ -169,15 +171,15 @@ function MarkdownWorkProductRow({
         <MarkdownBody>{reviewDoc.body}</MarkdownBody>
       </IssueDocumentAnnotations>
     ) : (
-      <p className="text-sm text-muted-foreground">Document is empty.</p>
+      <p className="text-sm text-muted-foreground">{t("localizationIssueDetail.ui_Document_is_empty")}</p>
     );
   } else if (ensure.isError) {
     expandedBody = (
       <div className="flex flex-col items-start gap-1.5">
         <p className="text-sm text-muted-foreground">
           {unsupportedError
-            ? "This file can't be previewed as Markdown. Use Raw or Download instead."
-            : "Preview failed to load."}
+            ? t("localizationIssueDetail.ui_This_file_can_t_be_previewed_as_Markdown_Use_Raw_or_Download_instead")
+            : t("localizationIssueDetail.ui_Preview_failed_to_load")}
         </p>
         {!unsupportedError ? (
           <button
@@ -188,13 +190,13 @@ function MarkdownWorkProductRow({
               ensure.mutate();
             }}
           >
-            Retry
+            {t("pages.inbox.retry")}
           </button>
         ) : null}
       </div>
     );
   } else {
-    expandedBody = <p className="text-sm text-muted-foreground">Preparing preview…</p>;
+    expandedBody = <p className="text-sm text-muted-foreground">{t("localizationIssueDetail.ui_Preparing_preview")}</p>;
   }
 
   return (
@@ -218,7 +220,7 @@ function MarkdownWorkProductRow({
           ) : null}
           {reviewDoc ? (
             <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">
-              {`Rev ${reviewDoc.latestRevisionNumber ?? 1}`}
+              {t("localizationIssueDetail.revision", { revision: reviewDoc.latestRevisionNumber ?? 1 })}
             </span>
           ) : null}
           <Chevron className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
@@ -235,16 +237,16 @@ function MarkdownWorkProductRow({
           href={metadata.openPath}
           target="_blank"
           rel="noreferrer"
-          aria-label={`Open raw ${workProduct.title}`}
-          title="Open raw"
+          aria-label={t("localizationIssueDetail.openRawFile", { title: workProduct.title })}
+          title={t("localizationIssueDetail.ui_Open_raw")}
           className="shrink-0 px-1.5 py-1.5 text-muted-foreground hover:text-foreground"
         >
           <ExternalLink className="h-3 w-3" />
         </a>
         <a
           href={metadata.downloadPath}
-          aria-label={`Download ${workProduct.title}`}
-          title="Download"
+          aria-label={t("localizationIssueDetail.downloadFile", { title: workProduct.title })}
+          title={t("pages.pipelines.download")}
           className="shrink-0 py-1.5 pr-2 pl-0.5 text-muted-foreground hover:text-foreground"
         >
           <Download className="h-3 w-3" />
@@ -268,6 +270,7 @@ function DocumentRow({
   openRequestId?: number;
   onOpen?: () => void;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [annotationPanelOpen, setAnnotationPanelOpen] = useState(false);
   const headerRef = useRef<HTMLDivElement | null>(null);
@@ -291,7 +294,7 @@ function DocumentRow({
         <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate">{documentDisplayTitle(doc)}</span>
         <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">
-          {`Rev ${doc.latestRevisionNumber ?? 1}`}
+          {t("localizationIssueDetail.revision", { revision: doc.latestRevisionNumber ?? 1 })}
         </span>
         <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       </button>
@@ -309,7 +312,7 @@ function DocumentRow({
           <FileText className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           <span className="min-w-0 flex-1 truncate">{documentDisplayTitle(doc)}</span>
           <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">
-            {`Rev ${doc.latestRevisionNumber ?? 1}`}
+            {t("localizationIssueDetail.revision", { revision: doc.latestRevisionNumber ?? 1 })}
           </span>
           <Chevron className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </button>
@@ -338,7 +341,7 @@ function DocumentRow({
               <MarkdownBody>{doc.body}</MarkdownBody>
             </IssueDocumentAnnotations>
           ) : (
-            <p className="text-sm text-muted-foreground">Document is empty.</p>
+            <p className="text-sm text-muted-foreground">{t("localizationIssueDetail.ui_Document_is_empty")}</p>
           )}
         </div>
       ) : null}
@@ -357,6 +360,7 @@ function DocumentRow({
  * thread.
  */
 export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDocument }: IssuePropertiesArtifactsTabProps) {
+  const { t } = useTranslation();
   const [typeFilter, setTypeFilter] = useState("all");
   const [runFilter, setRunFilter] = useState("all");
   const { data: attachments } = useQuery({
@@ -383,8 +387,8 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
   const documentRows = (documents ?? []).filter((doc) => !isArtifactReviewDocumentKey(doc.key));
   const reviewDocsByKey = new Map((documents ?? []).map((doc) => [doc.key, doc]));
   const fileRows = selectAgentArtifactAttachments(attachments, workProducts);
-  const runsById = useMemo(() => new Map((runs ?? []).map((run) => [run.runId, run])), [runs]);
-  const agentsById = useMemo(() => new Map((agents ?? []).map((agent) => [agent.id, agent])), [agents]);
+  const runsById = useMemo(() => new Map((runs ?? []).map((run) => [run.runId, run])), [i18n.resolvedLanguage, runs]);
+  const agentsById = useMemo(() => new Map((agents ?? []).map((agent) => [agent.id, agent])), [i18n.resolvedLanguage, agents]);
 
   type ArtifactRow =
     | { kind: "work_product"; id: string; runId: string | null; date: Date; type: string; value: IssueWorkProduct }
@@ -418,7 +422,7 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
       type: value.contentType.startsWith("image/") ? "image" : "file",
       value,
     })),
-  ], [documentRows, fileRows, workProductRows]);
+  ], [i18n.resolvedLanguage, documentRows, fileRows, workProductRows]);
 
   const filteredRows = allRows.filter((row) =>
     (typeFilter === "all" || row.type === typeFilter) &&
@@ -444,7 +448,7 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
   if (workProductRows.length === 0 && documentRows.length === 0 && fileRows.length === 0) {
     return (
       <div className="px-1 py-6 text-sm text-muted-foreground">
-        No artifacts yet. Work products, documents, and agent-produced files will appear here.
+        {t("localizationIssueDetail.ui_No_artifacts_yet_Work_products_documents_and_agent_produced_files_will_appear_here")}
       </div>
     );
   }
@@ -453,50 +457,50 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
     <div className="flex flex-col gap-3 py-2">
       <div className="flex items-center gap-2 px-1">
         <label className="min-w-0 flex-1 text-(length:--text-micro) text-muted-foreground">
-          <span className="sr-only">Filter artifacts by type</span>
+          <span className="sr-only">{t("pages.artifacts.filterByType")}</span>
           <select
-            aria-label="Filter artifacts by type"
+            aria-label={t("pages.artifacts.filterByType")}
             value={typeFilter}
             onChange={(event) => setTypeFilter(event.target.value)}
             className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
           >
-            <option value="all">All types</option>
-            <option value="image">Images</option>
-            <option value="file">Files</option>
-            <option value="pull_request">Pull requests</option>
-            <option value="commit">Commits</option>
-            <option value="branch">Branches</option>
-            <option value="document">Documents</option>
-            <option value="preview_url">Previews</option>
-            <option value="runtime_service">Runtime services</option>
+            <option value="all">{t("localizationIssueDetail.ui_All_types")}</option>
+            <option value="image">{t("pages.artifacts.kindImages")}</option>
+            <option value="file">{t("pages.artifacts.kindFiles")}</option>
+            <option value="pull_request">{t("localizationIssueDetail.ui_Pull_requests")}</option>
+            <option value="commit">{t("localizationIssueDetail.ui_Commits")}</option>
+            <option value="branch">{t("localizationIssueDetail.ui_Branches")}</option>
+            <option value="document">{t("pages.pipelines.outputDocuments")}</option>
+            <option value="preview_url">{t("localizationIssueDetail.ui_Previews")}</option>
+            <option value="runtime_service">{t("localizationIssueDetail.ui_Runtime_services")}</option>
           </select>
         </label>
         <label className="min-w-0 flex-1 text-(length:--text-micro) text-muted-foreground">
-          <span className="sr-only">Filter artifacts by run</span>
+          <span className="sr-only">{t("localizationIssueDetail.ui_Filter_artifacts_by_run")}</span>
           <select
-            aria-label="Filter artifacts by run"
+            aria-label={t("localizationIssueDetail.ui_Filter_artifacts_by_run")}
             value={runFilter}
             onChange={(event) => setRunFilter(event.target.value)}
             className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground"
           >
-            <option value="all">All runs</option>
+            <option value="all">{t("localizationIssueDetail.ui_All_runs")}</option>
             {runOptions.map((runId) => {
               const run = runsById.get(runId);
               const agent = run ? agentsById.get(run.agentId) : null;
               const runDate = run?.startedAt ?? allRows.find((row) => row.runId === runId)?.date;
               return (
                 <option key={runId} value={runId}>
-                  {`${agent?.name ?? `Run ${runId.slice(0, 8)}`}${runDate ? ` · ${formatDateTime(runDate)}` : ""}`}
+                  {`${agent?.name ?? t("localizationIssueDetail.runId", { id: runId.slice(0, 8) })}${runDate ? ` · ${formatDateTime(runDate)}` : ""}`}
                 </option>
               );
             })}
-            {allRows.some((row) => row.runId === null) ? <option value="other">Other artifacts</option> : null}
+            {allRows.some((row) => row.runId === null) ? <option value="other">{t("localizationIssueDetail.ui_Other_artifacts")}</option> : null}
           </select>
         </label>
       </div>
 
       {groupedRows.length === 0 ? (
-        <p className="px-1 py-6 text-sm text-muted-foreground">No artifacts match these filters.</p>
+        <p className="px-1 py-6 text-sm text-muted-foreground">{t("localizationIssueDetail.ui_No_artifacts_match_these_filters")}</p>
       ) : groupedRows.map((group) => {
         const run = group.runId === "other" ? null : runsById.get(group.runId);
         const agent = run ? agentsById.get(run.agentId) : null;
@@ -504,7 +508,7 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
           <section key={group.runId} className="flex flex-col gap-1.5">
             <header className="flex items-baseline justify-between gap-2 px-1">
               <h3 className="truncate text-xs font-medium text-foreground">
-                {group.runId === "other" ? "Other artifacts" : agent?.name ?? `Run ${group.runId.slice(0, 8)}`}
+                {group.runId === "other" ? t("localizationIssueDetail.ui_Other_artifacts") : agent?.name ?? t("localizationIssueDetail.runId", { id: group.runId.slice(0, 8) })}
               </h3>
               <time className="shrink-0 text-(length:--text-micro) text-muted-foreground" dateTime={group.date.toISOString()}>
                 {formatDateTime(group.date)}
@@ -565,7 +569,7 @@ export function IssuePropertiesArtifactsTab({ issue, documentDeepLink, onOpenDoc
       })}
 
       <Link to="/artifacts" className="mx-1 border-t border-border pt-2 text-xs font-medium text-foreground hover:underline">
-        View all in company Artifacts →
+        {t("localizationIssueDetail.ui_View_all_in_company_Artifacts")}
       </Link>
     </div>
   );
