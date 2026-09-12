@@ -140,12 +140,13 @@ describe("TaskChatRunnerActivityGroup", () => {
     expect(container.querySelectorAll("li")).toHaveLength(2);
     expect(container.textContent).toContain("output-one");
     act(() => toggle().click());
-    expect(viewport().textContent).toContain("command-two");
+    expect(toggle().textContent).toContain("Ran commands");
+    expect(container.textContent).not.toContain("command-two");
   });
 
   it("keeps failures discoverable after later activity, with neutral detail and no X", () => {
     render([tool("failed", "failed"), tool("next")]);
-    expect(toggle().textContent).toContain("1 failed");
+    expect(toggle().textContent).not.toMatch(/\d+ failed/);
     act(() => toggle().click());
     expect(container.querySelector("li")?.textContent).toContain("failed");
     act(() => container.querySelector<HTMLButtonElement>("li button")!.click());
@@ -203,8 +204,9 @@ describe("TaskChatRunnerActivityGroup", () => {
     expect(container.textContent).toContain("Finished");
     expect(container.querySelector(".text-destructive,.lucide-x")).toBeNull();
     act(() => toggle().click());
-    expect(viewport().textContent).toContain("command-two");
-    expect(toggle().textContent).toContain("1 failed");
+    expect(toggle().textContent).toContain("Ran commands");
+    expect(container.textContent).not.toContain("command-two");
+    expect(toggle().textContent).not.toMatch(/\d+ failed/);
   });
 
   it("does not offer empty disclosures for sparse activities", () => {
@@ -237,6 +239,25 @@ describe("TaskChatRunnerActivityGroup", () => {
         '[data-testid="task-chat-runner-activity-detail"]',
       ),
     ).toBeNull();
+  });
+
+  it("settles to a summary and can resume without losing the current activity", () => {
+    const items = [tool("one", "failed"), tool("two", "completed")];
+    render(items);
+    expect(viewport().textContent).toContain("command-two");
+    render(items, "live", false);
+    expect(
+      container.querySelector('[data-testid="task-chat-activity-viewport"]'),
+    ).toBeNull();
+    expect(toggle().textContent).toBe("Ran commands");
+    expect(toggle().getAttribute("aria-label")).toContain("ran commands");
+    expect(container.textContent).not.toContain("command-two");
+    act(() => toggle().click());
+    expect(container.querySelectorAll("li")).toHaveLength(2);
+    expect(toggle().textContent).not.toMatch(/\d+ failed/);
+    act(() => toggle().click());
+    render([...items, tool("three")]);
+    expect(viewport().textContent).toContain("command-three");
   });
 
   it("replaces immediately with reduced motion", () => {

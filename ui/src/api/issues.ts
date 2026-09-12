@@ -384,6 +384,10 @@ export const issuesApi = {
       `/issues/${id}/queued-comments/order`,
       data,
     ),
+  interruptQueuedComments: (
+    id: string,
+    data: { queueId: string; targetRunId: string; revision: string },
+  ) => api.post<IssueQueuedCommentQueue>(`/issues/${id}/queued-comments/interrupt`, data),
   steerQueuedComment: (
     id: string,
     commentId: string,
@@ -501,10 +505,12 @@ export const issuesApi = {
     reopen?: boolean,
     interrupt?: boolean,
     attachmentIds?: string[],
+    clientRequestId?: string,
   ) =>
     confirmedCommentResponse(
       api.post<IssueComment>(`/issues/${id}/comments`, {
         body,
+        ...(clientRequestId ? { clientRequestId } : {}),
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
         ...(attachmentIds?.length ? { attachmentIds } : {}),

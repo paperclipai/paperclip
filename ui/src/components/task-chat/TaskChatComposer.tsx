@@ -102,6 +102,7 @@ interface TaskChatComposerProps {
     reopen?: boolean,
     reassignment?: CommentReassignment,
     attachmentIds?: string[],
+    clientRequestId?: string,
   ) => Promise<void> | void;
   onStop?: () => Promise<void>;
   stopPending?: boolean;
@@ -118,6 +119,7 @@ interface TaskChatComposerProps {
   /** Mentionable entities for the editor's @-autocomplete. */
   mentions?: MentionOption[];
   enableReassign?: boolean;
+  conversationMode?: boolean;
   reassignOptions?: InlineEntityOption[];
   agentMap?: ReadonlyMap<string, { icon?: string | null }>;
   userProfileMap?: ReadonlyMap<
@@ -391,6 +393,7 @@ export function TaskChatComposer({
   onImageUpload,
   mentions,
   enableReassign = false,
+  conversationMode = false,
   reassignOptions,
   agentMap,
   userProfileMap,
@@ -591,6 +594,7 @@ export function TaskChatComposer({
 
   const modeMeta = workModeMetaFor(pendingMode);
   const canAcceptFiles =
+    !pause &&
     !queuedEdit &&
     !uncertainSubmission &&
     Boolean(onAttachImage || onImageUpload);
@@ -797,7 +801,7 @@ export function TaskChatComposer({
   const uploadPending = attachments.some((item) => item.status === "uploading");
   const uploadFailed = attachments.some((item) => item.status === "error");
   const takeoverVisible = Boolean(
-    takeover && !queuedEdit && !submitting && !uploadPending,
+    takeover && !pause && !queuedEdit && !submitting && !uploadPending,
   );
   const previousTakeoverVisibleRef = useRef(takeoverVisible);
   useEffect(() => {
@@ -807,8 +811,10 @@ export function TaskChatComposer({
     previousTakeoverVisibleRef.current = takeoverVisible;
   }, [queuedEdit, takeoverVisible]);
 
+  const canResetPausedConversation = conversationMode && !queuedEdit && body.trim() === "/new" && attachments.length === 0;
+
   async function submit() {
-    if (pause || disabled) return;
+    if (disabled || (pause && !canResetPausedConversation)) return;
     const retained =
       draftKey && !queuedEdit ? loadDraftSubmission(draftKey) : null;
     if (retained && !submitting) {
@@ -822,6 +828,10 @@ export function TaskChatComposer({
     const goalCommand = queuedEdit
       ? ({ matched: false } as const)
       : parseRunnerGoalCommand(submittedBody);
+    if (goalCommand.matched && conversationMode) {
+      setActionError("Create a separate task for work that needs an ongoing execution goal.");
+      return;
+    }
     if (goalCommand.matched) {
       if ("error" in goalCommand) {
         setActionError(goalCommand.error);
@@ -961,7 +971,9 @@ export function TaskChatComposer({
             .map((item) => item.attachmentId!),
         ),
       ];
-      if (attachmentIds.length > 0)
+      if (conversationMode)
+        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId);
+      else if (attachmentIds.length > 0)
         await onAdd(fullBody, reopen, reassignment, attachmentIds);
       else await onAdd(fullBody, reopen, reassignment);
       if (mountedTaskKey.current !== draftKey) return;
@@ -1064,7 +1076,7 @@ export function TaskChatComposer({
     </Button>
   ) : null;
 
-  if (pause) {
+  if (pause && (!conversationMode || queuedEdit)) {
     return <TaskChatPausedTakeover {...pause} hasDraft={Boolean(body.trim() || attachments.length)} />;
   }
 
@@ -1074,7 +1086,7 @@ export function TaskChatComposer({
         streamlined
           ? "paperclip-task-chat-composer rounded-(--radius-task-composer) border border-border bg-card p-(--sz-18px) shadow-(--shadow-task-composer) dark:border-0 dark:bg-muted dark:shadow-none"
           : "paperclip-task-chat-composer rounded-xl bg-card p-(--sz-18px)",
-        mobile && "p-3",
+        mobile && "p-2",
       )}
       onKeyDownCapture={(e) => {
         // Capture mode shortcuts on the wrapper so they work while the rich
@@ -1243,6 +1255,12 @@ export function TaskChatComposer({
               </span>
             </button>
           ) : null}
+          {pause && conversationMode ? (
+            <div className="space-y-2">
+              <TaskChatPausedTakeover {...pause} hasDraft={Boolean(body.trim() || attachments.length)} />
+              <p className="text-xs text-muted-foreground">Send /new to start a fresh session and resume this conversation.</p>
+            </div>
+          ) : null}
           <div data-testid="task-chat-composer-input">
             <MarkdownEditor
               ref={editorRef}
@@ -1255,7 +1273,11 @@ export function TaskChatComposer({
               }
               readOnly={disabled || !!uncertainSubmission}
               mentions={mentions}
-              actionCommands={[goalCommandOption]}
+              actionCommands={conversationMode ? [{
+                id: "action:new", kind: "action", command: "new", name: "New session",
+                description: "Start fresh context here, preserving conversation history.", aliases: ["new"],
+                disabled,
+              }] : [goalCommandOption]}
               onSubmit={() => void submit()}
               imageUploadHandler={
                 canAcceptFiles ? uploadInlineImage : undefined
@@ -1504,6 +1526,7 @@ export function TaskChatComposer({
                 showStop
                   ? disabled || stopControl.stopping
                   : disabled ||
+                    (Boolean(pause) && !canResetPausedConversation) ||
                     submitting ||
                     !!uncertainSubmission ||
                     uploadPending ||

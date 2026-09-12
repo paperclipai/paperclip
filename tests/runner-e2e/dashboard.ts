@@ -1,5 +1,8 @@
+import {
+  discoverReportCatalog,
+  type ReportExecution,
+} from "./report-catalog.js";
 import type {
-  MatrixExecution,
   RunnerE2ECampaign,
   RunnerE2EHistoryIndex,
   RunnerE2EResult,
@@ -22,7 +25,7 @@ export interface RunnerDashboardInput {
   title: string;
   generatedAt: string;
   expected: readonly string[];
-  catalog: readonly MatrixExecution[];
+  catalog: readonly ReportExecution[];
   entries: readonly RunnerDashboardEntry[];
   campaign?: RunnerE2ECampaign;
   history?: RunnerE2EHistoryIndex;
@@ -135,7 +138,7 @@ function resolveScreenshots(
 }
 
 function renderCase(
-  execution: MatrixExecution,
+  execution: ReportExecution,
   expected: ReadonlySet<string>,
   entryById: ReadonlyMap<string, RunnerDashboardEntry>,
 ) {
@@ -151,7 +154,11 @@ function renderCase(
   const label = state.replace("-", " ");
   const detail =
     entry?.errors.join("; ") ||
-    (entry?.valid ? "All invariants passed" : "Not selected");
+    (entry?.valid
+      ? "All invariants passed"
+      : selected
+        ? "No result artifact was uploaded"
+        : "Not selected");
   const screenshots = resolveScreenshots(entry);
   const billing = entry ? summarizeExecutionBilling(entry.result) : null;
   const matcherResults = entry?.result.matcherResults ?? [];
@@ -508,7 +515,7 @@ function renderHistory(history: RunnerE2EHistoryIndex | undefined) {
 }
 
 function renderSuiteMatrix(input: {
-  suiteCatalog: readonly MatrixExecution[];
+  suiteCatalog: readonly ReportExecution[];
   expected: ReadonlySet<string>;
   entryById: ReadonlyMap<string, RunnerDashboardEntry>;
   summary?: RunnerE2ESuiteSummary;
@@ -580,6 +587,11 @@ function renderSuiteMatrix(input: {
 }
 
 export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
+  const catalog = discoverReportCatalog({
+    catalog: input.catalog,
+    expected: input.expected,
+    results: input.entries.map((entry) => entry.result),
+  });
   const expected = new Set(input.expected);
   const entryById = new Map(
     input.entries.map((entry) => [entry.result.executionId, entry]),
@@ -602,13 +614,13 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
   );
   const suites = [
     ...new Map(
-      input.catalog.map((execution) => [execution.suite.id, execution.suite]),
+      catalog.map((execution) => [execution.suite.id, execution.suite]),
     ).values(),
   ];
   const suiteSections = suites
     .map((suite) =>
       renderSuiteMatrix({
-        suiteCatalog: input.catalog.filter(
+        suiteCatalog: catalog.filter(
           (execution) => execution.suite.id === suite.id,
         ),
         expected,
@@ -625,15 +637,12 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
   );
   const filterProfiles = [
     ...new Map(
-      input.catalog.map((execution) => [
-        execution.profile.id,
-        execution.profile,
-      ]),
+      catalog.map((execution) => [execution.profile.id, execution.profile]),
     ).values(),
   ];
   const filterEnvironments = [
     ...new Map(
-      input.catalog.map((execution) => [
+      catalog.map((execution) => [
         execution.environment.id,
         execution.environment,
       ]),
@@ -1034,7 +1043,7 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
     </section>
     ${suiteSections}
     ${historySection}
-    <footer><span>Generated ${html(input.generatedAt)}</span><span>${input.catalog.length} catalog executions · Declared screenshots and sanitized structured evidence published</span></footer>
+    <footer><span>Generated ${html(input.generatedAt)}</span><span>${catalog.length} catalog executions · Declared screenshots and sanitized structured evidence published</span></footer>
   </main>
   <dialog class="gallery-dialog" data-gallery-dialog aria-labelledby="gallery-title">
     <div class="gallery-shell">

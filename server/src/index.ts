@@ -1441,6 +1441,9 @@ async function startServerWithDatabaseTeardown(
       );
     } else {
       const startupHeartbeatRecovery = (async () => {
+        // Legacy remote recovery releases sandbox leases. Wait for provider
+        // workers before cleanup or retry admission, including unmanaged installs.
+        await app.locals.bundledPluginsStartup;
         try {
           const nativeRecovery =
             await heartbeat.recoverNativeRunsAfterRestart();

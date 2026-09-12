@@ -63676,7 +63676,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const reviewResult = {
       ...(accepted.resultJson.result as PrpStructuredRunResult),
       reportedWorkDisposition: "needs_review" as const,
-      attentionRequests: [],
+      attentionRequests: [{ kind: "review" as const, ownerClass: "human" as const, summary: "Approve the prepared response and selected files." }],
     };
     delete reviewResult.continuation;
     await reviewPort.completeRun({

@@ -1,3 +1,4 @@
+import { runChatFlow } from "./chat-flow.js";
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -630,6 +631,7 @@ for (const execution of executions) {
 
     const isReviewedFixtureScreenshotRoute = () =>
       isPublicRunnerScreenshotRoute(page.url(), {
+        chatAgentId: execution.task.flow === "agent_chat" ? fixtures?.agent.id : undefined,
         issuePrefix: fixtures?.company.issuePrefix,
         issueId: issue?.id,
         issueIdentifier: issue?.identifier,
@@ -672,10 +674,10 @@ for (const execution of executions) {
     };
 
     const cancelActiveRunsForCleanup = async () => {
-      if (!issue) return;
-      const cleanupIssueId = issue.id;
+      if (!issue && !(execution.task.flow === "agent_chat" && fixtures)) return;
+      const cleanupIssueId = issue?.id;
       const runs = await api.get<RunRecord[]>(
-        `/api/issues/${cleanupIssueId}/runs`,
+        execution.task.flow === "agent_chat" && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`,
       );
       const activeRunIds = [
         ...new Set(
@@ -696,7 +698,7 @@ for (const execution of executions) {
       await pollUntil({
         label: `cleanup cancellation for issue ${cleanupIssueId}`,
         deadlineAt: Date.now() + 45_000,
-        load: () => api.get<RunRecord[]>(`/api/issues/${cleanupIssueId}/runs`),
+        load: () => api.get<RunRecord[]>(execution.task.flow === "agent_chat" && fixtures ? `/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100` : `/api/issues/${cleanupIssueId}/runs`),
         accept: (currentRuns) =>
           currentRuns
             .filter((run) => activeIds.has(run.id))
@@ -706,7 +708,16 @@ for (const execution of executions) {
     };
 
     const captureFailureApiState = async () => {
-      if (!fixtures || !issue) return;
+      if (!fixtures) return;
+      if (execution.task.flow === "agent_chat" && !issue) {
+        const companyRuns = await api.get<RunRecord[]>(`/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`);
+        selectedRuns = await Promise.all(companyRuns.map(run => api.get<RunRecord>(`/api/heartbeat-runs/${run.id}`)));
+        // Settings are already restored on failure, so chat resolution may be
+        // gated. Direct task access still permits evidence and usage capture.
+        const sourceId = selectedRuns.map(run => record(run.contextSnapshot).issueId).find(id => typeof id === "string");
+        if (typeof sourceId === "string") issue = await api.get<IssueRecord>(`/api/issues/${sourceId}`);
+      }
+      if (!issue) return;
       const capture = async <T>(operation: () => Promise<T>) =>
         operation().catch((error) => ({
           evidenceCaptureError:
@@ -717,7 +728,9 @@ for (const execution of executions) {
           capture(() => api.get<IssueRecord>(`/api/issues/${issue!.id}`)),
           capture(() =>
             api.get<RunRecord[]>(
-              `/api/companies/${fixtures!.company.id}/heartbeat-runs?agentId=${fixtures!.agent.id}&limit=20`,
+              execution.task.flow === "agent_chat"
+                ? `/api/companies/${fixtures!.company.id}/heartbeat-runs?limit=100`
+                : `/api/companies/${fixtures!.company.id}/heartbeat-runs?agentId=${fixtures!.agent.id}&limit=20`,
             ),
           ),
           capture(() =>
@@ -732,7 +745,7 @@ for (const execution of executions) {
           ),
         ]);
       const taskRuns = Array.isArray(listedRuns)
-        ? matchingRuns(listedRuns, "id" in currentIssue ? currentIssue : issue)
+        ? execution.task.flow === "agent_chat" ? listedRuns : matchingRuns(listedRuns, "id" in currentIssue ? currentIssue : issue)
         : [];
       const detailedRuns = await Promise.all(
         taskRuns.map((candidate) =>
@@ -803,7 +816,9 @@ for (const execution of executions) {
       // Each isolated campaign selects its generation explicitly; the app's
       // default can change without changing which runtime this cell exercises.
       const enableNativeRunner = execution.profile.generation === "native";
-      await api.patch("/api/instance/settings/experimental", {
+      const experimental = await api.patch<{
+        enableNativeRunner: boolean;
+      }>("/api/instance/settings/experimental", {
         enableNativeRunner,
         ...(execution.task.flow === "warm_three_turn"
           ? { enableIsolatedWorkspaces: true }
@@ -813,6 +828,7 @@ for (const execution of executions) {
           ? { enableRunnerPreviewIngress: true }
           : {}),
       });
+      expect(experimental.enableNativeRunner).toBe(enableNativeRunner);
 
       const configuredExperimental = await api.get<{
         enableNativeRunner: boolean;
@@ -852,6 +868,17 @@ for (const execution of executions) {
         secrets,
       );
 
+      if (execution.task.flow === "agent_chat") {
+        const chat = await runChatFlow({
+          page, api, fixtures, execution, nonce,
+          restart: () => restartIsolatedPaperclipServer({ api, requestId: `chat-${nonce}`, deadlineAt: startedAtMs + deadlineMs }),
+          observe: (chatIssue, chatRuns) => { issue = chatIssue; selectedRuns = chatRuns; },
+          capture: captureScreenshot,
+          evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = chat.issue; selectedRuns = chat.runs;
+        matcherResults = [{ matcher: { kind: "issue_status", expected: "in_review" }, passed: true, detail: "Chat workflow and durable handoff/session assertions passed" }];
+      } else {
       const issuePrefix = fixtures.company.issuePrefix;
       if (!issuePrefix)
         throw new Error(
@@ -917,7 +944,9 @@ for (const execution of executions) {
         const [currentIssue, runs, comments, interactions] = await Promise.all([
           api.get<IssueRecord>(`/api/issues/${issue!.id}`),
           api.get<RunRecord[]>(
-            `/api/companies/${fixtures!.company.id}/heartbeat-runs?agentId=${fixtures!.agent.id}&limit=20`,
+            execution.task.flow === "agent_chat"
+                ? `/api/companies/${fixtures!.company.id}/heartbeat-runs?limit=100`
+                : `/api/companies/${fixtures!.company.id}/heartbeat-runs?agentId=${fixtures!.agent.id}&limit=20`,
           ),
           api.get<CommentRecord[]>(
             `/api/issues/${issue!.id}/comments?order=asc`,
@@ -2388,6 +2417,7 @@ for (const execution of executions) {
           `Runtime invariant failure: ${invariantFailures.join("; ")}`,
         );
       }
+      }
     } catch (error) {
       primaryError = error;
       try {
@@ -2450,6 +2480,11 @@ for (const execution of executions) {
         });
         try {
           await cancelActiveRunsForCleanup();
+          if (execution.task.flow === "agent_chat") {
+            const companyRuns = await api.get<RunRecord[]>(`/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`);
+            selectedRuns = await Promise.all(companyRuns.map(run => api.get<RunRecord>(`/api/heartbeat-runs/${run.id}`)));
+            await writeSanitizedJson(snapshotsDir, "chat-final-run-ledger.json", selectedRuns, secrets);
+          }
           await fixtures.teardown();
           cleanup = "passed";
         } catch (error) {
