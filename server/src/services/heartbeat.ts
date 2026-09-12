@@ -25080,7 +25080,9 @@ export function heartbeatService(
             });
           }
         }
-        if (latestRun?.status === "cancelled" && !nativeDispatchStarted && !nativeOwnershipHeld) {
+        if (latestRun?.status === "cancelled" && !nativeDispatchStarted && !nativeOwnershipHeld &&
+            (latestRun.runtimeMode === "native" ||
+              parseObject(latestRun.resultJson?.startupCancellation).beforeNativeSelection === true)) {
           // This executor has finished preparation and lease cleanup without
           // handing off to native execution. Keep a durable receipt for admission
           // after a restart; cleanup receipts are independently rechecked there.
@@ -27668,39 +27670,8 @@ export function heartbeatService(
       )
     )
       return run;
-    // Fence preparation before any asynchronous provider Stop. Refresh the
-    // selected runtime under the same lock used by the native handoff, so a
-    // cancellation that first saw legacy cannot miss a just-selected native run.
-    run = await db.transaction(async (tx) => {
-      const [current] = await tx.select().from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId)).for("update");
-      if (!current) throw notFound("Heartbeat run not found");
-      if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(current.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number]) &&
-          !(pendingNativeRetry && current.status === "failed")) return current;
-      const [fenced] = await tx.update(heartbeatRuns).set({
-        resultJson: { ...current.resultJson, startupCancellation: {
-          requestedAt: new Date().toISOString(),
-          beforeNativeSelection: current.runtimeMode === "legacy" &&
-            !current.runtimeModeResolvedAt && current.executionStage === "preparing" &&
-            claimedAdapterType(current) === "paperclip_runner",
-        } },
-      }).where(eq(heartbeatRuns.id, runId)).returning();
-      return fenced;
-    });
-    if (!CANCELLABLE_HEARTBEAT_RUN_STATUSES.includes(run.status as (typeof CANCELLABLE_HEARTBEAT_RUN_STATUSES)[number]) &&
-        !(pendingNativeRetry && run.status === "failed")) return run;
     const agent = await getAgent(run.agentId);
     const errorCode = options.errorCode ?? "cancelled";
-    const resultJson = agent
-      ? {
-          ...mergeRunStopMetadataForAgent(agent, "cancelled", {
-            resultJson: parseObject(run.resultJson),
-            errorCode,
-            errorMessage: reason,
-          }),
-          ...(options.resultJson ?? {}),
-        }
-      : options.resultJson;
 
     const pendingProcessCancellation = processRunCancellationSettlements.get(
       run.id,
@@ -27717,6 +27688,39 @@ export function heartbeatService(
         ? captureAdapterStopOwnership(run.id)
         : undefined;
     const control = stopOwnership?.control;
+    // Capture the existing adapter owner before waiting on the run lock. Then
+    // atomically fence preparation and refresh the selected runtime, so Stop
+    // cannot miss a native handoff that won after its first read.
+    // Established legacy processes must still be stopped if the database is
+    // unavailable. Only native or not-yet-dispatched preparation needs this
+    // additional durable fence before its existing cancellation path.
+    if (run.runtimeMode === "native" || (!run.runtimeModeResolvedAt && !running && !control)) {
+      const [fenced] = await db.update(heartbeatRuns).set({
+        resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
+          jsonb_build_object('startupCancellation', jsonb_build_object(
+            'requestedAt', ${new Date().toISOString()}::text,
+            'beforeNativeSelection', ${heartbeatRuns.runtimeMode} = 'legacy'
+              and ${heartbeatRuns.runtimeModeResolvedAt} is null
+              and ${heartbeatRuns.executionStage} = 'preparing'
+              and coalesce(${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType' = 'paperclip_runner', false)
+          ))`,
+      }).where(and(eq(heartbeatRuns.id, runId), inArray(heartbeatRuns.status,
+        pendingNativeRetry ? [...CANCELLABLE_HEARTBEAT_RUN_STATUSES, "failed"] : [...CANCELLABLE_HEARTBEAT_RUN_STATUSES],
+      ))).returning();
+      if (!fenced) return getRun(runId);
+      run = fenced;
+    }
+    const resultJson = agent
+      ? {
+          ...mergeRunStopMetadataForAgent(agent, "cancelled", {
+            resultJson: parseObject(run.resultJson),
+            errorCode,
+            errorMessage: reason,
+          }),
+          ...(options.resultJson ?? {}),
+        }
+      : options.resultJson;
+
     try {
       let releaseProcessCancellation: (() => void) | undefined;
       const processCancellationSettlement =
