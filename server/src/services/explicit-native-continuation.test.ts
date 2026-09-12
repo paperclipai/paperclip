@@ -236,6 +236,69 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(after).toMatchObject({ status: "coalesced", runId: runs[0].id });
   });
 
+  it.each([
+    ["approval", "held"], ["question", "held"],
+    ["approval", "resolved"], ["question", "resolved"],
+  ] as const)("retains a saved message when a %s appears at final admission after recovery is %s", async (kind, recovery) => {
+    const f = await seed();
+    // Occupy the agent so a regression queues work without invoking a provider.
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    await db.update(heartbeatRuns).set({ processPid: process.pid }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await heartbeatService(db).wakeup(f.agentId, { source: "automation", triggerDetail: "system", reason: "issue_commented",
+      requestedByActorType: "user", requestedByActorId: "board", payload: { issueId: f.issueId, commentId: f.commentId },
+      contextSnapshot: { issueId: f.issueId, wakeCommentId: f.commentId } });
+    const [waiting] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(waiting.status).toBe("deferred_issue_execution");
+    await db.update(heartbeatRuns).set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    if (recovery === "resolved") await db.update(issueRecoveryActions).set({ status: "resolved", evidence: { runId: f.sourceRunId } })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    const decisionId = randomUUID();
+    if (kind === "question") await db.insert(issueThreadInteractions).values({
+      id: decisionId, companyId: f.companyId, issueId: f.issueId,
+      kind: "ask_user_questions", status: "resolved", payload: { version: 1, questions: [] },
+    });
+    else {
+      await db.insert(approvals).values({ id: decisionId, companyId: f.companyId, type: "hire_agent", status: "approved", payload: {} });
+      await db.insert(issueApprovals).values({ companyId: f.companyId, issueId: f.issueId, approvalId: decisionId });
+    }
+    const original = continuationAdmission.admitExplicitNativeContinuation;
+    let injected = false;
+    const admission = vi.spyOn(continuationAdmission, "admitExplicitNativeContinuation").mockImplementation(async input => {
+      if (input.issueId === f.issueId && !input.dryRun && !injected) {
+        injected = true;
+        // Change decision state on another connection after the early reads.
+        // Final transactional admission must observe that committed change.
+        if (kind === "question") await db.update(issueThreadInteractions).set({ status: "pending" }).where(eq(issueThreadInteractions.id, decisionId));
+        else await db.update(approvals).set({ status: "pending" }).where(eq(approvals.id, decisionId));
+      }
+      return original(input);
+    });
+    const makeDue = () => db.update(agentWakeupRequests).set({ updatedAt: new Date(0) }).where(eq(agentWakeupRequests.id, waiting.id));
+    try {
+      await makeDue();
+      await heartbeatService(db).resumeExecutionWaitComments();
+      expect(injected).toBe(true);
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
+      const [after] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, waiting.id));
+      expect(after).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(after.payload?.executionWait).toMatchObject({ reason: "decision_pending" });
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(1);
+      // Unchanged retries must preserve the same receipt, including after the
+      // recovery blocker itself has been cleared.
+      await makeDue();
+      await heartbeatService(db).resumeExecutionWaitComments();
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
+    } finally { admission.mockRestore(); }
+    if (kind === "question") await db.update(issueThreadInteractions).set({ status: "resolved" }).where(eq(issueThreadInteractions.id, decisionId));
+    else await db.update(approvals).set({ status: "approved" }).where(eq(approvals.id, decisionId));
+    await makeDue();
+    await Promise.all([heartbeatService(db).resumeExecutionWaitComments(), heartbeatService(db).resumeExecutionWaitComments()]);
+    const runs = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    expect(runs).toHaveLength(1);
+    const [after] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, waiting.id));
+    expect(after).toMatchObject({ status: "coalesced", runId: runs[0].id });
+  });
+
   it.each(["live", "remote", "provider_event"])("does not accept invalid local stop proof: %s", async kind => {
     const f = await seed();
     if (kind === "remote") {

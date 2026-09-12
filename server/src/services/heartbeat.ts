@@ -26961,17 +26961,25 @@ export function heartbeatService(
             return { kind: "skipped" as const };
           }
 
+          let continuationRejected = false;
           const explicitContinuation = await admitExplicitNativeContinuation({
             db: tx as unknown as Db, companyId: issue.companyId, issueId: issue.id,
             agentId, actorType: opts.requestedByActorType, actorId: opts.requestedByActorId,
             reason, commentId: wakeCommentId ?? null, failedRunId: opts.failedRunId, successorRunId: explicitContinuationRunId,
+            resumingSavedMessage: Boolean(executionWaitRequestId),
+            onBlocked: (reason, message) => {
+              continuationRejected = true;
+              continuationWait = { reason, message };
+            },
           });
           // Recovery can change while earlier admission gates await I/O. Use
           // the current blocker, not the snapshot from the start of admission.
           const remainingExecutionBlocker = await getExecutionBlocker(
             tx as unknown as Db, issue.companyId, issue.id,
           );
-          if (remainingExecutionBlocker) return deferBlockedExecution(remainingExecutionBlocker);
+          // A decision can reject a saved message after cleanup has removed
+          // every recovery blocker; null can also mean no applicable hold to retire.
+          if (continuationRejected || remainingExecutionBlocker) return deferBlockedExecution(remainingExecutionBlocker);
           if (explicitContinuation) {
             enrichedContextSnapshot.forceFreshSession = true;
             enrichedContextSnapshot.previousRunId = explicitContinuation.previousRunId;
