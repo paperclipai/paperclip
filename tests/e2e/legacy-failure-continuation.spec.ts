@@ -94,7 +94,7 @@ for (const action of ["task_retry", "inbox_retry", "message", "queued_interrupt"
         await page.getByRole("textbox", { name: "editable markdown" }).fill("Please continue the pending follow-up.");
         await page.getByRole("button", { name: "Send", exact: true }).click();
       } else {
-        await page.getByRole("button", { name: "Retry", exact: true }).click();
+        await page.getByRole("button", { name: action === "task_retry" ? "Try again" : "Retry", exact: true }).click();
         if (action === "inbox_retry") await page.goto(taskUrl);
       }
       await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible({ timeout: 45_000 });
