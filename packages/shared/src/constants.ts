@@ -191,17 +191,20 @@ export const ISSUE_STATUSES = [
   "todo",
   "in_progress",
   "in_review",
+  "needs_retry",
   "done",
   "blocked",
   "cancelled",
 ] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 
+/** Statuses that count as "active work" for inbox / mine queries. */
 export const INBOX_MINE_ISSUE_STATUSES = [
   "backlog",
   "todo",
   "in_progress",
   "in_review",
+  "needs_retry",
   "blocked",
   "done",
 ] as const;

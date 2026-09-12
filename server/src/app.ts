@@ -62,6 +62,7 @@ import { environmentService } from "./services/environments.js";
 import { environmentRuntimeService } from "./services/environment-runtime.js";
 import { projectRoutes } from "./routes/projects.js";
 import { issueRoutes } from "./routes/issues.js";
+import { issueRevivalRoutes } from "./routes/issue-revival.js";
 import { issueTreeControlRoutes } from "./routes/issue-tree-control.js";
 import { caseRoutes } from "./routes/cases.js";
 import { fileResourceRoutes } from "./routes/file-resources.js";
@@ -824,6 +825,10 @@ export async function createApp(
   }));
   app.locals.toolGateway = toolGateway;
   app.locals.toolActionDeliveries = toolActionDeliveries;
+  // Revival routes (force-release-checkout, retry) are board-only and mount on the
+  // same `/api` prefix. They are kept as a separate router so a future surface
+  // (e.g. an agent-facing retry path) can be split without touching issues.ts.
+  api.use(issueRevivalRoutes(db));
   app.use(mcpGatewayProtocolRoutes(toolGateway));
   api.use(aiConnectionRoutes(db, { deploymentMode: opts.deploymentMode, deploymentExposure: opts.deploymentExposure, trustedLocalStdioRuntimeHost }));
   api.use(

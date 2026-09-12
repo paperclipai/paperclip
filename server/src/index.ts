@@ -1791,6 +1791,17 @@ async function startServerWithDatabaseTeardown(
               if (swept.cleared > 0) {
                 logger.warn({ ...swept }, "periodic stale-lock sweeper cleared issue locks");
               }
+              // ADR-0001 Fix D-obs (VIR-296): explicit zombie WARN on the
+              // periodic tick so the team detects zombie executionRunId/
+              // checkoutRunId references before they wedge the next heartbeat
+              // on a 409. The per-issue WARNs already live inside the sweep;
+              // this is the dashboards/feed summary entrypoint.
+              if ((swept as { zombieRefs?: unknown[] }).zombieRefs?.length) {
+                logger.warn(
+                  { event: "zombie_executionRunId_detected", zombieCount: (swept as { zombieRefs: unknown[] }).zombieRefs.length },
+                  "periodic stale-lock sweeper detected zombie executionRunId/checkoutRunId references",
+                );
+              }
             })
             .catch((err) => {
               logger.error({ err }, "periodic heartbeat recovery failed");
