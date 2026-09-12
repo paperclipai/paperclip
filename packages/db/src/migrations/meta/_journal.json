@@ -1902,8 +1902,29 @@
     {
       "idx": 273,
       "version": "7",
-      "when": 1789164653792,
-      "tag": "0273_organic_jackal",
+      "when": 1789164595203,
+      "tag": "0273_aromatic_moondragon",
+      "breakpoints": true
+    },
+    {
+      "idx": 274,
+      "version": "7",
+      "when": 1789219070888,
+      "tag": "0274_agent_chat",
+      "breakpoints": true
+    },
+    {
+      "idx": 275,
+      "version": "7",
+      "when": 1789221632037,
+      "tag": "0275_easy_dragon_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 276,
+      "version": "7",
+      "when": 1789245055965,
+      "tag": "0276_hard_mandroid",
       "breakpoints": true
     }
   ]

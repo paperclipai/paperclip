@@ -1,3 +1,4 @@
+import { documentService } from "./documents.js";
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import type { ExecutionProjection } from "@paperclipai/shared";
@@ -1857,8 +1858,17 @@ type IssueUserContextInput = {
 };
 type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
+/** Conversation containers cannot acquire new child edges, even with the experiment disabled. */
+async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: string | null) {
+  if (!parentId) return;
+  const [parent] = await db.select({ conversationAgentId: issues.conversationAgentId })
+    .from(issues).where(and(eq(issues.id, parentId), eq(issues.companyId, companyId)));
+  if (parent?.conversationAgentId) throw unprocessable("Conversations cannot have new subtasks; create a task in a project instead");
+}
+
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
+  initialPlan?: string | null;
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
@@ -4609,6 +4619,9 @@ async function listIssueReviewAttentionMap(
       assigneeUserId: issue.assigneeUserId,
       createdByAgentId: issue.createdByAgentId,
       createdByUserId: issue.createdByUserId,
+      conversationAgentId: issue.conversationAgentId,
+      conversationUserId: issue.conversationUserId,
+      conversationState: issue.conversationState,
       executionPolicy: issue.executionPolicy,
       executionState: issue.executionState,
       monitorNextCheckAt: issue.monitorNextCheckAt,
@@ -4763,6 +4776,11 @@ async function listIssueReviewAttentionMap(
 }
 
 const issueListSelect = {
+  conversationAgentId: issues.conversationAgentId,
+  conversationUserId: issues.conversationUserId,
+  conversationState: issues.conversationState,
+  conversationSessionGeneration: issues.conversationSessionGeneration,
+  conversationBoundaryCommentId: issues.conversationBoundaryCommentId,
   id: issues.id,
   companyId: issues.companyId,
   projectId: issues.projectId,
@@ -5705,6 +5723,9 @@ async function listIssueBlockedInboxAttentionMap(
       assigneeUserId: issue.assigneeUserId,
       createdByAgentId: issue.createdByAgentId,
       createdByUserId: issue.createdByUserId,
+      conversationAgentId: issue.conversationAgentId,
+      conversationUserId: issue.conversationUserId,
+      conversationState: issue.conversationState,
       executionPolicy: issue.executionPolicy,
       executionState: issue.executionState,
       monitorNextCheckAt: issue.monitorNextCheckAt,
@@ -7762,6 +7783,7 @@ export function issueService(db: Db) {
         eq(issues.companyId, companyId),
         visibleIssueCondition(),
       ];
+      if (!filters?.q?.trim()) conditions.push(isNull(issues.conversationAgentId));
       if (filters?.afterId) conditions.push(gt(issues.id, filters.afterId));
       const assigneeAgentFilter = parseIssueAssigneeAgentFilter(
         filters?.assigneeAgentId,
@@ -8121,10 +8143,8 @@ export function issueService(db: Db) {
         return countBlockedInboxIssues(db, companyId, filters);
       }
 
-      const conditions = [
-        eq(issues.companyId, companyId),
-        visibleIssueCondition(),
-      ];
+      const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
+      if (!filters?.q?.trim()) conditions.push(isNull(issues.conversationAgentId));
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1)
         conditions.push(eq(issues.status, statuses[0]!));
@@ -8994,6 +9014,7 @@ export function issueService(db: Db) {
             eq(issueRelations.companyId, blockerIssue.companyId),
             eq(issueRelations.type, "blocks"),
             eq(issueRelations.issueId, blockerIssueId),
+            isNull(issues.conversationAgentId),
           ),
         );
       if (candidates.length === 0) return [];
@@ -9042,6 +9063,7 @@ export function issueService(db: Db) {
       const parent = await db
         .select({
           id: issues.id,
+          conversationAgentId: issues.conversationAgentId,
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
           companyId: issues.companyId,
@@ -9049,11 +9071,7 @@ export function issueService(db: Db) {
         .from(issues)
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
-      if (
-        !parent ||
-        !parent.assigneeAgentId ||
-        ["backlog", "done", "cancelled"].includes(parent.status)
-      ) {
+      if (!parent || parent.conversationAgentId || !parent.assigneeAgentId || ["backlog", "done", "cancelled"].includes(parent.status)) {
         return null;
       }
 
@@ -9141,6 +9159,7 @@ export function issueService(db: Db) {
         .where(eq(issues.id, parentIssueId))
         .then((rows) => rows[0] ?? null);
       if (!parent) throw notFound("Parent issue not found");
+      await assertExecutionTaskParent(db, parent.companyId, parent.id);
 
       const idempotencyKey = data.idempotencyKey?.trim();
       if (idempotencyKey) {
@@ -9639,12 +9658,17 @@ export function issueService(db: Db) {
       });
     },
 
+    getConversation: async (companyId: string, agentId: string, userId: string) => db.select().from(issues).where(and(
+      eq(issues.companyId, companyId), eq(issues.conversationAgentId, agentId), eq(issues.conversationUserId, userId),
+    )).then((rows) => rows[0] ?? null),
+
     create: async (
       companyId: string,
       data: IssueCreateInput,
       dbOrTx: Db | DbTransaction = db,
     ) => {
       const {
+        initialPlan,
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
@@ -9686,6 +9710,18 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       const persist = async (tx: DbTransaction) => {
+        await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
+        if (issueData.conversationAgentId && issueData.conversationUserId) {
+          const identity = `conversation:${companyId}:${issueData.conversationAgentId}:${issueData.conversationUserId}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${identity}, 0))`);
+          const [existing] = await tx.select().from(issues).where(and(eq(issues.companyId, companyId),
+            eq(issues.conversationAgentId, issueData.conversationAgentId), eq(issues.conversationUserId, issueData.conversationUserId)));
+          if (existing) {
+            const [enriched] = await withIssueLabels(tx, [existing]);
+            const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
+            return withRelations;
+          }
+        }
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
         const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
         if (allowDuplicate === false) {
@@ -10094,6 +10130,13 @@ export function issueService(db: Db) {
             tx,
           );
         }
+        if (initialPlan?.trim()) {
+          await documentService(tx as unknown as Db).upsertIssueDocument({
+            issueId: issue.id, key: "plan", title: "Plan", format: "markdown", body: initialPlan,
+            createdByAgentId: issueData.createdByAgentId, createdByUserId: issueData.createdByUserId,
+            createdByRunId: actorRunId,
+          });
+        }
         const [enriched] = await withIssueLabels(tx, [issue]);
         const [withRelations] = await withIssueRelationSummaries(
           companyId,
@@ -10235,6 +10278,7 @@ export function issueService(db: Db) {
 
         let counter = base;
         for (const row of rows) {
+          await assertExecutionTaskParent(tx as unknown as Db, companyId, row.parentId);
           counter += 1;
           const issueNumber = counter;
           const identifier = `${company.issuePrefix}-${issueNumber}`;
@@ -10482,6 +10526,17 @@ export function issueService(db: Db) {
         .where(idPredicate)
         .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
       if (!existing) return null;
+      if (data.parentId !== undefined && data.parentId !== existing.parentId) {
+        await assertExecutionTaskParent(dbOrTx, existing.companyId, data.parentId);
+      }
+      if (existing.conversationAgentId) {
+        if ((data.assigneeAgentId !== undefined && data.assigneeAgentId !== existing.conversationAgentId)
+          || data.assigneeUserId || data.conversationAgentId !== undefined || data.conversationUserId !== undefined
+          || data.conversationState !== undefined || data.conversationSessionGeneration !== undefined
+          || data.conversationBoundaryCommentId !== undefined || data.status === "done" || data.status === "cancelled") {
+          throw unprocessable("Conversation identity is fixed; finish the reply instead of completing or reassigning the conversation");
+        }
+      }
 
       const {
         labelIds: nextLabelIds,
@@ -11939,10 +11994,11 @@ export function issueService(db: Db) {
         authorizationReason?: string | null;
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
+        clientRequestId?: string;
       },
       dbOrTx: any = db,
     ): Promise<IssueComment> {
-      if (dbOrTx === db && actor.runId) {
+      if (dbOrTx === db && (actor.runId || actor.userId)) {
         const append = () =>
           db.transaction(async (tx) => {
             // Serialize run-authored comments on the issue so a provider retry
@@ -11962,13 +12018,16 @@ export function issueService(db: Db) {
           : append();
       }
       const issue = await dbOrTx
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, conversationAgentId: issues.conversationAgentId })
         .from(issues)
         .where(eq(issues.id, issueId))
-        .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
+        .then((rows: Array<{ companyId: string; conversationAgentId: string | null }>) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
 
+      if (issue.conversationAgentId && actor.userId && !(await instanceSettingsService(dbOrTx).getExperimental()).enableAgentChat) {
+        throw unprocessable("Agent Chat is disabled in Experimental settings");
+      }
       const currentUserRedactionOptions = {
         // Keep every read on the caller's transaction connection. Re-entering
         // the outer pool here can deadlock when concurrent transactions fill
@@ -11976,10 +12035,23 @@ export function issueService(db: Db) {
         enabled: (await instanceSettings.getGeneral({ db: dbOrTx }))
           .censorUsernameInLogs,
       };
-      const redactedBody = redactCurrentUserText(
-        body,
-        currentUserRedactionOptions,
-      );
+      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      if (actor.userId && options?.clientRequestId) {
+        const [existing] = await dbOrTx.select().from(issueComments).where(and(eq(issueComments.issueId, issueId),
+          eq(issueComments.authorUserId, actor.userId), eq(issueComments.clientRequestId, options.clientRequestId)));
+        if (existing) {
+          if (existing.body !== redactedBody) throw conflict("Message request ID was already used for different content");
+          return existing;
+        }
+      }
+      if (issue.conversationAgentId && actor.runId) {
+        const [run] = await dbOrTx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, actor.runId));
+        const [current] = await dbOrTx.select().from(issues).where(eq(issues.id, issueId));
+        if (run?.status === "cancelled") throw conflict("This conversation turn was cancelled; it cannot post a reply");
+        if (run?.contextSnapshot?.conversationSessionGeneration !== current.conversationSessionGeneration) {
+          throw conflict("Conversation session changed; this reply belongs to an earlier session");
+        }
+      }
       const authorType = issueCommentAuthorTypeSchema.parse(
         options?.authorType ??
           (actor.agentId ? "agent" : actor.userId ? "user" : "system"),
@@ -12190,6 +12262,7 @@ export function issueService(db: Db) {
             authorType,
             createdByRunId,
             body: redactedBody,
+            clientRequestId: options?.clientRequestId ?? null,
             presentation,
             metadata,
             sourceTrust: options?.sourceTrust ?? null,
@@ -12395,6 +12468,9 @@ export function issueService(db: Db) {
         }
       }
 
+      if (issue.conversationAgentId && actor.userId) {
+        await dbOrTx.update(issues).set({ conversationState: "active" }).where(eq(issues.id, issueId));
+      }
       // Update issue's updatedAt so comment activity is reflected in recency sorting
       await dbOrTx
         .update(issues)

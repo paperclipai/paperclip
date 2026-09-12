@@ -426,6 +426,45 @@ describe("IssueChatThread", () => {
     });
   });
 
+  it("labels incoming iMessage bubbles without labeling board replies", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={["imessage", "board"].map((source) => ({
+              id: `comment-${source}`,
+              companyId: "company-1",
+              issueId: "issue-1",
+              authorAgentId: null,
+              authorUserId: "user-board",
+              authorType: "user" as const,
+              body: `Reply from ${source}`,
+              presentation: null,
+              metadata: source === "imessage" ? {
+                version: 1 as const,
+                sourceChannel: "imessage-photon" as const,
+                sections: [{ title: "iMessage Photon sender", rows: [{ type: "text" as const, text: "Linked person" }] }],
+              } : null,
+              createdAt: new Date("2026-09-12T12:00:00Z"),
+              updatedAt: new Date("2026-09-12T12:00:00Z"),
+            }))}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+    expect(container.querySelector("#comment-comment-imessage")?.textContent).toContain("Sent from iMessage");
+    expect(container.querySelector("#comment-comment-board")?.textContent).not.toContain("Sent from iMessage");
+    act(() => root.unmount());
+  });
+
   it("uses accent-safe markdown color in the current user's blue message bubble", () => {
     const root = createRoot(container);
 

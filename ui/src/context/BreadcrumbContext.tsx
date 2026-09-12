@@ -16,6 +16,10 @@ export interface Breadcrumb {
    * a primitive that changes only when the rendered `leading` should change.
    */
   leadingKey?: string;
+  /** Optional action beside the label, outside the breadcrumb link. */
+  trailing?: ReactNode;
+  /** Stable identity for the action, following leadingKey semantics. */
+  trailingKey?: string;
 }
 
 interface BreadcrumbContextValue {
@@ -50,6 +54,7 @@ function breadcrumbsEqual(left: Breadcrumb[], right: Breadcrumb[]) {
       || left[index]?.href !== right[index]?.href
       || left[index]?.identifier !== right[index]?.identifier
       || left[index]?.leadingKey !== right[index]?.leadingKey
+      || left[index]?.trailingKey !== right[index]?.trailingKey
     ) {
       return false;
     }

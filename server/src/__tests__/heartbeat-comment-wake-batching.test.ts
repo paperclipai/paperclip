@@ -1198,7 +1198,11 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     }
   }, 120_000);
 
-  it("does not reopen a finished issue when the deferred comment wake came from another agent", async () => {
+  it.each([
+    { caseName: "allows a non-assignee mention on completed work", targetAssignee: false, terminalStatus: "done" },
+    { caseName: "cancels an assignee continuation on completed work", targetAssignee: true, terminalStatus: "done" },
+    { caseName: "cancels an assignee continuation on cancelled work", targetAssignee: true, terminalStatus: "cancelled" },
+  ] as const)("$caseName without reopening an agent-commented task", async ({ targetAssignee, terminalStatus }) => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();
@@ -1206,6 +1210,9 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     const issueId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const heartbeat = heartbeatService(db);
+    const targetAgentId = targetAssignee ? assigneeAgentId : mentionedAgentId;
+    const commentingAgentId = targetAssignee ? mentionedAgentId : assigneeAgentId;
+    const wakeReason = targetAssignee ? "issue_commented" : "issue_comment_mentioned";
 
     try {
       await db.insert(companies).values({
@@ -1301,28 +1308,29 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .values({
           companyId,
           issueId,
-          authorAgentId: assigneeAgentId,
-          createdByRunId: firstRun?.id ?? null,
+          authorAgentId: commentingAgentId,
+          createdByRunId: targetAssignee ? null : firstRun?.id ?? null,
           body: "@Mentioned Agent please review after I finish",
         })
         .returning()
         .then((rows) => rows[0]);
 
-      const deferredRun = await heartbeat.wakeup(mentionedAgentId, {
+      const deferredRun = await heartbeat.wakeup(targetAgentId, {
         source: "automation",
         triggerDetail: "system",
-        reason: "issue_comment_mentioned",
+        reason: wakeReason,
         payload: { issueId, commentId: comment.id },
         contextSnapshot: {
           issueId,
           taskId: issueId,
           commentId: comment.id,
           wakeCommentId: comment.id,
-          wakeReason: "issue_comment_mentioned",
+          wakeReason,
+          ...(targetAssignee ? { resumeIntent: true, followUpRequested: true } : {}),
           source: "comment.mention",
         },
         requestedByActorType: "agent",
-        requestedByActorId: assigneeAgentId,
+        requestedByActorId: commentingAgentId,
       });
 
       expect(deferredRun).toBeNull();
@@ -1334,7 +1342,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
           .where(
             and(
               eq(agentWakeupRequests.companyId, companyId),
-              eq(agentWakeupRequests.agentId, mentionedAgentId),
+              eq(agentWakeupRequests.agentId, targetAgentId),
               eq(agentWakeupRequests.status, "deferred_issue_execution"),
             ),
           )
@@ -1349,7 +1357,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await db
         .update(issues)
         .set({
-          status: "done",
+          status: terminalStatus,
           completedAt: new Date(),
           executionRunId: null,
           executionAgentNameKey: null,
@@ -1359,6 +1367,26 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .where(eq(issues.id, issueId));
 
       gateway.releaseFirstWait();
+
+      if (targetAssignee) {
+        await waitFor(async () => {
+          const cancelled = await db.select().from(agentWakeupRequests).where(and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, targetAgentId),
+            eq(agentWakeupRequests.status, "cancelled"),
+          ));
+          return cancelled.some((wake) => wake.error === "Deferred execution wake no longer applies to a terminal task");
+        });
+        const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+        expect(runs).toEqual([expect.objectContaining({ id: firstRun!.id, status: "succeeded" })]);
+        expect(gateway.getAgentPayloads()).toHaveLength(1);
+        const [closedIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+        expect(closedIssue).toMatchObject({ status: terminalStatus, executionRunId: null });
+        expect(closedIssue.completedAt).not.toBeNull();
+        const [retainedComment] = await db.select().from(issueComments).where(eq(issueComments.id, comment.id));
+        expect(retainedComment.body).toContain("please review after I finish");
+        return;
+      }
 
       await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
       await waitFor(async () => {
@@ -1389,7 +1417,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(secondPayload.paperclip).toBeUndefined();
       const secondWake = parseWakePayloadFromMessage(secondPayload.message);
       expect(secondWake).toMatchObject({
-        reason: "issue_comment_mentioned",
+        reason: wakeReason,
         commentIds: [comment.id],
         latestCommentId: comment.id,
         issue: {

@@ -1,6 +1,6 @@
 export interface PaperclipChatFilePreparationDelivery {
   readonly provider:
-    "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | null;
+    "slack" | "github" | "discord" | "microsoft-teams" | "telegram" | "imessage-photon" | null;
   readonly mode: "provider_attachment" | "paperclip_task_only" | "unknown";
   readonly preparationState: "prepared";
   readonly providerDeliveryConfirmed: false;
@@ -35,7 +35,8 @@ export function paperclipChatFilePreparationDelivery(
   if (
     authenticatedProvider === "slack" ||
     authenticatedProvider === "discord" ||
-    authenticatedProvider === "telegram"
+    authenticatedProvider === "telegram" ||
+    authenticatedProvider === "imessage-photon"
   ) {
     return {
       ...common,

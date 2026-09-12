@@ -602,6 +602,7 @@ interface IssueChatThreadProps {
     reopen?: boolean,
     reassignment?: CommentReassignment,
     attachmentIds?: string[],
+    clientRequestId?: string,
   ) => Promise<void>;
   onReviewConversation?: () => Promise<void>;
   onCancelRun?: () => Promise<void>;
@@ -2018,6 +2019,8 @@ function IssueChatUserMessage({
     ? custom.sourceTrust
     : null;
   const followUpRequested = custom.followUpRequested === true;
+  const sentFromIMessage = isIssueCommentMetadata(custom.commentMetadata) &&
+    custom.commentMetadata.sourceChannel === "imessage-photon";
   const queueReason =
     typeof custom.queueReason === "string" ? custom.queueReason : null;
   const queueBadgeLabel =
@@ -2150,6 +2153,11 @@ function IssueChatUserMessage({
         )}
       </div>
 
+      {sentFromIMessage && !deleted ? (
+        <div className="mt-1 px-1 text-xs text-muted-foreground">
+          Sent from iMessage
+        </div>
+      ) : null}
       {pending ? (
         <div
           className={cn(

@@ -758,6 +758,7 @@ function requireBlockedStatusForUnblockDescriptor(
 }
 
 const createIssueDuplicateGuardSchema = {
+  initialPlan: z.string().min(1).max(200000).optional().nullable(),
   idempotencyKey: z.string().trim().min(1).max(255).optional().nullable(),
   allowDuplicate: z
     .boolean()
@@ -999,6 +1000,7 @@ export const issueCommentMetadataSectionSchema = z
 export const issueCommentMetadataSchema = z
   .object({
     version: z.literal(1),
+    sourceChannel: z.literal("imessage-photon").optional(),
     sourceRunId: z.string().guid().nullable().optional(),
     authorizationReason: z
       .string()
@@ -1014,6 +1016,7 @@ export const issueCommentMetadataSchema = z
 export type IssueCommentMetadata = z.infer<typeof issueCommentMetadataSchema>;
 
 export const addIssueCommentSchema = z.object({
+  clientRequestId: z.string().uuid().optional(),
   body: multilineTextSchema.pipe(z.string().min(1)),
   attachmentIds: issueCommentAttachmentIdsSchema.optional(),
   onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),

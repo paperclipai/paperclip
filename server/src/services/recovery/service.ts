@@ -1,3 +1,5 @@
+import { instanceSettingsService } from "../instance-settings.js";
+import { isWaitingConversation, settleConversationTurn, deliverConversationComments } from "../agent-conversations.js";
 import {
   and,
   asc,
@@ -4194,12 +4196,24 @@ export function recoveryService(
     }
 
     for (const issue of candidates) {
-      const executionState =
-        issue.status === "in_review"
-          ? parseIssueExecutionState(issue.executionState)
-          : null;
-      const pendingExecutionState =
-        executionState?.status === "pending" ? executionState : null;
+      if (issue.conversationAgentId) {
+        const lastRun = await getLatestIssueRun(issue.companyId, issue.id);
+        if (lastRun?.status === "succeeded") {
+          if (await settleConversationTurn(db, (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, lastRun.id)))[0]!)) {
+            const [current] = await db.select().from(issues).where(eq(issues.id, issue.id));
+            if (current) Object.assign(issue, current);
+          }
+        }
+        if (!(await instanceSettingsService(db).getExperimental()).enableAgentChat) { result.skipped += 1; continue; }
+        {
+          await deliverConversationComments(db, issue, deps.enqueueWakeup);
+        }
+      }
+      if (isWaitingConversation(issue)) { result.skipped += 1; continue; }
+      const executionState = issue.status === "in_review"
+        ? parseIssueExecutionState(issue.executionState)
+        : null;
+      const pendingExecutionState = executionState?.status === "pending" ? executionState : null;
       const currentParticipant = pendingExecutionState
         ? pendingExecutionState.currentParticipant
         : null;
@@ -4228,6 +4242,18 @@ export function recoveryService(
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      // A native chat can finish between the earlier settlement read and this
+      // fresh run read, before its response is materialized. Its trusted
+      // finalizer owns that settlement; generic productive-work recovery must
+      // not invent another conversation turn during the publication window.
+      if (
+        issue.conversationAgentId &&
+        latestRun?.status === "succeeded" &&
+        parseObject(latestRun.resultJson).finalizationReasonCode === "conversation_turn_finished"
+      ) {
+        result.skipped += 1;
+        continue;
+      }
 
       const agent = await getAgent(agentId);
       const agentInvokable =
@@ -5188,6 +5214,7 @@ export function recoveryService(
     const queryCandidates = (afterIssueId: string | null) => {
       const filters = [
         eq(issues.status, "blocked"),
+        isNull(issues.conversationAgentId),
         visibleIssueCondition(),
         sql`${issues.assigneeAgentId} is not null`,
       ];

@@ -412,6 +412,7 @@ export function Browse() {
       });
     }
     const nativeChatProviders = [
+      { provider: "imessage-photon", name: "iMessage Photon", description: "Message agents and share photos from Apple Messages with a dedicated Photon number." },
       {
         provider: "slack",
         name: "Slack",
@@ -534,6 +535,7 @@ export function Browse() {
           discord: "Discord",
           "microsoft-teams": "Microsoft Teams",
           telegram: "Telegram",
+          "imessage-photon": "iMessage Photon",
   agentmail: "AgentMail",
         } as const;
         target = {

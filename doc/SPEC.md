@@ -277,6 +277,8 @@ All agent communication flows through the **task system**.
 
 There is no separate messaging or chat system. Tasks are the communication channel. This keeps all context attached to the work it relates to and creates a natural audit trail.
 
+Experimental Agent Chat presents one persistent task per person and agent as a simplified conversation. It retains the task composer, transcript, tools, attachments, documents, and existing Subtasks panel, with ordinary company visibility. New execution tasks are ordinary project tasks, not children of the conversation. Idle conversations wait for a message without entering execution-task work queues. Agents clarify goals here and create assigned tasks for substantial execution. `/new` resets provider context at an ordered session boundary within the same task while preserving visible history. `enableAgentChat` is disabled by default; the V1 lifecycle and rollout contract is specified in `SPEC-implementation.md`.
+
 ### Implications
 
 - An agent's "inbox" is: tasks assigned to them + comments on tasks they're involved in
@@ -549,9 +551,38 @@ Things Paperclip explicitly does **not** do:
 8. **Progressive deployment.** Trivial to start local, straightforward to scale to hosted.
 9. **Extensible core.** Clean boundaries so plugins can add capabilities (Adapters, knowledge base, revenue tracking) without modifying core.
 
+### Agent chat project handoff (2026-09-11)
+
+Chat supports research and full plan drafting/revision in its existing plan document. On handoff, each ordinary assigned task receives the relevant plan in its own `plan` document, committed with task creation before execution is scheduled. The source plan remains in the conversation. Plan acceptance hands off execution; it never switches the conversation into implementation.
+
+Chat instructions require selecting a suitable project, reusing an existing one where appropriate. The project requirement is prompt-only; ordinary projectless tasks remain supported. New parent relationships beneath conversation tasks are rejected by task services, including direct API creation and reparenting. Existing children remain readable/editable and can be moved elsewhere. The Subtasks panel is unchanged.
+
+The `create_project` runtime tool uses the normal project API with durable idempotency. `list_projects` and `list_project_repositories` support selection. Multiple `repositoryIds` select authorized catalog entries; multiple HTTPS GitHub `repositoryUrls` register existing repositories absent from the catalog. IDs and URLs may be combined, but cannot accompany an explicit `workspace`. URLs do not create repositories on GitHub or grant credentials. Execution uses normal repository access rules. Repository IDs are revalidated against the authenticated run's responsible user and connection grants. Agents should consider proper available repositories, clarify material ambiguity, and use repository-free projects when appropriate for non-code work.
+
+Confirmed project creation appears as a durable card in the shared task transcript, including selected repository links. Tasks are linked inline. Failed creation never produces a success card. Tool evals cover planning/handoff, project/repository selection, retries, permission and mode denials, and ordinary delegation regressions using the production chat directive.
+
 ### Paused task messages
 
 A paused task takes over the composer with an amber notice and a Resume action.
 Operators must release the effective task or ancestor pause before sending a new
 message. The draft stays intact. This applies to both task interfaces and to
 board comment API requests; an agent may still report interrupted work.
+
+### Experimental iMessage Photon channel
+
+A Photon Cloud project can represent one agent through the existing
+experimental channel subsystem. DMs and explicitly enabled groups create or
+continue task-bound conversations. Linked sender identity is the default;
+telephone numbers, email addresses, names, and group membership do not grant
+Paperclip authority. Photos/files and ordinary questions/confirmations use the
+existing attachment, interaction, continuation, and publication contracts.
+Pause and Disconnect govern runtime behavior independently of the UI gate.
+Local Mac access, unsolicited conversations, and SMS/RCS
+fallback are excluded. Live qualification is required before release readiness.
+Pro shared allocation supports DMs only, with sender enrollment in Photon and
+separate identity linking in Paperclip. Shared channels reserve one project, not
+a pool phone number; group admission and publication are disabled. Dedicated
+allocation retains one selected number and individually enabled groups.
+
+See [iMessage Photon](connections/IMESSAGE-PHOTON.md) for the implementation
+contract, setup, recovery, boundaries, and qualification status.

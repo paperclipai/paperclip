@@ -35,6 +35,8 @@ export interface CodexNativeSessionBackendOptions {
       | "activeTurnId"
     >;
   }) => CodexAppServerTransport;
+  /** Current server constraints; does not commit task status before the turn ends. */
+  completionFeedback?: (result: import("../protocol/replay-contract.js").PrpStructuredRunResult) => Promise<string>;
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];
   dynamicToolHandler?: (call: {
     tool: string;
@@ -167,6 +169,7 @@ function createTransportBackedNativeSessionBackend(
       transportFactory: options.transportFactory,
       dynamicTools: options.dynamicTools,
       dynamicToolHandler: options.dynamicToolHandler,
+      completionFeedback: options.completionFeedback,
       environment: options.environment,
       workingDirectoryAuthority: options.workingDirectoryAuthority,
       driverIdentity,

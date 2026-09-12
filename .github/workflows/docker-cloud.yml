@@ -65,24 +65,6 @@ jobs:
         id: tools-epoch
         run: echo "epoch=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
 
-      # Each SHA exports its own cache. Import recent first-parent caches so
-      # a late older build cannot overwrite a newer build's cache manifest.
-      # The legacy ref keeps the first builds warm during the transition.
-      - name: Select cloud cache ancestry
-        id: cloud-cache
-        env:
-          CACHE_IMAGE: ghcr.io/${{ github.repository }}
-        run: |
-          set -euo pipefail
-          {
-            echo 'sources<<CACHE_SOURCES'
-            for commit in $(git rev-list --first-parent --max-count=10 HEAD); do
-              echo "type=registry,ref=$CACHE_IMAGE:buildcache-cloud-$commit"
-            done
-            echo "type=registry,ref=$CACHE_IMAGE:buildcache-cloud"
-            echo 'CACHE_SOURCES'
-          } >> "$GITHUB_OUTPUT"
-
       - name: Setup pnpm
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
@@ -161,6 +143,14 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
+      # Mixing several historical manifests missed otherwise reusable native
+      # layers on fresh builders. Import the nearest available complete cache.
+      - name: Select cloud cache ancestry
+        id: cloud-cache
+        env:
+          CACHE_IMAGE: ghcr.io/${{ github.repository }}
+        run: node scripts/select-cloud-cache.mjs
+
       # Deployment tooling reads these labels from the registry to verify an
       # image's schema expectations against a migrator before deploying it,
       # without pulling the image. The server refuses to start when the
@@ -225,7 +215,7 @@ jobs:
           # Same-SHA builds serialize above; different SHAs never share a
           # writable cache ref. Registry layers are content-addressed and
           # shared even when cache manifests have separate tags.
-          cache-from: ${{ steps.cloud-cache.outputs.sources }}
+          cache-from: ${{ steps.cloud-cache.outputs.source }}
           cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-cloud-${{ github.sha }},mode=max
           tags: ${{ steps.meta-cloud.outputs.tags }}
           labels: ${{ steps.meta-cloud.outputs.labels }}

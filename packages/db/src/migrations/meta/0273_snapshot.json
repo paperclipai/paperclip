@@ -1,5 +1,5 @@
 {
-  "id": "4ac3f78f-6977-4e56-b10c-471adf75e3e5",
+  "id": "d01dd077-2ab3-494b-962c-02b219026b64",
   "prevId": "cad9198b-f814-4ed9-b364-e8677eab5c23",
   "version": "7",
   "dialect": "postgresql",
@@ -266,30 +266,6 @@
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
-        },
-        "ai_connection": {
-          "name": "ai_connection",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "connection_id": {
-          "name": "connection_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "connection_grant_id": {
-          "name": "connection_grant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "connection_method": {
-          "name": "connection_method",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "adapter_type": {
           "name": "adapter_type",
@@ -2271,135 +2247,6 @@
       },
       "policies": {},
       "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.ai_connection_defaults": {
-      "name": "ai_connection_defaults",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "method": {
-          "name": "method",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "grant_id": {
-          "name": "grant_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "ai_connection_defaults_owner_method_uq": {
-          "name": "ai_connection_defaults_owner_method_uq",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "method",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "ai_connection_defaults_company_id_companies_id_fk": {
-          "name": "ai_connection_defaults_company_id_companies_id_fk",
-          "tableFrom": "ai_connection_defaults",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "ai_connection_defaults_company_grant_fk": {
-          "name": "ai_connection_defaults_company_grant_fk",
-          "tableFrom": "ai_connection_defaults",
-          "tableTo": "connection_grants",
-          "columnsFrom": [
-            "company_id",
-            "grant_id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "ai_connection_defaults_provider_check": {
-          "name": "ai_connection_defaults_provider_check",
-          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai')"
-        },
-        "ai_connection_defaults_method_check": {
-          "name": "ai_connection_defaults_method_check",
-          "value": "\"ai_connection_defaults\".\"method\" in ('subscription','api_key')"
-        }
-      },
       "isRLSEnabled": false
     },
     "public.approval_comments": {
@@ -22126,6 +21973,24 @@
         },
         "external_run_id": {
           "name": "external_run_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "controller_boot_id": {
+          "name": "controller_boot_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "controller_lease_expires_at": {
+          "name": "controller_lease_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "execution_stage": {
+          "name": "execution_stage",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -42193,15 +42058,15 @@
         },
         "tool_connections_transport_check": {
           "name": "tool_connections_transport_check",
-          "value": "\"tool_connections\".\"transport\" in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk', 'runtime_auth')"
+          "value": "\"tool_connections\".\"transport\" in ('mcp_remote', 'rest_api', 'local_stdio', 'chat_sdk')"
         },
         "tool_connections_purpose_check": {
           "name": "tool_connections_purpose_check",
-          "value": "\"tool_connections\".\"connection_purpose\" in ('tool', 'channel', 'ai')"
+          "value": "\"tool_connections\".\"connection_purpose\" in ('tool', 'channel')"
         },
         "tool_connections_channel_transport_check": {
           "name": "tool_connections_channel_transport_check",
-          "value": "(\n      (\"tool_connections\".\"connection_purpose\" = 'tool' and \"tool_connections\".\"transport\" not in ('chat_sdk', 'runtime_auth'))\n      or\n      (\"tool_connections\".\"connection_purpose\" = 'channel' and (\"tool_connections\".\"transport\" = 'chat_sdk' or (\"tool_connections\".\"transport\" = 'rest_api' and \"tool_connections\".\"config\"->>'provider' = 'agentmail')))\n      or\n      (\"tool_connections\".\"connection_purpose\" = 'ai' and \"tool_connections\".\"transport\" = 'runtime_auth')\n    )"
+          "value": "(\n      (\"tool_connections\".\"connection_purpose\" = 'tool' and \"tool_connections\".\"transport\" <> 'chat_sdk')\n      or\n      (\"tool_connections\".\"connection_purpose\" = 'channel' and (\"tool_connections\".\"transport\" = 'chat_sdk' or (\"tool_connections\".\"transport\" = 'rest_api' and \"tool_connections\".\"config\"->>'provider' = 'agentmail')))\n    )"
         },
         "tool_connections_auth_kind_check": {
           "name": "tool_connections_auth_kind_check",

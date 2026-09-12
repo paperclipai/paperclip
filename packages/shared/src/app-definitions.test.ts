@@ -679,7 +679,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(45);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(46);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -691,7 +691,7 @@ describe("AppDefinition catalog", () => {
       expect(storeSlugs.has(slug), slug).toBe(false);
     }
   });
-  it("ships complete local branding provenance for all 45 store-visible providers", () => {
+  it("ships complete local branding provenance for all 46 store-visible providers", () => {
     const uiPublic = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),
       "../../../ui/public",
@@ -711,14 +711,14 @@ describe("AppDefinition catalog", () => {
       }>;
     };
     const visible = manifest.providers.filter((entry) => entry.catalogVisible);
-    expect(visible).toHaveLength(45);
+    expect(visible).toHaveLength(46);
     expect(new Set(visible.map((entry) => entry.slug))).toHaveProperty(
       "size",
-      45,
+      46,
     );
     expect(new Set(visible.map((entry) => entry.localAsset))).toHaveProperty(
       "size",
-      45,
+      46,
     );
     expect(new Set(APP_STORE_DEFINITIONS.map((entry) => entry.slug))).toEqual(
       new Set(visible.map((entry) => entry.slug)),

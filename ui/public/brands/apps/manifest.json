@@ -221,46 +221,74 @@
       "darkVariantRequired": false
     },
     {
-      "slug": "google-drive", "provider": "Google Drive", "catalogVisible": true,
-      "localAsset": "/brands/apps/google-drive.svg", "officialSourceUrl": "https://drive.google.com",
+      "slug": "google-drive",
+      "provider": "Google Drive",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-drive.svg",
+      "officialSourceUrl": "https://drive.google.com",
       "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/googledrive.svg",
-      "assetType": "svg", "darkVariantRequired": false
+      "assetType": "svg",
+      "darkVariantRequired": false
     },
     {
-      "slug": "google-docs", "provider": "Google Docs", "catalogVisible": true,
-      "localAsset": "/brands/apps/google-docs.svg", "officialSourceUrl": "https://docs.google.com",
+      "slug": "google-docs",
+      "provider": "Google Docs",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-docs.svg",
+      "officialSourceUrl": "https://docs.google.com",
       "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/googledocs.svg",
-      "assetType": "svg", "darkVariantRequired": false
+      "assetType": "svg",
+      "darkVariantRequired": false
     },
     {
-      "slug": "google-slides", "provider": "Google Slides", "catalogVisible": true,
-      "localAsset": "/brands/apps/google-slides.svg", "officialSourceUrl": "https://slides.google.com",
+      "slug": "google-slides",
+      "provider": "Google Slides",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-slides.svg",
+      "officialSourceUrl": "https://slides.google.com",
       "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/googleslides.svg",
-      "assetType": "svg", "darkVariantRequired": false
+      "assetType": "svg",
+      "darkVariantRequired": false
     },
     {
-      "slug": "google-calendar", "provider": "Google Calendar", "catalogVisible": true,
-      "localAsset": "/brands/apps/google-calendar.svg", "officialSourceUrl": "https://calendar.google.com",
+      "slug": "google-calendar",
+      "provider": "Google Calendar",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-calendar.svg",
+      "officialSourceUrl": "https://calendar.google.com",
       "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/googlecalendar.svg",
-      "assetType": "svg", "darkVariantRequired": false
+      "assetType": "svg",
+      "darkVariantRequired": false
     },
     {
-      "slug": "google-chat", "provider": "Google Chat", "catalogVisible": true,
-      "localAsset": "/brands/apps/google-chat.svg", "officialSourceUrl": "https://chat.google.com",
+      "slug": "google-chat",
+      "provider": "Google Chat",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-chat.svg",
+      "officialSourceUrl": "https://chat.google.com",
       "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/googlechat.svg",
-      "assetType": "svg", "darkVariantRequired": false
+      "assetType": "svg",
+      "darkVariantRequired": false
     },
     {
-      "slug": "google-people", "provider": "Google People", "catalogVisible": true,
-      "localAsset": "/brands/apps/google-people.svg", "officialSourceUrl": "https://contacts.google.com",
+      "slug": "google-people",
+      "provider": "Google People",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-people.svg",
+      "officialSourceUrl": "https://contacts.google.com",
       "upstreamAssetUrl": "https://github.com/simple-icons/simple-icons/blob/16.28.0/icons/googlecontacts.svg",
-      "assetType": "svg", "darkVariantRequired": false
+      "assetType": "svg",
+      "darkVariantRequired": false
     },
     {
-      "slug": "google-workspace-search", "provider": "Google Workspace Search", "catalogVisible": true,
-      "localAsset": "/brands/apps/google-workspace-search.svg", "officialSourceUrl": "https://workspace.google.com",
+      "slug": "google-workspace-search",
+      "provider": "Google Workspace Search",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/google-workspace-search.svg",
+      "officialSourceUrl": "https://workspace.google.com",
       "upstreamAssetUrl": "https://fonts.google.com/icons?selected=Material+Symbols+Outlined:search:FILL@0;wght@400;GRAD@0;opsz@24",
-      "assetType": "svg", "darkVariantRequired": false
+      "assetType": "svg",
+      "darkVariantRequired": false
     },
     {
       "slug": "hugging-face",
@@ -670,6 +698,16 @@
       "assetType": "svg",
       "darkVariantRequired": true,
       "verifiedAt": "2026-09-10"
+    },
+    {
+      "slug": "imessage-photon",
+      "provider": "iMessage Photon",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/imessage-photon.png",
+      "officialSourceUrl": "https://photon.codes/",
+      "upstreamAssetUrl": "https://framerusercontent.com/images/XbFmp7b9ze39qL1GdqVbmJXbiS8.png?height=512&width=512",
+      "assetType": "png",
+      "darkVariantRequired": false
     }
   ]
 }

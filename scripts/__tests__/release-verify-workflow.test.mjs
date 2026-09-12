@@ -221,10 +221,12 @@ test("release verify workflow covers the same split test surface as stable PR ve
   );
   assert.match(verifyWorkflow, /pnpm -r typecheck/);
   assert.match(verifyWorkflow, /pnpm build/);
-  assert.match(
-    verifyWorkflow,
-    /pnpm --filter @paperclipai\/paperclip-runner check:all/,
-  );
+  const runnerScripts = JSON.parse(readFileSync(path.join(repoRoot, "packages/paperclip-runner/package.json"), "utf8")).scripts;
+  const runnerChecks = [...verifyWorkflow.matchAll(/^            checks: (.+)$/gm)]
+    .flatMap(([, checks]) => checks.split(" "));
+  assert.deepEqual(runnerChecks, runnerScripts["check:all"].split(" && ")
+    .map((command) => command.replace(/^pnpm run /, "")));
+  assert.match(verifyWorkflow, /pnpm --filter @paperclipai\/paperclip-runner "\$check"/);
   assert.match(verifyWorkflow, /runner_workflow_evals:/);
   assert.match(verifyWorkflow, /runner_chaos_evals:/);
   assert.match(
@@ -233,7 +235,7 @@ test("release verify workflow covers the same split test surface as stable PR ve
   );
   assert.match(
     verifyWorkflow,
-    /runner_workflow_evals:[\s\S]*?Install dependencies\n\s+run: pnpm install --frozen-lockfile[\s\S]*?Run deterministic Runner workflow scorer tests/,
+    /runner_workflow_evals:[\s\S]*?Install dependencies\n\s+run: pnpm install --no-frozen-lockfile[\s\S]*?Run deterministic Runner workflow scorer tests/,
   );
   assert.match(verifyWorkflow, /pnpm test:runner-workflow-evals/);
 

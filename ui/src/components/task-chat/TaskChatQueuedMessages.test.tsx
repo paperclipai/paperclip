@@ -324,7 +324,7 @@ describe("TaskChatQueuedMessages", () => {
       ),
     ).not.toBeNull();
     expect(container.textContent).toContain(
-      "Active turn interrupted. Message remains queued.",
+      "Interruption requested. Queued messages will continue after the active turn stops.",
     );
   });
 });
