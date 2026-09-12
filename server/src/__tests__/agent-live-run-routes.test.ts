@@ -832,6 +832,7 @@ describe("agent live run routes", () => {
     // Optional wake fields retain their existing shape; execution identity
     // always comes from the authenticated caller.
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      manualUserWake: true,
       source: "on_demand",
       triggerDetail: "manual",
       reason: "issue_assigned",
@@ -863,6 +864,7 @@ describe("agent live run routes", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(202);
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, {
+      manualUserWake: true,
       source: "on_demand",
       triggerDetail: "manual",
       requestedByActorType: "user",
@@ -885,7 +887,7 @@ describe("agent live run routes", () => {
     }), url => request(url).post(`/api/agents/${routeAgentId}/${endpoint}`).send({}));
     expect(res.status, JSON.stringify(res.body)).toBe(202);
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "agent:wake" }));
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({ manualUserWake: true }));
   });
 
   describe("exact failed chat run retry", () => {
@@ -952,7 +954,7 @@ describe("agent live run routes", () => {
       }));
     });
 
-    it.each(["viewer", "missing", "other-company", "reassigned"])(
+    it.each(["viewer", "missing", "other-company", "reassigned", "other-chat-owner"])(
       "rejects a %s task retry without dispatching or requiring agent creation", async (fault) => {
         const fixture = createFailedChatRetryDb(false);
         mockHeartbeatService.getRun.mockResolvedValue({ ...selectedRun, contextSnapshot: { issueId: failedChatIssueId } });
@@ -962,10 +964,11 @@ describe("agent live run routes", () => {
         else mockIssueService.getById.mockResolvedValue(fault === "missing" ? null : {
           id: failedChatIssueId, companyId: fault === "other-company" ? "elsewhere" : "company-1",
           assigneeAgentId: "other-agent", assigneeUserId: null, projectId: null, parentId: null, status: "blocked",
+          ...(fault === "other-chat-owner" ? { conversationAgentId: routeAgentId, conversationUserId: "someone-else" } : {}),
         });
         const res = await requestApp(await createApp(fixture.db), url =>
           request(url).post(`/api/agents/${routeAgentId}/wakeup`).send(retryBody));
-        expect(res.status).toBe(fault === "viewer" ? 403 : fault === "reassigned" ? 409 : 404);
+        expect(res.status).toBe(fault === "viewer" || fault === "other-chat-owner" ? 403 : fault === "reassigned" ? 409 : 404);
         expect(mockAccessService.decide.mock.calls.every(([input]) => input.action !== "agents:create")).toBe(true);
         expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
         expect(mockChatRunRetries.prepareFailedChatRunRetry).not.toHaveBeenCalled();

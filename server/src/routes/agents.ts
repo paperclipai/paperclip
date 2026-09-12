@@ -1709,6 +1709,7 @@ export function agentRoutes(
 
   async function assertBoardCanWakeAgent(req: Request, agent: { id: string; companyId: string }) {
     assertBoard(req);
+    if (!hasCompanyAccess(req, agent.companyId)) throw notFound("Agent not found");
     assertCompanyAccess(req, agent.companyId);
     const decision = await access.decide({
       actor: req.actor, action: "agent:wake",
@@ -5501,6 +5502,9 @@ export function agentRoutes(
       if (issueId) {
         const issue = await issueService(db).getById(issueId);
         if (!issue || issue.companyId !== agent.companyId) throw notFound("Task not found");
+        if (issue.conversationAgentId && issue.conversationUserId !== req.actor.userId) {
+          throw forbidden("Only the conversation owner can retry a chat run");
+        }
         const decision = await access.decide({
           actor: req.actor, action: "issue:comment",
           resource: {
@@ -5578,6 +5582,7 @@ export function agentRoutes(
     }
     const run = await heartbeat.wakeup(id, {
       failedRunId: req.body.failedRunId ?? null,
+      ...(req.actor.type === "board" && !req.body.failedRunId ? { manualUserWake: true } : {}),
       source: opts.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
       reason: req.body.reason ?? null,
@@ -5711,6 +5716,7 @@ export function agentRoutes(
       }
     }
     const wakeOpts: Parameters<typeof heartbeat.wakeup>[1] = {
+      ...(req.actor.type === "board" ? { manualUserWake: true } : {}),
       source: "on_demand",
       triggerDetail: typeof body.triggerDetail === "string" ? body.triggerDetail as "manual" | "system" | "ping" | "callback" : "manual",
       requestedByActorType: req.actor.type === "agent" ? "agent" : "user",

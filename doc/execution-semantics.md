@@ -1059,6 +1059,9 @@ members have within their company. Both wake endpoints use this action instead
 of `agents:create`. An exact task retry also checks `issue:comment` on the task
 from the stored failed run and verifies that its assigned agent has not changed.
 External chat retries retain their additional conversation authorization.
+Ordinary board wake requests also persist the clicking user's identity, so
+adopting another author's queued message cannot change their execution authority.
+Private agent conversations retain their owner-only wake and retry checks.
 
 These actions do not grant permission to hire agents or change their settings.
 Each action during execution still checks the agent's authority and the

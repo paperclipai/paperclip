@@ -14,7 +14,7 @@ import { isUuidLike } from "@paperclipai/shared";
 import { queuedCommentIdsFromRunContext, queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 
 /** Resolve an explicit click from persisted receipts, never caller context or message authors. */
-export async function queuedCommentInterruptActor(
+export async function explicitOperatorRunIdentity(
   executor: Pick<Db, "select">,
   run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "contextSnapshot" | "wakeupRequestId">,
 ) {
@@ -22,6 +22,12 @@ export async function queuedCommentInterruptActor(
     eq(agentWakeupRequests.id, run.wakeupRequestId), eq(agentWakeupRequests.companyId, run.companyId),
     eq(agentWakeupRequests.agentId, run.agentId), eq(agentWakeupRequests.runId, run.id),
   )) : [];
+  if (request?.payload?.manualUserWake === true) {
+    if (request.requestedByActorType !== "user" || !request.requestedByActorId) {
+      throw forbidden("Manual wake requires an authenticated user");
+    }
+    return { actorId: request.requestedByActorId, cause: "manual_user_wake" };
+  }
   const prefix = "queued-comment-interrupt:";
   if (!request?.idempotencyKey?.startsWith(prefix)) return null;
   const queueId = request.idempotencyKey.slice(prefix.length);
@@ -45,7 +51,7 @@ export async function queuedCommentInterruptActor(
       request.requestedByActorType !== "user" || request.requestedByActorId !== actorId) {
     throw forbidden("Queued-message interrupt authority is unavailable");
   }
-  return actorId;
+  return { actorId, cause: "queued_comment_interrupt" };
 }
 
 export type RunIdentityContext = typeof runIdentityContexts.$inferSelect;
@@ -184,7 +190,7 @@ export async function initializeRunIdentity(
         .where(eq(runIdentityContexts.id, run.activeIdentityContextId));
       return current!;
     }
-    const interruptActor = await queuedCommentInterruptActor(tx, run);
+    const operatorIdentity = await explicitOperatorRunIdentity(tx, run);
     const [parent] = input.parentRunId
       ? await tx
           .select()
@@ -209,7 +215,7 @@ export async function initializeRunIdentity(
               ),
             )
         : [];
-    const parentId = interruptActor ? null : (
+    const parentId = operatorIdentity ? null : (
       interaction?.sourceIdentityContextId ?? input.parentContextId ?? parent?.activeIdentityContextId
     );
     const [origin] = parentId
@@ -229,10 +235,10 @@ export async function initializeRunIdentity(
     let current = await append(tx, {
       companyId: input.companyId,
       runId: input.runId,
-      responsibleUserId: interruptActor ?? (origin ? origin.responsibleUserId : input.responsibleUserId),
+      responsibleUserId: operatorIdentity?.actorId ?? (origin ? origin.responsibleUserId : input.responsibleUserId),
       parentContextId: origin?.id ?? null,
       cause:
-        interruptActor ? "queued_comment_interrupt" : origin?.cause === "company_default" ? "company_default" : input.cause,
+        operatorIdentity ? operatorIdentity.cause : origin?.cause === "company_default" ? "company_default" : input.cause,
       correlationId: "dispatch",
     });
     const ids = [...new Set(input.messageIds ?? [])];
@@ -255,10 +261,10 @@ export async function initializeRunIdentity(
       current = await append(tx, {
         companyId: input.companyId,
         runId: input.runId,
-        responsibleUserId: interruptActor ?? comment.authorUserId,
+        responsibleUserId: operatorIdentity?.actorId ?? comment.authorUserId,
         messageId: id,
         parentContextId: current.id,
-        cause: interruptActor ? "queued_comment_interrupt" : "instruction",
+        cause: operatorIdentity?.cause ?? "instruction",
         correlationId: `message:${id}`,
       });
     }

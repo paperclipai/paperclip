@@ -178,6 +178,50 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0].authorUserId).toBe(ownerUserId);
   });
 
+  it("keeps a board manual wake under its caller even when it adopts someone else's queue", async () => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
+      membershipRole: "operator", status: "active" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Manual wake", status: "todo",
+      assigneeAgentId: agentId, responsibleUserId: ownerUserId });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, body: "Pending work" });
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
+      source: "automation", reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: ownerUserId,
+      payload: { issueId, commentId, _paperclipWakeContext: { wakeCommentIds: [commentId] } },
+    });
+    const run = await heartbeat.wakeup(agentId, { manualUserWake: true, source: "on_demand", triggerDetail: "manual",
+      payload: { issueId }, requestedByActorType: "user", requestedByActorId: operatorId,
+      contextSnapshot: { responsibleUserId: operatorId } });
+    expect(run?.responsibleUserId).toBe(operatorId);
+    const completed = await waitForRun(db, run!.id);
+    expect(completed).toMatchObject({ status: "succeeded", responsibleUserId: operatorId });
+    expect(completed?.contextSnapshot?.wakeCommentIds).toEqual([commentId]);
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    expect((await db.select().from(heartbeatRuns)).every(row => row.responsibleUserId === operatorId)).toBe(true);
+  });
+
+  it("denies a manual wake of another user's private conversation", async () => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Private conversation", status: "todo",
+      assigneeAgentId: agentId, responsibleUserId: ownerUserId, conversationAgentId: agentId, conversationUserId: ownerUserId });
+    await expect(heartbeat.wakeup(agentId, { manualUserWake: true, source: "on_demand", triggerDetail: "manual",
+      payload: { issueId }, requestedByActorType: "user", requestedByActorId: "another-user" })).rejects.toThrow("conversation owner");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+  });
+
+  it("does not accept a caller-supplied manual-wake authority marker", async () => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "manual",
+      requestedByActorType: "agent", requestedByActorId: agentId, payload: { manualUserWake: true },
+      contextSnapshot: { responsibleUserId: ownerUserId } });
+    expect((await waitForRun(db, run!.id))?.status).toBe("succeeded");
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, run!.wakeupRequestId!));
+    expect(wake.payload?.manualUserWake).toBeUndefined();
+  });
+
   it("uses the issue responsible user for automated dependency wakes without a message context", async () => {
     const { companyId, agentId } = await seedCompany();
     const issueResponsibleUserId = `issue-owner-${randomUUID()}`;
