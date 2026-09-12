@@ -10141,6 +10141,7 @@ export function heartbeatService(
     if (!agent || agent.companyId !== companyId || agent.adapterType === "paperclip_runner") return;
     const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.companyId, companyId),
+      eq(heartbeatRuns.agentId, wake.agentId),
       sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
       inArray(heartbeatRuns.status, ["running", "queued", "scheduled_retry"]),
     )).limit(1);
@@ -10162,6 +10163,7 @@ export function heartbeatService(
             !current || !queuedCommentIdsFromWakePayload(current.payload).length) return null;
         const [successor] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, wake.agentId),
           sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`,
           inArray(heartbeatRuns.status, ["running", "queued", "scheduled_retry"]),
         )).limit(1);
