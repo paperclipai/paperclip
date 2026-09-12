@@ -766,7 +766,7 @@ describe("AgentConfigForm environment selector", () => {
         await act(async () => { await i18n.changeLanguage(locale); });
         await flushReact();
         expect(container.querySelector('[role="alert"]')?.textContent).toBe(locale === "ru"
-          ? "Уже выполняется другая попытка входа. Завершите или отмените её в настройках того аккаунта, прежде чем начинать новую."
+          ? "Уже выполняется другая попытка входа. Прежде чем начать новую, завершите или отмените текущую в настройках соответствующего аккаунта."
           : "Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
         expect(activeQuery).toHaveBeenCalledTimes(1);
         expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();

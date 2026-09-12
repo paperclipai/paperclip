@@ -22,7 +22,7 @@ describe("queuedMessageWaitMessage", () => {
       expect(queuedMessageWaitMessage(manual.message)).toBe(locale === "en" ? manual.message
         : "Очистка после отменённого запуска ещё не подтверждена. Сообщение сохранено. Подробности доступны в сведениях о запуске и его среде.");
       expect(queuedMessageWaitMessage(automatic.message)).toBe(locale === "en" ? automatic.message
-        : "Ожидание завершения восстановления предыдущего запуска. Обработка сообщения начнётся автоматически.");
+        : "Ждём, пока завершится восстановление предыдущего запуска. Обработка сообщения начнётся автоматически.");
       expect(JSON.stringify([manual, automatic])).toBe(original);
     }
   });
@@ -45,7 +45,7 @@ describe("queuedMessageWaitMessage", () => {
     await i18n.changeLanguage("ru");
     expect(queuedMessageWaitMessage("This task is paused. Resume it to send your saved message.")).toBe("Задача приостановлена. Возобновите её, чтобы отправить сохранённое сообщение.");
     expect(queuedMessageWaitMessage("The agent has reached its daily limit. Your message is saved until work can resume.")).toBe("Агент достиг суточного лимита. Сообщение сохранено до возобновления работы.");
-    expect(queuedMessageWaitMessage("Agent is paused because its budget hard-stop was reached.")).toBe("Агент приостановлен: достигнут лимит бюджета для автоматической остановки.");
+    expect(queuedMessageWaitMessage("Agent is paused because its budget hard-stop was reached.")).toBe("Работа агента приостановлена: расходы достигли порога автоматической остановки.");
     expect(queuedMessageWaitMessage("Agent is not invokable because its reporting chain is invalid")).toBe("Агента нельзя запустить: нарушена цепочка подчинения");
   });
 

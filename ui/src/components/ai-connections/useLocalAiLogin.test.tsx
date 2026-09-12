@@ -88,7 +88,7 @@ it("retranslates persistent local errors en/ru/en without restarting or rechecki
   await vi.waitFor(() => expect(host.textContent).toContain("This sign-in attempt expired."));
   const checks = api.checkLocalLogin.mock.calls.length;
   for (const [locale, message] of [
-    ["ru", "Срок действия попытки входа истёк."],
+    ["ru", "Время на вход истекло."],
     ["en", "This sign-in attempt expired."],
   ]) {
     flushSync(() => { void i18n.changeLanguage(locale); });

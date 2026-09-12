@@ -44,7 +44,7 @@ describe("shared provider login localization", () => {
       expect(anchor.getAttribute("href")).toBe("https://auth.openai.com/device?challenge=raw");
       expect(anchor.getAttribute("rel")).toBe("noreferrer noopener");
       expect(container.textContent).toContain(locale === "ru"
-        ? mode === "submitted_code" ? "затем вернитесь и введите код авторизации" : "с помощью кода авторизации ниже"
+        ? mode === "submitted_code" ? "затем вернитесь и введите код авторизации" : "с помощью указанного ниже кода авторизации"
         : mode === "submitted_code" ? "then come back and enter authorization code" : "by providing the authorization code below");
       expect(submit).not.toHaveBeenCalled();
       expect(change).not.toHaveBeenCalled();
