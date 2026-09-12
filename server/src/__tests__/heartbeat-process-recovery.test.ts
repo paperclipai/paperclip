@@ -2705,12 +2705,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         expect(failedSave).toMatchObject({ state: "failed", error: "Injected storage outage" });
         expect(failedSave.manifest.finalCheckpointAt).toBeUndefined();
 
-        // Model the recovery hold recorded for this unfinished cleanup, then
-        // keep the agent occupied so resumption can be inspected without ever
+        // Cancellation already records a recovery hold for unfinished cleanup.
+        // Keep the agent occupied so resumption can be inspected without ever
         // starting a provider or running another heartbeat teardown.
-        await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
-          cause: "uncertain_external_action", fingerprint: `cancel-save-${runId}`, status: "active",
-          nextAction: "Recover the retained workspace", evidence: { runId } });
+        expect(await getExecutionBlocker(db, companyId, issueId)).toMatchObject({ runId });
         busyRunId = randomUUID();
         await db.insert(heartbeatRuns).values({ id: busyRunId, companyId, agentId, status: "running", processPid: process.pid });
         const commentId = randomUUID();
