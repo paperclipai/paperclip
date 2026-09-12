@@ -282,6 +282,43 @@ describe("terminal no-direct-report 1:1 receipts (SON-699 / SON-641 shape)", () 
     expect(classification.nextAction).toBeNull();
   });
 
+  it("does not record a multiline none fallback line as a next action", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "Reviewed the routine window; nothing pending.\nNext:\nnone",
+      },
+    });
+
+    expect(classification.nextAction).toBeNull();
+  });
+
+  it("keeps a required continuation when a structured next action accompanies an empty-ledger phrase", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      resultJson: {
+        summary: "Roster/session check complete against live data.\nAction ledger: empty",
+        nextAction: "Update the tenant migration runbook with the rollback steps.",
+      },
+    });
+
+    expect(classification.livenessState).toBe("plan_only");
+    expect(classification.nextAction).toContain("Update the tenant migration runbook");
+  });
+
+  it("still classifies an empty-ledger receipt with a none-like structured next action as terminal", () => {
+    const classification = classifyRunLiveness({
+      ...terminalReceiptInput,
+      resultJson: {
+        ...terminalReceiptInput.resultJson,
+        nextAction: "none",
+      },
+    });
+
+    expect(classification.livenessState).toBe("completed");
+    expect(classification.nextAction).toBeNull();
+  });
+
   it("keeps plan-only classification when an empty-ledger phrase coexists with real future-work intent", () => {
     const classification = classifyRunLiveness({
       ...baseInput,

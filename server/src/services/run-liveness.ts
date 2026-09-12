@@ -197,7 +197,11 @@ function hasExplicitEmptyActionLedger(input: RunLivenessClassificationInput) {
   if (!EXPLICIT_EMPTY_ACTION_LEDGER_RE.test(actionabilityText(input))) return false;
   // Genuine future-work intent always wins over an empty-ledger phrase: a run
   // that writes "Action ledger: empty" and then plans real follow-up work is
-  // still planning-only under the standard rules.
+  // still planning-only under the standard rules. A structured next action
+  // carries that intent even when the prose summary has no planning language;
+  // none-like values are explicit absence markers, not future work.
+  const extractedNextAction = extractNextAction(input);
+  if (extractedNextAction && !NONE_LIKE_NEXT_ACTION_RE.test(extractedNextAction)) return false;
   return !looksLikePlanningOnly(input);
 }
 
@@ -287,10 +291,11 @@ function extractNextActionFromText(text: string) {
     const labeled = line.match(/^next(?: steps?| action)?\s*:\s*(.*)$/i);
     if (labeled) {
       const sameLine = stripMarkdownListPrefix(labeled[1] ?? "");
-      if (!sameLine) return nextNonNoiseLine(lines, i);
-      // An explicit "none" answer means the run declared no next action.
-      if (NONE_LIKE_NEXT_ACTION_RE.test(sameLine)) return null;
-      return sameLine;
+      const nextAction = sameLine || nextNonNoiseLine(lines, i);
+      // An explicit "none" answer means the run declared no next action; the
+      // check must cover both same-line values and fallback lines.
+      if (nextAction && NONE_LIKE_NEXT_ACTION_RE.test(nextAction)) return null;
+      return nextAction;
     }
     if (PLANNING_ONLY_RE.test(line)) return line;
   }
