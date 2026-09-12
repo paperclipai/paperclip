@@ -1517,6 +1517,70 @@ describeEmbeddedPostgres("secretService", () => {
     expect(resolved.manifest[0]?.bindingId).toBe(binding!.id);
   });
 
+  // REVIP-5787: a low-trust reviewer with allowedSecretBindingIds: [] used to
+  // hard-fail setup for every project carrying a project-wide env secret, even
+  // though the reviewer never declared that secret itself. Inherited bindings
+  // (environment/project/routine) must be omitted, not fatal; only the agent's
+  // own adapterConfig.env binding keeps the hard failure from the test above.
+  it("omits an inherited project secret binding outside the low-trust boundary instead of throwing, when instructed", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `project-inherited-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "aral-bp-invoices",
+    });
+    const env = {
+      ARAL_BP_RECHNUNGEN: { type: "secret_ref" as const, secretId: secret.id, version: "latest" as const },
+      PROJECT_PLAIN: "still-here",
+    };
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "project", targetId: "project-1" }, env);
+    const [binding] = await svc.listBindings(companyId, secret.id);
+    expect(binding?.id).toBeTruthy();
+
+    const resolved = await svc.resolveEnvBindings(
+      companyId,
+      env,
+      {
+        consumerType: "project",
+        consumerId: "project-1",
+        actorType: "agent",
+        actorId: "low-trust-reviewer",
+        // Empty allowlist, exactly like a reviewOnly class-1 agent with no
+        // secret bindings of its own.
+        allowedBindingIds: [],
+      },
+      { omitDisallowedBindings: true },
+    );
+
+    expect(resolved.env).toEqual({ PROJECT_PLAIN: "still-here" });
+    expect(resolved.secretKeys.has("ARAL_BP_RECHNUNGEN")).toBe(false);
+    expect(resolved.manifest).toEqual([]);
+    expect(JSON.stringify(resolved)).not.toContain("aral-bp-invoices");
+
+    const [denialEvent] = await svc.listAccessEvents(companyId, secret.id);
+    expect(denialEvent).toMatchObject({
+      consumerType: "project",
+      consumerId: "project-1",
+      configPath: "env.ARAL_BP_RECHNUNGEN",
+      outcome: "failure",
+      errorCode: "binding_not_allowed",
+    });
+    expect(JSON.stringify(denialEvent)).not.toContain("aral-bp-invoices");
+
+    // Without the opt-in the same call still hard-fails — omission is
+    // per-call, not a change to the default enforcement.
+    await expect(
+      svc.resolveEnvBindings(companyId, env, {
+        consumerType: "project",
+        consumerId: "project-1",
+        actorType: "agent",
+        actorId: "low-trust-reviewer",
+        allowedBindingIds: [],
+      }),
+    ).rejects.toMatchObject({ status: 422, details: { code: "binding_not_allowed" } });
+  });
+
   it("fails closed at runtime for class-3 env lease rows outside the allowlist", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
@@ -1606,6 +1670,61 @@ describeEmbeddedPostgres("secretService", () => {
     });
     expect(resolved.env.GITHUB_TOKEN).toBe("user-one-secret");
     expect(resolved.manifest[0]?.bindingId).toBe(declaration!.id);
+  });
+
+  it("omits an inherited user-secret declaration outside the low-trust boundary instead of throwing, when instructed", async () => {
+    const companyId = await seedCompany();
+    await seedCompanyMember(companyId, "user-1", "owner");
+    const svc = secretService(db);
+    const definition = await svc.createUserSecretDefinition(companyId, {
+      key: "github_token",
+      name: "GitHub token",
+      provider: "local_encrypted",
+    });
+    const env = {
+      GITHUB_TOKEN: { type: "user_secret_ref" as const, key: "github_token", version: "latest" as const },
+      ROUTINE_PLAIN: "still-here",
+    };
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: "routine", targetId: "routine-1" }, env);
+    const userSecret = await svc.createCurrentUserSecretValue(companyId, "user-1", {
+      definitionKey: "github_token",
+      value: "user-one-secret",
+    });
+
+    const resolved = await svc.resolveEnvBindings(
+      companyId,
+      env,
+      {
+        consumerType: "routine",
+        consumerId: "routine-1",
+        actorType: "agent",
+        actorId: "low-trust-reviewer",
+        responsibleUserId: "user-1",
+        allowedBindingIds: [],
+      },
+      { omitDisallowedBindings: true },
+    );
+
+    expect(resolved.env).toEqual({ ROUTINE_PLAIN: "still-here" });
+    expect(resolved.secretKeys.has("GITHUB_TOKEN")).toBe(false);
+    expect(JSON.stringify(resolved)).not.toContain("user-one-secret");
+
+    const [denialEvent] = await svc.listAccessEvents(companyId, userSecret.id);
+    expect(denialEvent).toMatchObject({
+      secretId: userSecret.id,
+      userSecretDefinitionId: definition.id,
+      secretScope: "user",
+      responsibleUserId: "user-1",
+      credentialOwnerUserId: "user-1",
+      credentialSubjectType: "user",
+      credentialSubjectId: "user-1",
+      consumerType: "routine",
+      consumerId: "routine-1",
+      configPath: "env.GITHUB_TOKEN",
+      outcome: "failure",
+      errorCode: "binding_not_allowed",
+    });
+    expect(JSON.stringify(denialEvent)).not.toContain("user-one-secret");
   });
 
   it("resolves routine env secret refs through routine bindings and records value-free access metadata", async () => {

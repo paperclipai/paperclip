@@ -4350,6 +4350,73 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     mockAdapterExecute.mockClear();
   });
 
+  it("keeps a disallowed agent-owned low-trust secret as a terminal pre-dispatch setup failure", async () => {
+    const { companyId, agentId, runId, issueId } =
+      await seedQueuedIssueRunFixture();
+    const secrets = secretService(db);
+    const secret = await secrets.create(companyId, {
+      name: `agent-owned-negative-probe-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "must-never-reach-the-adapter",
+    });
+    const adapterConfig = {
+      env: {
+        REVIP5787_NEGATIVE_SETUP_PROBE: {
+          type: "secret_ref" as const,
+          secretId: secret.id,
+          version: "latest" as const,
+        },
+      },
+    };
+
+    await secrets.syncEnvBindingsForTarget(
+      companyId,
+      { targetType: "agent", targetId: agentId },
+      adapterConfig.env,
+    );
+    await db
+      .update(agents)
+      .set({
+        adapterConfig,
+        permissions: {
+          trustPreset: "low_trust_review",
+          authorizationPolicy: {
+            trustPreset: "low_trust_review",
+            reviewPreset: {
+              id: "low_trust_review",
+              version: 1,
+              rawOutputDisposition: "quarantine",
+            },
+            trustBoundary: {
+              mode: "low_trust_review",
+              companyId,
+              issueIds: [issueId],
+              allowedToolClasses: ["git.read", "tests.local"],
+              allowedSecretBindingIds: [],
+              outputPromotionTarget: { type: "issue", issueId },
+            },
+          },
+        },
+      })
+      .where(eq(agents.id, agentId));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+
+    const failedRun = await waitForRunToSettle(heartbeat, runId);
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      errorCode: "setup_failed",
+      resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      },
+    });
+    expect(failedRun?.error).toContain(
+      "Secret binding is outside the active low-trust boundary",
+    );
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
   it("classifies only the installed-but-not-ready sandbox provider plugin message as a configuration gap", () => {
     expect(
       parseSandboxProviderPluginNotReadyFailureMessage(

@@ -712,6 +712,7 @@ type RuntimeSecretResolution = {
 };
 
 type SecretResolutionErrorCode =
+  | "binding_not_allowed"
   | "binding_missing"
   | "secret_deleted"
   | "secret_inactive"
@@ -808,11 +809,21 @@ function defaultProviderConfigStatus(provider: SecretProvider): SecretProviderCo
   return COMING_SOON_SECRET_PROVIDERS.has(provider) ? "coming_soon" : "ready";
 }
 
+// True only for the low-trust-boundary rejection raised by assertBindingContext /
+// resolveUserSecretValue (context.allowedBindingIds set and the binding isn't in
+// it). Distinguishing this from other resolution failures (missing binding,
+// inactive secret, ...) lets a caller choose to omit just this class of binding
+// instead of aborting the whole resolution.
+function isBindingNotAllowedError(error: unknown): boolean {
+  return error instanceof HttpError && asRecord(error.details)?.code === "binding_not_allowed";
+}
+
 function secretResolutionErrorCode(error: unknown): SecretResolutionErrorCode {
   if (isSecretProviderClientError(error)) return "provider_error";
   if (error instanceof HttpError) {
     const details = asRecord(error.details);
     switch (details?.code) {
+      case "binding_not_allowed":
       case "binding_missing":
       case "secret_deleted":
       case "secret_inactive":
@@ -1047,6 +1058,24 @@ export function secretService(db: Db | DbTransaction) {
   }) {
     return db
       .select()
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.companyId, input.companyId),
+        eq(companySecrets.scope, "user"),
+        eq(companySecrets.ownerUserId, input.ownerUserId),
+        eq(companySecrets.userSecretDefinitionId, input.definitionId),
+        ne(companySecrets.status, "deleted"),
+      ))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  async function getUserSecretValueId(input: {
+    companyId: string;
+    ownerUserId: string;
+    definitionId: string;
+  }) {
+    return db
+      .select({ id: companySecrets.id })
       .from(companySecrets)
       .where(and(
         eq(companySecrets.companyId, input.companyId),
@@ -4157,6 +4186,27 @@ export function secretService(db: Db | DbTransaction) {
         Array.isArray(context?.allowedBindingIds) &&
         (!declaration || !context.allowedBindingIds.includes(declaration.id))
       ) {
+        const deniedSecret = await getUserSecretValueId({
+          companyId,
+          ownerUserId: responsibleUserId,
+          definitionId: definition.id,
+        });
+        if (deniedSecret) {
+          await recordAccessEvent({
+            companyId,
+            secretId: deniedSecret.id,
+            userSecretDefinitionId: definition.id,
+            secretScope: "user",
+            version: null,
+            provider: definition.provider as SecretProvider,
+            context: context ? { ...context, responsibleUserId } : undefined,
+            credentialOwnerUserId: responsibleUserId,
+            credentialSubjectType: "user",
+            credentialSubjectId: responsibleUserId,
+            outcome: "failure",
+            errorCode: "binding_not_allowed",
+          }).catch(() => undefined);
+        }
         throw unprocessable(
           "User secret declaration is outside the active low-trust boundary",
           { code: "binding_not_allowed" },
@@ -5101,6 +5151,7 @@ export function secretService(db: Db | DbTransaction) {
       companyId: string,
       envValue: unknown,
       context?: Omit<SecretBindingContext, "configPath">,
+      opts?: { omitDisallowedBindings?: boolean },
     ): Promise<{ env: Record<string, string>; secretKeys: Set<string>; manifest: RuntimeSecretManifestEntry[] }> => {
       const record = asRecord(envValue);
       if (!record) return { env: {} as Record<string, string>, secretKeys: new Set<string>(), manifest: [] };
@@ -5120,37 +5171,61 @@ export function secretService(db: Db | DbTransaction) {
         if (binding.type === "plain") {
           resolved[key] = binding.value;
         } else if (binding.type === "secret_ref") {
-          const secretResolution = await resolveSecretValueInternal(
-            companyId,
-            binding.secretId,
-            binding.version,
-            context
-              ? {
-                  bindingContext: { ...context, configPath: `env.${key}` },
-                  accessContext: { ...context, configPath: `env.${key}` },
-                }
-              : undefined,
-          );
+          let secretResolution: RuntimeSecretResolution;
+          try {
+            secretResolution = await resolveSecretValueInternal(
+              companyId,
+              binding.secretId,
+              binding.version,
+              context
+                ? {
+                    bindingContext: { ...context, configPath: `env.${key}` },
+                    accessContext: { ...context, configPath: `env.${key}` },
+                  }
+                : undefined,
+            );
+          } catch (err) {
+            if (opts?.omitDisallowedBindings && isBindingNotAllowedError(err)) {
+              logger.warn(
+                { envKey: key, consumerType: context?.consumerType, consumerId: context?.consumerId },
+                "omitting inherited secret binding outside the active low-trust boundary",
+              );
+              continue;
+            }
+            throw err;
+          }
           resolved[key] = secretResolution.value;
           manifest.push(secretResolution.manifestEntry);
           secretKeys.add(key);
         } else {
-          const secretResolution = await secretService(db).resolveUserSecretValue(
-            companyId,
-            {
-              definitionKey: binding.key,
-              version: binding.version,
-              required: binding.required,
-              allowMissingOverride: binding.allowMissingOverride,
-            },
-            context
-              ? {
-                  ...context,
-                  configPath: `env.${key}`,
-                  responsibleUserId: context.responsibleUserId ?? null,
-                }
-              : undefined,
-          );
+          let secretResolution: RuntimeSecretResolution | null;
+          try {
+            secretResolution = await secretService(db).resolveUserSecretValue(
+              companyId,
+              {
+                definitionKey: binding.key,
+                version: binding.version,
+                required: binding.required,
+                allowMissingOverride: binding.allowMissingOverride,
+              },
+              context
+                ? {
+                    ...context,
+                    configPath: `env.${key}`,
+                    responsibleUserId: context.responsibleUserId ?? null,
+                  }
+                : undefined,
+            );
+          } catch (err) {
+            if (opts?.omitDisallowedBindings && isBindingNotAllowedError(err)) {
+              logger.warn(
+                { envKey: key, consumerType: context?.consumerType, consumerId: context?.consumerId },
+                "omitting inherited user-secret binding outside the active low-trust boundary",
+              );
+              continue;
+            }
+            throw err;
+          }
           if (secretResolution) {
             resolved[key] = secretResolution.value;
             manifest.push(secretResolution.manifestEntry);
