@@ -557,16 +557,22 @@ export function isTransientDbConnectionError(error: unknown): boolean {
 }
 
 /**
- * Runs `run` and retries it exactly once when it fails on a transient
- * closed-connection error. Callers must pass an idempotent operation.
- * Exported for tests.
+ * Runs `run` and retries it up to twice when it fails on a transient
+ * closed-connection error. Two replays, not one: when a pooled endpoint
+ * suspends or recycles, EVERY pooled socket is dead at once, so the first
+ * replay can draw another stale socket from the pool and fail identically
+ * (observed 2026-09-12: retried actor resolution still surfacing
+ * CONNECTION_CLOSED). The short pause gives the driver time to notice and
+ * re-dial. Callers must pass an idempotent operation. Exported for tests.
  */
 export async function retryOnTransientDbConnectionError<T>(run: () => Promise<T>): Promise<T> {
-  try {
-    return await run();
-  } catch (error) {
-    if (!isTransientDbConnectionError(error)) throw error;
-    return run();
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (error) {
+      if (attempt >= 2 || !isTransientDbConnectionError(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+    }
   }
 }
 
