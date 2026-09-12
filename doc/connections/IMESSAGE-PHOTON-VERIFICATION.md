@@ -264,3 +264,23 @@ iMessage”; the agent returned “PHOTON-17 live follow-up received” and
 were preserved as history. No live `/new` was sent to replace the operator's
 current conversation; explicit reset, close, stale controls, duplicate delivery,
 restart, and dedicated-group continuity are covered by integration fixtures.
+
+The live server was then restarted on `4d7222110`. A third message asked the
+agent to repeat its previous reply. It appeared live on PHOTON-17 with its
+iMessage label, and the agent returned the exact previous reply through Photon.
+All 304 focused tests passed on that commit, and the existing Teams completion
+boundary passed its separate regression test.
+
+Interactive Storybook coverage lives under **Connections / iMessage Photon**.
+It uses the production catalog card, three-step channel wizard, access and
+management pages, and task message bubbles with explicitly simulated provider
+actions. Thirteen stories cover catalog discovery, agent selection, credentials,
+shared setup, multiple dedicated lines, missing allocation, loading, connecting,
+outage recovery, reconnect, identity access, and persistent task follow-ups.
+All 26 light/dark Playwright cases passed, including the 390px mobile layout.
+The credential and mobile screenshots were inspected. Run with:
+
+```sh
+pnpm build-storybook
+pnpm exec playwright test --config tests/storybook-visual/imessage-photon.config.ts
+```
