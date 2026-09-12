@@ -1150,9 +1150,14 @@ function OnboardingWizardInner({
    */
   const connectStepNeedsLogin = Boolean(
     credentialMode !== "api" &&
-      (showAdapterLoginPanel || (canShowAdapterLogin && adapterType === "codex_local" && subscriptionId?.companyId === createdCompanyId && subscriptionId.id === "")) &&
-      !savedSubscription &&
-      !(adapterType === "claude_local" && savedKeys.storedLogin.data) &&
+      // Connection-list invalidation can arrive before the login's completion
+      // poll. Keep its controller mounted until it reports success; otherwise
+      // the saved account replaces the panel and "Connecting" never finishes.
+      (connectAuthUrl || (
+        (showAdapterLoginPanel || (canShowAdapterLogin && adapterType === "codex_local" && subscriptionId?.companyId === createdCompanyId && subscriptionId.id === "")) &&
+        !savedSubscription &&
+        !(adapterType === "claude_local" && savedKeys.storedLogin.data)
+      )) &&
       !savedKeys.loading &&
       createdCompanyId &&
       resolvedLoginEnvironmentId,
