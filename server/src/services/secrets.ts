@@ -1069,6 +1069,24 @@ export function secretService(db: Db | DbTransaction) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getUserSecretValueId(input: {
+    companyId: string;
+    ownerUserId: string;
+    definitionId: string;
+  }) {
+    return db
+      .select({ id: companySecrets.id })
+      .from(companySecrets)
+      .where(and(
+        eq(companySecrets.companyId, input.companyId),
+        eq(companySecrets.scope, "user"),
+        eq(companySecrets.ownerUserId, input.ownerUserId),
+        eq(companySecrets.userSecretDefinitionId, input.definitionId),
+        ne(companySecrets.status, "deleted"),
+      ))
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function getUserSecretValueById(companyId: string, ownerUserId: string, secretId: string) {
     const secret = await getById(secretId);
     if (!secret || secret.status === "deleted" || secret.scope !== "user") {
@@ -4164,19 +4182,19 @@ export function secretService(db: Db | DbTransaction) {
           );
         }
       }
-      const secret = await getUserSecretValue({
-        companyId,
-        ownerUserId: responsibleUserId,
-        definitionId: definition.id,
-      });
       if (
         Array.isArray(context?.allowedBindingIds) &&
         (!declaration || !context.allowedBindingIds.includes(declaration.id))
       ) {
-        if (secret) {
+        const deniedSecret = await getUserSecretValueId({
+          companyId,
+          ownerUserId: responsibleUserId,
+          definitionId: definition.id,
+        });
+        if (deniedSecret) {
           await recordAccessEvent({
             companyId,
-            secretId: secret.id,
+            secretId: deniedSecret.id,
             userSecretDefinitionId: definition.id,
             secretScope: "user",
             version: null,
@@ -4194,6 +4212,11 @@ export function secretService(db: Db | DbTransaction) {
           { code: "binding_not_allowed" },
         );
       }
+      const secret = await getUserSecretValue({
+        companyId,
+        ownerUserId: responsibleUserId,
+        definitionId: definition.id,
+      });
       if (!secret) {
         if (optionalBinding) return null;
         throw unprocessable("User secret value is not configured", {
