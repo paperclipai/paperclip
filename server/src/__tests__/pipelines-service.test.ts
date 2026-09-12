@@ -1362,8 +1362,15 @@ describeEmbeddedPostgres("pipelineService", () => {
     });
     expect(firstRetry.status).toBe("succeeded");
     expect(secondRetry.status).toBe("succeeded");
+    // Both retries resolve via the stage-re-entry reuse path (patch 0053): the crash-simulated
+    // execution shares this stage's automationId with the original dispatch, so it finds the
+    // already-linked execution issue, resets it, and returns -- without calling
+    // runPipelineStageEntryRoutine synchronously. Redispatch happens via the heartbeat.wakeup()
+    // call in that branch instead, which is a no-op under noopHeartbeat in this test. So exactly
+    // ONE routineRun exists after both retries (from the original dispatch only), not two -- this
+    // assertion predates patch 0053 and assumed retries always dispatch a fresh synchronous run.
     const runsAfterRetries = await db.select().from(routineRuns);
-    expect(runsAfterRetries).toHaveLength(2);
+    expect(runsAfterRetries).toHaveLength(1);
     const crashExecutions = await db
       .select()
       .from(pipelineAutomationExecutions)
@@ -1375,6 +1382,151 @@ describeEmbeddedPostgres("pipelineService", () => {
       .from(pipelineCaseIssueLinks)
       .where(eq(pipelineCaseIssueLinks.issueId, crashExecutions[0]!.executionIssueId!));
     expect(crashLinks).toHaveLength(1);
+  });
+
+  it("does not reuse a different stage's automation issue when entering a new stage", async () => {
+    const company = await seedCompany();
+    const routineA = await seedRoutine(company.id, "Stage A routine");
+    const routineB = await seedRoutine(company.id, "Stage B routine");
+    const pipeline = await svc.createPipeline({
+      companyId: company.id,
+      key: "cross-stage",
+      name: "Cross stage",
+      actor: userActor,
+      stages: [
+        { key: "intake", name: "Intake", kind: "open" },
+        { key: "stage_a", name: "Stage A", kind: "working", config: { onEnter: { type: "run_routine", routineId: routineA.id } } },
+        { key: "stage_b", name: "Stage B", kind: "working", config: { onEnter: { type: "run_routine", routineId: routineB.id } } },
+        { key: "done", name: "Done", kind: "done" },
+        { key: "cancelled", name: "Cancelled", kind: "cancelled" },
+      ],
+    });
+    const stagesByKey = new Map((await svc.listStages(company.id, pipeline.id)).map((stage) => [stage.key, stage]));
+    const created = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "cross-stage-case",
+      title: "Cross stage case",
+      actor: userActor,
+    });
+
+    const movedToA = await svc.transitionCase({
+      companyId: company.id,
+      caseId: created.case.id,
+      toStageKey: "stage_a",
+      expectedVersion: 1,
+      actor: userActor,
+    });
+    expect(movedToA.automationExecution.status).toBe("succeeded");
+
+    // Move to stage_b BEFORE stage_a's execution issue closes out (it's still open/todo) --
+    // this is exactly the scenario that silently broke without the automationId scoping fix.
+    const movedToB = await svc.transitionCase({
+      companyId: company.id,
+      caseId: created.case.id,
+      toStageKey: "stage_b",
+      expectedVersion: movedToA.case.version,
+      actor: userActor,
+    });
+    expect(movedToB.automationExecution.status).toBe("succeeded");
+
+    const [executionA] = await db
+      .select()
+      .from(pipelineAutomationExecutions)
+      .where(eq(pipelineAutomationExecutions.automationId, `${stagesByKey.get("stage_a")!.id}:on_enter`));
+    const [executionB] = await db
+      .select()
+      .from(pipelineAutomationExecutions)
+      .where(eq(pipelineAutomationExecutions.automationId, `${stagesByKey.get("stage_b")!.id}:on_enter`));
+    expect(executionA!.executionIssueId).toBeTruthy();
+    expect(executionB!.executionIssueId).toBeTruthy();
+    // The actual regression: without the automationId scoping fix, stage_b's on_enter
+    // automation matched stage_a's still-open execution issue and reused it instead of
+    // dispatching its own routine.
+    expect(executionB!.executionIssueId).not.toBe(executionA!.executionIssueId);
+    expect(executionB!.routineId).toBe(routineB.id);
+
+    const runs = await db.select().from(routineRuns);
+    expect(runs).toHaveLength(2);
+
+    const links = await db.select().from(pipelineCaseIssueLinks).where(eq(pipelineCaseIssueLinks.role, "automation"));
+    expect(links).toHaveLength(2);
+  });
+
+  it("resets a done same-stage automation issue and redispatches on re-entry", async () => {
+    const company = await seedCompany();
+    const routineA = await seedRoutine(company.id, "Stage A routine");
+    const routineB = await seedRoutine(company.id, "Stage B routine");
+    const pipeline = await svc.createPipeline({
+      companyId: company.id,
+      key: "same-stage-reentry",
+      name: "Same stage reentry",
+      actor: userActor,
+      stages: [
+        { key: "intake", name: "Intake", kind: "open" },
+        { key: "stage_a", name: "Stage A", kind: "working", config: { onEnter: { type: "run_routine", routineId: routineA.id } } },
+        { key: "stage_b", name: "Stage B", kind: "working", config: { onEnter: { type: "run_routine", routineId: routineB.id } } },
+        { key: "done", name: "Done", kind: "done" },
+        { key: "cancelled", name: "Cancelled", kind: "cancelled" },
+      ],
+    });
+    const stagesByKey = new Map((await svc.listStages(company.id, pipeline.id)).map((stage) => [stage.key, stage]));
+    const stageAAutomationId = `${stagesByKey.get("stage_a")!.id}:on_enter`;
+    const created = await svc.ingestCase({
+      companyId: company.id,
+      pipelineId: pipeline.id,
+      caseKey: "same-stage-case",
+      title: "Same stage case",
+      actor: userActor,
+    });
+
+    const movedToA = await svc.transitionCase({
+      companyId: company.id,
+      caseId: created.case.id,
+      toStageKey: "stage_a",
+      expectedVersion: 1,
+      actor: userActor,
+    });
+    const [firstExecution] = await db
+      .select()
+      .from(pipelineAutomationExecutions)
+      .where(eq(pipelineAutomationExecutions.automationId, stageAAutomationId));
+    const firstIssueId = firstExecution!.executionIssueId!;
+
+    // Simulate stage A's execution issue reaching a terminal "done" state before the case
+    // cycles back into stage A (e.g. the previous round's PR merged and disposition closed it).
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, firstIssueId));
+
+    const movedToB = await svc.transitionCase({
+      companyId: company.id,
+      caseId: created.case.id,
+      toStageKey: "stage_b",
+      expectedVersion: movedToA.case.version,
+      actor: userActor,
+    });
+    const movedBackToA = await svc.transitionCase({
+      companyId: company.id,
+      caseId: created.case.id,
+      toStageKey: "stage_a",
+      expectedVersion: movedToB.case.version,
+      actor: userActor,
+    });
+    expect(movedBackToA.automationExecution.status).toBe("succeeded");
+
+    const reenteredExecutions = await db
+      .select()
+      .from(pipelineAutomationExecutions)
+      .where(eq(pipelineAutomationExecutions.automationId, stageAAutomationId));
+    expect(reenteredExecutions).toHaveLength(2);
+    const reenteredExecution = reenteredExecutions.find((execution) => execution.id !== firstExecution!.id)!;
+    // Same-stage cycle-back correctly reuses the SAME issue...
+    expect(reenteredExecution.executionIssueId).toBe(firstIssueId);
+
+    // ...but must reset it out of "done" so the agent actually re-runs. Before the fix, the
+    // update excluded status="done", so the issue stayed done while this execution was still
+    // marked "succeeded" -- a silent stall with no dispatch and no error.
+    const [reusedIssue] = await db.select().from(issues).where(eq(issues.id, firstIssueId));
+    expect(reusedIssue!.status).not.toBe("done");
   });
 
   it("carries saved stage automation workspace context into the execution issue", async () => {
