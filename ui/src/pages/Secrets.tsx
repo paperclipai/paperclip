@@ -208,7 +208,7 @@ const PROVIDER_ORDER: SecretProvider[] = [
 ];
 
 function defaultProviderVaultStatus(provider: SecretProvider): SecretProviderConfigStatus {
-  return provider === "gcp_secret_manager" || provider === "vault" ? "coming_soon" : "ready";
+  return provider === "vault" ? "coming_soon" : "ready";
 }
 
 function emptyProviderVaultForm(provider: SecretProvider = "local_encrypted"): ProviderVaultForm {
@@ -608,7 +608,7 @@ function buildProviderVaultConfig(form: ProviderVaultForm): Record<string, unkno
     case "gcp_secret_manager":
       return {
         projectId: compact(form.projectId),
-        location: compact(form.location),
+        location: "global",
         namespace: compact(form.namespace),
         secretNamePrefix: compact(form.secretNamePrefix),
       };
@@ -2993,10 +2993,10 @@ export function Secrets() {
                     }));
                   }}
                 >
-                  <option value="ready" disabled={vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault"}>
+                  <option value="ready" disabled={vaultForm.provider === "vault"}>
                     Ready
                   </option>
-                  <option value="warning" disabled={vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault"}>
+                  <option value="warning" disabled={vaultForm.provider === "vault"}>
                     Warning
                   </option>
                   <option value="coming_soon">Coming soon</option>
@@ -3034,7 +3034,13 @@ export function Secrets() {
               />
             ) : null}
 
-            {vaultForm.provider === "gcp_secret_manager" || vaultForm.provider === "vault" ? (
+            {vaultForm.provider === "gcp_secret_manager" ? (
+              <p className="text-xs text-muted-foreground">
+                Link existing global secrets using the server's Google Application Default Credentials.
+                Linking verifies access and pins the selected version. Secret values are managed in Google Cloud.
+              </p>
+            ) : null}
+            {vaultForm.provider === "vault" ? (
               <div className="rounded-md border border-sky-500/30 bg-sky-500/5 p-3 text-xs text-sky-700 dark:text-sky-300">
                 This provider can save draft routing metadata, but runtime writes and resolution stay disabled until
                 the provider module is implemented and reviewed.
@@ -3054,7 +3060,8 @@ export function Secrets() {
               disabled={
                 saveVaultMutation.isPending ||
                 !vaultForm.displayName.trim() ||
-                (vaultForm.provider === "aws_secrets_manager" && !vaultForm.region.trim())
+                (vaultForm.provider === "aws_secrets_manager" && !vaultForm.region.trim()) ||
+                (vaultForm.provider === "gcp_secret_manager" && !vaultForm.projectId.trim())
               }
             >
               {saveVaultMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin mr-1" /> : null}
@@ -3570,7 +3577,7 @@ export function ProviderVaultsTab({
     id: providerId,
     provider: providerMap.get(providerId),
     Icon: providerFamilyIcon(providerId),
-    isComingSoonFamily: providerId === "gcp_secret_manager" || providerId === "vault",
+    isComingSoonFamily: providerId === "vault",
     configs: providerConfigs.filter((config) => config.provider === providerId),
   }));
 
@@ -3798,9 +3805,11 @@ function ProviderVaultFields({
   if (form.provider === "gcp_secret_manager") {
     return (
       <div className="grid gap-3 sm:grid-cols-2">
-        <TextField label="Project id" value={form.projectId} onChange={(value) => setField("projectId", value)} placeholder="paperclip-prod" />
-        <TextField label="Location" value={form.location} onChange={(value) => setField("location", value)} placeholder="global" />
-        <TextField label="Namespace" value={form.namespace} onChange={(value) => setField("namespace", value)} placeholder="production" />
+        <TextField label="Project ID or number" value={form.projectId} onChange={(value) => setField("projectId", value)} placeholder="paperclip-prod" required />
+        <div>
+          <label className="text-xs font-medium" htmlFor="provider-vault-location">Location (global only)</label>
+          <Input id="provider-vault-location" value="global" readOnly />
+        </div>
         <TextField label="Secret name prefix" value={form.secretNamePrefix} onChange={(value) => setField("secretNamePrefix", value)} placeholder="paperclip" />
       </div>
     );

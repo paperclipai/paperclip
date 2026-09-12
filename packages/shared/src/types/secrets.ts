@@ -146,9 +146,12 @@ export interface AwsSecretsManagerProviderConfig {
 }
 
 export interface GcpSecretManagerProviderConfig {
+  /** Project ID or number. Required for runtime resolution. */
   projectId?: string | null;
-  location?: string | null;
+  location?: "global" | null;
+  /** Informational metadata only; Google Secret Manager has no namespaces. */
   namespace?: string | null;
+  /** If set, linked secret names must begin with this prefix. */
   secretNamePrefix?: string | null;
 }
 

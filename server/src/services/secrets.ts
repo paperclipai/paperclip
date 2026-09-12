@@ -100,7 +100,6 @@ const SENSITIVE_ENV_KEY_RE =
   /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 const REDACTED_SENTINEL = "***REDACTED***";
 const COMING_SOON_SECRET_PROVIDERS: ReadonlySet<SecretProvider> = new Set([
-  "gcp_secret_manager",
   "vault",
 ]);
 const FALLBACK_ADAPTER_SCHEMA_SECRET_FIELDS: Readonly<Record<string, readonly string[]>> = {

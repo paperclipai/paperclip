@@ -296,11 +296,14 @@ Each vault carries a status that drives what the runtime can do with it:
 | `coming_soon` | Visible and editable as draft metadata, but locked out of all runtime operations.            |
 | `disabled`    | Soft-deleted. Hidden from the secret create/rotate flow.                                      |
 
-`gcp_secret_manager` and `vault` are pinned to `coming_soon` until their
-runtime modules ship. The settings UI lets you save draft configuration for
-those providers (and surfaces them on the vault list), but secret create,
-rotate, and resolve calls that target a coming-soon vault fail with a clear
-runtime-locked error.
+`gcp_secret_manager` supports linking existing global Google Secret Manager
+versions and resolving them through the server's Application Default Credentials.
+It does not write remote values. New vaults default to `ready`; existing draft
+vaults stay `coming_soon` until edited. See `doc/SECRETS-GCP-PROVIDER.md` for
+configuration, version pinning and the runtime access boundary.
+
+`vault` remains pinned to `coming_soon`. Secret create, rotate and resolve calls
+that target any coming-soon vault fail with a runtime-locked error.
 
 ### Default Vault Behavior
 
@@ -447,7 +450,10 @@ Each provider family has a different backup story:
   role still has `GetSecretValue` plus KMS decrypt for both managed and linked
   user-scoped values. The full restore checklist lives in
   `doc/SECRETS-AWS-PROVIDER.md`.
-- `gcp_secret_manager` and `vault`: while these are coming soon, only the
+- `gcp_secret_manager`: back up Paperclip metadata, including references and
+  pinned version records. Values remain in Google Secret Manager; restoring
+  resolution also requires access to the same remote versions through server ADC.
+- `vault`: while this is coming soon, only the
   draft vault config exists in Paperclip. Database backups capture it. There
   is nothing to restore on the provider side until runtime support lands.
 

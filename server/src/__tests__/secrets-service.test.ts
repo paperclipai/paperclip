@@ -25,6 +25,7 @@ import {
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
+import { gcpSecretManagerProvider } from "../secrets/gcp-secret-manager-provider.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { SecretProviderClientError } from "../secrets/types.js";
 import { secretService } from "../services/secrets.js";
@@ -2892,6 +2893,7 @@ describeEmbeddedPostgres("secretService", () => {
     const draftVault = await svc.createProviderConfig(companyId, {
       provider: "gcp_secret_manager",
       displayName: "GCP draft",
+      status: "coming_soon",
       config: { projectId: "paperclip-prod1" },
     });
 
@@ -2904,6 +2906,35 @@ describeEmbeddedPostgres("secretService", () => {
         value: "runtime-secret",
       }),
     ).rejects.toThrow(/coming soon/i);
+  });
+
+  it("links and resolves a Google secret through a ready company vault without persisting its value", async () => {
+    const companyId = await seedCompany();
+    const foreignCompanyId = await seedCompany();
+    const svc = secretService(db);
+    const vault = await svc.createProviderConfig(companyId, {
+      provider: "gcp_secret_manager", displayName: "Google", config: { projectId: "example-project" },
+    });
+    expect(vault.status).toBe("ready");
+    const externalRef = "projects/example-project/secrets/example-key";
+    const material = { scheme: "gcp_secret_manager_v1", externalRef, providerVersionRef: "7" };
+    const link = vi.spyOn(gcpSecretManagerProvider, "linkExternalSecret").mockResolvedValue({
+      material, externalRef, providerVersionRef: "7", valueSha256: "fingerprint", fingerprintSha256: "fingerprint",
+    });
+    const resolve = vi.spyOn(gcpSecretManagerProvider, "resolveVersion").mockResolvedValue("resolved-private-value");
+    const secret = await svc.create(companyId, {
+      name: `google-${randomUUID()}`, provider: "gcp_secret_manager", managedMode: "external_reference",
+      providerConfigId: vault.id, externalRef,
+    });
+    expect(link).toHaveBeenCalledWith(expect.objectContaining({ providerConfig: expect.objectContaining({ id: vault.id }) }));
+    await expect(svc.resolveSecretValue(foreignCompanyId, secret.id, "latest")).rejects.toThrow();
+    expect(resolve).not.toHaveBeenCalled();
+    expect(await svc.resolveSecretValue(companyId, secret.id, "latest")).toBe("resolved-private-value");
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({
+      providerConfig: expect.objectContaining({ id: vault.id }), providerVersionRef: "7", material,
+    }));
+    const stored = await db.select().from(companySecretVersions).where(eq(companySecretVersions.secretId, secret.id));
+    expect(JSON.stringify(stored)).not.toContain("resolved-private-value");
   });
 
   it("passes selected provider vault config through create, rotate, and resolve", async () => {

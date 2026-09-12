@@ -142,6 +142,25 @@ describe("secret validators", () => {
     ).not.toThrow();
   });
 
+  it.each(["example-project", "123456789012"])("accepts ready Google vault metadata for project %s", (projectId) => {
+    expect(() => createSecretProviderConfigSchema.parse({
+      provider: "gcp_secret_manager", displayName: "Google", status: "ready", isDefault: true,
+      config: { projectId, location: "global", secretNamePrefix: "app-" },
+    })).not.toThrow();
+  });
+
+  it.each([
+    { projectId: "https://other.example" },
+    { projectId: "example-project", location: "us-east1" },
+    { projectId: "example-project", credentials: "private-value" },
+    { projectId: "example-project", serviceAccountJson: "private-value" },
+    { projectId: "example-project", keyFile: "/private/credential.json" },
+  ])("rejects unsupported routing and credential fields in Google vault metadata", (config) => {
+    expect(() => createSecretProviderConfigSchema.parse({
+      provider: "gcp_secret_manager", displayName: "Google", status: "ready", config,
+    })).toThrow();
+  });
+
   it("accepts origin-only Vault provider vault addresses", () => {
     expect(() =>
       createSecretProviderConfigSchema.parse({

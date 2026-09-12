@@ -43,6 +43,12 @@ describe("secret provider registry", () => {
           supportsExternalReferences: true,
           configured: false,
         }),
+        expect.objectContaining({
+          id: "gcp_secret_manager",
+          supportsManagedValues: false,
+          supportsExternalReferences: true,
+          supportsExternalValueWrites: false,
+        }),
       ]),
     );
   });

@@ -52,6 +52,21 @@ function providerConfig(
 }
 
 describe("Secrets page provider helpers", () => {
+  it("allows a ready Google vault for external links while keeping managed values unavailable", () => {
+    const google: SecretProviderDescriptor = {
+      id: "gcp_secret_manager", label: "Google Secret Manager", requiresExternalRef: true,
+      supportsManagedValues: false, supportsExternalReferences: true, supportsExternalValueWrites: false,
+      configured: false,
+    };
+    const vault = providerConfig({
+      id: "google-vault", provider: "gcp_secret_manager", config: { projectId: "example-project" },
+    });
+    expect(getCreateProviderBlockReason(google, "external", null, vault)).toBeNull();
+    expect(getCreateProviderBlockReason(google, "managed", null, vault)).toMatch(/does not support Paperclip-managed/);
+    expect(getCreateProviderBlockReason(google, "external", null, { ...vault, status: "coming_soon" }))
+      .toMatch(/draft metadata/);
+  });
+
   it("previews the derived AWS managed path from provider health details", () => {
     const health: SecretProviderHealthResponse = {
       providers: [

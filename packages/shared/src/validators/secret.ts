@@ -257,8 +257,8 @@ export const awsSecretsManagerProviderConfigSchema = z.object({
 }).strict();
 
 export const gcpSecretManagerProviderConfigSchema = z.object({
-  projectId: z.string().trim().min(1).max(128).regex(/^[a-z][a-z0-9-]{4,127}$/).optional().nullable(),
-  location: optionalSafeShortText,
+  projectId: z.string().trim().regex(/^(?:[a-z][a-z0-9-]{4,28}[a-z0-9]|[1-9][0-9]{0,19})$/, "Invalid Google Cloud project ID or number").optional().nullable(),
+  location: z.literal("global").optional().nullable(),
   namespace: optionalSafeShortText,
   secretNamePrefix: optionalSafeShortText,
 }).strict();
@@ -335,8 +335,8 @@ export const createSecretProviderConfigSchema = z.object({
       });
     }
   }
-  const status = value.status ?? (["gcp_secret_manager", "vault"].includes(value.provider) ? "coming_soon" : "ready");
-  if ((value.provider === "gcp_secret_manager" || value.provider === "vault") && status !== "coming_soon" && status !== "disabled") {
+  const status = value.status ?? (value.provider === "vault" ? "coming_soon" : "ready");
+  if (value.provider === "vault" && status !== "coming_soon" && status !== "disabled") {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ["status"],
