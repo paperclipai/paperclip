@@ -7,6 +7,7 @@ import {
   buildRemoteEnvFileContent,
   buildSshEnvLabFixtureConfig,
   buildSshSpawnTarget,
+  createSshTimeoutBudget,
   getSshEnvLabSupport,
   provisionRemoteEnvFile,
   remoteEnvFilePathExpr,
@@ -195,13 +196,14 @@ describe("ssh remote environment delivery (REVIP-3492)", () => {
         host: "fixture",
         port: 22,
         username: "tester",
+        remoteWorkspacePath: "/workspace",
         privateKey: null,
         knownHosts: null,
         strictHostKeyChecking: false,
       },
       env: [["PAPERCLIP_API_KEY", "secret"]],
       runCommand: async (_spec, command, options) => {
-        commands.push({ command, stdin: options.stdin, timeoutMs: options.timeoutMs });
+        commands.push({ command, stdin: options?.stdin, timeoutMs: options?.timeoutMs });
         if (commands.length === 1) throw new Error("provisioning failed after write");
         return { stdout: "", stderr: "" };
       },
@@ -221,6 +223,7 @@ describe("ssh remote environment delivery (REVIP-3492)", () => {
       host: "192.0.2.1",
       port: 22,
       username: "tester",
+      remoteWorkspacePath: "/workspace",
       privateKey: null,
       knownHosts: null,
       strictHostKeyChecking: false,
@@ -229,6 +232,12 @@ describe("ssh remote environment delivery (REVIP-3492)", () => {
       timeoutMs: 100,
     })).rejects.toThrow();
     expect(Date.now() - startedAt).toBeLessThan(1_000);
+  });
+
+  it("preserves zero as the unlimited SSH timeout", () => {
+    const budget = createSshTimeoutBudget(0);
+    expect(budget.deadlineAt).toBeNull();
+    expect(budget.remainingTimeoutMs()).toBe(0);
   });
 
   it("fails closed when the environment file is missing instead of running without secrets", async () => {

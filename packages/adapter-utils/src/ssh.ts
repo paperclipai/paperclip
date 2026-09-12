@@ -156,6 +156,28 @@ export function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
+export function createSshTimeoutBudget(timeoutMs: number): {
+  deadlineAt: number | null;
+  remainingTimeoutMs: () => number;
+} {
+  // Node's child-process timeout contract uses zero for no timeout, and the
+  // SSH execution-target path intentionally forwards timeoutSec: 0 that way.
+  if (timeoutMs === 0) {
+    return { deadlineAt: null, remainingTimeoutMs: () => 0 };
+  }
+  const deadlineAt = Date.now() + timeoutMs;
+  return {
+    deadlineAt,
+    remainingTimeoutMs: () => {
+      const remaining = deadlineAt - Date.now();
+      if (remaining <= 0) {
+        throw new Error(`SSH command timed out after ${timeoutMs}ms`);
+      }
+      return remaining;
+    },
+  };
+}
+
 function isValidShellEnvKey(value: string) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
@@ -1317,14 +1339,7 @@ export async function runSshCommand(
   } = {},
 ): Promise<SshCommandResult> {
   const operationTimeoutMs = options.timeoutMs ?? 15_000;
-  const deadline = Date.now() + operationTimeoutMs;
-  const remainingTimeoutMs = () => {
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) {
-      throw new Error(`SSH command timed out after ${operationTimeoutMs}ms`);
-    }
-    return remaining;
-  };
+  const timeoutBudget = createSshTimeoutBudget(operationTimeoutMs);
   let cleanup: () => Promise<void> = () => Promise.resolve();
   try {
     const auth = await createSshAuthArgs(config);
@@ -1356,8 +1371,8 @@ export async function runSshCommand(
     const envFile = await provisionRemoteEnvFile({
       spec: config,
       env: envEntries,
-      timeoutMs: remainingTimeoutMs(),
-      deadlineAt: deadline,
+      timeoutMs: timeoutBudget.remainingTimeoutMs(),
+      deadlineAt: timeoutBudget.deadlineAt ?? undefined,
     });
     if (envFile) {
       const previousCleanup = cleanup;
@@ -1385,11 +1400,11 @@ export async function runSshCommand(
     return options.stdin != null
       ? await spawnText("ssh", sshArgs, {
           stdin: options.stdin,
-          timeout: remainingTimeoutMs(),
+          timeout: timeoutBudget.remainingTimeoutMs(),
           maxBuffer: options.maxBuffer ?? 1024 * 128,
         })
       : await execFileText("ssh", sshArgs, {
-          timeout: remainingTimeoutMs(),
+          timeout: timeoutBudget.remainingTimeoutMs(),
           maxBuffer: options.maxBuffer ?? 1024 * 128,
         });
   } finally {
