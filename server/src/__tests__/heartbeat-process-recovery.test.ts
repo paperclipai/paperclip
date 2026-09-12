@@ -5841,6 +5841,128 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("blocks routine execution after successful missing-disposition recovery instead of starting productive continuation", async () => {
+    const { companyId, agentId, runId, issueId } =
+      await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "succeeded",
+        livenessState: "advanced",
+      });
+    const sourceRunId = randomUUID();
+    await db
+      .update(issues)
+      .set({
+        originKind: "routine_execution",
+        originId: randomUUID(),
+      })
+      .where(eq(issues.id, issueId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "source_scoped_recovery_action",
+          recoveryActionId: randomUUID(),
+          recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+          sourceRunId,
+          recoveryIntent: "status_only",
+          allowDeliverableWork: false,
+          allowDocumentUpdates: false,
+          resumeRequiresNormalModel: true,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result =
+      await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.successfulRunHandoffEscalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+    expect(
+      await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0]?.status),
+    ).toBe("blocked");
+    await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_progress",
+      retryReason: null,
+      cause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+      kind: "missing_disposition",
+    });
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("preserves productive continuation when fresh owner direction precedes its asynchronous wake", async () => {
+    const { companyId, agentId, runId, issueId } =
+      await seedStrandedIssueFixture({
+        status: "in_progress",
+        runStatus: "succeeded",
+        livenessState: "advanced",
+      });
+    const recoveryRunAt = new Date(Date.now() - 1_000);
+    await db
+      .update(issues)
+      .set({
+        originKind: "routine_execution",
+        originId: randomUUID(),
+      })
+      .where(eq(issues.id, issueId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "source_scoped_recovery_action",
+          recoveryActionId: randomUUID(),
+          recoveryCause: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+          recoveryIntent: "status_only",
+          allowDeliverableWork: false,
+          allowDocumentUpdates: false,
+          resumeRequiresNormalModel: true,
+        },
+        createdAt: recoveryRunAt,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      authorType: "user",
+      authorUserId: "local-board",
+      body: "Continue with this new owner instruction.",
+      createdAt: new Date(recoveryRunAt.getTime() + 500),
+    });
+
+    const result =
+      await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+    expect(
+      runs.find((run) => run.id !== runId)?.contextSnapshot,
+    ).toMatchObject({
+      issueId,
+      source: "issue.productive_terminal_continuation_recovery",
+    });
+  });
+
   it("converts a continuation parked for review into a dependency wait on its open sub-tasks", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
