@@ -180,11 +180,11 @@ function createDb(requireBoardApprovalForNewAgents = false) {
 let agentRoutes: (typeof import("../routes/agents.js"))["agentRoutes"];
 let errorHandler: (typeof import("../middleware/index.js"))["errorHandler"];
 
-async function createApp(db: Record<string, unknown> = createDb()) {
+async function createApp(db: Record<string, unknown> = createDb(), actor?: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as any).actor = {
+    (req as any).actor = actor ?? {
       type: "board",
       userId: "local-board",
       companyIds: ["company-1"],
@@ -1226,6 +1226,73 @@ describe.sequential("agent skill routes", () => {
     const seededCalls = mockAgentInstructionsService.materializeManagedBundle.mock.calls;
     const entrySeed = seededCalls.at(-1)?.[1] as Record<string, string> | undefined;
     expect(entrySeed?.["AGENTS.md"]).toContain("# Hiring and delegation");
+  });
+
+  it.each([
+    ["agents", "paperclipai/paperclip/paperclip-create-agent"],
+    ["agent-hires", "paperclipai/paperclip/paperclip-create-agent"],
+    ["agents", "paperclip"],
+    ["agent-hires", "paperclip"],
+  ])("gives a general onboarding chief core skills and preserves %s version pins for %s", async (route, skill) => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableBetaSkills: true });
+    const versionId = "22222222-2222-4222-8222-222222222222";
+    const res = await request(await createApp(createDb(route === "agent-hires")))
+      .post(`/api/companies/company-1/${route}`)
+      .send({
+        name: "Chiff", role: "general", adapterType: "codex_local",
+        onboardingFirstAgent: true,
+        desiredSkills: [{ key: skill, versionId }],
+      });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const input = mockAgentService.create.mock.calls[0][1];
+    expect(input.role).toBe("general");
+    const canonicalKey = skill === "paperclip" ? "paperclipai/paperclip/paperclip" : skill;
+    const expected = ["paperclip", "paperclip-board", "paperclip-converting-plans-to-tasks", "paperclip-create-agent", "para-memory-files"]
+      .map((name) => ({ key: `paperclipai/paperclip/${name}`, versionId: `paperclipai/paperclip/${name}` === canonicalKey ? versionId : null }));
+    expect(input.adapterConfig.paperclipSkillSync.desiredSkills).toEqual(expect.arrayContaining(expected));
+    expect(input.adapterConfig.paperclipSkillSync.desiredSkills).toHaveLength(5);
+  });
+
+  it.each(["agents", "agent-hires"])("leaves ordinary general agents' defaults unchanged via %s", async (route) => {
+    const res = await request(await createApp())
+      .post(`/api/companies/company-1/${route}`)
+      .send({ name: "Biff", role: "general", adapterType: "codex_local" });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create.mock.calls[0][1].adapterConfig.paperclipSkillSync).toBeUndefined();
+  });
+
+  it("does not trust an agent-supplied onboarding marker to select chief-of-staff defaults", async () => {
+    mockAgentService.getById.mockResolvedValue(makeAgent("claude_local"));
+    const res = await request(await createApp(createDb(), {
+      type: "agent", agentId: "11111111-1111-4111-8111-111111111111", companyId: "company-1",
+    }))
+      .post("/api/companies/company-1/agent-hires")
+      .send({ name: "Biff", role: "general", adapterType: "claude_local", onboardingFirstAgent: true });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create.mock.calls[0][1].adapterConfig.paperclipSkillSync).toBeUndefined();
+    await vi.waitFor(() => expect(mockAgentInstructionsService.materializeManagedBundle).toHaveBeenCalled());
+    expect(mockAgentInstructionsService.materializeManagedBundle.mock.calls[0][1]["AGENTS.md"])
+      .not.toContain("chief of staff");
+  });
+
+  it("creates nothing for rejected Biff payloads and exactly one approval-gated hire after correction", async () => {
+    const app = await createApp(createDb(true));
+    const hire = { name: "Biff", role: "general", adapterType: "codex_local", capabilities: "Be a friendly, affable robot" };
+    const retired = await request(app).post("/api/companies/company-1/agent-hires")
+      .send({ ...hire, adapterConfig: { promptTemplate: "Be friendly" } });
+    expect(retired.status).toBe(422);
+    const malformed = await request(app).post("/api/companies/company-1/agent-hires")
+      .send({ ...hire, instructionsBundle: { files: [{ path: "AGENTS.md", content: "Be friendly" }] } });
+    expect(malformed.status).toBe(400);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    const corrected = await request(app).post("/api/companies/company-1/agent-hires")
+      .send({ ...hire, instructionsBundle: { files: { "AGENTS.md": "Be a friendly, affable robot." } } });
+    expect(corrected.status, JSON.stringify(corrected.body)).toBe(201);
+    expect(corrected.body.agent).toMatchObject({ name: "Biff", status: "pending_approval" });
+    expect(corrected.body.approval).toMatchObject({ type: "hire_agent", status: "pending" });
+    expect(mockAgentService.create).toHaveBeenCalledTimes(1);
+    expect(mockApprovalService.create).toHaveBeenCalledTimes(1);
   });
 
   it("includes canonical desired skills in hire approvals", async () => {

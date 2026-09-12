@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::acpx_event_scope::AcpxEventScope;
 use crate::acpx_sidecar_transport::AcpxSidecarEvent;
-use crate::durable::{redact_text, sanitize_value};
+use crate::durable::{redact_text, sanitize_semantic_tool_input, sanitize_value};
 use crate::generated_acpx_sidecar_contract::{
     classify_generated_acpx_tool_operation, GeneratedAcpxSidecarEventType,
 };
@@ -133,11 +133,19 @@ pub fn decode_acpx_event(
                     "ACPX tool call input must be an object",
                 ));
             }
+            let operation_id = required_id(&event.payload, "operationId", "tool operation")?;
+            // This input is dispatched as a mutation, not merely displayed in
+            // the event feed. Use the same declared-prose policy as native
+            // semantic_tool.input before any generic diagnostic scrub can
+            // irreversibly change the task's requirements.
+            let safe_input = sanitize_semantic_tool_input(&operation_id, &input)
+                .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
             Ok(AcpxEventPayload::ToolCalled {
                 call_id: required_id(&event.payload, "callId", "tool call")?,
-                operation_id: required_id(&event.payload, "operationId", "tool operation")?,
+                operation_id,
+                // Keep the original digest for the sidecar's result binding.
                 input_digest: semantic_value_digest(&input),
-                input: sanitize_value(&input),
+                input: safe_input,
             })
         }
         GeneratedAcpxSidecarEventType::RuntimeTurnTerminal => {

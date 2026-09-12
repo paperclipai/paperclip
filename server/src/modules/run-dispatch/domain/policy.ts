@@ -493,7 +493,7 @@ export function decideQueuedRunStaleness(
   if (facts.isResolvedInteractionContinuation || facts.isConnectionContinuation) {
     const earlyStatus = decideIssueStatus({
       status: facts.issueStatus,
-      requiresInProgress: !(facts.isConnectionContinuation && facts.issueStatus === "in_review"),
+      requiresInProgress: facts.issueStatus !== "in_review",
       terminalBypass: true,
     });
     if (earlyStatus === "not_in_progress") {

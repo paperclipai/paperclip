@@ -1556,9 +1556,211 @@
   {
     "allowedModes": [
       "standard",
+      "ask",
+      "planning",
       "skill_test"
     ],
-    "description": "Create one child task under the active task.",
+    "description": "Inspect available company projects before selecting a project for new work.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "list_projects",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [
+      "discovery:projects:read"
+    ],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List projects",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "ask",
+      "planning",
+      "skill_test"
+    ],
+    "description": "List authorized repositories with stable IDs and names. Consider appropriate repositories before creating a project; never invent IDs.",
+    "effect": "read",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "operationId": "list_project_repositories",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "List available repositories",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "description": "Create a project after considering existing projects and available repositories. repositoryIds and repositoryUrls accept multiple existing repositories. Use HTTPS GitHub repositoryUrls when an accessible repo is not in the catalog; this registers project repositories, not remote GitHub repositories. Non-code projects may omit repositories. Cannot combine repositoryIds/repositoryUrls with workspace. Reuse the idempotency key on retries.",
+    "effect": "write",
+    "inputSchema": {
+      "additionalProperties": false,
+      "properties": {
+        "archivedAt": {
+          "description": "Archive timestamp.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "color": {
+          "description": "Project color.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "Project outcome and context.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "env": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "executionWorkspacePolicy": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "goalId": {
+          "description": "Goal ID.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "goalIds": {
+          "description": "Goal IDs.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "icon": {
+          "description": "Project icon.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "idempotencyKey": {
+          "description": "Caller-stable retry key.",
+          "maxLength": 240,
+          "minLength": 1,
+          "type": "string"
+        },
+        "leadAgentId": {
+          "description": "Lead agent ID.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Project name.",
+          "maxLength": 500,
+          "minLength": 1,
+          "type": "string"
+        },
+        "repositoryIds": {
+          "description": "Authorized repository IDs from list_project_repositories; may contain multiple repositories.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 200,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "repositoryUrls": {
+          "description": "Existing HTTPS GitHub repository URLs, including repos absent from the catalog.",
+          "items": {
+            "maxLength": 2000,
+            "pattern": "^https://github\\.com/(?!\\.{1,2}/)[A-Za-z0-9_.-]+/(?!\\.{1,2}/?$)[A-Za-z0-9_.-]+/?$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "status": {
+          "enum": [
+            "backlog",
+            "planned",
+            "in_progress",
+            "completed",
+            "cancelled"
+          ]
+        },
+        "targetDate": {
+          "description": "Target date.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workspace": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "required": [
+        "idempotencyKey",
+        "name"
+      ],
+      "type": "object"
+    },
+    "operationId": "create_project",
+    "outputSchema": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "placement": "optional",
+    "requiredClaims": [],
+    "schema": "paperclip.semantic-action.v1",
+    "title": "Create project",
+    "version": 1
+  },
+  {
+    "allowedModes": [
+      "standard",
+      "skill_test"
+    ],
+    "description": "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -1595,6 +1797,14 @@
           "minLength": 1,
           "type": "string"
         },
+        "initialPlan": {
+          "description": "Relevant markdown plan to persist on the new task before it starts.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "priority": {
           "enum": [
             "critical",
@@ -1603,8 +1813,16 @@
             "low"
           ]
         },
+        "projectId": {
+          "description": "Project identifier for the new task.",
+          "maxLength": 20000,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "title": {
-          "description": "Child task title.",
+          "description": "Task title.",
           "maxLength": 500,
           "minLength": 1,
           "type": "string"
@@ -1671,7 +1889,7 @@
       "delegation:tasks:create"
     ],
     "schema": "paperclip.semantic-action.v1",
-    "title": "Create child task",
+    "title": "Create task",
     "version": 1
   },
   {
