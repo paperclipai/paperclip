@@ -968,6 +968,40 @@ jobs:
             sleep "$((attempt * 10))"
           done
 
+      # This definition executes only from the authorized default-branch workflow.
+      # Provision host policy before credentials reach target-controlled tests.
+      - name: Provision Codex sandbox on the disposable trusted runner
+        if: matrix.environmentId == 'local' && matrix.profileId == 'runner-codex'
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from "node:child_process";
+          import { createHash } from "node:crypto";
+          import { readFileSync, realpathSync, writeFileSync } from "node:fs";
+          import { createRequire } from "node:module";
+          import path from "node:path";
+          if (process.platform !== "linux") process.exit(0);
+          let restricted = "0";
+          try { restricted = readFileSync("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", "utf8").trim(); } catch {}
+          if (restricted !== "1") process.exit(0);
+          const root = realpathSync(process.env.GITHUB_WORKSPACE);
+          const runnerRequire = createRequire(path.join(root, "packages/paperclip-runner/package.json"));
+          const acpRequire = createRequire(runnerRequire.resolve("@agentclientprotocol/codex-acp/package.json"));
+          const codexRequire = createRequire(acpRequire.resolve("@openai/codex/package.json"));
+          const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : null;
+          if (!arch) throw new Error("Unsupported Codex CI architecture");
+          const platformPackage = codexRequire.resolve(`@openai/codex-linux-${arch}/package.json`);
+          const triple = arch === "x64" ? "x86_64-unknown-linux-musl" : "aarch64-unknown-linux-musl";
+          const suffix = `/vendor/${triple}/bin/codex`;
+          const binary = realpathSync(path.join(path.dirname(platformPackage), suffix));
+          if (!binary.startsWith(root + "/node_modules/.pnpm/") || !binary.endsWith(suffix) || !/^[/A-Za-z0-9_.@+\-]+$/.test(binary)) {
+            throw new Error("Codex executable is outside the resolved dependency tree");
+          }
+          const name = `paperclip-e2e-codex-${createHash("sha256").update(binary).digest("hex").slice(0,16)}`;
+          const profilePath = path.join(process.env.RUNNER_TEMP, "paperclip-codex-userns.apparmor");
+          writeFileSync(profilePath, `abi <abi/4.0>,\ninclude <tunables/global>\nprofile ${name} "${binary}" flags=(unconfined) {\n  userns,\n}\n`, {mode:0o600, flag:"wx"});
+          execFileSync("sudo", ["-n", "apparmor_parser", "-r", profilePath], {timeout:15000, stdio:"pipe"});
+          NODE
+
       - name: Run paid cell
         env:
           OPENAI_API_KEY: ${{ matrix.credentialName == 'OPENAI_API_KEY' && secrets.OPENAI_API_KEY || '' }}

@@ -10,6 +10,8 @@ import {
   type KeyObject,
 } from "node:crypto";
 import {
+  DEFAULT_OWNERSHIP_AVAILABILITY,
+  type AppDefinition,
   GITHUB_CONNECTOR_PROFILES,
   GOOGLE_WORKSPACE_CONNECTOR_PROFILES,
   isGitHubConnectorProfileId,
@@ -485,6 +487,27 @@ export type PaperclipCloudGoogleWorkspaceConnector = PaperclipCloudConnector;
 /** Accept persisted Paperclip ID-era records while all new records use the Cloud strategy. */
 export function isPaperclipCloudConnectorStrategy(value: unknown): boolean {
   return value === "paperclip_cloud_connector" || value === "paperclip_id_connector";
+}
+
+/** Use the same signed instance profiles for catalog display and setup validation. */
+export function appWithPaperclipCloudConnectorAvailability(
+  app: AppDefinition,
+  profiles: readonly string[],
+): AppDefinition {
+  const enabledProfiles = new Set(profiles);
+  const methods = app.methods.filter((method) =>
+    !isPaperclipCloudConnectorStrategy(method.oauthStrategy)
+    || Boolean(method.connectorProfile && enabledProfiles.has(method.connectorProfile))
+  );
+  return {
+    ...app,
+    methods,
+    ownershipAvailability: {
+      ...DEFAULT_OWNERSHIP_AVAILABILITY,
+      ...app.ownershipAvailability,
+      platform_shared: methods.some((method) => isPaperclipCloudConnectorStrategy(method.oauthStrategy)),
+    },
+  };
 }
 
 let capabilityCache: { key: string; expiresAt: number; profiles: PaperclipCloudConnectorProfileId[] } | null = null;

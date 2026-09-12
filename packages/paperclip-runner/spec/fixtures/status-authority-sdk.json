@@ -27,7 +27,7 @@
       "covers": { "decisionRows": ["SD-03"], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
       "tags": ["premature_done_claim", "incomplete_evidence", "partial_progress", "atomic_liveness"],
       "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "missing_required_test", "trigger": "runner_finalizer" },
-      "expected": { "runStatus": "succeeded", "statusAction": "in_review", "reasonCode": "external_verification_required", "requiredEffects": ["bind_reviewer"], "forbiddenEffects": ["release_checkout_as_done", "enqueue_continuation"], "livePathKind": "review", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_progress", "reasonCode": "completion_evidence_incomplete", "requiredEffects": ["enqueue_continuation"], "forbiddenEffects": ["release_checkout_as_done", "bind_reviewer"], "livePathKind": "continuation", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 1, "maxNotificationCount": 0 },
       "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
     },
     {
@@ -36,7 +36,7 @@
       "covers": { "decisionRows": [], "terminalRows": [], "attentionRows": [], "livenessRows": [], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
       "tags": ["incomplete_evidence", "atomic_liveness"],
       "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "done", "nativeFinalization": "present", "completionState": "missing_required_test", "trigger": "runner_finalizer", "fault": "continuation_insert_failure" },
-      "expected": { "runStatus": "succeeded", "statusAction": "in_review", "reasonCode": "external_verification_required", "requiredEffects": ["bind_reviewer"], "forbiddenEffects": ["enqueue_continuation"], "livePathKind": "review", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "expected": { "runStatus": "succeeded", "statusAction": "preserve", "reasonCode": "side_effect_planning_failed", "requiredEffects": ["record_finalization_error"], "forbiddenEffects": ["enqueue_continuation"], "livePathKind": null, "preserveClaim": true, "nativeRecords": true, "decisionCount": 0, "maxWakeCount": 0, "maxNotificationCount": 0 },
       "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
     },
     {
@@ -54,7 +54,7 @@
       "covers": { "decisionRows": ["SD-04"], "terminalRows": [], "attentionRows": [], "livenessRows": ["LIVE-01"], "reconciliationRows": [], "compatibilityRows": [], "migrationRows": [] },
       "tags": ["required_review", "atomic_liveness"],
       "given": { "priorIssueStatus": "in_progress", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "needs_review", "nativeFinalization": "present", "completionState": "named_reviewer_required", "trigger": "runner_finalizer" },
-      "expected": { "runStatus": "succeeded", "statusAction": "in_review", "reasonCode": "external_verification_required", "requiredEffects": ["bind_reviewer"], "forbiddenEffects": ["bind_blocker", "notify_owner"], "livePathKind": "review", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
+      "expected": { "runStatus": "succeeded", "statusAction": "in_review", "reasonCode": "actionable_attention_pending", "requiredEffects": ["bind_reviewer"], "forbiddenEffects": ["bind_blocker", "notify_owner"], "livePathKind": "review", "preserveClaim": true, "nativeRecords": true, "decisionCount": 1, "maxWakeCount": 0, "maxNotificationCount": 0 },
       "replay": { "attempts": 2, "sameDecisionDigest": true, "maxSemanticDecisions": 1, "maxDomainEffectsPerKey": 1 }
     },
     {

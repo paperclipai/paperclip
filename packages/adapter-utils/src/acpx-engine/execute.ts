@@ -46,6 +46,7 @@ import {
 } from "../workspace-restore-merge.js";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
   applyPaperclipWorkspaceEnv,
   asNumber,
   asString,
@@ -2510,7 +2511,12 @@ async function buildRuntime(input: {
     await emitRunPhaseTiming(input.ctx, "start_transport", nowMs() - startTransportStart, "failed");
     throw err;
   }
-  const overrideCommand = processSessionBridge?.agentCommand ?? agentCommand;
+  // The relay runs on the host with the sanitized remote launch environment.
+  // Its /usr/bin/env node shebang cannot rely on that environment's PATH.
+  const overrideCommand = processSessionBridge?.agentCommand
+    ? [process.execPath, processSessionBridge.agentCommand]
+      .map((part) => JSON.stringify(part.replaceAll("\\", "/"))).join(" ")
+    : agentCommand;
   const overrides = overrideCommand ? { [acpxAgent]: overrideCommand } : undefined;
   const agentRegistry = createAgentRegistry({ overrides });
   const loggedEnv = buildInvocationEnvForLogs(env, {
@@ -2949,7 +2955,9 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
   const hasCustomPromptTemplate = configuredPromptTemplate.trim().length > 0;
   const promptTemplate = hasCustomPromptTemplate
     ? configuredPromptTemplate
-    : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
+    : context.conversationMode === true
+      ? DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE
+      : DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE;
   const instructionsFilePath = asString(config.instructionsFilePath, "").trim();
   const instructionsDir = instructionsFilePath ? `${path.dirname(instructionsFilePath)}/` : "";
   let instructionsPrefix = "";
@@ -2993,6 +3001,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
   const externalChatTurn = isPaperclipExternalChatTurn(context.paperclipWake);
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
     resumedSession,
+    conversationMode: context.conversationMode === true,
     // The task-context markdown is the authoritative brief on this lane; keep
     // the wake prompt's description copy out so the prompt carries it once.
     suppressIssueDescription: taskContextNote.length > 0,

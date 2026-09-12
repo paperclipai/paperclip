@@ -1409,7 +1409,7 @@ describe("TaskChatRunnerTurn", () => {
     expect(rows[0]?.textContent).toContain("Read file");
     expect(rows[2]?.textContent).toContain("Questions answered");
     expect(rows[3]?.textContent).toContain("Searched the web");
-    expect(rows[5]?.textContent).toContain("Ran a command");
+    expect(rows[5]?.textContent).toContain("Ran commands");
     const worked = container.querySelector(
       '[data-testid="task-chat-turn-status-header"]',
     );

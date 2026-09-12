@@ -48,6 +48,8 @@ export interface CodexAppServerDriverOptions {
     turnId: string;
     arguments: unknown;
   }) => Promise<unknown>;
+  /** Current server constraints; does not commit task status before the turn ends. */
+  completionFeedback?: (result: import("../../protocol/replay-contract.js").PrpStructuredRunResult) => Promise<string>;
   environment?: NodeJS.ProcessEnv;
   /** Filesystem that authoritatively admits the workspace path. */
   workingDirectoryAuthority?: CodexWorkingDirectoryAuthority;
