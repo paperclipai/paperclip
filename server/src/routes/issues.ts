@@ -1,3 +1,5 @@
+import { listWatchdogSignals } from "../services/watchdog-service-context.js";
+import { trustedWatchdogOrigin, trustedWatchdogContext } from "../middleware/watchdog-service-request.js";
 import { deliverConversationComments, isConversation } from "../services/agent-conversations.js";
 import { issueRecoveryActionReadModel } from "../services/issue-recovery-actions.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
@@ -3772,6 +3774,7 @@ export function issueRoutes(
       responsibleUserId: req.actor.onBehalfOfUserId ?? null,
       targetIssueId: issue.id,
       targetIssueIdentifier: issue.identifier ?? null,
+      authenticatedSource: req.actor.source,
       kind,
     });
     if (!decision || decision.allowed) return true;
@@ -7736,6 +7739,14 @@ export function issueRoutes(
   });
 
   router.get("/companies/:companyId/issues", async (req, res) => {
+    const watchdog = trustedWatchdogContext(req);
+    if (watchdog) {
+      const signals = await listWatchdogSignals(db, watchdog);
+      const query = typeof req.query.q === "string" ? req.query.q.toLowerCase() : "";
+      res.json(signals.filter((issue) => issue.title.toLowerCase().includes(query)));
+      return;
+    }
+
     const startedAt = Date.now();
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
@@ -11657,6 +11668,7 @@ export function issueRoutes(
         ...(taskBridgeOriginForActor(req) ?? {}),
         id: issueId,
         originRunId: createBody.originRunId ?? actor.runId,
+        ...trustedWatchdogOrigin(req),
         originIdentityContextId: req.actor.identityContextId ?? null,
         executionPolicy,
         ...(sourceTrust ? { sourceTrust } : {}),
@@ -17384,6 +17396,7 @@ export function issueRoutes(
         currentIssue.executionPolicy ?? null,
       );
       const shouldAutoApproveReviewComment =
+        !trustedWatchdogContext(req) &&
         currentIssue.status === "in_review" &&
         currentExecutionState?.status === "pending" &&
         actorMatchesExecutionParticipant(
@@ -17554,6 +17567,7 @@ export function issueRoutes(
           metadata: req.body.metadata ?? null,
           attachmentIds: req.body.attachmentIds,
           authorizationReason: commentAuthorizationReason,
+          watchdogContext: trustedWatchdogContext(req),
           sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
         };
         const add = (dbOrTx: Db = db) =>

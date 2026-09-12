@@ -1,3 +1,4 @@
+import { assertFixedProcessUnresolvedEnvironment, captureFixedProcessEnvironment } from "../adapters/process/fixed-command.js";
 import { AGENT_CHAT_DIRECTIVE, conversationReplay, isConversation, isConversationExecutionWake, isWaitingConversation, prepareConversationTurn, settleConversationTurn } from "./agent-conversations.js";
 import { PROCESS_IDENTITY_RECORDED, recordNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { legacyControllerBootId, legacyControllerClaim, renewLegacyControllerLease, hasLiveLegacyController, revokeExpiredLegacyController, watchLegacyControllerLease } from "./legacy-controller-lease.js";
@@ -20636,6 +20637,9 @@ export function heartbeatService(
           selectedEnvironmentForConfig?.driver ?? "local",
         );
       const aiBinding = agent.runtimeConfig?.aiConnection ? aiConnectionBindingSchema.parse(agent.runtimeConfig.aiConnection) : undefined;
+      const fixedProcessConfig = agent.adapterType === "process" ? agent.adapterConfig : {};
+      assertFixedProcessUnresolvedEnvironment(fixedProcessConfig, executionRunConfig,
+        [selectedEnvironmentForConfig?.envVars, projectContext?.env, routineEnvContext.env]);
       const { resolvedConfig, secretKeys, secretManifest } =
         await resolveExecutionRunAdapterConfig({
           managedAiCredentials: Boolean(aiBinding),
@@ -20657,6 +20661,7 @@ export function heartbeatService(
           secretsSvc,
           trustPreset,
         });
+      let approveFixedProcessEnvironment = captureFixedProcessEnvironment(fixedProcessConfig, resolvedConfig);
       if (aiBinding) {
         try {
           managedAiRuntime = await prepareManagedAiRuntime(db, { companyId: agent.companyId, agentId: agent.id, responsibleUserId, adapterType: agent.adapterType, binding: aiBinding, config: resolvedConfig });
@@ -21657,6 +21662,7 @@ export function heartbeatService(
         }
         return { dispatched: false };
       };
+      approveFixedProcessEnvironment(runtimeConfig);
       if (!executionTarget || executionTarget.kind === "local") {
         try {
           runScratch = await prepareHeartbeatRunScratch({
@@ -21701,6 +21707,9 @@ export function heartbeatService(
       } else {
         delete context.paperclipScratch;
       }
+      // Only controller-created scratch variables changed the checked environment.
+      approveFixedProcessEnvironment = captureFixedProcessEnvironment(fixedProcessConfig, runtimeConfig);
+      approveFixedProcessEnvironment(runtimeConfig);
       const gitExecutionEnv = await prepareGitHubExecutionEnvironment({
         target: executionTarget,
         cwd: executionWorkspace.cwd,
@@ -21743,6 +21752,9 @@ export function heartbeatService(
         };
         secretKeys.add("PAPERCLIP_GITHUB_BROKER_TOKEN");
       }
+      // Git credential transport is also controller-owned; no request override
+      // may change the result between this snapshot and process dispatch.
+      approveFixedProcessEnvironment = captureFixedProcessEnvironment(fixedProcessConfig, runtimeConfig);
       context.paperclipEnvironment = {
         id: selectedEnvironment.id,
         name: selectedEnvironment.name,
@@ -23633,6 +23645,7 @@ export function heartbeatService(
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(
                 (markDispatchStarted) => {
+                  approveFixedProcessEnvironment(runtimeConfig);
                   legacyAdapterEntered = true;
                   return adapter.execute({
                     runId: run.id,

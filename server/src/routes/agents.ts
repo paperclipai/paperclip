@@ -5,6 +5,7 @@ import { toolConnections } from "@paperclipai/db";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { assertAiConnectionCreateAccess, canInstallSharedAiConnectionForNewAgent, responsibleUserForAiRequest } from "./ai-connections.js";
 import { isAiConnectionCompatible } from "@paperclipai/shared";
+import { assertNoAgentFixedProcessConfiguration, assertAgentFixedProcessTarget } from "../middleware/fixed-process-configuration.js";
 import { applyConnectorSkills, resolveConnectorAssignments, annotateConnectorSkills, isConnectorSkill } from "../services/connector-runtime.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { paperclipRunnerTransitionConfig, normalizeLegacyRunnerProvider, isPaperclipRunnerProvider } from "@paperclipai/adapter-utils";
@@ -524,6 +525,12 @@ export function agentRoutes(
   const KNOWN_INSTRUCTIONS_BUNDLE_KEY_SET: ReadonlySet<string> = new Set(KNOWN_INSTRUCTIONS_BUNDLE_KEYS);
 
   const router = Router();
+  router.use((req, _res, next) => {
+    try {
+      assertNoAgentFixedProcessConfiguration(req);
+      next();
+    } catch (error) { next(error); }
+  });
   const svc = agentService(db);
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
@@ -3090,6 +3097,10 @@ export function agentRoutes(
   router.param("id", async (req, _res, next, rawId) => {
     try {
       req.params.id = await normalizeAgentReference(req, String(rawId));
+      if (req.actor.type === "agent" && req.method !== "GET") {
+        const target = await svc.getById(req.params.id);
+        if (target) assertAgentFixedProcessTarget({ actor: req.actor, method: req.method, body: req.body, query: req.query, path: `/api${req.path}` }, target);
+      }
       next();
     } catch (err) {
       next(err);
@@ -4069,6 +4080,16 @@ export function agentRoutes(
         res.json(buildLowTrustSelfView(agent));
         return;
       }
+    }
+    const fixedConfig = parseObject(agent.adapterConfig);
+    if (isSelf && req.actor.type === "agent" && req.actor.source === "agent_key" &&
+        agent.adapterType === "process" && fixedConfig.fixedCommand === true) {
+      res.json({ id: agent.id, adapterType: agent.adapterType, status: agent.status,
+        lastHeartbeatAt: agent.lastHeartbeatAt,
+        adapterConfig: { fixedCommand: true, command: fixedConfig.command, args: fixedConfig.args, cwd: fixedConfig.cwd },
+        runtimeConfig: { heartbeat: { maxConcurrentRuns: parseObject(parseObject(agent.runtimeConfig).heartbeat).maxConcurrentRuns } },
+      });
+      return;
     }
     const canReadSensitiveDetail = isSelf
       ? true

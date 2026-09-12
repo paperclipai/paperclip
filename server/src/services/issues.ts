@@ -1,3 +1,4 @@
+import { loadWatchdogServiceContext, assertWatchdogCommentTarget, type WatchdogServiceContext } from "./watchdog-service-context.js";
 import { documentService } from "./documents.js";
 import { parseTaskSearch, taskSearchCtes, taskSearchScore } from "./task-search.js";
 import { createdFromIssueCondition } from "./issue-creation-origin.js";
@@ -96,7 +97,7 @@ import {
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
-import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { isForeignKeyViolation } from "../db-errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
@@ -11964,6 +11965,7 @@ export function issueService(db: Db) {
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
         clientRequestId?: string;
+        watchdogContext?: WatchdogServiceContext;
       },
       dbOrTx: any = db,
     ): Promise<IssueComment> {
@@ -11980,11 +11982,31 @@ export function issueService(db: Db) {
               .where(eq(issues.id, issueId))
               .for("update");
             return addComment(issueId, body, actor, options, tx);
+          }).catch(async (error) => {
+            if (options?.watchdogContext) {
+              const service = options.watchdogContext;
+              await db.insert(activityLog).values({ companyId: service.companyId, actorType: "agent",
+                actorId: service.agentId, agentId: service.agentId, runId: service.runId,
+                action: "watchdog.service_action_rejected", entityType: "issue", entityId: issueId,
+                details: { stage: "comment-insert" } });
+            }
+            throw error;
           });
         return options?.authorizationReason ===
           CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON
           ? retryNativeChatReviewPresentation(append)
           : append();
+      }
+      if (options?.watchdogContext) {
+        // The outer transaction holds the issue row lock. Re-read provenance,
+        // assignment, status and the live run immediately before inserting.
+        const service = await loadWatchdogServiceContext(dbOrTx, {
+          source: "agent_jwt", companyId: options.watchdogContext.companyId,
+          agentId: actor.agentId, runId: actor.runId ?? undefined,
+        });
+        if (!service) throw forbidden("Watchdog service authorization no longer exists.");
+        const signal = await assertWatchdogCommentTarget(dbOrTx, service, issueId);
+        if (!body.includes(signal.marker)) throw forbidden("Watchdog comment signal changed.");
       }
       const issue = await dbOrTx
         .select({ companyId: issues.companyId, conversationAgentId: issues.conversationAgentId })
