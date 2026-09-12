@@ -152,6 +152,74 @@ describe("issue graph liveness classifier", () => {
     expect(findings).toEqual([]);
   });
 
+  it.each([
+    ["board", "board"],
+    ["user", { userId: "board-user-1" }],
+    ["agent", { agentId: "00000000-0000-4000-8000-000000000001" }],
+  ])("treats a valid %s unblock descriptor as the external path for a blocked leaf", (_ownerKind, owner) => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Externally owned unblock work",
+          status: "blocked",
+          assigneeAgentId: null,
+          unblockDescriptor: { owner, action: "Obtain the external approval" },
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
+  it("does not accept malformed descriptors as a comment-free unblock path", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Malformed external unblock work",
+          status: "blocked",
+          assigneeAgentId: null,
+          unblockDescriptor: { owner: "board", action: "   " },
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.state).toBe("blocked_by_unassigned_issue");
+  });
+
+  it("keeps terminal dependency findings ahead of an external descriptor on the blocked issue", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue({ unblockDescriptor: { owner: "board", action: "Review the external dependency" } }),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Cancelled first-class dependency",
+          status: "cancelled",
+          assigneeAgentId: null,
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      state: "blocked_by_cancelled_issue",
+      recoveryIssueId: blockerId,
+    });
+  });
+
   it("detects an assigned backlog blocker leaf with no action path", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [
