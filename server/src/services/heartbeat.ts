@@ -749,6 +749,8 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length;
 const NULL_ENVIRONMENT_PROCESS_LOSS_RETRY_REASON = "retry_transient_environment_failure";
 const NULL_ENVIRONMENT_PROCESS_LOSS_WAKE_REASON = "process_lost_environment_retry";
+const PROCESS_LOST_RETRY_REASON = "process_lost_retry";
+const PROCESS_LOST_RETRY_WAKE_REASON = "process_lost_retry";
 const NULL_ENVIRONMENT_PROCESS_LOSS_RETRY_DELAYS_MS = [60_000, 180_000, 540_000] as const;
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 2;
 const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set(["accepted", "answered", "rejected"]);
@@ -13894,13 +13896,27 @@ export function heartbeatService(
     agent: typeof agents.$inferSelect,
     now: Date,
   ) {
-    // Native sessions have their own fenced same-run controller. Legacy
-    // bootstrap recovery shares the durable delay and incident counter with
-    // transient retries; process loss must not open a second retry budget.
-    if (run.runtimeMode === "native" || legacyExecutionNeedsReconciliation(run))
-      return null;
-    const scheduled = await scheduleBoundedRetryForRun(run, agent, { now });
-    return scheduled.outcome === "scheduled" ? scheduled.run : null;
+    // Native sessions have their own fenced same-run controller. The legacy
+    // process-loss path runs only after the reaper has already classified the
+    // run as process_lost with a CAS write, so the reconciliation gate that
+    // protects ambiguous bootstrap failures does not apply here. We still
+    // honor the de-facto retry budget by incrementing processLossRetryCount
+    // on the successor.
+    if (run.runtimeMode === "native") return null;
+    const successorLossRetryCount = (run.processLossRetryCount ?? 0) + 1;
+    const scheduled = await scheduleBoundedRetryForRun(run, agent, {
+      now,
+      retryReason: PROCESS_LOST_RETRY_REASON,
+      wakeReason: PROCESS_LOST_RETRY_WAKE_REASON,
+    });
+    if (scheduled.outcome !== "scheduled" || !scheduled.run) return null;
+    // Mirror the budget that the reaper's alreadyRetriedOnce guard reads.
+    const [bumped] = await db
+      .update(heartbeatRuns)
+      .set({ processLossRetryCount: successorLossRetryCount })
+      .where(eq(heartbeatRuns.id, scheduled.run.id))
+      .returning();
+    return bumped ?? { ...scheduled.run, processLossRetryCount: successorLossRetryCount };
   }
 
   function toHotRestartIntentRun(input: {
@@ -18554,13 +18570,25 @@ export function heartbeatService(
           const withAllocationDiagnostic = allocationDiagnostic
             ? { ...result, environmentAllocationDiagnostic: allocationDiagnostic }
             : result;
+          // The process-loss dispatch lost the process before any provider
+          // work could start. Mark the failed run as a safe bootstrap so the
+          // legacy retry path (process_lost_retry / interaction_continuation_infra_retry)
+          // is not blocked by legacyExecutionNeedsReconciliation. The
+          // null-env ladder does not consume this field.
+          const withBootstrapEvidence = {
+            ...withAllocationDiagnostic,
+            executionRecovery: {
+              kind: "bootstrap" as const,
+              providerWorkStarted: false,
+            },
+          };
           return unmanagedBackgroundTaskEvidence
             ? {
-              ...withAllocationDiagnostic,
+              ...withBootstrapEvidence,
               stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
               unmanagedBackgroundTask: unmanagedBackgroundTaskEvidence,
             }
-            : withAllocationDiagnostic;
+            : withBootstrapEvidence;
         })(),
         ...(allocationDiagnosticLine
           ? { stderrExcerpt: appendWithByteCap(run.stderrExcerpt ?? "", allocationDiagnosticLine, MAX_EXCERPT_BYTES) }
