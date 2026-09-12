@@ -2409,7 +2409,8 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     await queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(conversationIssueId) });
   }, [conversationIssueId, queryClient]);
 
-  const handleInterruptConversationQueuedRun = useCallback(async (runId: string) => {
+  const handleInterruptConversationQueuedRun = useCallback(async (runId: string | null) => {
+    if (!runId) throw new Error("The queued messages changed. Refresh and try again.");
     await heartbeatsApi.cancel(runId);
     await invalidateConversation();
   }, [invalidateConversation]);

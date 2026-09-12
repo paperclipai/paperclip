@@ -386,7 +386,7 @@ export const issuesApi = {
     ),
   interruptQueuedComments: (
     id: string,
-    data: { queueId: string; targetRunId: string; revision: string },
+    data: { queueId: string; targetRunId: string | null; revision: string },
   ) => api.post<IssueQueuedCommentQueue>(`/issues/${id}/queued-comments/interrupt`, data),
   steerQueuedComment: (
     id: string,

@@ -1052,6 +1052,18 @@ export function createPostgresWakeQueueAdapter(db: Db, deps: WakeQueuePostgresAd
           throw new Error(`wake-queue: pre-drain decision ${preDrain.kind} reached without an issue row`);
         }
 
+        // Enqueue does not stamp executionRunId until dispatch. A concurrent
+        // queued successor still owns the next turn, including during a late
+        // finalization/stranded-queue retry under this issue lock.
+        const [successor] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          sql`${heartbeatRuns.id} <> ${run.id}`,
+          or(eq(heartbeatRuns.nativeIssueId, issueRow.id),
+            sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueRow.id}`),
+          inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+        )).limit(1);
+        if (successor) return { outcome: { kind: "released" }, postCommitEffects: [], run: runSnapshot };
+
         if (preDrain.kind === "blocked") {
           return {
             outcome: {
