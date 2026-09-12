@@ -50,6 +50,10 @@ import type { PluginJobStore } from "./plugin-job-store.js";
 import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
+import {
+  createPluginStreamNotificationHandler,
+  type PluginStreamBus,
+} from "./plugin-stream-bus.js";
 import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
 
 const execFileAsync = promisify(execFile);
@@ -349,6 +353,8 @@ export interface PluginInstallOptions {
 export interface PluginRuntimeServices {
   /** Worker process manager for spawning and managing plugin workers. */
   workerManager: PluginWorkerManager;
+  /** Process-scoped bus shared with the plugin SSE routes. */
+  streamBus?: PluginStreamBus;
   /** Event bus for registering plugin event subscriptions. */
   eventBus: PluginEventBus;
   /** Job scheduler for registering plugin cron jobs. */
@@ -2224,6 +2230,7 @@ export function pluginLoader(
 
     const {
       workerManager,
+      streamBus,
       eventBus,
       jobScheduler,
       jobStore,
@@ -2321,6 +2328,9 @@ export function pluginLoader(
         // set is exactly the plugin's configured companies — proactive access
         // never reaches an unconfigured company.
         proactiveCompanyScopes: configRows.map((row) => row.companyId),
+        onStreamNotification: streamBus
+          ? createPluginStreamNotificationHandler(pluginId, streamBus)
+          : undefined,
       };
 
       // Repo-local plugin installs can resolve workspace TS sources at runtime
