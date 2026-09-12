@@ -1,3 +1,4 @@
+import { assertFixedProcessExecution } from "./fixed-command.js";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "../types.js";
 import {
   asString,
@@ -16,6 +17,7 @@ import {
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, config, onLog, onMeta, authToken } = ctx;
+  assertFixedProcessExecution(agent.adapterConfig, config, ctx.context);
   const command = asString(config.command, "");
   if (!command) throw new Error("Process adapter missing command");
 

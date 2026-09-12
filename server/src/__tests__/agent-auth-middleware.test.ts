@@ -31,7 +31,7 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 }
 
 function createDbState(input: {
-  agent: { id: string; companyId: string; status?: string };
+  agent: { id: string; companyId: string; status?: string; adapterType?: string; adapterConfig?: Record<string, unknown> };
   agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
   run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null };
 }) {
@@ -40,6 +40,8 @@ function createDbState(input: {
     id: input.agent.id,
     companyId: input.agent.companyId,
     status: input.agent.status ?? "active",
+    adapterType: input.agent.adapterType ?? "process",
+    adapterConfig: input.agent.adapterConfig ?? {},
   };
   const keyRow = input.agentKey
     ? {
@@ -102,6 +104,10 @@ function createApp(db: any, deploymentMode: "authenticated" | "local_trusted" = 
   app.get("/actor", (req, res) => {
     res.json(req.actor);
   });
+  app.post(["/api/agents/:id/wakeup", "/api/agents/:id/heartbeat/invoke"], (req, res) => {
+    res.status(202).json({ actorSource: req.actor.source, trigger: req.body });
+  });
+  app.get("/api/agents/:id", (_req, res) => { res.json({ status: "idle" }); });
   app.post("/mcp/gateways/:gatewayPublicId", (req, res) => {
     res.json({ reachedGatewayProtocol: true, actorType: req.actor.type });
   });
@@ -458,6 +464,63 @@ describe("agent auth middleware", () => {
       onBehalfOfUserId: "user-key",
       source: "agent_key",
     });
+  });
+
+  it("limits fixed process keys to parameter-free self invocation over HTTP", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = "pcp_fixed_process_test_key";
+    const { db } = createDbState({
+      agent: { id: agentId, companyId, adapterType: "process", adapterConfig: { fixedCommand: true } },
+      agentKey: { id: randomUUID(), agentId, companyId, keyHash: hashToken(token), responsibleUserId: "user-key" },
+    });
+    const app = createApp(db);
+    expect((await request(app).get(`/api/agents/${agentId}`).set("Authorization", `Bearer ${token}`)).status).toBe(200);
+    expect((await request(app).get(`/api/agents/${randomUUID()}`).set("Authorization", `Bearer ${token}`)).status).toBe(403);
+    expect((await request(app).get(`/api/agents/${agentId}/configuration`).set("Authorization", `Bearer ${token}`)).status).toBe(403);
+    for (const suffix of ["wakeup", "heartbeat/invoke"]) {
+      const path = `/api/agents/${agentId}/${suffix}`;
+      const accepted = await request(app).post(path).set("Authorization", `Bearer ${token}`)
+        .send({ idempotencyKey: "fixed-tick" });
+      expect(accepted.status).toBe(202);
+      expect(accepted.body).toEqual({ actorSource: "agent_key", trigger: { idempotencyKey: "fixed-tick" } });
+      for (const body of [
+        { command: "/usr/bin/true" }, { args: ["changed"] }, { cwd: "/var/empty" },
+        { payload: { issueId: randomUUID() } }, { issueId: randomUUID() },
+        { contextSnapshot: { adapterConfig: { command: "/usr/bin/true" } } },
+        { failedRunId: randomUUID() }, { reason: "retry_failed_run" },
+        { debug: { providerTrace: "raw" } }, { forceFreshSession: true },
+        { idempotencyKey: {} }, [],
+      ]) {
+        expect((await request(app).post(path).set("Authorization", `Bearer ${token}`).send(body)).status).toBe(403);
+      }
+      expect((await request(app).post(`${path}?issueId=other`).set("Authorization", `Bearer ${token}`).send({})).status).toBe(403);
+    }
+    for (const [method, path, body] of [
+      ["patch", `/api/agents/${agentId}`, { adapterConfig: { fixedCommand: false } }],
+      ["patch", `/api/agents/${agentId}`, { adapterType: "codex_local" }],
+      ["patch", `/api/agents/${agentId}/instructions-path`, { path: "/var/empty" }],
+      ["post", `/api/agents/${agentId}/config-revisions/revert`, {}],
+      ["post", `/api/agents/${randomUUID()}/wakeup`, {}],
+      ["post", `/api/companies/${companyId}/issues`, { assigneeAdapterOverrides: { adapterConfig: { command: "/usr/bin/true" } } }],
+      ["post", "/api/agents/me/secrets/DOKPLOY_KEY/value", {}],
+    ] as const) {
+      expect((await request(app)[method](path).set("Authorization", `Bearer ${token}`).send(body)).status).toBe(403);
+    }
+    // A claimed run header cannot convert a permanent key into a run JWT.
+    expect((await request(app).get("/actor").set("Authorization", `Bearer ${token}`)
+      .set("X-Paperclip-Run-Id", randomUUID())).status).toBe(403);
+  });
+
+  it.each(["claude_local", "codex_local", "process"])("preserves ordinary %s agent-key access", async (adapterType) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = "pcp_ordinary_profile_test_key";
+    const { db } = createDbState({
+      agent: { id: agentId, companyId, adapterType, adapterConfig: adapterType === "process" ? {} : { fixedCommand: true } },
+      agentKey: { id: randomUUID(), agentId, companyId, keyHash: hashToken(token), responsibleUserId: "user-key" },
+    });
+    expect((await request(createApp(db)).get("/actor").set("Authorization", `Bearer ${token}`)).status).toBe(200);
   });
 
   it("rejects agent keys that lack a responsible user binding and audits the denial", async () => {

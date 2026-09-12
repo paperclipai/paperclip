@@ -1,3 +1,4 @@
+import { loadWatchdogServiceContext, assertWatchdogCommentTarget } from "./watchdog-service-context.js";
 import { and, count, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns } from "@paperclipai/db";
@@ -77,6 +78,7 @@ export async function observeCrossIssueInfluence(
     targetIssueId: string;
     targetIssueIdentifier?: string | null;
     kind: CrossIssueInfluenceKind;
+    authenticatedSource?: string;
     now?: Date;
   },
 ): Promise<CrossIssueInfluenceDecision | null> {
@@ -110,10 +112,16 @@ export async function observeCrossIssueInfluence(
     }
 
     const sourceIssueId = readRunSourceIssueId(run.contextSnapshot);
-    if (!sourceIssueId) throw crossIssueInfluenceRunContextError();
+    if (!sourceIssueId) {
+      const service = input.kind === "comment" ? await loadWatchdogServiceContext(tx as unknown as Db, {
+        source: input.authenticatedSource, companyId: input.companyId, agentId: input.agentId, runId: input.runId,
+      }) : null;
+      if (!service) throw crossIssueInfluenceRunContextError();
+      await assertWatchdogCommentTarget(tx as unknown as Db, service, input.targetIssueId);
+    }
     if (
       sourceIssueId === input.targetIssueId ||
-      (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
+      (input.targetIssueIdentifier && sourceIssueId?.toUpperCase() === input.targetIssueIdentifier.toUpperCase())
     ) {
       return null;
     }
