@@ -119,6 +119,7 @@ import {
 import { initializeCloudRuntimeIdentity } from "./services/cloud-runtime-identity.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
+import { startRunScratchSweeper } from "./services/run-scratch-sweeper.js";
 import {
   createEmbeddedPostgresSupervisor,
   type EmbeddedPostgresSupervisor,
@@ -1170,6 +1171,7 @@ async function startServerWithDatabaseTeardown(
     heartbeatSchedulerInterval = setInterval(callback, config.heartbeatSchedulerIntervalMs);
     heartbeatSchedulerInterval?.unref?.();
   };
+  const runScratchSweeper = startRunScratchSweeper({ db: db as any });
   const externalObjects = externalObjectService(db as any, {
     pluginWorkerManager,
     enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
@@ -1592,6 +1594,29 @@ async function startServerWithDatabaseTeardown(
     // restart, so a leaked sandbox does not stay allocated across the restart.
     await runEnvironmentLeaseCleanupSweep(0);
 
+    // Run the orphaned run-scratch sweep once at startup, so scratch dirs that
+    // leaked when a previous process crashed mid-run (their `finally` never
+    // executed) are removed before timer ticks start.
+    await runScratchSweeper
+      .sweepOnce()
+      .then((result) => {
+        if (result.removed > 0 || result.failed.length > 0) {
+          logger.info(
+            {
+              scanned: result.scanned,
+              removed: result.removed,
+              removedDirs: result.removedDirs,
+              skippedLiveRun: result.skippedLiveRun,
+              failed: result.failed,
+            },
+            "startup orphaned run scratch sweep complete",
+          );
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "startup orphaned run scratch sweep failed");
+      });
+
     const runRetentionSweep = async () => {
       const activeCompanies = await db.select({ id: companies.id }).from(companies).where(eq(companies.status, "active"));
       let archived = 0;
@@ -1905,7 +1930,9 @@ async function startServerWithDatabaseTeardown(
   ) => {
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
+    heartbeatSchedulerStopped = true;
     clearInterval(executionControlInterval);
+    runScratchSweeper.stop();
     if (heartbeatSchedulerInterval) {
       clearInterval(heartbeatSchedulerInterval);
       heartbeatSchedulerInterval = null;

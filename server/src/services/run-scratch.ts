@@ -49,7 +49,9 @@ function isPathInside(parent: string, child: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-async function readMarker(markerPath: string): Promise<HeartbeatRunScratchMetadata | null> {
+export async function readHeartbeatRunScratchMarker(
+  markerPath: string,
+): Promise<HeartbeatRunScratchMetadata | null> {
   try {
     const parsed = JSON.parse(await fs.readFile(markerPath, "utf8")) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
@@ -139,7 +141,7 @@ export async function cleanupHeartbeatRunScratch(input: {
     return { removed: false, dir, reason: "missing" };
   }
 
-  const marker = await readMarker(path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER));
+  const marker = await readHeartbeatRunScratchMarker(path.join(dir, HEARTBEAT_RUN_SCRATCH_MARKER));
   if (!marker) return { removed: false, dir, reason: "unmarked" };
   if (
     marker.companyId !== input.scratch.metadata.companyId ||
