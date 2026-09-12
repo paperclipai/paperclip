@@ -23,7 +23,7 @@ export const principalPermissionGrants = pgTable(
     grantOrigin: text("grant_origin")
       .notNull()
       .default("explicit")
-      .$type<"explicit" | "role_default">(),
+      .$type<"explicit" | "role_default" | "legacy_unknown">(),
     grantedByUserId: text("granted_by_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -41,7 +41,7 @@ export const principalPermissionGrants = pgTable(
     ),
     grantOriginCheck: check(
       "principal_permission_grants_origin_check",
-      sql`${table.grantOrigin} in ('explicit', 'role_default')`,
+      sql`${table.grantOrigin} in ('explicit', 'role_default', 'legacy_unknown')`,
     ),
   }),
 );

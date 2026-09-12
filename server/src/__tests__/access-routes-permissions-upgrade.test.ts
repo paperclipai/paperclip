@@ -261,6 +261,50 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
     )).resolves.toBe(false);
   });
 
+  it("preserves ambiguous legacy grants while limiting them to the current role", async () => {
+    const { company, owner } = await createCompanyWithOwner(db);
+    const member = await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: `legacy-admin-${randomUUID()}`,
+      status: "active",
+      membershipRole: "admin",
+    }).returning().then((rows) => rows[0]!);
+    await db.insert(principalPermissionGrants).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: member.principalId,
+      permissionKey: "tools:admin",
+      grantOrigin: "legacy_unknown",
+    });
+
+    await expect(ownerHasRequiredGrant(
+      db,
+      member.principalId,
+      [company.id],
+      "tools:manage",
+    )).resolves.toBe(true);
+
+    const res = await request(await createApp(db, company.id, owner.principalId))
+      .patch(`/api/companies/${company.id}/members/${member.id}`)
+      .send({ membershipRole: "operator" });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+
+    const preserved = await db
+      .select()
+      .from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, member.principalId));
+    expect(preserved).toEqual(expect.arrayContaining([
+      expect.objectContaining({ permissionKey: "tools:admin", grantOrigin: "legacy_unknown" }),
+    ]));
+    await expect(ownerHasRequiredGrant(
+      db,
+      member.principalId,
+      [company.id],
+      "tools:manage",
+    )).resolves.toBe(false);
+  });
+
   it("sweeps personal connection access when the member route suspends a user", async () => {
     const { company, owner } = await createCompanyWithOwner(db);
     const member = await db.insert(companyMemberships).values({

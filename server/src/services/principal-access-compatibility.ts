@@ -22,7 +22,7 @@ export async function insertMissingPrincipalGrants(
     principalId: string;
     grants: GrantInput[];
     grantedByUserId: string | null;
-    grantOrigin?: "explicit" | "role_default";
+    grantOrigin?: "explicit" | "role_default" | "legacy_unknown";
   },
 ): Promise<number> {
   if (input.grants.length === 0) return 0;

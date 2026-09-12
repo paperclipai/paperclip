@@ -10,6 +10,7 @@ import type {
   BoardPermissionKey,
   PermissionKey,
 } from "@paperclipai/shared";
+import { grantsForHumanRole, normalizeHumanRole } from "../services/company-member-roles.js";
 
 export function isBoardKeyWriteAction(action: BoardPermissionKey) {
   return /:(?:write|manage|control|operate|run|decide|create|import_export)$/.test(action);
@@ -135,6 +136,8 @@ export async function ownerHasRequiredGrant(
     .select({
       companyId: principalPermissionGrants.companyId,
       permissionKey: principalPermissionGrants.permissionKey,
+      grantOrigin: principalPermissionGrants.grantOrigin,
+      membershipRole: companyMemberships.membershipRole,
     })
     .from(principalPermissionGrants)
     .innerJoin(companyMemberships, and(
@@ -151,6 +154,13 @@ export async function ownerHasRequiredGrant(
     ));
   const liveKeysByCompany = new Map<string, Set<string>>();
   for (const row of rows) {
+    if (row.grantOrigin === "legacy_unknown") {
+      const currentRolePermissionKeys = new Set(
+        grantsForHumanRole(normalizeHumanRole(row.membershipRole))
+          .map((grant) => grant.permissionKey),
+      );
+      if (!currentRolePermissionKeys.has(row.permissionKey as PermissionKey)) continue;
+    }
     const liveKeys = liveKeysByCompany.get(row.companyId) ?? new Set<string>();
     liveKeys.add(row.permissionKey);
     liveKeysByCompany.set(row.companyId, liveKeys);

@@ -27,7 +27,7 @@ async function migrationStatements() {
 }
 
 describeEmbeddedPostgres("principal permission grant origin migration", () => {
-  it("preserves ambiguous historical grants as explicit", async () => {
+  it("preserves ambiguous historical grants with unknown provenance", async () => {
     const database = await startEmbeddedPostgresTestDatabase("paperclip-grant-origin-");
     cleanups.push(database.cleanup);
     const sql = postgres(database.connectionString, { max: 1, onnotice: () => {} });
@@ -95,6 +95,19 @@ describeEmbeddedPostgres("principal permission grant origin migration", () => {
       for (const statement of await migrationStatements()) {
         await sql.unsafe(statement);
       }
+      await sql.unsafe(`
+        INSERT INTO principal_permission_grants (
+          id, company_id, principal_type, principal_id, permission_key, scope, granted_by_user_id
+        ) VALUES (
+          '00000000-0000-4000-8000-000000000020',
+          '00000000-0000-4000-8000-000000000001',
+          'user',
+          'new-user',
+          'tools:use',
+          NULL,
+          NULL
+        )
+      `);
 
       const rows = await sql.unsafe<Array<{ id: string; grant_origin: string }>>(`
         SELECT id, grant_origin
@@ -102,16 +115,17 @@ describeEmbeddedPostgres("principal permission grant origin migration", () => {
         ORDER BY id
       `);
       expect(rows).toEqual([
-        { id: "00000000-0000-4000-8000-000000000010", grant_origin: "explicit" },
-        { id: "00000000-0000-4000-8000-000000000011", grant_origin: "explicit" },
-        { id: "00000000-0000-4000-8000-000000000012", grant_origin: "explicit" },
-        { id: "00000000-0000-4000-8000-000000000013", grant_origin: "explicit" },
-        { id: "00000000-0000-4000-8000-000000000014", grant_origin: "explicit" },
-        { id: "00000000-0000-4000-8000-000000000015", grant_origin: "explicit" },
-        { id: "00000000-0000-4000-8000-000000000016", grant_origin: "explicit" },
-        { id: "00000000-0000-4000-8000-000000000017", grant_origin: "explicit" },
-        { id: "00000000-0000-4000-8000-000000000018", grant_origin: "explicit" },
-        { id: "00000000-0000-4000-8000-000000000019", grant_origin: "explicit" },
+        { id: "00000000-0000-4000-8000-000000000010", grant_origin: "legacy_unknown" },
+        { id: "00000000-0000-4000-8000-000000000011", grant_origin: "legacy_unknown" },
+        { id: "00000000-0000-4000-8000-000000000012", grant_origin: "legacy_unknown" },
+        { id: "00000000-0000-4000-8000-000000000013", grant_origin: "legacy_unknown" },
+        { id: "00000000-0000-4000-8000-000000000014", grant_origin: "legacy_unknown" },
+        { id: "00000000-0000-4000-8000-000000000015", grant_origin: "legacy_unknown" },
+        { id: "00000000-0000-4000-8000-000000000016", grant_origin: "legacy_unknown" },
+        { id: "00000000-0000-4000-8000-000000000017", grant_origin: "legacy_unknown" },
+        { id: "00000000-0000-4000-8000-000000000018", grant_origin: "legacy_unknown" },
+        { id: "00000000-0000-4000-8000-000000000019", grant_origin: "legacy_unknown" },
+        { id: "00000000-0000-4000-8000-000000000020", grant_origin: "explicit" },
       ]);
     } finally {
       await sql.end();

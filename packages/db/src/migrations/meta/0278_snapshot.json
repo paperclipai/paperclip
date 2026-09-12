@@ -35518,7 +35518,7 @@
       "checkConstraints": {
         "principal_permission_grants_origin_check": {
           "name": "principal_permission_grants_origin_check",
-          "value": "\"principal_permission_grants\".\"grant_origin\" in ('explicit', 'role_default')"
+          "value": "\"principal_permission_grants\".\"grant_origin\" in ('explicit', 'role_default', 'legacy_unknown')"
         }
       },
       "isRLSEnabled": false
