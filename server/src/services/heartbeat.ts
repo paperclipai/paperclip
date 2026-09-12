@@ -25344,11 +25344,16 @@ export function heartbeatService(
     options: { suppressImmediateRecovery?: boolean } = {},
   ) {
     try {
+      // Some release paths carry only the durable run key. Read authoritative
+      // cancellation evidence before deciding whether automatic recovery is allowed.
+      const latestRun = options.suppressImmediateRecovery ? null : await getRun(run.id);
+      const operatorCancelled = latestRun?.companyId === run.companyId
+        && isOperatorCancelledRun(latestRun, latestRun.agentId);
       const { postCommitEffects } = await wakeQueue.releaseIssueExecution({
         companyId: run.companyId,
         runId: run.id,
         now: new Date(),
-        suppressImmediateRecovery: options.suppressImmediateRecovery || isOperatorCancelledRun(run, run.agentId),
+        suppressImmediateRecovery: options.suppressImmediateRecovery || operatorCancelled,
       });
       await applyWakeQueuePostCommitEffects(postCommitEffects);
     } catch (error) {
