@@ -118,7 +118,10 @@ export async function buildExecutionContinuation(input: {
   const triggerInteraction = interactions.find(
     (row) => row.id === input.context.interactionId,
   );
+  const explicitContinuation = object(input.context.explicitUserContinuation);
+  const explicitUserSource = string(explicitContinuation.previousRunId);
   const sourceRunId =
+    explicitUserSource ??
     triggerInteraction?.sourceRunId ??
     string(input.context.retryOfRunId) ??
     string(input.context.previousRunId);
@@ -137,7 +140,7 @@ export async function buildExecutionContinuation(input: {
       )[0]
     : null;
   if (sourceRunId && !sourceRun)
-    throw new Error("continuation_source_context_missing");
+    throw new Error(explicitUserSource ? "continuation_user_authorization_missing" : "continuation_source_context_missing");
   const originCommentIds = [
     ...new Set([
       ...continuationOriginCommentIds(input.context),
@@ -259,8 +262,6 @@ export async function buildExecutionContinuation(input: {
     ["succeeded", "failed", "timed_out", "interrupted", "cancelled"].includes(run.status) &&
     !(run.status === "cancelled" && run.errorCode === "execution_reconciliation_required"),
   );
-  const explicitContinuation = object(input.context.explicitUserContinuation);
-  const explicitUserSource = string(explicitContinuation.previousRunId);
   if (explicitUserSource) {
     const predecessor = priorRuns.find(run => run.id === explicitUserSource &&
       ["failed", "timed_out", "interrupted", "cancelled"].includes(run.status));
@@ -289,6 +290,7 @@ export async function buildExecutionContinuation(input: {
         eq(agentWakeupRequests.status, "coalesced"),
         sql`${agentWakeupRequests.payload}->>'issueId' = ${issueId}`,
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null`,
+        input.runId ? eq(agentWakeupRequests.runId, input.runId) : undefined,
       )) : [];
     const authorization = continuationAuthorizations.find(value => failedRunId
           ? value.failedRunId === failedRunId && retryWakes.some(wake =>

@@ -1,6 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "@/i18n";
-import { Link } from "react-router-dom";
 import type { ExecutionBlocker } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { activityApi } from "../api/activity";
@@ -32,18 +31,15 @@ export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried 
     },
   });
   return (
-    <div role="status" className="px-(--sz-execution-blocker-inline) py-(--sz-execution-blocker-block) text-sm text-muted-foreground">
-      <span>{t("localizationTaskExecution.cannotStart")} {blocker.nextAction}</span>{" "}
+    <div role="status" aria-label={t("sep13Recovery.label")} className="mx-(--sz-execution-blocker-inline) my-(--sz-execution-blocker-block) flex flex-wrap items-center justify-between execution-blocker-notice border border-border bg-muted text-foreground">
+      <span>{blocker.cause === "legacy_execution_requires_reconciliation" ? t("sep13Recovery.stopped") : blocker.nextAction}</span>
       {failedRun && (
         <Button variant="outline" size="sm" disabled={retry.isPending} onClick={() => retry.mutate()}>
           {retry.isPending ? t("sep12Screens.retrying") : t("sep12Screens.retry")}
         </Button>
-      )}{" "}
-      {blocker.runId && blocker.agentId && (
-        <Link className="underline" to={`/agents/${blocker.agentId}/runs/${blocker.runId}`}>{t("localizationTaskExecution.viewStoppedRun")}</Link>
       )}
       {retry.isError && (
-        <p role="alert" className="text-destructive">{retry.error.message}</p>
+        <p role="alert" className="w-full text-destructive">{retry.error.message}</p>
       )}
     </div>
   );

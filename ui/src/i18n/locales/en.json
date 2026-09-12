@@ -17282,5 +17282,12 @@
   "sep13Marker": {
     "aiAccountNeedsRepair": "The selected AI account is unavailable. Fix it in the connection card.",
     "aiAccountStoppedRun": "This run stopped because its AI account was unavailable."
+  },
+  "sep13Auth": {
+    "prepareFailed": "Could not prepare sign-in. Reload this page to try again."
+  },
+  "sep13Recovery": {
+    "label": "Task recovery",
+    "stopped": "Automatic recovery of this task stopped."
   }
 }

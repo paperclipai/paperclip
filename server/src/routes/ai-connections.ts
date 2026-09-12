@@ -1,3 +1,4 @@
+import { supportsLocalAiLogin } from "../services/local-ai-login-policy.js";
 import { readVerifiedLocalAiCredential } from "../services/local-ai-credentials.js";
 import { localAiLoginService } from "../services/local-ai-login.js";
 import { z } from "zod";
@@ -165,7 +166,10 @@ export async function validateAiApiKey(
     );
 }
 
-export function aiConnectionRoutes(db: Db) {
+export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLocalAiLogin>[0] = {}) {
+  function assertLocalLoginAvailable() {
+    if (!supportsLocalAiLogin(options)) throw unprocessable("Server-host subscription sign-in is unavailable on this hosted instance. Choose a supported sign-in environment or use an API key.");
+  }
   const router = Router();
   const service = aiConnectionService(db);
   const localLogin = localAiLoginService(db);
@@ -176,22 +180,27 @@ export function aiConnectionRoutes(db: Db) {
       throw forbidden("Only the local operator can connect this machine's CLI account.");
   }
   router.post("/companies/:companyId/ai-connections/local/attempts", validate(localAiLoginStartSchema), async (req, res) => {
-    assertLocalOperator(req);
     const companyId = req.params.companyId as string;
     const { restart, ...intent } = localAiLoginStartSchema.parse(req.body);
+    assertLocalLoginAvailable();
     const userId = await assertAiConnectionCreateAccess(db, req, companyId, intent);
+    res.setHeader("Cache-Control", "no-store");
     res.status(201).json(await localLogin.start(companyId, userId, intent, restart));
   });
   router.post("/companies/:companyId/ai-connections/local/check", validate(localAiConnectionSchema), async (req, res) => {
-    assertLocalOperator(req);
     const companyId = req.params.companyId as string;
     const { localSessionId, ...intent } = localAiConnectionSchema.parse(req.body);
+    assertLocalLoginAvailable();
+    // Only implicit local operators may inspect ambient Claude credentials.
+    // Authenticated users sign in to their own company/user-scoped attempt.
+    if (intent.provider === "anthropic" && !localSessionId) assertLocalOperator(req);
     const userId = await assertAiConnectionCreateAccess(db, req, companyId, intent);
     res.setHeader("Cache-Control", "no-store");
     res.json(await localLogin.check(companyId, userId, intent, localSessionId));
   });
   router.delete("/companies/:companyId/ai-connections/local/attempts/:sessionId", async (req, res) => {
-    assertLocalOperator(req);
+    assertBoard(req);
+    assertCompanyAccess(req, req.params.companyId as string);
     const id = z.string().uuid().parse(req.params.sessionId);
     await localLogin.cancel(req.params.companyId as string, getActorInfo(req).actorId, id);
     res.json({ ok: true });
@@ -288,12 +297,12 @@ export function aiConnectionRoutes(db: Db) {
     "/companies/:companyId/ai-connections/local",
     validate(localAiConnectionSchema),
     async (req, res) => {
-      // A signed-in remote user must never claim the server operator's account.
-      assertLocalOperator(req);
       const companyId = req.params.companyId as string;
       const { localSessionId, ...input } = localAiConnectionSchema.parse(req.body);
+      assertLocalLoginAvailable();
+      if (input.provider === "anthropic" && !localSessionId) assertLocalOperator(req);
       const userId = await assertAiConnectionCreateAccess(db, req, companyId, input);
-      if (input.provider === "openai" || input.provider === "xai") {
+      if (localSessionId || input.provider === "openai" || input.provider === "xai") {
         if (!localSessionId) throw unprocessable("Start a separate local sign-in for this connection before connecting.");
         res.status(201).json(await localLogin.complete(companyId, userId, localSessionId, input));
         return;

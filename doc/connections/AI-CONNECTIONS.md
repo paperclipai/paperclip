@@ -27,7 +27,7 @@ Native runner supports the corresponding existing Codex, OpenCode, and Claude
 ACP profiles. Connections creation and reconnect mount `AgentProviderConnection`,
 the same provider tiles, method controls, API entry, and `AdapterLoginPanel` used
 by agent setup. Supported sandbox environments use onboarding's existing browser
-sign-in controllers. Local trusted installations use the shared terminal sign-in
+sign-in controllers. Self-hosted installations use the shared terminal sign-in
 instructions described below and require no sandbox. Environment selection does
 not change agent execution settings.
 API keys are validated against fixed provider endpoints; redirects
@@ -139,12 +139,15 @@ the server preserves the managed binding and will not restore legacy fallback.
 
 Local installations do not need a sandbox to connect a subscription. Connections,
 onboarding, and agent setup share `LocalProviderLoginInstructions` and
-`useLocalAiLogin`. Claude uses `claude auth login` on the machine running
-Paperclip; the explicit local operator import reads and verifies the access token.
+`useLocalAiLogin`. In local-trusted mode, Claude checks the operator’s existing
+Claude Code login. Authenticated self-hosted users instead get a separate
+`CLAUDE_CONFIG_DIR` for `claude auth login`; checking and saving only read that
+attempt’s credential files, never the server operator’s account or Keychain.
 
 Codex and Grok start a separate terminal sign-in for each connection or reconnect.
 The shared component shows a server-generated command with a fresh `CODEX_HOME`
-or `GROK_HOME`. Codex uses file credential storage in that home. The home is never
+or `GROK_HOME`. Codex uses file credential storage in that home and `login --device-auth`, so
+signing in from another computer does not depend on a localhost callback. The home is never
 seeded with the operator's existing login: copying a rotating refresh token would
 allow managed runs to invalidate credentials still used by legacy agents or the
 operator's terminal. The user completes browser sign-in from that command, then
@@ -158,9 +161,10 @@ periodic cleanup sweep retries expired directories. Successful completion persis
 credentials to the encrypted grant and removes the temporary login home. Refreshes
 subsequently update only that grant. Reconnect preserves IDs and access settings.
 
-The local endpoints require the local trusted operator; remote authenticated users
-cannot import host credentials or start local attempts. Claude Keychain reads are
-allowed only for the explicit default-home import. A failed verification creates
+Starting an isolated attempt requires normal company-scoped AI-connection creation
+permission. Checks, completion, cancellation, and resumption are owner-bound.
+Authenticated users cannot import host credentials or use another user’s attempt.
+Claude Keychain reads remain limited to the explicit local-trusted default-home import. A failed verification creates
 no healthy connection. Preview-era Codex/Grok managed connections without the
 isolated-subscription marker require reconnect before another managed execution;
 unmanaged legacy agents retain their existing authentication paths.
@@ -200,9 +204,10 @@ authentication with a live account.
 Local subscription screens share the same credential check on entry and when the
 window regains focus. Waiting screens also poll until sign-in verifies. A successful
 check shows the account is signed in; only **Connect** creates or reconnects the grant.
-Claude checks the local operator's Claude Code login. Codex and Grok check only their
-connection-specific login home, preserving the operator's separate rotating CLI login.
-These checks are restricted to the local operator in local-trusted deployments.
+In local-trusted mode, Claude checks the local operator’s Claude Code login.
+Authenticated Claude users, plus all Codex and Grok users, check only their
+connection-specific login home. The health response selects credential isolation,
+not whether a self-hosted user may sign in.
 
 Leaving and returning to a local sign-in screen resumes its active attempt. Navigation
 does not delete a directory referenced by a copied command. **Start sign-in again**
@@ -222,3 +227,5 @@ personal OpenAI API connection, and issue must all be named `AI Repair QA <marke
 provider key with `AI_REPAIR_TEST_KEY`. The test verifies these boundaries before
 revoking credentials or submitting work. Delete the disposable instance and revoke
 its provider key after the test; failed tests may leave a paused task for inspection.
+
+Authenticated public deployments must configure a trusted runtime host (`PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST` or `PAPERCLIP_TOOL_RUNTIME_TRUSTED_HOST`) before offering server-host subscription login, matching the local stdio runtime boundary. Health reports this capability so setup can offer a supported environment or API key instead of an unusable terminal command. Private authenticated self-hosted instances support isolated local login without that extra setting. Isolated Claude credential files must be private, owned by the server user, bounded, and free of symlinks.

@@ -35,6 +35,7 @@ const create = (userId: string, name: string, ownership: "personal" | "shared" =
 beforeAll(async () => {
   home = await mkdtemp(path.join(os.tmpdir(), "paperclip-ai-tests-"));
   vi.stubEnv("PAPERCLIP_HOME", home);
+  vi.stubEnv("PAPERCLIP_INSTANCE_ID", "ai-connection-fixture");
   database = await startEmbeddedPostgresTestDatabase("paperclip-ai-db-");
   db = createDb(database.connectionString);
   service = aiConnectionService(db);
@@ -271,7 +272,7 @@ describe("managed AI connections", () => {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => {
-      req.actor = { type: "board", source: req.headers["x-local"] === "yes" ? "local_implicit" : "session", userId: "alice", companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member" }] };
+      req.actor = { type: "board", source: req.headers["x-local"] === "yes" ? "local_implicit" : "session", userId: String(req.headers["x-test-user"] ?? "alice"), companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member" }] };
       next();
     });
     app.use("/api", aiConnectionRoutes(db));
@@ -303,15 +304,73 @@ describe("managed AI connections", () => {
       expect((await service.list(companyId, "alice")).some(c => c.name === "Unsuccessful local login")).toBe(false);
       const codex = { ...payload, provider: "openai", name: "Isolated terminal login" };
       const attempts = `${url}/attempts`;
-      expect((await request(app).post(attempts).send(codex)).status).toBe(403);
+      expect((await request(app).post(attempts).send(codex)).status).toBe(403); // This member cannot authorize agentId.
       expect((await request(app).post(url).set("x-local", "yes").send(codex)).status).toBe(422);
       const prepared = await request(app).post(attempts).set("x-local", "yes").send(codex);
       expect(prepared.status).toBe(201);
-      expect(prepared.body.command).toMatch(/^\(export CODEX_HOME=.* && mkdir -p .* && codex -c .* login\)$/);
+      expect(prepared.body.command).toMatch(/^\(export CODEX_HOME=.* && mkdir -p .* && codex -c .* login --device-auth\)$/);
       expect((await request(app).post(attempts).set("x-local", "yes").send(codex)).body).toEqual(prepared.body);
-      expect((await request(app).delete(`${attempts}/${prepared.body.sessionId}`).send()).status).toBe(403);
+      expect((await request(app).delete(`${attempts}/${prepared.body.sessionId}`).set("x-test-user", "bob").send()).status).toBe(404);
       expect((await request(app).delete(`${attempts}/${prepared.body.sessionId}`).set("x-local", "yes").send()).status).toBe(200);
       expect((await request(app).post(url).set("x-local", "yes").send({ ...codex, localSessionId: prepared.body.sessionId })).status).toBe(422);
+    } finally { reader.mockRestore(); }
+  });
+  it.each(["anthropic", "openai"] as const)("blocks server-host %s login on a public deployment without a trusted host", async provider => {
+    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredential");
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId: "alice", companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member" }] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db, { deploymentMode: "authenticated", deploymentExposure: "public", trustedLocalStdioRuntimeHost: "" }));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const base = `/api/companies/${companyId}/ai-connections/local`;
+    const intent = { provider, method: "subscription", ownership: "personal", name: "Hosted account", allAgents: false, agentIds: [] };
+    try {
+      for (const endpoint of [base, `${base}/attempts`, `${base}/check`]) {
+        const result = await request(app).post(endpoint).send(intent);
+        expect(result.status).toBe(422);
+        expect(result.body.error).toContain("unavailable on this hosted instance");
+      }
+      expect(reader).not.toHaveBeenCalled();
+    } finally { reader.mockRestore(); }
+  });
+  it.each(["anthropic", "openai"] as const)("lets authenticated users connect only their own isolated %s login", async provider => {
+    const owner = `self-hosted-${provider}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredential").mockResolvedValue("isolated-fixture-token");
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId: String(req.headers["x-test-user"] ?? owner), companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: req.headers["x-viewer"] ? "viewer" : "member" }] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db));
+    app.use((error: { status?: number; message: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => { res.status(error.status ?? 500).json({ error: error.message }); });
+    const base = `/api/companies/${companyId}/ai-connections/local`;
+    const intent = { provider, method: "subscription", ownership: "personal", name: `Self-hosted ${provider}`, allAgents: false, agentIds: [] };
+    try {
+      expect((await request(app).post(`${base}/attempts`).set("x-viewer", "yes").send(intent)).status).toBe(403);
+      const started = await request(app).post(`${base}/attempts`).send(intent);
+      expect(started.status).toBe(201);
+      expect(started.headers["cache-control"]).toBe("no-store");
+      expect(started.body.command).toContain(provider === "anthropic" ? "CLAUDE_CONFIG_DIR=" : "login --device-auth");
+      expect((await request(app).post(`${base}/attempts`).send(intent)).body).toEqual(started.body);
+      const input = { ...intent, localSessionId: started.body.sessionId };
+      for (const endpoint of [base, `${base}/check`]) {
+        expect((await request(app).post(endpoint).set("x-test-user", "bob").send(input)).status).toBe(404);
+        expect((await request(app).post(endpoint.replace(companyId, otherCompanyId)).send(input)).status).toBe(403);
+      }
+      expect(reader).not.toHaveBeenCalled();
+      const checked = await request(app).post(`${base}/check`).send(input);
+      expect(checked.body).toEqual({ status: "ready" });
+      expect(reader).toHaveBeenLastCalledWith(provider, path.join(home, "instances/ai-connection-fixture/ai-local-logins", started.body.sessionId));
+      const saved = await request(app).post(base).send(input);
+      expect(saved.status).toBe(201);
+      expect((await request(app).post(base).send(input)).body).toEqual(saved.body);
+      expect(JSON.stringify(saved.body)).not.toContain("isolated-fixture-token");
+      expect((await service.list(companyId, owner)).filter(c => c.name === intent.name)).toHaveLength(1);
     } finally { reader.mockRestore(); }
   });
   it("rejects invalid credentials without exposing the provider response", async () => {

@@ -66,7 +66,7 @@ export function AgentProviderConnection({
 }) {
   const { t } = useTranslation();
   const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: localEnvironment });
-  const canUseLocalLogin = localEnvironment && health.data?.deploymentMode === "local_trusted";
+  const canUseLocalLogin = localEnvironment && (health.data?.localAiLoginSupported ?? health.data?.deploymentMode === "local_trusted");
   const epoch = useRef(0);
   useEffect(
     () => () => {
@@ -125,7 +125,8 @@ export function AgentProviderConnection({
   const localLogin = useLocalAiLogin(companyId, managedAccount?.intent ?? {
     provider: aiProvider, method: "subscription", name: `My ${provider} subscription`,
     ownership: "personal", agentIds: [], allAgents: true,
-  }, canUseLocalLogin && method === "subscription" && !savedSubscription && !storedLogin.data);
+  }, canUseLocalLogin && method === "subscription" && !savedSubscription && !storedLogin.data,
+  { allowHostClaude: health.data?.deploymentMode === "local_trusted" });
   const auth = useQuery({
     queryKey: queryKeys.agents.authSignal(
       companyId,
@@ -355,7 +356,7 @@ export function AgentProviderConnection({
                   onConnected(connection);
                 }}
               />
-            ) : savedSubscription ? null : localEnvironment && !storedLogin.data ? (
+            ) : savedSubscription ? null : canUseLocalLogin && !storedLogin.data ? (
               <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }} />
             ) : (
               <p className="text-sm text-muted-foreground">
@@ -378,6 +379,9 @@ export function AgentProviderConnection({
         <p role="alert" className="mt-4 text-sm text-destructive">
           {testError ?? error}
         </p>
+      )}
+      {localEnvironment && health.isError && (
+        <p role="alert" className="mt-4 text-sm text-destructive">{t("sep13Auth.prepareFailed")}</p>
       )}
       <FooterNav
         onBack={() => {

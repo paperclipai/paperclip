@@ -1,7 +1,7 @@
 import { useTranslation } from "@/i18n";
 import { useState } from "react";
 import { AiConnectionPicker } from "./AiConnectionPicker";
-import { ProviderApiKeyCard } from "@/components/AdapterLoginChrome";
+import { LocalProviderLoginInstructions, ProviderApiKeyCard } from "@/components/AdapterLoginChrome";
 import type {
   AiConnectionBinding,
   AiConnectionRequirement,
@@ -56,6 +56,11 @@ export function AiConnectionDesignExamples() {
         onChange={() => {}}
         onSubmit={() => {}}
         placeholder={t("sep13Connections.apiKeyPlaceholder")}
+      />
+      <LocalProviderLoginInstructions
+        adapterType="claude_local"
+        login={{ isolated: true, preparing: false, status: "sign_in_required", error: null,
+          command: "CLAUDE_CONFIG_DIR='/example/connection-login' claude auth login", retry: () => {} }}
       />
     </div>
   );
