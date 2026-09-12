@@ -141,6 +141,8 @@ The active-lock lifecycle is part of the checkout contract:
 - process-loss retry handoff must not leave `checkoutRunId` pinned to the failed run when `executionRunId` moves to the retry run
 - checkout and checkout-owner checks may self-heal lock columns that point at terminal or missing runs before evaluating conflicts
 - the recovery sweeper may clear rows whose checkout and execution locks all point at terminal or missing runs
+- a terminal issue status does not prove its agent process has stopped; recovery must not terminalize a run while its in-memory execution owner is still active
+- a run-scoped checkout request is valid only while the requesting run is queued or running
 
 Stale-lock recovery is crash recovery, not a retry loop. Paperclip must not clear or adopt locks held by non-terminal runs. After stale cleanup, a checkout `409` should mean a real live owner, status/assignee mismatch, unresolved blocker, or active gate still prevents checkout. Agents must treat that `409` as an ownership conflict and stop rather than retrying the same checkout.
 

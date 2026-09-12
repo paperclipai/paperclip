@@ -1770,11 +1770,11 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("still implicitly reopens done issues via POST comments when the comment runId differs from the issue's owning run", async () => {
+  it("does not implicitly reopen done issues via POST comments when finalization already cleared the comment run's lock", async () => {
     mockIssueService.getById.mockResolvedValue({
       ...makeIssue("done"),
-      checkoutRunId: "run-owning",
-      executionRunId: "run-owning",
+      checkoutRunId: null,
+      executionRunId: null,
     });
     mockIssueService.update.mockImplementation(
       async (_id: string, patch: Record<string, unknown>) => ({
@@ -1794,12 +1794,12 @@ describe.sequential("issue comment reopen routes", () => {
       }),
     )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      .send({ body: "Real human follow-up — please reopen" });
+      .send({ body: "Done — final note after the run lock was released" });
 
     expect(res.status).toBe(201);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
-      { status: "todo" },
+      expect.objectContaining({ status: "todo" }),
     );
   });
 

@@ -2281,10 +2281,7 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
-  actorId: string;
   actorRunId: string | null | undefined;
-  checkoutRunId: string | null | undefined;
-  executionRunId: string | null | undefined;
   requestAddsExplicitBlockers?: boolean;
 }) {
   // A request that wires a non-empty blockedByIssueIds list is declaring that
@@ -2293,18 +2290,12 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   // edits — flipping to todo here would contradict the caller's stated intent
   // in the same request.
   if (input.requestAddsExplicitBlockers) return false;
-  // Local-CLI agents post comments under user auth, so the actor.type is "user"
-  // even though the comment originates from the same heartbeat run that owns
-  // the issue lock. Without this guard, an agent that closes its own issue and
-  // then posts a follow-up comment in the same run silently reopens it.
-  // Suppress the implicit move whenever the comment's source run matches the
-  // issue's checkout/execution run.
-  if (
-    typeof input.actorRunId === "string" &&
-    input.actorRunId.length > 0 &&
-    (input.actorRunId === input.checkoutRunId ||
-      input.actorRunId === input.executionRunId)
-  ) {
+  // Local-CLI agents post comments under user auth, so actor.type alone cannot
+  // distinguish a human comment from a run-originated one. Run finalization can
+  // clear the issue lock before the agent posts its final comment, so equality
+  // with the current lock is not a reliable discriminator. Any non-empty run id
+  // means the request is run-originated and must require an explicit resume.
+  if (typeof input.actorRunId === "string" && input.actorRunId.length > 0) {
     return false;
   }
   // Only human comments should implicitly reopen finished work.
@@ -12822,10 +12813,7 @@ export function issueRoutes(
               issueStatus: existing.status,
               assigneeAgentId: requestedAssigneeAgentId,
               actorType: actor.actorType,
-              actorId: actor.actorId,
               actorRunId: actor.runId,
-              checkoutRunId: existing.checkoutRunId,
-              executionRunId: existing.executionRunId,
               requestAddsExplicitBlockers:
                 Array.isArray(req.body.blockedByIssueIds) &&
                 req.body.blockedByIssueIds.length > 0,
@@ -17167,10 +17155,7 @@ export function issueRoutes(
             issueStatus: issue.status,
             assigneeAgentId: issue.assigneeAgentId,
             actorType: actor.actorType,
-            actorId: actor.actorId,
             actorRunId: actor.runId,
-            checkoutRunId: issue.checkoutRunId,
-            executionRunId: issue.executionRunId,
           }) ||
           shouldResumeInProgressScheduledRetry);
       const hasUnresolvedFirstClassBlockers =
