@@ -83,16 +83,25 @@ for (const [file, expectedNames] of Object.entries(expectedJobs)) {
 }
 
 
-test("Cloud readiness bookkeeping never competes with AWS build and test jobs", () => {
+test("Cloud readiness bookkeeping never waits for the AWS verification fleet", () => {
   const workflow = readFileSync(new URL("../../workflows/cloud-readiness.yml", import.meta.url), "utf8");
-  for (const name of ["artifacts", "source_verified", "ready"]) {
+  const bodies = new Map();
+  for (const [name, needs] of [
+    ["artifacts", null],
+    ["source_verified", "[verify]"],
+    ["ready", "[verify, image, artifacts]"],
+  ]) {
     const body = workflow.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z_]+:|(?![\\s\\S]))`, "m"))?.[1];
     assert.ok(body, `missing ${name} job`);
+    bodies.set(name, body);
     assert.match(body, /^    runs-on: ubuntu-latest$/m);
     assert.doesNotMatch(body, /^ +continue-on-error:|^ +if:.*always\(\)/m);
+    assert.match(body, /^    if: github.repository == 'paperclipai\/paperclip' && github.ref == 'refs\/heads\/master'$/m);
+    assert.match(body, /^ +SOURCE_SHA: \$\{\{ github.sha \}\}$/m);
+    assert.equal(body.match(/^    needs: (.+)$/m)?.[1] ?? null, needs, `${name} prerequisites`);
   }
-  assert.match(workflow, /needs: \[verify\]/);
-  assert.match(workflow, /needs: \[verify, image, artifacts\]/);
-  assert.match(workflow, /run: node scripts\/cloud-readiness.mjs/);
-  assert.match(workflow, /node --test scripts\/cloud-source-verification.test.mjs/);
+  assert.match(bodies.get("artifacts"), /^        run: node scripts\/cloud-readiness.mjs "\$SOURCE_SHA"$/m);
+  assert.match(bodies.get("source_verified"), /^        run: node --test scripts\/cloud-source-verification.test.mjs$/m);
+  assert.match(bodies.get("source_verified"), /echo "Cloud source verified v1: \$SOURCE_SHA"/);
+  assert.match(bodies.get("ready"), /echo "Cloud deployable v1: \$SOURCE_SHA"/);
 });

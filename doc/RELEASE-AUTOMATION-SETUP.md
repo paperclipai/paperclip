@@ -403,10 +403,11 @@ accounts for it in both ordinary PR and release verification.
 
 ## Cloud readiness runner placement
 
-Cloud image builds and source verification use the approved post-merge AWS
-fleet. The artifact wait and the `Cloud source verified v1` and `Cloud deployable
-v1` marker jobs run on GitHub-hosted runners. These small jobs must not hold or
-wait for the same AWS capacity used by image builds and tests. During a merge
+When AWS routing is enabled, Cloud image builds use `paperclip-cloud-build-x64`
+and source verification uses `paperclip-post-merge-x64`. The artifact wait and
+the `Cloud source verified v1` and `Cloud deployable v1` marker jobs run on
+GitHub-hosted runners. These small jobs must not hold or wait for capacity in
+the source-verification fleet. During a merge
 burst, even a completed build must wait for its marker before consumers can
 recognize readiness.
 
