@@ -50,7 +50,7 @@ export function connectionDisplayNameForOwner(
   if (connectionName.trim().toLocaleLowerCase() !== applicationName.trim().toLocaleLowerCase()) {
     return connectionName;
   }
-  return t("localizationApps.ownerApplication", { owner: i18n.resolvedLanguage === "ru" ? ownerGivenName(owner.label) : possessive(ownerGivenName(owner.label)), app: applicationName });
+  return t("localizationApps.ownerApplication", { owner: (i18n.resolvedLanguage ?? "en").split("-")[0] !== "en" ? ownerGivenName(owner.label) : possessive(ownerGivenName(owner.label)), app: applicationName });
 }
 
 export function ConnectionOwnerIdentity({ owner }: { owner: ConnectionOwnerProfile | null }) {

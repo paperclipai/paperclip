@@ -35,6 +35,13 @@ Paperclip resolves short-lived tokens at invocation time. Before writing a
 connector, read [Identity vs. connections](./README.md#identity-vs-connections)
 for the P1/P2/P3 boundary and the D7 standing rule.
 
+AI provider credentials use the same vault, applications, grants, installations,
+and delegation model with `connectionPurpose: ai` and `transport: runtime_auth`.
+They authenticate provider execution and never enter MCP discovery or tool/channel
+execution. Extend the provider's existing catalog entry with typed AI methods;
+reuse the existing login controllers. See [AI Connections](./AI-CONNECTIONS.md)
+for compatibility, personal defaults, resolver isolation, and legacy adoption.
+
 ## Contents
 
 - [Mental model and support matrix](#mental-model-five-independent-axes)

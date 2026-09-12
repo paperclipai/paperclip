@@ -59,7 +59,7 @@ function phraseDisplay(value: string): string | null {
 
 /** Translate a generated phase summary without rewriting its canonical model. */
 export function taskChatPhaseSummaryDisplay(value: string, origin: "generated" | "marker" = "generated"): string {
-  if (!i18n.resolvedLanguage?.startsWith("ru")) return value;
+  if ((i18n.resolvedLanguage ?? "en").split("-")[0] === "en") return value;
   // phaseSummary may return an interruption label verbatim. A custom label
   // that happens to resemble a generated counter must still remain raw.
   if (origin === "marker") return MARKER_LABELS.has(value) ? taskChatDisplayLabel(value) : value;
@@ -90,7 +90,7 @@ export function taskChatPhaseSummaryDisplay(value: string, origin: "generated" |
     const label = phraseDisplay(canonical);
     if (label === null) return value; // Unknown grammar stays intact, not half-translated.
     // Do not lowercase protected names such as Paperclip at a phrase boundary.
-    translated.push(index === 0 ? label : label.replace(/^[А-ЯЁ]/, (letter) => letter.toLowerCase()));
+    translated.push(index === 0 || !i18n.resolvedLanguage?.startsWith("ru") ? label : label.replace(/^[А-ЯЁ]/, (letter) => letter.toLowerCase()));
   }
   if (hidden !== null) translated.push(t("localizationPhaseSummary.more", { count: hidden }));
   return translated.join(", ");

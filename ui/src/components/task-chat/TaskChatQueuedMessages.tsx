@@ -30,6 +30,7 @@ import type {
   IssueQueuedCommentQueue,
 } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
+import { queuedMessageWaitMessage } from "@/lib/queued-message-display";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -148,8 +149,8 @@ function SortableQueuedMessage({
         <button
           type="button"
           onClick={onInterrupt}
-          disabled={busy || !queue.targetRunId || !onInterrupt}
-          title={t("sep12Chat.queue.interruptTitle")}
+          disabled={busy || !queue.queueId || !onInterrupt}
+          title={queue.targetRunId ? t("sep12Chat.queue.interruptTitle") : t("sep13Queue.sendNow")}
           className="flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
           data-testid={`task-chat-queued-interrupt-${entry.comment.id}`}
         >
@@ -316,7 +317,7 @@ export function TaskChatQueuedMessages({
       action === "steer"
         ? "localizationTaskRuntime.ui_Steering_queued_message_14queke"
         : action === "interrupt"
-          ? "localizationTaskRuntime.ui_Interrupting_the_active_turn_n0zo1s"
+          ? "sep13Queue.sending"
           : "localizationTaskRuntime.ui_Discarding_queued_message_wbq7ev",
     });
     if (action === "steer") {
@@ -337,7 +338,7 @@ export function TaskChatQueuedMessages({
         action === "steer"
           ? "localizationTaskRuntime.ui_Message_steered_into_the_active_turn_1a5u1dy"
           : action === "interrupt"
-            ? "sep12Chat.queue.interruptionRequested"
+            ? "sep13Queue.sendAfterStop"
             : "localizationTaskRuntime.ui_Queued_message_discarded_cx3l12",
       });
     } catch (error) {
@@ -370,7 +371,7 @@ export function TaskChatQueuedMessages({
     >
       {queue.executionWait && (
         <div role="status" aria-live="polite" className="px-3 py-1.5 text-xs text-muted-foreground">
-          {queue.executionWait.message}
+          {queuedMessageWaitMessage(queue.executionWait.message)}
         </div>
       )}
       <DndContext

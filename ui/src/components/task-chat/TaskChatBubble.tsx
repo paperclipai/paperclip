@@ -191,6 +191,7 @@ function TaskChatBubbleContent({
 
   const isHuman = item.author === "human";
   const timestamp = taskChatTimestampDisplay(item.createdAtIso ?? item.atMs, item.timestamp);
+  const sentFromIMessage = isHuman && item.sourceChannel === "imessage-photon";
   // Non-image file references ("[name](/api/attachments/…/content)") render as
   // attachment chips under the bubble; link-only lines leave the body text.
   const { refs: linkedRefs, text: bodyWithoutAttachmentLinks } =
@@ -423,9 +424,11 @@ function TaskChatBubbleContent({
             ) : null}
           </div>
         )
-      ) : timestamp ? (
+      ) : timestamp || sentFromIMessage ? (
         // Timestamps are always visible (round 9) — no longer hover-revealed.
         <span className="px-1 text-(length:--text-micro) text-muted-foreground">
+          {sentFromIMessage ? t("communityPhoton.sentFromIMessage") : null}
+          {sentFromIMessage && timestamp ? " · " : null}
           {timestamp}
         </span>
       ) : null}

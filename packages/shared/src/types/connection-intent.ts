@@ -42,6 +42,12 @@ export interface ConnectionRequestResult {
 export type ConnectionIntentSetupConnection = Pick<ToolConnection, "id" | "applicationId" | "name" | "status" | "enabled">;
 
 export interface ConnectionIntentSetupOptions {
+  aiConnection?: import("../ai-connections.js").AiConnectionBinding;
+  /** Selected account, including an unavailable default. Reconnect must preserve its identity. */
+  aiRepair?: {
+    connection: import("../ai-connections.js").AiManagedConnectionSummary;
+    canReconnect: boolean;
+  };
   version: 1;
   interaction: ConnectionIntentInteraction;
   service: ConnectionSearchResultItem;

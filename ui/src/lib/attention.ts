@@ -432,7 +432,7 @@ export function attentionDetailLineDisplay(item: AttentionItem): string | null {
       return issue ? t("localizationAttention.detailBlockedBy", { issue }) : null;
     }
     case "budget": {
-      const number = (value: number | string) => i18n.resolvedLanguage?.startsWith("ru") ? Number(value).toLocaleString(i18n.resolvedLanguage) : String(value);
+      const number = (value: number | string) => (i18n.resolvedLanguage ?? "en").split("-")[0] !== "en" ? Number(value).toLocaleString(i18n.resolvedLanguage) : String(value);
       return t("localizationAttention.detailBudget", { percent: number(Math.round(detail.observedPercent)), observed: number(detail.amountObserved), limit: number(detail.amountLimit) });
     }
     default: return attentionDetailLine(item);

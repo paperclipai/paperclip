@@ -352,7 +352,7 @@ export function taskChatTimestampDisplay(
 ): string | undefined {
   // English retains the exact upstream string, including host locale conventions.
   // Opaque/provider-authored timestamps without a raw source are never parsed.
-  if (!fallback || !i18n.resolvedLanguage?.startsWith("ru") || value == null) return fallback;
+  if (!fallback || (i18n.resolvedLanguage ?? "en").split("-")[0] === "en" || value == null) return fallback;
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return fallback;
   return date.toLocaleTimeString(i18n.resolvedLanguage, { hour: "numeric", minute: "2-digit" });
@@ -360,7 +360,7 @@ export function taskChatTimestampDisplay(
 
 /** The transcript keeps its compact English counter for exports and parsing. */
 export function taskChatTokenLabel(value: string): string {
-  if (!i18n.resolvedLanguage?.startsWith("ru")) return value;
+  if ((i18n.resolvedLanguage ?? "en").split("-")[0] === "en") return value;
   const match = /^(\d+(?:\.\d+)?)([km])? tokens?$/.exec(value);
   if (!match) return value;
   const count = Number(match[1]) * (match[2] === "m" ? 1_000_000 : match[2] === "k" ? 1_000 : 1);
@@ -373,7 +373,7 @@ export function taskChatEnumLabel(value: string): string {
 
 /** Format a duration label without changing the model's stable English value. */
 export function taskChatDurationLabel(value: string): string {
-  if (!i18n.resolvedLanguage?.startsWith("ru")) return value;
+  if ((i18n.resolvedLanguage ?? "en").split("-")[0] === "en") return value;
   const units: Record<string, string> = {
     s: "s", m: "m", h: "h", d: "d",
     second: "s", seconds: "s", minute: "m", minutes: "m",

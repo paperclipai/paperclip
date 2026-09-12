@@ -1,6 +1,7 @@
 import { TaskChatProjectCreatedCard } from "@/components/task-chat/TaskChatProjectCreatedCard";
 import { useTranslation } from "@/i18n";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
+import { AiConnectionDesignExamples } from "@/components/ai-connections/AiConnectionDesignExamples";
 import { SavedProviderKeySelect } from "../components/onboarding/SavedProviderKeySelect";
 import { RepositoryEditor } from "@/components/RepositoryEditor";
 import { TaskChatRunnerActivityGroup } from "@/components/task-chat/TaskChatRunnerActivityGroup";
@@ -2338,6 +2339,10 @@ export function DesignGuide() {
             Compact variant for embedding inside dialogs and modals.
           </InlineBanner>
         </div>
+      </Section>
+
+      <Section title="AI Connections">
+        <AiConnectionDesignExamples />
       </Section>
 
       <Section title="Built-in Agent Lifecycle Chips">

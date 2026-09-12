@@ -16,6 +16,12 @@ import type {
 // Display projection only. Recognition, deduplication keys, and stored metadata
 // retain the original strings produced by the server.
 const NOTICE_DISPLAY_KEYS: Record<string, string> = {
+  "iMessage Photon sender": "communityPhoton.senderMetadata",
+  "Reply to message": "communityPhoton.replyToMessage",
+  "Reply part": "communityPhoton.replyPart",
+  "Name": "communityPhoton.senderName",
+  "Provider ID": "communityPhoton.providerId",
+  "Authority": "communityPhoton.authority",
   "System notice": "localizationTaskRuntime.ui_System_notice_1j94h34",
   "System warning": "localizationTaskRuntime.ui_System_warning_8kjbgo",
   "System alert": "localizationTaskRuntime.ui_System_alert_nsduvm",
@@ -27,6 +33,7 @@ const NOTICE_DISPLAY_KEYS: Record<string, string> = {
   "No live execution path": "localizationTaskRuntime.ui_No_live_execution_path_ocr24d",
   "Workspace validation failed": "localizationTaskRuntime.ui_Workspace_validation_failed_1ak9xwe",
   "Configuration incomplete": "localizationTaskRuntime.ui_Configuration_incomplete_an1vbj",
+  "AI connection needs attention": "sep13QueueMetadata.aiConnectionNeedsAttention",
   "Review recovery stalled": "localizationTaskRuntime.ui_Review_recovery_stalled_3ewqnf",
   "Automatic recovery blocked": "localizationTaskRuntime.ui_Automatic_recovery_blocked_1eunv7z",
   "Error: usage limit reached": "localizationTaskRuntime.ui_Error_usage_limit_reached_mzg8db",
@@ -69,8 +76,13 @@ export function systemNoticeRunStatusDisplay(value: string): string {
 
 export function systemNoticeMetadataValueDisplay(row: SystemNoticeMetadataRow): string {
   if (row.kind !== "text") return "";
+  if (row.label === "Authority" && row.value === "Linked Paperclip user") return t("communityPhoton.linkedUser");
+  if (row.label === "Authority" && row.value === "Sponsored external guest (restricted)") return t("communityPhoton.sponsoredGuest");
   if (row.label === "Previous status") return systemNoticeRunStatusDisplay(row.value);
   if (row.label === "Recovery owner" && row.value === "board") return t("localizationTaskRuntime.ui_Board_1hpelzf");
+  if (row.label === "Next action" && row.value === "Reconnect the selected AI account or choose an available connection, then continue the task.") {
+    return t("sep13QueueMetadata.aiConnectionNextAction");
+  }
   const values: Record<string, string> = {
     "Board decision required": "localizationTaskRuntime.ui_Board_decision_required_1kwnj60",
     "The recovery owner should either restore a live execution path or record the manual resolution on the source issue": "localizationTaskRuntime.ui_The_recovery_owner_should_either_restore_a_live_execution_path_or_dr2smj",

@@ -742,6 +742,45 @@ describe("AgentConfigForm environment selector", () => {
     vi.clearAllMocks();
   });
 
+  it.each(["codex_local", "claude_local"] as const)("retranslates a conflicting %s login without resuming, starting or cancelling either account", async (adapterType) => {
+    const originalLanguage = i18n.language;
+    const activeQuery = adapterType === "claude_local"
+      ? mockAgentsApi.getActiveClaudeSetupTokenLoginSession
+      : mockAgentsApi.getActiveAdapterAuthLoginSession;
+    activeQuery.mockResolvedValue({
+      sessionId: "other-account-session", environmentId: "other-environment", status: "waiting_for_user",
+      aiConnection: { provider: adapterType === "claude_local" ? "anthropic" : "openai", method: "subscription", ownership: "shared", connectionId: "other-account" },
+    });
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}>
+        <AdapterLoginPanel companyId="company-1" adapterType={adapterType} environmentId="sandbox-1" chrome="onboarding" autoStart
+          aiConnection={{ provider: adapterType === "claude_local" ? "anthropic" : "openai", method: "subscription", name: "Canonical name", ownership: "personal", agentIds: [], allAgents: true }} />
+      </QueryClientProvider>));
+      await flushUntil(() => Boolean(container.querySelector('[role="alert"]')));
+      for (const locale of ["en", "ru", "en"]) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        await flushReact();
+        expect(container.querySelector('[role="alert"]')?.textContent).toBe(locale === "ru"
+          ? "Уже выполняется другая попытка входа. Завершите или отмените её в настройках того аккаунта, прежде чем начинать новую."
+          : "Another sign-in attempt is active. Finish or cancel it in its original account setup before starting this one.");
+        expect(activeQuery).toHaveBeenCalledTimes(1);
+        expect(mockAgentsApi.startAdapterAuthLogin).not.toHaveBeenCalled();
+        expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
+        expect(mockAgentsApi.cancelAdapterAuthLogin).not.toHaveBeenCalled();
+        expect(mockAgentsApi.cancelClaudeSetupTokenLogin).not.toHaveBeenCalled();
+        expect(mockAgentsApi.getAdapterAuthLoginStatus).not.toHaveBeenCalled();
+        expect(mockAgentsApi.getClaudeSetupTokenLoginStatus).not.toHaveBeenCalled();
+      }
+    } finally {
+      await act(async () => { await i18n.changeLanguage(originalLanguage); });
+    }
+  });
+
   it("updates card headings in Russian while preserving the Cursor command placeholder", async () => {
     const originalLanguage = i18n.language;
     const result = await renderForm([], { adapterType: "cursor" }, { sectionLayout: "cards" });

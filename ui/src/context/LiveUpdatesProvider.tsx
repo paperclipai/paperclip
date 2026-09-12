@@ -1066,6 +1066,9 @@ function buildRunStatusToast(
 
   const error = readString(payload.error);
   const errorCode = readString(payload.errorCode);
+  // Interrupt is an intentional conversation control. Its caller gives
+  // feedback; the terminal event must not announce a cancelled/failed run.
+  if (errorCode === "operator_interrupted") return null;
   const contextSource = readString(payload.contextSource);
   const triggerDetail = readString(payload.triggerDetail);
   const name = nameOf(agentId) ?? t("pages.agentDetail.agentFallback");
@@ -1250,6 +1253,10 @@ function invalidateActivityQueries(
     (actorType === "agent" &&
       !!currentActor.agentId &&
       actorId === currentActor.agentId);
+
+  if (action?.startsWith("ai_connection.") || action?.startsWith("connection_grant.")) {
+    queryClient.invalidateQueries({ queryKey: ["ai-connections", companyId] });
+  }
 
   if (action?.startsWith("resource_membership.")) {
     const targetUserId = readString(details?.userId);

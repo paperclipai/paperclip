@@ -374,6 +374,41 @@ describe("Search page", () => {
     });
   });
 
+  it.each([
+    { locale: "en", sort: "relevance", summary: "3 results · sorted by Relevance" },
+    { locale: "en", sort: "updated", summary: "3 results · sorted by Recently updated" },
+    { locale: "ru", sort: "relevance", summary: "Результатов: 3 · сортировка: По релевантности" },
+    { locale: "ru", sort: "updated", summary: "Результатов: 3 · сортировка: Недавно обновлённые" },
+  ])("preserves server $sort order across result sources in $locale", async ({ locale, sort, summary }) => {
+    await act(async () => { await i18n.changeLanguage(locale); });
+    const results = ["document", "title", "comment"].map((field, index) => ({
+      id: `rank-${index}`, type: "issue", score: 300 - index,
+      title: `Rank ${index}`, href: `/PAP/issues/rank-${index}`,
+      matchedFields: [field], sourceLabel: field, snippet: field,
+      snippets: [{ field, label: field, text: field, highlights: [] }],
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      issue: { id: `rank-${index}`, identifier: `RANK-${index}`, title: `Rank ${index}`,
+        status: "todo", priority: "medium", assigneeAgentId: null, assigneeUserId: null,
+        projectId: null, updatedAt: "2026-01-01T00:00:00.000Z" },
+    }));
+    searchApiMock.search.mockResolvedValue({ query: "rank", normalizedQuery: "rank", scope: "all",
+      sort, limit: 20, offset: 0, hasMore: false, zeroResults: null, results,
+      countsByType: { issue: 1, comment: 1, document: 1, artifact: 0, agent: 0, project: 0 },
+      filterOptionCounts: { status: {}, priority: {}, assigneeAgentId: {}, assigneeUserId: {}, projectId: {}, labelId: {}, updatedWithin: {} },
+    });
+    const { root } = renderSearch(`/search?q=rank&sort=${sort}`, container);
+    try {
+      await waitForAssertion(() => {
+        const resultList = container.querySelector('[data-testid="search-results"]');
+        const links = Array.from(resultList?.querySelectorAll("a[data-result-type]") ?? []);
+        expect(links.map((link) => link.getAttribute("href"))).toEqual(results.map((result) => result.href));
+        expect(resultList?.textContent).toContain(summary);
+      });
+    } finally {
+      flushSync(() => root.unmount());
+    }
+  });
+
   it("renders artifact search results in the company search surface", async () => {
     searchApiMock.search.mockResolvedValueOnce({
       query: "launch brief",

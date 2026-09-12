@@ -27,6 +27,11 @@ interface ActivityFormatOptions {
 // collide with a built-in code (for example issue.read_marked / issue_read.marked).
 // These labels supplement the existing detail-aware formatters below.
 const LOCALIZED_FALLBACK_ACTIVITY_ACTIONS = new Set<string>([
+  "ai_connection.default_changed",
+  "ai_connection.connected",
+  "ai_connection.reconnected",
+  "ai_connection.local_login_cancelled",
+  "ai_connection.local_login_started",
   "issue.queued_comments_interrupted",
   "issue.conversation_opened",
   "issue.conversation_session_started",

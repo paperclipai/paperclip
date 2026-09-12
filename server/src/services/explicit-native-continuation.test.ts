@@ -42,6 +42,143 @@ const support = await getEmbeddedPostgresTestSupport();
       actorType: "user", actorId: "board", reason: "issue_commented" };
   }
   type Fixture = Awaited<ReturnType<typeof seed>>;
+  it.each(["pending", "failed", "historical", "shared", "retained"])("an explicit queued interrupt retries only its stopped sandbox, without granting automatic retries (%s)", async scenario => {
+    const fails = scenario === "failed";
+    const protectedLease = scenario === "shared" || scenario === "retained";
+    const f = await seed(), other = await seed();
+    await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null, processPid: null })
+      .where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const queueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
+      source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "system", payload: { issueId: f.issueId, commentId: f.commentId,
+        _paperclipWakeContext: { wakeCommentIds: [f.commentId] },
+        queuedCommentInterrupt: { actorId: "board", requestedAt: new Date().toISOString() } },
+    });
+    const identities = [f, other].map(fixture => ({ id: randomUUID(), companyId: fixture.companyId,
+      heartbeatRunId: fixture.sourceRunId, provider: "daytona", providerLeaseId: fixture.sourceRunId }));
+    for (const identity of identities) await db.insert(environmentLeases).values({ ...identity,
+      status: "pending_cleanup", leasePolicy: "ephemeral", releasedAt: new Date(), cleanupStatus: "failed",
+      metadata: { pendingCleanupRetryAttempts: 5, pendingCleanupRetryCapWarned: true } });
+    if (scenario === "historical" || protectedLease) await db.update(environmentLeases).set({
+      status: "failed", cleanupStatus: "success",
+    }).where(eq(environmentLeases.id, identities[0].id));
+    if (scenario === "shared") await db.update(environmentLeases).set({
+      providerLeaseId: identities[0].providerLeaseId, status: "active", releasedAt: null,
+    }).where(eq(environmentLeases.id, identities[1].id));
+    if (scenario === "retained") await db.update(environmentLeases).set({
+      status: "retained", leasePolicy: "retain_on_failure",
+    }).where(eq(environmentLeases.id, identities[0].id));
+    const attempted: string[] = [];
+    const heartbeat = heartbeatService(db, { environmentRuntime: {
+      isPendingCleanupWorkerReady: async () => true,
+      retryPendingSandboxTeardown: async ({ lease }: { lease: { id: string; providerLeaseId: string } }) => {
+        attempted.push(lease.id);
+        if (fails) throw new Error("Provider unavailable");
+        return { providerLeaseId: lease.providerLeaseId, state: "destroyed" };
+      },
+    } as unknown as HeartbeatEnvironmentRuntime });
+    try {
+      await heartbeat.resumeQueuedCommentInterrupt(f.companyId, queueId);
+      expect(attempted).toEqual([]);
+      await heartbeat.resumeQueuedCommentInterrupt(f.companyId, queueId, { retryCleanup: true });
+      expect(attempted).toEqual(protectedLease ? [] : [identities[0].id]);
+      await heartbeat.resumeQueuedCommentInterrupt(f.companyId, queueId);
+      expect(attempted).toHaveLength(protectedLease ? 0 : 1);
+      const [queue] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
+      expect(queue.status).toBe(fails || protectedLease ? "deferred_issue_execution" : "coalesced");
+      expect(Boolean(queue.runId)).toBe(!fails && !protectedLease);
+      const [untouched] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, identities[1].id));
+      expect(untouched).toMatchObject({ status: scenario === "shared" ? "active" : "pending_cleanup", metadata: { pendingCleanupRetryAttempts: 5 } });
+    } finally {
+      for (const identity of identities) await db.delete(environmentLeases).where(eq(environmentLeases.id, identity.id));
+    }
+  });
+  it("a durable queue interrupt authorizes older legacy messages but still requires the provider to stop", async () => {
+    const f = await seed();
+    await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null,
+      processPid: process.pid,
+    }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    await db.update(issueComments).set({ authorUserId: "original-author", createdAt: new Date("2026-09-11T09:00:00Z") })
+      .where(eq(issueComments.id, f.commentId));
+    const queueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "original-author",
+      payload: { issueId: f.issueId, _paperclipWakeContext: { wakeCommentIds: [f.commentId] },
+        queuedCommentInterrupt: { actorId: "board", requestedAt: new Date().toISOString() } },
+    });
+    const attempt = (queue = queueId) => db.transaction(async tx => {
+      await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
+      return admitExplicitNativeContinuation({ ...f, db: tx as unknown as typeof db,
+        queuedCommentInterruptId: queue, dryRun: true });
+    });
+    expect(await attempt()).toBeNull();
+    await db.update(heartbeatRuns).set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    expect(await attempt(randomUUID())).toBeNull();
+    expect(await attempt()).toMatchObject({ previousRunId: f.sourceRunId, commentId: f.commentId });
+    await db.update(agentWakeupRequests).set({ status: "cancelled" }).where(eq(agentWakeupRequests.id, queueId));
+    expect(await attempt()).toBeNull();
+  });
+  it("dispatches another user's queued legacy message using the consumed board interrupt receipt", async () => {
+    const f = await seed();
+    await db.update(agents).set({ adapterType: "claude_local" }).where(eq(agents.id, f.agentId));
+    await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.sourceRunId));
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null })
+      .where(eq(heartbeatRuns.id, f.sourceRunId));
+    await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation" })
+      .where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    await db.update(issueComments).set({ authorUserId: "original-author", createdAt: new Date("2026-09-11T09:00:00Z") })
+      .where(eq(issueComments.id, f.commentId));
+    // Hold adapter startup so the test can exercise the real dispatch envelope
+    // deterministically, without invoking a provider.
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status: "running" });
+    const queueId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
+      source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "system", payload: { issueId: f.issueId, commentId: f.commentId,
+        _paperclipWakeContext: { wakeCommentIds: [f.commentId] },
+        queuedCommentInterrupt: { actorId: "board", requestedAt: new Date().toISOString() } },
+    });
+    await heartbeatService(db).resumeQueuedCommentInterrupt(f.companyId, queueId);
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
+    expect(receipt.status).toBe("coalesced");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, receipt.runId!));
+    const dispatch = (runId = run.id) => buildExecutionContinuation({ db, companyId: f.companyId,
+      issueId: f.issueId, agentId: f.agentId, runId, context: run.contextSnapshot!,
+      summary: null, exposeLowTrustRaw: false });
+    const envelope = await dispatch();
+    expect(envelope.interruptedRunId).toBe(f.sourceRunId);
+    expect(envelope.originCommentIds).toContain(f.commentId);
+    expect(envelope.messages).toEqual(expect.arrayContaining([expect.objectContaining({ id: f.commentId, body: "What happened?" })]));
+    await expect(dispatch(randomUUID())).rejects.toThrow("continuation_user_authorization_missing");
+    for (const patch of [
+      { status: "cancelled" }, { runId: f.sourceRunId },
+      { payload: { ...receipt.payload, issueId: randomUUID() } },
+      { payload: { ...receipt.payload, queuedCommentInterrupt: { actorId: "someone-else" } } },
+      { payload: { ...receipt.payload, _paperclipWakeContext: { wakeCommentIds: [] }, commentId: undefined } },
+    ]) {
+      await db.update(agentWakeupRequests).set(patch).where(eq(agentWakeupRequests.id, queueId));
+      await expect(dispatch()).rejects.toThrow("continuation_user_authorization_missing");
+      await db.update(agentWakeupRequests).set({ status: receipt.status, runId: receipt.runId, payload: receipt.payload })
+        .where(eq(agentWakeupRequests.id, queueId));
+    }
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    await db.update(issueRecoveryActions).set({ evidence: { ...action.evidence,
+      explicitUserContinuation: { ...(action.evidence.explicitUserContinuation as Record<string, unknown>),
+        queuedCommentInterruptId: "malformed-historical-receipt" },
+    } }).where(eq(issueRecoveryActions.id, action.id));
+    await expect(dispatch()).rejects.toThrow("continuation_user_authorization_missing");
+  });
   const admit = (f: Fixture, dryRun = false) => db.transaction(async tx => {
     await tx.select().from(issues).where(eq(issues.id, f.issueId)).for("update");
     const result = await admitExplicitNativeContinuation({ ...f, dryRun, db: tx as unknown as typeof db });

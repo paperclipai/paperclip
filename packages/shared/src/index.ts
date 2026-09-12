@@ -2760,5 +2760,6 @@ export type { ExecutionProjection, ExecutionReconciliation, ExecutionBlocker } f
 
 export { EXECUTION_RECONCILIATION_CAUSES, requiresExecutionReconciliation } from "./types/execution-projection.js";
 
+export * from "./ai-connections.js";
 export * from "./types/email.js";
 export * from "./validators/email.js";

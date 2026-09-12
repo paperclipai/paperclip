@@ -1,6 +1,7 @@
 import { Trans } from "react-i18next";
 import { t, useTranslation } from "@/i18n";
 import { chatUiErrorMessage, type ChatUiError } from "./chat-copy";
+import { PhotonConnectStep } from "./PhotonConnectStep";
 import { EmailEndpointSetup } from "./EmailEndpointSetup";
 import {
   useEffect,
@@ -46,6 +47,7 @@ const providerNames: Record<ChatProvider, string> = {
   discord: "Discord",
   "microsoft-teams": "Microsoft Teams",
   telegram: "Telegram",
+  "imessage-photon": "iMessage Photon",
 };
 
 const knownProviders = new Set(Object.keys(providerNames));
@@ -134,7 +136,7 @@ export function ChatEndpointSetup() {
 }
 function ChatSdkEndpointSetup() {
   const { i18n } = useTranslation();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { selectedCompanyId } = useCompany();
@@ -239,7 +241,14 @@ function ChatSdkEndpointSetup() {
         provider: provider!,
         assignedAgentId: agentId,
       }),
-    onSuccess: syncEndpointSnapshot,
+    onSuccess: (next) => {
+      syncEndpointSnapshot(next);
+      if (next.provider === "imessage-photon") {
+        const resumed = new URLSearchParams(params);
+        resumed.set("resume", next.id);
+        setParams(resumed, { replace: true });
+      }
+    },
     onError: (error) =>
       pushToast({
         title: t("chatUi.chatEndpointSetup.couldnTStartSetup"),
@@ -254,11 +263,16 @@ function ChatSdkEndpointSetup() {
     }: {
       action: ChatEndpointSetupAction;
       values?: Record<string, string>;
-    }) => chatEndpointsApi.setup(endpoint!.id, { action, credentials: values }),
+    }) => chatEndpointsApi.setup(endpoint!.id, provider === "imessage-photon" ? {
+      action,
+      ...(values?.projectSecret ? { credentials: { projectSecret: values.projectSecret } } : {}),
+      ...(values?.projectId && values.allocation === "shared" ? { photon: { allocation: "shared" as const, projectId: values.projectId } } : values?.projectId && values?.lineId ? { photon: { allocation: "dedicated" as const, projectId: values.projectId, lineId: values.lineId } } : {}),
+    } : { action, credentials: values }),
     onMutate: () => setSetupError(null),
     onSuccess: (next) => {
       setSetupError(null);
       syncEndpointSnapshot(next);
+      setCredentials({});
     },
     onError: (error, variables) =>
       setSetupError(error instanceof Error && error.message.trim()
@@ -458,6 +472,7 @@ function ChatSdkEndpointSetup() {
             agentName={selectedAgent?.name ?? endpoint.assignedAgentName}
             botLabel={endpoint.botLabel}
             botUsername={endpoint.botUsername}
+            photonAllocation={endpoint.photonAllocation}
             providerUrl={endpoint.setup?.providerUrl}
             guestIsolationState={
               experimentalSettingsQuery.isPending
@@ -724,6 +739,7 @@ settings:
     null,
     2,
   );
+  if (provider === "imessage-photon") return <PhotonConnectStep endpoint={endpoint} agentName={agentName} repairing={repairing} pending={pending} onAction={onAction} />;
   if (provider === "discord") {
     const applicationId = credentials.applicationId?.trim() ?? "";
     const guildId = credentials.guildId?.trim() ?? "";
@@ -1234,6 +1250,7 @@ function TryStep({
   agentName,
   botLabel,
   botUsername,
+  photonAllocation,
   providerUrl,
   guestIsolationState,
   pending,
@@ -1245,6 +1262,7 @@ function TryStep({
   agentName: string;
   botLabel?: string | null;
   botUsername?: string | null;
+  photonAllocation?: "dedicated" | "shared";
   providerUrl?: string | null;
   guestIsolationState: "loading" | "enabled" | "disabled" | "unknown";
   pending: boolean;
@@ -1257,12 +1275,16 @@ function TryStep({
     queryFn: () => chatEndpointsApi.listPrincipals(endpointId),
     refetchInterval: 1_500,
   });
+  const [numberCopied, setNumberCopied] = useState(false);
+  const [copyError, setCopyError] = useState<ChatUiError | null>(null);
   const identities = principalsQuery.data ?? [];
   const unlinkedIdentities = identities.filter(
     (identity) => identity.status !== "linked",
   );
   const freshConversationInstruction = t(`chatUi.freshConversation.${provider}`);
-  const identityGuidance = principalsQuery.isError
+  const identityGuidance = provider === "imessage-photon" && principalsQuery.isSuccess && (identities.length === 0 || unlinkedIdentities.length > 0)
+    ? { tone: "info" as const, title: t("communityPhoton.linkIdentity"), body: t("communityPhoton.identityGuidance") }
+    : principalsQuery.isError
     ? {
         tone: "warning" as const,
         title: t("chatUi.chatEndpointSetup.identityReadinessCouldNotBeChecked"),
@@ -1309,8 +1331,16 @@ function TryStep({
   const botMention = normalizedBotUsername
     ? `@${normalizedBotUsername}`
     : (botLabel ?? agentName);
+  const photonDedicatedDestination = botUsername ?? botLabel;
   const instructions =
-    provider === "discord"
+    provider === "imessage-photon" ? [
+      photonAllocation === "shared" ? t("communityPhoton.tryShared")
+        : photonDedicatedDestination == null ? t("communityPhoton.tryDedicatedWithoutNumber")
+          : t("communityPhoton.tryDedicated", { number: photonDedicatedDestination }),
+      t("communityPhoton.tryLink"),
+      t("communityPhoton.tryReply"),
+      photonAllocation === "shared" ? t("communityPhoton.trySharedBoundary") : t("communityPhoton.tryGroup"),
+    ] : provider === "discord"
       ? [
           t("chatUi.chatEndpointSetup.openATextChannelWhereTheBotIsInstalled"),
           t("chatUi.mentionRoot", { mention: botMention }),
@@ -1369,6 +1399,17 @@ function TryStep({
           >{t("chatUi.chatEndpointSetup.reviewIdentityAccess")}</Button>
         </div>
       ) : null}
+      {provider === "imessage-photon" && botUsername && (
+        <div className="space-y-2">
+          <Button variant="outline" onClick={() => {
+            void copyTextToClipboard(botUsername).then(
+              () => { setNumberCopied(true); setCopyError(null); },
+              () => setCopyError({ key: "communityPhoton.copySetupFailed" }),
+            );
+          }}>{numberCopied ? t("communityPhoton.numberCopied") : t("communityPhoton.copySpecificNumber", { number: botUsername })}</Button>
+          {copyError && <p role="alert" className="text-sm text-destructive">{chatUiErrorMessage(copyError)}</p>}
+        </div>
+      )}
       <ol className="list-decimal space-y-2 pl-5 text-sm">
         {instructions.map((item) => (
           <li key={item}>{item}</li>

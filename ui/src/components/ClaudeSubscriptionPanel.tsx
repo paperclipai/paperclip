@@ -149,7 +149,7 @@ export function ClaudeSubscriptionPanel({
                 </div>
                 {window.usedPercent != null ? (
                   <div className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
-                    {t("localizationAgentChrome.quotaUsed", { percent: i18n.resolvedLanguage?.startsWith("ru") ? new Intl.NumberFormat(i18n.resolvedLanguage, { maximumFractionDigits: 20, useGrouping: false }).format(window.usedPercent) : String(window.usedPercent) })}
+                    {t("localizationAgentChrome.quotaUsed", { percent: (i18n.resolvedLanguage ?? "en").split("-")[0] !== "en" ? new Intl.NumberFormat(i18n.resolvedLanguage, { maximumFractionDigits: 20, useGrouping: false }).format(window.usedPercent) : String(window.usedPercent) })}
                   </div>
                 ) : null}
               </div>

@@ -121,6 +121,7 @@ export function commentsToTaskChatItems(
       author: kind,
       authorName,
       text: comment.body,
+      sourceChannel: kind === "human" ? comment.metadata?.sourceChannel : undefined,
       timestamp: formatTaskChatCommentTimestamp(comment, kind),
       optimistic,
       queueTargetRunId: queued ? comment.queueTargetRunId ?? null : null,

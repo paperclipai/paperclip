@@ -2894,7 +2894,7 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     expect(occurrenceCount(queuedComment.body)).toBe(1);
   });
 
-  it("keeps legacy follow-ups in the composer queue with an interrupt fallback", () => {
+  it.each(["run-1", null])("keeps legacy queued delivery available with target %s", (targetRunId) => {
     const onInterruptQueued = vi.fn(async () => {});
     render(
       <TaskChatThread
@@ -2909,6 +2909,7 @@ describe("TaskChatThread Paperclip Runner queue", () => {
         onInterruptQueued={onInterruptQueued}
         queuedCommentQueue={{
           ...queue,
+          targetRunId,
           protocol: "legacy",
           steeringDisposition: "unsupported",
         }}
@@ -2932,7 +2933,7 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     );
     expect(interrupt).not.toBeNull();
     flushSync(() => interrupt!.click());
-    expect(onInterruptQueued).toHaveBeenCalledWith("run-1");
+    expect(onInterruptQueued).toHaveBeenCalledWith(targetRunId);
   });
 
   it("cancels an optimistic queued row locally before server acknowledgement", async () => {

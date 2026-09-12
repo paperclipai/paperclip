@@ -44,6 +44,18 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.comments("chat-1") });
     client.clear();
   });
+  it.each(["ai_connection.default_changed", "ai_connection.reconnected", "connection_grant.revoked"])(
+    "refreshes company AI account previews after %s", (action) => {
+      const invalidateQueries = vi.fn();
+      __liveUpdatesTestUtils.invalidateActivityQueries(
+        { invalidateQueries, getQueryData: () => undefined } as never,
+        "company-1", { entityType: "connection_grant", entityId: "grant-1", action },
+        { userId: "owner", agentId: null },
+      );
+      expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ["ai-connections", "company-1"] });
+      expect(invalidateQueries).not.toHaveBeenCalledWith({ queryKey: ["ai-connections"] });
+    },
+  );
 
   it("refreshes touched inbox queries and only the changed issue data for issue updates", () => {
     const invalidations: unknown[] = [];
@@ -1178,6 +1190,13 @@ describe("LiveUpdatesProvider run lifecycle toasts", () => {
         () => "CodexCoder",
       ),
     ).toBeNull();
+  });
+
+  it.each(["cancelled", "failed"])("does not toast an intentional legacy interruption reported as %s", (status) => {
+    expect(__liveUpdatesTestUtils.buildRunStatusToast({
+      runId: "interrupted-run", agentId: "agent-1", status,
+      errorCode: "operator_interrupted", error: "Interrupted to send queued messages",
+    }, () => "Assistant")).toBeNull();
   });
 
   it("still builds failure toasts for agent errors and failed runs", () => {

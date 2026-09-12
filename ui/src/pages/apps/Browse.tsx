@@ -1,5 +1,6 @@
 import { t, useTranslation } from "@/i18n";
-import { useEffect, useMemo, useState } from "react";
+import { ManagedAiConnectionRow } from "@/components/ai-connections/ManagedAiConnectionDetails";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -20,6 +21,7 @@ import {
   getAppDefinitionForUrl,
   getAppStoreDefinition,
   isToolConnectionAttentionHealth,
+  aiSubscriptionNeedsIsolatedLogin,
 } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
@@ -175,7 +177,7 @@ function connectionState(connection: ToolConnection): ConnectionState {
       message: t("localizationApps.agentsCanTUseThisAccountRightNow65"),
     };
   }
-  if (isToolConnectionAttentionHealth(connection.healthStatus)) {
+  if ((connection.connectionPurpose === "ai" && (connection.healthStatus !== "ok" || aiSubscriptionNeedsIsolatedLogin(connection.config))) || isToolConnectionAttentionHealth(connection.healthStatus)) {
     return {
       kind: "attention",
       label: t("pages.apps.connections.statusNeedsAttention"),
@@ -266,7 +268,7 @@ function accountActionHref(
  * surface. Connected providers sort first and expand in place to show every
  * account; unconnected providers retain the same catalog setup flows.
  */
-export function Browse() {
+export function Browse({ renderAccountDetails = (connection) => connection.connectionPurpose === "ai" ? <ManagedAiConnectionRow connection={connection} /> : null }: { renderAccountDetails?: (connection: ToolConnection) => ReactNode } = {}) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const preselectedChatAgentId =
@@ -414,6 +416,7 @@ export function Browse() {
       });
     }
     const nativeChatProviders = [
+      { provider: "imessage-photon", name: "iMessage Photon", description: t("sep13ProviderIntegration.photonDescription") },
       {
         provider: "slack",
         name: "Slack",
@@ -534,6 +537,7 @@ export function Browse() {
           discord: "Discord",
           "microsoft-teams": "Microsoft Teams",
           telegram: "Telegram",
+          "imessage-photon": "iMessage Photon",
           agentmail: "AgentMail",
         } as const;
         target = {
@@ -668,6 +672,7 @@ export function Browse() {
         <div className="space-y-3" role="list" aria-label={t("localizationApps.connectorList84")}>
           {visibleRows.map((row) => (
             <ConnectorCard
+              renderAccountDetails={renderAccountDetails}
               key={row.key}
               row={row}
               allConnections={connectionsQuery.data?.connections ?? []}
@@ -724,6 +729,7 @@ export function Browse() {
 }
 
 export function ConnectorCard({
+  renderAccountDetails,
   row,
   allConnections,
   userProfileById,
@@ -732,6 +738,7 @@ export function ConnectorCard({
   preselectedAgentId,
   chatConnectorsEnabled,
 }: {
+  renderAccountDetails?: (connection: ToolConnection) => ReactNode;
   row: ConnectorRowModel;
   allConnections: ToolConnection[];
   userProfileById: ReadonlyMap<string, ConnectionOwnerProfile>;
@@ -790,6 +797,7 @@ export function ConnectorCard({
         <div className="divide-y divide-border border-t border-border">
           {row.connections.map((connection) => (
             <ConnectionAccountRow
+              details={renderAccountDetails?.(connection)}
               key={connection.id}
               row={row}
               connection={connection}
@@ -872,12 +880,14 @@ export function ConnectorCard({
 }
 
 function ConnectionAccountRow({
+  details,
   row,
   connection,
   owner,
   onNavigate,
   onRemove,
 }: {
+  details?: ReactNode;
   row: ConnectorRowModel;
   connection: ToolConnection;
   owner: ConnectionOwnerProfile | null;
@@ -906,6 +916,7 @@ function ConnectionAccountRow({
           >
             {accountName}
           </button>
+          {details}
           {state.message ? (
             <div
               className={

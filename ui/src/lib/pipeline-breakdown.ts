@@ -118,7 +118,7 @@ export function hasStageBreakdown(stage: PipelineStage | null | undefined): bool
 /** Display form only; never modifies the saved piece name. */
 export function pieceNounPlural(noun: string): string {
   const trimmed = noun.trim() || "piece";
-  return i18n.resolvedLanguage?.startsWith("ru") ? trimmed : `${trimmed}s`;
+  return (i18n.resolvedLanguage ?? "en").split("-")[0] !== "en" ? trimmed : `${trimmed}s`;
 }
 
 /** "a and b" / "a, b and c" — for inherited-field lists. */

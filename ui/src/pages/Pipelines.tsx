@@ -2486,10 +2486,17 @@ export function PipelineItemDetailView({ pipelineId, caseId }: { pipelineId: str
     await queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(conversationIssueId) });
   }, [conversationIssueId, queryClient]);
 
-  const handleInterruptConversationQueuedRun = useCallback(async (runId: string) => {
-    await heartbeatsApi.cancel(runId);
-    await invalidateConversation();
-  }, [invalidateConversation]);
+  const handleInterruptConversationQueuedRun = useCallback(async (runId: string | null) => {
+    if (!conversationIssueId) return;
+    try {
+      await issuesApi.interruptLatestQueuedComments(conversationIssueId, runId);
+      pushToast({ title: t("localizationIssueDetail.ui_Interrupt_requested"), body: t("sep13QueueMetadata.messagesWillBeSent"), tone: "success" });
+    } catch (error) {
+      pushToast({ title: t("localizationIssueDetail.ui_Interrupt_failed"), body: error instanceof Error ? error.message : t("sep13QueueMetadata.sendFailed"), tone: "error" });
+    } finally {
+      await invalidateConversation();
+    }
+  }, [conversationIssueId, invalidateConversation, pushToast, t]);
 
   const handleCancelConversationQueuedComment = useCallback(async (commentId: string) => {
     if (!conversationIssueId) return;

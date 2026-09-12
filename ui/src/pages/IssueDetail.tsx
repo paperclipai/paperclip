@@ -1299,7 +1299,7 @@ type IssueDetailChatTabProps = {
   onReviewConversation: () => Promise<void>;
   onImageUpload: (file: File) => Promise<string>;
   onAttachImage: (file: File) => Promise<IssueAttachment | void>;
-  onInterruptQueued: (runId: string) => Promise<void>;
+  onInterruptQueued: (runId: string | null) => Promise<void>;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
   onPauseWorkRun?: (runId: string, feedback?: "composer") => Promise<void>;
   pauseWorkPending?: boolean;
@@ -4979,21 +4979,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const interruptQueuedComment = useMutation({
-    mutationFn: async (runId: string) => {
-      const queue = await issuesApi.getQueuedComments(issueId!);
-      if (!queue.queueId || queue.targetRunId !== runId) {
-        throw new Error(t("sep12Screens.queuedMessagesChanged"));
-      }
-      return issuesApi.interruptQueuedComments(issueId!, {
-        queueId: queue.queueId, revision: queue.revision, targetRunId: runId,
-      });
-    },
+    mutationFn: (runId: string | null) => issuesApi.interruptLatestQueuedComments(issueId!, runId),
     onSuccess: () => {
       invalidateIssueDetail();
       invalidateIssueRunState();
       pushToast({
         get title() { return t("localizationIssueDetail.ui_Interrupt_requested"); },
-        get body() { return t("localizationIssueDetail.ui_The_active_run_is_stopping_so_queued_comments_can_continue_next"); },
+        get body() { return t("sep13Queue.sendAfterStop"); },
         tone: "success",
       });
     },
@@ -6183,7 +6175,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [uploadAttachment],
   );
   const handleInterruptQueuedRun = useCallback(
-    async (runId: string) => {
+    async (runId: string | null) => {
       await interruptQueuedComment.mutateAsync(runId);
     },
     [interruptQueuedComment],
