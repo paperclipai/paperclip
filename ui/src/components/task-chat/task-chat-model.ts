@@ -530,7 +530,18 @@ export interface TaskChatTurnItem {
   };
 }
 
+export interface TaskChatProjectCreatedItem {
+  id: string;
+  kind: "project_created";
+  projectId: string;
+  name: string;
+  description?: string | null;
+  repositories: { id: string; name: string; url: string }[];
+  timestamp: string;
+}
+
 export type TaskChatItem =
+  | TaskChatProjectCreatedItem
   | TaskChatMessageItem
   | TaskChatThinkingItem
   | TaskChatToolItem

@@ -385,7 +385,10 @@ describe("TaskChatTurn", () => {
     expect(header?.textContent).toContain("Editing files…");
     expect(header?.textContent).toContain("Edit · server/src/routes/auth.ts");
     expect(header?.getAttribute("aria-expanded")).toBe("false");
-    expect(header?.firstElementChild?.firstElementChild?.tagName).toBe("svg");
+    expect(
+      header?.querySelector('[data-testid="task-chat-status-caret-slot"] svg')
+        ?.tagName,
+    ).toBe("svg");
     // All activity is folded behind it — no rows visible, no summary line.
     expect(fold()?.getAttribute("data-folded")).toBe("true");
     expect(summaryBtn()).toBeNull();

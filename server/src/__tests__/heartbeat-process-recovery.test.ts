@@ -1,3 +1,5 @@
+import * as controllerLeases from "../services/legacy-controller-lease.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { randomUUID } from "node:crypto";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { issueService } from "../services/issues.js";
@@ -6699,6 +6701,45 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(repairWakeups).toHaveLength(0);
   });
 
+  it("stops controller renewal and releases execution controls when teardown deadline cleanup throws", async () => {
+    const { runId, issueId } = await seedRunFixture({ runtimeMode: "legacy", agentStatus: "idle", runStatus: "queued" });
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, issueId));
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null, summary: "Completed the turn.", provider: "test", model: "test-model" };
+    });
+    const originalWatch = controllerLeases.watchLegacyControllerLease;
+    const stopped = vi.fn();
+    const watcher = vi.spyOn(controllerLeases, "watchLegacyControllerLease").mockImplementation((...args) => {
+      const lease = originalWatch(...args);
+      return { ...lease, stop() { stopped(); lease.stop(); } };
+    });
+    const originalUpdate = db.update.bind(db);
+    const cleanupFailure = vi.fn(() => { throw new Error("fixture_deadline_cleanup_failure"); });
+    const update = vi.spyOn(db, "update").mockImplementation(((table: typeof heartbeatRuns) => {
+      const builder = originalUpdate(table);
+      const originalSet = builder.set.bind(builder);
+      builder.set = ((values: Record<string, unknown>) => {
+        if (table === heartbeatRuns && Object.keys(values).length === 1 && values.executionControlDeadlineAt === null) {
+          return { where: async () => cleanupFailure() };
+        }
+        return originalSet(values);
+      }) as typeof builder.set;
+      return builder;
+    }) as typeof db.update);
+    const heartbeat = heartbeatService(db);
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions().catch(() => undefined);
+      expect(cleanupFailure).toHaveBeenCalledTimes(1);
+      expect(stopped).toHaveBeenCalledTimes(1);
+      expect(adapterExecutionControls.has(runId)).toBe(false);
+      expect((await heartbeat.getRun(runId))?.status).not.toBe("running");
+    } finally {
+      update.mockRestore();
+      watcher.mockRestore();
+    }
+  });
+
   it("dispatches interrupted CLI input after the executor releases its lease", async () => {
     const actualProcess = await vi.importActual<typeof import("../adapters/process/execute.js")>("../adapters/process/execute.js");
     const { companyId, agentId, issueId, runId } = await seedRunFixture({
@@ -6843,13 +6884,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await vi.waitFor(async () => expect((await heartbeat.getRun(next!.id))?.status).not.toBe("running"));
   });
 
-  it.each(["dedicated deferred donor", "non-coalescing recipient"] as const)(
+  it.each(["dedicated deferred donor", "non-coalescing recipient", "persistent agent conversation"] as const)(
     "does not adopt unrelated queued comments for a %s after Stop",
     async (direction) => {
       const { companyId, agentId, issueId, runId } = await seedRunFixture({
         runtimeMode: "legacy",
         agentStatus: "running",
       });
+      const persistentConversation = direction === "persistent agent conversation";
+      if (persistentConversation) {
+        await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+        await db.update(issues).set({
+          conversationAgentId: agentId, conversationUserId: "responsible-user", conversationState: "active",
+        }).where(eq(issues.id, issueId));
+      }
       const heartbeat = heartbeatService(db);
       const [pending, go] = await db
         .insert(issueComments)
@@ -6934,11 +6982,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           reason: "issue_commented",
           requestedByActorType: "user",
           requestedByActorId: "responsible-user",
-          ...(dedicatedDonor ? {} : { allowRunCoalescing: false }),
+          ...(direction === "non-coalescing recipient" ? { allowRunCoalescing: false } : {}),
           payload: {
             issueId,
             commentId: go!.id,
-            ...(dedicatedDonor
+            ...(dedicatedDonor || persistentConversation
               ? {}
               : { mutation: "interaction", ...interaction }),
           },
@@ -6946,12 +6994,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
             issueId,
             commentId: go!.id,
             wakeReason: "issue_commented",
-            ...(dedicatedDonor ? {} : interaction),
+            ...(dedicatedDonor || persistentConversation ? {} : interaction),
           },
         });
         expect(next).not.toBeNull();
         expect(next?.contextSnapshot?.wakeCommentIds).toEqual([go!.id]);
-        if (!dedicatedDonor)
+        if (!dedicatedDonor && !persistentConversation)
           expect(next?.contextSnapshot).toMatchObject(interaction);
         const [retained] = await db
           .select()
@@ -6963,6 +7011,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         });
         expect(retained?.payload).toEqual(deferredPayload);
       } finally {
+        if (persistentConversation) await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });
         // Keep this fixture's parked donor from being scheduled during teardown.
         await db
           .update(agents)
@@ -10742,6 +10791,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       if (row.id !== runId) {
         await waitForRunToSettle(heartbeat, row.id);
       }
+    }
+  });
+
+  it("does not recover a finished native chat while its response publication is pending", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+      resultJson: { finalizationReasonCode: "conversation_turn_finished" },
+    });
+    await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
+    try {
+      await db.update(issues).set({
+        conversationAgentId: agentId,
+        conversationUserId: "responsible-user",
+        conversationState: "active",
+      }).where(eq(issues.id, issueId));
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result.continuationRequeued).toBe(0);
+      expect(result.escalated).toBe(0);
+      const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+      expect(runs.map((run) => run.id)).toEqual([runId]);
+      const wakes = await db.select().from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, agentId));
+      expect(wakes).toHaveLength(1);
+      expect(wakes[0].reason).toBe("issue_assigned");
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      // No fabricated idle state: durable response publication still settles it.
+      expect(issue.status).toBe("in_progress");
+      expect(issue.conversationState).toBe("active");
+    } finally {
+      await instanceSettingsService(db).updateExperimental({ enableAgentChat: false });
     }
   });
 

@@ -1,5 +1,5 @@
 {
-  "id": "b899cb29-fd97-45e9-ade6-190b53615618",
+  "id": "02bc1b0f-2d2b-4c3e-9320-b085bade9f09",
   "prevId": "d01dd077-2ab3-494b-962c-02b219026b64",
   "version": "7",
   "dialect": "postgresql",
@@ -6505,22 +6505,6 @@
           "method": "btree",
           "with": {}
         },
-        "chat_endpoints_photon_number_uq": {
-          "name": "chat_endpoints_photon_number_uq",
-          "columns": [
-            {
-              "expression": "bot_external_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"chat_endpoints\".\"provider\" = 'imessage-photon' and \"chat_endpoints\".\"status\" <> 'archived' and \"chat_endpoints\".\"bot_external_id\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "chat_endpoints_live_discord_bot_external_uq": {
           "name": "chat_endpoints_live_discord_bot_external_uq",
           "columns": [
@@ -6679,7 +6663,7 @@
         },
         "chat_endpoints_provider_check": {
           "name": "chat_endpoints_provider_check",
-          "value": "\"chat_endpoints\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail', 'imessage-photon')"
+          "value": "\"chat_endpoints\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail')"
         },
         "chat_endpoints_status_check": {
           "name": "chat_endpoints_status_check",
@@ -6864,7 +6848,7 @@
       "checkConstraints": {
         "chat_external_principals_provider_check": {
           "name": "chat_external_principals_provider_check",
-          "value": "\"chat_external_principals\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail', 'imessage-photon')"
+          "value": "\"chat_external_principals\".\"provider\" in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'agentmail')"
         },
         "chat_external_principals_kind_check": {
           "name": "chat_external_principals_kind_check",
@@ -24395,6 +24379,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "client_request_id": {
+          "name": "client_request_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "conversation_session_generation": {
+          "name": "conversation_session_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
         "body": {
           "name": "body",
           "type": "text",
@@ -24693,6 +24689,15 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
+        "issue_comments_client_request_uq": {
+          "name": "issue_comments_client_request_uq",
+          "nullsNotDistinct": false,
+          "columns": [
+            "issue_id",
+            "author_user_id",
+            "client_request_id"
+          ]
+        },
         "issue_comments_company_id_uq": {
           "name": "issue_comments_company_id_uq",
           "nullsNotDistinct": false,
@@ -28766,6 +28771,37 @@
           "primaryKey": false,
           "notNull": true
         },
+        "conversation_agent_id": {
+          "name": "conversation_agent_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "conversation_user_id": {
+          "name": "conversation_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "conversation_state": {
+          "name": "conversation_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "conversation_session_generation": {
+          "name": "conversation_session_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "conversation_boundary_comment_id": {
+          "name": "conversation_boundary_comment_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
         "project_id": {
           "name": "project_id",
           "type": "uuid",
@@ -29102,6 +29138,33 @@
         }
       },
       "indexes": {
+        "issues_conversation_identity_idx": {
+          "name": "issues_conversation_identity_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "conversation_agent_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "conversation_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "issues_company_status_idx": {
           "name": "issues_company_status_idx",
           "columns": [
@@ -29744,6 +29807,19 @@
           "onDelete": "no action",
           "onUpdate": "no action"
         },
+        "issues_conversation_agent_id_agents_id_fk": {
+          "name": "issues_conversation_agent_id_agents_id_fk",
+          "tableFrom": "issues",
+          "tableTo": "agents",
+          "columnsFrom": [
+            "conversation_agent_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
         "issues_project_id_projects_id_fk": {
           "name": "issues_project_id_projects_id_fk",
           "tableFrom": "issues",
@@ -29874,7 +29950,12 @@
         }
       },
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "issues_conversation_identity_check": {
+          "name": "issues_conversation_identity_check",
+          "value": "(\n      \"issues\".\"conversation_agent_id\" is null and \"issues\".\"conversation_user_id\" is null and \"issues\".\"conversation_state\" is null\n    ) or (\n      \"issues\".\"conversation_agent_id\" is not null and \"issues\".\"conversation_user_id\" is not null\n      and \"issues\".\"assignee_agent_id\" = \"issues\".\"conversation_agent_id\" and \"issues\".\"assignee_agent_id\" is not null\n      and \"issues\".\"assignee_user_id\" is null and \"issues\".\"conversation_state\" is not null\n      and \"issues\".\"conversation_state\" in ('active', 'waiting')\n      and \"issues\".\"status\" not in ('done', 'cancelled')\n    )"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.join_requests": {

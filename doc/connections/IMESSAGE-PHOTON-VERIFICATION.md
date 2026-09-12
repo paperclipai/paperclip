@@ -1,12 +1,12 @@
 # iMessage Photon verification
 
 Date: 2026-09-11. Branch: `codex/imessage-photon`.
-Base inspected: `1c4bcff2b`; rebased onto `fe3808517` (`origin/master`).
+Base inspected: `1c4bcff2b`; updated through master `ab15aff39`.
 Initial implementation checked: `7ada38eb7ef5dff5441f23c02131798b11d57712`.
 **Status: experimental; Pro shared-DM live journeys verified below. Dedicated groups and the remaining release matrix are not yet qualified.**
 
 [PR #13299](https://github.com/paperclipai/paperclip/pull/13299) carries the current
-CI and review results. The Photon migration is `0274_jittery_anthem.sql`, regenerated after master added its own 0273 migration. Greptile reviewed the implementation commit at 5/5 with no
+CI and review results. The Photon migration is `0275_easy_dragon_man.sql`, regenerated after master added its own 0274 agent-chat migration. Greptile reviewed the implementation commit at 5/5 with no
 actionable comments. This record distinguishes local evidence from live proof.
 
 ## Environment and versions

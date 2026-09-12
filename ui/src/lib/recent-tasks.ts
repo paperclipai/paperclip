@@ -78,10 +78,11 @@ export function writeRecentTasks(storageKey: string, entries: RecentTaskEntry[])
 }
 
 export function recordRecentTask(
-  issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "updatedAt">,
+  issue: Pick<Issue, "id" | "companyId" | "title" | "identifier" | "status" | "updatedAt" | "conversationAgentId">,
   userId: string | null | undefined,
   recordedAt = new Date(issue.updatedAt).getTime(),
 ) {
+  if (issue.conversationAgentId) return;
   const storageKey = getRecentTasksStorageKey(issue.companyId, userId);
   const current = readRecentTasks(storageKey, issue.companyId);
   const existing = current.find((candidate) => candidate.id === issue.id);

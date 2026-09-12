@@ -72,6 +72,7 @@ export default defineConfig({
     env: {
       ...process.env,
       NODE_ENV: "test",
+      NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${path.resolve(import.meta.dirname, "fixtures/agent-chat-github.mjs")}`,
       PORT: String(PORT),
       PAPERCLIP_OPEN_ON_LISTEN: "false",
       PAPERCLIP_API_URL: BASE_URL,

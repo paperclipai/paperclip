@@ -887,6 +887,46 @@ export function nativeGovernedWaitResult(input: {
   };
 }
 
+/** A completed chat reply yields to the next message without claiming task completion. */
+export function nativeConversationReplyResult(input: {
+  conversation: boolean;
+  terminalEvent: PrpEvent;
+  replyEvent: PrpEvent | null;
+  completionContract: NativeExecutionInput["completionContract"]["contract"];
+}): PrpStructuredRunResult | null {
+  const reply = input.replyEvent;
+  const payload = record(reply?.payload);
+  const text = typeof payload.text === "string" ? payload.text.trim() : "";
+  if (!input.conversation || input.terminalEvent.eventType !== "turn.completed" ||
+      !reply || reply.eventType !== "item.completed" || payload.kind !== "agentMessage" ||
+      payload.channel !== "final" || !text || reply.runId !== input.terminalEvent.runId ||
+      reply.turnId !== input.terminalEvent.turnId ||
+      reply.normalizedSessionId !== input.terminalEvent.normalizedSessionId) return null;
+  const ref = `run-event:${reply.sourceEventId}`;
+  return {
+    schema: "paperclip.run_result.v1",
+    reportedWorkDisposition: "yielded",
+    summary: text.slice(0, 12_000),
+    completionClaim: {
+      contractRevision: input.completionContract.revision,
+      objectiveSatisfied: false,
+      criteria: input.completionContract.criteria.map((criterion) => ({
+        criterionId: criterion.id, status: "unknown", evidenceRefs: [ref],
+      })),
+      remainingWork: [],
+    },
+    evidence: [{ ref }],
+    verification: [],
+    attentionRequests: [],
+    artifacts: [],
+    continuation: {
+      kind: "response_wake",
+      summary: "Wait for the next user message in this conversation.",
+      idempotencyKey: `conversation-reply:${reply.sourceEventId}`,
+    },
+  };
+}
+
 /**
  * Bridge an asynchronous durable-interaction lookup to the runner package's
  * synchronous governed-wait boundary. Observations are single-use and bound
@@ -6616,6 +6656,8 @@ export async function executePaperclipNativeSession(input: {
   db: Db;
   execution: NativeExecutionInput;
   runnerInstanceId: string;
+  /** Trusted task identity from the heartbeat orchestration. */
+  conversationMode?: boolean;
   /** Configured total turn bound; zero/unset is unlimited. */
   turnTimeoutMs?: number;
   leaseOwner?: string;
@@ -7157,6 +7199,7 @@ async function executePaperclipNativeSessionWithinScope(
         payload: event.payload,
       },
     );
+  let completedConversationReply: PrpEvent | null = null;
   const controlPlane = new PaperclipControlPlanePort(
     input.db,
     {
@@ -7172,6 +7215,11 @@ async function executePaperclipNativeSessionWithinScope(
     },
     {
       onCommittedEvent: async (event) => {
+        if (event.eventType === "item.completed" &&
+            record(event.payload).kind === "agentMessage" &&
+            record(event.payload).channel === "final") {
+          completedConversationReply = event;
+        }
         await projectSessionGoalEvent(event);
         providerUsageLimitObserved ||= nativeProviderUsageLimitFromEvent(event);
         const eventAtMs = Date.parse(event.emittedAt);
@@ -7672,12 +7720,25 @@ async function executePaperclipNativeSessionWithinScope(
             resolveGovernedWait: ({ event }) =>
               governedWaitObservation.consume(event),
             resolveMissingResult: async ({ terminalEvent }) => {
-              // A model may correctly create a durable question/confirmation and
-              // then end its provider turn without also invoking paperclip_finish.
-              // Recover only completed turns with a pending interaction created by
-              // this exact run; unrelated or failed turns still fail closed.
+              // Governed waits take precedence over an ordinary chat reply.
+              // Execution tasks still require their normal semantic finish.
               if (terminalEvent.eventType !== "turn.completed") return null;
-              return resolvePendingGovernedWait();
+              const governedWait = await resolvePendingGovernedWait();
+              if (governedWait) return governedWait;
+              const [conversation] = await input.db
+                .select({ agentId: issues.conversationAgentId })
+                .from(issues)
+                .where(and(
+                  eq(issues.id, input.execution.binding.issueId),
+                  eq(issues.companyId, input.execution.binding.companyId),
+                ))
+                .limit(1);
+              return nativeConversationReplyResult({
+                conversation: conversation?.agentId === input.execution.binding.agentId,
+                terminalEvent,
+                replyEvent: completedConversationReply,
+                completionContract: input.execution.completionContract.contract,
+              });
             },
             existingSession: existingWarmSession,
             persistedSession: persistedWarmSession,

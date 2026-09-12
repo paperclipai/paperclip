@@ -69,7 +69,7 @@ function createMockSdkAgent(options: MockAgentOptions = {}) {
   const sendRun = options.sendRun ?? createMockRun();
   return {
     agentId: options.agentId ?? sendRun.agentId,
-    send: vi.fn(async () => sendRun),
+    send: vi.fn(async (_prompt: string, _options?: Record<string, unknown>) => sendRun),
     [Symbol.asyncDispose]: vi.fn(async () => {}),
   };
 }
@@ -140,6 +140,32 @@ describe("cursor_cloud execute", () => {
     createMock.mockReset();
     resumeMock.mockReset();
     getRunMock.mockReset();
+  });
+
+  it.each([false, true])("sends the central chat directive to Cursor Cloud (custom=%s)", async (custom) => {
+    const sdkAgent = createMockSdkAgent();
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext();
+    if (!custom) delete ctx.config.promptTemplate;
+    const directive = "Chat directive: clarify goals and hand plans off to project tasks.";
+    ctx.context = {
+      ...ctx.context,
+      conversationMode: true,
+      paperclipTaskMarkdown: directive,
+      paperclipWake: {
+        reason: "issue_commented",
+        issue: { id: "issue-1", workMode: "planning", status: "in_progress" },
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+      },
+    };
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    const prompt = String(sdkAgent.send.mock.calls[0]?.[0]);
+    expect(prompt).toContain(directive);
+    expect(prompt).toContain(custom ? "Do the work for" : "Continue your Paperclip conversation");
+    expect(prompt).not.toContain("Execution contract:");
+    expect(prompt).not.toContain("Create child issues");
   });
 
   it("creates a fresh Cursor agent and injects Paperclip env without CURSOR_API_KEY", async () => {

@@ -27,6 +27,23 @@ Manual local CLI mode (outside heartbeat runs): use `paperclipai agent local-cli
 
 **Run audit trail:** You MUST include `-H 'X-Paperclip-Run-Id: $PAPERCLIP_RUN_ID'` on ALL API requests that modify issues (checkout, update, comment, create subtask, release). This links your actions to the current heartbeat run for traceability.
 
+## Conversation tasks
+
+When the task context says **Chat mode** (the issue has `conversationAgentId`),
+follow that directive for the conversation lifecycle. Research, clarify, and
+revise the conversation's `plan` document here. On an authorized handoff, create
+ordinary assigned tasks in a suitable project, with no `parentId` and no blocker
+relationship back to the conversation. Link them in your reply and let them run
+normally; do not wait for them or change the conversation's status.
+
+Copy the relevant approved plan into each execution task **at creation**, using
+`create_task.initialPlan` or the HTTP issue-creation body's `initialPlan` field.
+Include an `idempotencyKey`. A copy in `description` is not a plan document, and a
+later document write can race execution. Verify the created task's `plan`
+document before claiming handoff. Preserve the source plan in this conversation.
+The ordinary completion, child-task, and blocker instructions below apply to
+execution tasks; they do not override chat mode.
+
 ## Server-Verified External Chat Turns
 
 Paperclip may identify an ordinary external-chat turn as already checked out and
@@ -208,7 +225,7 @@ Because of that, follow these rules:
 - **Never imply a live watcher on a task you are marking `done`.** `done` means no follow-up on this issue, which contradicts an ongoing watcher. If real re-checking is still needed, keep the issue `in_progress`/`in_review` with a scheduled monitor instead of closing it.
 - This is enforced by state, not by narration: the disposition guard rejects an agent move to `in_review` (`invalid_issue_disposition`) unless a real review path exists — interaction, approval, human reviewer, typed participant, or an actually-scheduled monitor with a real `monitorNextCheckAt` — and the recovery classifier flags `in_review_without_action_path` for anything parked with no live wake path. Keep your comments consistent with that real state.
 
-**Step 9 — Delegate if needed.** Create subtasks with `POST /api/companies/{companyId}/issues`. Always set `parentId` and `goalId`. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
+**Step 9 — Delegate if needed.** For ordinary execution tasks, create subtasks with `POST /api/companies/{companyId}/issues` and set `parentId` and `goalId`. For conversation tasks, use the project handoff above instead. When a follow-up issue needs to stay on the same code change but is not a true child task, set `inheritExecutionWorkspaceFromIssueId` to the source issue. Set `billingCode` for cross-team work.
 
 ### Delegating review tasks
 
@@ -624,7 +641,7 @@ PUT /api/issues/{issueId}/documents/plan
 }
 ```
 
-If `plan` already exists, fetch the current document first and send its latest `baseRevisionId` when you update it.
+If `plan` already exists, first `GET /api/issues/{issueId}/documents/plan` and read its current body and `latestRevisionId`. Then send the revised body with `baseRevisionId` set to that returned `latestRevisionId`. The GET field is `latestRevisionId`; the PUT field is `baseRevisionId`. Omitting it on an update returns `409`. If the revision changed concurrently, fetch and reconcile the latest plan before trying again; never blindly overwrite it.
 
 ## Key Endpoints (Hot Routes)
 

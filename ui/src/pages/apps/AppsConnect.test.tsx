@@ -3,7 +3,7 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { CONNECTABLE_APP_DEFINITIONS, getAppStoreDefinition } from "@paperclipai/shared";
+import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
@@ -1185,6 +1185,74 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       grantKind: "agent",
       subjectAgentId: "agent-1",
     }));
+  });
+
+  it.each([...new Set(Object.values(GOOGLE_WORKSPACE_CONNECTOR_PROFILES).map((profile) => profile.appSlug))]
+    .flatMap((slug) => [false, true].map((enrollmentReturn) => ({ slug, enrollmentReturn }))))(
+    "preserves personal Workspace access for $slug when changing method (enrollment return: $enrollmentReturn)",
+    async ({ slug, enrollmentReturn }) => {
+      const definition = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === slug)!;
+      const readMethod = definition.methods.find((method) => method.key === "paperclip-read")!;
+      mockSearch.value = enrollmentReturn
+        ? `source=${slug}&stage=setup&cloud_connector=enrolled`
+        : `source=${slug}`;
+      if (enrollmentReturn) {
+        window.sessionStorage.setItem(`paperclip.connector-enrollment-access:${slug}`, JSON.stringify({
+          companyId: "company-1", grantKind: "user", installChoice: "all", agentIds: [],
+        }));
+      }
+      listGalleryMock.mockResolvedValue({ apps: [{
+        ...definition, ownershipAvailability: { ...definition.ownershipAvailability, platform_shared: true },
+      }] });
+      await render();
+      if (!enrollmentReturn) {
+        await act(async () => {
+          radioContaining("Just me")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+        await passAccessStep();
+      }
+
+      if (definition.methods.some((method) => method.capabilityProfile?.key !== "read")) {
+        const readChoice = radioContaining(readMethod.capabilityProfile!.label);
+        expect(readChoice).not.toBeNull();
+        await act(async () => {
+          readChoice!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        });
+      }
+      await flushReact();
+      // Change auth methods too, including apps with only one capability.
+      expect(container.textContent).not.toContain("How do you want to connect?");
+      expect(container.textContent).not.toContain("Connect with Paperclip");
+      expect(container.textContent).not.toContain("Your OAuth app");
+      expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+      const customerAuth = buttonByText("Use your own Google OAuth app");
+      expect(customerAuth).toBeDefined();
+      expect(customerAuth?.getAttribute("aria-expanded")).toBe("false");
+      await act(async () => {
+        customerAuth!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      expect(container.textContent).toContain("Your OAuth app");
+      expect(container.textContent).toContain("Client ID");
+      expect(buttonByText("Continue to sign in")?.disabled).toBe(true);
+      const managedAuth = buttonByText("Use Paperclip instead");
+      expect(managedAuth).toBeDefined();
+      expect(managedAuth?.getAttribute("aria-expanded")).toBe("true");
+      const fieldsRegion = document.getElementById(managedAuth!.getAttribute("aria-controls")!);
+      expect(fieldsRegion?.getAttribute("role")).toBe("region");
+      expect(fieldsRegion?.textContent).toContain("Client ID");
+      await act(async () => {
+        managedAuth!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      expect(container.textContent).not.toContain("Your OAuth app");
+      await act(async () => {
+        buttonByText("Continue to sign in")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        galleryKey: slug, connectionMethodKey: "paperclip-read", grantKind: "user",
+      }));
   });
 
   it("never renders self-host enrollment when the connector identity is already active", async () => {
