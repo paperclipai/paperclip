@@ -752,6 +752,55 @@ function isExhaustedSuccessfulRunHandoff(latestRun: LatestIssueRun) {
   return { ...evidence, exhausted: true };
 }
 
+function routineMissingDispositionRecoveryEvidence(
+  issue: Pick<typeof issues.$inferSelect, "originKind">,
+  latestRun: LatestIssueRun,
+) {
+  // A status-only recovery may succeed without resolving the routine item.
+  // Treat that lineage as exhausted so it cannot become productive work.
+  if (
+    issue.originKind !== "routine_execution" ||
+    latestRun?.status !== "succeeded"
+  )
+    return null;
+
+  const context = parseObject(latestRun.contextSnapshot);
+  const paperclipWake = parseObject(context.paperclipWake);
+  const recovery = parseObject(paperclipWake.recovery);
+  const wakeReason =
+    readNonEmptyString(context.wakeReason) ??
+    readNonEmptyString(paperclipWake.reason);
+  const recoveryCause =
+    readNonEmptyString(context.recoveryCause) ??
+    readNonEmptyString(recovery.cause);
+  const isRecoveryActionRun =
+    wakeReason === "source_scoped_recovery_action" ||
+    readNonEmptyString(context.recoveryActionId) !== null;
+  const isMissingDispositionRecovery =
+    recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON ||
+    recoveryCause === "successful_run_missing_issue_disposition";
+  if (!isRecoveryActionRun || !isMissingDispositionRecovery) return null;
+
+  return {
+    sourceRunId:
+      readNonEmptyString(context.sourceRunId) ??
+      readNonEmptyString(context.resumeFromRunId) ??
+      readNonEmptyString(context.retryOfRunId),
+    correctiveRunId: latestRun.id,
+    missingDisposition:
+      readNonEmptyString(context.missingDisposition) ?? "clear_next_step",
+    handoffAttempt: Math.max(1, asNumber(context.handoffAttempt, 1)),
+    maxHandoffAttempts: Math.max(
+      1,
+      asNumber(
+        context.maxHandoffAttempts,
+        DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
+      ),
+    ),
+    exhausted: true,
+  };
+}
+
 function issueIdFromRunContext(contextSnapshot: unknown) {
   const context = parseObject(contextSnapshot);
   return (
@@ -4938,7 +4987,9 @@ export function recoveryService(
         }
         continue;
       }
-      const handoffEvidence = isExhaustedSuccessfulRunHandoff(latestRun);
+      const handoffEvidence =
+        isExhaustedSuccessfulRunHandoff(latestRun) ??
+        routineMissingDispositionRecoveryEvidence(issue, latestRun);
       if (handoffEvidence) {
         if (isPluginManagedIssueLifecycle(issue)) {
           result.skipped += 1;
