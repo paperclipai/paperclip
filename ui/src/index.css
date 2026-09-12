@@ -2984,6 +2984,15 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   animation: none;
 }
 
+/* Task recovery panel uses the shared spacing, radius, and type scales. */
+.execution-blocker-notice {
+  gap: calc(var(--spacing) * 2);
+  padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: var(--text-sm--line-height);
+}
+
 /* The runner keeps one fixed-height activity row between commentary updates. */
 @keyframes runner-activity-roll-in {
   from { transform: translateY(100%); opacity: 0; }
@@ -3000,11 +3009,22 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   .runner-activity-roll-out { display: none; }
 }
 
-/* Task recovery panel uses the shared spacing, radius, and type scales. */
-.execution-blocker-notice {
-  gap: calc(var(--spacing) * 2);
-  padding: calc(var(--spacing) * 2) calc(var(--spacing) * 3);
-  border-radius: var(--radius-md);
-  font-size: var(--text-sm);
-  line-height: var(--text-sm--line-height);
+/* Keep entity-picker search controls visible when a narrow viewport opens its
+   software keyboard. The fixed sheet also avoids scale motion during mobile
+   viewport resizing. */
+@media (max-width: 40rem) {
+  [data-mobile-entity-picker] {
+    position: fixed !important;
+    inset: auto calc(var(--spacing) * 4) max(calc(var(--spacing) * 4), env(safe-area-inset-bottom)) !important;
+    width: auto !important;
+    max-width: none !important;
+    max-height: calc(100dvh - calc(var(--spacing) * 8)) !important;
+    transform: none !important;
+    transform-origin: bottom center !important;
+    animation: none !important;
+  }
+
+  [data-mobile-entity-picker] [data-slot="command-list"] {
+    max-height: min(var(--sz-300px), calc(100dvh - calc(var(--spacing) * 24))) !important;
+  }
 }
